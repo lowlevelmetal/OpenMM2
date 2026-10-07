@@ -95,7 +95,7 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
     }
 }
 
-void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool night) {
+void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows) {
     const GpuModel* model = m_models.get(signal.model);
     if (!model)
         return;
@@ -104,20 +104,27 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
     const Mat44 world = Mat44::fromMat34(signal.transform);
     if (const GpuMesh* body = model->find("", lod))
         drawGpuMesh(m_device, m_textures, *body, model->materials(0), world);
+    // aiTrafficLightInstance::DrawGlow: the light's glow together with the
+    // pedestrian signal (WALK only in the walk phase), both or neither.
     const char* colour = signal.state == ai::LightState::Green  ? "GREEN"
                        : signal.state == ai::LightState::Amber  ? "YELLOW"
                                                                 : "RED";
-    const std::string part = std::format("{}GLOW{}", colour, night ? "NIGHT" : "DAY");
-    if (const GpuMesh* glow = model->find(part, asset::Lod::High)) {
+    const char* time = nightGlows ? "NIGHT" : "DAY";
+    const GpuMesh* glow = model->find(std::format("{}GLOW{}", colour, time), asset::Lod::High);
+    const GpuMesh* walk =
+        model->find(std::format("{}_{}", signal.state == ai::LightState::Walk ? "WALK" : "NOWALK", time),
+                    asset::Lod::High);
+    if (glow && walk) {
         MeshDrawOptions opts;
         opts.lighting = false;
         opts.blend = render::BlendMode::Additive;
         opts.depthWrite = false;
         drawGpuMesh(m_device, m_textures, *glow, model->materials(0), world, opts);
+        drawGpuMesh(m_device, m_textures, *walk, model->materials(0), world, opts);
     }
 }
 
-void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustum& frustum, bool night,
+void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time,
                       const std::function<const Mat34*(int)>& physicalTransform) {
     m_stats = {};
     const Vec3 eye = camera.position();
@@ -129,7 +136,9 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         CarModel* cm = carModel(car.model);
         if (!cm || !cm->model)
             continue;
-        const int paint = car.variant % cm->paintjobs;
+        // aiVehicleInstance::SetColor: trunc(frand * (paint jobs - 1)), so the
+        // last paint job is never chosen.
+        const int paint = cm->paintjobs > 1 ? static_cast<int>(car.paint * static_cast<float>(cm->paintjobs - 1)) : 0;
         auto& r = cm->renderers[paint];
         if (!r)
             r = std::make_unique<VehicleRenderer>(m_device, m_textures, m_models, *cm->model, paint);
@@ -140,7 +149,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             pose.wheelSteer[i] = i < 2 ? car.steer : 0.0f;
         }
         pose.brakeLights = car.braking;
-        pose.headlights = night;
+        pose.headlights = time == TimeOfDay::Night;
         r->draw(pose, eye);
         ++m_stats.cars;
     }
@@ -156,7 +165,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         if (signal.transform.m3.dist2(eye) > sq(kSignalDrawDistance) ||
             !frustum.intersectsSphere(signal.transform.m3, 6.0f))
             continue;
-        drawSignal(signal, camera, night);
+        drawSignal(signal, camera, time >= TimeOfDay::Evening);
         ++m_stats.signals;
     }
 }

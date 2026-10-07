@@ -133,8 +133,21 @@ public:
         if (m_trafficBodies && m_player)
             m_trafficBodies->afterStep(m_player->sim().modelMatrix().m3);
         if (m_ai && m_player) {
-            const auto& ics = m_player->sim().body.ics;
-            m_ai->update(static_cast<float>(dt), ics.matrix.m3, ics.frameVelocity);
+            const auto& sim = m_player->sim();
+            ai::PlayerCar pc;
+            pc.transform = sim.body.ics.matrix;
+            pc.velocity = sim.body.ics.frameVelocity;
+            pc.width = sim.body.shape.half.x * 2.0f;
+            pc.length = sim.body.shape.half.z * 2.0f;
+            pc.radius = sim.body.shape.half.mag();
+            pc.steering = sim.steering;
+            pc.reversing = sim.trans.getCurrentGear() < 0;
+            pc.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
+            std::vector<Vec3> racers;
+            for (const auto& o : m_opponents)
+                racers.push_back(o.sim->sim().body.ics.matrix.m3);
+            m_ai->setOpponents(racers);
+            m_ai->update(static_cast<float>(dt), pc);
         }
         if (m_player) {
             m_pose = m_player->pose();
@@ -199,7 +212,7 @@ public:
         const game::Frustum frustum(frame.view * frame.proj);
         m_cityRenderer->draw(m_camera, frustum, m_env, m_detail);
         if (m_ai && m_aiRenderer)
-            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay == game::TimeOfDay::Night,
+            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay,
                                [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
         drawRemoteCars(ctx, m_frameDt);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
@@ -751,14 +764,24 @@ private:
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
         std::string error;
-        m_ai = ai::World::create(*m_city, ctx.game->vfs, settings, nullptr, &error);
+        const city::AiMapConfig* raceMap =
+            m_session && m_session->setup().aiMap ? &*m_session->setup().aiMap : nullptr;
+        m_ai = ai::World::create(*m_city, ctx.game->vfs, settings, raceMap, &error);
         if (!m_ai) {
             log::warn("race: AI unavailable: {}", error);
             return;
         }
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
-        if (m_world)
+        if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
+            m_ai->traffic().setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
+                phys::RayHit hit;
+                if (!m_world->probe(from, to, hit))
+                    return false;
+                at = hit.position;
+                return true;
+            });
+        }
     }
 
     void loadEffects(Context& ctx) {

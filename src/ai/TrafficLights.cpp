@@ -1,3 +1,5 @@
+// Traffic light sets after MM2's aiTrafficLightSet (build 3393); see
+// TrafficLights.h and docs/ai.md.
 #include "ai/TrafficLights.h"
 
 namespace mm2::ai {
@@ -9,22 +11,56 @@ void TrafficLights::build(const RoadNetwork& network) {
         if (node.lights.empty())
             continue;
         Set set;
+        set.intersection = node.id;
         set.slots = node.lights;
+        set.paths = node.paths;
+        set.cycle = node.cycle;
         m_sets.push_back(std::move(set));
     }
     reset();
 }
 
+void TrafficLights::setState(const Set& set, int light, LightState state) {
+    if (light >= 0 && static_cast<std::size_t>(light) < set.slots.size())
+        m_states[static_cast<std::size_t>(set.slots[static_cast<std::size_t>(light)])] = state;
+}
+
+int TrafficLights::pairedLight(const Set& set) const {
+    return (set.current + 2) % 4;
+}
+
+void TrafficLights::resetSet(Set& set) {
+    // aiTrafficLightSet::Reset: light 0 green (with light 2 in a four-way
+    // set), the others red.
+    set.current = 0;
+    set.walkPhase = false;
+    set.timer = 0.0f;
+    for (std::size_t i = 0; i < set.slots.size(); ++i)
+        setState(set, static_cast<int>(i), i == 0 ? LightState::Green : LightState::Red);
+    if (set.cycle == LightCycle::FourWay)
+        setState(set, 2, LightState::Green);
+}
+
 void TrafficLights::reset() {
     m_forced = false;
     m_newGreen.clear();
-    for (auto& set : m_sets) {
-        set.current = 0;
-        set.timer = 0.0f;
-        // First light green, the rest red (aiTrafficLightSet::Reset).
-        for (std::size_t i = 0; i < set.slots.size(); ++i)
-            m_states[static_cast<std::size_t>(set.slots[i])] = i == 0 ? LightState::Green : LightState::Red;
-    }
+    for (auto& set : m_sets)
+        resetSet(set);
+}
+
+void TrafficLights::turnGreen(Set& set) {
+    // The new green light restarts the stopped queue of the intersection's
+    // road at the light's index (aiPath::ResetVehicleReactTicks).
+    auto report = [&](int light) {
+        setState(set, light, LightState::Green);
+        const int path = light >= 0 && static_cast<std::size_t>(light) < set.paths.size()
+                             ? set.paths[static_cast<std::size_t>(light)]
+                             : -1;
+        m_newGreen.push_back({set.intersection, path});
+    };
+    report(set.current);
+    if (set.cycle == LightCycle::FourWay)
+        report(pairedLight(set));
 }
 
 void TrafficLights::update(float dt) {
@@ -33,20 +69,40 @@ void TrafficLights::update(float dt) {
         return;
     for (auto& set : m_sets) {
         set.timer += dt;
-        if (set.timer > kLightCycleSeconds) {
-            m_states[static_cast<std::size_t>(set.slots[static_cast<std::size_t>(set.current)])] =
-                LightState::Red;
-            ++set.current;
-            set.timer = 0.0f;
-            if (set.current == static_cast<int>(set.slots.size()))
-                set.current = 0;
-            const int slot = set.slots[static_cast<std::size_t>(set.current)];
-            m_states[static_cast<std::size_t>(slot)] = LightState::Green;
-            m_newGreen.push_back(slot);
-        } else if (set.timer > kLightCycleSeconds - kLightAmberSeconds) {
-            m_states[static_cast<std::size_t>(set.slots[static_cast<std::size_t>(set.current)])] =
-                LightState::Amber;
+        if (set.walkPhase) {
+            // All red for pedestrians: WALK, then the don't-walk signal for
+            // the last 3 s, then the round starts again.
+            if (set.timer > kLightCycleSeconds)
+                resetSet(set);
+            else if (set.timer > kLightCycleSeconds - kLightAmberSeconds)
+                for (std::size_t i = 0; i < set.slots.size(); ++i)
+                    setState(set, static_cast<int>(i), LightState::WalkEnd);
+            continue;
         }
+        if (set.timer <= kLightCycleSeconds) {
+            if (set.timer > kLightCycleSeconds - kLightAmberSeconds) {
+                setState(set, set.current, LightState::Amber);
+                if (set.cycle == LightCycle::FourWay)
+                    setState(set, pairedLight(set), LightState::Amber);
+            }
+            continue;
+        }
+        setState(set, set.current, LightState::Red);
+        if (set.cycle == LightCycle::FourWay)
+            setState(set, pairedLight(set), LightState::Red);
+        ++set.current;
+        set.timer = 0.0f; // MM2 drops the overshoot
+        if (set.current == static_cast<int>(set.slots.size())) {
+            if (set.cycle != LightCycle::Rotate) {
+                set.walkPhase = true;
+                for (std::size_t i = 0; i < set.slots.size(); ++i)
+                    setState(set, static_cast<int>(i), LightState::Walk);
+            } else {
+                set.current = 0;
+            }
+        }
+        if (!set.walkPhase)
+            turnGreen(set);
     }
 }
 

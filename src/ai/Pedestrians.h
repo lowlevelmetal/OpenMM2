@@ -9,6 +9,7 @@
 // system substantially, so most behaviour here is inferred; docs/ai.md lists
 // which parts carry MM1 values.
 
+#include "ai/PlayerCar.h"
 #include "ai/Random.h"
 #include "ai/RoadNetwork.h"
 #include "asset/Ped.h"
@@ -55,6 +56,7 @@ public:
                 std::uint64_t seed);
 
     void step(float dt, const Vec3& playerPos, const Vec3& playerVel);
+    void step(float dt, const PlayerCar& p) { step(dt, p.transform.m3, p.velocity); }
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
     std::size_t activeCount() const;

@@ -1,8 +1,10 @@
 #include "ai/VehicleData.h"
 
+#include "asset/Mtx.h"
 #include "core/StringUtil.h"
 #include "data/DatFile.h"
 
+#include <cmath>
 #include <format>
 
 namespace mm2::ai {
@@ -35,6 +37,16 @@ std::optional<VehicleData> loadVehicleData(const vfs::Vfs& vfs, std::string_view
     n.read("RubberSpring", d.rubberSpring);
     n.read("RubberDamp", d.rubberDamp);
     n.read("CG", d.cg);
+    for (int w = 0; w < 6; ++w) {
+        const auto mtx = vfs.readAll(std::format("geometry/{}_whl{}.mtx", d.model, w));
+        const auto m = mtx ? asset::parseMtx(*mtx) : std::nullopt;
+        if (!m)
+            break;
+        d.wheels[static_cast<std::size_t>(w)] = m->origin;
+        d.wheelCount = w + 1;
+        if (w == 0)
+            d.wheelRadius = std::abs(m->max.y - m->min.y) * 0.5f;
+    }
     return d;
 }
 

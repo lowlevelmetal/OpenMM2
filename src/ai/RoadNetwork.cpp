@@ -56,18 +56,6 @@ float Polyline::project(const Vec3& p, float* distance) const {
     return bestS;
 }
 
-namespace {
-
-// Mirrors a point across the path's centre line at section `k` (drive on the
-// left): the lateral offset along the section's x axis changes sign.
-Vec3 mirror(const city::AiPath& path, std::size_t k, const Vec3& p) {
-    const Vec3 d = p - path.center[k];
-    const float lateral = d.dot(path.xAxis[k]);
-    return p - path.xAxis[k] * (2.0f * lateral);
-}
-
-} // namespace
-
 RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& options) {
     RoadNetwork net;
     net.m_source = &map;
@@ -93,69 +81,98 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
         info.id = static_cast<int>(p);
         info.flags = src.flags;
         info.halfWidth = src.halfWidth;
-        info.speedLimit = options.defaultSpeedLimit;
+        info.xAxis = src.xAxis;
+        info.centreLength = src.centerLengths.empty() ? 0.0f : src.centerLengths.back();
+        // Speed limits (aiMap::Init): an [Exceptions] entry sets the road's
+        // limit to its own value, zero included; otherwise freeways get the
+        // city's [Speed Limit] + 12.5 and other roads the limit itself.
+        info.speedLimit = options.defaultSpeedLimit + (info.freeway() ? 12.5f : 0.0f);
         for (const auto& e : options.exceptions) {
-            if (e.road == static_cast<int>(src.id)) {
+            if (e.road == static_cast<int>(p)) {
                 info.hasException = true;
                 info.density = e.density;
-                if (e.speedLimit > 0.0f)
-                    info.speedLimit = e.speedLimit;
+                info.speedLimit = e.speedLimit;
+                break;
             }
         }
-        info.intersection[0] = validIntersection(src.ends[0].intersection);
-        info.intersection[1] = validIntersection(src.ends[1].intersection);
+        for (int end = 0; end < 2; ++end) {
+            const auto& e = src.ends[static_cast<std::size_t>(end)];
+            info.intersection[end] = validIntersection(e.intersection);
+            info.rule[end] = static_cast<EntryRule>(e.vehicleRule == 1 ? 1 : e.vehicleRule == 0 ? 0 : 3);
+            info.endFlags[end] = e.unknown2;
+            // The file stores the path's index in each end's intersection list.
+            if (info.intersection[end] >= 0) {
+                const auto& list = net.m_intersections[static_cast<std::size_t>(info.intersection[end])].paths;
+                int idx = e.roadIndex < list.size() && list[e.roadIndex] == static_cast<int>(p)
+                              ? static_cast<int>(e.roadIndex)
+                              : -1;
+                for (std::size_t k = 0; idx < 0 && k < list.size(); ++k)
+                    if (list[k] == static_cast<int>(p))
+                        idx = static_cast<int>(k);
+                info.roadIndex[end] = idx;
+            }
+        }
         if (!src.center.empty()) {
             info.centreStart = src.center.front();
             info.centreEnd = src.center.back();
             for (const auto& c : src.center)
                 info.bounds.expand(c);
         }
-        const std::size_t sections = src.center.size();
 
+        // aiPath::ReverseDirection, applied to two-way roads when driving on
+        // the left: each side rides the other side's lane lines, reversed in
+        // point order and in lane order. The lane counts stay with their
+        // sides (equal on every reversed retail road).
+        const bool reverse = options.driveOnLeft && src.left.numLanes != 0;
         for (int sideIdx = 0; sideIdx < 2; ++sideIdx) {
             const city::AiRoadSide& side = sideIdx == 0 ? src.left : src.right;
-            // Right lanes run with increasing section index and arrive at
-            // ends[0]; left lanes run the other way and arrive at ends[1].
+            const city::AiRoadSide& other = sideIdx == 0 ? src.right : src.left;
+            info.sideFlags[static_cast<std::size_t>(sideIdx)] = side.roadType;
+            // Direction +1 (second side) arrives at ends[0]; -1 at ends[1].
             const int arriveEnd = sideIdx == 1 ? 0 : 1;
-            const city::AiPathEnd& arrival = src.ends[static_cast<std::size_t>(arriveEnd)];
             for (int l = 0; l < side.numLanes; ++l) {
-                if (static_cast<std::size_t>(l) >= side.polylines.size())
-                    break;
-                const auto& poly = side.polylines[static_cast<std::size_t>(l)];
+                std::vector<Vec3> points;
+                if (reverse) {
+                    const int k = other.numLanes - 1 - l;
+                    if (k < 0 || static_cast<std::size_t>(k) >= other.polylines.size())
+                        break;
+                    const auto& line = other.polylines[static_cast<std::size_t>(k)];
+                    points.assign(line.rbegin(), line.rend());
+                } else {
+                    if (static_cast<std::size_t>(l) >= side.polylines.size())
+                        break;
+                    points = side.polylines[static_cast<std::size_t>(l)];
+                }
                 Lane lane;
                 lane.id = static_cast<int>(net.m_lanes.size());
                 lane.path = static_cast<int>(p);
                 lane.side = sideIdx;
+                lane.dir = sideIdx == 1 ? 1 : -1;
                 lane.index = l;
-                // Stored in travel order; when mirroring, point i of a left
-                // lane lies at section (sections - 1 - i).
-                for (std::size_t i = 0; i < poly.size(); ++i) {
-                    Vec3 pt = poly[i];
-                    if (options.driveOnLeft && sections == poly.size()) {
-                        const std::size_t k = sideIdx == 1 ? i : sections - 1 - i;
-                        pt = mirror(src, k, pt);
-                    }
-                    lane.line.points.push_back(pt);
-                }
+                lane.count = side.numLanes;
+                lane.ambient = (side.roadType & 1) == 0;
+                lane.line.points = std::move(points);
                 lane.line.finalize();
                 lane.toIntersection = info.intersection[arriveEnd];
                 lane.fromIntersection = info.intersection[1 - arriveEnd];
-                lane.rule = static_cast<EntryRule>(arrival.vehicleRule == 1   ? 1
-                                                   : arrival.vehicleRule == 0 ? 0
-                                                                              : 3);
+                lane.rule = info.rule[arriveEnd];
                 lane.speedLimit = info.speedLimit;
                 info.lanes.push_back(lane.id);
+                info.sideLanes[static_cast<std::size_t>(sideIdx)].push_back(lane.id);
                 net.m_lanes.push_back(std::move(lane));
             }
 
-            // Sidewalk, curb and outer edge follow the lanes, trams and trains.
+            // The sidewalk line follows the lanes (MM2's vertex rows: lanes,
+            // then the sidewalk; aiPath::SidewalkVertice), then come the tram
+            // and train lines, the curb and the outer edge. ReverseDirection
+            // leaves the sidewalk in place.
             const std::size_t base = static_cast<std::size_t>(side.numLanes + side.numTrams + side.numTrains);
             if (side.numSidewalks > 0 && base + 2 < side.polylines.size()) {
                 Sidewalk walk;
                 walk.id = static_cast<int>(net.m_sidewalks.size());
                 walk.path = static_cast<int>(p);
                 walk.side = sideIdx;
-                walk.centre.points = side.polylines[base];
+                walk.centre.points = side.polylines[static_cast<std::size_t>(side.numLanes)];
                 walk.curb.points = side.polylines[base + 1];
                 walk.edge.points = side.polylines[base + 2];
                 // Pedestrians stand on the sidewalk surface: the outer edge
@@ -193,41 +210,79 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
                 net.m_intersections[static_cast<std::size_t>(n)].sidewalks.push_back(w.id);
     }
     for (auto& node : net.m_intersections) {
-        // One light per approaching path end with a traffic light (MM1's
-        // aiTrafficLightSet has one per "sink" path of IntersectionType 1),
-        // in the intersection's path order.
+        int sources = 0, sinks = 0;
         for (int pathId : node.paths) {
             if (pathId < 0 || static_cast<std::size_t>(pathId) >= map.paths.size())
                 continue;
             const auto& src = map.paths[static_cast<std::size_t>(pathId)];
-            for (int end = 0; end < 2; ++end) {
-                if (net.m_paths[static_cast<std::size_t>(pathId)].intersection[end] != node.id)
-                    continue;
-                const auto& e = src.ends[static_cast<std::size_t>(end)];
-                if (e.vehicleRule != 1)
-                    continue;
-                TrafficLightSite site;
-                site.intersection = node.id;
-                site.position = e.trafficLightPos;
-                const Vec3 d = e.trafficLightAxis - e.trafficLightPos;
-                site.facing = d.mag2() > 1e-8f ? d.normalized() : Vec3{0, 0, 1};
-                const int slot = static_cast<int>(net.m_lights.size());
-                // Lanes arriving at this end are controlled by this light.
-                for (int laneId : net.m_paths[static_cast<std::size_t>(pathId)].lanes) {
-                    Lane& lane = net.m_lanes[static_cast<std::size_t>(laneId)];
-                    const int arriveEnd = lane.side == 1 ? 0 : 1;
-                    if (arriveEnd == end && lane.toIntersection == node.id) {
-                        lane.lightSlot = slot;
-                        if (site.lane < 0)
-                            site.lane = laneId;
-                    }
-                }
-                node.lights.push_back(slot);
-                net.m_lights.push_back(site);
+            PathInfo& info = net.m_paths[static_cast<std::size_t>(pathId)];
+            // aiIntersection::NumSources / NumSinks as MM2 codes them: a
+            // source is a path whose ends[0] is here or whose first side has
+            // lanes; a "sink" a departing side whose flag bit 0 is set.
+            const bool atEnd0 = info.intersection[0] == node.id;
+            if (atEnd0 || src.left.numLanes != 0)
+                ++sources;
+            if (info.intersection[1] == node.id) {
+                if (info.sideFlags[1] & 1)
+                    ++sinks;
+            } else if (src.left.numLanes != 0 && (info.sideFlags[0] & 1)) {
+                ++sinks;
+            }
+            // One light per path end here with a traffic light, in the
+            // intersection's path order (aiTrafficLightSet ctor; the light
+            // indices are handed out the same way by SetFourWay).
+            const int end = atEnd0 ? 0 : (info.intersection[1] == node.id ? 1 : -1);
+            if (end < 0 || src.ends[static_cast<std::size_t>(end)].vehicleRule != 1)
+                continue;
+            const auto& e = src.ends[static_cast<std::size_t>(end)];
+            TrafficLightSite site;
+            site.intersection = node.id;
+            site.path = pathId;
+            site.position = e.trafficLightPos;
+            Vec3 d = e.trafficLightAxis - e.trafficLightPos;
+            d.y = 0.0f;
+            site.axis = d.mag2() > 1e-12f ? d.normalized() : Vec3{1, 0, 0};
+            // Lanes arriving at this end: direction +1 at ends[0], -1 at ends[1].
+            const int side = end == 0 ? 1 : 0;
+            site.arrivingLanes = side == 1 ? src.right.numLanes : src.left.numLanes;
+            const int slot = static_cast<int>(net.m_lights.size());
+            for (int laneId : info.sideLanes[static_cast<std::size_t>(side)]) {
+                Lane& lane = net.m_lanes[static_cast<std::size_t>(laneId)];
+                lane.lightSlot = slot;
+                if (site.lane < 0)
+                    site.lane = laneId;
+            }
+            node.lights.push_back(slot);
+            net.m_lights.push_back(site);
+        }
+        // aiTrafficLightSet::SetFourWay. With the sink count as MM2 codes it
+        // no retail intersection qualifies as a four-way one.
+        if (!node.lights.empty()) {
+            if (sinks == 4 && sources == 4 && node.paths.size() == 4)
+                node.cycle = LightCycle::FourWay;
+            else if (static_cast<int>(node.lights.size()) == sources)
+                node.cycle = LightCycle::AllSources;
+        }
+        if (node.cycle == LightCycle::FourWay) {
+            // The approaches' end flags get 3, so ambient traffic goes
+            // straight on there (aiMap::ChooseStraightLinkAt4Way).
+            for (int pathId : node.paths) {
+                PathInfo& info = net.m_paths[static_cast<std::size_t>(pathId)];
+                for (int end = 0; end < 2; ++end)
+                    if (info.intersection[end] == node.id)
+                        info.endFlags[end] |= 3;
             }
         }
     }
     return net;
+}
+
+int RoadNetwork::lane(int path, int dir, int index) const {
+    if (path < 0 || static_cast<std::size_t>(path) >= m_paths.size())
+        return -1;
+    const auto& lanes = m_paths[static_cast<std::size_t>(path)].lanesOf(dir);
+    return index >= 0 && static_cast<std::size_t>(index) < lanes.size() ? lanes[static_cast<std::size_t>(index)]
+                                                                         : -1;
 }
 
 std::vector<int> RoadNetwork::exits(int intersection, int fromPath) const {

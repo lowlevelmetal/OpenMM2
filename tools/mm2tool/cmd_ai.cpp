@@ -346,7 +346,9 @@ int cmdAiSim(std::span<char* const> args) {
         }
         for (std::size_t k = 0; k < redFor.size(); ++k)
             redFor[k] =
-                world->signals()[k].state == ai::LightState::Red ? redFor[k] + ai::kAiStepSeconds : 0.0f;
+                world->signals()[k].state != ai::LightState::Green && world->signals()[k].state != ai::LightState::Amber
+                    ? redFor[k] + ai::kAiStepSeconds
+                    : 0.0f; // red, or the all-red walk phase
         for (const auto& car : world->cars())
             stillFor[car.id] = car.speed < 0.1f ? stillFor[car.id] + ai::kAiStepSeconds : 0.0f;
         if (verbose && i + 1 == steps) {
