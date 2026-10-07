@@ -1045,10 +1045,10 @@ private:
     game::CameraTarget cameraTarget() const {
         const auto& sim = m_player->sim();
         game::CameraTarget t;
-        t.matrix = sim.body.ics.matrix;
+        // camCarCS tracks vehCarSim's world matrix (the model origin).
+        t.matrix = sim.modelMatrix();
         t.angularVelocity = sim.body.ics.angularVelocity;
-        const Vec3& v = sim.body.ics.frameVelocity;
-        t.speed = std::abs((t.matrix.m2.x * v.x + t.matrix.m2.y * v.y) + t.matrix.m2.z * v.z);
+        t.speed = sim.speed(); // vehCarSim: |velocity . Z|
         t.steering = sim.steering;
         t.throttle = sim.engine.throttle;
         t.handBrake = sim.handBrake;
