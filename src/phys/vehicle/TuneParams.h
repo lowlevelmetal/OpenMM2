@@ -134,48 +134,43 @@ struct CarDamageParams {
     bool mirrorPivot = false;
 };
 
+// vehTrailer (vehTrailer::FileIO; defaults from its constructor).
 struct TrailerParams {
-    float mass = 2000.0f;
-    Vec3 inertiaBox{2.5f, 0.6f, 12.0f};
-    // Hitch points, when the .vehTrailer file carries them (vpsemi does;
-    // vpcentury keeps them in its .dgTrailerJoint as Offset0/Offset1).
-    std::optional<Vec3> carHitchOffset;     // tractor model space
-    std::optional<Vec3> trailerHitchOffset; // trailer model space
-    WheelParams wheelFront;
-    WheelParams wheelBack;
-    // Drivetrain block (vpsemi); absent -> MM1's free drivetrain constants.
-    std::optional<DrivetrainParams> drivetrain;
+    float mass = 3000.0f;
+    Vec3 inertiaBox{3.0f, 4.0f, 9.0f};
+    // Hitch points. vehTrailer::Init takes them from the models'
+    // trailer_hitch pivots (TrailerGeometry); these fields replace them when
+    // the file has them (vpsemi). CarHitchOffset is used in the tractor's
+    // InertialCS space (relative to its centre of mass, not to its model
+    // origin), TrailerHitchOffset in the trailer's, whose centre of mass is
+    // its model origin.
+    std::optional<Vec3> carHitchOffset;
+    std::optional<Vec3> trailerHitchOffset;
+    WheelParams wheelFront; // TWHL0 (TWHL1 copies it)
+    WheelParams wheelBack;  // TWHL2 (TWHL3 copies it)
+    // The four free drivetrains (the first one's block; the others copy it).
+    DrivetrainParams drivetrain;
 };
 
-// dgTrailerJoint. The names match MM1's Joint3Dof parameters:
-// RestoreForce/DampConst/DampLinear = SetFriction*(restore, const, linear),
-// LeanLimit/LimitElasticityLean = SetLeanLimit, LimitElasticityRoll =
-// SetRollLimit's elasticity (MM1 mmCar::Init passes exactly vpcentury's old
-// tune/vpcentury.dgTrailerJoint values).
+// dgTrailerJoint (dgTrailerJoint::FileIO; defaults from dgTrailerJoint::Init).
+// See phys/TrailerJoint.h and docs/physics.md. MM2 reads nothing else:
+// vpcentury's Offset0/Offset1 (an older layout) are ignored, and the roll
+// limits are not loadable (Init's -0.3/+0.3).
 struct TrailerJointParams {
-    Vec3 offset0;            // hitch on the tractor (tractor model space)
-    Vec3 offset1;            // hitch on the trailer (trailer model space)
-    bool hasOffsets = false; // Offset0/Offset1 present in the file
-    float forceLimit = 0.0f; // 0 = unbreakable
-    int jointStatus = 2;
+    float forceLimit = 0.0f; // breaks above ForceLimit * 10000 N; 0 = never
+    int jointStatus = 2;     // the joint's flags: 1 broken, 2 torques and limits on
     float restoreForceLean = 2.0f;
     float dampConstLean = 2.0f;
-    float dampLinearLean = 0.9f;
+    float dampLinearLean = 0.9f; // read, but without effect in MM2
     float restoreForceRoll = 2.0f;
     float dampConstRoll = 0.1f;
     float dampLinearRoll = 2.0f;
-    float leanLimit = 3.0f;
-    float limitElasticityLean = 0.0f;
+    float leanLimit = 3.1415927f;
+    float limitElasticityLean = 1.0f;
     float limitElasticityRoll = 0.0f;
-    // MM2 dgTrailerJoint has NegativeRollLimit/PositiveRollLimit members, but
-    // no retail file sets them; absent -> Joint3Dof::Init's -pi/+pi.
-    std::optional<float> negativeRollLimit;
-    std::optional<float> positiveRollLimit;
-    // MM2 additions with no MM1 counterpart (vpsemi only): FreeRange,
-    // FreeLean, FreeRoll. Semantics inferred, see docs/physics.md.
-    float freeRange = 0.0f;
-    float freeLean = 0.0f;
-    float freeRoll = 0.0f;
+    float freeRange = 0.15f; // hitch gap (m) allowed before the bodies are moved together
+    float freeLean = 0.1f;   // lean (rad) inside which no restoring torque acts
+    float freeRoll = 0.1f;   // |roll| (rad) above which the roll torque would act
 };
 
 // Loaders take the top-level block ("vehCarSim { ... }"). Fields the Angel

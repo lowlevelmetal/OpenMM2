@@ -68,6 +68,9 @@ public:
     void computeConstants();
     // vehWheel::SetNormalLoad: derives the spring, damper and tyre constants.
     void setNormalLoad(float load);
+    // vehWheel::AddNormalLoad: SetNormalLoad(static load + load), at least 1 N
+    // (vehTrailer::Init adds the trailer's share to the tractor's wheels).
+    void addNormalLoad(float load);
     void reset();
 
     // vehWheel::SetInputs: steering (-1..1, before SteeringLimit), foot brake

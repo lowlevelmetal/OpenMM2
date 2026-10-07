@@ -85,6 +85,13 @@ void Wheel::computeConstants() {
     setNormalLoad((-(mass * kWheelGravity) * az * 0.5f) / (az + az));
 }
 
+void Wheel::addNormalLoad(float load) {
+    float l = load + normalLoad;
+    if (l < 1.0f)
+        l = 1.0f;
+    setNormalLoad(l);
+}
+
 void Wheel::setNormalLoad(float load) {
     normalLoad = load;
     if (params.suspensionFactor < 0.75f)

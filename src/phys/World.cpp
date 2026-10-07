@@ -77,13 +77,11 @@ void World::remove(Body* body) {
     std::erase(m_bodies, body);
 }
 
-void World::add(Joint3Dof* joint) {
-    if (std::ranges::find(m_joints, joint) == m_joints.end())
-        m_joints.push_back(joint);
-}
-
-void World::remove(Joint3Dof* joint) {
-    std::erase(m_joints, joint);
+void Body::invMassMatrix(const Vec3& worldPos, Mat34& out) const {
+    if (joint && !joint->isBroken())
+        joint->computeInvMassMatrix(&ics, out, worldPos);
+    else
+        ics.calcCMatrix(out, worldPos);
 }
 
 bool World::probe(const Vec3& a, const Vec3& b, RayHit& hit) const {
@@ -126,8 +124,6 @@ void World::step(float dt) {
     }
     for (Body* b : m_bodies)
         b->ics.update(dt, invDt);
-    for (Joint3Dof* j : m_joints)
-        j->update(dt, invDt);
     for (Body* b : m_bodies)
         if (b->controller)
             b->controller->afterIntegrate(*b, dt, *this);
@@ -206,12 +202,9 @@ void World::collide(std::vector<ContactPoint>& contacts) {
             Body* b = m_bodies[j];
             if (!b->collideBodies || (asleep(a) && asleep(b)))
                 continue;
-            bool jointed = false;
-            for (const Joint3Dof* jt : m_joints)
-                if (!jt->isBroken() && ((jt->ics1 == &a->ics && jt->ics2 == &b->ics) ||
-                                        (jt->ics1 == &b->ics && jt->ics2 == &a->ics)))
-                    jointed = true;
-            if (jointed)
+            // dgPhysManager::Update: colliders sharing an unbroken joint
+            // (a tractor and its trailer) do not collide.
+            if (a->joint && a->joint == b->joint && !a->joint->isBroken())
                 continue;
             const Aabb bb = b->aabb();
             if (ba.max.x < bb.min.x || ba.min.x > bb.max.x || ba.max.y < bb.min.y || ba.min.y > bb.max.y ||
@@ -316,12 +309,8 @@ void World::pushApart(std::vector<ContactPoint>& contacts) {
             cp.b->ics.numImpulses = std::max(cp.b->ics.numImpulses, 1);
         }
     }
-    // Linked bodies keep their pushes: Joint3Dof::update shares them between
-    // the two bodies and FinishUpdate applies them, as in the original (MM1
-    // only calls MoveICS for AI cars).
     for (Body* b : m_bodies)
-        if (!(b->ics.constraints & InertialCS::kConstrainLink))
-            b->ics.moveICS();
+        b->ics.moveICS();
 }
 
 void World::report(std::vector<ContactPoint>& contacts) {
