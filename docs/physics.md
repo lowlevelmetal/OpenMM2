@@ -579,6 +579,31 @@ the car's own collider id (0) and |x| + |y| + |z| of the impulse, and above
 an impulse of 100 reach its breakable parts (`vehBreakableMgr`, threshold
 2500 for traffic).
 
+### Props (`dgBangerData`, `dgUnhitBangerInstance`, `dgBangerActive`) — MM2
+
+`game/bangers/BangerSet`. A standing prop is a banger instance of its room
+(props placed without a room get `findRoom` at their CG, inferred): its bound
+(`dgBangerData::InitBound` by CollisionPrim: the `<name>_bound` geometry
+shifted by −CG, else a box of Size; a box; a hotdog of YRadius and Size.y; a
+sphere of YRadius) with its own material (`AdjustPrim`: the data's elasticity
+and friction), its matrix at the CG, its collider id the data's ColliderId,
+and for the sphere test its foot with YRadius (radius otherwise the bound's
+sphere about the origin, inferred). Touched, it attaches one of 32 bodies
+(`dgBangerActiveManager::Attach`, reusing the oldest when full): at rest,
+`InitBoxMass(Mass, Size)`, `SmoothAngInertia(40)`, phSleep thresholds 0.1 /
+0.5. If `dgImpact` breaks it loose, `dgUnhitBangerInstance::Impact` turns it
+into one of 40 knocked-over props (the oldest disappears; MM2's ring hands
+slot 0 out twice after each wrap) that keeps the body and its pending
+impulses, or splits it into its parts, each taking the velocity change those
+impulses give the whole; otherwise the body is let go. A knocked-over prop
+collides as a plain object and attaches a body when hit. The bodies collide
+by CollisionType (0x10 or 0x40: everything; 0x4: the city only; 0x2: no
+collisions) and stop being simulated asleep or below y −100. Parts thrown off
+cars (`vehBreakableMgr::Eject`) get the random speed as momentum, so heavy
+parts barely move (as the code does). OpenMM2 removes a broken prop's bound
+for the rest of the sample instead of taking it off the lists the movers
+gathered (`NewMover`'s second argument).
+
 ### Damage and sounds (`vehCarDamage::Impact`, `InsertImpact`, `ApplyImpact`)
 
 `vehStuck::Impact` first. The impact is worth |impulse| × the other body's

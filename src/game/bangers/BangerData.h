@@ -39,10 +39,15 @@ struct BangerData {
     // 0x10 no shadow pass, 0x40 (lamps; no reader), 0x80 unlit with alpha
     // reference 140, 0x100 glass, 0x200 tree (also set for "_tree" names).
     int billFlags = 0;
+    // The id the prop's colliders carry (the instance data's), which
+    // AudImpact plays for impacts against it.
     int colliderId = 0;
     // dgBangerData::InitBound: 0 the "<name>_bound" geometry (else a box),
     // 1 box of Size, 2 capsule of YRadius and length Size.y, 3 sphere of YRadius.
     int collisionPrim = 0;
+    // dgBangerActiveManager::Update: how a knocked-over prop is simulated:
+    // 0x2 without collisions, 0x40 / 0x10 colliding with everything, 0x4
+    // with the city only, otherwise not at all.
     int collisionType = 0x10;
     int audioId = 0; // read, never used
     std::optional<fx::BirthRule> birthRule;
@@ -65,6 +70,9 @@ public:
     bool has(std::string_view model) const;
     std::size_t available() const { return m_names.size(); }
     std::vector<std::string> names() const;
+    // The game data the entries come from (dgBangerData::InitBound loads the
+    // "<name>_bound" geometry from it).
+    const vfs::Vfs& vfs() const { return m_vfs; }
 
 private:
     const vfs::Vfs& m_vfs;
