@@ -114,7 +114,7 @@ public:
     void finish();
     // Collision report for this car (installed on CarSim::onImpactCallback
     // by the constructor, chaining any callback already set).
-    void onImpact(const phys::Impact& impact);
+    void onImpact(const phys::CarImpact& impact);
 
     Mode mode() const { return m_mode; }
     bool finished() const { return m_finished; }
@@ -141,7 +141,7 @@ private:
     OpponentSettings m_settings;
     int m_selfId = -1;
     PhysicsDriver m_driver;
-    std::function<void(const phys::Impact&)> m_prevCallback;
+    std::function<void(const phys::CarImpact&)> m_prevCallback;
 
     Mode m_mode = Mode::Held;
     bool m_held = false;

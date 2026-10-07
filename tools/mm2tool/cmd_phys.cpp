@@ -151,22 +151,23 @@ std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& c
     return out;
 }
 
-// A 100 km square of flat road.
-World makeTestWorld(const vfs::FileSystem& fs) {
+// A 100 km square of flat road (for the wheels; the bodies collide with
+// nothing).
+std::unique_ptr<World> makeTestWorld(const vfs::FileSystem& fs) {
     MaterialTable materials;
     if (auto mtl = readText(fs, "city/materials.mtl"))
         if (auto list = parseMaterials(*mtl))
             materials.add(*list);
-    World world(materials);
-    BoundGeometry ground;
+    auto world = std::make_unique<World>(materials);
+    SoupGeometry ground;
     const float s = 50000.0f;
     ground.vertices = {{-s, 0, -s}, {-s, 0, s}, {s, 0, s}, {s, 0, -s}};
     ground.polys.push_back({{0, 1, 2, 3}, 4, 0});
     ground.materialNames = {"_default"};
     PolygonSoup soup;
-    soup.add(ground, Mat34::identity(), world.materials());
+    soup.add(ground, Mat34::identity(), world->materials());
     soup.finalize(4096.0f);
-    world.setStatic(std::move(soup));
+    world->setStatic(std::move(soup));
     return world;
 }
 
@@ -198,7 +199,8 @@ struct RunOptions {
 };
 
 RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptions& opt) {
-    World world = makeTestWorld(fs);
+    std::unique_ptr<World> worldPtr = makeTestWorld(fs);
+    World& world = *worldPtr;
     CarSim sim;
     CarSimOptions simOptions;
     sim.init(car.params, car.geometry, simOptions);

@@ -1,6 +1,6 @@
 #pragma once
 
-#include "phys/Bound.h"
+#include "phys/PolygonSoup.h"
 #include "phys/vehicle/TuneParams.h"
 #include "phys/vehicle/VehicleGeometry.h"
 

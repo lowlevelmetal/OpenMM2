@@ -2,6 +2,7 @@
 
 #include "asset/Bound.h"
 #include "core/Log.h"
+#include "game/CityLevel.h"
 #include "core/StringUtil.h"
 #include "data/DatFile.h"
 #include "phys/vehicle/TuneParams.h"
@@ -57,14 +58,15 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
         else if (w.index < 6)
             geom.extraWheels[static_cast<std::size_t>(w.index - 4)] = wg;
     }
-    std::optional<asset::BoundGeometry> bound;
-    if (auto bin = vfs.readAll("bound/" + base + "_bound.bbnd"))
-        bound = asset::parseBbnd(*bin);
-    else if (auto txt = vfs.readAll("bound/" + base + "_bound.bnd"))
-        bound = asset::parseBnd(std::string_view(reinterpret_cast<const char*>(txt->data()), txt->size()));
+    // vehCarModel::InitBound: bound/<car>_bound.bnd (phBoundGeometry::Load
+    // reads the text file; every retail car has one).
+    std::optional<asset::BoundGeometry> bound = loadBoundFile(vfs, base, false);
+    if (!bound)
+        bound = loadBoundFile(vfs, base, true);
     if (bound && bound->bounds().valid()) {
         geom.body = bound->bounds();
         geom.hull = bound->vertices;
+        geom.bound = toGeometryData(*bound);
     } else if (const auto* body = v->m_model.pkg.findBest("BODY")) {
         geom.body = body->bounds();
         log::warn("vehicle: {} has no collision bound; using the body mesh box", base);
@@ -89,10 +91,12 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
                     tg.wheels[static_cast<std::size_t>(i)] = {pivot->origin, pivot->halfExtent().y,
                                                               pivot->halfExtent().x * 2.0f, true};
             }
-            if (auto txt = vfs.readAll("bound/" + base + "_trailer_bound.bnd")) {
-                if (auto b = asset::parseBnd(
-                        std::string_view(reinterpret_cast<const char*>(txt->data()), txt->size())))
-                    tg.body = b->bounds();
+            // The trailer instance's bound (its materials resolve to the
+            // bound's default material here; MM2 looks their names up in the
+            // city's material manager).
+            if (auto b = loadBoundFile(vfs, base + "_trailer", false)) {
+                tg.body = b->bounds();
+                tg.bound = toGeometryData(*b);
             }
             if (!tg.body.valid())
                 if (const auto* body = trailerModel->pkg.findBest("TRAILER"))

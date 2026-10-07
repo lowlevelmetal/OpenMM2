@@ -14,33 +14,78 @@
 
 #include <array>
 #include <functional>
+#include <memory>
 #include <optional>
 
 namespace mm2::phys {
 
-// Damage bookkeeping (vehCarDamage). CurrentDamage falls by RegenerateRate
-// per second; impacts stronger than ImpactThreshold add to it while the car
-// moves at 10 mph or more, or when the other party is a vehicle
-// (vehCarDamage::ApplyImpact). The impact value is the impulse scaled by the
-// other body's share of the two masses (vehCarDamage::InsertImpact; mapping
-// OpenMM2's contact impulse onto MM2's impact data is inferred). Damage is
-// the 0..1 fraction between MedDamage and MaxDamage; the car is wrecked at
-// MaxDamage.
+// One impact as vehCarDamage::ApplyImpact hands it on (vehDamageImpactInfo
+// plus what ApplyImpact decided): to AudImpact (sound), and to the sparks,
+// shards, texel damage, breakables and the game's impact callback
+// (damaging).
+struct CarImpact {
+    const Collider* other = nullptr; // the collider hit
+    Body* otherBody = nullptr;       // its body, when it is one
+    Vec3 localPosition;              // the impact point in the car's model space
+    Vec3 position;                   // the impact point (world)
+    Vec3 normal;                     // the impact's normal (from its B towards its A)
+    Vec3 impulse;                    // the impulse the car took
+    float value = 0.0f;              // |impulse| * damage modifier * the other body's mass share
+    float total = 0.0f;              // the values summed while the impact lasts
+    // AudImpact::Play(|x| + |y| + |z| of the impulse, the other collider's
+    // id), when value > 0.001.
+    bool sound = false;
+    float soundStrength = 0.0f;
+    int audioId = 0;
+    // value > ImpactThreshold at 10 mph or more, or against a body: sparks
+    // (above 15 mph), shards, damage, texel damage, breakables and the game
+    // callback.
+    bool damaging = false;
+    bool otherIsBody = false; // the other collider has an InertialCS
+};
+
+// vehCarDamage: the impact list and the damage bookkeeping.
+//
+// Each collision impulse the car takes (vehCarDamage::Impact, the collider's
+// impact callback) is worth |impulse| times the other body's share of the
+// two masses (1 against the world). The first impact from a collider, and
+// any later one worth more than 1.25 times the last, is applied
+// (ApplyImpact: a sound above 0.001; above ImpactThreshold, at 10 mph or
+// more or against a body, damage and effects); the collider then stays in
+// the list (12 entries) until RelaxTime (0.2 s) passes without such a
+// re-trigger, its weaker impacts adding damage silently. CurrentDamage falls
+// by RegenerateRate per second; damage is the 0..1 fraction between
+// MedDamage and MaxDamage and the car is wrecked at MaxDamage.
 struct CarDamage {
+    // ?RelaxTime@vehCarDamage@@2MA and the impact list's size.
+    static constexpr float kRelaxTime = 0.2f;
+    static constexpr int kMaxImpacts = 12;
+
+    struct ImpactInfo {
+        const Collider* other = nullptr; // null: free
+        Vec3 localPosition, position, normal, impulse;
+        float value = 0.0f;
+        float total = 0.0f;
+        float timer = 0.0f;
+    };
+
     CarDamageParams params;
     float currentDamage = 0.0f;
     float damage = 0.0f;      // 0..1
     float globalScale = 1.0f; // ?GlobalDamageScale@@3MA
+    // vehCarDamage's enable flag: impacts are recorded (the game turns it on for a
+    // race unless damage is off).
     bool enabled = true;
+    std::array<ImpactInfo, kMaxImpacts> impacts{};
 
     float maxScaled() const { return params.maxDamage * globalScale; }
     float medScaled() const { return params.medDamage * globalScale; }
-    void reset() {
-        currentDamage = 0.0f;
-        damage = 0.0f;
-    }
-    // `value`: impulse * other mass share; `speedMph`: the car's speed.
-    void impact(float value, float speedMph, bool otherIsVehicle);
+    // vehCarDamage::ClearDamage (and Reset).
+    void reset();
+    // vehCarDamage::AddDamage.
+    void addDamage(float value);
+    // vehCarDamage::Update's bookkeeping: regeneration, the damage fraction
+    // and the impact timers (per sample).
     void update(float dt);
     bool wrecked() const { return enabled && maxScaled() <= currentDamage; }
 };
@@ -69,6 +114,10 @@ struct CarSimOptions {
     // The player's car: mmPlayer::Update's input overrides apply (handbrake
     // below 4 mph without throttle, wrecked and finished states).
     bool player = false;
+    // vehCarModel::InitBound's choice: the polygonal bound of
+    // bound/<car>_bound.bnd (vehBound; the player's and the network cars),
+    // or a box around it (dgBoundBox; AI opponents and police).
+    bool polygonalBound = false;
 };
 
 // vehCarSim (Midtown Madness 2): a car, verified against the build 3393
@@ -79,7 +128,7 @@ struct CarSimOptions {
 // position plus R * CenterOfGravity (vehCarSim::SetWorldMatrix), so the
 // centre of mass sits at -CenterOfGravity in model space. Steering +1 turns
 // right.
-class CarSim final : public BodyController {
+class CarSim final : public BodyController, public ImpactHandler {
 public:
     using Options = CarSimOptions;
 
@@ -119,13 +168,22 @@ public:
 
     // Ground used by the wheels; defaults to the World the body is in.
     void setGround(const GroundQuery* ground) { m_ground = ground; }
-    // Called with every impact report (audio, game logic).
-    std::function<void(const Impact&)> onImpactCallback;
+    // Called with every impact vehCarDamage::ApplyImpact applies (sounds,
+    // effects, game logic).
+    std::function<void(const CarImpact&)> onImpactCallback;
+
+    // vehCarModel::InitBound again with another choice of bound (see
+    // CarSimOptions::polygonalBound).
+    void setPolygonalBound(bool polygonal);
+    const Bound* bound() const { return m_bound.get(); }
+    // Half the size of the collision bound's box (model space), for the AI.
+    Vec3 halfExtents() const;
 
     // BodyController.
     void beforeIntegrate(Body& body, float dt, const World& world) override;
     void afterIntegrate(Body& body, float dt, const World& world) override;
-    void onImpact(Body& body, const Impact& impact) override;
+    // ImpactHandler: vehCarDamage::Impact.
+    void onImpact(Collider& self, const Impact& impact, const Vec3& impulse) override;
 
     Body body;
     CarSimParams params;
@@ -155,11 +213,18 @@ private:
     WheelEnv makeEnv(float dt, const World& world);
     void updateAxles();
     Drivetrain& primary() { return drivetrains[2]; }
+    void buildBound();
+    // vehCarDamage::InsertImpact / ApplyImpact.
+    void insertImpact(const Impact& impact, const Vec3& impulse, const Collider* other);
+    void applyImpact(CarDamage::ImpactInfo& entry);
 
     std::array<int, 3> m_drivetrainOrder{0, 1, 2};
     int m_numDrivetrains = 3;
     const GroundQuery* m_ground = nullptr;
     std::optional<float> m_waterLevel;
+    std::optional<GeometryData> m_boundData; // bound/<car>_bound.bnd
+    Aabb m_boundBox;                         // its box (or the geometry's fallback)
+    std::unique_ptr<Bound> m_bound;
     float m_speed = 0.0f;
     float m_speedMph = 0.0f;
 };

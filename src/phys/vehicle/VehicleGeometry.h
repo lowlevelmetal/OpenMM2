@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Math.h"
+#include "phys/Bound.h"
 
 #include <array>
 #include <optional>
@@ -35,11 +36,14 @@ struct VehicleGeometry {
     // the original's fallbacks (body axes; roll factor 1).
     std::optional<Mat34> enginePivot;
     std::array<std::optional<Mat34>, 2> axlePivots;
-    // Collision box of the body.
+    // Box of the body's collision bound (the fallback when `bound` is
+    // missing).
     Aabb body;
-    // Optional convex hull points of the body bound (unused for now; the
-    // body collides as `body`'s box).
+    // Optional convex hull points of the body bound (unused).
     std::vector<Vec3> hull;
+    // bound/<car>_bound.bnd as phBoundGeometry::Load reads it: the car's
+    // polygonal bound (vehBound), or the box around it (dgBoundBox).
+    std::optional<GeometryData> bound;
 
     static WheelGeometry wheelFromPivot(const Mat34& pivot);
 

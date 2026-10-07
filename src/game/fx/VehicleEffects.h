@@ -53,10 +53,11 @@ public:
     void reset();
     // Runs the original per-frame updates at a fixed 60 Hz (FixedTicker).
     void update(float dt, const phys::CarSim& car, const VehicleFxContext& context = {});
-    // vehCarDamage::ApplyImpact's effects for an impact the car reported:
-    // sparks above 15 mph, shards, and texel damage at the first such point
-    // since the last takeDamagePoint().
-    void impact(const phys::Impact& impact, const phys::CarSim& car);
+    // vehCarDamage::ApplyImpact's effects for an impact the car applied
+    // (CarSim::onImpactCallback): for a damaging one, sparks above 15 mph,
+    // shards, and texel damage at the first such point since the last
+    // takeDamagePoint().
+    void impact(const phys::CarImpact& impact, const phys::CarSim& car);
     // The model-space point texel damage should be painted at, once.
     std::optional<Vec3> takeDamagePoint();
     // The impacts that counted since the last call (model-space point and

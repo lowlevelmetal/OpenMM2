@@ -1,5 +1,6 @@
 add_library(mm2_city STATIC
     Psdl.cpp
+    SdlCollect.cpp
     CityMesh.cpp
     Inst.cpp
     Pvs.cpp

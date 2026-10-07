@@ -17,7 +17,7 @@ runs the x87 in single precision); `mm2_phys` is built with
 |---|---|
 | **MM2** | Ported from the build 3393 code (function named in the code comments). |
 | **Ported (MM1)** | Translated from MM1 (Open1560 `game.asm`), not yet replaced by MM2's version. |
-| **OpenMM2** | Our own code where the original is not ported (collision). |
+| **OpenMM2** | Our own code where the original is not ported. |
 | **inferred** | A reasoned mapping that the code does not settle. |
 
 ## How a sample runs
@@ -36,7 +36,9 @@ calls `vehCar::Update` for each mover, then collides them):
    `vehAxle` — followed by `vehCar::Update`'s `vehGyro`, `vehStuck` and
    `vehCarDamage`. A trailer is the next mover: its `vehTrailer::Update`
    runs the same three steps and ends with the hitch joint (see Trailers).
-4. Collisions (OpenMM2), impact reports.
+4. Collisions (`dgPhysManager`: the city, the other movers, the objects
+   around; see "Collision"), then each mover's pending push
+   (`phColliderBase::UpdateMtx`).
 
 MM2 oversamples each frame: n = min(ceil((frame - 0.001) / SampleStep),
 MaxSamples) samples of frame / n. `mmGame::Init` sets SampleStep 1/35 s and
@@ -72,9 +74,11 @@ other frame rates.)
   `GetLocalAcceleration`, `GetForce`/`GetTorque` (the accumulated force plus
   the accumulated impulse over the sample; the `ApplyContactForce` part is
   not included) serve the joints.
-* Kept from MM1's asInertialCS: the sleep test (MM2 moved sleeping to
-  `phSleep`, not ported) and constraints. OpenMM2 re-orthonormalises the
-  matrix when it drifts.
+* Kept from MM1's asInertialCS: the sleep test and constraints. MM2 moved
+  sleeping to `phSleep` (`phys/Sleep`), which traffic cars off their rail
+  and knocked-over props use: still for 15 updates (speed with the pushes
+  and spin below their thresholds, or jittering) puts the body to sleep.
+  OpenMM2 re-orthonormalises the matrix when it drifts.
 
 ## Car (vehCarSim) — MM2
 
@@ -265,17 +269,13 @@ high, then settles lower. The point velocity includes the unit vector of the
 car's world position, a quirk of the original kept as is. The race rules
 respawn or end the race after 5 s in the water.
 
-## Damage (vehCarDamage) — MM2 with an inferred mapping
+## Damage (vehCarDamage) — MM2
 
-CurrentDamage falls by RegenerateRate per second; impacts above
-ImpactThreshold add their value while the car moves at 10 mph or more, or when
-the other party is a vehicle; damage is the fraction between MedDamage and
-MaxDamage and the car is wrecked at MaxDamage. MM2's impact value is the
-impulse vector of its collision callback times the other body's share of the
-two masses (`vehCarDamage::InsertImpact`); OpenMM2 feeds its own contact
-impulse (inferred). A wrecked car stops responding with the brakes on
-(`vehCar::PreUpdate`'s disabled state; which state MM2 uses for a wreck is
-inferred).
+CurrentDamage falls by RegenerateRate per second; damage is the fraction
+between MedDamage and MaxDamage and the car is wrecked at MaxDamage. Impacts
+add to it through the impact list (see "Collision", "Damage and sounds"). A
+wrecked car stops responding with the brakes on (`vehCar::PreUpdate`'s
+disabled state; which state MM2 uses for a wreck is inferred).
 
 ## Opponents and police
 
@@ -296,8 +296,8 @@ trailer. `phys/vehicle/Trailer` ports `vehTrailer` (`Init`, `Reset`,
 `DoJointTorque`, `DoJointLimits`, both `ComputeInvMassMatrix`, `FileIO`) and
 `phys/Joint` its base `phJoint` (`Init`, `Reset`, `Update`,
 `ComputeInvMassMatrix`, `ComputeJointForce`, `ComputeJointPush`,
-`GetInvMassMatrix`, `IsBroken`). `Body::joint` and `Body::invMassMatrix` are
-`phColliderJointed`'s `Attach` and `GetInvMassMatrix`. MM1's `Joint3Dof`,
+`GetInvMassMatrix`, `IsBroken`). `Collider::joint` and `Collider::invMassMatrix`
+are `phColliderJointed`'s `Attach` and `GetInvMassMatrix`. MM1's `Joint3Dof`,
 which OpenMM2 used before, is gone; `dgTrailerJoint` descends from it.
 
 **Integration.** MM2's joint does not integrate anything. The trailer is its
@@ -418,11 +418,11 @@ steady circle vpsemi's trailer then lags (its body velocity reads 10 m/s at
 | vehTrailer Mass, InertiaBox | `InitBoxMass` (defaults 3000, 3 4 9) | MM2 |
 | CarHitchOffset, TrailerHitchOffset | replace the models' hitch pivots (above) | MM2 |
 | WheelFront, WheelBack, Drivetrain | TWHL0 (TWHL1 copies), TWHL2 (TWHL3 copies), the first drivetrain (the others copy) | MM2 |
-| (impact elasticity/friction) | vehTrailer sets none, so MM2 uses its bound's material (`default`: 0.1/0.5); OpenMM2's collision gives the trailer body the tractor's BoundElasticity/BoundFriction | inferred |
+| (impact elasticity/friction) | vehTrailer sets none: the trailer's bound (`bound/<car>_trailer_bound.bnd`) keeps the materials it names, which MM2 looks up in the city's material manager; OpenMM2 gives it the bound default (elasticity 0.5, friction 1) | inferred |
 
-`Body::invMassMatrix` gives the inverse mass matrix through the joint as
-`phColliderJointed::GetInvMassMatrix` does; OpenMM2's contact solver, which
-applies impulses to one body at a time, still uses each body's own mass. The
+Impacts see the inverse mass matrix through the joint while it holds
+(`phColliderJointed::GetInvMassMatrix`), and the tractor and its trailer do
+not collide with each other (`dgPhysManager::Update`). The
 Ctrl+B debug key that breaks the joint (`dgTrailerJoint::Update`) is not
 ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are not simulated: MM2
 keeps only their offset from TWHL2/3 (vehCarSim
@@ -446,15 +446,178 @@ covers the joint's mechanics on synthetic bodies and, with the retail data,
 both trucks' setup, rest, straight run, coasting energy, steady circle, hard
 braking, resets and MM2's static loads.
 
-## Collision (OpenMM2)
+## Collision — MM2
 
-Bodies collide as oriented boxes (cars: the box of `bound/<car>_bound.bnd`)
-against static convex polygons (one-sided, XZ grid broad phase, continuous
-check for fast bodies) and against each other (SAT). Sequential impulses with
-restitution = elasticity products (none below 1 m/s) and Coulomb friction act
-on momentum immediately; penetration is removed with `applyPush` + `moveICS`
-as in the original. Wheels only probe the ground (segments). This is not a
-port: MM2's phBound family, phContact and phImpact remain to be done.
+`phys/World` is MM2's collision manager, `dgPhysManager`; the bounds, the
+narrow phase and the impact response are ports of the `phBound` family,
+`phCollision`, `phBoundPolygonal`, `phBoundBox`, `phBoundSphere`,
+`phBoundHotdog`, `phBoundTerrain`, `lvlSDL`, `phImpact`, `phContactMgr` and
+`dgImpact` (build 3393, MM2Recomp). Function names are cited in the code.
+
+### What collides
+
+* **Movers** (`phys::Body`, a `dgPhysEntity` with its `lvlInstance`): cars,
+  trailers, traffic cars that left their rail, knocked-over props. Each has a
+  collider (`phColliderBase`): its bound (`GetBound(0)`), the bound's world
+  matrix, its `phInertialCS`, and the matrix it had at the end of the
+  previous sample. Mover flags: 2 the city, 8 the objects around, 0x10 the
+  other movers (cars and traffic: all three, `DeclareMover(..., 0x1b)`).
+* **The city** (`lvlSDL`): for each mover, `sdlPage16::Collect` builds the
+  collision polygons of its room and of the neighbours its bounding sphere
+  touches (`cityLevel::GetTouchedNeighbors`), at most 256, culled by the
+  sphere (`src/city/SdlCollect`, docs/formats/psdl.md). Their materials come
+  from `city/materials.csv` (texture → material name) resolved in the
+  material manager (`lvlLevelBound::GetMaterial`: 0 is the default,
+  `_default` of `city/materials.mtl`).
+* **Objects** (`lvlInstance` in the rooms' lists): the city's collidable
+  instances (`.inst` flag 0x2000: their `bound/<name>_bound.bnd` geometry,
+  scaled by the matrix's row lengths, listed in every room their sphere
+  touches (`lvlMultiRoomInstance`); flag 0x100: a terrain bound of their own
+  space, `.bbnd` + `.ter`), unhit and resting props, traffic cars on their
+  rails. Instances with neither flag are drawn only (building walls are the
+  PSDL's facade bounds).
+
+### A sample (`dgPhysManager::Update`)
+
+1. The movers' updates (`dgPhysEntity::Update` and the entity's own: see "How
+   a sample runs"); the bound's world matrix follows the body (a car's is its
+   model matrix, which does not see the sample's push until the next
+   integration); room update (`lvlLevel::MoveToRoom`).
+2. `GatherCollidables`: the instances of the mover's room and touched
+   neighbours whose bounding spheres meet the mover's
+   (`TrivialCollideInstances`; a prop with a YRadius is tested in the ground
+   plane at its foot with that radius), at most 32.
+3. Per mover: `CollideTerrain` (the city), then every later mover
+   (`TrivialCollideInstances`, skipped for colliders sharing an unbroken
+   joint), then its gathered instances (`CollideInstances`).
+4. Movers attached by the collisions (`NewMover`) join; `UpdateMtx`: each
+   mover's pending push moves it (`phInertialCS::MoveICS`) and the collider
+   remembers its matrix and which collider pushed it hardest.
+
+The penetration tolerance is 0 for the whole session (the manager's
+constructor calls `phContact::DisableContacts`, which sets it), and contacts
+(`phContact`) are off: every collision is an impact.
+
+### Bounds and impacts
+
+* Cars: the player's (and network) cars use the polygonal bound of
+  `bound/<car>_bound.bnd` (`vehBound`, one own material with BoundFriction /
+  BoundElasticity); AI opponents and police use a box around it
+  (`dgBoundBox`, `vehCarModel::InitBound(..., false)`). Text `.bnd` files:
+  `quad a b c 0` stays a quad starting at b (`phBoundGeometry::Load`); edges,
+  edge normals (sum of the two faces' normals) and edge cosines are computed
+  as `PostLoadCompute` does.
+* Traffic cars: a box of the `.aivehicledata` Size at its CG field, with the
+  default material (elasticity 0.5, friction 1). Props: `dgBangerData`'s
+  CollisionPrim (geometry shifted by -CG, box, hotdog, sphere) with the
+  prop's own material.
+* Polygonal pairs (`phBoundPolygonal::TestBoundPolyPoly`): after a
+  separating test along the line between the bodies, each bound's vertex
+  sweeps (from the last matrix to the current one) and edges are run through
+  the other's polygons; `FindImpacts` turns the intersections into impacts:
+  a vertex that crossed a face (`DoEndPtSearch`), two edges that cross
+  (`CheckSaveEdgeEdge`), an edge through a face across one of the face's
+  edges (`GetCollideEdgePoly`), then the vertices left over
+  (`RetryVertPolyCollide`). Box against box has its own search
+  (`FindImpactsBoxToBox`), spheres and hotdogs theirs. The city works the
+  same way with the city as side A and only the mover's vertices and edges
+  tested (`lvlSDL::CollidePolyToLevel` and its impact search).
+* An impact (`phImpact`) holds the contact point, a unit normal from B
+  towards A, the depth, and the friction and elasticity of the two materials
+  (`FindFrictionAndElasticity`: friction = fA · fB, elasticity =
+  min(eA · eB, 1); the "/blubber" cheat raises the cap to 4).
+
+### Response (`phImpact::CalcCollision`, `phContactMgr::CalcImpact`)
+
+For each of a pair's n impacts, weight 1 / n:
+
+* Unless the contact separates faster than 0.01 m/s, j = (Ma + Mb)⁻¹ (−v),
+  v the relative velocity of the contact points and M each body's inverse
+  mass matrix there (through the trailer joint while it holds). If its
+  tangential part exceeds friction × its normal part, j points along
+  n + friction · t̂ instead, sized to stop the normal motion. j × (1 +
+  elasticity) × weight goes to A's impulse accumulator, −that to B's (they
+  act at the next integration).
+* The depth becomes pushes: each body takes |M n| / (|Ma n| + |Mb n|) of it,
+  A along n, B against it; a push downwards goes to the other body when that
+  one can move. Pushes are not weighted (`phInertialCS::CalcNetPush` adds
+  only what the pending push does not cover).
+* Each collider's impact callback gets the impulse it took (cars:
+  `vehCarDamage::Impact`, traffic: `aiVehicleActive::Impact`).
+
+Unhit props (`dgImpact::CalcImpact`): the impulse that would stop the car
+against an immovable prop; up to sqrt(ImpulseLimit2) the prop holds like a
+wall, beyond it breaks loose (`dgUnhitBangerInstance::Impact`) and both share
+what the remaining relative motion needs. A traffic car on its rail is
+attached when hit (`aiVehicleInstance::AttachEntity`: a rigid body at the
+rail speed, four cheap wheels) and the impact is resolved with both bodies.
+
+Because the impacts of one pair see the same velocities and share the
+weight, a box landing flat on four corners takes a quarter of each corner's
+stopping impulse: MM2 bodies land with little bounce, and a body resting on
+its bound keeps a small downward velocity that the sample's push cancels
+(`phSleep` judges rest by the velocity with the pushes).
+
+### Traffic cars (`aiVehicleInstance`, `aiVehicleActive`) — MM2
+
+`game/TrafficBodies`. A car on its rail is an instance of its room: a box of
+the `.aivehicledata` Size at its CG (`aiVehicleManager::AddVehicleDataEntry`,
+`dgBoundBox` with the default material: `aiVehicleData::SetFricElas` is never
+called), placed by the AI's matrix; its position for the room and sphere
+tests is m3 + m1 (`aiVehicleInstance::GetPosition`; the radius, the model's
+in MM2, is the box's sphere about that point, inferred). Hit, it attaches one
+of 32 bodies (`aiVehicleManager::Attach`; when all are taken the first slot is
+let go): the InertialCS at the model origin with `InitBoxMass(Mass, Size)`,
+moving at the rail speed along -Z, its collider's last matrix moved back by
+one sample of that motion, four `vehWheelCheap` (a spring and damper per
+wheel with locked-wheel rubber grip, 0.4 × load × WeatherFriction), and a
+`phSleep` with thresholds 0.01 / 0.01. The collision manager then resolves the
+impact between both bodies. Once asleep, or below y −100, the body is handed
+back to the AI (`aiVehicleActive::Detach`: upright when a probe along its up
+axis finds ground facing within 0.9 of it). Its impacts play AudImpact with
+the car's own collider id (0) and |x| + |y| + |z| of the impulse, and above
+an impulse of 100 reach its breakable parts (`vehBreakableMgr`, threshold
+2500 for traffic).
+
+### Props (`dgBangerData`, `dgUnhitBangerInstance`, `dgBangerActive`) — MM2
+
+`game/bangers/BangerSet`. A standing prop is a banger instance of its room
+(props placed without a room get `findRoom` at their CG, inferred): its bound
+(`dgBangerData::InitBound` by CollisionPrim: the `<name>_bound` geometry
+shifted by −CG, else a box of Size; a box; a hotdog of YRadius and Size.y; a
+sphere of YRadius) with its own material (`AdjustPrim`: the data's elasticity
+and friction), its matrix at the CG, its collider id the data's ColliderId,
+and for the sphere test its foot with YRadius (radius otherwise the bound's
+sphere about the origin, inferred). Touched, it attaches one of 32 bodies
+(`dgBangerActiveManager::Attach`, reusing the oldest when full): at rest,
+`InitBoxMass(Mass, Size)`, `SmoothAngInertia(40)`, phSleep thresholds 0.1 /
+0.5. If `dgImpact` breaks it loose, `dgUnhitBangerInstance::Impact` turns it
+into one of 40 knocked-over props (the oldest disappears; MM2's ring hands
+slot 0 out twice after each wrap) that keeps the body and its pending
+impulses, or splits it into its parts, each taking the velocity change those
+impulses give the whole; otherwise the body is let go. A knocked-over prop
+collides as a plain object and attaches a body when hit. The bodies collide
+by CollisionType (0x10 or 0x40: everything; 0x4: the city only; 0x2: no
+collisions) and stop being simulated asleep or below y −100. Parts thrown off
+cars (`vehBreakableMgr::Eject`) get the random speed as momentum, so heavy
+parts barely move (as the code does). OpenMM2 removes a broken prop's bound
+for the rest of the sample instead of taking it off the lists the movers
+gathered (`NewMover`'s second argument).
+
+### Damage and sounds (`vehCarDamage::Impact`, `InsertImpact`, `ApplyImpact`)
+
+`vehStuck::Impact` first. The impact is worth |impulse| × the other body's
+share of the two masses (1 against the city and objects). A list of 12
+entries keyed by the other collider: a new collider is applied
+(`ApplyImpact`) and stays listed until RelaxTime (0.2 s) passes; an impact
+from a listed collider worth more than 1.25 times its last value is applied
+again (with the first contact's point and impulse), a weaker one above
+ImpactThreshold only adds damage (at 10 mph or more, or against a body).
+`ApplyImpact`: above 0.001 the impact sound (`AudImpact::Play` with
+|x| + |y| + |z| of the impulse and the other collider's id: a prop's AudioId,
+0 otherwise); above ImpactThreshold, at 10 mph or more or against a body:
+sparks (above 15 mph), shards, damage, texel damage, breakables and the
+game's impact callback (the hit counts).
 
 ## simcar results
 
@@ -493,16 +656,21 @@ as speeds at MaxRPM and capped every car at High.)
 
 ## Known gaps
 
-- Collision response and bounds are OpenMM2's own (see above); car bodies are
-  single boxes.
+- Collision: lvlSDL's sphere and hotdog searches against the city (unnamed
+  helpers of `dgPhysManager::CollideTerrain`) and force spheres
+  (`phCollision::TestBoundForce`) are not ported; no race object uses them
+  (inferred). The trailer's bound materials resolve to the bound default
+  (MM2 looks their names up in the city's material manager). A body outside
+  every room keeps its last room (MM2 moves it to room 0). MM2's cap of 32
+  movers and its freezing of type-1 movers (props) outside the rooms the
+  cars are in (`dgPhysManager::Update`) are not modelled. Wheel probes
+  still use OpenMM2's probe geometry (the render mesh of the PSDL) rather
+  than `lvlSDL::CollideProbe` over `sdlPage16::Collect`'s polygons.
 - Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
   (MM2's values make vpcentury's trailer ride on its bump stops, see
-  "Trailers"); contacts of jointed bodies use each body's own mass; the
-  trailer's impact parameters are inferred.
-- `phSleep`, the per-axis angular velocity limits of non-car bodies other
-  than trailers and `vehSuspension` (the visual shocks) are not ported.
-- Damage: MM2's impact list (relax times, texel damage positions) is not
-  ported; the impact value mapping is inferred.
+  "Trailers"); the trailer's impact parameters are inferred.
+- The per-axis angular velocity limits of non-car bodies other than
+  trailers and `vehSuspension` (the visual shocks) are not ported.
 - The engine pivot (`<car>_engine.mtx`) and axle pivots are not loaded yet;
   the original's fallbacks apply.
 

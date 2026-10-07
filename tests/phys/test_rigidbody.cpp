@@ -1,6 +1,5 @@
 #include "phys/AgeMath.h"
-#include "phys/Bound.h"
-#include "phys/Collide.h"
+#include "phys/PolygonSoup.h"
 #include "phys/InertialCS.h"
 #include "phys/Material.h"
 #include "phys/World.h"
@@ -156,7 +155,7 @@ TEST(Material, ParsesMtlBlocks) {
 namespace {
 
 PolygonSoup groundSoup(float half = 100.0f) {
-    BoundGeometry g;
+    SoupGeometry g;
     g.vertices = {{-half, 0, -half}, {-half, 0, half}, {half, 0, half}, {half, 0, -half}};
     g.polys.push_back({{0, 1, 2, 3}, 4, 0});
     g.materialNames = {"_default"};
@@ -168,7 +167,7 @@ PolygonSoup groundSoup(float half = 100.0f) {
 
 } // namespace
 
-TEST(Bound, RaycastHitsGround) {
+TEST(PolygonSoup, RaycastHitsGround) {
     PolygonSoup soup = groundSoup();
     RayHit hit;
     ASSERT_TRUE(soup.raycast({1, 5, 2}, {1, -5, 2}, hit));
@@ -176,69 +175,6 @@ TEST(Bound, RaycastHitsGround) {
     EXPECT_NEAR(hit.normal.y, 1.0f, 1e-6f);
     EXPECT_FALSE(soup.raycast({1, 5, 2}, {1, 1, 2}, hit));
     EXPECT_FALSE(soup.raycast({500, 5, 2}, {500, -5, 2}, hit));
-}
-
-TEST(Collide, BoxRestingOnPolygon) {
-    PolygonSoup soup = groundSoup();
-    Obb box;
-    box.center = {0, 0.45f, 0};
-    box.half = {1, 0.5f, 2};
-    Contact c[kMaxContacts];
-    const int n = collideObbPolygon(box, soup.polygon(0), c, kMaxContacts);
-    ASSERT_EQ(n, 4);
-    for (int i = 0; i < n; ++i) {
-        EXPECT_NEAR(c[i].depth, 0.05f, 1e-5f);
-        EXPECT_NEAR(c[i].normal.y, 1.0f, 1e-6f);
-    }
-}
-
-TEST(Collide, BoxBoxSeparatesAlongShortestAxis) {
-    Obb a, b;
-    a.center = {0, 0, 0};
-    b.center = {0.9f, 0.05f, 0};
-    Contact c[kMaxContacts];
-    const int n = collideObbObb(a, b, c, kMaxContacts);
-    ASSERT_GT(n, 0);
-    EXPECT_NEAR(c[0].normal.x, -1.0f, 1e-5f);
-    EXPECT_NEAR(c[0].depth, 0.1f, 1e-4f);
-}
-
-TEST(World, DroppedBoxComesToRestOnGround) {
-    World world;
-    world.setStatic(groundSoup());
-    Body box;
-    box.shape.half = {0.5f, 0.5f, 0.5f};
-    box.ics.setMass(1, 1, 1, 100.0f);
-    box.ics.matrix.m3 = {0, 3.0f, 0};
-    box.ics.elasticity = 0.3f;
-    box.ics.friction = 0.8f;
-    world.add(&box);
-    for (int i = 0; i < 600; ++i)
-        world.step(1.0f / 60.0f);
-    EXPECT_NEAR(box.ics.matrix.m3.y, 0.5f, 0.02f);
-    EXPECT_LT(box.ics.linearVelocity.mag(), 0.05f);
-}
-
-TEST(World, BounceUsesElasticity) {
-    World world;
-    world.setStatic(groundSoup());
-    Body ball;
-    ball.shape.kind = Shape::Kind::Sphere;
-    ball.shape.radius = 0.5f;
-    ball.ics.setMass(1, 1, 1, 10.0f);
-    ball.ics.matrix.m3 = {0, 0.6f, 0};
-    ball.ics.linearMomentum = {0, -50.0f, 0}; // 5 m/s down
-    ball.ics.linearVelocity = {0, -5.0f, 0};
-    ball.ics.elasticity = 0.5f;
-    world.add(&ball);
-    float maxUp = 0;
-    for (int i = 0; i < 60; ++i) {
-        world.step(1.0f / 120.0f);
-        maxUp = std::max(maxUp, ball.ics.linearVelocity.y);
-    }
-    // Ground _default elasticity 0.9 * 0.5 = 0.45 restitution; gravity eats a bit.
-    EXPECT_GT(maxUp, 1.5f);
-    EXPECT_LT(maxUp, 2.6f);
 }
 
 TEST(World, OversampleSplitsFrames) {

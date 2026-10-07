@@ -340,14 +340,14 @@ TEST(TrailerJoint, InverseMassMatrixThroughTheJoint) {
     TrailerJoint j;
     j.init(TrailerJointParams{}, &ba.ics, &bb.ics, {0, 0, 2}, {0, 0, -2});
     Mat34 own, through;
-    ba.invMassMatrix(j.position, own); // no joint attached yet
-    ba.joint = &j;
-    ba.invMassMatrix(j.position, through);
+    ba.collider.invMassMatrix(j.position, own); // no joint attached yet
+    ba.collider.joint = &j;
+    ba.collider.invMassMatrix(j.position, through);
     for (int r = 0; r < 3; ++r)
         for (int c = 0; c < 3; ++c)
             EXPECT_NEAR(through.row(r)[c], 0.5f * own.row(r)[c], 1e-6f) << r << c;
     j.breakJoint();
-    ba.invMassMatrix(j.position, through);
+    ba.collider.invMassMatrix(j.position, through);
     EXPECT_NEAR(through.m0.x, own.m0.x, 1e-9f);
     // The two-body overload stays finite and symmetric.
     Mat34 c2;
@@ -459,7 +459,7 @@ std::optional<Mat34> readPivot(const vfs::Vfs& fs, const std::string& path) {
 }
 
 PolygonSoup flatGround(float half = 20000.0f) {
-    BoundGeometry g;
+    SoupGeometry g;
     g.vertices = {{-half, 0, -half}, {-half, 0, half}, {half, 0, half}, {half, 0, -half}};
     g.polys.push_back({{0, 1, 2, 3}, 4, 0});
     g.materialNames = {"_default"};

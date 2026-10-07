@@ -1,13 +1,15 @@
 /*
-    OpenMM2 - runtime breakable props (bangers), after MM2's dgBangerManager,
-    dgUnhitBangerInstance, dgHitBangerInstance, dgBangerActive(Manager) and
-    dgImpact::CalcImpact. Structure first ported from Open1560
-    (mmbangers/banger.cpp, active.cpp), Copyright (C) 2020 Brick,
-    GPL-3.0-or-later.
+    OpenMM2 - runtime breakable props (bangers) on MM2's collision manager:
+    dgBangerData's bounds, dgUnhitBangerInstance, dgHitBangerInstance,
+    dgBangerManager, dgBangerActive and dgBangerActiveManager, ported from
+    the code of midtown2.exe build 3393 (MM2Recomp). Structure first ported
+    from Open1560 (mmbangers/banger.cpp, active.cpp), Copyright (C) 2020
+    Brick, GPL-3.0-or-later.
 */
 #pragma once
 
 #include "game/Camera.h"
+#include "game/CityLevel.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
 #include "game/TextureLibrary.h"
@@ -19,47 +21,58 @@
 #include "phys/World.h"
 #include "render/Device.h"
 
+#include <array>
+#include <deque>
 #include <memory>
-#include <span>
 #include <unordered_map>
 #include <vector>
 
 namespace mm2::game::bangers {
 
-// All props of a city that can be knocked over.
+// All props of a city that can be knocked over, as MM2's collision manager
+// (phys::World) sees them.
 //
-// Unhit props stand still. When a vehicle touches one, dgImpact::CalcImpact
-// asks for the impulse J that would stop the car's contact point against an
-// immovable prop: up to sqrt(ImpulseLimit2) the prop holds like a wall and
-// the car bounces off it; beyond, the car spends that limit on breaking it
-// loose and the rest is a normal collision between the two, the prop taking
-// its share. The broken prop becomes a hit instance (a ring of 40: the
-// oldest knocked-over prop disappears when the ring wraps) or splits into
-// its BREAKnn parts, and is simulated by one of 32 actives until it sleeps.
+// A prop standing where the city placed it is an unhit instance listed in
+// its room. When a body touches it, the world attaches one of 32 actives
+// (dgBangerActive: a rigid body) to it and resolves the impacts with
+// dgImpact: up to sqrt(ImpulseLimit2) the prop holds like a wall and the
+// active goes back to the pool; beyond, the prop breaks loose. It then
+// leaves its room and one of a ring of 40 hit instances takes its place,
+// keeping the active and the impulses (dgUnhitBangerInstance::Impact), or
+// each of its BREAKnn parts becomes a hit instance with its own active that
+// carries the prop's change of motion. Actives are movers of the world until
+// they sleep or fall below the city; their hit instance then rests where it
+// stopped, an ordinary object that can be hit again. When the ring wraps,
+// the oldest hit instance disappears.
 //
-// OpenMM2 detects the touch with a box test against each vehicle before the
-// physics step instead of through MM2's collision manager, and solves the
-// impulses along the contact normal with the car's effective mass and the
-// prop's mass (MM2 uses the full 3D impulse with a friction cone).
-class BangerSet {
+// Per frame: World::advance*, then update(). Register the set with the
+// level (CityLevel::addSource) so the world finds the props in their rooms.
+class BangerSet final : public InstanceSource {
 public:
     static constexpr int kMaxActive = 32; // dgBangerActiveManager
     static constexpr int kMaxHit = 40;    // dgBangerManager::Init(40)
 
     explicit BangerSet(const BangerDataLibrary& data);
-    ~BangerSet();
+    ~BangerSet() override;
     BangerSet(const BangerSet&) = delete;
     BangerSet& operator=(const BangerSet&) = delete;
 
     // Adds props that have banger data (others are ignored and counted).
     void add(const std::vector<PlacedProp>& props);
-    // Physics world that active props join. Must outlive this set (or call
+    // The physics world whose movers the actives become and whose level
+    // places props without a room. Must outlive this set (or call
     // setWorld(nullptr) first).
     void setWorld(phys::World* world);
 
-    // Call once per frame before stepping the physics world. `vehicles` are
-    // the bodies that can knock props over (player, AI, network cars).
-    void update(float dt, std::span<phys::Body* const> vehicles);
+    // Once per frame, after the physics world's step: dgBangerActive::
+    // PostUpdate (actives that sleep or fell below the city detach), then
+    // dgBangerActiveManager::Update for the next frame (the actives join the
+    // world as its CollisionType says), and the debris.
+    void update(float dt);
+
+    // InstanceSource: the props standing or resting in `room` (actives'
+    // instances are not collidable and not listed).
+    void instancesIn(int room, std::vector<phys::Instance*>& out) const override;
 
     struct DrawParams {
         ObjectDetail detail;
@@ -70,10 +83,17 @@ public:
     void draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, fx::ParticleRenderer& cards,
               const Frustum& frustum, const Camera& camera, const DrawParams& params);
 
-    // Resets every prop to its original place (race restart).
+    // Resets every prop to its original place (race restart):
+    // dgBangerActiveManager::Reset, dgBangerManager::Reset and
+    // dgUnhitBangerInstance::Reset.
     void reset();
 
-    enum class State : std::uint8_t { Unhit, Active, Hit, Gone };
+    enum class State : std::uint8_t {
+        Unhit,  // standing where the city placed it
+        Active, // simulated by an active
+        Hit,    // knocked over, at rest (can be hit again)
+        Gone,   // in no room: a prop that broke loose, or an unused hit instance
+    };
     struct Instance {
         const BangerData* data = nullptr;
         std::string model;
@@ -83,47 +103,75 @@ public:
         Mat34 ground;    // placement of the model's ground origin
         Mat34 matrix;    // current frame at the CG (meshes are centred on it)
         State state = State::Unhit;
-        bool everHit = false; // a hit instance (in the ring) rather than the original
+        bool everHit = false; // one of the ring of hit instances rather than a placed prop
         int active = -1; // index into the active pool
         int room = 0;
     };
-    const std::vector<Instance>& instances() const { return m_instances; }
+    // The placed props (in add() order) and the hit instances (created as
+    // the ring first hands them out).
+    const std::deque<Instance>& instances() const { return m_instances; }
+    // Instance i as the collision manager sees it (lvlInstance).
+    phys::Instance& prop(std::size_t i);
+    // The body simulating instance i (its active's), or null.
+    const phys::Body* body(std::size_t i) const;
+    // dgBangerData's bound for `data`, built on first use.
+    const phys::Bound* bound(const BangerData& data) const;
     std::size_t skipped() const { return m_skipped; } // props without banger data
-    int activeCount() const;
+    int activeCount() const { return m_attached; }
     int hitCount() const;
-
-    // Debug/testing: `vehicle` touches instance `i` at `point` with contact
-    // normal `n` (from the prop towards the vehicle).
-    void impact(std::size_t i, phys::Body& vehicle, const Vec3& point, const Vec3& n);
 
     // vehBreakableMgr::Eject: a car part flies off as a knocked-over banger.
     // `mesh` is the part of `model` (the car's PKG) to draw with paint job
-    // `paint`; `frame` its world placement (the part's pivot). It leaves in
-    // a random upward direction at `speed` +- 1 m/s, spinning at 1-3 rad/s.
+    // `paint`; `frame` its world placement (the part's pivot); `room` the
+    // car's room (-1: found from the world's level). It is given momentum
+    // `speed` +- 1 in a random upward direction and an angular impulse of
+    // 1-3 (as momentum, not velocity: see the .cpp).
     void ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
-                   const Mat34& frame, float speed);
+                   const Mat34& frame, float speed, int room = -1);
 
 private:
     struct Active;
-    using CellKey = std::int64_t;
-    CellKey cellOf(const Vec3& p) const;
-    void insertCell(std::size_t i);
-    void removeCell(std::size_t i);
-    phys::Obb obbOf(const Instance& inst) const;
-    int attach(std::size_t i, bool blast);
-    void detach(int activeIndex);
-    void takeRingSlot(std::size_t i);
+    class Prop;
+    struct DataBounds;
+
+    std::size_t newInstance();
+    bool roomsTracked() const;
+    int findRoom(const Vec3& position, int hint) const;
+    void placeUnroomed();
+    void moveToRoom(std::size_t i, int room);
+    std::size_t getBanger();
+    const DataBounds& boundsOf(const BangerData& data) const;
+
+    Active* activeOf(std::size_t i);
+    phys::Body* attachEntity(std::size_t i);
+    Active* managerAttach(std::size_t i);
+    void managerDetach(const Active& a);
+    void activeAttach(Active& a, std::size_t i);
+    void activeDetach(Active& a);
+    void detachMe(Active& a);
+    void newMover(Active& a);
+    void declare(Active& a, float dt);
+    void directUpdate(Active& a, float dt);
+    bool inWorld(const Active& a) const;
+    void unhitImpact(std::size_t i);
+    void syncActiveList();
 
     const BangerDataLibrary& m_data;
     phys::World* m_world = nullptr;
-    std::vector<Instance> m_instances;
-    std::vector<Mat34> m_initial;
+    // Stable addresses: the world holds pointers to the props during a step,
+    // and breaking a prop adds hit instances in the middle of one.
+    std::deque<Instance> m_instances;
+    std::vector<std::unique_ptr<Prop>> m_props; // per instance
+    std::vector<std::vector<Prop*>> m_rooms;    // lvlLevel's room lists (props only)
+    mutable std::unordered_map<const BangerData*, std::unique_ptr<DataBounds>> m_bounds;
     std::vector<std::unique_ptr<Active>> m_active; // fixed pool of kMaxActive
-    std::vector<int> m_activeList;                 // attached actives in attach order (swap-removed)
-    std::vector<std::size_t> m_ring;               // hit instances by ring slot
-    std::size_t m_ringNext = 0;
-    std::unordered_map<CellKey, std::vector<std::size_t>> m_grid;
-    std::vector<CellKey> m_cellOfInstance;
+    // dgBangerActiveManager's list: the first m_attached are attached, the
+    // rest free in the order they are handed out.
+    std::array<int, kMaxActive> m_list{};
+    int m_attached = 0;
+    std::vector<int> m_activeList; // the attached ones (the list's head), for drawing
+    std::vector<std::size_t> m_ring; // dgBangerManager's hit instances by slot
+    int m_ringNext = 0;
     std::size_t m_skipped = 0;
     fx::FixedTicker m_ticker;
     fx::Rand m_glowRand{1};

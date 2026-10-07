@@ -170,7 +170,7 @@ PoliceCar::PoliceCar(const RoadNetwork& net, phys::CarSim& car, const Mat34& pos
     : m_net(net), m_car(car), m_post(post), m_selfId(selfId), m_settings(settings), m_driver(car, selfId),
       m_random(settings.seed + static_cast<std::uint64_t>(selfId) * 7919u) {
     m_prevCallback = car.onImpactCallback;
-    car.onImpactCallback = [this](const phys::Impact& impact) { onImpact(impact); };
+    car.onImpactCallback = [this](const phys::CarImpact& impact) { onImpact(impact); };
     // aiPoliceOfficer::Init: vehStuck's TimeThresh 0.75 s.
     configureAiVehStuck(car, 0.75f);
     m_destination = post.m3;
@@ -202,10 +202,10 @@ void PoliceCar::reset() {
     m_driver.setState(PhysicsDriver::State::Stop);
 }
 
-void PoliceCar::onImpact(const phys::Impact& impact) {
+void PoliceCar::onImpact(const phys::CarImpact& impact) {
     if (m_prevCallback)
         m_prevCallback(impact);
-    if (impact.other && impact.other == m_playerBody)
+    if (impact.otherBody && impact.otherBody == m_playerBody)
         m_touchingPlayer = true;
 }
 
@@ -390,7 +390,7 @@ void PoliceCar::block(const TrackedCar& perp) {
     } else {
         // Behind it: beside its tail, on the cop's side (or, more than 20 m
         // behind on a road, the side that is on the road).
-        const float sideOff = m_car.body.shape.half.x + perp.halfWidth + 1.0f;
+        const float sideOff = m_car.halfExtents().x + perp.halfWidth + 1.0f;
         const float side = rel.dot(r);
         const Vec3 tail = perp.position - f * back;
         const Vec3 rightGoal = tail + r * sideOff, leftGoal = tail - r * sideOff;
@@ -430,7 +430,9 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
     for (const TrackedCar& c : cars)
         if (c.isPlayer)
             m_playerBody = c.body;
-    const bool touching = m_touchingPlayer;
+    // dgPhysManager::CollideInstances marks what the player's car hits
+    // (lvlInstance flag 0x8000, cleared each frame).
+    const bool touching = m_touchingPlayer || m_car.body.hitByPlayer;
     m_touchingPlayer = false;
     m_routeAge += dt;
     auto& ics = m_car.body.ics;

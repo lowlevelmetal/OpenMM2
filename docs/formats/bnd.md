@@ -28,6 +28,28 @@ tri  <a> <b> <c> <mtl>        × P
 Material names in retail data: default, grass, cobblestone, water, deepwater,
 sand, mud. All files declare 0 edges.
 
+How the game reads it (`phBoundGeometry::Load`; `src/phys/Bound.cpp`
+`makeGeometryBound`):
+
+* `quad a b c d` is a quad with vertices (a, b, c, d); when d is 0 the game
+  starts it at b instead, (b, c, 0, a), so that it stays a quad (a `phPolygon`
+  is a triangle exactly when its fourth index is 0). `tri a b c` is a
+  triangle.
+* Materials are looked up by name in the material manager
+  (`lvlMaterialMgr::Load`): a name it does not know yet is added with the
+  file's values; `default` is the manager's default material, whatever the
+  file says. Cars (`vehBound`) and props (`dgBoundGeometry`) give every
+  polygon their own single material instead.
+* `PostLoadCompute`: the edges are listed polygon by polygon, edge
+  (v[n−1], v0) first, then (v0, v1), ... (an edge already listed is not added
+  again); each polygon then records the index of its edge (v[i], v[i+1]);
+  each edge's normal is the normalised sum of the first two faces found on
+  it, its cosine the face normal's dot with it (2.0 when the faces fold
+  inwards, −1 with normal (1, 0, 0) for a free edge).
+* The car bounds and the city objects flagged collidable (`.inst` flag
+  0x2000) use the text file; the terrain bounds (flag 0x100) read the `.bbnd`
+  with the `.ter`.
+
 ## BBND (binary, little-endian)
 
 ```
@@ -67,7 +89,9 @@ f32    edgeValue[edgeCount]
 
 * Section index = (z·h + y)·w + x with cell = floor((p − min) · factor). This
   is verified by polygon centroids (7618 of 7619 land in a section that lists
-  them). The y term is not verified because nearly every grid has h = 1.
+  them). The game's queries (`phBoundTerrain::InitPolyIterator`,
+  `CalculateBuckets`) use only x and z, section = w·z + x, and test y against
+  the box alone (the two agree when h = 1, as in nearly every retail grid).
 * Edge normal and value match MM1's `mmBoundTemplate::ComputeEdgeNormals`
   (Open1560 `game.asm`): the normal is the normalised sum of the two adjacent
   face normals, and the value is the cosine between it and a face normal, or

@@ -32,7 +32,7 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     originOffset = {carHitchOffset.x - trailerHitchOffset.x, carHitchOffset.y - trailerHitchOffset.y,
                     carHitchOffset.z - trailerHitchOffset.z};
 
-    body = Body{};
+    body.ics = InertialCS{};
     body.controller = this;
     InertialCS& ics = body.ics;
     ics.setMass(p.inertiaBox.x, p.inertiaBox.y, p.inertiaBox.z, p.mass);
@@ -41,8 +41,7 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     ics.setMaxAngVelocity(kTrailerMaxAngVelocity);
     ics.limitAngVelocity = true;
     ics.state = InertialCS::Off;
-    // vehTrailer sets no impact parameters (its bound keeps its own); the
-    // tractor's are used (inferred: OpenMM2's collision is not MM2's).
+    // vehTrailer sets no impact parameters: its bound's materials decide.
     ics.elasticity = tractor.params.boundElasticity;
     ics.friction = tractor.params.boundFriction;
     // Init places the trailer from the tractor's model matrix; reset() (as
@@ -51,17 +50,31 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     ics.matrix = model;
     ics.matrix.m3 = model.transform(originOffset);
 
-    Aabb box = g.body;
-    if (!box.valid()) {
-        for (const auto& w : g.wheels) {
-            box.expand(w.center + Vec3{w.radius, w.radius, w.radius});
-            box.expand(w.center - Vec3{w.radius, 0.0f, w.radius});
+    // The collider's bound: the trailer instance's geometry bound
+    // (bound/<car>_trailer_bound.bnd through lvlInstance::GetBound, with the
+    // materials the file names), in the trailer's model space, which is its
+    // InertialCS frame. Without one, a box around the wheels (OpenMM2).
+    m_bound.reset();
+    if (g.bound)
+        m_bound = makeGeometryBound(*g.bound);
+    if (!m_bound) {
+        Aabb box = g.body;
+        if (!box.valid()) {
+            for (const auto& w : g.wheels) {
+                box.expand(w.center + Vec3{w.radius, w.radius, w.radius});
+                box.expand(w.center - Vec3{w.radius, 0.0f, w.radius});
+            }
+            box.max.y += 1.5f;
         }
-        box.max.y += 1.5f;
+        auto b = std::make_unique<BoundBox>();
+        b->makeOwnMaterial();
+        b->setOffset(box.center());
+        b->setSize(box.max - box.min);
+        m_bound = std::move(b);
     }
-    body.shape.kind = Shape::Kind::Box;
-    body.shape.offset = box.center();
-    body.shape.half = box.extent();
+    body.collisionBound = m_bound.get();
+    body.boundOrigin = {};
+    body.resetCollider();
 
     // Wheels: vehWheel::Init without a vehCarSim (the body frame, a static
     // load of Mass * 19.6 / 4); TWHL1 copies TWHL0's tune, TWHL3 TWHL2's.
@@ -158,6 +171,8 @@ void Trailer::reset() {
         // OpenMM2: the wheels' drawing matrices start at rest.
         w.matrix = Mat34::mul(Mat34::translation(w.center), ics.matrix);
     }
+    body.syncBoundMatrix();
+    body.collider.reset();
 }
 
 void Trailer::addTo(World& world) {

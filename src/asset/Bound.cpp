@@ -135,6 +135,7 @@ std::optional<BoundGeometry> parseBnd(std::string_view text, std::string* error)
         } else if (tok == "tri" || tok == "quad") {
             const int n = tok == "tri" ? 3 : 4;
             BoundPolygon p;
+            p.quadToken = n == 4;
             for (int i = 0; i < n; ++i) {
                 long long idx = 0;
                 if (!integer(idx) || idx < 0 || idx > 0xFFFF)

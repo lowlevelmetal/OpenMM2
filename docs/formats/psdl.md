@@ -206,12 +206,190 @@ following parts are *reconstructions*, not known original behaviour:
   are double-sided.
 - Low-detail textures are not used yet.
 
+## Collision polygons (sdlPage16::Collect)
+
+Port: `src/city/SdlCollect.{h,cpp}` (`collectRoomPolygons`,
+`sdlTextureMaterials`, `sdlMaterialIndex`). Everything in this section was read
+from MM2 build 3393 (MM2Recomp) unless marked *inferred*. Functions:
+`sdlPage16::Collect`, `sdlPage16::FindBoundingIsoParams`, `sdlPoly::InitNoArea`,
+`sdlPoly::SetQuad` (two overloads), `SetFlatQuad`, `SetTri`, `SetFlatTri`,
+`SetWall` (two overloads), `lvlSDL::LoadBinary`, `lvlSDL::CollidePolyToLevel`,
+`lvlSDL::CollideProbe`, `sdlPage16::CollideSegment`,
+`lvlLevelBound::GetMaterial`, `lvlMaterialMgr::Load`.
+
+The level's collision polygons are not the render mesh. `Collect` generates
+them per room on demand from the attribute list, with its own rules: which
+attributes collide, how curbs, medians, tunnel walls and railings become
+walls, and a crude cull against a query sphere.
+
+### Callers
+
+- `lvlSDL::CollidePolyToLevel` (bodies against the city): for each room the
+  body touches, with the sphere (body matrix position, bound radius
+  bounding-sphere radius) into a static buffer of 256 phPolygons, capacity 256 minus
+  what earlier rooms added. One `int` state (initially 0) is shared by all the
+  rooms of a call; whenever it is nonzero after a room it reports
+  "CollidePolyToLevel: buffer overflow" and carries on (the next room then
+  *starts* at that state's offset: an original quirk after an overflow).
+- `sdlPage16::CollideSegment` (wheel probes, from `lvlSDL::CollideProbe`):
+  sphere = the segment's midpoint with radius 0.51 x its length, capacity
+  256, calling again with the state until it is 0 ("Primitive too large"
+  when the state does not advance).
+- Before either, the generated-vertex part of lvlSDL's vertex array is reset:
+  `sdlPoly::sm_Count` = PSDL vertex count, budget counter = 0x200.
+  lvlSDL::LoadBinary allocates exactly 0x200 spare vertices; the counter is
+  decremented per generated vertex and never checked. With car-sized spheres
+  the retail cities stay far below it; a whole building block without culling
+  can generate over 1,200.
+
+### Polygons
+
+`sdlPoly::InitNoArea(material, a, b, c, d)` stores the vertex indices (16-bit;
+`d == 0` makes it a triangle, so a quad whose fourth corner is vertex 0 is a
+triangle) and the material byte (low byte of phPolygon's area field). The normal is exactly
+(0, 1, 0) when a, b and c have the same y (bit-equal floats), whatever the
+winding; otherwise `normalize((c - b) x (a - b))` (32-bit floats, |n|² summed
+y, x, z). A polygon whose normalized normal has |n|² < 0.9 (zero area) is
+rejected: not counted, though any vertices generated for it stay. InitNoArea
+also computes the edge normals (`phPolygon::ComputeEdgeNormalCross`).
+
+| Setter | Vertices | Winding |
+|--------|----------|---------|
+| `SetQuad(m, v0,h0, v1,h1, v2,h2, v3,h3)` | a new vertex (x, y + h, z) for each h ≠ 0. If v1 == v3: triangle v0 v1 v2 (v2 takes h3's place); else if v0 == v2: triangle v0 v1 v3 | v0 v1 v3 v2 |
+| `SetFlatQuad(m, a, b, c, d, y)` | a new vertex at height y for each corner not already at y | a b d c |
+| `SetQuad(m, p0, p1, p2, p3)` | 4 new | p0 p1 p3 p2 |
+| `SetTri(m, p0, p1, p2)` | 3 new | p0 p1 p2 |
+| `SetFlatTri(m, a, b, c, y)` | as SetFlatQuad | a b c |
+| `SetWall(m, a, b, ya, yb)` | a' = (a.x, ya, a.z), b' (absolute heights) | a b b' a' |
+| `SetWall(m, pa, pb, ya, yb)` | pa, pa', pb, pb' all new | pa pb pb' pa' |
+
+Strip quads (v0, v1 = section k; v2, v3 = section k + 1) therefore wind
+across-then-along.
+
+### Sphere culling
+
+All tests are in the xz plane, with r² = radius² computed once. Without a
+sphere nothing is culled.
+
+- Quad or wall with test corners p, q: kept when |S - p|² < 2 (|p - q|² + r²).
+- Triangle a, b, c: with ab, bc, ca the squared edge lengths and m the
+  largest, kept when |S - v|² < 2 (m + r²), where v = c if ab <= bc, else a.
+- Flat fan or roof at height y: kept when (S.y - r - y)(S.y + r - y) < 0.
+- Strips first narrow their sections with `FindBoundingIsoParams`: per
+  section a cross line (two of its vertices); a binary search for a section
+  whose line passes within the radius of the centre (signed xz distance,
+  assuming the distance decreases along the strip), then widening backwards
+  until a line is >= r on the positive side and forwards until one is <= -r.
+  The quads between those bounding sections are tested; strips of fewer than
+  3 sections are not narrowed. (A global scale on r is 1.0 and its enable flag
+  is set in the retail executable.)
+
+These are coarse: a 2 km water triangle in SF is "near" a sphere 500 m outside
+the city.
+
+### The walk
+
+`Collect` starts at the state's word offset (`state >> 11`) with the current
+texture `state & 0x7ff` but with the "no texture" flag clear, and stops after
+the attribute with bit 7 set: Texture attributes stored after it are never
+read. Every attribute whose subtype is 0 has its count word consumed (true of
+all count types; the fixed-size types always have a nonzero subtype in the
+retail files). Before every polygon it tries, it decrements the capacity,
+including polygons InitNoArea then rejects; when that goes negative it writes
+the state of the attribute it is in (`word offset << 11 | texture`, or 0 if
+that attribute is the first one processed in this call) and returns the
+count. It does not write the state when it finishes.
+
+"tex" below is the current Texture value (1-based; materials come from the
+table below, indexed by tex plus an offset).
+
+| Attribute | Collision polygons | Material |
+|-----------|--------------------|----------|
+| Texture | sets tex; value 0 sets "no texture" | |
+| RoadStrip | three passes over sections (cross lines outer L-curb L, curb L-curb R, curb R-outer R): left sidewalk quad (curb corners raised 0.15) and curb wall (curb vertex to +0.15) when outer != curb; road quad; right sidewalk and curb wall | sidewalk, curb: tex+1; road: tex |
+| SidewalkStrip | per pair step: walk quad (curb raised 0.15) and curb wall (next curb to this curb). Two pairs with first pair (0,0)/(1,1): one end-cap triangle (curb+0.15, outer, curb) resp. (curb, outer, curb+0.15) | tex+1 |
+| RectangleStrip | quads | tex |
+| Sliver, Facade | nothing | |
+| Crosswalk | flat quad (w1, w0, w2, w3) at w0's height | tex+2 |
+| RoadTriangleFan | flat triangles at the hub's height; skipped when material(tex) == 2 | tex |
+| TriangleFan | triangles as stored; skipped when material(tex) == 2 | tex |
+| FacadeBound | wall from the two vertices up to the top height (even with no texture) | tex |
+| DividedRoadStrip | left sidewalk and curb; per section left road, median, right road; right sidewalk and curb. Median (flags & 0x3f) == 1: flat quad at road level; otherwise two walls up the divider height (median R/L edges) and a top quad at that height | sidewalk, curb, road as RoadStrip; flat median: divider+1; raised top: divider+2; median walls: tex+1 |
+| Tunnel | see below | tex (at the tunnel) |
+| RoofTriangleFan | flat triangles at the height (the word after the count word, if any); no texture check | tex |
+
+All strip, crosswalk and fan types produce nothing while "no texture" is set
+(Texture value 0: 120 attributes in London, 1 in SF). FacadeBound,
+Tunnel and roofs ignore it. Material 2 is "deepwater" with the retail
+materials (`s_thames`, `s_ocean`): those water fans have no collision, so
+cars sink (*inferred* intent; the code compares with 2).
+
+Tunnels: walls are max(height2, 3 m) above their base vertex (height2 <= 3
+gives 3; railings with height2 = 1 m are 3 m walls). Junction tunnels (count
+10): a wall along perimeter edge (point j, point j-1) for every set bit j
+(j & 31) of words 4-5 read as a 32-bit mask. Strip tunnels (count 3) describe
+the next attribute, skipping one Texture attribute: RoadStrip (stride 4),
+DividedRoadStrip (6, after its 2 header words) or RectangleStrip (2); its
+section count is the subtype or the count word's low byte. Flags (names
+*inferred* from their use):
+
+- 0x0001 / 0x0002 left / right, 0x0004 railing.
+- Without 0x2000: walls along the strip's outer edges for each side set;
+  with the railing bit, walls along a railing line (each section's outer
+  vertex moved height1 x 0.333 outwards, away from its neighbour vertex), with
+  start/end caps back to the road edge (left 0x10/0x20, right 0x40/0x80).
+- With 0x2000 ("sloped", both lines computed): per section and side set, a
+  quad from the road edge to the railing line raised by a quarter of the wall
+  height, and a wall on the railing line. 0x200/0x400 (left) and 0x800/0x1000
+  (right) pull the first/last line point back onto the road edge.
+- No ceiling polygons. Other tunnel types (count not 3 or 10) produce
+  nothing.
+
+In a room with `RoomFlag::SpecialBound` (0x20), while `lvlSDL::CollideProbe`
+collides that room (it stores the room id in a global; `CollidePolyToLevel`
+does not), road, rectangle and divided strips use two triangles per quad
+(`SetTri` with vertex copies, sidewalk corners raised 0.15) instead of quads,
+all with the material of tex+1; the median top stays at road level.
+
+### Materials
+
+`lvlSDL::LoadBinary` builds the texture -> material table: for each row of
+`city/materials.csv` (header line skipped, two fields) whose material is not
+`none` and that `lvlMaterialMgr::Find` knows, texture name -> (manager index
++ 1); the first row for a name wins. Texture i of the PSDL (1-based, as Texture
+values count) gets its name's entry, 0 if none; a name ending in a movie frame
+suffix `-0nnn` is looked up without it (`s_thames-0009`). The polygon stores
+that byte; `lvlLevelBound::GetMaterial` maps 0 to the default material and n
+to `lvlMaterialMgr::Lookup(n - 1)`. The manager's entry 0 is its built-in
+"default" material; `cityLevel::Load` then adds `city/materials.mtl` in file
+order (`_default` is a new name, not the built-in one), so the retail indices
+are deepwater 2, _default 3, grass 4, water 5, dirt 6, sand 7, cobblestone 8,
+wood 9. `materials.csv` also names `mud` and `ash`, which the .mtl lacks: 0.
+
+### Port notes
+
+Memory-safety deviations only, none reachable with the retail files (checked
+by `tests/city/test_sdlcollect.cpp` and a scan of every attribute): reads past
+the vertex, height or material tables give 0; a state that does not point at
+an attribute boundary returns nothing; a strip tunnel with no following
+attribute, or followed by a type that leaves its stride unset, produces
+nothing (MM2 would read past the room / use a stale stride); MM2's skip of a
+DividedRoadStrip under texture 0 (5 words per section instead of 6) is not
+reproduced. The vertex buffer grows instead of overrunning, and indices are
+kept 32-bit.
+
 ## Verification
 
 - `mm2tool citycheck` parses every city/race file (0 failures among files the
   game references).
 - `tests/city/test_city_retail.cpp`: index validation, symmetric neighbours,
   bounds, mesh sanity (finite data, unit normals, upward road/roof normals).
+- `tests/city/test_sdlcollect.cpp`: collision polygons for synthetic rooms;
+  for every retail room, car-sized spheres at its perimeter corners collect
+  within 256 polygons and 0x200 generated vertices, unit normals, a subset of
+  the unculled set; a road polygon under the middle of every road room's
+  first road quad. Unculled, 8 London and 33 SF building blocks exceed 256
+  polygons (up to 478 / 626).
 - Visual: `psdl2obj` + a top-down raster of London and SF (kept under
   `local/out/`) shows the street grids, roundabouts, parks, the Tower of London
   walls, Market Street and the Golden Gate Bridge.

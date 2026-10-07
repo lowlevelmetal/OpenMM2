@@ -57,26 +57,23 @@ void VehicleEffects::reset() {
     m_impacts.clear();
 }
 
-void VehicleEffects::impact(const phys::Impact& impact, const phys::CarSim& car) {
-    // vehCarDamage::InsertImpact/ApplyImpact: the impulse scaled by the other
-    // body's share of the masses must pass ImpactThreshold, at 10 mph or
-    // more unless the other party is a vehicle.
-    float share = 1.0f;
-    if (impact.other)
-        share = impact.other->ics.mass / (car.body.ics.mass + impact.other->ics.mass);
-    const float value = std::abs(impact.impulse) * share;
-    const float mph = car.speedMph();
-    if (!(car.damage.params.impactThreshold < value) || (mph < 10.0f && !impact.other))
+void VehicleEffects::impact(const phys::CarImpact& impact, const phys::CarSim& car) {
+    // vehCarDamage::ApplyImpact's effects of a damaging impact (the car
+    // decided: value above ImpactThreshold at 10 mph or more, or against a
+    // body).
+    if (!impact.damaging)
         return;
+    const float mph = car.speedMph();
     // Sparks: 16 x impact x frame seconds of them (at most the pool's 64).
     if (15.0f < mph)
-        m_sparks.radialBlast(static_cast<int>(16.0f * value * FixedTicker::kStep), impact.point, impact.normal);
-    m_shards.emit(impact.point, value, car.speed(), car.body.ics.matrix);
-    const Vec3 local = car.modelMatrix().untransform(impact.point);
+        m_sparks.radialBlast(static_cast<int>(16.0f * impact.value * FixedTicker::kStep), impact.position,
+                             impact.normal);
+    // fxShardManager::EmitShards gets the impact's running total.
+    m_shards.emit(impact.position, impact.total, car.speed(), car.body.ics.matrix);
     if (!m_damagePoint)
-        m_damagePoint = local;
+        m_damagePoint = impact.localPosition;
     if (m_impacts.size() < 64)
-        m_impacts.push_back({local, value});
+        m_impacts.push_back({impact.localPosition, impact.value});
 }
 
 std::vector<VehicleEffects::CountedImpact> VehicleEffects::takeImpacts() {

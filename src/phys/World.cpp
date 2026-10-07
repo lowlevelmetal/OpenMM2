@@ -1,34 +1,21 @@
+// dgPhysManager (Update, GatherCollidables, TrivialCollideInstances,
+// CollideTerrain, CollideInstances, NewMover) from the code of midtown2.exe
+// build 3393 (MM2Recomp). See docs/physics.md, "How a sample runs" and
+// "Collision".
+
 #include "phys/World.h"
 
 #include <algorithm>
 #include <cmath>
 
-// Collision detection and response in this file are OpenMM2 code, not a port:
-// the Angel engine's own collision (mmBoundTemplate / asBound::Impact in MM1,
-// phBound / phImpact in MM2) has not been ported yet. Bodies are integrated by
-// the ported InertialCS; contact impulses change momentum immediately and
-// penetration is resolved through InertialCS::applyPush + moveICS as in the
-// original.
-
 namespace mm2::phys {
 namespace {
 
-void tangentBasis(const Vec3& n, Vec3& t1, Vec3& t2) {
-    t1 = std::abs(n.y) < 0.9f ? Vec3{0, 1, 0}.cross(n) : Vec3{1, 0, 0}.cross(n);
-    t1 = t1.normalized();
-    t2 = n.cross(t1);
-}
-
-bool asleep(const Body* b) {
-    return b && b->ics.state == InertialCS::Asleep;
-}
-
-void wake(Body* b) {
-    if (b && b->ics.state == InertialCS::Asleep) {
-        b->ics.state = InertialCS::Awake;
-        b->ics.counter = 0.0f;
-    }
-}
+// dgPhysManager::GatherCollidables keeps at most 32 per mover.
+constexpr std::size_t kMaxCollidables = 32;
+// cityLevel::GetTouchedNeighbors' table size in GatherCollidables and
+// CollideTerrain.
+constexpr int kMaxNeighbors = 8;
 
 } // namespace
 
@@ -44,51 +31,142 @@ bool FlatGround::probe(const Vec3& a, const Vec3& b, RayHit& hit) const {
     return true;
 }
 
-Obb Body::obb() const {
-    Obb o;
+// --- Body ------------------------------------------------------------------------------------
+
+Body::Body() {
+    boundMatrix = Mat34::identity();
+    resetCollider();
+}
+
+void Body::place(const Mat34& icsMatrix) {
+    ics.place(icsMatrix);
+    syncBoundMatrix();
+    resetCollider();
+}
+
+void Body::syncBoundMatrix() {
+    // vehCarSim::SetWorldMatrix (and the plain bodies' equivalent): the
+    // bound's origin at boundOrigin in the ICS frame.
     const Mat34& m = ics.matrix;
-    o.center = m.transform(shape.offset);
-    o.axis[0] = m.m0;
-    o.axis[1] = m.m1;
-    o.axis[2] = m.m2;
-    o.half = shape.kind == Shape::Kind::Box ? shape.half : Vec3{shape.radius, shape.radius, shape.radius};
-    return o;
+    boundMatrix.m0 = m.m0;
+    boundMatrix.m1 = m.m1;
+    boundMatrix.m2 = m.m2;
+    boundMatrix.m3 = m.transform(boundOrigin);
+}
+
+void Body::resetCollider() {
+    ImpactHandler* handler = collider.handler;
+    collider.init(collisionBound, &boundMatrix, kinematic ? nullptr : &ics);
+    collider.handler = handler;
+    collider.joint = joint;
+    collider.id = audioId;
+    collider.body = this;
+    collider.setKey(this);
+}
+
+const Bound* Body::bound(int which) const {
+    if (which == 1 && terrainBound)
+        return terrainBound;
+    return collisionBound;
+}
+
+float Body::radius() const {
+    if (!collisionBound)
+        return 0.0f;
+    const Vec3& c = collisionBound->centroid;
+    return std::sqrt(c.x * c.x + c.y * c.y + c.z * c.z) + collisionBound->radius;
 }
 
 Aabb Body::aabb() const {
-    if (shape.kind == Shape::Kind::Sphere) {
-        const Vec3 c = ics.matrix.transform(shape.offset);
-        const Vec3 r{shape.radius, shape.radius, shape.radius};
-        return {c - r, c + r};
+    Aabb box;
+    if (!collisionBound) {
+        box.expand(boundMatrix.m3);
+        return box;
     }
-    return obb().aabb();
+    const Vec3& lo = collisionBound->boxMin;
+    const Vec3& hi = collisionBound->boxMax;
+    for (int i = 0; i < 8; ++i)
+        box.expand(boundMatrix.transform({i & 1 ? hi.x : lo.x, i & 2 ? hi.y : lo.y, i & 4 ? hi.z : lo.z}));
+    return box;
+}
+
+// --- World -----------------------------------------------------------------------------------
+
+World::World() {
+    m_identity = Mat34::identity();
+    m_levelBound.clear();
+    m_levelCollider.init(&m_levelBound, &m_identity, nullptr);
+    m_isectsA.resize(kMaxIntersections);
+    m_isectsB.resize(kMaxIntersections);
+    m_impacts.resize(kMaxImpacts);
+}
+
+World::World(MaterialTable materials) : World() {
+    m_materials = std::move(materials);
+}
+
+void World::setLevel(const Level* level) {
+    m_level = level;
 }
 
 void World::add(Body* body) {
-    if (std::ranges::find(m_bodies, body) != m_bodies.end())
-        return;
+    for (Mover& m : m_movers) {
+        if (m.body == body) {
+            m.removed = false;
+            return;
+        }
+    }
     const InertialCS defaults;
     if (body->ics.gravity == defaults.gravity)
         body->ics.gravity = {0.0f, -kGravity, 0.0f};
-    m_bodies.push_back(body);
+    Mover m;
+    m.body = body;
+    m_movers.push_back(std::move(m));
+}
+
+void World::addNewMover(Body* body) {
+    // dgPhysManager::NewMover: flag 0x100 until the end of the sample.
+    for (Mover& m : m_movers) {
+        if (m.body == body) {
+            if (m.removed) {
+                m.removed = false;
+                m.fresh = true;
+            }
+            return;
+        }
+    }
+    add(body);
+    m_movers.back().fresh = true;
 }
 
 void World::remove(Body* body) {
-    std::erase(m_bodies, body);
+    if (m_stepping) {
+        for (Mover& m : m_movers)
+            if (m.body == body)
+                m.removed = true;
+        return;
+    }
+    std::erase_if(m_movers, [&](const Mover& m) { return m.body == body; });
 }
 
-void Body::invMassMatrix(const Vec3& worldPos, Mat34& out) const {
-    if (joint && !joint->isBroken())
-        joint->computeInvMassMatrix(&ics, out, worldPos);
-    else
-        ics.calcCMatrix(out, worldPos);
+bool World::contains(const Body* body) const {
+    return std::ranges::any_of(m_movers, [&](const Mover& m) { return m.body == body && !m.removed; });
 }
 
 bool World::probe(const Vec3& a, const Vec3& b, RayHit& hit) const {
     return m_static.raycast(a, b, hit);
 }
 
+void World::beginFrame() {
+    // dgPhysManager::Update clears the "hit by the player" marks of its
+    // movers once per frame, before the samples.
+    for (Mover& m : m_movers)
+        if (live(m))
+            m.body->hitByPlayer = false;
+}
+
 int World::advanceFixed(float frameDelta, float sampleStep, int maxSamples) {
+    beginFrame();
     m_accumulator += frameDelta;
     int n = 0;
     while (m_accumulator >= sampleStep && n < maxSamples) {
@@ -104,6 +182,7 @@ int World::advanceFixed(float frameDelta, float sampleStep, int maxSamples) {
 int World::advanceOversampled(float frameDelta, float sampleStep, int maxSamples) {
     // dgPhysManager::Update. (At least one sample: OpenMM2 guard for frames
     // under a millisecond.)
+    beginFrame();
     int n = static_cast<int>(std::ceil(static_cast<double>((frameDelta - 0.001f) / sampleStep)));
     n = std::max(1, std::min(n, maxSamples));
     const float dt = frameDelta / static_cast<float>(n);
@@ -116,228 +195,304 @@ void World::step(float dt) {
     if (dt <= 0)
         return;
     const float invDt = 1.0f / dt;
+    // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
+    sampleTime() = {dt, invDt};
+    m_stats = {};
+    m_stepping = true;
 
-    for (Body* b : m_bodies) {
-        b->m_prevPosition = b->ics.position();
-        if (b->controller)
+    // The movers' own updates (dgPhysEntity::Update and the entity's
+    // Update: vehCar::Update for cars).
+    const std::size_t count = m_movers.size();
+    for (std::size_t i = 0; i < count; ++i) {
+        Body* b = m_movers[i].body;
+        if (live(m_movers[i]) && b->controller)
             b->controller->beforeIntegrate(*b, dt, *this);
     }
-    for (Body* b : m_bodies)
-        b->ics.update(dt, invDt);
-    for (Body* b : m_bodies)
+    for (std::size_t i = 0; i < count; ++i) {
+        Body* b = m_movers[i].body;
+        if (!live(m_movers[i]))
+            continue;
+        if (!b->kinematic)
+            b->ics.update(dt, invDt);
+        if (!b->kinematic)
+            b->syncBoundMatrix();
+    }
+    for (std::size_t i = 0; i < count; ++i) {
+        Body* b = m_movers[i].body;
+        if (!live(m_movers[i]))
+            continue;
         if (b->controller)
             b->controller->afterIntegrate(*b, dt, *this);
+        // lvlLevel::MoveToRoom after the entity's update (vehCar::Update,
+        // aiVehicleActive::Update).
+        if (m_level)
+            b->room = m_level->findRoom(b->position(), b->room);
+        b->collider.joint = b->joint;
+        b->collider.id = b->audioId;
+        b->collider.calcMaxMoved(dt);
+    }
 
-    for (Body* b : m_bodies)
-        if (b->collideStatic && !asleep(b))
-            continuous(*b);
-    m_contacts.clear();
-    collide(m_contacts);
-    solve(m_contacts);
-    pushApart(m_contacts);
-    report(m_contacts);
-    for (Body* b : m_bodies)
-        if (b->controller)
+    // dgPhysManager::GatherCollidables for movers that collide with the city
+    // or its objects.
+    for (Mover& m : m_movers) {
+        m.collidables.clear();
+        if (live(m) && !m.fresh && m.body->collisionBound && (m.body->collideTerrain || m.body->collideInstances))
+            gatherCollidables(m);
+    }
+
+    // Collisions, mover by mover: the city, the movers after it, then the
+    // gathered instances. Movers that collisions set in motion are appended
+    // (fresh) and wait for the next sample.
+    for (std::size_t i = 0; i < m_movers.size(); ++i) {
+        if (!live(m_movers[i]) || m_movers[i].fresh || !m_movers[i].body->collisionBound)
+            continue;
+        Body* a = m_movers[i].body;
+        if (a->collideTerrain)
+            collideTerrain(*a);
+        if (a->collideMovers) {
+            for (std::size_t j = i + 1; j < m_movers.size(); ++j) {
+                Body* b = m_movers[j].body;
+                if (!live(m_movers[j]) || m_movers[j].fresh || !b->collideMovers || !b->collisionBound)
+                    continue;
+                // Colliders sharing an unbroken joint (a tractor and its
+                // trailer) do not collide.
+                if (a->joint && !a->joint->isBroken() && a->joint == b->joint)
+                    continue;
+                if (trivialCollide(*a, *b))
+                    collideInstances(*a, *b);
+            }
+        }
+        if (a->collideTerrain || a->collideInstances) {
+            // The list may not survive the calls (new movers reallocate).
+            std::vector<Instance*> list = m_movers[i].collidables;
+            for (Instance* c : list)
+                if (live(m_movers[i]))
+                    collideInstances(*m_movers[i].body, *c);
+        }
+    }
+
+    // New movers take part from now on (0x100 -> 0x1b).
+    for (Mover& m : m_movers)
+        m.fresh = false;
+    // phColliderBase::UpdateMtx: the pending pushes move the bodies.
+    for (Mover& m : m_movers)
+        if (live(m))
+            m.body->collider.updateMtx();
+    for (std::size_t i = 0; i < m_movers.size(); ++i) {
+        Body* b = m_movers[i].body;
+        if (live(m_movers[i]) && b->controller)
             b->controller->afterCollisions(*b, dt, *this);
+    }
+    m_stepping = false;
+    std::erase_if(m_movers, [](const Mover& m) { return m.removed; });
     m_time += dt;
 }
 
-void World::continuous(Body& body) {
-    const Vec3 from = body.m_prevPosition;
-    const Vec3 to = body.ics.position();
-    const Vec3& h = body.shape.kind == Shape::Kind::Box
-                        ? body.shape.half
-                        : Vec3{body.shape.radius, body.shape.radius, body.shape.radius};
-    const float minHalf = std::min({h.x, h.y, h.z});
-    if (from.dist2(to) < minHalf * minHalf)
+bool World::trivialCollide(const Instance& a, const Instance& b) const {
+    // dgPhysManager::TrivialCollideInstances: bounding spheres. A banger
+    // with a YRadius uses the point under its centre of gravity and that
+    // radius, compared in the horizontal plane only (the original copies
+    // the other centre's height into it).
+    Vec3 ca = a.position();
+    Vec3 cb = b.position();
+    float ra = a.radius();
+    float rb = b.radius();
+    Vec3 c;
+    float r = 0.0f;
+    if (a.isBanger() && a.bangerSphere(c, r)) {
+        ra = r;
+        ca = {c.x, cb.y, c.z};
+    }
+    if (b.isBanger() && b.bangerSphere(c, r)) {
+        rb = r;
+        cb = {c.x, ca.y, c.z};
+    }
+    const float dx = ca.x - cb.x, dy = ca.y - cb.y, dz = ca.z - cb.z;
+    const float sum = rb + ra;
+    return dx * dx + dy * dy + dz * dz <= sum * sum;
+}
+
+void World::gatherCollidables(Mover& mover) {
+    // dgPhysManager::GatherCollidables: the instances of the mover's room
+    // and of the neighbours its sphere touches (instances listed in several
+    // rooms only from the mover's own), whose spheres touch the mover's.
+    Body& self = *mover.body;
+    if (!m_level || self.room == 0)
         return;
-    RayHit hit;
-    if (!m_static.raycast(from, to, hit) || (to - from).dot(hit.normal) >= 0)
+    int rooms[1 + kMaxNeighbors];
+    rooms[0] = self.room;
+    const int n = 1 + m_level->touchedNeighbors(rooms + 1, kMaxNeighbors, self.room, self.position(), self.radius());
+    for (int k = 0; k < n; ++k) {
+        m_roomScratch.clear();
+        m_level->instances(rooms[k], m_roomScratch);
+        for (Instance* inst : m_roomScratch) {
+            if (inst == &self)
+                continue;
+            const bool wanted = ((self.collideInstances || self.collideMovers) && inst->collidable) ||
+                                (self.collideTerrain && inst->terrainCollidable);
+            if (!wanted || (k != 0 && inst->multiRoom) || !trivialCollide(self, *inst))
+                continue;
+            // An instance listed in several of the rooms is gathered once
+            // (lvlMultiRoomInstance::IsTerrainCollidable answers once per
+            // gather).
+            if (std::ranges::find(mover.collidables, inst) != mover.collidables.end())
+                continue;
+            if (mover.collidables.size() < kMaxCollidables)
+                mover.collidables.push_back(inst);
+        }
+    }
+    m_stats.collidables += static_cast<int>(mover.collidables.size());
+}
+
+void World::collideTerrain(Body& body) {
+    // dgPhysManager::CollideTerrain: the body against the city's polygons
+    // in its room and the touched neighbours (lvlSDL::CollidePolyToLevel).
+    if (!m_level || body.room == 0)
         return;
-    body.ics.matrix.m3 = hit.position + hit.normal * 0.02f;
+    const Bound* bound = body.bound(0);
+    if (!bound)
+        return;
+    Collider& collider = body.collider;
+    int rooms[1 + kMaxNeighbors];
+    rooms[0] = body.room;
+    const Vec3 centre = collider.matrix->m3;
+    const int roomCount =
+        1 + m_level->touchedNeighbors(rooms + 1, kMaxNeighbors, body.room, centre, bound->radius);
+    if (bound->type == BoundType::Hotdog || bound->type == BoundType::Sphere)
+        bound = body.bound(1);
+    int count = 0;
+    switch (bound->type) {
+    case BoundType::Geometry:
+    case BoundType::Box: {
+        const auto& poly = static_cast<const BoundPolygonal&>(*bound);
+        // The sweep starts from the last matrix, moved by the last push when
+        // the city pushed hardest.
+        const Mat34 last = collider.copyLastMatrix(m_levelCollider.key());
+        m_level->collect(rooms, roomCount, centre, bound->radius, m_levelBound);
+        m_levelBound.level = m_level;
+        int found = 0;
+        if (collidePolyToLevel(m_levelBound, poly, nullptr, *collider.matrix, last, m_isectsA.data(),
+                               kMaxIntersections, found, true) != 0)
+            count = findLevelImpacts(m_levelBound, poly, *collider.matrix, last, &m_levelCollider, &collider,
+                                     m_isectsA.data(), found, m_impacts.data(), kMaxImpacts);
+        break;
+    }
+    default:
+        // Spheres and hotdogs against the city (lvlSDL's sphere and hotdog
+        // searches) are not ported: no MM2 mover uses them in a race
+        // (inferred: cars, traffic and bangers use polygonal bounds for
+        // the city).
+        break;
+    }
+    if (count == 0)
+        return;
+    m_stats.terrainImpacts += count;
+    const float weight = 1.0f / static_cast<float>(count);
+    for (int i = 0; i < count; ++i)
+        calcImpact(m_impacts[static_cast<std::size_t>(i)], weight);
 }
 
-void World::collide(std::vector<ContactPoint>& contacts) {
-    Contact buf[kMaxContacts];
-    auto addContact = [&](Body* a, Body* b, const Contact& c) {
-        ContactPoint cp;
-        cp.a = a;
-        cp.b = b;
-        cp.c = c;
-        if (b) {
-            cp.bounce = a->elasticity() * b->elasticity();
-            cp.friction = std::sqrt(std::max(a->friction() * b->friction(), 0.0f));
-        } else {
-            const Material& m = m_materials[c.material];
-            cp.bounce = a->elasticity() * m.elasticity;
-            cp.friction = a->friction() * m.friction;
-        }
-        contacts.push_back(cp);
-    };
-
-    for (Body* a : m_bodies) {
-        if (!a->collideStatic || asleep(a))
-            continue;
-        Aabb box = a->aabb();
-        box.min -= Vec3{0.05f, 0.05f, 0.05f};
-        box.max += Vec3{0.05f, 0.05f, 0.05f};
-        m_static.query(box, m_query);
-        for (std::uint32_t pi : m_query) {
-            const Polygon& poly = m_static.polygon(pi);
-            const int n = a->shape.kind == Shape::Kind::Box
-                              ? collideObbPolygon(a->obb(), poly, buf, kMaxContacts)
-                              : collideSpherePolygon(a->ics.matrix.transform(a->shape.offset),
-                                                     a->shape.radius, poly, buf);
-            for (int i = 0; i < n; ++i)
-                addContact(a, nullptr, buf[i]);
-        }
+bool World::collideInstances(Instance& a, Instance& b) {
+    // dgPhysManager::CollideInstances.
+    const Bound* boundA = a.bound(0);
+    const Bound* boundB = b.bound(0);
+    if (!boundA || !boundB)
+        return false;
+    m_tempMatrixA = a.matrix();
+    m_tempMatrixB = b.matrix();
+    const Vec3 relPos = m_tempMatrixB.m3 - m_tempMatrixA.m3;
+    Body* entityA = a.entity();
+    Body* entityB = b.entity();
+    Collider* colA = &m_tempA;
+    Collider* colB = &m_tempB;
+    if (entityA) {
+        colA = &entityA->collider;
+    } else {
+        m_tempA.init(boundA, &m_tempMatrixA, nullptr);
+        m_tempA.id = a.audioId;
     }
-
-    for (std::size_t i = 0; i < m_bodies.size(); ++i) {
-        Body* a = m_bodies[i];
-        if (!a->collideBodies)
-            continue;
-        const Aabb ba = a->aabb();
-        for (std::size_t j = i + 1; j < m_bodies.size(); ++j) {
-            Body* b = m_bodies[j];
-            if (!b->collideBodies || (asleep(a) && asleep(b)))
-                continue;
-            // dgPhysManager::Update: colliders sharing an unbroken joint
-            // (a tractor and its trailer) do not collide.
-            if (a->joint && a->joint == b->joint && !a->joint->isBroken())
-                continue;
-            const Aabb bb = b->aabb();
-            if (ba.max.x < bb.min.x || ba.min.x > bb.max.x || ba.max.y < bb.min.y || ba.min.y > bb.max.y ||
-                ba.max.z < bb.min.z || ba.min.z > bb.max.z)
-                continue;
-            const bool sa = a->shape.kind == Shape::Kind::Sphere, sb = b->shape.kind == Shape::Kind::Sphere;
-            int n;
-            if (!sa && !sb) {
-                n = collideObbObb(a->obb(), b->obb(), buf, kMaxContacts);
-            } else if (sa && sb) {
-                n = collideSphereSphere(a->ics.matrix.transform(a->shape.offset), a->shape.radius,
-                                        b->ics.matrix.transform(b->shape.offset), b->shape.radius, buf);
-            } else if (sa) {
-                n = collideSphereObb(a->ics.matrix.transform(a->shape.offset), a->shape.radius, b->obb(),
-                                     buf);
-            } else {
-                n = collideSphereObb(b->ics.matrix.transform(b->shape.offset), b->shape.radius, a->obb(),
-                                     buf);
-                for (int k = 0; k < n; ++k)
-                    buf[k].normal = -buf[k].normal;
-            }
-            if (n > 0) {
-                wake(a);
-                wake(b);
-            }
-            for (int k = 0; k < n; ++k)
-                addContact(a, b, buf[k]);
-        }
+    if (entityB) {
+        colB = &entityB->collider;
+    } else {
+        m_tempB.init(boundB, &m_tempMatrixB, nullptr);
+        m_tempB.id = b.audioId;
     }
+    if (boundB->type == BoundType::ForceSphere)
+        return true; // phCollision::TestBoundForce: no force spheres in a race (not ported)
 
-    for (auto& cp : contacts) {
-        const Vec3& n = cp.c.normal;
-        tangentBasis(n, cp.t1, cp.t2);
-        auto k = [&](const Vec3& dir) {
-            float sum = 1.0f / std::max(cp.a->ics.effectiveMass(dir, cp.c.point), 1e-12f);
-            if (cp.b)
-                sum += 1.0f / std::max(cp.b->ics.effectiveMass(dir, cp.c.point), 1e-12f);
-            return sum > 0 ? 1.0f / sum : 0.0f;
-        };
-        cp.massN = k(n);
-        cp.massT1 = k(cp.t1);
-        cp.massT2 = k(cp.t2);
-        Vec3 vrel = cp.a->ics.getVelocity(&cp.c.point);
-        if (cp.b)
-            vrel -= cp.b->ics.getVelocity(&cp.c.point);
-        cp.approach = vrel.dot(n);
-        cp.bounce = cp.approach < -restitutionThreshold ? -cp.bounce * cp.approach : 0.0f;
-    }
-}
+    const int n = testBoundGeneric(*boundA, *colA, *boundB, *colB, m_isectsA.data(), m_isectsB.data(),
+                                   m_impacts.data(), kMaxIntersections, kMaxImpacts, relPos);
+    if (n == 0)
+        return false;
+    m_stats.instanceImpacts += n;
+    Body* player = entityA && entityA->player ? entityA : nullptr;
+    if (player)
+        b.hitByPlayer = true;
+    else if (entityB && entityB->player)
+        a.hitByPlayer = true;
 
-void World::solve(std::vector<ContactPoint>& contacts) {
-    for (int it = 0; it < solverIterations; ++it) {
-        for (auto& cp : contacts) {
-            const Vec3& p = cp.c.point;
-            const Vec3& n = cp.c.normal;
-            auto relVel = [&] {
-                Vec3 v = cp.a->ics.getVelocity(&p);
-                if (cp.b)
-                    v -= cp.b->ics.getVelocity(&p);
-                return v;
-            };
-            auto apply = [&](const Vec3& j) {
-                cp.a->ics.applyImpulseNow(j, p);
-                if (cp.b)
-                    cp.b->ics.applyImpulseNow(-j, p);
-            };
-            Vec3 v = relVel();
-            float dj = cp.massN * (cp.bounce - v.dot(n));
-            const float newJn = std::max(cp.jn + dj, 0.0f);
-            dj = newJn - cp.jn;
-            cp.jn = newJn;
-            if (dj != 0)
-                apply(n * dj);
-            v = relVel();
-            const float maxF = cp.friction * cp.jn;
-            const float nj1 = clampf(cp.jt1 - cp.massT1 * v.dot(cp.t1), -maxF, maxF);
-            const float nj2 = clampf(cp.jt2 - cp.massT2 * v.dot(cp.t2), -maxF, maxF);
-            const float d1 = nj1 - cp.jt1, d2 = nj2 - cp.jt2;
-            cp.jt1 = nj1;
-            cp.jt2 = nj2;
-            if (d1 != 0 || d2 != 0)
-                apply(cp.t1 * d1 + cp.t2 * d2);
-        }
-    }
-}
-
-void World::pushApart(std::vector<ContactPoint>& contacts) {
-    for (auto& cp : contacts) {
-        const float depth = cp.c.depth - pushSlop;
-        if (depth <= 0)
-            continue;
-        const float wa = cp.a->ics.invMass;
-        const float wb = cp.b ? cp.b->ics.invMass : 0.0f;
-        const float total = wa + wb;
-        if (total <= 0)
-            continue;
-        const float corr = depth * pushFactor;
-        cp.a->ics.applyPush(cp.c.normal * (corr * wa / total));
-        cp.a->ics.numImpulses = std::max(cp.a->ics.numImpulses, 1);
-        if (cp.b) {
-            cp.b->ics.applyPush(cp.c.normal * (-corr * wb / total));
-            cp.b->ics.numImpulses = std::max(cp.b->ics.numImpulses, 1);
-        }
-    }
-    for (Body* b : m_bodies)
-        b->ics.moveICS();
-}
-
-void World::report(std::vector<ContactPoint>& contacts) {
-    struct Best {
-        Body* self;
-        Impact impact;
-    };
-    std::vector<Best> best;
-    auto consider = [&](Body* self, Body* other, const ContactPoint& cp, const Vec3& normal) {
-        if (!self->controller)
-            return;
-        for (auto& b : best) {
-            if (b.self == self && b.impact.other == other && (other || b.impact.material == cp.c.material)) {
-                if (cp.jn > b.impact.impulse)
-                    b.impact = {other, cp.c.material, cp.c.point, normal, cp.jn, -cp.approach};
-                return;
+    std::span<Impact> impacts(m_impacts.data(), static_cast<std::size_t>(n));
+    bool newA = false;
+    if (!entityA) {
+        if (!a.terrainCollidable) {
+            if (Body* attached = a.attachEntity()) {
+                newA = true;
+                entityA = attached;
+                for (Impact& im : impacts) {
+                    if (im.colliderA != &m_tempA) {
+                        im.normal = -im.normal;
+                        im.colliderB = im.colliderA;
+                    }
+                    im.colliderA = &attached->collider;
+                }
             }
         }
-        best.push_back({self, {other, cp.c.material, cp.c.point, normal, cp.jn, -cp.approach}});
-    };
-    for (const auto& cp : contacts) {
-        consider(cp.a, cp.b, cp, cp.c.normal);
-        if (cp.b)
-            consider(cp.b, cp.a, cp, -cp.c.normal);
+    } else if (entityB && impacts[0].colliderA == colB) {
+        for (Impact& im : impacts)
+            im.swapColliders();
     }
-    for (auto& b : best)
-        b.self->controller->onImpact(*b.self, b.impact);
+    bool newB = false;
+    if (!entityB && !b.terrainCollidable) {
+        if (Body* attached = b.attachEntity()) {
+            newB = true;
+            entityB = attached;
+            for (Impact& im : impacts) {
+                if (!newA) {
+                    if (im.colliderB != &m_tempB)
+                        im.normal = -im.normal;
+                    im.colliderA = &entityA->collider;
+                }
+                im.colliderB = &attached->collider;
+            }
+        }
+    }
+
+    const float weight = 1.0f / static_cast<float>(n);
+    if (!b.isBanger()) {
+        if (newA)
+            addNewMover(entityA);
+        if (newB)
+            addNewMover(entityB);
+        for (Impact& im : impacts)
+            calcImpact(im, weight);
+        if (newA)
+            a.attached();
+        if (newB)
+            b.attached();
+        return true;
+    }
+    // An unhit banger holds until an impulse beyond its limit breaks it
+    // loose (dgImpact::CalcImpact), then dgUnhitBangerInstance::Impact
+    // turns it into a body.
+    bool broke = false;
+    const float limit2 = b.bangerImpulseLimit2();
+    for (Impact& im : impacts)
+        broke = calcBangerImpact(im, weight, limit2) || broke;
+    if (broke)
+        b.bangerHit(a, impacts[0].position);
+    else if (entityB)
+        b.bangerHeld();
+    return true;
 }
 
 } // namespace mm2::phys

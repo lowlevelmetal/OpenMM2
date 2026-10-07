@@ -689,7 +689,7 @@ int PhysicsDriver::roadState(const Vec3& p, const DriveContext& ctx, float hint)
     const float s = c.locate(p, hint, 60.0f, &lateral);
     float road, sidewalk;
     c.onRoadLimits(s, road, sidewalk);
-    const float side = m_car.body.shape.half.x;
+    const float side = m_car.halfExtents().x;
     const float a = std::abs(lateral);
     if (a < road - side)
         return 1;
@@ -700,7 +700,7 @@ int PhysicsDriver::roadState(const Vec3& p, const DriveContext& ctx, float hint)
 
 RouteNode PhysicsDriver::roadTarget(const RouteNode& from, const RouteNode* before,
                                     const DriveContext& ctx) const {
-    return courseTarget(from, before, -m_car.body.ics.matrix.m2, m_car.body.shape.half.x, params, ctx);
+    return courseTarget(from, before, -m_car.body.ics.matrix.m2, m_car.halfExtents().x, params, ctx);
 }
 
 RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float side,
@@ -893,8 +893,8 @@ const TrackedCar* PhysicsDriver::blocking(const Vec3& from, const Vec3& to, std:
     // aiVehiclePhysics::IsTargetBlocked: the nearest vehicle in the way, of
     // the kinds this route avoids (ambient traffic, players, other racers
     // once past the third waypoint). Police cars are no obstacle in MM2.
-    const float myLength = 2.0f * m_car.body.shape.half.z;
-    const float myWidth = 2.0f * m_car.body.shape.half.x;
+    const float myLength = 2.0f * m_car.halfExtents().z;
+    const float myWidth = 2.0f * m_car.halfExtents().x;
     const TrackedCar* best = nullptr;
     float nearest = 99999.0f;
     for (const TrackedCar& c : cars) {
@@ -959,7 +959,7 @@ void PhysicsDriver::enumRoutes(std::vector<RouteNode>& nodes, std::span<const Tr
     ctx.course->pointAt(ctx.s + from.s, &roadDir);
     roadDir = flatUnit(roadDir);
     const Vec3 lookDir = before ? flatUnit(from.pos - before->pos) : flatUnit(-m_car.body.ics.matrix.m2);
-    const float clearance = m_car.body.shape.half.x + 2.0f;
+    const float clearance = m_car.halfExtents().x + 2.0f;
     std::vector<RouteNode> found;
     auto accept = [&](const Vec3& p, const TrackedCar& by, int onRoad) {
         RouteNode node;
