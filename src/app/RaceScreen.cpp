@@ -20,6 +20,7 @@
 #include "game/TrafficBodies.h"
 #include "game/bangers/BangerSet.h"
 #include "game/bangers/PropPlacement.h"
+#include "game/bangers/RoadDecals.h"
 #include "game/fx/EffectLibrary.h"
 #include "game/fx/ParticleRenderer.h"
 #include "game/fx/SkidMarks.h"
@@ -187,6 +188,8 @@ public:
             }
         }
         m_textures->update(m_time);
+        if (m_cityRenderer)
+            m_cityRenderer->update(m_frameDt);
         if (ctx.input.keyPressed(platform::Key::F3))
             m_showDebug = !m_showDebug;
         if (m_showDebug)
@@ -203,7 +206,7 @@ public:
         const float aspect = extent.height ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
         const auto proj = render::computeProjection(m_camera.horizontalFov, aspect, ctx.display.fovMode,
                                                     ctx.display.maxAspect);
-        m_camera.farPlane = m_env.fogEnd + 100.0f;
+        m_camera.farPlane = m_env.farClip;
         render::FrameConstants frame = m_env.frame;
         frame.view = m_camera.view();
         frame.proj = Mat44::perspective(proj.fovY, proj.aspect, m_camera.nearPlane, m_camera.farPlane, true);
@@ -211,34 +214,49 @@ public:
         dev.setFrameConstants(frame);
         const game::Frustum frustum(frame.view * frame.proj);
         m_cityRenderer->draw(m_camera, frustum, m_env, m_detail);
+        m_roadDecals.draw(dev, *m_textures);
         if (m_ai && m_aiRenderer)
             m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay,
                                [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
         drawRemoteCars(ctx, m_frameDt);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
-            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera,
-                            {m_detail.lodScale, m_env.fogEnd + 50.0f, night});
+            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera, {m_detail.objects, night});
+        const bool lights = carLights();
         if (m_vehicle && (m_flyCamera || m_cams.display() == game::CarDisplay::Body)) {
-            m_pose.headlights = m_result.config.timeOfDay == game::TimeOfDay::Night ||
-                                m_result.config.timeOfDay == game::TimeOfDay::Evening;
-            m_vehicle->draw(m_pose, m_camera.position());
+            m_pose.headlights = lights;
+            m_vehicle->draw(m_pose, m_camera.transform);
             if (m_trailer) {
-                m_trailerPose.headlights = m_pose.headlights;
-                m_trailer->draw(m_trailerPose, m_camera.position());
+                m_trailerPose.headlights = lights;
+                m_trailer->draw(m_trailerPose, m_camera.transform);
             }
         }
-        for (const auto& o : m_opponents)
-            o.renderer->draw(o.sim->pose(), m_camera.position());
+        for (const auto& o : m_opponents) {
+            game::VehiclePose pose = o.sim->pose();
+            pose.headlights = lights;
+            o.renderer->draw(pose, m_camera.transform);
+        }
         for (const auto& c : m_cops) {
             game::VehiclePose pose = c.sim->pose();
-            if (c.driver->siren())
-                pose.sirenPhase = static_cast<int>(m_time * 4.0) % 2; // flash rate inferred
-            c.renderer->draw(pose, m_camera.position());
+            pose.headlights = lights;
+            pose.siren = c.driver->siren();
+            pose.sirenAngle = c.sirenAngle;
+            c.renderer->draw(pose, m_camera.transform);
         }
         if (m_vehicleFx)
             m_vehicleFx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
-        if (m_weather)
+        for (const auto& o : m_opponents)
+            if (o.fx)
+                o.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
+        for (const auto& c : m_cops)
+            if (c.fx)
+                c.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
+        // cityLevel::DrawRooms draws no rain while the camera is underground
+        // (PSDL room flag 0x02).
+        const int cameraRoom = m_cityRenderer->stats().cameraRoom;
+        const bool underground = cameraRoom > 0 && static_cast<std::size_t>(cameraRoom) < m_city->psdl.rooms.size() &&
+                                 (m_city->psdl.rooms[static_cast<std::size_t>(cameraRoom)].flags & city::RoomFlag::Subterranean);
+        if (m_weather && !underground)
             m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
@@ -286,13 +304,22 @@ private:
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
         m_cityRenderer = std::make_unique<game::CityRenderer>(ctx.device(), *m_textures, *m_models, *m_city,
                                                               [this](std::string_view n) { return m_bangerData->has(n); });
+        m_objectDetail = std::clamp(static_cast<int>(ctx.settings.ini.getInt("Graphics", "ObjectDetail", 3)), 0, 3);
+        m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
         // Development aid for screenshots: "<timeOfDay 0-3>,<weather 0-3>".
         if (const char* env = std::getenv("OPENMM2_DEBUG_ENV"); env && std::strlen(env) >= 3) {
             m_result.config.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(env[0] - '0', 0, 3));
             m_result.config.weather = static_cast<game::Weather>(std::clamp(env[2] - '0', 0, 4));
         }
-        m_env = game::makeEnvironment(*m_city, m_result.config.timeOfDay, m_result.config.weather);
-        m_textures->setNight(m_result.config.timeOfDay == game::TimeOfDay::Night);
+        {
+            // The Lighting slider (0-1) picks MM2's light quality 0-3; the
+            // Visibility slider maps to the Far Clip range 100-1000 m (inferred).
+            const double lighting = ctx.settings.ini.getDouble("Graphics", "Lighting", 1.0);
+            const double visibility = ctx.settings.ini.getDouble("Graphics", "Visibility", 1.0);
+            m_envOptions.lightQuality = static_cast<int>(std::lround(std::clamp(lighting, 0.0, 1.0) * 3.0));
+            m_envOptions.farClip = 100.0f + 900.0f * static_cast<float>(std::clamp(visibility, 0.0, 1.0));
+        }
+        applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
         m_yaw = 0.0f;
         m_pitch = -0.15f;
@@ -370,9 +397,12 @@ private:
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
-        if (const auto* trailer = m_player->trailerModel())
+        setupVehicleRenderer(ctx, *m_vehicle);
+        if (const auto* trailer = m_player->trailerModel()) {
             m_trailer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, *trailer,
                                                                 m_result.config.vehicleColor, "TRAILER", "TWHL");
+            setupVehicleRenderer(ctx, *m_trailer);
+        }
         auto [pos, heading] = spawnPoint(ctx);
         if (m_session) {
             const Mat34 sp = m_session->playerSpawn();
@@ -478,7 +508,12 @@ private:
             opp.spawn = spawn;
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
+            setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
+            opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
+            opp.sim->sim().onImpactCallback = [fx = opp.fx.get(), sim = &opp.sim->sim()](const phys::Impact& impact) {
+                fx->impact(impact, *sim);
+            };
             if (m_ai) {
                 std::string error;
                 opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
@@ -529,7 +564,12 @@ private:
             const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
+            setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
+            cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model(), *cop.renderer);
+            cop.sim->sim().onImpactCallback = [fx = cop.fx.get(), sim = &cop.sim->sim()](const phys::Impact& impact) {
+                fx->impact(impact, *sim);
+            };
             m_cops.push_back(std::move(cop));
         }
         log::info("race: {} police cars", m_cops.size());
@@ -700,12 +740,23 @@ private:
                 m_cams.startWaterCam();
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
+                if (m_vehicleFx)
+                    m_vehicleFx->reset(); // vehCar::Reset
+                if (m_vehicle)
+                    m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
                 // The race starts over (mmGame::Reset): every car to its start.
                 m_player->reset(m_spawn);
+                if (m_vehicleFx)
+                    m_vehicleFx->reset();
+                if (m_vehicle)
+                    m_vehicle->resetDamage();
                 for (auto& o : m_opponents) {
                     o.sim->reset(o.spawn);
+                    if (o.fx)
+                        o.fx->reset();
+                    o.renderer->resetDamage();
                     if (o.driver)
                         o.driver->reset();
                 }
@@ -714,6 +765,8 @@ private:
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
+                if (m_vehicle)
+                    m_vehicle->resetDamage(); // vehCar::ClearDamage
             } else if (e.type == EventType::PlayerDamageLimits) {
                 auto& d = m_player->sim().damage.params;
                 d.maxDamage = e.value;
@@ -790,27 +843,21 @@ private:
 
     void loadEffects(Context& ctx) {
         m_effects.load(ctx.game->vfs);
+        // Road decals (city/<map>/decals.pathset, dgRoadDecalInstance).
+        if (auto bytes = ctx.game->vfs.readAll("city/" + str::lower(m_city->info.mapName) + "/decals.pathset"))
+            if (auto set = city::parsePathSet(*bytes))
+                m_roadDecals.load(*set);
         if (m_world) {
             m_bangers = std::make_unique<game::bangers::BangerSet>(*m_bangerData);
             m_bangers->add(game::bangers::placeCityProps(*m_city, ctx.game->vfs, *m_bangerData));
             m_bangers->setWorld(m_world.get());
         }
-        // Damage smoke from the car's vehCarDamage particle fields.
-        std::optional<game::fx::BirthRule> damageRule;
-        Vec3 smoke1;
-        std::optional<Vec3> smoke2;
-        if (auto bytes = ctx.game->vfs.readAll("tune/vehicle/" + m_result.config.vehicle + ".vehcardamage")) {
-            if (auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
-                f && f->top()) {
-                game::fx::BirthRule rule;
-                if (game::fx::loadBirthRule(*f->top(), rule))
-                    damageRule = rule;
-                f->top()->read("SmokeOffset", smoke1);
-                smoke2 = f->top()->getVec3("SmokeOffset2");
-            }
+        if (m_player && m_vehicle) {
+            m_vehicleFx = loadVehicleFx(ctx, m_result.config.vehicle, m_player->model(), *m_vehicle);
+            m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
+                m_vehicleFx->impact(impact, m_player->sim());
+            };
         }
-        m_vehicleFx = std::make_unique<game::fx::VehicleEffects>(m_effects, damageRule ? &*damageRule : nullptr, smoke1,
-                                                                 smoke2);
         const auto w = m_result.config.weather;
         m_weather = std::make_unique<game::fx::Weather>(
             m_effects, w == game::Weather::Rain   ? game::fx::Weather::Kind::Rain
@@ -818,42 +865,122 @@ private:
                                                   : game::fx::Weather::Kind::None);
     }
 
-    void updateEffects(float dt) {
-        if (!m_player || !m_vehicleFx)
+    // Lighting, fog, texture variants and street shading for the race's time
+    // and weather.
+    void applyEnvironment() {
+        m_env = game::makeEnvironment(*m_city, m_result.config.timeOfDay, m_result.config.weather, m_envOptions);
+        // mmGame's texture variants: night textures (and darkening) at
+        // night, wet (_fa) textures in rain.
+        m_textures->setVariants(m_result.config.timeOfDay == game::TimeOfDay::Night,
+                                m_result.config.weather == game::Weather::Rain);
+        if (m_cityRenderer)
+            m_cityRenderer->setEnvironment(m_env);
+    }
+
+    // mmGame::InitWeather's light flag: evening, night or fog turn the car
+    // lights on.
+    bool carLights() const {
+        const auto t = m_result.config.timeOfDay;
+        return t == game::TimeOfDay::Evening || t == game::TimeOfDay::Night || m_result.config.weather == game::Weather::Fog;
+    }
+
+    // Object Detail, reflections and the shadow's ground probe of a car renderer.
+    void setupVehicleRenderer(Context& ctx, game::VehicleRenderer& r) {
+        r.setDetail(m_detail.objects);
+        r.setReflections(ctx.settings.ini.getBool("Graphics", "VehicleReflections", true));
+        r.setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
+            phys::RayHit hit;
+            if (!m_world || !m_world->probe(from, to, hit))
+                return false;
+            point = hit.position;
+            normal = hit.normal;
+            return true;
+        });
+    }
+
+    // vehCar's effects (tracks, wheel particles, damage and exhaust smoke) for
+    // one car: the .vehCarDamage particle fields over the engine smoke
+    // defaults, the exhaust pivots of its model.
+    std::unique_ptr<game::fx::VehicleEffects> loadVehicleFx(Context& ctx, const std::string& vehicle,
+                                                            const asset::VehicleModel& model,
+                                                            const game::VehicleRenderer& renderer) {
+        game::fx::VehicleFxSetup setup;
+        if (!m_sparkColors)
+            m_sparkColors = game::fx::SparkLut::load(ctx.game->vfs);
+        setup.sparkColors = *m_sparkColors;
+        setup.shardTextures = renderer.materialTextures();
+        if (auto bytes = ctx.game->vfs.readAll("tune/vehicle/" + vehicle + ".vehcardamage"))
+            if (auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+                f && f->top())
+                game::fx::loadBirthRule(*f->top(), setup.smokeRule);
+        for (int i = 0; i < 2; ++i)
+            if (const auto* pivot = model.pivot(std::format("exhaust{}", i)))
+                setup.exhaust[static_cast<std::size_t>(i)] = pivot->origin;
+        setup.rain = m_result.config.weather == game::Weather::Rain;
+        return std::make_unique<game::fx::VehicleEffects>(m_effects, setup);
+    }
+
+    // Car parts that fly off as bangers (tune/banger/<car>_<part>):
+    // vehBreakableMgr::Impact ejects the breakable nearest an impact of
+    // 10000 or more; a wrecked car loses wheels, hubs and fenders by speed
+    // (vehCarModel::EjectOneshot), thrown at 1.3 times its speed. Parts
+    // without banger data stay on.
+    void breakParts(game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim,
+                    const std::string& vehicle) {
+        const auto impacts = fx.takeImpacts();
+        if (!m_bangers || !m_bangerData)
             return;
-        const auto& sim = m_player->sim();
-        game::fx::VehicleFxInput in;
-        const bool shouldSkid = sim.speed() > 7.0f || m_lastPedals.accelerator > 0.5f || m_lastPedals.brake > 0.7f;
-        for (std::size_t i = 0; i < 4; ++i) {
-            const auto& w = sim.wheels[i];
-            auto& wi = in.wheels[i];
-            wi.skid.carSpeed = sim.speed();
-            wi.skid.wheelSpeed = std::abs(w.rotationSpeed * w.radius);
-            wi.skid.latSlip = w.latSlipPercent;
-            wi.skid.longSlip = w.longSlipPercent;
-            wi.skid.onGround = w.onGround;
-            wi.skid.shouldSkid = shouldSkid;
-            wi.skid.groundNormal = w.intersection.normal;
-            wi.skid.contact = Mat34::identity();
-            wi.skid.contact.m0 = m_pose.body.m0;
-            wi.skid.contact.m3 = w.intersection.position;
-            wi.skid.width = w.width;
-            wi.skid.lightMarks = m_result.config.weather == game::Weather::Snow;
-            if (w.material) {
-                wi.ptxIndex[0] = w.material->ptxIndex[0];
-                wi.ptxIndex[1] = w.material->ptxIndex[1];
-                wi.ptxThreshold[0] = w.material->ptxThreshold[0];
-                wi.ptxThreshold[1] = w.material->ptxThreshold[1];
-            }
+        const Mat34 body = sim.modelMatrix();
+        auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
+            const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
+            if (!data)
+                return false;
+            r.detach(b.part);
+            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed);
+            return true;
+        };
+        for (const auto& impact : impacts)
+            if (impact.value >= 10000.0f)
+                if (auto b = r.nearestBreakable(impact.point))
+                    eject(*b, 4.0f);
+        if (sim.damage.enabled && sim.damage.params.maxDamage <= sim.damage.currentDamage)
+            for (const auto& b : r.wreckParts(sim.speedMph(), m_ejectRand))
+                eject(b, sim.speed() * 1.3f);
+    }
+
+    // vehCar::UpdateTrack lays no tracks in rooms flagged by gizBridge (the
+    // opening bridges, not ported): everywhere else they are allowed.
+    game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim&) const { return {}; }
+
+    void updateEffects(float dt) {
+        // vehCarDamage::Update paints the first impact since the last frame
+        // into the body (fxTexelDamage::ApplyDamage, TextelDamageRadius).
+        auto paint = [this](game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim,
+                            const std::string& vehicle) {
+            if (auto p = fx.takeDamagePoint())
+                r.applyDamage(*p, sim.damage.params.textelDamageRadius);
+            breakParts(fx, r, sim, vehicle);
+        };
+        if (m_player && m_vehicleFx) {
+            m_vehicleFx->update(dt, m_player->sim(), vehicleFxContext(m_player->sim()));
+            if (m_vehicle)
+                paint(*m_vehicleFx, *m_vehicle, m_player->sim(), m_player->model().baseName);
         }
-        in.body = m_pose.body;
-        in.damage01 = sim.damage.damage;
-        m_vehicleFx->update(dt, in);
+        for (auto& o : m_opponents)
+            if (o.fx) {
+                o.fx->update(dt, o.sim->sim(), vehicleFxContext(o.sim->sim()));
+                paint(*o.fx, *o.renderer, o.sim->sim(), o.sim->model().baseName);
+            }
+        for (auto& c : m_cops) {
+            if (c.fx) {
+                c.fx->update(dt, c.sim->sim(), vehicleFxContext(c.sim->sim()));
+                paint(*c.fx, *c.renderer, c.sim->sim(), c.sim->model().baseName);
+            }
+            if (c.driver->siren())
+                c.sirenAngle = std::fmod(c.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
+        }
         if (m_weather)
-            m_weather->update(dt, m_camera.transform, [this](const Vec3& p) {
-                phys::RayHit hit;
-                return m_world && m_world->probe(p + Vec3{0, 50, 0}, p - Vec3{0, 50, 0}, hit) ? hit.position.y : p.y;
-            });
+            m_weather->update(dt, m_camera.transform);
     }
 
     void loadAudio(Context& ctx) {
@@ -874,6 +1001,8 @@ private:
         m_rain.load(*m_bank, *ctx.mixer, m_result.config.timeOfDay == game::TimeOfDay::Night);
         // Impacts reported by the simulation feed the impact sounds.
         m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
+            if (m_vehicleFx)
+                m_vehicleFx->impact(impact, m_player->sim());
             m_impacts.push_back({audio::game::impactStrength(impact.normal * impact.impulse), 0, impact.point});
             if (impact.speed > 1.0f)
                 ++(impact.other ? m_vehicleImpacts : m_objectImpacts);
@@ -978,6 +1107,7 @@ private:
                     rv.model = std::make_unique<asset::VehicleModel>(std::move(*model));
                     rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                           *rv.model, rv.color);
+                    setupVehicleRenderer(ctx, *rv.renderer);
                 }
             }
             if (!rv.renderer)
@@ -995,7 +1125,7 @@ private:
             pose.headlights = (rc.flags & net::kVehicleHeadlights) != 0;
             pose.brakeLights = (rc.flags & net::kVehicleBrakeLights) != 0;
             pose.reverseLights = rc.controls.gear < 0;
-            rv.renderer->draw(pose, m_camera.position());
+            rv.renderer->draw(pose, m_camera.transform);
         }
     }
 
@@ -1211,11 +1341,11 @@ private:
         if (changed) {
             m_result.config.timeOfDay = static_cast<game::TimeOfDay>(tod);
             m_result.config.weather = static_cast<game::Weather>(weather);
-            m_env = game::makeEnvironment(*m_city, m_result.config.timeOfDay, m_result.config.weather);
-            m_textures->setNight(m_result.config.timeOfDay == game::TimeOfDay::Night);
+            applyEnvironment();
         }
         ImGui::Checkbox("PVS", &m_detail.usePvs);
-        ImGui::SliderFloat("Detail", &m_detail.lodScale, 0.25f, 4.0f);
+        if (ImGui::SliderInt("Object detail", &m_objectDetail, 0, 3))
+            m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
         ImGui::TextDisabled("Arrows/WASD drive, Space handbrake, C camera, V dash, keypad look, R reset, F2 free cam, F3 panel");
         ImGui::End();
     }
@@ -1234,6 +1364,8 @@ private:
     std::unique_ptr<game::CityRenderer> m_cityRenderer;
     game::Environment m_env;
     game::DetailSettings m_detail;
+    game::EnvironmentOptions m_envOptions;
+    int m_objectDetail = 3; // the Object Detail option, 0-3
     game::Camera m_camera;
     std::unique_ptr<phys::World> m_world;
     std::unique_ptr<game::SimVehicle> m_player;
@@ -1262,6 +1394,7 @@ private:
         std::unique_ptr<game::VehicleRenderer> renderer;
         std::unique_ptr<ai::Opponent> driver;
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        std::unique_ptr<game::fx::VehicleEffects> fx;
     };
     std::vector<Opponent> m_opponents;
     struct Cop {
@@ -1269,6 +1402,8 @@ private:
         std::unique_ptr<game::VehicleRenderer> renderer;
         ai::PoliceCar* driver = nullptr; // owned by m_police
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        std::unique_ptr<game::fx::VehicleEffects> fx;
+        float sirenAngle = 0.0f; // vehSiren::Update: 2.5 pi rad/s while on
     };
     std::unique_ptr<ai::PoliceSquad> m_police;
     std::vector<Cop> m_cops;
@@ -1280,6 +1415,9 @@ private:
     // Props that can be knocked over, and particle effects.
     std::unique_ptr<game::bangers::BangerDataLibrary> m_bangerData;
     std::unique_ptr<game::bangers::BangerSet> m_bangers;
+    game::bangers::RoadDecals m_roadDecals;
+    std::optional<game::fx::SparkLut> m_sparkColors;
+    game::fx::Rand m_ejectRand{0xB4EAu};
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;
     std::unique_ptr<game::fx::Weather> m_weather;

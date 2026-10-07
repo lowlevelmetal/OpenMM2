@@ -1,92 +1,117 @@
 #include "game/fx/SkidMarks.h"
 
+#include <bit>
 #include <cmath>
 
 namespace mm2::game::fx {
 
-SkidTrail::SkidTrail(int maxSkids) : m_quads(static_cast<std::size_t>(std::max(1, maxSkids))) {}
-
-void SkidTrail::reset() {
-    for (auto& q : m_quads)
-        q.used = false;
-    m_next = 0;
-    m_timeSinceTrack = 0.0f;
-    m_notSkidding = true;
-    m_distance = 0.0f;
+SkidTrack::SkidTrack(int pairs) {
+    const auto n = std::bit_ceil(static_cast<std::size_t>(std::max(2, pairs)));
+    m_pairs.resize(n);
+    m_mask = n - 1;
 }
 
-bool SkidTrail::update(float dt, const SkidInput& in) {
-    // mmSkidManager::Update
-    if ((in.carSpeed > kSpeedThreshold || in.wheelSpeed > kSpeedThreshold) &&
-        (std::abs(in.latSlip) > in.slipThreshold || std::abs(in.longSlip) > in.slipThreshold) && in.onGround &&
-        in.shouldSkid && in.groundNormal.y > 0.1f) {
-        m_timeSinceTrack += dt;
-        if (m_timeSinceTrack > kTrackInterval) {
-            if (in.allowTrack)
-                layTrack(in);
-            m_timeSinceTrack = 0.0f;
+void SkidTrack::setWidth(float width) {
+    m_halfWidth = width * 0.5f;
+    m_invWidth = 1.0f / width;
+}
+
+void SkidTrack::reset() {
+    m_head = m_tail = 0;
+    m_laying = false;
+    m_pending = false;
+}
+
+// Adds a pair at the head; a full ring drops the oldest pair, and the pair
+// after it too when that one starts a new strip.
+void SkidTrack::push(const Pair& p) {
+    const std::size_t next = (m_head + 1) & m_mask;
+    if (next == m_tail) {
+        m_tail = (m_tail + 1) & m_mask;
+        const std::size_t after = (m_tail + 1) & m_mask;
+        if (m_pairs[after].v == 0.0f)
+            m_tail = after;
+    }
+    m_pairs[m_head] = p;
+    m_head = next;
+}
+
+void SkidTrack::update(const Vec3& contact, const Vec3& axle, bool laying) {
+    if (!laying) {
+        m_pending = false;
+        m_laying = false;
+        return;
+    }
+    const Pair here{axle * -m_halfWidth + contact, axle * m_halfWidth + contact, 0.0f};
+    if (!m_laying) {
+        if (!m_pending) {
+            m_pending = true;
+            m_pendingPair = here;
+            m_last = contact;
+            return;
         }
-        return true;
+        // Start a strip once the wheel has moved 10 cm from the held pair.
+        const Vec3 d = contact - m_last;
+        if (d.mag2() < 0.010000001f)
+            return;
+        push(m_pendingPair);
+        m_pending = false;
+        m_direction = d * (1.0f / d.mag());
+        m_directionValid = true;
+        m_laying = true;
+        push({here.left, here.right, d.mag() * m_invWidth});
+        return;
     }
-    m_notSkidding = true;
-    return false;
+    const Vec3 d = contact - m_last;
+    const float length = d.mag();
+    const float v = length * m_invWidth;
+    // A wheel that has not moved has no direction: the original's NaN
+    // direction fails the test, so it adds a pair (with v = 0, which starts
+    // a new strip) and the next segment adds one too.
+    const bool moved = length > 0.0f;
+    const Vec3 direction = moved ? d * (1.0f / length) : Vec3{};
+    if (moved && m_directionValid && direction.dot(m_direction) >= 0.99f && length <= 10.0f) {
+        // Same direction: the newest pair follows the wheel.
+        m_pairs[(m_head - 1) & m_mask] = {here.left, here.right, v};
+        return;
+    }
+    push({here.left, here.right, v});
+    m_direction = direction;
+    m_directionValid = moved;
+    m_last = contact;
 }
 
-void SkidTrail::layTrack(const SkidInput& in) {
-    // mmSkidManager::LayTrack: the track's edges are +-half the tyre width
-    // along the contact frame's axle direction.
-    const Vec3 half = in.contact.m0.normalized() * (in.width * 0.5f);
-    const Vec3 left = in.contact.m3 - half;
-    const Vec3 right = in.contact.m3 + half;
-    if (m_notSkidding) {
-        // First sample of a new track: just remember the edge.
-        m_notSkidding = false;
-    } else {
-        Quad& q = m_quads[static_cast<std::size_t>(m_next)];
-        q.p[0] = m_prevLeft;
-        q.p[1] = m_prevRight;
-        q.p[2] = left;
-        q.p[3] = right;
-        q.light = in.lightMarks;
-        const float step = ((left + right) * 0.5f).dist((m_prevLeft + m_prevRight) * 0.5f);
-        q.v0 = m_distance;
-        m_distance += step / std::max(in.width, 0.05f);
-        q.v1 = m_distance;
-        q.used = true;
-        m_next = (m_next + 1) % static_cast<int>(m_quads.size());
-    }
-    m_prevLeft = left;
-    m_prevRight = right;
-}
-
-void SkidRenderer::draw(render::Device& device, TextureLibrary& textures, const std::vector<const SkidTrail*>& trails) {
+void SkidRenderer::draw(render::Device& device, TextureLibrary& textures, const std::vector<const SkidTrack*>& tracks) {
     std::vector<render::Vertex3D> vertices;
     std::vector<std::uint16_t> indices;
-    auto vert = [&](const Vec3& p, float u, float v, std::uint32_t color) {
+    auto vert = [&](const Vec3& p, float u, float v) {
         render::Vertex3D rv{};
         rv.position[0] = p.x;
-        rv.position[1] = p.y + 0.01f; // lift off the road to avoid z-fighting
+        rv.position[1] = p.y;
         rv.position[2] = p.z;
         rv.normal[1] = 1.0f;
-        rv.color = color;
+        rv.color = 0xFFFFFFFFu;
         rv.uv0[0] = rv.uv1[0] = u;
         rv.uv0[1] = rv.uv1[1] = v;
         vertices.push_back(rv);
     };
-    for (const SkidTrail* t : trails) {
-        for (const auto& q : t->quads()) {
-            if (!q.used || vertices.size() + 4 > 65535)
-                continue;
-            // Dark marks normally, pale ones in snow (MM1 variant 1); colours inferred.
-            const std::uint32_t color = q.light ? 0xC0E0E0E0u : 0xC0303030u;
+    for (const SkidTrack* t : tracks) {
+        t->forEachStrip([&](const std::vector<const SkidTrack::Pair*>& strip) {
+            if (strip.size() < 2 || vertices.size() + strip.size() * 2 > 65535)
+                return;
+            // A triangle strip of (left, right) pairs: s = 0 left, 1 right; t = v.
             const auto base = static_cast<std::uint16_t>(vertices.size());
-            vert(q.p[0], 0.0f, q.v0, color);
-            vert(q.p[1], 1.0f, q.v0, color);
-            vert(q.p[2], 0.0f, q.v1, color);
-            vert(q.p[3], 1.0f, q.v1, color);
-            for (std::uint16_t k : {0, 1, 3, 0, 3, 2})
-                indices.push_back(static_cast<std::uint16_t>(base + k));
-        }
+            for (const auto* p : strip) {
+                vert(p->left, 0.0f, p->v);
+                vert(p->right, 1.0f, p->v);
+            }
+            for (std::size_t k = 0; k + 1 < strip.size(); ++k) {
+                const auto a = static_cast<std::uint16_t>(base + 2 * k);
+                for (std::uint16_t i : {a, static_cast<std::uint16_t>(a + 1), static_cast<std::uint16_t>(a + 3), a,
+                                        static_cast<std::uint16_t>(a + 3), static_cast<std::uint16_t>(a + 2)})
+                    indices.push_back(i);
+            }
+        });
     }
     if (indices.empty())
         return;

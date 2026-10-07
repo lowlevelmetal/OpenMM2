@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asset/Image.h"
 #include "render/Device.h"
 #include "vfs/Vfs.h"
 
@@ -35,13 +36,25 @@ public:
     // Null when the texture does not exist (logged once).
     const WorldTexture* get(std::string_view name);
 
-    // At night the game uses "<name>_ni" variants where they exist (401 of
-    // the retail textures have one: lit windows, shop fronts, lamps).
-    // Inferred from the data; only the night tables enable it.
-    void setNight(bool night) { m_night = night; }
+    // MM2's texture variant handler (InstallTextureVariantHandler), active
+    // in game: in rain a texture loads as "<name>_fa" when that exists (wet
+    // roads and decals); at night as "<name>_ni" (lit windows, shop fronts,
+    // lamps), and every other texture is darkened (each channel halved on
+    // every mip level). Changing the variants reloads the textures.
+    void setVariants(bool night, bool rain);
+    void setNight(bool night) { setVariants(night, m_rain); }
     bool night() const { return m_night; }
+    bool rain() const { return m_rain; }
     // Advances animated textures to `time` seconds.
     void update(double time);
+
+    // The pixels `name` loads as (variants and night darkening applied), for
+    // textures that are modified at run time (fxTexelDamage).
+    std::optional<asset::Image> image(std::string_view name);
+    // Adds a texture made elsewhere under `name` (kept across variant
+    // changes); the library destroys it.
+    const WorldTexture* adopt(const std::string& name, const WorldTexture& texture);
+    void release(const std::string& name);
 
     std::size_t loadedCount() const { return m_textures.size(); }
 
@@ -51,13 +64,18 @@ private:
         float rate = 30.0f;
         WorldTexture current;
     };
-    std::optional<WorldTexture> load(const std::string& name);
+    std::optional<WorldTexture> load(const std::string& name, bool darken);
+    // The variant to load for `name` and whether to darken it.
+    std::optional<WorldTexture> loadVariant(const std::string& name);
+    void clear();
 
     render::Device& m_device;
     const vfs::Vfs& m_vfs;
     std::unordered_map<std::string, std::optional<WorldTexture>> m_textures;
     std::unordered_map<std::string, Animation> m_animations;
+    std::unordered_map<std::string, WorldTexture> m_adopted;
     bool m_night = false;
+    bool m_rain = false;
 };
 
 } // namespace mm2::game

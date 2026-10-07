@@ -38,9 +38,12 @@ std::optional<BangerData> parseBangerData(std::string_view name, std::string_vie
         if (c.name == "GlowOffset" && c.numbers.size() >= 3)
             d.glowOffsets.push_back(
                 {static_cast<float>(c.numbers[0]), static_cast<float>(c.numbers[1]), static_cast<float>(c.numbers[2])});
-    int numGlows = 0;
-    if (b.read("NumGlows", numGlows))
-        d.glowOffsets.resize(static_cast<std::size_t>(std::max(0, std::min<int>(numGlows, static_cast<int>(d.glowOffsets.size())))));
+    // dgBangerData::Load: NumGlows is optional and 1 without it.
+    int numGlows = 1;
+    b.read("NumGlows", numGlows);
+    d.glowOffsets.resize(static_cast<std::size_t>(std::max(0, std::min<int>(numGlows, static_cast<int>(d.glowOffsets.size())))));
+    if (d.name.find("_tree") != std::string::npos)
+        d.billFlags |= BangerData::kTree;
     if (const auto* rule = b.child("BirthRule")) {
         fx::BirthRule r;
         if (fx::loadBirthRule(*rule, r))

@@ -6,7 +6,7 @@
 namespace mm2::game::fx {
 namespace {
 
-constexpr const char* kSurfaceRules[] = {"default", "dirt", "grass", "leaf", "smoke", "dust", "splash", "rock", "snow"};
+constexpr const char* kWheelRuleNames[] = {"dirt", "dust", "grass", "leaf", "smoke", "snow", "splash", "rock"};
 
 } // namespace
 
@@ -47,12 +47,13 @@ const BirthRule* EffectLibrary::rule(std::string_view name) const {
     return it == m_rules.end() ? nullptr : &it->second;
 }
 
-const char* EffectLibrary::surfaceRuleName(int i) {
-    return i >= 0 && i < static_cast<int>(std::size(kSurfaceRules)) ? kSurfaceRules[i] : nullptr;
+const char* EffectLibrary::wheelRuleName(int i) {
+    static_assert(std::size(kWheelRuleNames) == kWheelRules);
+    return i >= 0 && i < kWheelRules ? kWheelRuleNames[i] : nullptr;
 }
 
-const BirthRule* EffectLibrary::surfaceRule(int i) const {
-    const char* name = surfaceRuleName(i);
+const BirthRule* EffectLibrary::wheelRule(int i) const {
+    const char* name = wheelRuleName(i);
     return name ? rule(std::string("effects/") + name) : nullptr;
 }
 

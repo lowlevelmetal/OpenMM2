@@ -163,6 +163,7 @@ enum class BlendMode : std::uint8_t {
     Additive,      // src*a + dst
     Modulate,      // src * dst (multiplicative, e.g. shadows/lightmaps)
     Premultiplied, // src + dst*(1-a)
+    Add,           // src + dst (Direct3D ONE/ONE: light glows)
 };
 
 enum class CullMode : std::uint8_t { None, Back, Front };

@@ -152,6 +152,7 @@ VehiclePose SimVehicle::trailerPose() const {
         pose.wheelValid[i] = true;
     }
     pose.hasWheelWorld = true;
+    // vehTrailerInstance::Draw: the tail lights while the tow car brakes over 0.1.
     pose.brakeLights = m_sim.brakes > 0.1f;
     return pose;
 }
@@ -186,7 +187,8 @@ VehiclePose SimVehicle::pose() const {
         pose.wheelValid[static_cast<std::size_t>(w.index)] = true;
     }
     pose.hasWheelWorld = true;
-    pose.brakeLights = m_sim.brakes > 0.1f;
+    // vehCarModel::DrawGlow: brake input not zero; reverse gear.
+    pose.brakeLights = m_sim.brakes != 0.0f;
     pose.reverseLights = reversing();
     return pose;
 }

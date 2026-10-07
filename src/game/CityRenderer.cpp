@@ -1,6 +1,7 @@
 #include "game/CityRenderer.h"
 
 #include "core/Log.h"
+#include "core/StringUtil.h"
 #include "game/MeshDraw.h"
 
 #include <algorithm>
@@ -10,28 +11,33 @@
 namespace mm2::game {
 namespace {
 
+constexpr float kPi = 3.14159265f;
+
 Vec3 unpackRgb(std::uint32_t argb) {
     return {static_cast<float>((argb >> 16) & 0xFF) / 255.0f, static_cast<float>((argb >> 8) & 0xFF) / 255.0f,
             static_cast<float>(argb & 0xFF) / 255.0f};
 }
 
-// Direction a light travels for an Angel heading/pitch pair (radians).
-// Inferred: pitch < 0 points down; heading rotates about +Y from -Z.
+// cityLevel::SetLightDirection: the direction a light travels for a heading
+// and pitch (radians).
 Vec3 lightDirection(float heading, float pitch) {
-    return Vec3{std::sin(heading) * std::cos(pitch), std::sin(pitch), -std::cos(heading) * std::cos(pitch)}
-        .normalized();
+    return {std::cos(heading) * std::cos(pitch), std::sin(pitch), std::sin(heading) * std::cos(pitch)};
 }
 
-// LOD switch distances in metres (inferred; the original's values live in
-// code we cannot read and were scaled by the Object Detail option).
-asset::Lod lodForDistance(float d, float scale) {
-    if (d < 60.0f * scale)
-        return asset::Lod::High;
-    if (d < 130.0f * scale)
-        return asset::Lod::Medium;
-    if (d < 260.0f * scale)
-        return asset::Lod::Low;
-    return asset::Lod::VeryLow;
+// cityTimeWeatherLighting::ComputeAmbientLightLevels: lower light qualities
+// use an ambient level moved towards white (by 66% at quality 1, 33% at 2).
+std::uint32_t ambientForQuality(std::uint32_t argb, int quality) {
+    if (quality >= 3)
+        return argb;
+    if (quality <= 0)
+        return 0xFFFFFFFFu;
+    const std::uint32_t k = quality == 1 ? 168u : 84u;
+    std::uint32_t out = 0xFF000000u;
+    for (int shift = 0; shift < 24; shift += 8) {
+        const std::uint32_t c = (argb >> shift) & 0xFF;
+        out |= (c + (((255u - c) * k) >> 8)) << shift;
+    }
+    return out;
 }
 
 Aabb transformBounds(const Aabb& b, const Mat34& m) {
@@ -43,37 +49,79 @@ Aabb transformBounds(const Aabb& b, const Mat34& m) {
     return out;
 }
 
+std::uint32_t argbToRgba(std::uint32_t argb) {
+    return (argb & 0xFF00FF00u) | ((argb >> 16) & 0xFFu) | ((argb & 0xFFu) << 16);
+}
+
 } // namespace
 
-Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather weatherIn) {
+const GpuMesh* findFilledLod(const GpuModel& model, std::string_view part, asset::Lod lod) {
+    for (int l = static_cast<int>(lod); l <= static_cast<int>(asset::Lod::VeryLow); ++l)
+        for (const auto& m : model.meshes)
+            if (m.lod == static_cast<asset::Lod>(l) && str::iequals(m.part, part))
+                return &m;
+    // Models without LOD names.
+    for (const auto& m : model.meshes)
+        if (m.lod == asset::Lod::None && str::iequals(m.part, part))
+            return &m;
+    return nullptr;
+}
+
+Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather weatherIn,
+                            const EnvironmentOptions& options) {
     Environment env;
     const int t = static_cast<int>(time);
     const int w = std::min(static_cast<int>(weatherIn), 3); // snow -> rain tables
     const int index = city::lightingIndex(t, w);
+    const int quality = std::clamp(options.lightQuality, 0, 3);
 
     auto& f = env.frame;
     if (const auto& lt = city.lighting[static_cast<std::size_t>(index)]) {
-        f.lights[0] = {lightDirection(lt->keyHeading, lt->keyPitch), lt->keyColor};
-        f.lights[1] = {lightDirection(lt->fill1Heading, lt->fill1Pitch), lt->fill1Color};
-        f.lights[2] = {lightDirection(lt->fill2Heading, lt->fill2Pitch), lt->fill2Color};
-        f.ambient = unpackRgb(lt->ambient);
+        // cityLevel::SetupLighting: the key light from quality 1, fill1 from
+        // 2, fill2 from 3; the render state's ambient by quality.
+        const std::array<std::pair<Vec3, Vec3>, 3> lights = {
+            std::pair{lightDirection(lt->keyHeading, lt->keyPitch), lt->keyColor},
+            std::pair{lightDirection(lt->fill1Heading, lt->fill1Pitch), lt->fill1Color},
+            std::pair{lightDirection(lt->fill2Heading, lt->fill2Pitch), lt->fill2Color}};
+        for (int i = 0; i < 3; ++i)
+            f.lights[static_cast<std::size_t>(i)] = {lights[static_cast<std::size_t>(i)].first,
+                                                     quality > i ? lights[static_cast<std::size_t>(i)].second : Vec3{}};
+        f.ambient = unpackRgb(ambientForQuality(lt->ambient, quality));
     } else {
         f.lights[0] = {Vec3{0.3f, -1.0f, -0.5f}.normalized(), {1, 1, 1}};
         f.ambient = {0.4f, 0.4f, 0.4f};
     }
+    // sdlCommon::UpdateLighting: the street walls' light table. A wall
+    // facing angle a gets ambient + sum max(0, n . -L) x light colour.
+    for (int i = 0; i < 64; ++i) {
+        const float a = static_cast<float>(i) * kPi / 32.0f - kPi / 2.0f;
+        const float nx = std::cos(a), nz = std::sin(a);
+        std::uint32_t argb = 0xFF000000u;
+        for (int c = 0; c < 3; ++c) {
+            auto pick = [c](const Vec3& v) { return c == 0 ? v.x : c == 1 ? v.y : v.z; };
+            float v = pick(f.ambient) * 255.0f;
+            for (const auto& light : f.lights)
+                v += std::max(0.0f, nx * -light.direction.x + nz * -light.direction.z) * pick(light.color) * 255.0f;
+            argb |= static_cast<std::uint32_t>(std::min(v, 255.0f)) << (16 - 8 * c);
+        }
+        env.wallShades[static_cast<std::size_t>(i)] = argb;
+    }
+
+    env.farClip = options.farClip;
     if (static_cast<std::size_t>(index) < city.fog.size()) {
+        // lvlSky::SetupFog: linear fog clamped by the far plane.
         const auto& fog = city.fog[static_cast<std::size_t>(index)];
         f.fogMode = render::FogMode::Linear;
         f.fogColor = {fog.r / 255.0f, fog.g / 255.0f, fog.b / 255.0f};
-        f.fogStart = fog.start;
-        f.fogEnd = fog.end;
-        env.fogEnd = fog.end;
+        f.fogStart = std::min(options.farClip - 30.0f, fog.start);
+        f.fogEnd = std::min(options.farClip, fog.end);
+        env.fogEnd = f.fogEnd;
+        // The clear colour is the fog colour.
         env.clearColor = {f.fogColor.x, f.fogColor.y, f.fogColor.z, 1.0f};
     }
     // Sky dome paint jobs: four times of day (a = dawn, n = noon, d = dusk,
-    // m = midnight in the texture names, verified by viewing them) times four
-    // weathers (c clear, p partly cloudy, f fog, r rain): the same order as the
-    // lighting tables.
+    // m = midnight in the texture names) times four weathers (c clear, p
+    // partly cloudy, f fog, r rain): the lighting tables' order.
     env.skyPaintjob = t * 4 + w;
     return env;
 }
@@ -82,9 +130,8 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
                            const city::CityData& city, const std::function<bool(std::string_view)>& isDynamic)
     : m_device(device), m_textures(textures), m_models(models), m_city(city), m_locator(city.psdl) {
     const city::CityMesh mesh = city::buildCityMesh(city.psdl);
-    std::vector<render::Vertex3D> vertices;
     std::vector<std::uint32_t> indices;
-    vertices.reserve(mesh.vertexCount());
+    m_streetVertices.reserve(mesh.vertexCount());
     m_rooms.resize(mesh.rooms.size());
     for (std::size_t r = 0; r < mesh.rooms.size(); ++r) {
         const auto& roomMesh = mesh.rooms[r];
@@ -99,7 +146,7 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
             b.kind = batch.kind;
             if (const auto* name = city.psdl.texture(batch.texture); name && !name->empty())
                 b.textureName = name;
-            const auto base = static_cast<std::uint32_t>(vertices.size());
+            const auto base = static_cast<std::uint32_t>(m_streetVertices.size());
             for (const auto& v : batch.vertices) {
                 render::Vertex3D rv{};
                 rv.position[0] = v.position.x;
@@ -111,15 +158,16 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
                 rv.color = 0xFFFFFFFFu;
                 rv.uv0[0] = rv.uv1[0] = v.uv.x;
                 rv.uv0[1] = rv.uv1[1] = v.uv.y;
-                vertices.push_back(rv);
+                m_streetVertices.push_back(rv);
+                m_streetKinds.push_back(batch.kind);
             }
             for (auto i : batch.indices)
                 indices.push_back(base + i);
             room.batches.push_back(b);
         }
     }
-    m_vertices = m_device.createBuffer(render::BufferKind::Vertex, vertices.size() * sizeof(render::Vertex3D),
-                                       vertices.data());
+    m_vertices = m_device.createBuffer(render::BufferKind::Vertex,
+                                       m_streetVertices.size() * sizeof(render::Vertex3D), m_streetVertices.data());
     m_indices = m_device.createBuffer(render::BufferKind::Index, indices.size() * sizeof(std::uint32_t), indices.data());
 
     for (const auto& inst : city.instances) {
@@ -137,13 +185,48 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
     m_roomMarks.assign(m_rooms.size(), 0);
     if (city.sky)
         m_sky = m_models.get(city.sky->model);
-    log::info("city: {} rooms, {} vertices, {} triangles, {} instances", m_rooms.size(), vertices.size(),
+    log::info("city: {} rooms, {} vertices, {} triangles, {} instances", m_rooms.size(), m_streetVertices.size(),
               indices.size() / 3, m_instances.size());
 }
 
 CityRenderer::~CityRenderer() {
     m_device.destroyBuffer(m_vertices);
     m_device.destroyBuffer(m_indices);
+}
+
+void CityRenderer::setEnvironment(const Environment& env) {
+    // sdlPage16::Draw lights nothing: road, sidewalk, roof and ground
+    // vertices take the room colour, curbs half of it, and facades and
+    // slivers the light table entry of their facing, shaded by the room
+    // colour. The room colours come from city/<map>.lmap, but its count
+    // never matches the room count cityLevel::Load checks (London 1340 for
+    // 1341, SF 1125 for 1171), so MM2 drops it and every room is white.
+    // The light table index is the facade's orientation (MM2 stores it in
+    // the preceding FacadeBound attribute; here it is taken from the wall's
+    // normal, inferred to match).
+    for (std::size_t i = 0; i < m_streetVertices.size(); ++i) {
+        auto& v = m_streetVertices[i];
+        std::uint32_t argb = 0xFFFFFFFFu;
+        switch (m_streetKinds[i]) {
+        case city::SurfaceKind::Wall: {
+            const float a = std::atan2(v.normal[2], v.normal[0]);
+            const int index = static_cast<int>(std::lround((a + kPi / 2.0f) * 32.0f / kPi)) & 63;
+            argb = env.wallShades[static_cast<std::size_t>(index)];
+            break;
+        }
+        case city::SurfaceKind::Curb: argb = ((0xFFFFFFFFu >> 1) & 0x7F7F7Fu) | 0xFF000000u; break;
+        default: break;
+        }
+        v.color = argbToRgba(argb);
+    }
+    if (!m_streetVertices.empty())
+        m_device.updateBuffer(m_vertices, 0, std::as_bytes(std::span<const render::Vertex3D>(m_streetVertices)));
+}
+
+void CityRenderer::update(float dt) {
+    // lvlSky::Update: the dome turns at the .sky file's rate (rad/s).
+    const float speed = m_city.sky && m_city.sky->params.size() > 2 ? m_city.sky->params[2] : 0.0f;
+    m_skyAngle = std::fmod(m_skyAngle + dt * speed, 2.0f * kPi);
 }
 
 void CityRenderer::drawMesh(const GpuMesh& mesh, const std::vector<asset::PkgMaterial>& materials, const Mat44& world,
@@ -160,7 +243,12 @@ void CityRenderer::drawSky(const Camera& camera, const Environment& env) {
     const GpuMesh* mesh = m_sky->find("", asset::Lod::High);
     if (!mesh)
         return;
-    Mat34 m = Mat34::translation(camera.position());
+    // lvlSky::DrawHat: at the camera, its height scaled and offset by the
+    // .sky parameters, turned about Y; unlit, unfogged, no depth.
+    const auto& p = m_city.sky->params;
+    const float yOffset = p.size() > 0 ? p[0] : 0.0f, yScale = p.size() > 1 ? p[1] : 1.0f;
+    const Vec3 eye = camera.position();
+    const Mat34 m = Mat34::rotationY(m_skyAngle) * Mat34::translation({eye.x, eye.y * yScale + yOffset, eye.z});
     const auto& mats = m_sky->materials(env.skyPaintjob);
     for (const auto& d : mesh->draws) {
         const asset::PkgMaterial* mat = d.shader < mats.size() ? &mats[d.shader] : nullptr;
@@ -188,13 +276,14 @@ void CityRenderer::drawSky(const Camera& camera, const Environment& env) {
 void CityRenderer::resolve(InstanceDraw& inst) {
     inst.resolved = true;
     inst.gpu = m_models.get(inst.model);
-    if (inst.gpu)
+    if (inst.gpu) {
         inst.worldBounds = transformBounds(inst.gpu->bounds, inst.transform);
+        inst.radius = (inst.gpu->bounds.max - inst.gpu->bounds.min).mag() * 0.5f;
+    }
 }
 
 void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth) {
-    const GpuMesh* mesh = model.find("", lod);
-    if (mesh)
+    if (const GpuMesh* mesh = findFilledLod(model, "", lod))
         drawMesh(*mesh, model.materials(0), Mat44::fromMat34(transform));
     if (depth >= 3)
         return;
@@ -204,18 +293,22 @@ void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asse
     }
 }
 
-void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, const Vec3& eye,
+void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera,
                                 const DetailSettings& detail) {
     if (!inst.resolved)
         resolve(inst);
     if (!inst.gpu || !frustum.intersects(inst.worldBounds))
         return;
-    const float distance = inst.worldBounds.center().dist(eye);
-    drawModel(*inst.gpu, inst.transform, lodForDistance(distance, detail.lodScale), 0);
+    // lvlInstance::IsVisible: the depth of the instance's origin minus its
+    // radius; static instances have no NoDraw limit (only the far plane).
+    const auto lod = objectLod(viewDepth(camera, inst.transform.m3), inst.radius, detail.objects);
+    if (!lod)
+        return;
+    drawModel(*inst.gpu, inst.transform, *lod, 0);
     ++m_stats.instancesDrawn;
 }
 
-void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Vec3& eye, const DetailSettings& detail) {
+void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail) {
     Room& room = m_rooms[r];
     if (room.batches.empty() && room.instances.empty())
         return;
@@ -230,7 +323,8 @@ void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Vec3& e
             call.count = b.indexCount;
             call.first = b.firstIndex;
             call.constants.color = {1, 1, 1, 1};
-            call.constants.flags = render::DrawFlag::Fog | render::DrawFlag::Lighting;
+            // Street geometry is unlit: the vertex colours carry its shading.
+            call.constants.flags = render::DrawFlag::Fog | render::DrawFlag::VertexColor;
             // Looked up per frame so day/night texture sets can switch live.
             if (const WorldTexture* tex = b.textureName ? m_textures.get(*b.textureName) : nullptr) {
                 call.constants.flags |= render::DrawFlag::Texture0;
@@ -241,8 +335,10 @@ void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Vec3& e
                 sampler.addressU = sampler.addressV = render::AddressMode::Wrap;
                 call.textures[0] = {tex->handle, sampler};
                 if (tex->translucent) {
+                    // Textures with alpha blend and alpha test (GREATER 100).
                     call.constants.flags |= render::DrawFlag::AlphaTest;
-                    call.constants.alphaRef = 0.5f;
+                    call.constants.alphaRef = 101.0f / 255.0f;
+                    call.state.blend = render::BlendMode::Alpha;
                 }
             }
             // Street geometry is built with counter-clockwise front faces
@@ -254,7 +350,7 @@ void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Vec3& e
         }
     }
     for (std::size_t i : room.instances)
-        drawInstance(m_instances[i], frustum, eye, detail);
+        drawInstance(m_instances[i], frustum, camera, detail);
 }
 
 void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Environment& env,
@@ -263,20 +359,23 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
     drawSky(camera, env);
 
     const Vec3 eye = camera.position();
-    const int room = m_locator.find(eye);
+    // cityLevel::Draw: the camera's room, or the last one found while the
+    // camera is outside every room.
+    if (const int found = m_locator.find(eye); found > 0)
+        m_lastRoom = found;
+    const int room = m_lastRoom;
     m_stats.cameraRoom = room;
-    const float farSq = sq(env.fogEnd + 50.0f);
 
     std::ranges::fill(m_roomMarks, 0);
-    // The PVS was computed for street-level viewpoints; from high above a
-    // room (debug camera, big jumps) everything may be visible.
-    const bool nearGround = room > 0 && eye.y - m_rooms[static_cast<std::size_t>(room)].bounds.min.y < 40.0f;
-    if (detail.usePvs && nearGround && m_city.pvs && m_city.pvs->hasData(static_cast<std::size_t>(room))) {
+    if (detail.usePvs && room > 0 && m_city.pvs && m_city.pvs->hasData(static_cast<std::size_t>(room))) {
         m_roomMarks[static_cast<std::size_t>(room)] = 1;
         for (auto r : m_city.pvs->visibleFrom(static_cast<std::size_t>(room)))
             if (r < m_roomMarks.size())
                 m_roomMarks[r] = 1;
     } else {
+        // No PVS (or never inside the city, an OpenMM2 debug case): every
+        // room within the far plane.
+        const float farSq = sq(env.farClip + 50.0f);
         for (std::size_t r = 1; r < m_rooms.size(); ++r) {
             const Aabb& b = m_rooms[r].bounds;
             const Vec3 closest = vmax(b.min, vmin(eye, b.max));
@@ -286,7 +385,7 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
     }
     for (std::size_t r = 1; r < m_rooms.size(); ++r)
         if (m_roomMarks[r])
-            drawRoom(r, frustum, eye, detail);
+            drawRoom(r, frustum, camera.transform, detail);
 }
 
 } // namespace mm2::game

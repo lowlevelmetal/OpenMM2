@@ -1,7 +1,8 @@
 /*
     OpenMM2 - particle systems (asParticles).
-    Ported from Open1560 (code/midtown/mmeffects/ptx.cpp and game.asm
-    asBirthRule::InitSpark), Copyright (C) 2020 Brick, GPL-3.0-or-later.
+    First ported from Open1560 (code/midtown/mmeffects/ptx.cpp),
+    Copyright (C) 2020 Brick, GPL-3.0-or-later; the update and birth now
+    follow MM2's asParticles::Update/Blast and asBirthRule::InitSpark.
 */
 #pragma once
 
@@ -9,7 +10,6 @@
 #include "game/fx/Random.h"
 
 #include <cstdint>
-#include <functional>
 #include <span>
 #include <vector>
 
@@ -17,59 +17,63 @@ namespace mm2::game::fx {
 
 // asSparkInfo: per-particle simulation state.
 struct SparkInfo {
-    float life = 0.0f;
     Vec3 velocity;
-    float invMass = 0.0f; // MM1 field "Mass" holds 1 / mass
+    float life = 0.0f;
+    float invMass = 0.0f; // the rule's mass is stored inverted
     float drag = 0.0f;
     float damp = 1.0f;
     float gravity = 0.0f;
     float dRadius = 0.0f;
     std::int8_t dAlpha = 0;
     std::int8_t dRotation = 0;
+    std::uint8_t frameStart = 0, frameEnd = 0;
+    // Birth colour (red, green, blue) and the current alpha.
+    std::uint8_t red = 255, green = 255, blue = 255, alpha = 255;
 };
 
 // asSparkPos: per-particle render state.
 struct SparkPos {
     std::int8_t frame = 0;
-    std::int8_t rotation = 0;      // 256 units per turn; cards use (rotation >> 2) & 31
+    std::int8_t rotation = 0; // 32 units per turn (asMeshCardInfo masks it with 31)
+    std::uint8_t flags = 0;   // low byte of the rule's BirthFlags
     float radius = 0.0f;
-    std::uint32_t color = 0xFFFFFFFFu; // ARGB, alpha in the top byte
+    std::uint32_t color = 0xFFFFFFFFu; // 0xAARRGGBB
+    float height = 0.0f;               // the rule's Height (bounce/stop/shadow plane)
     Vec3 position;
 };
 
-// asParticles: a pool of particles born by a BirthRule and integrated with
-// the original's update (30 Hz frame counting for alpha, rotation and frame
-// animation; per-1/30 s damping).
+// asParticles: a pool of particles born by BirthRules.
+//
+// update() is one MM2 update with the frame time `dt`. Several rules work per
+// update rather than per second (frame cycling advances one frame, alpha and
+// rotation change by ftol(delta * 60 * dt)), so owners call it at a fixed
+// 60 Hz (see FixedTicker): exactly the original running at 60 fps, the rate
+// OpenMM2's physics reproduces too.
 class ParticleSystem {
 public:
-    // Particle frames run at 30 Hz (PtxFrameRate).
-    static constexpr float kFrameRate = 30.0f;
-
-    // `maxParticles` is scaled by `capacityScale` as MM1 does with its
-    // "maxptx" command-line parameter (default 2).
-    void init(int maxParticles, int framesWide, int framesHigh, float capacityScale = 2.0f);
+    // asParticles::Init(count, framesWide, framesHigh, ...). The original
+    // quartered the count in software rendering only.
+    void init(int maxParticles, int framesWide, int framesHigh);
     void reset();
 
+    // Rule spewed by update() (asParticles' own rule); blasts may name another.
     void setBirthRule(const BirthRule* rule) { m_rule = rule; }
     const BirthRule* birthRule() const { return m_rule; }
-    // Emitter placement for blasts: positions are transformed by it (MM1
-    // SetMatrix). Null emits in world space.
+    // Blast positions are transformed by this matrix when set (the particle
+    // velocities are not).
     void setMatrix(const Mat34* m) { m_matrix = m; }
 
-    // Emits up to `count` particles from `rule` (or the system's rule).
+    // asParticles::Blast: emits up to `count` particles from `rule` (or the
+    // system's rule), as many as fit.
     void blast(int count, const BirthRule* rule = nullptr);
-    // Advances the system: spews by the rule's SpewRate, integrates, ages
-    // and kills particles.
+    // asParticles::Update.
     void update(float dt);
 
-    // Wind for drag (MM1 defaults: no wind, density 0, so Drag has no effect
-    // unless a density is set).
+    // Scales the birth colours every update (asParticles' intensity, 1 by
+    // default; cityLevel::GetLightingIntensity always answers 1).
+    float intensity = 1.0f;
+    // Added to the particle velocity before drag (zero in MM2).
     Vec3 wind;
-    float windDensity = 0.0f;
-    // Height of the splash plane for rules with kSplashes. MM1 used y = 0;
-    // OpenMM2 lets the owner supply the ground (inferred adaptation for hilly
-    // San Francisco).
-    std::function<float(const Vec3&)> splashHeight;
 
     int count() const { return m_count; }
     int capacity() const { return static_cast<int>(m_info.size()); }
@@ -91,6 +95,19 @@ private:
     float m_elapsed = 0.0f;
     float m_spewFraction = 0.0f;
     Rand m_rand;
+};
+
+// Runs per-update effect rules at a fixed rate whatever the frame rate:
+// advance() returns how many kStep updates are due.
+class FixedTicker {
+public:
+    static constexpr float kStep = 1.0f / 60.0f;
+    // At most `maxSteps` per call (a long stall does not replay seconds of effects).
+    int advance(float dt, int maxSteps = 8);
+    void reset() { m_accumulator = 0.0f; }
+
+private:
+    float m_accumulator = 0.0f;
 };
 
 } // namespace mm2::game::fx

@@ -162,7 +162,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         }
         pose.brakeLights = car.braking;
         pose.headlights = time == TimeOfDay::Night;
-        r->draw(pose, eye);
+        r->draw(pose, camera.transform);
         ++m_stats.cars;
     }
     for (const auto& ped : world.peds()) {

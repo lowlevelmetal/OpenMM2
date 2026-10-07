@@ -166,12 +166,12 @@ int cmdFxSim(std::span<char* const> args) {
         return 1;
     }
     rule.position = {};
-    int frames = 60, every = 10;
+    int frames = 120, every = 20; // updates at 60 Hz
     for (std::size_t i = 3; i + 1 < args.size(); i += 2) {
         if (std::string_view(args[i]) == "--frames")
-            frames = static_cast<int>(str::parseInt(args[i + 1]).value_or(60));
+            frames = static_cast<int>(str::parseInt(args[i + 1]).value_or(120));
         else if (std::string_view(args[i]) == "--every")
-            every = static_cast<int>(str::parseInt(args[i + 1]).value_or(10));
+            every = static_cast<int>(str::parseInt(args[i + 1]).value_or(20));
     }
     // Particle sheet texture.
     std::optional<asset::Image> tex;
@@ -186,7 +186,7 @@ int cmdFxSim(std::span<char* const> args) {
     sys.init(std::max(64, rule.initialBlast + static_cast<int>(rule.spewRate * 4)), sheet.framesWide, sheet.framesHigh);
     sys.setBirthRule(&rule);
     sys.blast(rule.initialBlast > 0 ? rule.initialBlast : 0);
-    const float dt = 1.0f / 30.0f;
+    const float dt = game::fx::FixedTicker::kStep; // the original at 60 fps
     const auto outDir = str::toPath(args[2]);
     std::error_code ec;
     std::filesystem::create_directories(outDir, ec);

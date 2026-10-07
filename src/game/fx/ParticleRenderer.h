@@ -1,8 +1,8 @@
 /*
-    OpenMM2 - camera-facing particle cards (agiMeshSet::DrawCard).
-    Card geometry (DefaultQuad, 32-step rotation table, frame grid) ported
-    from Open1560 (agiworld/meshrend.cpp, game.asm agiMeshCardInfo::Init),
-    Copyright (C) 2020 Brick, GPL-3.0-or-later.
+    OpenMM2 - camera-facing particle cards (asMeshCardInfo).
+    Card geometry first ported from Open1560 (agiworld/meshrend.cpp),
+    Copyright (C) 2020 Brick, GPL-3.0-or-later; follows MM2's
+    asMeshCardInfo::Init, Draw and DrawShadows.
 */
 #pragma once
 
@@ -26,14 +26,16 @@ struct CardStyle {
 // transient buffers.
 class ParticleRenderer {
 public:
-    // Rotation steps of a card (agiMeshCardInfo PointCount; MM1 uses 32).
+    // Rotation steps of a card (asParticles::Init passes 32).
     static constexpr int kRotations = 32;
 
     ParticleRenderer();
 
     // `cameraBasis`: the view's world placement (m0 right, m1 up). The
     // texture is a sheet of system.framesWide() x framesHigh() frames, frame
-    // 0 at the start of the texture's first stored row.
+    // 0 at the start of the texture's first stored row. Particles flagged
+    // BirthRule::kShadow also get their flat shadow, drawn first
+    // (asParticles::Cull).
     void draw(render::Device& device, const Mat34& cameraBasis, const ParticleSystem& system,
               const WorldTexture* texture, const CardStyle& style = {});
 
@@ -46,8 +48,7 @@ public:
 
 private:
     std::array<std::array<Vec2, 4>, kRotations> m_rot{};
-    std::vector<render::Vertex3D> m_vertices;
-    std::vector<std::uint16_t> m_indices;
+    std::vector<render::Vertex3D> m_vertices, m_shadows;
     int m_cardsDrawn = 0;
 };
 
