@@ -66,11 +66,19 @@ void Drivetrain::update(InertialCS& ics, const WheelEnv& env, float brakes, floa
     for (int i = 0; i < n; ++i)
         brakeSum = brakeSum + perWheel;
 
+    // mmWheel::ComputeDwtdw's first half (probe, suspension) comes first so
+    // that the tyre torques can be evaluated at the current body velocity.
+    // MM1 calls ComputeDwtdw after summing them; the probe does not use them.
+    for (int i = 0; i < n; ++i)
+        m_wheels[static_cast<std::size_t>(i)]->probe(env);
+
     float drive = m_engine ? m_engine->torque : 0.0f;
     if (m_trans)
         drive = drive * m_trans->currentRatio();
-    for (int i = 0; i < n; ++i)
-        drive = drive - m_wheels[static_cast<std::size_t>(i)]->tireResistance;
+    for (int i = 0; i < n; ++i) {
+        const Wheel* w = m_wheels[static_cast<std::size_t>(i)];
+        drive = drive - (mm1ExplicitSpin ? w->tireResistance : w->predictTireResistance(env));
+    }
 
     float net;
     bool brakesDominate = false;
@@ -97,10 +105,17 @@ void Drivetrain::update(InertialCS& ics, const WheelEnv& env, float brakes, floa
         inertia = angInertia * 0.005f;
     }
 
+    // MM1 calls ComputeDwtdw for wheel 0, and for wheel 1 only when the
+    // drivetrain has exactly two wheels; MM2 has four-wheel drivetrains, so
+    // every wheel is included (OpenMM2).
     float A[4], B[4], C[4];
     float D = 300.0f;
-    for (int i = 0; i < n; ++i)
-        D = m_wheels[static_cast<std::size_t>(i)]->computeDwtdw(net, A[i], B[i], C[i], env) + D;
+    for (int i = 0; i < n; ++i) {
+        float slope = m_wheels[static_cast<std::size_t>(i)]->computeLimits(net, A[i], B[i], C[i], env);
+        if (mm1ExplicitSpin) // build 1560 stores 0 to A and C and returns 0
+            slope = A[i] = C[i] = 0.0f;
+        D = slope + D;
+    }
 
     float negNet = -net;
     float rot0 = w0->rotationSpeed;

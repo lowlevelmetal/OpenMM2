@@ -75,6 +75,8 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     drivetrains[1].configure(p.freetrain);
     drivetrains[2].configure(p.drivetrain);
     drivetrains[2].attach(&engine, &trans);
+    for (Drivetrain& d : drivetrains)
+        d.mm1ExplicitSpin = o.mm1ExplicitSpin;
 
     // mmCarSim::ConfigureDrivetrain.
     Wheel& fl = wheels[0];

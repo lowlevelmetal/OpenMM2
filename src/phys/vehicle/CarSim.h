@@ -59,6 +59,9 @@ struct CarSimOptions {
     bool indoors = false;
     // Damage disables the car and changes impact response.
     bool damage = true;
+    // Drivetrain::mm1ExplicitSpin: MM1 build 1560's explicit wheel spin, for
+    // comparison (unstable with stiff tyres at 60 Hz).
+    bool mm1ExplicitSpin = false;
 };
 
 // vehCarSim: a player-style car, ported from MM1's mmCarSim (Open1560

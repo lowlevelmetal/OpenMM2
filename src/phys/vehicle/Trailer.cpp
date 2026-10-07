@@ -74,6 +74,7 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
                         4, front ? Wheel::kUseIcsWorld : Wheel::kUseIcsWorld | Wheel::kHandbrake);
         drivetrains[ii] = Drivetrain{};
         drivetrains[ii].configure(free);
+        drivetrains[ii].mm1ExplicitSpin = tractor.options.mm1ExplicitSpin;
         drivetrains[ii].addWheel(&wheels[ii]);
     }
 

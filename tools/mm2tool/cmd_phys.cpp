@@ -188,6 +188,8 @@ struct RunOptions {
     float steer = 0.0f;
     float brakeAt = -1.0f;
     float step = kFixedSampleStep;
+    float printEvery = 0.5f;
+    float settle = 1.0f; // seconds at rest before the run
     bool print = true;
     bool debug = false;
     std::string csv;
@@ -195,12 +197,15 @@ struct RunOptions {
     // "mesh" (TRAILER mesh box centre, MM1's choice) or "x,y,z".
     std::string trailerCg = "origin";
     bool noTrailer = false;
+    bool mm1Spin = false; // CarSimOptions::mm1ExplicitSpin
 };
 
 RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptions& opt) {
     World world = makeTestWorld(fs);
     CarSim sim;
-    sim.init(car.params, car.geometry);
+    CarSimOptions simOptions;
+    simOptions.mm1ExplicitSpin = opt.mm1Spin;
+    sim.init(car.params, car.geometry, simOptions);
     sim.setStuckParams(car.stuck);
     sim.setGyroParams(car.gyro);
     sim.setDamageParams(car.damage);
@@ -238,7 +243,7 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
     RunResult res;
     const Vec3 start = sim.modelMatrix().m3;
     // Settle on the suspension first (no input).
-    for (int i = 0; i < static_cast<int>(1.0f / opt.step); ++i) {
+    for (int i = 0; i < static_cast<int>(opt.settle / opt.step); ++i) {
         controls.apply(sim, {});
         world.step(opt.step);
     }
@@ -306,7 +311,7 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
                         w.currentTireDispLong, w.tireGripLong, w.currentTireDispLat, w.tireGripLat,
                         w.longSlipPercent);
             }
-            nextPrint += 0.5f;
+            nextPrint += opt.printEvery;
         }
     }
     return res;
@@ -342,6 +347,10 @@ int cmdSimcar(std::span<char* const> args) {
             ok = parseFloatArg(args, i, opt.brakeAt);
         else if (a == "--step")
             ok = parseFloatArg(args, i, opt.step);
+        else if (a == "--settle")
+            ok = parseFloatArg(args, i, opt.settle);
+        else if (a == "--print-every")
+            ok = parseFloatArg(args, i, opt.printEvery);
         else if (a == "--debug")
             opt.debug = true;
         else if (a == "--csv" && i + 1 < args.size())
@@ -350,6 +359,8 @@ int cmdSimcar(std::span<char* const> args) {
             opt.trailerCg = args[++i];
         else if (a == "--no-trailer")
             opt.noTrailer = true;
+        else if (a == "--mm1-spin")
+            opt.mm1Spin = true;
         else
             ok = false;
         if (!ok) {
@@ -414,11 +425,11 @@ int cmdSimcars(std::span<char* const> args) {
     return 0;
 }
 
-const Registrar
-    r1({"simcar",
-        "<container> <car> [--seconds N] [--throttle T] [--steer S] [--brake-at T] [--step S] [--csv FILE] "
-        "[--trailer-cg origin|mesh|x,y,z] [--no-trailer] [--debug]",
-        "drive a car on a flat plane and print speed/RPM/gear", &cmdSimcar});
+const Registrar r1({"simcar",
+                    "<container> <car> [--seconds N] [--throttle T] [--steer S] [--brake-at T] [--step S] "
+                    "[--print-every S] [--settle S] [--csv FILE] "
+                    "[--trailer-cg origin|mesh|x,y,z] [--no-trailer] [--mm1-spin] [--debug]",
+                    "drive a car on a flat plane and print speed/RPM/gear", &cmdSimcar});
 const Registrar r2({"simcars", "<container> [seconds]",
                     "acceleration test for every player car (markdown table)", &cmdSimcars});
 

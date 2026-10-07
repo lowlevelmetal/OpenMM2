@@ -15,15 +15,24 @@ class Transmission;
 // A drivetrain is a set of wheels that spin together. The engine-driven one is
 // "attached" to the engine and transmission; the others (Freetrain) only feel
 // brakes and tyre forces. Each sample it integrates the shared wheel speed
-// implicitly:
+// with one linearly implicit step:
 //     w' = w + dt * (-net) / (I + dt * D)
-// where net = engine torque * gear ratio - sum of tyre resistance, adjusted by
-// the brakes (which cannot reverse the wheel), D = 300 (+ tyre slopes, which
-// are zero in this engine build) and I = an effective inertia. If w' crosses
-// the wheel-speed limit reported by Wheel::computeDwtdw, the step stops there
-// and continues past it (piecewise-linear solve). Finally the wheel speed is
-// limited by the engine's MaxRPM in the current gear and the engine speed is
-// set from it.
+// where net = engine torque * gear ratio - sum of tyre torques
+// (TireResistance), adjusted by the brakes (which cannot reverse the wheel),
+// D = 300 + the tyres' slopes d(TireResistance)/d(w) and I = an effective
+// inertia. If w' crosses the wheel speed B reported by Wheel::computeLimits
+// (optimum slip), the step stops there and continues without that wheel's
+// slope (piecewise-linear solve). Finally the wheel speed is limited by the
+// engine's MaxRPM in the current gear and the engine speed is set from it.
+//
+// MM1 build 1560 discards the tyre slopes (D = 300) and sums the tyre torques
+// of the previous sample, so the wheel and tyre are coupled explicitly. With
+// MM2's stiffer tyres that diverges at 60 Hz (vp4x4, several *_opp tunes), so
+// OpenMM2 keeps the slopes, with MM1's first slope term corrected by dt, and
+// linearises about the tyre torque at the current body velocity
+// (Wheel::predictTireResistance), so the slopes stabilise the step without
+// acting as extra inertia: in steady acceleration I + dt * 300 resists the
+// wheel, as in MM1. mm1ExplicitSpin restores the 1560 behaviour.
 class Drivetrain {
 public:
     // MM2: AngInertia and BrakeDynamicCoef/BrakeStaticCoef replace MM1's
@@ -51,6 +60,9 @@ public:
     float dynCoeff = 2000.0f;
     float statCoeff = 2400.0f;
     float engineAngInertia = 1.0f; // copied from the engine when attached
+    // MM1 build 1560: tyre slopes discarded, previous sample's tyre torques
+    // (explicit coupling; unstable for stiff tyres at 60 Hz).
+    bool mm1ExplicitSpin = false;
 
 private:
     std::array<Wheel*, 4> m_wheels{};

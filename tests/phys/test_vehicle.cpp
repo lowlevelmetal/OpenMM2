@@ -1,4 +1,5 @@
 #include "TestData.h"
+#include "core/File.h"
 #include "data/DatFile.h"
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
@@ -14,6 +15,8 @@
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <optional>
+#include <string>
 
 using namespace mm2;
 using namespace mm2::phys;
@@ -171,6 +174,79 @@ struct TestCar {
         }
     }
 };
+
+// Full throttle from rest (after 1 s at rest); speed in mph after `seconds`.
+float launchSpeedMph(const CarSimParams& p, const VehicleGeometry& g, float seconds, float dt,
+                     bool mm1ExplicitSpin = false) {
+    World world;
+    world.setStatic(flatGround());
+    CarSim car;
+    CarSimOptions o;
+    o.mm1ExplicitSpin = mm1ExplicitSpin;
+    car.init(p, g, o);
+    car.reset(Mat34::identity());
+    world.add(&car.body);
+    ArcadeControls controls;
+    PedalInput in;
+    for (int i = 0; i < static_cast<int>(1.0f / dt + 0.5f); ++i) {
+        controls.apply(car, {});
+        world.step(dt);
+    }
+    in.accelerator = 1.0f;
+    for (int i = 0; i < static_cast<int>(seconds / dt + 0.5f); ++i) {
+        controls.apply(car, in);
+        world.step(dt);
+    }
+    return car.speedMph();
+}
+
+// The bug tune with stiff, heavily damped tyres and an MM1-layout gearbox,
+// like the retail *_opp tunes (TireDispLimit 0.075, TireDampCoef 0.75,
+// front OptimumSlipPercent 0.01, explicit GearRatios).
+CarSimParams stiffTyreParams() {
+    CarSimParams p = bugParams();
+    p.engine.maxHorsePower = 200.0f;
+    p.trans = {};
+    p.trans.hasExplicitRatios = true;
+    p.trans.numGears = 7;
+    p.trans.gearRatios = {-20.0f, 0.0f, 21.0f, 15.0f, 10.0f, 7.0f, 5.0f};
+    p.trans.upshiftRPM = {6000, 6000, 6000, 6000, 6000, 6000, 6000};
+    p.trans.downshiftRPM = {2000, 2000, 2000, 2000, 2000, 2000, 2000};
+    for (WheelParams* w : {&p.wheelFront, &p.wheelBack}) {
+        w->tireDispLimitLong = w->tireDispLimitLat = 0.075f;
+        w->tireDampCoefLong = w->tireDampCoefLat = 0.75f;
+        w->tireDragCoefLong = w->tireDragCoefLat = 0.0f;
+    }
+    p.wheelFront.optimumSlipPercent = 0.01f;
+    p.wheelFront.slidingFric = 2.5f;
+    return p;
+}
+
+// A retail tune with its model's wheel pivots (geometry/<model>_whlN.mtx: 12
+// floats, the pivot in the last row) and a placeholder body.
+std::optional<std::pair<CarSimParams, VehicleGeometry>> retailCar(const std::string& name) {
+    const vfs::Vfs* fs = test::gameData();
+    auto bytes = fs->readAll("tune/vehicle/" + name + ".vehcarsim");
+    if (!bytes)
+        return std::nullopt;
+    auto dat = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+    CarSimParams p;
+    if (!dat || !dat->top() || !loadCarSimParams(*dat->top(), p))
+        return std::nullopt;
+    VehicleGeometry g = VehicleGeometry::placeholder();
+    const std::string model = name.substr(0, name.find('_'));
+    for (int i = 0; i < 4; ++i) {
+        auto mtx = fs->readAll("geometry/" + model + "_whl" + std::to_string(i) + ".mtx");
+        if (!mtx || mtx->size() < 48)
+            return std::nullopt;
+        Mat34 m;
+        for (int r = 0; r < 4; ++r)
+            m.row(r) = {loadLE<float>(mtx->data() + r * 12), loadLE<float>(mtx->data() + r * 12 + 4),
+                        loadLE<float>(mtx->data() + r * 12 + 8)};
+        g.wheels[static_cast<std::size_t>(i)] = VehicleGeometry::wheelFromPivot(m);
+    }
+    return std::make_pair(p, g);
+}
 
 } // namespace
 
@@ -451,11 +527,58 @@ TEST(CarSim, LoadsEveryRetailCar) {
         const Vec3& pos = t.car->body.ics.matrix.m3;
         EXPECT_TRUE(std::isfinite(pos.x) && std::isfinite(pos.y) && std::isfinite(pos.z)) << e.path;
         EXPECT_LT(t.car->speedMph(), 250.0f) << e.path;
-        // Moves forward. (Three opponent tunes, vpcoop_opp, vpcoop2k_opp and
-        // vppanoz_opp, have front OptimumSlipPercent 0.01 and only creep;
-        // see docs/physics.md.)
-        EXPECT_GT(t.car->speedMph(), 2.0f) << e.path;
+        // Moves off: the slowest (the buses) reach about 18 mph in 6 s. The
+        // stiff *_opp tyres once only crept (see Drivetrain tests below).
+        EXPECT_GT(t.car->speedMph(), 10.0f) << e.path;
         ++loaded;
     }
     EXPECT_GE(loaded, 45);
+}
+
+// The drivetrain's implicit step must not add inertia: the tyre slopes only
+// stabilise it. With MM1's per-radian slope (or the previous sample's tyre
+// torque) stiff tyres turned into a flywheel worth tens of tonnes and the
+// *_opp cars took 25 s to reach 60 mph; see docs/physics.md.
+TEST(Drivetrain, StiffTyresLaunchBriskly) {
+    const CarSimParams stiff = stiffTyreParams();
+    const float v4 = launchSpeedMph(stiff, bugGeometry(), 4.0f, kFixedSampleStep);
+    EXPECT_GT(v4, 35.0f);
+    // Like the soft-tyred original within a few mph (same engine and mass).
+    CarSimParams soft = bugParams();
+    soft.engine.maxHorsePower = 200.0f;
+    soft.trans = stiff.trans;
+    EXPECT_NEAR(v4, launchSpeedMph(soft, bugGeometry(), 4.0f, kFixedSampleStep), 6.0f);
+}
+
+TEST(Drivetrain, LaunchDoesNotDependOnTheSampleStep) {
+    // The original oversampled at 1/35 s or less; OpenMM2 defaults to 1/60.
+    for (const CarSimParams& p : {bugParams(), stiffTyreParams()}) {
+        const float ref = launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 240.0f);
+        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, kFixedSampleStep), ref, 0.05f * ref);
+        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 120.0f), ref, 0.05f * ref);
+    }
+}
+
+TEST(Drivetrain, MatchesMm1ExplicitSpinWhereThatIsStable) {
+    // MM1 build 1560 couples wheel and tyre explicitly; at small steps that
+    // is stable, and both solvers converge to the same launch.
+    for (const CarSimParams& p : {bugParams(), stiffTyreParams()}) {
+        const float mm1 = launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 240.0f, true);
+        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 240.0f), mm1, 0.03f * mm1);
+        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, kFixedSampleStep), mm1, 0.08f * mm1);
+    }
+}
+
+TEST(Drivetrain, RetailOpponentTunesLaunchLikeThePlayerCars) {
+    MM2_REQUIRE_GAME_DATA();
+    // MM1-layout gearboxes with stiff, front OptimumSlipPercent 0.01 tyres.
+    for (const char* name : {"vpcoop", "vpbug", "vpcaddie", "vppanoz", "vpmustang99", "vpcop"}) {
+        auto opp = retailCar(std::string(name) + "_opp");
+        auto player = retailCar(name);
+        ASSERT_TRUE(opp && player) << name;
+        const float vOpp = launchSpeedMph(opp->first, opp->second, 4.0f, kFixedSampleStep);
+        const float vPlayer = launchSpeedMph(player->first, player->second, 4.0f, kFixedSampleStep);
+        EXPECT_GT(vOpp, 30.0f) << name;
+        EXPECT_GT(vOpp, 0.5f * vPlayer) << name;
+    }
 }

@@ -66,10 +66,28 @@ public:
     // Friction coefficient for a slip ratio (the curve used by update()).
     float frictionForSlip(float slip, bool lateral) const;
 
-    // mmWheel::ComputeDwtdw: probes the ground, updates suspension and load,
-    // and returns the tyre torque slope d(net)/d(w) (also in A), the wheel
-    // speed B beyond which the tyre saturates, and the slope past B (C = 0).
-    float computeDwtdw(float net, float& A, float& B, float& C, const WheelEnv& env);
+    // mmWheel::ComputeDwtdw, split in two so that the drivetrain can evaluate
+    // the tyre torque between the halves (MM1 calls it after summing the
+    // torques; nothing in the first half depends on them).
+    //
+    // probe(): the ground probe, suspension and load, and the contact
+    // velocity along the wheel's heading (contactForwardVel). Returns hit.
+    bool probe(const WheelEnv& env);
+    // computeLimits(): the wheel speed B at which the slip reaches the
+    // optimum (the drivetrain's breakpoint), the tyre torque slope
+    // d(TireResistance)/d(w) below it (A, also returned) and past it (C = 0).
+    // MM1 build 1560 discards the slope (Drivetrain::mm1ExplicitSpin); ours
+    // is the exact per-sample slope of the tyre model (see Wheel.cpp).
+    float computeLimits(float net, float& A, float& B, float& C, const WheelEnv& env) const;
+
+    // OpenMM2: the TireResistance update() would produce this sample if the
+    // wheel kept its current speed (same operations as update(); valid after
+    // probe()). The drivetrain's implicit step is linearised about it.
+    float predictTireResistance(const WheelEnv& env) const;
+
+    // Surface friction: material x WeatherFriction (outdoors), adjusted by
+    // CarFrictionHandling below 1 (mmWheel::Update).
+    float surfaceFriction(const WheelEnv& env) const;
 
     // mmWheel::Update: tyre forces (applied to `ics`) and visual state.
     void update(InertialCS& ics, const WheelEnv& env);
@@ -131,8 +149,9 @@ public:
     float suspension = 0.0f;         // compression from rest (m)
     float suspensionVelocity = 0.0f; // dword1E4
     float currentLoad = 0.0f;
-    float rollingRotation = 0.0f; // MaybeGrip: forward speed / -radius
-    float rotation = 0.0f;        // accumulated spin (visual)
+    float rollingRotation = 0.0f;   // MaybeGrip: forward speed / -radius
+    float contactForwardVel = 0.0f; // probe(): contact velocity along the heading
+    float rotation = 0.0f;          // accumulated spin (visual)
     float wobble = 0.0f;
     Vec3 planeVelocity; // field_178: contact velocity in the ground plane
     Vec3 skidVelocity;  // field_16C: for skid marks

@@ -34,9 +34,10 @@ aero, force and drivetrains, whose children are the wheels):
    Bodies linked by a joint skip this (`ICS_CONSTRAIN_LINK`); right after
    the free bodies, each `Joint3Dof::update` integrates its two bodies
    together (see [Trailers](#trailers-joint3dof-and-mmtrailer)).
-3. `afterIntegrate`: axles (visual), gyro, aero, then each drivetrain solves
-   its wheel speed and updates its wheels, which accumulate suspension and
-   tyre forces for the next sample; then `mmStuck::Update`.
+3. `afterIntegrate`: axles (visual), gyro, aero, then each drivetrain probes
+   its wheels (suspension, load), solves its wheel speed and updates its
+   wheels, which accumulate suspension and tyre forces for the next sample;
+   then `mmStuck::Update`.
 4. Collisions (OpenMM2), impact reports.
 
 The original oversampled: n = min(floor(frame / SampleStep) + 1, MaxSamples)
@@ -103,23 +104,121 @@ original in the last bit.
 
 ### Drivetrain / Freetrain (vehDrivetrain)
 
-The engine-driven drivetrain integrates the shared wheel speed implicitly,
-w' = w + dt·(−net)/(I + dt·D), where net = torque × ratio − Σ tyre resistance
-and brakes. D = 300 + Σ tyre slopes; the step stops at each wheel's
-saturation speed B and continues with that wheel's slope removed. Brakes hold
-a stopped wheel and never reverse a spinning one. **Ported**
-(`mmDrivetrain::Update`), with these MM2 mappings:
+The engine-driven drivetrain integrates the shared wheel speed with one
+linearly implicit step, w' = w + dt·(−net)/(I + dt·D), where net = torque ×
+ratio − Σ tyre torque (TireResistance) and brakes. D = 300 + Σ tyre slopes;
+the step stops at each wheel's optimum-slip speed B and continues with that
+wheel's slope removed. Brakes hold a stopped wheel and never reverse a
+spinning one. **Ported** (`mmDrivetrain::Update`), with these MM2 mappings
+and one OpenMM2 change to the tyre coupling (next section):
 
 | Field | Use | Evidence |
 |---|---|---|
 | BrakeDynamicCoef, BrakeStaticCoef | brake torque coefficient = AngInertia × coef (MM1: 2·mass and 2.4·mass, i.e. ratio 1.2 = BrakeStaticCoef/BrakeDynamicCoef) | MM2 adaptation (medium) |
 | AngInertia | inertia = AngInertia × 0.01 + 0.2 × Engine.AngInertia × ratio² attached, AngInertia × 0.005 free (MM1: mass × (0.02 + 0.0002 ratio²) / mass × 0.01; identical for MM2's typical 2000 = 2 × 1000 kg) | MM2 adaptation (inferred); MM1-layout files default to 2·mass |
-| (tyre slope) | MM1 computes min(R²(RubberSpring + RubberDamp/dt), R²/\|V\| · 2·StaticFric/s0 · load) but build 1560 discards it (A = C = 0). Heavy MM2 tunes diverge without it, so we use it below B (A) and drop it past B (C = 0) | **Deviation** from MM1 1560; formula ported |
+| (tyre slope, tyre torque) | slope R²(RubberSpring·dt + RubberDamp) per wheel below B, 0 past it; net uses the tyre torque at the current wheel speed and body velocity (`Wheel::predictTireResistance`). MM1 1560 uses D = 300 and the previous sample's TireResistance | **Deviation** from MM1 1560 (see below); `CarSimOptions::mm1ExplicitSpin` / `simcar --mm1-spin` restore MM1 |
+| (wheels in the solve) | every wheel of the drivetrain. MM1 calls `ComputeDwtdw` for wheel 0, and for wheel 1 only when there are exactly two, so a four-wheel drivetrain would probe one wheel; MM1's tunes have none, MM2's 4WD cars need them all | MM2 adaptation |
 | (brake split) | MM1: front drivetrains feel only the foot brake, back ones only the handbrake. We apply the foot brake to all and max(foot, handbrake × HandbrakeCoef) to the back | MM2 adaptation (inferred; MM2 gives every wheel BrakeCoef and HandbrakeCoef) |
+
+#### Wheel spin and the stiff `*_opp` tyres
+
+Most retail opponent tunes (`tune/vehicle/*_opp.vehCarSim`) have stiff,
+heavily damped tyres (TireDispLimit 0.075, TireDampCoef 0.75; the player
+tunes have 0.125 and 0.25), several with front OptimumSlipPercent 0.01 and
+an MM1-layout gearbox. They once took 25 s to reach 60 mph (vpcoop_opp:
+7.5 mph at 4 s, still in first gear) while their top speed was right. The
+tyre model was not at fault; the drivetrain coupling was.
+
+What MM1 does (`code/midtown/game.asm`, Open1560):
+
+- `mmWheel::ComputeDwtdw` computes a slope at `loc_47E095`:
+  `([ARTSPTR+140h] (1/dt) · RubberDamp + RubberSpring) · Radius²`, the
+  minimum of that and `Radius²/|V| · StaticFric · FricMultiplier · 2 /
+  OptimumSlipPercent · BlendedLoad`, and the breakpoint B. Every return
+  path then stores 0 to `*A` and `*C` and returns `flt_61C6D8` = 0.0 (e.g.
+  `loc_47E37A`: `mov [eax], edi; mov [ecx], edi; fld flt_61C6D8`). The slope
+  is dead code.
+- `mmDrivetrain::Update` sums the wheels' `TireResistance` (`+208h`, written by
+  the previous sample's `mmWheel::Update` as TireGripLong · Radius;
+  `loc_47FFFC`), adds 300 to the returned slopes (`fsub flt_61C800`, −300.0)
+  and steps `rot0 + dt · (−net) / (dt · D + I)` (`loc_480188`).
+
+So MM1 couples wheel and tyre explicitly, with D = 300. An earlier OpenMM2
+used the computed slope as A, because the explicit coupling diverges with
+MM2's stiffer tyres at 60 Hz. That slope has the wrong units: one sample
+moves the tyre displacement by R·Δw·dt, so the tyre torque changes by
+R²(RubberSpring·dt + RubberDamp) per rad/s, and MM1's first term is that
+divided by dt (a torque per radian). With the previous sample's tyre torque
+in net, a steady acceleration α then needs drive − Σ TireResistance =
+α (I + dt·D): dt·D acts as extra wheel inertia, R²(RubberSpring·dt +
+RubberDamp) per wheel (until MM1's friction-curve term, ∝ 1/|V|, takes over
+at speed), which does not vanish as dt → 0. At 1/60 s that was about
+1600 kg·m² on vpcoop_opp's driven pair against I ≈ 108 (1200 of it from
+RubberDamp), and about 800 on each free rear wheel against its own 10, so
+the car launched at about a tenth of the expected rate. The player tunes
+carried 540–1470 kg·m² per driven pair against I = 100–250 (0-60 times
+15–35 % slow, worse at larger steps).
+
+OpenMM2 now (**deviation**, OpenMM2):
+
+1. The slope is the exact per-sample one, R²(RubberSpring·dt + RubberDamp),
+   applied below B and removed past it (C = 0) as MM1's piecewise solve
+   intends. MM1's friction-curve term is not used: with MM1's BlendedLoad for
+   car wheels (0.5·CurrentLoad + 0.5·OtherNormalLoad, which the constructor
+   sets to 0.25 and nothing changes) it undercuts the tyre's per-sample slope
+   above walking pace and the step turns partly explicit again (vppanoz_opp
+   then passes its rev-limited top speed by 40 mph).
+2. net uses the tyre torque `mmWheel::Update` would produce this sample at the
+   unchanged wheel speed (`Wheel::predictTireResistance`, the same
+   operations), so the implicit term only damps the step: in a steady
+   acceleration the wheel is resisted by I + dt·300, exactly as in MM1. To
+   allow this the wheel probe (`ComputeDwtdw`'s first half, which does not use
+   net) runs before the torques are summed (`Wheel::probe`,
+   `Wheel::computeLimits`).
+
+The result converges to MM1's explicit solve where that is stable: at
+1/240 s, `--mm1-spin` and the new solve agree within about 3 % on 0-60 mph
+(4–5 % for the four-wheel-drive vpford_opp and vp4x4_opp; tests
+`Drivetrain.*`), and the new solve at 1/60 s is close to both (0-60 mph, s,
+`simcar`; vpcop's launch depends on the step in MM1 too, through the
+crossing of B):
+
+| car | before (1/60) | new 1/60 | new 1/165 | MM1 explicit 1/60 | MM1 explicit 1/240 |
+|---|---|---|---|---|---|
+| vpbug | 6.83 | 4.67 | 4.66 | 4.80 | 4.62 |
+| vpcoop | 8.35 | 6.12 | 5.62 | 6.07 | 5.63 |
+| vpmustang99 | 4.97 | 3.00 | 3.01 | 3.15 | 2.99 |
+| vpcop | 3.15 | 2.08 | 2.89 | 2.40 | 3.29 |
+| vp4x4 | 5.43 | 3.63 | 3.56 | diverges | 3.56 |
+| vpcoop_opp | 25.65 | 5.70 | 5.56 | 6.58 | 5.87 |
+| vpbug_opp | 23.75 | 5.47 | 5.06 | 5.88 | 4.98 |
+| vpcaddie_opp | 6.90 | 4.92 | 4.41 | diverges | 4.39 |
+| vppanoz_opp | 17.35 | 5.02 | 4.53 | 3.98 (top 66 mph) | 4.34 |
+| vpmustang99_opp | 8.68 | 4.88 | 4.57 | diverges | 4.52 |
+| vpcop_opp | 8.63 | 4.92 | 4.58 | diverges | 4.54 |
+| vpdb7_opp | n/a | 3.37 | 3.12 | diverges | 3.24 |
+| vpford_opp | 15.23 | 9.10 | 6.24 | diverges | 5.53 |
+| vpsemi_opp | 9.97 | 9.08 | 8.84 | 9.00 | 8.97 |
+
+The player cars' top speeds are unchanged (gear-limited). vpford_opp (and vp4x4_opp) stay
+slow at 1/60 s for another reason: their stiff lateral tyres (RubberSpring
+≈ 350 kN/m) chatter in yaw against the explicitly integrated body; at 1/35 s
+every stiff `*_opp` tune does (see Known gaps).
+
+Evidence that tyres this stiff are genuine: `vpcab_opp.vehCarSim` is a dump
+from an engine between MM1 and MM2 (MM1's `dyn_coeff 2600` and `stat_coeff
+3120` = 2 and 2.4 × its Mass 1300, next to AngInertia 2000) and gives
+`RubberSuspensionSpring 120000`, `RubberDamp 9000` and OptimumSlipPercent
+0.01. Under our mapping, TireDampCoef 0.75 at that stiffness is
+9000 / (2√(120000 · 1300/4)) ≈ 0.72, close to the files' 0.75 (inferred).
+TireDispLimit 0.075 maps to 120 kN/m only if the static load uses g = 9.8
+rather than MM1's 19.8; with 19.8 the `*_opp` tyres come out twice as stiff
+(inferred, open; see Known gaps).
 
 ### Wheel (vehWheel)
 
-**Ported** (`mmWheel::Update`, `ComputeDwtdw`, `ComputeConstants`, `Init`):
+**Ported** (`mmWheel::Update`, `ComputeDwtdw` (as `probe` + `computeLimits`),
+`ComputeConstants`, `Init`):
 probe from the top of travel to full droop; suspension load = Spring·s +
 Damping·ṡ (ṡ clamped ±3 m/s) + static load, projected on the ground normal;
 tyre displacement per direction moves with the slip velocity towards
@@ -263,6 +362,13 @@ ball joint with approximate torques):
 | full brake at 12 s | vpsemi 48.7 → 7.4 mph in 1 s, then its speed reads 40 mph at 15.5 s while it stays within 1 m (the bodies thrash); vpcentury was doing 3.8 mph | vpsemi 60.1 → 1.0 mph and vpcentury 47.5 → 6.5 mph in 1 s; hitch angle ≤ 0.3° (≤ 3.7° with steer 0.15), upright |
 | `--step 1/35`, steer 0.15 | — | max gap < 1 mm |
 
+(These were measured before the [wheel spin fix](#wheel-spin-and-the-stiff-_opp-tyres).
+Since then vpsemi does 0–60 mph in 9.83 s (¼ mile 17.33 s) and vpcentury in
+17.87 s (19.73 s), same top speeds; max hitch gap ≤ 0.3 mm and hitch angle
+≤ 0.9° at full throttle, 1.5° / 2.7° in the steady circle, and a full brake
+at 12 s takes vpsemi from 64.1 to 2.4 mph and vpcentury from 52.7 to 3.5 mph
+in 1 s.)
+
 Reversing with a trailer is unstable, as in reality: holding the brake (auto
 reverse) at 20 mph jackknifes vpcentury past 90°, and the trailer then passes
 through the cab because the linked bodies do not collide.
@@ -290,26 +396,29 @@ trailers.
 
 | car | drive | mass | hp | High (mph) | 0-60 (s) | 1/4 mile (s) | top (mph) | .info Top Speed |
 |---|---|---|---|---|---|---|---|---|
-| vp4x4 | 4WD | 2500 | 550 | 85 | 5.43 | 14.52 | 85.2 | 57 |
-| vpauditt | RWD | 1300 | 551 | 120 | 3.73 | 11.73 | 120.3 | 182 |
-| vpbug | FWD | 1000 | 260 | 90 | 6.83 | 15.15 | 90.1 | 91 |
-| vpbullet | RWD | 1300 | 550 | 110 | 4.83 | 13.12 | 110.2 | 137 |
-| vpbus | RWD | 5000 | 450 | 83 | n/a | 22.83 | 53.9 | 60 |
-| vpcab | RWD | 1000 | 300 | 95 | 5.03 | 13.53 | 95.2 | 103 |
-| vpcaddie | RWD | 1300 | 550 | 110 | 4.42 | 12.80 | 110.3 | 136 |
-| vpcentury | RWD | 3500 | 750 | 75 | 20.48 | 21.43 | 71.1 | 91 |
-| vpcoop | FWD | 800 | 250 | 80 | 8.35 | 16.63 | 80.2 | 60 |
-| vpcoop2k | FWD | 800 | 300 | 108 | 6.27 | 14.92 | 107.5 | 115 |
-| vpcop | RWD | 1300 | 750 | 140 | 3.15 | 10.47 | 140.5 | 160 |
-| vpdb7 | FWD | 1573 | 550 | 150 | 5.07 | 13.52 | 150.2 | 206 |
-| vpddbus | RWD | 4915 | 456 | 65 | 19.98 | 22.00 | 62.0 | 25 |
-| vpdune | FWD | 1000 | 400 | 106 | 5.23 | 13.58 | 106.1 | 170 |
-| vpford | RWD | 2500 | 550 | 85 | 6.22 | 15.22 | 85.2 | 58 |
-| vpmustang99 | RWD | 1300 | 500 | 115 | 4.97 | 13.15 | 115.3 | 160 |
-| vppanoz | FWD | 1300 | 650 | 151 | 3.80 | 11.72 | 151.1 | 216 |
-| vppanozgt | RWD | 1200 | 902 | 180 | 3.13 | 10.40 | 176.1 | 240 |
-| vpsemi | RWD | 3500 | 896 | 85 | 11.95 | 18.85 | 80.5 | 69 |
-| vpvwcup | FWD | 1000 | 550 | 122 | 3.95 | 11.85 | 122.1 | 194 |
+| vp4x4 | 4WD | 2500 | 550 | 85 | 3.63 | 13.00 | 85.2 | 57 |
+| vpauditt | RWD | 1300 | 551 | 120 | 2.67 | 10.68 | 120.3 | 182 |
+| vpbug | FWD | 1000 | 260 | 90 | 4.67 | 13.40 | 90.1 | 91 |
+| vpbullet | RWD | 1300 | 550 | 110 | 2.75 | 11.08 | 110.3 | 137 |
+| vpbus | RWD | 5000 | 450 | 83 | n/a | 20.32 | 53.9 | 60 |
+| vpcab | RWD | 1000 | 300 | 95 | 4.02 | 12.68 | 95.2 | 103 |
+| vpcaddie | RWD | 1300 | 550 | 110 | 2.70 | 11.17 | 110.3 | 136 |
+| vpcentury | RWD | 3500 | 750 | 75 | 17.87 | 19.73 | 71.1 | 91 |
+| vpcoop | FWD | 800 | 250 | 80 | 6.12 | 14.88 | 80.2 | 60 |
+| vpcoop2k | FWD | 800 | 300 | 108 | 4.53 | 13.37 | 107.6 | 115 |
+| vpcop | RWD | 1300 | 750 | 140 | 2.08 | 9.33 | 140.5 | 160 |
+| vpdb7 | FWD | 1573 | 550 | 150 | 2.72 | 11.12 | 150.2 | 206 |
+| vpddbus | RWD | 4915 | 456 | 65 | 12.80 | 18.83 | 62.0 | 25 |
+| vpdune | FWD | 1000 | 400 | 106 | 2.93 | 11.40 | 106.1 | 170 |
+| vpford | RWD | 2500 | 550 | 85 | 4.05 | 13.47 | 85.2 | 58 |
+| vpmustang99 | RWD | 1300 | 500 | 115 | 3.00 | 11.23 | 115.3 | 160 |
+| vppanoz | FWD | 1300 | 650 | 151 | 2.32 | 10.13 | 151.1 | 216 |
+| vppanozgt | RWD | 1200 | 902 | 180 | 2.33 | 9.62 | 176.1 | 240 |
+| vpsemi | RWD | 3500 | 896 | 85 | 9.83 | 17.33 | 80.5 | 69 |
+| vpvwcup | FWD | 1000 | 550 | 122 | 2.27 | 10.47 | 122.1 | 194 |
+
+(Before the wheel spin fix above the 0-60 times were 15–35 % longer, e.g.
+vpbug 6.83 s, vpcoop 8.35 s, vpsemi 11.95 s; top speeds were the same.)
 
 Almost every car tops out at its High gear speed (MaxRPM in top gear), which
 supports the gear-speed interpretation. The bus (drag) does not, and the two
@@ -325,9 +434,17 @@ trucks reach 71–81 mph with their trailers (High 75 and 85).
   (vpsemi, vpcentury) are not simulated; like the trailers' TWHL4/5, MM2
   keeps only their offset from WHL2/3 (vehCarSim BackBackLeft/RightWheelPosDiff
   in mm2hook's layout), which suggests they are drawn, not simulated.
-- Three opponent tunes (vpcoop_opp, vpcoop2k_opp, vppanoz_opp) have front
-  OptimumSlipPercent 0.01 and barely accelerate. MM2 may drive opponents with
-  a simpler model (MM1 had mmCarSimCheap/mmWheelCheap).
+- The wheel spin solve deviates from MM1 1560 (see
+  [Wheel spin](#wheel-spin-and-the-stiff-_opp-tyres)); MM2's own vehDrivetrain
+  is unknown (mm2hook lists no ComputeDwtdw for vehWheel, and its layout
+  has DispLongRate/DispLimitLongLoaded-style members instead of RubberSpring,
+  so MM2's tyre may differ in form, not only in tuning).
+- The stiffest `*_opp` tyres (vpford_opp, vp4x4_opp: lateral RubberSpring
+  ≈ 350 kN/m) chatter in yaw at 1/60 s and every stiff `*_opp` tune does at
+  1/35 s (MM1's largest sample step): the lateral tyre force is coupled
+  explicitly to the body. Whether MM2 sampled faster, or whether
+  TireDispLimit should map with g = 9.8 (halving these stiffnesses, see the
+  vpcab_opp note), is open.
 - Gyro and axle coupling are approximations and disabled.
 - MM1-specific mechanisms not carried over because MM2's vehCarSim has no
   fields for them: SpinState drift/spin friction multipliers, weight
