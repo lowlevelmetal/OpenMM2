@@ -7,6 +7,7 @@
 #include "city/CityData.h"
 #include "game/Profile.h"
 #include "game/RaceConfig.h"
+#include "ui/MenuLayout.h"
 #include "ui/Text.h"
 #include "ui/TextureCache.h"
 #include "ui/Widgets.h"
@@ -47,8 +48,10 @@ public:
     ui::TextureCache textures;
     ui::TextRenderer text;
     ui::NavReader navReader;
+    ui::MenuLayout layout; // tune/widget.csv + tune/menu.csv
     game::ProfileStore store;
     game::Progress progress;
+    game::HallOfFame hallOfFame; // <players dir>/records.ini
     std::optional<game::Profile> profile;
     std::vector<city::CityInfo> cities;
     std::vector<std::vector<city::RaceDefinition>> races; // per city, parallel to `cities`
@@ -80,6 +83,14 @@ public:
 
     // Fills `config` from the profile's last choices.
     void configFromProfile();
+    // Applies the selected race's default environment (MM2
+    // `RaceMenuBase::SetStateRace`) for `cfg.difficulty`.
+    void applyRaceDefaults(game::RaceConfig& cfg) const;
+    // Name of the race `cfg` describes ("Cruise" etc. for the modes without races).
+    std::string raceName(const game::RaceConfig& cfg) const;
+    // Records a finished race in the driver's profile and the race records;
+    // returns the reward it announces.
+    std::optional<game::Reward> recordResult(const game::RaceResult& result);
     // Starts the session described by `config`.
     void startRace();
 
@@ -108,7 +119,7 @@ std::unique_ptr<Page> makeCustomizeControlsPage(Frontend& fe);
 std::unique_ptr<Page> makeAboutPage(Frontend& fe);
 std::unique_ptr<Page> makeCrashIntroPage(Frontend& fe);
 std::unique_ptr<Page> makeCrashCoursePage(Frontend& fe, std::string city);
-std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::vector<game::Reward> earned);
+std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::optional<game::Reward> reward);
 std::unique_ptr<Page> makeSessionsPage(Frontend& fe);
 // Multiplayer (PagesMulti.cpp).
 std::unique_ptr<Page> makeHostOptionsDialog(Frontend& fe);
@@ -119,6 +130,38 @@ std::unique_ptr<Page> makeEjectDialog(Frontend& fe);
 // Automation helpers: host with the current config / join an address.
 bool frontendHostSession(Frontend& fe);
 void frontendJoinSession(Frontend& fe, const std::string& address, const std::string& password);
+
+// MM2's menu ids: the first column of tune/menu.csv and the second of
+// tune/widget.csv (the UIMenu constructor arguments in MM2
+// `mmInterface::mmInterface`). Widget positions are looked up with these and
+// the widget's creation index in the original menu (ui::MenuLayout).
+namespace menu_id {
+inline constexpr int kNavBar = 0;
+inline constexpr int kMain = 1;
+inline constexpr int kOptions = 2;
+inline constexpr int kAudio = 3;
+inline constexpr int kGraphics = 4;
+inline constexpr int kControl = 5;
+inline constexpr int kRace = 7;
+inline constexpr int kVehicle = 8;
+inline constexpr int kShowcase = 9;
+inline constexpr int kNetSelect = 10;
+inline constexpr int kHostRace = 11;
+inline constexpr int kNetArena = 12;
+inline constexpr int kNewDriver = 17;
+inline constexpr int kDriverRecord = 19;
+inline constexpr int kHallOfFame = 20;
+inline constexpr int kRaceEnvironment = 22;
+inline constexpr int kLocked = 23;
+inline constexpr int kQuit = 27;
+inline constexpr int kDeleteDriver = 28;
+inline constexpr int kDuplicateDriver = 29;
+inline constexpr int kDefaults = 31;
+inline constexpr int kAbout = 34;
+inline constexpr int kCrashCourse = 39;
+inline constexpr int kCrashIntro = 40;
+inline constexpr int kControlCustom = 41;
+} // namespace menu_id
 
 // Common layout positions recovered from the art (see docs/frontend.md).
 namespace layout {

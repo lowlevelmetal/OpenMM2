@@ -18,11 +18,12 @@ namespace frontend {
 // --- Frontend --------------------------------------------------------------------------
 
 Frontend::Frontend(Context& c)
-    : ctx(c), textures(c.device(), c.game->vfs), text(c.device()), store(game::ProfileStore::defaultDir()),
-      progress(game::Progress::load(c.game->vfs)) {
+    : ctx(c), textures(c.device(), c.game->vfs), text(c.device()), layout(ui::MenuLayout::load(c.game->vfs)),
+      store(game::ProfileStore::defaultDir()), progress(game::Progress::load(c.game->vfs)) {
     cities = city::listCities(c.game->vfs);
     for (const auto& info : cities)
         races.push_back(city::listRaces(c.game->vfs, info));
+    hallOfFame.load(store.dir() / "records.ini");
 }
 
 void Frontend::push(std::unique_ptr<Page> page) { m_pages.push_back(std::move(page)); }
@@ -120,6 +121,94 @@ void Frontend::configFromProfile() {
     config.laps = p.laps;
 }
 
+void Frontend::applyRaceDefaults(game::RaceConfig& cfg) const {
+    using game::GameMode;
+    if (cfg.mode == GameMode::Cruise) {
+        // RaceMenuBase::SetStateRace for cruise.
+        cfg.timeOfDay = game::TimeOfDay::Noon;
+        cfg.weather = game::Weather::Clear;
+        cfg.pedestrianDensity = 0.25f;
+        cfg.trafficDensity = 0.5f;
+        cfg.copDensity = 1.0f;
+        return;
+    }
+    const auto list = racesFor(cfg.mode, cfg.city);
+    if (cfg.raceIndex < 0 || cfg.raceIndex >= static_cast<int>(list.size()))
+        return;
+    const auto* def = list[static_cast<std::size_t>(cfg.raceIndex)];
+    if (!def->settings)
+        return;
+    const auto& s = cfg.difficulty == game::Difficulty::Professional ? def->settings->professional
+                                                                       : def->settings->amateur;
+    cfg.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
+    cfg.weather = static_cast<game::Weather>(std::clamp(s.weather, 0, 3));
+    cfg.pedestrianDensity = std::clamp(s.pedDensity, 0.0f, 1.0f);
+    if (cfg.mode == GameMode::CrashCourse) {
+        // Lessons: the lesson table's time, weather and pedestrians, no
+        // traffic, all cops (mmInterface::Update, Crash Course GO).
+        cfg.trafficDensity = 0.0f;
+        cfg.copDensity = 1.0f;
+        cfg.opponents = 0;
+        return;
+    }
+    cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
+    // MM2 keeps the race's cop count in the cop density; OpenMM2's densities
+    // are 0..1, so the count is clamped (the slider shows full either way).
+    cfg.copDensity = std::clamp(static_cast<float>(s.cops), 0.0f, 1.0f);
+    if (cfg.mode == GameMode::Checkpoint) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = 1;
+    } else if (cfg.mode == GameMode::Circuit) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = std::max(1, s.numLaps);
+    }
+}
+
+std::string Frontend::raceName(const game::RaceConfig& cfg) const {
+    const auto& s = ctx.game->strings;
+    switch (cfg.mode) {
+    case game::GameMode::Cruise: return s.get(80, "Cruise");
+    case game::GameMode::CopsAndRobbers: return s.get(79, "Cops & Robbers");
+    case game::GameMode::CrashCourse: return s.get(78, "Crash Course");
+    default: break;
+    }
+    const auto list = racesFor(cfg.mode, cfg.city);
+    if (cfg.raceIndex >= 0 && cfg.raceIndex < static_cast<int>(list.size()))
+        return list[static_cast<std::size_t>(cfg.raceIndex)]->name;
+    return {};
+}
+
+std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& result) {
+    if (!profile)
+        return std::nullopt;
+    game::RaceConfig defaults = result.config;
+    applyRaceDefaults(defaults);
+    if (!game::Progress::recordable(result.config, defaults))
+        return std::nullopt;
+    auto reward = progress.record(*profile, result);
+    // The race records (mmMiscData::NewRecord): races only; a circuit enters
+    // every lap's time, the score with the first.
+    const auto& cfg = result.config;
+    const std::string mode = game::modeKey(cfg.mode);
+    const bool race = cfg.mode == game::GameMode::Blitz || cfg.mode == game::GameMode::Checkpoint ||
+                      cfg.mode == game::GameMode::Circuit;
+    if (race && result.finished) {
+        const int score = std::max(0, result.score);
+        if (cfg.mode == game::GameMode::Circuit && !result.lapSeconds.empty()) {
+            for (std::size_t i = 0; i < result.lapSeconds.size(); ++i)
+                hallOfFame.submit(cfg.difficulty, cfg.city, mode, cfg.raceIndex,
+                                  {profile->name, cfg.vehicle, result.lapSeconds[i], i == 0 ? score : 0});
+        } else {
+            hallOfFame.submit(cfg.difficulty, cfg.city, mode, cfg.raceIndex,
+                              {profile->name, cfg.vehicle, result.timeSeconds, score});
+        }
+        if (!hallOfFame.save(store.dir() / "records.ini"))
+            log::warn("frontend: cannot save the race records");
+    }
+    saveProfile();
+    return reward;
+}
+
 void Frontend::startRace() {
     // In a multiplayer lobby the vehicle page's GO DRIVE only picks the car;
     // the host starts the race for everyone.
@@ -166,8 +255,8 @@ void Frontend::update(double dt) {
     Page* page = top();
     if (!page)
         return;
-    const render::UiLayout layout = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
-    const ui::NavInput nav = navReader.read(ctx.input, layout, dt);
+    const render::UiLayout screen = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
+    const ui::NavInput nav = navReader.read(ctx.input, screen, dt);
     ui::UiFrame f{*ctx.overlay, textures, text, nav, time};
     page->update(*this, dt);
     if (top() == page)
@@ -557,12 +646,8 @@ public:
             m_fe.config = result->config;
             m_fe.push(frontend::makeDriverPage(m_fe));
             m_fe.push(frontend::makeRacesPage(m_fe));
-            std::vector<game::Reward> earned;
-            if (recordable(*result))
-                earned = m_fe.progress.record(*m_fe.profile, *result);
-            m_fe.profile->lastRace = raceName(*result);
-            m_fe.saveProfile();
-            m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(earned)));
+            auto reward = m_fe.recordResult(*result);
+            m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(reward)));
             if (auto* music = ctx.music())
                 music->setState(audio::MusicState::Results);
         } else if (m_script.active()) {
@@ -610,30 +695,6 @@ private:
         up.key.down = false;
         // Release on the next frame so keyDown() is seen once.
         SDL_PushEvent(&up);
-    }
-
-    // The driver record says statistics are kept "for races under default
-    // conditions only": customised laps or opponents are not recorded.
-    bool recordable(const game::RaceResult& r) {
-        const auto races = m_fe.racesFor(r.config.mode, r.config.city);
-        if (r.config.mode == game::GameMode::CrashCourse || r.config.mode == game::GameMode::Cruise)
-            return true;
-        if (r.config.raceIndex < 0 || r.config.raceIndex >= static_cast<int>(races.size()))
-            return false;
-        const auto* def = races[static_cast<std::size_t>(r.config.raceIndex)];
-        if (!def->settings)
-            return true;
-        const auto& s = r.config.difficulty == game::Difficulty::Professional ? def->settings->professional
-                                                                               : def->settings->amateur;
-        const bool lapsDefault = r.config.mode != game::GameMode::Circuit || s.numLaps <= 0 || r.config.laps == s.numLaps;
-        return lapsDefault && r.config.opponents == s.opponents;
-    }
-
-    std::string raceName(const game::RaceResult& r) {
-        const auto races = m_fe.racesFor(r.config.mode, r.config.city);
-        if (r.config.raceIndex >= 0 && r.config.raceIndex < static_cast<int>(races.size()))
-            return races[static_cast<std::size_t>(r.config.raceIndex)]->name;
-        return frontend::modeDisplayName(m_fe, r.config.mode);
     }
 
     Frontend m_fe;

@@ -1,46 +1,52 @@
 #pragma once
 
-// Driver profiles ("Select Driver" in the frontend) and the unlock rules that
-// depend on them. The original's save format is not known, so profiles use
-// OpenMM2's own INI format (see docs/frontend.md):
+// Driver profiles ("Select Driver" in the frontend) and the progress rules
+// that depend on them: which races and lessons are open, what a finish
+// records and which vehicles and paint jobs are unlocked.
+//
+// The rules follow MM2's own code (mmPlayerData, mmPlayerCityRecord,
+// mmRewardList; see docs/frontend.md). MM2 saves profiles in a binary
+// format; OpenMM2 keeps the same information in its own INI files:
 //
 //   <userDataDir>/players/<file>.ini
-//   [Driver]   Name, Score, LastRace, LastVehicle, NetName
+//   [Driver]   Name, NetName
 //   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race, ...
-//   [Races]    <difficulty>.<city>.<mode>.<index> = <bestPosition>,<bestTimeSeconds>,<wins>
-//   [Crash]    <city>.<lesson> = passed | failed
+//   [Races]    <city>.<mode>.<index> = <time>,<vehicle>,<score>,<passed>
 //
-// mode is one of blitz, circuit, race (checkpoint), crash.
+// mode is one of blitz, circuit, race (checkpoint), crash. Files written by
+// earlier OpenMM2 versions ([Races] keyed by difficulty, [Crash]) are read
+// and converted.
 
 #include "game/RaceConfig.h"
 #include "vfs/Vfs.h"
 
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <map>
 #include <optional>
-#include <set>
 #include <string>
 #include <vector>
 
 namespace mm2::game {
 
+// One race's record (MM2 `mmPlayerRecord`). There is one per race, shared by
+// both difficulties.
 struct RaceRecord {
-    int bestPosition = 0;   // 1-based; 0 = never finished
-    float bestTime = 0.0f;  // seconds; 0 = none
-    int wins = 0;           // times the race was "won" (see Progress::isWin)
+    float time = 0.0f;   // checkpoint/blitz: race time; circuit: best lap; crash: 1
+    std::string vehicle; // the car that set `time`
+    int score = 0;       // best race score
+    bool passed = false; // ever passed; never cleared
 };
 
 struct Profile {
     std::string name;
     std::filesystem::path file; // where it is stored (set by ProfileStore)
-
-    // Driver record (driver's stats screen).
-    int score = 0;
-    std::string lastRace;
-    std::string lastVehicle;
     std::string netName;
+    int order = 0; // creation sequence: MM2 lists drivers in the order they were created
 
-    // Last choices in the menus.
+    // Last choices in the menus. Vehicle/Color, Mode/Race and City are what
+    // MM2 stores as the last car, race and city (saved when a race starts).
     std::string vehicle = "vpbug";
     int vehicleColor = 0;
     bool automatic = true;
@@ -56,13 +62,11 @@ struct Profile {
     int opponents = 3;
     int laps = 3;
 
-    // Progress. Keys as in the file format above.
+    // Records keyed as in the file format above.
     std::map<std::string, RaceRecord> races;
-    std::set<std::string> crashPassed; // "<city>.<lesson>"
-    std::set<std::string> crashFailed; // attempted but never passed
 
-    static std::string raceKey(Difficulty d, std::string_view city, std::string_view mode, int index);
-    const RaceRecord* record(Difficulty d, std::string_view city, std::string_view mode, int index) const;
+    static std::string raceKey(std::string_view city, std::string_view mode, int index);
+    const RaceRecord* record(std::string_view city, std::string_view mode, int index) const;
 
     bool load(const std::filesystem::path& path);
     bool save() const;
@@ -71,13 +75,22 @@ struct Profile {
 // Mode names used in file names and the rewards tables.
 const char* modeKey(GameMode mode); // "blitz", "circuit", "race", "crash", "cruise", "cops"
 
-// Profiles in <userDataDir>/players/.
+// Profiles in <userDataDir>/players/ (MM2 `mmPlayerDirectory`).
 class ProfileStore {
 public:
+    // MM2 `mmInterface::PlayerCreate`: at most 18 drivers, names of up to 18
+    // characters (`Dialog_NewPlayer`).
+    static constexpr int kMaxDrivers = 18;
+    static constexpr std::size_t kMaxNameLength = 18;
+
+    enum class CreateError { None, EmptyName, Duplicate, TooMany, CannotSave };
+
     explicit ProfileStore(std::filesystem::path dir);
 
-    std::vector<Profile> list() const; // sorted by name
-    std::optional<Profile> create(std::string_view name, std::string* error = nullptr);
+    std::vector<Profile> list() const; // in creation order
+    // Fails on an empty name, an exact (case-sensitive) duplicate or when
+    // kMaxDrivers exist.
+    std::optional<Profile> create(std::string_view name, CreateError* error = nullptr);
     bool remove(const Profile& p);
     std::string lastUsed() const;          // name of the last selected driver
     void setLastUsed(std::string_view name);
@@ -89,58 +102,114 @@ private:
     std::filesystem::path m_dir;
 };
 
+// The Race Records ("hall of fame") shared by all drivers: per difficulty,
+// city and race, the five best times and the five best scores (MM2
+// `mmMiscData`, players/<city>/amateur and pro). OpenMM2 stores them in
+// <players dir>/records.ini:
+//
+//   [Index]   <table> = 1, for every table below
+//   [<difficulty>.<city>.<mode>.<index>]   difficulty amateur | pro
+//   time0..time4, score0..score4 = <driver>|<vehicle>|<time>|<score>
+struct HallEntry {
+    std::string driver;
+    std::string vehicle;
+    float time = 0.0f; // 0 = empty slot
+    int score = 0;
+};
+
+class HallOfFame {
+public:
+    static constexpr int kEntries = 5;
+    struct Table {
+        std::array<HallEntry, kEntries> byTime;
+        std::array<HallEntry, kEntries> byScore;
+    };
+
+    static std::string key(Difficulty d, std::string_view city, std::string_view mode, int index);
+
+    // MM2 `mmMiscData::NewRecord`: the entry goes into the time list before
+    // the first slower or empty slot, and into the score list before the
+    // first lower score; the last entry drops out.
+    void submit(Difficulty d, std::string_view city, std::string_view mode, int index, const HallEntry& e);
+    const Table* table(Difficulty d, std::string_view city, std::string_view mode, int index) const;
+
+    bool load(const std::filesystem::path& path);
+    bool save(const std::filesystem::path& path) const;
+
+private:
+    std::map<std::string, Table> m_tables;
+};
+
 // One row of race/<city>/<city>_rewards.csv.
 struct Reward {
     std::string city;
     std::string raceType; // blitz, circuit, race, crash
-    std::string raceNum;  // half, all or a lesson number
+    std::string raceNum;  // half, all or a race/lesson index
     std::string vehicle;
     int variant = 0;      // 0 = unlocks the vehicle, else a paint job index
     std::string message;
 };
 
-// Per-city facts needed by the progress rules (from tune/<city>.cinfo and the
-// race lists).
+// Per-city race counts needed by the progress rules.
 struct CityProgressInfo {
     std::string name; // map name
-    int mustPlace = 3;   // amateur: finishing position that counts as a win
-    int unlockGroup = 3; // races available before any is won (inferred)
-    int blitzCount = 0, circuitCount = 0, checkpointCount = 0, crashCount = 0;
+    int blitzCount = 0, circuitCount = 0, checkpointCount = 0;
+    int crashCount = 13; // MM2 keeps 13 lessons per city
 };
 
-// Unlock and race-availability rules. Evidence: the rewards tables and the
-// lock messages (jpg/vp*_lck*.jpg): amateur drivers must place within
-// MustPlace (1st-3rd), professionals must finish first; "half" means half of
-// the city's races of that type (5 of 10 blitz, 6 of 12 checkpoint), "all"
-// means every race; crash N means passing Crash Course lesson N.
+// Bit i set = race (or lesson) i.
+using RaceMask = std::uint32_t;
+
 class Progress {
 public:
     Progress() = default;
     Progress(std::vector<CityProgressInfo> cities, std::vector<Reward> rewards);
 
-    // Loads tune/*.cinfo and race/<dir>/<dir>_rewards.csv.
+    // Loads the race counts and race/<dir>/<dir>_rewards.csv of every city.
     static Progress load(const vfs::Vfs& vfs);
 
     const std::vector<Reward>& rewards() const { return m_rewards; }
     const CityProgressInfo* city(std::string_view name) const;
-
-    bool isWin(const CityProgressInfo& c, Difficulty d, int position) const;
-    int wins(const Profile& p, std::string_view city, std::string_view mode, Difficulty d) const;
     int raceCount(const CityProgressInfo& c, std::string_view mode) const;
 
-    bool rewardEarned(const Profile& p, const Reward& r) const;
+    RaceMask passedMask(const Profile& p, std::string_view city, std::string_view mode) const;
+    int passedCount(const Profile& p, std::string_view city, std::string_view mode) const;
+
+    // Races of a mode the driver may enter (MM2 `mmInterface::CitySetupCB`):
+    // checkpoint races in groups of three, each group opening when the
+    // previous one is all passed (`mmPlayerData::ResolveCheckpointProgress`);
+    // crash course lessons open, each midterm after its three lessons and the
+    // final after everything else (`ResolveCrashProgress`); blitz and circuit
+    // races all open. Without a driver everything is open.
+    RaceMask openMask(const Profile* p, std::string_view city, std::string_view mode) const;
+    bool raceOpen(const Profile* p, std::string_view city, std::string_view mode, int index) const;
+
+    // A reward row's condition (MM2 `mmRewardList::UnlockPlayerRewards`):
+    // "half" = at least half (rounded down) of the city's races of that mode
+    // passed, "all" = all of them, a number = that race or lesson passed.
+    bool rewardMet(const Profile& p, const Reward& r) const;
+    // Every row naming the vehicle (variant 0) or paint job must be met;
+    // vehicles and paint jobs no row names are always available.
     bool vehicleUnlocked(const Profile& p, std::string_view vehicle) const;
     bool variantUnlocked(const Profile& p, std::string_view vehicle, int variant) const;
-    // The reward that would unlock the vehicle/variant (for lock messages).
-    const Reward* lockingReward(std::string_view vehicle, int variant) const;
 
-    // Number of races of a mode the player may enter (first UnlockGroup,
-    // plus one per race won; inferred). Crash course lessons open one at a
-    // time as the previous one is passed (inferred).
-    int availableRaces(const Profile& p, std::string_view city, std::string_view mode) const;
+    // Whether a finish counts for the records: the race must run under its
+    // default conditions for the driver's difficulty (MM2 game modes'
+    // RegisterFinish checks). `defaults` is `played` with the race's default
+    // settings applied.
+    static bool recordable(const RaceConfig& played, const RaceConfig& defaults);
 
-    // Records a finished race; returns the rewards newly earned by it.
-    std::vector<Reward> record(Profile& p, const RaceResult& result) const;
+    // Records a finish (MM2 `mmPlayerCityRecord::NewRecord`): the best time
+    // with its car, the best score, the passed flag. Returns the reward the
+    // finish announces (`mmRewardList::CheckReward`): the first row of the
+    // mode just driven whose condition is now met and whose vehicle or paint
+    // job was still locked.
+    std::optional<Reward> record(Profile& p, const RaceResult& result) const;
+
+    // Sum of the best scores of a city's blitz, circuit and checkpoint races
+    // (MM2 `mmPlayerData::GetTotalScore`), and over all cities.
+    int totalScore(const Profile& p, std::string_view city) const;
+    int totalScore(const Profile& p) const;
 
 private:
     std::vector<CityProgressInfo> m_cities;

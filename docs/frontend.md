@@ -90,29 +90,61 @@ rendering, audio toggles, controller settings, key bindings) are stored in
 ## Drivers and unlocks
 
 Driver profiles are OpenMM2's own INI files in `<user data>/players/`
-(format documented in `src/game/Profile.h`); the original save format is not
-known.
+(format documented in `src/game/Profile.h`); MM2's binary save files
+(`players.dir`, `player<N>.sav`, per-city `.rec`) are not used, but the
+profiles hold the same information. The rules below are MM2's own code
+(`src/game/Profile.cpp`, tests in `tests/game/test_profile.cpp`).
 
-Unlock rules come from the data:
+**Records** (MM2 `mmPlayerRecord`, `mmPlayerCityRecord::NewRecord`). One
+record per city, mode and race, shared by both difficulties: the best time
+(checkpoint and blitz: race time; circuit: best lap; crash course: 1) with the
+car that set it, the best score and a passed flag that is never cleared.
+A race is passed by an amateur in places 1-3 and by a professional only in
+1st place (checkpoint, circuit); a blitz is passed by reaching the finish in
+time at either difficulty; a lesson by its pass event (the game modes'
+`ProgressCheck` / `RegisterFinish`). `MustPlace` and `UnlockGroup` in
+`tune/<city>.cinfo` are never read by MM2.
 
-* `race/<city>/<city>_rewards.csv` lists every reward: `half` of a mode's
-  races unlocks a vehicle (`VariantNum` 0), `all` unlocks a paint job,
-  `crash,N` is awarded for passing Crash Course lesson N (3, 7, 11 are the
-  midterms, 12 the final). **Verified** against the lock pictures
-  (`jpg/vp*_lck*.jpg`): "place 1st, 2nd, or 3rd in five London Blitz Races",
-  "pass San Francisco Crash Course Midterm Exam Two", etc.
-* A race counts as won within `MustPlace` (3, from `tune/<city>.cinfo`) for
-  amateurs and only in 1st place for professionals (the `_lck_p` pictures
-  say "finish first"). **Verified** by the pictures.
-* Vehicles not in a rewards table are available from the start, giving 12
-  of 20 cars initially. `UnlockScore`/`UnlockFlags` in `tune/*.info` do not
-  line up with the rewards table and are **not used** (meaning unknown).
-* Race availability: the first `UnlockGroup` (3) races of each mode, plus one
-  per race won — **inferred**. Crash Course lessons open in order —
-  **inferred**.
-* Results are recorded only "for races under default conditions" (text of
-  `drec_dlg.jpg`): changing laps or opponents from the race's defaults
-  skips recording. **Verified** rule, implemented in the frontend.
+**When a finish is recorded.** Races at the finish line, also when lost;
+lessons when passed or failed. Nothing is recorded for quitting, a wreck or a
+blitz time-up, in multiplayer, or when the race did not run under its default
+conditions for the driver's difficulty (the `drec_dlg.jpg` text): time of
+day, weather, cops and traffic for every race, plus laps and opponents for
+circuits (`mmSingleRace/Circuit/Blitz::RegisterFinish`). Blitz races from
+index 12 on and lessons from 13 on are never recorded.
+
+**Which races are open** (`mmInterface::CitySetupCB`):
+
+* Checkpoint races in groups of three: 0-2 open; 3-5 once 0-2 are all passed;
+  6-8 once 3-5 are; 9-11 once 6-8 are
+  (`mmPlayerData::ResolveCheckpointProgress`).
+* Crash Course: lessons 0-2, 4-6 and 8-10 are open; midterm 1 (3) after
+  0-2, midterm 2 (7) after 4-6, midterm 3 (11) after 8-10, the final (12)
+  after everything else (`ResolveCrashProgress`).
+* Blitz and circuit races are all open; without a driver everything is.
+
+**Rewards** (`race/<city>/<city>_rewards.csv`, `mmRewardList`). At most 32
+rows per city; the message ends at the next comma. A row's condition, on that
+city's passed races of its mode: `half` = at least half of the races
+(rounded down), `all` = all of them, a number = that race or lesson (0-based)
+passed. Every row naming a vehicle (`VariantNum` 0) or paint job must be met
+before it can be picked; vehicles no row names are always available (12 of
+20). After a finish the first row of the mode just driven, in table order,
+that is now met and whose target was still locked is announced on the
+results screen (`mmRewardList::CheckReward`). `UnlockScore` and
+`UnlockFlags` in `tune/*.info` are parsed by MM2 but never used.
+
+**Score** (`mmGame::CalculateRaceScore`, done by the race session): the car's
+`ScoringBias` × 50 / 25 / 10 for 1st / 2nd / 3rd (blitz counts as 1st) × the
+race's difficulty column. A driver's total is the sum of the best scores of
+all blitz, circuit and checkpoint races in both cities
+(`mmPlayerData::GetTotalScore`).
+
+**Race records** (the main menu's RACE RECORDS, `mmMiscData`): per
+difficulty, city and race the five best times and the five best scores of
+any driver, recorded with the same conditions as the driver's records; a
+circuit enters every lap's time. OpenMM2 stores them in
+`<players dir>/records.ini`.
 
 ## Automation
 

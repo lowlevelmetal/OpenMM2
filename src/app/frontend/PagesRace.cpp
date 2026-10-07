@@ -23,27 +23,6 @@ const char* modeHelp(GameMode m) {
     }
 }
 
-// Applies the default environment of the selected race (amateur or
-// professional row of mm<mode>data.csv).
-void applyRaceDefaults(Frontend& fe) {
-    auto& cfg = fe.config;
-    const auto races = fe.racesFor(cfg.mode, cfg.city);
-    if (cfg.mode == GameMode::Cruise || cfg.raceIndex < 0 || cfg.raceIndex >= static_cast<int>(races.size()))
-        return;
-    const auto* def = races[static_cast<std::size_t>(cfg.raceIndex)];
-    if (!def->settings)
-        return;
-    const bool pro = fe.profile && fe.profile->difficulty == game::Difficulty::Professional;
-    const auto& s = pro ? def->settings->professional : def->settings->amateur;
-    cfg.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
-    cfg.weather = static_cast<game::Weather>(std::clamp(s.weather, 0, 3));
-    cfg.opponents = std::clamp(s.opponents, 0, 7);
-    cfg.laps = s.numLaps > 0 ? s.numLaps : cfg.laps;
-    cfg.pedestrianDensity = std::clamp(s.pedDensity, 0.0f, 1.0f);
-    cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
-    cfg.copDensity = std::clamp(static_cast<float>(s.cops) / 4.0f, 0.0f, 1.0f);
-}
-
 // --- Races ------------------------------------------------------------------------------
 
 class RacesPage final : public Page {
@@ -77,7 +56,7 @@ public:
             [&fe] { return fe.config.mode == GameMode::Cruise ? 0 : fe.config.raceIndex; },
             [&fe](int i) {
                 fe.config.raceIndex = i;
-                applyRaceDefaults(fe);
+                fe.applyRaceDefaults(fe.config);
             });
         m_laps = &menu.add<ui::ValueBox>(
             Box{kBoxX, 100, kBoxSmall, kBoxH}, [] { return numbers(1, 10); },
@@ -97,7 +76,7 @@ public:
             [this, &fe](int i) {
                 fe.config.city = fe.cities[static_cast<std::size_t>(i)].mapName;
                 clampRace(fe);
-                applyRaceDefaults(fe);
+                fe.applyRaceDefaults(fe.config);
             });
         menu.add<ui::ValueBox>(
             Box{kBoxX, 245, kBoxMid, kBoxH},
@@ -151,16 +130,13 @@ private:
             return {modeDisplayName(fe, GameMode::Cruise)};
         std::vector<std::string> names;
         const auto races = fe.racesFor(fe.config.mode, fe.config.city);
-        const int avail = available(fe);
-        for (int i = 0; i < avail && i < static_cast<int>(races.size()); ++i)
+        for (int i = 0; i < static_cast<int>(races.size()); ++i)
             names.push_back(races[static_cast<std::size_t>(i)]->name);
         return names;
     }
 
     int available(Frontend& fe) const {
-        if (!fe.profile)
-            return 0;
-        return fe.progress.availableRaces(*fe.profile, fe.config.city, game::modeKey(fe.config.mode));
+        return static_cast<int>(fe.racesFor(fe.config.mode, fe.config.city).size());
     }
 
     void clampRace(Frontend& fe) {
@@ -177,7 +153,7 @@ private:
         fe.config.mode = m;
         fe.config.raceIndex = 0;
         clampRace(fe);
-        applyRaceDefaults(fe);
+        fe.applyRaceDefaults(fe.config);
     }
 
     // Lower-left panel: the race map (<city>_map<mode><n>.jpg, 242x184).
@@ -382,8 +358,8 @@ public:
 
 class ResultsPage final : public Page {
 public:
-    ResultsPage(Frontend& fe, const game::RaceResult& r, std::vector<game::Reward> earned)
-        : m_result(r), m_earned(std::move(earned)) {
+    ResultsPage(Frontend& fe, const game::RaceResult& r, std::optional<game::Reward> reward)
+        : m_result(r), m_reward(std::move(reward)) {
         const bool crash = r.config.mode == GameMode::CrashCourse;
         menu.background = crash ? "jpg/crshi_bk.jpg" : "jpg/rshi_bk.jpg";
         // Buttons have transparent surroundings; their positions are inferred.
@@ -439,10 +415,8 @@ public:
                         ui::style::kValueText);
             y += 22;
         }
-        for (const auto& r : m_earned) {
-            y += 8;
-            y += f.text.drawWrapped(f.overlay, ui::style::smallFont(), r.message, 40, y, 240, ui::style::kHelpText);
-        }
+        if (m_reward)
+            f.text.drawWrapped(f.overlay, ui::style::smallFont(), m_reward->message, 40, y + 8, 240, ui::style::kHelpText);
     }
 
 private:
@@ -450,17 +424,18 @@ private:
         const auto& cfg = m_result.config;
         if (cfg.mode == GameMode::Cruise || cfg.raceIndex < 0 || !fe.profile)
             return false;
-        return cfg.raceIndex + 1 < fe.progress.availableRaces(*fe.profile, cfg.city, game::modeKey(cfg.mode));
+        return cfg.raceIndex + 1 < static_cast<int>(fe.racesFor(cfg.mode, cfg.city).size()) &&
+               fe.progress.raceOpen(&*fe.profile, cfg.city, game::modeKey(cfg.mode), cfg.raceIndex + 1);
     }
     void nextRace(Frontend& fe) {
         fe.config = m_result.config;
         ++fe.config.raceIndex;
-        applyRaceDefaults(fe);
+        fe.applyRaceDefaults(fe.config);
         fe.startRace();
     }
 
     game::RaceResult m_result;
-    std::vector<game::Reward> m_earned;
+    std::optional<game::Reward> m_reward;
 };
 
 } // namespace
@@ -470,8 +445,8 @@ std::unique_ptr<Page> makeVehiclePage(Frontend& fe) { return std::make_unique<Ve
 std::unique_ptr<Page> makeShowcasePage(Frontend& fe, std::string vehicle) {
     return std::make_unique<ShowcasePage>(fe, std::move(vehicle));
 }
-std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::vector<game::Reward> earned) {
-    return std::make_unique<ResultsPage>(fe, result, std::move(earned));
+std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::optional<game::Reward> reward) {
+    return std::make_unique<ResultsPage>(fe, result, std::move(reward));
 }
 
 } // namespace mm2::app::frontend

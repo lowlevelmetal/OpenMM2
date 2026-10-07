@@ -150,9 +150,10 @@ private:
         std::vector<Choice> choices;
         for (const auto& c : fe.cities)
             for (auto m : {game::GameMode::Blitz, game::GameMode::Circuit, game::GameMode::Checkpoint}) {
-                const int n = fe.progress.availableRaces(*fe.profile, c.mapName, game::modeKey(m));
+                const int n = static_cast<int>(fe.racesFor(m, c.mapName).size());
                 for (int i = 0; i < n; ++i)
-                    choices.push_back({c.mapName, m, i});
+                    if (fe.progress.raceOpen(&*fe.profile, c.mapName, game::modeKey(m), i))
+                        choices.push_back({c.mapName, m, i});
             }
         std::vector<std::string> cars;
         for (const auto& v : fe.ctx.game->catalog.vehicles())
@@ -221,10 +222,10 @@ public:
 
 private:
     void create(Frontend& fe) {
-        std::string error;
+        game::ProfileStore::CreateError error{};
         auto p = fe.store.create(m_name, &error);
         if (!p) {
-            m_error = error;
+            m_error = "Cannot create the driver";
             return;
         }
         p->difficulty = m_difficulty;
@@ -279,23 +280,21 @@ public:
         if (!fe.profile)
             return;
         const auto races = fe.racesFor(m_mode, m_city);
-        const auto diff = fe.profile->difficulty;
         float y = oy + 19;
         for (std::size_t i = 0; i < races.size() && i < 12; ++i) {
-            const auto* rec = fe.profile->record(diff, m_city, game::modeKey(m_mode), static_cast<int>(i));
+            const auto* rec = fe.profile->record(m_city, game::modeKey(m_mode), static_cast<int>(i));
             f.text.draw(f.overlay, font, races[i]->name, ox + 8, y, ui::style::kValueText);
-            f.text.draw(f.overlay, font, rec && rec->bestPosition ? std::to_string(rec->bestPosition) : "-", ox + 300, y,
-                        ui::style::kValueText);
-            f.text.draw(f.overlay, font, formatTime(rec ? rec->bestTime : 0.0f), ox + 390, y, ui::style::kValueText);
+            f.text.draw(f.overlay, font, rec && rec->passed ? "yes" : "-", ox + 300, y, ui::style::kValueText);
+            f.text.draw(f.overlay, font, formatTime(rec ? rec->time : 0.0f), ox + 390, y, ui::style::kValueText);
             y += 18;
         }
         // Driver record summary (string table 635-640).
         const auto& p = *fe.profile;
         const float sx = origin.x + 230, sy = origin.y + 320;
-        f.text.draw(f.overlay, font, std::format("{} {}", s.get(640, "SCORE:"), p.score), sx, sy, ui::style::kValueText);
-        f.text.draw(f.overlay, font, std::format("{} {}", s.get(636, "LAST RACE:"), p.lastRace), sx, sy + 18,
+        f.text.draw(f.overlay, font, std::format("{} {}", s.get(640, "SCORE:"), fe.progress.totalScore(p)), sx, sy, ui::style::kValueText);
+        f.text.draw(f.overlay, font, std::format("{} {}", s.get(636, "LAST RACE:"), fe.raceName(fe.config)), sx, sy + 18,
                     ui::style::kValueText);
-        const auto* v = fe.ctx.game->catalog.vehicle(p.lastVehicle);
+        const auto* v = fe.ctx.game->catalog.vehicle(p.vehicle);
         f.text.draw(f.overlay, font, std::format("{} {}", s.get(637, "LAST VEHICLE:"), v ? v->description : ""), sx,
                     sy + 36, ui::style::kValueText);
         f.text.draw(f.overlay, ui::style::valueFont(),

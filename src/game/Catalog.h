@@ -43,8 +43,8 @@ struct CityInfo {
     std::vector<std::string> blitzNames;
     std::vector<std::string> circuitNames;
     std::vector<std::string> checkpointNames;
-    int mustPlace = 0;   // finishing position needed to count a race as won (inferred)
-    int unlockGroup = 0; // races unlocked per group (inferred)
+    int mustPlace = 0;   // parsed, but never read by MM2 (pass rules are fixed, see game/Profile.h)
+    int unlockGroup = 0; // parsed, but never read by MM2
 };
 
 class Catalog {

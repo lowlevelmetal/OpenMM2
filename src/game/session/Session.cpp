@@ -194,6 +194,7 @@ void Session::resetRace() {
     m_raceTime = 0.0f;
     m_raceClock = false;
     m_lapStart = m_lastLap = m_bestLap = 0.0f;
+    m_lapTimes.clear();
     m_timeUp = false;
     m_penaltyLeft = 0.0f;
     m_penaltyHeld = false;
@@ -562,6 +563,7 @@ void Session::updateWaypoints(const PlayerState& player) {
                 const float lapTime = m_raceTime - m_lapStart;
                 m_lastLap = lapTime;
                 m_bestLap = m_bestLap > 0.0f ? std::min(m_bestLap, lapTime) : lapTime;
+                m_lapTimes.push_back(lapTime);
                 m_lapStart = m_raceTime;
                 push(EventType::LapCompleted, m_wp.lap, lapTime);
                 if (m_wp.lap == m_setup.laps) {
@@ -1284,10 +1286,13 @@ MusicHint Session::musicHint() const {
 RaceResult Session::result() const {
     RaceResult r;
     r.config = m_setup.config;
+    r.ended = m_phase == Phase::PostRace || m_phase == Phase::Done;
     r.finished = m_resultFinished;
     r.won = m_resultWon;
     r.position = m_resultFinished ? (m_resultPosition > 0 ? m_resultPosition : 1) : 0;
     r.timeSeconds = m_resultTime;
+    r.bestLapSeconds = m_bestLap;
+    r.lapSeconds = m_lapTimes;
     r.damage = static_cast<int>(std::lround(clampf(m_resultDamage, 0.0f, 1.0f) * 100.0f));
     // mmGame::CalculateRaceScore: the car's ScoringBias and the race's
     // Difficulty column, both truncated to integers, times 50 / 25 / 10 for

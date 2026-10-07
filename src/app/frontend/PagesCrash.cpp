@@ -70,8 +70,6 @@ public:
                                                 [this, &fe] { proceed(fe); });
         addNavStrip(fe, *this);
         menu.focus(&next);
-        if (fe.profile)
-            m_lesson = std::max(0, fe.progress.availableRaces(*fe.profile, m_city, "crash") - 1);
     }
 
     void update(Frontend&, double) override {
@@ -83,10 +81,10 @@ public:
         if (!fe.profile)
             return;
         for (int i = 0; i < 13; ++i) {
-            const std::string key = std::format("{}.{}", m_city, i);
             const float y = kLessonRowY[i] - 6;
-            const bool passed = fe.profile->crashPassed.contains(key);
-            const bool failed = !passed && fe.profile->crashFailed.contains(key);
+            const auto* rec = fe.profile->record(m_city, "crash", i);
+            const bool passed = rec && rec->passed;
+            const bool failed = rec && !rec->passed;
             ui::drawSpriteFrame(f, {"texture/cc_smchk.tga", 3}, passed ? 1 : 0, kPassX, y);
             ui::drawSpriteFrame(f, {"texture/cc_smchk.tga", 3}, failed ? 2 : 0, kFailX, y);
         }
@@ -100,8 +98,7 @@ private:
 
     std::vector<std::string> lessonNames(Frontend& fe) const {
         std::vector<std::string> v;
-        const int n = fe.profile ? fe.progress.availableRaces(*fe.profile, m_city, "crash") : 1;
-        for (int i = 0; i < n && i < 13; ++i)
+        for (int i = 0; i < 13; ++i)
             v.push_back(fe.ctx.game->strings.get(lessonStringId(i), std::format("Lesson {}", i + 1)));
         return v;
     }
@@ -109,8 +106,7 @@ private:
     std::vector<std::string> workRaceNames(Frontend& fe) const {
         std::vector<std::string> v;
         const auto races = fe.racesFor(m_work, m_city);
-        const int n = fe.profile ? fe.progress.availableRaces(*fe.profile, m_city, game::modeKey(m_work)) : 1;
-        for (int i = 0; i < n && i < static_cast<int>(races.size()); ++i)
+        for (int i = 0; i < static_cast<int>(races.size()); ++i)
             v.push_back(races[static_cast<std::size_t>(i)]->name);
         return v;
     }
