@@ -1,17 +1,19 @@
 #pragma once
 
-// Car sounds: engine, gear/reverse, horn, siren, tyres on surfaces, skids,
-// suspension, impacts. Structure ported from MM1's mmPlayerCarAudio,
-// EngineAudio, mmSurfaceAudio, mmImpactAudio, mmPoliceCarAudio and
-// mmOpponentCarAudio (Open1560, GPL-3.0: class layouts in code/midtown/mmcar,
-// logic from the MASM in code/midtown/game.asm). MM2 replaced MM1's
-// hard-coded tables with the CSV files in aud/cardata; how MM2 evaluates
-// those files is inferred and marked as such (see docs/audio.md).
+// Car sounds: engine, gear change, horn, siren, tyres on surfaces, skids,
+// suspension, tyre wobble, impacts, and ambient traffic. Ported from MM2's
+// vehCarAudioContainer, vehCarAudio, vehEngineAudio, vehEngineSampleWrapper,
+// vehSurfaceAudio, vehSurfaceAudioData, vehPoliceCarAudio, vehSemiCarAudio,
+// AudImpact, AudImpactData, aiAmbientVehicleAudio, aiEngineAudio, vehHornAudio
+// and vehHornAudioTiming, driven by the CSV tables in aud/cardata (see
+// docs/audio.md).
 
 #include "audio/game/AudioTables.h"
+#include "audio/game/Object3D.h"
 #include "audio/game/SoundSlot.h"
 
 #include <array>
+#include <optional>
 #include <random>
 #include <string>
 #include <vector>
@@ -22,26 +24,33 @@ namespace mm2::audio::game {
 
 struct WheelAudioInput {
     bool onGround = false;
-    // Tyre slip, max(|lateral|, |longitudinal|) slip percentage as the
-    // wheel computes it (vehWheel Lat/LongSlipPercent; ~0 gripping, >= 1
-    // fully sliding).
+    // vehWheel's skid amount (vehSurfaceAudio::UpdateSkid takes the largest
+    // of the four): the slip percentage of the direction the tyre slides in, 0
+    // while it grips; ~1 fully sliding.
     float slip = 0.0f;
-    // Surface sound index: 0 road, 1 water, 2 grass, 3 cobblestone,
-    // 4 flagstone (order of default_surfacedry.csv; see surfaceSoundIndex()).
+    // Surface sound index: the wheel's material "sound:" value in
+    // city/materials.mtl (vehWheel::GetSurfaceSound): 0 road, 1 water, 2 grass.
     int surface = 0;
-    // Suspension compression speed (m/s, positive while compressing).
+    // Suspension compression speed (m/s, compressing > 0, clamped to +-10 by vehWheel).
     float suspensionSpeed = 0.0f;
+    // vehWheel BrakeCoef (tuning). vehSurfaceAudio::IsBrakeing tests the
+    // front pair against 0.5, not the brake pedal.
+    float brakeCoef = 0.0f;
 };
 
 struct ImpactInput {
-    // Impact strength: the normal impulse in N s, as mmCarSim::PlayImpactAudio
-    // passes |normal . impulse| to mmImpactAudio::Play.
+    // vehCarDamage::ApplyImpact passes |x| + |y| + |z| of the impulse vector
+    // (N s); see impactStrength().
     float force = 0.0f;
-    // dgBangerData AudioId of what was hit (0 = WALL: buildings, ground,
-    // other cars).
+    // Index into the impact table: the AudioId of the banger hit (0 = WALL:
+    // buildings, ground and other cars; out-of-range values also use WALL).
     int audioId = 0;
     Vec3 position;
 };
+
+// vehCarDamage::ApplyImpact / aiVehicleActive: the impact strength handed to
+// AudImpact::Play.
+float impactStrength(const Vec3& impulse);
 
 struct CarAudioInputs {
     float rpm = 0.0f;
@@ -51,31 +60,40 @@ struct CarAudioInputs {
     bool engineRunning = true;
     float throttle = 0.0f; // 0..1
     float brake = 0.0f;    // 0..1
-    float speed = 0.0f;    // m/s
+    float speed = 0.0f;    // m/s (vehCarSim speed)
     int gear = 1;          // -1 reverse, 0 neutral, 1.. forward
-    std::array<WheelAudioInput, 4> wheels{};
+    std::array<WheelAudioInput, 4> wheels{}; // front left, front right, rear left, rear right
     std::vector<ImpactInput> impacts; // impacts since the previous update
     bool horn = false;                // horn button held
-    bool siren = false;               // police: siren on
-    bool wrecked = false;             // car destroyed (police explosion sound)
-    float tireWobble = 0.0f;          // 0..1, damaged wheel wobble
-    Mat34 transform;                  // car placement (3D cars)
+    bool siren = false;               // police: siren on (AI police: pursuing)
+    bool wrecked = false;             // police: destroyed while pursuing (explosion)
+    // vehSurfaceAudio::UpdateTireWobble: (damage - MedDamage) / (MaxDamage -
+    // MedDamage) from vehCarDamage; the thumps start above 0.05.
+    float tireWobble = 0.0f;
+    // Radius of the rear left wheel: one wobble thump per revolution.
+    float wheelRadius = 0.3f;
+    // Distance from the car down to the ground below it, if any within 33 m
+    // (vehSurfaceAudio::UpdateAir's probe; player only).
+    std::optional<float> groundBelow;
+    Mat34 transform; // car placement (positioned cars)
     Vec3 velocity;
+    // The listener is in a tunnel (Aud3DObjectManager echo flag): every car's
+    // surface sound uses the table's tunnel entry.
     bool inTunnel = false;
 };
 
 enum class SurfaceWeather { Dry, Wet, Snow };
 
-// Maps a physics material (city/materials.mtl name and its "sound:" value) to
-// the surface sound index used by the surface tables. Inferred: the tables
-// list road, water, grass, cobblestone and flagstone in that order, while
-// materials.mtl only uses sound values 0..2.
+// The surface sound index of a wheel's material: its "sound:" value
+// (vehWheel::GetSurfaceSound reads lvlMaterial's sound field; "none" and
+// negative values count as 0). The name is not used: cobblestone, for
+// example, has sound 0 and sounds like road.
 int surfaceSoundIndex(std::string_view materialName, int mtlSound);
 
 // --- Engine -------------------------------------------------------------------------
 
-// Multi-sample engine: every sample of the car's table is evaluated at the
-// engine speed and the audible ones loop with their volume and pitch.
+// vehEngineAudio: every sample of the car's table loops while its volume at
+// the current RPM is at least kSilentVolume.
 class EngineSound {
 public:
     struct Evaluation {
@@ -83,17 +101,23 @@ public:
         float pitch = 1;
         bool audible = false;
     };
-    // Inferred evaluation of one aud/cardata row (MM1 used two samples with
-    // volume = clamp(k * rpm) instead):
-    //   fade  = 0 outside [fadeInStart, fadeOutEnd]; ramps 0->1 over the fade
-    //           in range and 1->0 over the fade out range
-    //   volume = minVolume + (maxVolume - minVolume) * fade
-    //   pitch  = lerp(minPitch, maxPitch) by rpm over [pitchStart, pitchEnd]
-    // A sample is audible while volume >= kSilentVolume (MM1 rule).
+    // vehEngineSampleWrapper::CalculateVolume / CalculatePitch:
+    //   volume = min volume at or below the fade-in start and at or past the
+    //            fade-out end, rising linearly to max volume over the fade-in
+    //            range, max between the fades, falling linearly over the fade-out
+    //   pitch  = min pitch up to the shift start, max pitch from the shift end,
+    //            and min + rpm * (max - min) / (end - start) in between (the
+    //            slope is applied to the whole RPM, not to rpm - start, so the
+    //            pitch jumps at both ends of the range unless it starts at 0)
     static Evaluation evaluate(const EngineSampleDef& def, float rpm);
 
     void load(Mixer& mixer, SoundBank& bank, const std::vector<EngineSampleDef>& samples, Bus bus);
-    void update(float rpm, const Emitter3D* emitter = nullptr, float volumeOffset = 0.0f);
+    // UpdateRPM: the cut-off test uses the table volume; positioned cars then
+    // scale volume and pitch by their attenuation and doppler factor.
+    void update(float rpm, float volumeScale = 1.0f, float pitchScale = 1.0f, float pan = 0.0f);
+    // vehEngineAudio::Silence: zero every sample's volume range (the engine
+    // stops), or restore it.
+    void silence(bool on);
     void stop();
     std::size_t sampleCount() const { return m_samples.size(); }
     const Evaluation& state(std::size_t i) const { return m_states[i]; }
@@ -102,191 +126,297 @@ private:
     std::vector<EngineSampleDef> m_defs;
     std::vector<SoundSlot> m_samples;
     std::vector<Evaluation> m_states;
+    bool m_silenced = false;
 };
 
-// --- Surfaces and skids -----------------------------------------------------------------
+// --- Surfaces, skids, suspension, tyre wobble ------------------------------------------
 
-// mmSurfaceAudio: rolling-surface loop and skid loop for one car.
+// vehSurfaceAudio with its vehSurfaceAudioData entries.
 class SurfaceSounds {
 public:
     void load(Mixer& mixer, SoundBank& bank, const SurfaceTable& table, Bus bus);
-    // Ported conditions (UpdateSurface / UpdateSkidClear): the surface
-    // sound needs speed > 2 m/s and at least two wheels on the ground and is
-    // silenced while skidding; skids need speed > 1 m/s. The surface keeps
-    // its current type while either front wheel is still on it.
-    void update(const CarAudioInputs& in, const Emitter3D* emitter = nullptr);
+    void loadSuspension(Mixer& mixer, SoundBank& bank, const SuspensionDef& def, Bus bus);
+    void loadTireWobble(Mixer& mixer, SoundBank& bank, const TireWobbleDef& def, Bus bus);
+
+    // vehSurfaceAudio::Update: suspension, rolling surface, skid, tyre wobble.
+    // The player's car (not positioned) also tracks the airborne state.
+    void update(const CarAudioInputs& in, float dt);
+    // The positioned variant: volumes scaled by `attenuation`, pan applied,
+    // no wobble pitch and no airborne tracking.
+    void update3D(const CarAudioInputs& in, float dt, float attenuation, float pan);
     void stop();
 
     int currentSurface() const { return m_surface; }
-    bool skidding() const { return m_skidSample >= 0; }
-    int skidSample() const { return m_skidSample; }
-    float skidVolume() const { return m_skidVolume; }
+    bool skidding() const { return m_skidding; }
+    // Whether skid sample k of the current surface is playing.
+    bool skidPlaying(int k) const;
+    // vehSurfaceAudio::UpdateAir: all four wheels off the ground with ground
+    // 3 to 33 m below (the "big air" the music reacts to); cleared on landing.
+    bool airborne() const { return m_airborne; }
 
-    // Inferred skid evaluation: the skid sample is the one whose slippage
-    // range contains the slip (ice tables: speed range); volume ramps from
-    // minSkidVolume at the first sample's lower bound to maxSkidVolume at 1.
-    static int chooseSkid(const SurfaceSoundDef& def, float value);
+    // vehSurfaceAudioData::UpdateSkid: every skid sample whose slip range
+    // contains the slip (bounds inclusive) plays, the others stop; the volume
+    // is min skid volume + slip * (max - min).
+    static bool skidInRange(const SkidSampleDef& skid, float slip);
     static float skidVolumeFor(const SurfaceSoundDef& def, float slip);
+    // vehSurfaceAudioData::UpdateSurface: linear in speed up to max speed.
+    static float surfaceVolumeFor(const SurfaceSoundDef& def, float speed);
+    static float surfacePitchFor(const SurfaceSoundDef& def, float speed);
 
 private:
     struct Entry {
+        SurfaceSoundDef def;
         SoundSlot surface;
         std::vector<SoundSlot> skids;
     };
-    SurfaceTable m_table;
-    bool m_loaded = false;
+    bool surfaceChanged(const CarAudioInputs& in) const;
+    void selectSurface(const CarAudioInputs& in, bool positioned);
+    void stopSurface(int index);
+    void stopSkid(int index);
+    bool skidPlayingOn(int index) const;
+    void updateSurface(const CarAudioInputs& in, bool positioned, float attenuation, float pan);
+    void updateSkid(const CarAudioInputs& in, float attenuation, float pan);
+    void updateSuspension(const CarAudioInputs& in, bool positioned, float attenuation, float pan);
+    void updateTireWobble(const CarAudioInputs& in, float dt, bool positioned, float attenuation, float pan);
+    Entry* entry(int index);
+
     std::vector<Entry> m_entries;
+    int m_tunnelIndex = 0;
     int m_surface = 0;
-    int m_skidEntry = -1;
-    int m_skidSample = -1;
-    float m_skidVolume = 0;
+    int m_previous = -1;
+    bool m_skidding = false;
+    bool m_airborne = false;
+    std::optional<SuspensionDef> m_suspensionDef;
+    SoundSlot m_suspension;
+    std::optional<TireWobbleDef> m_wobbleDef;
+    SoundSlot m_wobble;
+    float m_wobbleDistance = 0.0f;
 };
 
 // --- Impacts ------------------------------------------------------------------------------
 
-// mmImpactAudio: one-shot collision sounds chosen by what was hit and how hard.
+// AudImpact / AudImpactData: one-shot collision sounds chosen by what was hit
+// and how hard.
 class ImpactSounds {
 public:
     void load(Mixer& mixer, SoundBank& bank, const ImpactTable& table, Bus bus);
-    // Plays every sample of the banger whose force range contains `force`
-    // and that is not already playing (as PlayWall checks IsPlaying).
-    // Volume ramps from min to max volume across the force range (inferred;
-    // MM1 used clamp(35 * force) between per-sample limits).
-    void play(const ImpactInput& impact, const Emitter3D* emitter = nullptr);
+    // AudImpactData::Play: every sample of the banger whose force range
+    // contains `force` (bounds inclusive) and that is not already playing.
+    void play(const ImpactInput& impact, float attenuation = 1.0f, float pan = 0.0f);
+    // AudImpact::UpdateAttenuation: positioned cars keep the samples of the
+    // last banger hit following the car's attenuation and pan.
+    void updateAttenuation(float attenuation, float pan);
     void stop();
-    int lastPlayed() const { return m_lastPlayed; }
+    int lastPlayed() const { return m_last; }
 
+    // AudImpactData::PlaySample: min volume + force * (max - min) / (max force
+    // - min force). The slope is applied to the whole force, not to force -
+    // min force, so loud hits can exceed the max volume.
     static float volumeFor(const ImpactSampleDef& s, float force);
 
 private:
     struct Banger {
-        int id = 0;
         std::vector<ImpactSampleDef> defs;
         std::vector<SoundSlot> slots;
+        std::vector<float> volumes; // table volume each sample last played at
     };
     std::vector<Banger> m_bangers;
-    int m_lastPlayed = 0;
+    int m_last = -1;
 };
 
 // --- Sirens ---------------------------------------------------------------------------------
 
-// Police siren as a little state machine from the siren tables: play sample
-// i for its play time, then switch to its "next index" (opponent tables list
-// several (time, next) choices per sample; one is picked at random). Replaces
-// MM1's hard-coded FluctuateSlowSiren / FluctuateFastSiren (inferred).
+// vehPoliceCarAudio's siren: sample i loops until its current (play time,
+// next) entry runs out, then the next sample starts and the entry index of
+// sample i advances, wrapping (FluctuateSiren). After an explosion the siren
+// drops in pitch and dies (DamageSiren).
 class SirenPlayer {
 public:
     void load(Mixer& mixer, SoundBank& bank, const SirenTable& table, Bus bus);
-    void update(bool on, bool wrecked, float dt, const Emitter3D* emitter = nullptr);
+    // StartSiren / StopSiren. `pursuingPlayer` is StartSiren's argument (the
+    // cop chases the player; counted by copsPursuingPlayer()). The state
+    // changes whether or not the car has a sound slot (`audible`); only a car
+    // with a slot starts the sample.
+    void start(bool pursuingPlayer, bool audible = true, float attenuation = 1.0f, float doppler = 1.0f);
     void stop();
-    int currentSample() const { return m_current; }
+    // UpdateSiren: the player's car (not positioned).
+    void update(float dt);
+    // UpdateSiren(volume, frequency, pan): positioned cars. The siren never
+    // drops below volume 0.75 however far away the car is.
+    void update3D(float dt, float attenuation, float doppler, float pan);
+    // PlayExplosion: the explosion one-shot (only with a slot); the siren
+    // then drops in pitch and dies.
+    void explode(bool audible, float attenuation);
+    // UnAssignSounds: the sounds stop, the siren state stays.
+    void silence();
+    void stopAll();
+
+    bool on() const { return m_state != 0; }
+    int currentSample() const { return m_state != 0 ? m_current : -1; }
+    bool explosionPlaying() const { return m_explosion.playing(); }
+
+    // vehPoliceCarAudio::s_iNumCopsPursuingPlayer: drives the cop chase music.
+    static int copsPursuingPlayer();
+    static void resetPursuitCount();
 
 private:
-    SirenTable m_table;
-    std::vector<SoundSlot> m_slots;
+    struct Sample {
+        SirenSampleDef def;
+        SoundSlot slot;
+        std::size_t step = 0;
+    };
+    void fluctuate(float dt);
+    void damage(float attenuation, float doppler);
+
+    std::vector<Sample> m_samples;
     SoundSlot m_explosion;
-    int m_current = -1;
-    int m_next = 0;
-    float m_timer = 0;
-    bool m_wasWrecked = false;
-    std::mt19937 m_rng{12345};
+    int m_current = 0;
+    int m_state = 0;         // 0 off, 1 pursuing the player, 2 on
+    float m_timer = 0;       // time on the current sample
+    float m_volume = 0.95f;  // current siren volume
+    bool m_damaged = false;
+    float m_damageTime = 0.01f;
+    float m_dt = 0.0f;
 };
 
 // --- Player car -----------------------------------------------------------------------------
 
 struct CarAudioOptions {
     SurfaceWeather weather = SurfaceWeather::Dry;
-    std::string city = "london"; // police siren variant
+    std::string city = "london"; // police siren table: <city>policesiren.csv
+    // Positioned cars share this (Aud3DObjectManager); null = every car sounds.
+    Object3DManager* manager = nullptr;
+    // A network player's car (vehCarAudioContainer mode 0) keeps its horn; AI
+    // opponents and police (mode 1) have none.
+    bool horn = false;
 };
 
-// mmPlayerCarAudio: the player's car, heard from inside/behind (2D).
+// The player's car: vehCarAudio (or vehSemiCarAudio / vehPoliceCarAudio by
+// shared/vehtypes.csv), not positioned.
 class PlayerCarAudio {
 public:
     // Loads aud/cardata/player/<car>.csv (default.csv when missing), the
-    // impact, surface, suspension and tyre wobble tables and, for freight
-    // and police vehicles (shared/vehtypes.csv), their extra sounds.
+    // surface table for the weather, suspension, tyre wobble and impact tables
+    // and, for vehicles listed in vehtypes.csv, the semi or police extras.
     bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view car,
               const CarAudioOptions& options = {}, std::string* error = nullptr);
     void update(const CarAudioInputs& in, float dt);
     void stop();
+    // vehCarAudioContainer::SilenceEngine (the engine dies after a damage out).
+    void silenceEngine(bool on) { m_engine.silence(on); }
 
     const CarAudioDef& definition() const { return m_def; }
     const EngineSound& engine() const { return m_engine; }
     const SurfaceSounds& surfaces() const { return m_surfaces; }
     const ImpactSounds& impacts() const { return m_impacts; }
+    bool police() const { return m_siren.has_value(); }
+    bool sirenOn() const { return m_siren && m_siren->on(); }
+    bool airborne() const { return m_surfaces.airborne(); }
 
 private:
+    void updateHorn(bool pressed);
+
     CarAudioDef m_def;
     EngineSound m_engine;
     SurfaceSounds m_surfaces;
     ImpactSounds m_impacts;
-    SoundSlot m_horn, m_clutch, m_reverseBeep, m_airBlow, m_suspension, m_wobble;
-    std::optional<SuspensionDef> m_suspensionDef;
-    std::optional<TireWobbleDef> m_wobbleDef;
+    SoundSlot m_horn, m_clutch, m_reverseBeep, m_airBlow;
     std::optional<SemiDef> m_semi;
     std::optional<SirenPlayer> m_siren;
-    int m_prevGearState = 1;
-    bool m_airBlown = false;
-    bool m_prevHorn = false;
-    bool m_hornLatched = false;
+    int m_prevGear = -1; // MM2 gear index (0 reverse); -1 before the first update
+    bool m_hornPressed = false;
 };
 
-// --- Opponents / police / network cars (3D) ---------------------------------------------------------
+// --- Opponents / police / network cars (positioned) -----------------------------------------
 
-// mmOpponentCarAudio: another simulated car, positioned in 3D. Cars farther
-// than `maxDistance` from the listener are silenced (aiAudioManager only
-// gave sounds to the nearest cars).
-class OpponentCarAudio {
+// vehCarAudio in 3D mode: another car, attenuated by distance (0..150 m) and
+// panned like every MM2 positioned sound, sounding only while it holds a slot
+// of the Object3DManager.
+class OpponentCarAudio : private SlotHolder {
 public:
     bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view car, bool police,
               const CarAudioOptions& options = {}, std::string* error = nullptr);
+    void update(const CarAudioInputs& in, float dt, const Mat34& listener);
     void update(const CarAudioInputs& in, float dt, const Vec3& listener);
     void stop();
-    float maxDistance = 150.0f;
-    // Distance model for the car's voices (DS3D min/max distance; inferred).
-    float minDistance = 6.0f;
+    bool audible() const { return hasSlot(); }
+    bool sirenOn() const { return m_siren && m_siren->on(); }
+
+    static constexpr float kMaxDistance = 150.0f; // vehCarAudio::Init SetDropOffs(0, 150)
 
 private:
+    float slotDistance2() const override { return m_3d.distance2(); }
+    int slotPriority() const override { return m_priority; }
+    void slotLost() override { silence(); }
+    void silence();
+
     CarAudioDef m_def;
     EngineSound m_engine;
     SurfaceSounds m_surfaces;
     ImpactSounds m_impacts;
     SoundSlot m_horn;
     std::optional<SirenPlayer> m_siren;
-    bool m_audible = false;
+    Audio3D m_3d;
+    int m_priority = 9;
+    float m_doppler = 1.0f; // last doppler factor (Aud3DObject +0x10)
+    bool m_hasHorn = false;
+    bool m_prevSiren = false;
+    bool m_prevWrecked = false;
 };
 
-// --- Ambient traffic (3D) -------------------------------------------------------------------------
+// --- Ambient traffic (positioned) -------------------------------------------------------------
 
-// Ambient traffic: one engine loop pitched by speed band, honking patterns,
-// a stuck horn after a hard hit (aiVehicleAmbient / aiAudioManager roles).
-class AmbientCarAudio {
+// aiAmbientVehicleAudio: one engine loop pitched by speed band, horn patterns,
+// impacts; attenuated over 0..100 m.
+class AmbientCarAudio : private SlotHolder {
 public:
     // `type` is the ambient vehicle name ("va_sedans_s"); files are looked up
     // as aud/cardata/ambient/<type>_engine.csv and _horn.csv with a trailing
     // plural "s" dropped from the model part when needed (va_sedans_s ->
-    // va_sedan_s), else default_engine.csv / default_horn.csv.
-    bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view type);
+    // va_sedan_s; inferred), else default_engine.csv / default_horn.csv.
+    // Impacts come from aud/cardata/opponent/default_impacts.csv.
+    bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view type,
+              Object3DManager* manager = nullptr);
+    void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Mat34& listener);
     void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Vec3& listener);
-    // Starts one of the horn patterns (random when < 0).
-    void honk(int pattern = -1);
-    void impact(float force);
+    // vehHornAudio::PlayAvoidance: a random pattern, or (half the time)
+    // nothing; returns whether a pattern started. pattern >= 0 forces one.
+    bool honk(int pattern = -1);
+    // aiVehicleActive's impact: the impact sounds and vehHornAudio::PlayImpact.
+    void impact(const ImpactInput& impact);
     void stop();
+    bool audible() const { return hasSlot(); }
+    void seed(unsigned s) { m_rng.seed(s); }
 
-    static float pitchFor(const AmbientEngineDef& def, float speed);
+    // aiEngineAudio::CalculatePitch for a car holding or gaining speed (the
+    // band containing the speed; bands are inclusive and the last band is
+    // skipped) or slowing down (the last band). Returns nullopt when no band
+    // applies (the pitch then stays as it was).
+    static std::optional<float> pitchFor(const AmbientEngineDef& def, float speed, bool slowing = false);
 
-    float maxDistance = 120.0f;
-    float minDistance = 5.0f;
+    static constexpr float kMaxDistance = 100.0f; // aiAmbientVehicleAudio::Init SetDropOffs(0, 100)
 
 private:
+    float slotDistance2() const override { return m_3d.distance2(); }
+    int slotPriority() const override { return 8; }
+    void slotLost() override { silence(); }
+    void silence();
+    void updateHorn(float dt);
+    void startPattern(std::size_t index);
+
     AmbientEngineDef m_engineDef;
     std::optional<HornDef> m_hornDef;
     SoundSlot m_engine, m_horn;
-    int m_pattern = -1;
+    ImpactSounds m_impacts;
+    Audio3D m_3d;
+    float m_pan = 0.0f; // last pan (AudImpact +0x1c)
+    float m_pitch = 0.0f;
+    float m_speed = 0.0f, m_prevSpeed = 0.0f;
+    // vehHornAudioTiming of the current pattern.
+    std::size_t m_pattern = 0;
     std::size_t m_beep = 0;
-    float m_beepTimer = 0;
-    bool m_beepOn = false;
-    bool m_stuck = false;
+    int m_hornState = 2; // 0 sounding, 1 pausing, 2 idle
+    float m_hornTimer = 0;
     std::mt19937 m_rng{4242};
 };
 

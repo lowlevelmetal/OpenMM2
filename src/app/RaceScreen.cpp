@@ -7,6 +7,7 @@
 #include "audio/SoundBank.h"
 #include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
+#include "audio/game/Object3D.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
 #include "ai/Opponent.h"
@@ -418,6 +419,8 @@ private:
             return nullptr;
         audio::game::CarAudioOptions opts;
         opts.city = m_result.config.city;
+        opts.weather = surfaceWeather();
+        opts.manager = &m_audioSlots;
         auto audio = std::make_unique<audio::game::OpponentCarAudio>();
         std::string error;
         if (!audio->load(ctx.game->vfs, *m_bank, *ctx.mixer, vehicle, police, opts, &error)) {
@@ -569,9 +572,9 @@ private:
         }
     }
 
-    // Engine, tyre and siren sounds of the opponents and police, in 3D.
+    // Engine, tyre and siren sounds of the opponents and police, positioned.
     void updateAiAudio(float dt) {
-        const Vec3 listener = m_camera.position();
+        const Mat34& listener = m_camera.transform;
         auto feed = [&](audio::game::OpponentCarAudio& audio, const phys::CarSim& sim, bool siren) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = sim.engine.throttle;
@@ -751,22 +754,26 @@ private:
                                                          : audio::SoundBank::Quality::Low);
         audio::game::CarAudioOptions opts;
         opts.city = m_result.config.city;
-        const auto w = m_result.config.weather;
-        opts.weather = w == game::Weather::Snow ? audio::game::SurfaceWeather::Snow
-                     : w == game::Weather::Rain ? audio::game::SurfaceWeather::Wet
-                                                : audio::game::SurfaceWeather::Dry;
+        opts.weather = surfaceWeather();
         std::string error;
         m_carAudioOk = m_carAudio.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.vehicle, opts, &error);
         if (!m_carAudioOk)
             log::warn("race: car audio: {}", error);
-        m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city);
-        m_rain.load(*m_bank, *ctx.mixer);
+        m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city, &m_audioSlots);
+        m_rain.load(*m_bank, *ctx.mixer, m_result.config.timeOfDay == game::TimeOfDay::Night);
         // Impacts reported by the simulation feed the impact sounds.
         m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
-            m_impacts.push_back({std::abs(impact.impulse), 0, impact.point});
+            m_impacts.push_back({audio::game::impactStrength(impact.normal * impact.impulse), 0, impact.point});
             if (impact.speed > 1.0f)
                 ++(impact.other ? m_vehicleImpacts : m_objectImpacts);
         };
+    }
+
+    audio::game::SurfaceWeather surfaceWeather() const {
+        const auto w = m_result.config.weather;
+        return w == game::Weather::Snow   ? audio::game::SurfaceWeather::Snow
+               : w == game::Weather::Rain ? audio::game::SurfaceWeather::Wet
+                                          : audio::game::SurfaceWeather::Dry;
     }
 
     // Audio inputs shared by every simulated car (engine, gears, tyres).
@@ -783,7 +790,12 @@ private:
             wi.slip = std::max(std::abs(w.latSlipPercent), std::abs(w.longSlipPercent));
             wi.surface = w.material ? audio::game::surfaceSoundIndex(w.material->name, w.material->sound) : 0;
             wi.suspensionSpeed = w.suspensionVelocity;
+            wi.brakeCoef = w.brakeRatio;
         }
+        // vehSurfaceAudio::UpdateTireWobble: damage past MedDamage.
+        const float damageRange = sim.damage.maxScaled() - sim.damage.medScaled();
+        in.tireWobble = damageRange > 0.0f ? (sim.damage.currentDamage - sim.damage.medScaled()) / damageRange : 0.0f;
+        in.wheelRadius = sim.wheels[2].radius;
         in.wrecked = sim.damage.wrecked();
         in.velocity = sim.body.ics.frameVelocity;
         in.inTunnel = false; // TODO: room flags (subterranean)
@@ -802,13 +814,18 @@ private:
             m_impacts.clear();
             in.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
             in.transform = m_pose.body;
+            // vehSurfaceAudio::UpdateAir: ground within 33 m below ("big air").
+            phys::RayHit hit;
+            const Vec3 at = sim.modelMatrix().m3;
+            if (m_world && m_world->probe(at, at - Vec3{0, 33, 0}, hit))
+                in.groundBelow = at.y - hit.position.y;
             m_carAudio.update(in, dt);
         }
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
         updateAiAudio(dt);
-        m_ambience.update(m_camera.position(), dt);
-        m_rain.update(m_result.config.weather == game::Weather::Rain, false, false, false, dt);
+        m_ambience.update(m_camera.transform, dt);
+        m_rain.update(m_result.config.weather == game::Weather::Rain, false, false, dt);
     }
 
     void sendLocalState(Context& ctx) {
@@ -1106,6 +1123,9 @@ private:
     // Race rules, opponents and HUD (src/game/session).
     std::unique_ptr<game::session::Session> m_session;
     std::unique_ptr<game::session::Hud> m_hud;
+    // MM2's positioned-sound slots (Aud3DObjectManager); declared before every
+    // sound that uses it so it outlives them.
+    audio::game::Object3DManager m_audioSlots;
     struct Opponent {
         std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
         std::unique_ptr<game::SimVehicle> sim;
