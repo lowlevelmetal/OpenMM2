@@ -88,7 +88,8 @@ The rule files' Position is an editor leftover; Blast overwrites it.
 
 Four tracks per car (one per wheel), 64 vertex pairs each, laid while the
 wheel's skid flag is set (vehWheel: slide > 0.5), its material is not
-`water` and the car's room is not an intersection (PSDL room flag 0x10).
+`water` and the car's room lacks the runtime flag 0x10 (set by `gizBridge` on
+the opening bridges, which OpenMM2 does not have yet).
 The pair is the contact point ∓ half the tyre width along the wheel
 matrix's axle. The first pair waits until the wheel has moved 10 cm; while
 the wheel keeps its direction (dot ≥ 0.99) and stays within 10 m of the last

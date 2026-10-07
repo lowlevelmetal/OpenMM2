@@ -30,8 +30,8 @@ struct VehicleFxSetup {
 
 // What the car's surroundings say this frame.
 struct VehicleFxContext {
-    // vehCar::UpdateTrack lays no tracks while the car's room is an
-    // intersection (PSDL room flag 0x10).
+    // vehCar::UpdateTrack lays no tracks while the car's room has the
+    // runtime flag 0x10, which gizBridge sets on the opening bridges.
     bool tracksAllowed = true;
 };
 

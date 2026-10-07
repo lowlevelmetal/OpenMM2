@@ -206,22 +206,26 @@ public:
         if (m_bangers)
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera,
                             {m_detail.lodScale, m_env.fogEnd + 50.0f, night});
+        const bool lights = carLights();
         if (m_vehicle && (m_flyCamera || m_cams.display() == game::CarDisplay::Body)) {
-            m_pose.headlights = m_result.config.timeOfDay == game::TimeOfDay::Night ||
-                                m_result.config.timeOfDay == game::TimeOfDay::Evening;
-            m_vehicle->draw(m_pose, m_camera.position());
+            m_pose.headlights = lights;
+            m_vehicle->draw(m_pose, m_camera.transform);
             if (m_trailer) {
-                m_trailerPose.headlights = m_pose.headlights;
-                m_trailer->draw(m_trailerPose, m_camera.position());
+                m_trailerPose.headlights = lights;
+                m_trailer->draw(m_trailerPose, m_camera.transform);
             }
         }
-        for (const auto& o : m_opponents)
-            o.renderer->draw(o.sim->pose(), m_camera.position());
+        for (const auto& o : m_opponents) {
+            game::VehiclePose pose = o.sim->pose();
+            pose.headlights = lights;
+            o.renderer->draw(pose, m_camera.transform);
+        }
         for (const auto& c : m_cops) {
             game::VehiclePose pose = c.sim->pose();
-            if (c.driver->siren())
-                pose.sirenPhase = static_cast<int>(m_time * 4.0) % 2; // flash rate inferred
-            c.renderer->draw(pose, m_camera.position());
+            pose.headlights = lights;
+            pose.siren = c.driver->siren();
+            pose.sirenAngle = c.sirenAngle;
+            c.renderer->draw(pose, m_camera.transform);
         }
         if (m_vehicleFx)
             m_vehicleFx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
@@ -363,9 +367,12 @@ private:
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
-        if (const auto* trailer = m_player->trailerModel())
+        setupVehicleRenderer(ctx, *m_vehicle);
+        if (const auto* trailer = m_player->trailerModel()) {
             m_trailer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, *trailer,
                                                                 m_result.config.vehicleColor, "TRAILER", "TWHL");
+            setupVehicleRenderer(ctx, *m_trailer);
+        }
         auto [pos, heading] = spawnPoint(ctx);
         if (m_session) {
             const Mat34 sp = m_session->playerSpawn();
@@ -471,6 +478,7 @@ private:
             opp.spawn = spawn;
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
+            setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
             opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model());
             if (m_ai) {
@@ -523,6 +531,7 @@ private:
             const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
+            setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
             cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model());
             m_cops.push_back(std::move(cop));
@@ -791,6 +800,27 @@ private:
                                                   : game::fx::Weather::Kind::None);
     }
 
+    // mmGame::InitWeather's light flag: evening, night or fog turn the car
+    // lights on.
+    bool carLights() const {
+        const auto t = m_result.config.timeOfDay;
+        return t == game::TimeOfDay::Evening || t == game::TimeOfDay::Night || m_result.config.weather == game::Weather::Fog;
+    }
+
+    // Object Detail, reflections and the shadow's ground probe of a car renderer.
+    void setupVehicleRenderer(Context& ctx, game::VehicleRenderer& r) {
+        r.setDetail(game::ObjectDetail::forLevel(static_cast<int>(ctx.settings.ini.getInt("Graphics", "ObjectDetail", 3))));
+        r.setReflections(ctx.settings.ini.getBool("Graphics", "VehicleReflections", true));
+        r.setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
+            phys::RayHit hit;
+            if (!m_world || !m_world->probe(from, to, hit))
+                return false;
+            point = hit.position;
+            normal = hit.normal;
+            return true;
+        });
+    }
+
     // vehCar's effects (tracks, wheel particles, damage and exhaust smoke) for
     // one car: the .vehCarDamage particle fields over the engine smoke
     // defaults, the exhaust pivots of its model.
@@ -808,14 +838,9 @@ private:
         return std::make_unique<game::fx::VehicleEffects>(m_effects, setup);
     }
 
-    // vehCar::UpdateTrack: no tracks while the car's room is an intersection.
-    game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim& sim) const {
-        game::fx::VehicleFxContext c;
-        const int room = m_cityRenderer->roomAt(sim.modelMatrix().m3);
-        if (room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size())
-            c.tracksAllowed = !(m_city->psdl.rooms[static_cast<std::size_t>(room)].flags & city::RoomFlag::Intersection);
-        return c;
-    }
+    // vehCar::UpdateTrack lays no tracks in rooms flagged by gizBridge (the
+    // opening bridges, not ported): everywhere else they are allowed.
+    game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim&) const { return {}; }
 
     void updateEffects(float dt) {
         if (m_player && m_vehicleFx)
@@ -823,9 +848,12 @@ private:
         for (auto& o : m_opponents)
             if (o.fx)
                 o.fx->update(dt, o.sim->sim(), vehicleFxContext(o.sim->sim()));
-        for (auto& c : m_cops)
+        for (auto& c : m_cops) {
             if (c.fx)
                 c.fx->update(dt, c.sim->sim(), vehicleFxContext(c.sim->sim()));
+            if (c.driver->siren())
+                c.sirenAngle = std::fmod(c.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
+        }
         if (m_weather)
             m_weather->update(dt, m_camera.transform);
     }
@@ -952,6 +980,7 @@ private:
                     rv.model = std::make_unique<asset::VehicleModel>(std::move(*model));
                     rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                           *rv.model, rv.color);
+                    setupVehicleRenderer(ctx, *rv.renderer);
                 }
             }
             if (!rv.renderer)
@@ -969,7 +998,7 @@ private:
             pose.headlights = (rc.flags & net::kVehicleHeadlights) != 0;
             pose.brakeLights = (rc.flags & net::kVehicleBrakeLights) != 0;
             pose.reverseLights = rc.controls.gear < 0;
-            rv.renderer->draw(pose, m_camera.position());
+            rv.renderer->draw(pose, m_camera.transform);
         }
     }
 
@@ -1245,6 +1274,7 @@ private:
         ai::PoliceCar* driver = nullptr; // owned by m_police
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
         std::unique_ptr<game::fx::VehicleEffects> fx;
+        float sirenAngle = 0.0f; // vehSiren::Update: 2.5 pi rad/s while on
     };
     std::unique_ptr<ai::PoliceSquad> m_police;
     std::vector<Cop> m_cops;

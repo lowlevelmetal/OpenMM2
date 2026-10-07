@@ -1,5 +1,7 @@
 #include "game/MeshDraw.h"
 
+#include <algorithm>
+
 namespace mm2::game {
 
 int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh& mesh,
@@ -16,7 +18,11 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
         call.first = d.firstIndex;
         call.baseVertex = d.baseVertex;
         call.constants.world = world;
-        const Vec4 diffuse = mat ? mat->diffuse : Vec4{1, 1, 1, 1};
+        // Without lighting Direct3D ignores the material: the vertex colour
+        // (white for the PKG's colourless vertices) times the texture. This
+        // is how MM2 draws pre-lit parts (gfxForceLVERTEX: shadows, light
+        // glows), whose materials are black.
+        const Vec4 diffuse = mat && options.lighting ? mat->diffuse : Vec4{1, 1, 1, 1};
         call.constants.color = {diffuse.x * options.tint.x, diffuse.y * options.tint.y, diffuse.z * options.tint.z,
                                 diffuse.w * options.tint.w};
         std::uint32_t flags = render::DrawFlag::VertexColor;
@@ -38,6 +44,11 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
         if (options.blend)
             call.state.blend = *options.blend;
         call.state.depthWrite = options.depthWrite;
+        if (options.depthBias) {
+            call.state.depthBias = true;
+            call.depthBias = 2.0f; // positive pulls towards the viewer (render::DrawCall)
+            call.depthBiasSlope = 1.0f;
+        }
         call.constants.flags = flags;
         call.state.cull = options.cull ? render::CullMode::Back : render::CullMode::None;
         call.state.frontFace = render::FrontFace::CounterClockwise;
@@ -45,6 +56,29 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
         ++calls;
     }
     return calls;
+}
+
+ObjectDetail ObjectDetail::forLevel(int level) {
+    switch (std::clamp(level, 0, 3)) {
+    case 0: return {20.0f, 70.0f, 150.0f, 200.0f};
+    case 1: return {30.0f, 90.0f, 175.0f, 250.0f};
+    case 2: return {40.0f, 100.0f, 200.0f, 300.0f};
+    default: return {70.0f, 130.0f, 200.0f, 300.0f};
+    }
+}
+
+std::optional<asset::Lod> objectLod(float depth, float radius, const ObjectDetail& detail,
+                                    std::optional<float> limit) {
+    if (limit && depth > *limit)
+        return std::nullopt;
+    const float d = depth - radius;
+    if (d > detail.vlow)
+        return asset::Lod::VeryLow;
+    if (d > detail.low)
+        return asset::Lod::Low;
+    if (d > detail.med)
+        return asset::Lod::Medium;
+    return asset::Lod::High;
 }
 
 } // namespace mm2::game
