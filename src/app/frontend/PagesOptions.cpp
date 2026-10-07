@@ -1,11 +1,18 @@
-// Options: main options page (opt_bk), graphics (gfx_bk), audio (aud_bk),
+// Options: the options menu (opt_bk), graphics (gfx_bk), audio (aud_bk),
 // controls (ctrl_bk), customize controls (cuss_bk) and about (about_bk).
+//
+// Widget order and positions follow MM2's menus (OptionsMenu, GraphicsOptions,
+// AudioOptions, ControlSetup, ControlCustom, AboutMenu) and tune/widget.csv;
+// see docs/frontend.md. MM2 keeps these settings per driver (<driver>.cfg,
+// mmPlayerConfig); OpenMM2 keeps them in openmm2.ini so that they apply
+// before a driver is chosen.
 #include "app/frontend/Frontend.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "platform/Window.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 
@@ -16,88 +23,98 @@ using ui::Box;
 using ui::SpriteSheet;
 using namespace layout;
 
-// Options that exist in the original's menus but have no OpenMM2 subsystem
-// yet are stored in the settings file so they survive until they do.
-float iniFloat(Context& ctx, const char* section, const char* key, float def) {
-    return std::clamp(static_cast<float>(ctx.settings.ini.getDouble(section, key, def)), 0.0f, 1.0f);
+// Dialogs of the customize page that menu_id does not name.
+constexpr int kControlWarningDialog = 21; // ctrl_dlg: "Duplicate key or button"
+constexpr int kRefusedDialog = 32;        // xasn_dlg: "You cannot assign this function"
+
+float iniFloat(Context& ctx, const char* section, const char* key, float def, float lo, float hi) {
+    return std::clamp(static_cast<float>(ctx.settings.ini.getDouble(section, key, def)), lo, hi);
 }
-int iniInt(Context& ctx, const char* section, const char* key, int def) {
-    return static_cast<int>(ctx.settings.ini.getInt(section, key, def));
+int iniInt(Context& ctx, const char* section, const char* key, int def, int lo, int hi) {
+    return static_cast<int>(std::clamp<long long>(ctx.settings.ini.getInt(section, key, def), lo, hi));
 }
 bool iniBool(Context& ctx, const char* section, const char* key, bool def) {
     return ctx.settings.ini.getBool(section, key, def);
 }
 
-// Applies the audio toggles on top of Context::applyAudioSettings().
-void applyAudio(Context& ctx) {
-    ctx.applyAudioSettings();
-    if (!ctx.mixer)
-        return;
-    if (!iniBool(ctx, "Audio", "SoundEffects", true)) {
-        ctx.mixer->setBusVolume(audio::Bus::Effects, 0);
-        ctx.mixer->setBusVolume(audio::Bus::Engine, 0);
-    }
-    if (!iniBool(ctx, "Audio", "Commentary", true))
-        ctx.mixer->setBusVolume(audio::Bus::Voice, 0);
-    if (!iniBool(ctx, "Audio", "Music", true))
-        ctx.mixer->setBusVolume(audio::Bus::Music, 0);
-    if (!iniBool(ctx, "Audio", "CitySounds", true))
-        ctx.mixer->setBusVolume(audio::Bus::Ambient, 0);
-}
-
-// An options sub-page: CANCEL restores the settings captured on entry, DONE
-// keeps and saves them.
+// An options sub-page (MM2 `OptionsBase`): widgets 0-2 are DEFAULTS, CANCEL
+// and DONE. DEFAULTS asks first (odef_dlg) and applies the defaults without
+// saving them; CANCEL, Escape and the strip's OPTIONS button restore the
+// settings the page was entered with; DONE keeps and saves them.
 class SettingsPage : public Page {
 public:
-    SettingsPage(Frontend& fe, const char* background) : m_savedSettings(fe.ctx.settings), m_savedDisplay(fe.ctx.display) {
+    SettingsPage(Frontend& fe, const char* background, int id)
+        : m_savedSettings(fe.ctx.settings), m_savedDisplay(fe.ctx.display), m_savedAutomatic(fe.config.automatic) {
+        menuId = id;
         menu.background = background;
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_can.tga", 4}, kBack.x, kBack.y, [this, &fe] { cancel(fe); })
-            .help = "jpg/opt_tbck.jpg";
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_done.tga", 4}, kNext.x, kNext.y, [this, &fe] { done(fe); });
+        const Vec2 def = fe.layout.position(id, 0, {347, 379});
+        const Vec2 can = fe.layout.position(id, 1, kBack);
+        const Vec2 dn = fe.layout.position(id, 2, kNext);
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_def.tga", 4}, def.x, def.y, [this, &fe] { askDefaults(fe); })
+            .sound = "Selectionmade";
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_can.tga", 4}, can.x, can.y, [this, &fe] { cancel(fe); })
+            .sound = "Selectionmade";
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_done.tga", 4}, dn.x, dn.y, [this, &fe] { done(fe); })
+            .sound = "Selectionmade";
         menu.onBack = [this, &fe] { cancel(fe); };
-        addNavStrip(fe, *this, false);
     }
 
 protected:
+    // Call after the page's own widgets: the strip's OPTIONS button cancels
+    // back to the options menu; option sub-pages have no PREV.
+    void finish(Frontend& fe) { addNavStrip(fe, *this, NavOptions::Cancel, [this, &fe] { cancel(fe); }); }
+
+    virtual void resetDefaults(Frontend& fe) = 0;
     virtual void cancel(Frontend& fe) {
         fe.ctx.settings = m_savedSettings;
-        applyAudio(fe.ctx);
+        fe.config.automatic = m_savedAutomatic;
+        fe.ctx.applyAudioSettings();
         fe.pop();
     }
     virtual void done(Frontend& fe) {
+        if (fe.profile && fe.profile->automatic != fe.config.automatic) {
+            fe.profile->automatic = fe.config.automatic;
+            fe.saveProfile();
+        }
         fe.ctx.saveSettings();
         fe.pop();
-    }
-    void addDefaults(Frontend& fe, float y, std::function<void()> reset) {
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_def.tga", 4}, 33, y, std::move(reset)).help = "jpg/opt_tdef.jpg";
-        (void)fe;
     }
 
     Settings m_savedSettings;
     render::DisplaySettings m_savedDisplay;
+    bool m_savedAutomatic;
+
+private:
+    void askDefaults(Frontend& fe) {
+        // odef_dlg: "Are you sure you want to restore the original settings?"
+        fe.dialog("jpg/odef_dlg.jpg", menu_id::kDefaults,
+                  {{"texture/dlg_ok.tga", {180, 176}, [this, &fe] { resetDefaults(fe); }},
+                   {"texture/dlg_can.tga", {18, 176}, {}}});
+    }
 };
 
 // --- Options --------------------------------------------------------------------------
 
+// OptionsMenu (menu 2): ABOUT, AUDIO, CONTROLS, GRAPHICS, then PREV.
 class OptionsPage final : public Page {
 public:
     explicit OptionsPage(Frontend& fe) {
+        menuId = menu_id::kOptions;
         menu.background = "jpg/opt_bk.jpg";
-        menu.defaultHelp = "jpg/opt_tbck.jpg";
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_aud.tga", 4}, kColumnX, kRow58,
-                                   [&fe] { fe.push(makeAudioPage(fe)); })
-            .help = "jpg/opt_taud.jpg";
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_ctl.tga", 4}, kColumnX, kRow56,
-                                   [&fe] { fe.push(makeControlPage(fe)); })
-            .help = "jpg/opt_tctl.jpg";
-        auto& gfx = menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_gfx.tga", 4}, kColumnX, kRow65,
-                                               [&fe] { fe.push(makeGraphicsPage(fe)); });
-        gfx.help = "jpg/opt_tgfx.jpg";
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_abt.tga", 4}, 25, 328, [&fe] { fe.push(makeAboutPage(fe)); })
-            .help = "jpg/opt_tabt.jpg";
-        addBack(fe, *this).help = "jpg/opt_tbck.jpg";
-        addNavStrip(fe, *this, false);
-        menu.focus(&gfx);
+        auto add = [&](int index, const char* sprite, Vec2 code, const char* help, std::function<void()> fn) {
+            const Vec2 p = fe.layout.position(menu_id::kOptions, index, code);
+            auto& b = menu.add<ui::SpriteButton>(SpriteSheet{sprite, 4}, p.x, p.y, std::move(fn));
+            b.help = help;
+            return &b;
+        };
+        auto* about = add(0, "texture/opt_abt.tga", {25, 328}, "jpg/opt_tabt.jpg", [&fe] { fe.push(makeAboutPage(fe)); });
+        add(1, "texture/opt_aud.tga", {kColumnX, kRow58}, "jpg/opt_taud.jpg", [&fe] { fe.push(makeAudioPage(fe)); });
+        add(2, "texture/opt_ctl.tga", {kColumnX, kRow56}, "jpg/opt_tctl.jpg", [&fe] { fe.push(makeControlPage(fe)); });
+        add(3, "texture/opt_gfx.tga", {kColumnX, kRow65}, "jpg/opt_tgfx.jpg", [&fe] { fe.push(makeGraphicsPage(fe)); });
+        // Widget 4 is the hidden "mnav_prev" hotspot that places the strip's PREV.
+        addBack(fe, *this);
+        addNavStrip(fe, *this, NavOptions::Lit);
+        menu.setInitialFocus(about); // UIMenu::Enable: widget 0
     }
 };
 
@@ -108,35 +125,55 @@ struct Resolution {
     float hz;
 };
 
+// [Graphics] keys and their MM2 defaults: the top tier of
+// mmGfxCFG::AutoDetect (a fast machine with a 3D card).
+constexpr float kDefaultFarClip = 1000.0f; // camera far plane, 100..1000 m
+constexpr int kDefaultLighting = 3;        // cityLevel::sm_LightQuality 0..3
+constexpr int kDefaultTexture = 2;         // AutoDetect never picks Very High
+constexpr int kDefaultObjectDetail = 3;
+constexpr int kDefaultCloudShadows = 2;
+
 class GraphicsPage final : public SettingsPage {
 public:
-    explicit GraphicsPage(Frontend& fe) : SettingsPage(fe, "jpg/gfx_bk.jpg"), m_pending(fe.ctx.display) {
+    explicit GraphicsPage(Frontend& fe)
+        : SettingsPage(fe, "jpg/gfx_bk.jpg", menu_id::kGraphics), m_pending(fe.ctx.display) {
         Context& ctx = fe.ctx;
+        const auto& s = ctx.game->strings;
+        const int id = menu_id::kGraphics;
         m_displays = platform::enumerateDisplays();
-        menu.defaultHelp = "jpg/opt_tgfx.jpg";
 
-        // DISPLAY: window mode.
+        // 3-6: toggles (silent). SMART RENDERING (gfx_port) is created and
+        // turned off at once in MM2, so it is never shown; the setting stays on.
+        addToggle(fe, 3, "texture/gfx_sky.tga", 62, "TexturedSky", "jpg/gfx_tsky.jpg");
+        addToggle(fe, 4, "texture/gfx_rflx.tga", 89, "VehicleReflections", "jpg/gfx_tfl.jpg");
+        addToggle(fe, 5, "texture/gfx_peds.tga", 116, "ShowPedestrians", "jpg/gfx_tped.jpg");
+        addToggle(fe, 6, "texture/gfx_port.tga", 143, "SmartRendering", "").visible = false;
+
+        // 7-9: DISPLAY, RENDERER, RESOLUTION. MM2 lists display adapters,
+        // software/hardware renderers and "W x H (N bit color)" modes here;
+        // OpenMM2 uses the slots for the window mode, Vulkan/OpenGL and the
+        // window size or exclusive mode. MM2's DISPLAY help picture
+        // (gfx_td...) is missing from the data.
         menu.add<ui::ValueBox>(
-            Box{kBoxX, 62, kBoxWide, kBoxH},
+            fe.layout.widget(id, 7, {kBoxX, 62, kBoxWide, kBoxH}),
             [] { return std::vector<std::string>{"Window", "Full Screen (Desktop)", "Full Screen (Exclusive)"}; },
             [this] { return static_cast<int>(m_pending.windowMode); },
             [this](int i) {
                 m_pending.windowMode = static_cast<platform::WindowMode>(i);
                 m_resolutions = resolutions();
             });
-        // RENDERER
         menu.add<ui::ValueBox>(
-            Box{kBoxX, 100, kBoxWide, kBoxH},
-            [&ctx] {
-                const std::string active = render::backendName(ctx.device().backend());
-                return std::vector<std::string>{"Automatic (" + active + ")", "Vulkan", "OpenGL"};
-            },
-            [this] { return static_cast<int>(m_pending.backend); },
-            [this](int i) { m_pending.backend = static_cast<render::Backend>(i); });
-        // RESOLUTION
+                fe.layout.widget(id, 8, {kBoxX, 100, kBoxWide, kBoxH}),
+                [&ctx] {
+                    const std::string active = render::backendName(ctx.device().backend());
+                    return std::vector<std::string>{"Automatic (" + active + ")", "Vulkan", "OpenGL"};
+                },
+                [this] { return static_cast<int>(m_pending.backend); },
+                [this](int i) { m_pending.backend = static_cast<render::Backend>(i); })
+            .help = "jpg/gfx_tren.jpg";
         m_resolutions = resolutions();
-        menu.add<ui::ValueBox>(
-            Box{kBoxX, 135, kBoxWide, kBoxH},
+        auto& resolution = menu.add<ui::ValueBox>(
+            fe.layout.widget(id, 9, {kBoxX, 135, kBoxWide, kBoxH}),
             [this] {
                 std::vector<std::string> v;
                 for (const auto& r : m_resolutions)
@@ -146,49 +183,69 @@ public:
                 return v;
             },
             [this] { return currentResolution(); }, [this](int i) { setResolution(i); });
-        // Grid: VISIBILITY, LIGHTING QUALITY.
-        menu.add<ui::Slider>(Box{471, 179, 139, 33}, [&ctx] { return iniFloat(ctx, "Graphics", "Visibility", 1.0f); },
-                             [&ctx](float v) { ctx.settings.ini.setDouble("Graphics", "Visibility", v); });
-        menu.add<ui::Slider>(Box{471, 212, 139, 33}, [&ctx] { return iniFloat(ctx, "Graphics", "Lighting", 1.0f); },
-                             [&ctx](float v) { ctx.settings.ini.setDouble("Graphics", "Lighting", v); });
-        const auto& s = ctx.game->strings;
-        const std::vector<std::string> quality = {s.get(574, "Low"), s.get(575, "Medium"), s.get(576, "High"),
-                                                  s.get(577, "Very High")};
-        addChoice(ctx, Box{kBoxX, 261, kBoxWide, kBoxH}, "TextureQuality", quality, 3);
-        addChoice(ctx, Box{kBoxX, 298, kBoxMid, 27}, "ObjectDetail", quality, 3);
-        addChoice(ctx, Box{kBoxX, 333, kBoxMid, 27}, "CloudShadows",
-                  {s.get(660, "None"), s.get(661, "Low"), s.get(662, "High")}, 2);
+        resolution.help = "jpg/gfx_tres.jpg";
 
-        addToggle(ctx, "texture/gfx_sky.tga", 64, "TexturedSky");
-        addToggle(ctx, "texture/gfx_rflx.tga", 91, "VehicleReflections");
-        addToggle(ctx, "texture/gfx_peds.tga", 118, "ShowPedestrians");
-        addToggle(ctx, "texture/gfx_port.tga", 145, "SmartRendering");
+        // 10-11: FAR CLIP (VISIBILITY) in metres and LIGHTING QUALITY 0-3.
+        // Lighting snaps to whole steps, up when raised and down when lowered
+        // (GraphicsOptions::SetLightQuality).
+        menu.add<ui::Slider>(
+                fe.layout.widget(id, 10, {450, 179, 184, 29}),
+                [&ctx] { return iniFloat(ctx, "Graphics", "FarClip", kDefaultFarClip, 100.0f, 1000.0f); },
+                [&ctx](float v) { ctx.settings.ini.setDouble("Graphics", "FarClip", v); }, 100.0f, 1000.0f)
+            .help = "jpg/gfx_tfp.jpg";
+        menu.add<ui::Slider>(
+                fe.layout.widget(id, 11, {450, 213, 184, 29}),
+                [&ctx] {
+                    return static_cast<float>(iniInt(ctx, "Graphics", "LightingQuality", kDefaultLighting, 0, 3));
+                },
+                [&ctx](float v) {
+                    const int old = iniInt(ctx, "Graphics", "LightingQuality", kDefaultLighting, 0, 3);
+                    const int snapped = static_cast<int>(v > static_cast<float>(old) ? std::ceil(v) : std::floor(v));
+                    ctx.settings.ini.setInt("Graphics", "LightingQuality", std::clamp(snapped, 0, 3));
+                },
+                0.0f, 3.0f)
+            .help = "jpg/gfx_tlq.jpg";
+
+        // 12-14: TEXTURE QUALITY (390-393, " - Recommended" (389) after the
+        // level AutoDetect picks), OBJECT DETAIL (574-577), CLOUD SHADOWS
+        // (660, 661, 576).
+        std::vector<std::string> texture = {s.get(390, "Low"), s.get(391, "Medium"), s.get(392, "High"),
+                                            s.get(393, "Very High [AGP]")};
+        texture[kDefaultTexture] += s.get(389, " - Recommended");
+        addChoice(fe, 12, Box{kBoxX, 261, kBoxWide, kBoxH}, "TextureQuality", texture, kDefaultTexture,
+                  "jpg/gfx_ttq.jpg");
+        addChoice(fe, 13, Box{kBoxX, 298, kBoxMid, kBoxH}, "ObjectDetail",
+                  {s.get(574, "Low"), s.get(575, "Medium"), s.get(576, "High"), s.get(577, "Very High")},
+                  kDefaultObjectDetail, "jpg/gfx_tobj.jpg");
+        addChoice(fe, 14, Box{kBoxX, 333, kBoxMid, kBoxH}, "CloudShadows",
+                  {s.get(660, "None"), s.get(661, "Low"), s.get(576, "High")}, kDefaultCloudShadows,
+                  "jpg/gfx_shd.jpg");
 
         addAdvanced(fe);
-        addDefaults(fe, 345, [this, &ctx] {
-            m_pending = render::DisplaySettings{};
-            m_pending.backend = ctx.display.backend;
-            for (const char* k : {"Visibility", "Lighting", "TextureQuality", "ObjectDetail", "CloudShadows",
-                                  "TexturedSky", "VehicleReflections", "ShowPedestrians", "SmartRendering"})
-                ctx.settings.ini.remove("Graphics", k);
-            m_resolutions = resolutions();
-        });
+        finish(fe);
+        // MM2 appears to focus RESOLUTION on entry (the SetFocusWidget
+        // argument is not recovered; inferred).
+        menu.setInitialFocus(&resolution);
     }
 
-    void drawBelow(Frontend& fe, ui::UiFrame& f) override {
-        // Panel for the options the original did not have (lower-left).
+    void drawBelow(Frontend&, ui::UiFrame& f) override {
+        // Panel for the options MM2 did not have, on the empty lower-left art.
         f.overlay.rect(30, 192, 242, 188, render::packColor(8, 2, 46, 215));
         const auto font = ui::style::smallFont();
         const char* labels[] = {"VSYNC", "ANTI-ALIASING", "RENDER SCALE", "UI SCALE", "FIELD OF VIEW"};
         for (int i = 0; i < 5; ++i)
-            f.text.draw(f.overlay, font, labels[i], 38, 200 + 28.0f * static_cast<float>(i) + 5, ui::style::kValueText);
-        if (!m_notice.empty())
-            f.text.drawWrapped(f.overlay, font, m_notice, 280, 380, 150, ui::style::kHelpText);
-        (void)fe;
+            f.text.draw(f.overlay, font, labels[i], 38, 200 + 28.0f * static_cast<float>(i) + 4, ui::style::kValueText);
     }
 
 protected:
-    void cancel(Frontend& fe) override { SettingsPage::cancel(fe); }
+    void resetDefaults(Frontend& fe) override {
+        m_pending = render::DisplaySettings{};
+        m_pending.backend = fe.ctx.display.backend;
+        for (const char* k : {"FarClip", "LightingQuality", "TextureQuality", "ObjectDetail", "CloudShadows",
+                              "TexturedSky", "VehicleReflections", "ShowPedestrians", "SmartRendering"})
+            fe.ctx.settings.ini.remove("Graphics", k);
+        m_resolutions = resolutions();
+    }
 
     void done(Frontend& fe) override {
         Context& ctx = fe.ctx;
@@ -208,23 +265,30 @@ protected:
     }
 
 private:
-    void addChoice(Context& ctx, Box b, const char* key, std::vector<std::string> options, int def) {
+    void addChoice(Frontend& fe, int index, Box code, const char* key, std::vector<std::string> options, int def,
+                   const char* help) {
+        Context& ctx = fe.ctx;
         menu.add<ui::ValueBox>(
-            b, [options] { return options; },
-            [&ctx, key, def, n = static_cast<int>(options.size())] {
-                return std::clamp(iniInt(ctx, "Graphics", key, def), 0, n - 1);
-            },
-            [&ctx, key](int i) { ctx.settings.ini.setInt("Graphics", key, i); });
+                fe.layout.widget(menu_id::kGraphics, index, code), [options] { return options; },
+                [&ctx, key, def, n = static_cast<int>(options.size())] {
+                    return iniInt(ctx, "Graphics", key, def, 0, n - 1);
+                },
+                [&ctx, key](int i) { ctx.settings.ini.setInt("Graphics", key, i); })
+            .help = help;
     }
 
-    void addToggle(Context& ctx, const char* sprite, float y, const char* key) {
-        menu.add<ui::LampItem>(
-            SpriteSheet{sprite, 5}, kLampX, y, [&ctx, key] { return iniBool(ctx, "Graphics", key, true); },
+    ui::LampItem& addToggle(Frontend& fe, int index, const char* sprite, float y, const char* key, const char* help) {
+        Context& ctx = fe.ctx;
+        const Vec2 p = fe.layout.position(menu_id::kGraphics, index, {kLampX, y});
+        auto& lamp = menu.add<ui::LampItem>(
+            SpriteSheet{sprite, 5}, p.x, p.y, [&ctx, key] { return iniBool(ctx, "Graphics", key, true); },
             [&ctx, key] { ctx.settings.ini.setBool("Graphics", key, !iniBool(ctx, "Graphics", key, true)); });
+        lamp.help = help;
+        return lamp;
     }
 
     void addAdvanced(Frontend& fe) {
-        const float x = 140, w = 128, h = 24;
+        const float x = 140, w = 128, h = 23;
         auto row = [](int i) { return 200 + 28.0f * static_cast<float>(i); };
         menu.add<ui::ValueBox>(
             Box{x, row(0), w, h}, [] { return std::vector<std::string>{"Off", "On", "Adaptive", "Fast (Mailbox)"}; },
@@ -336,267 +400,590 @@ private:
     render::DisplaySettings m_pending;
     std::vector<platform::DisplayInfo> m_displays;
     std::vector<Resolution> m_resolutions;
-    std::string m_notice;
 };
 
 // --- Audio --------------------------------------------------------------------------------
 
 class AudioPage final : public SettingsPage {
 public:
-    explicit AudioPage(Frontend& fe) : SettingsPage(fe, "jpg/aud_bk.jpg") {
+    explicit AudioPage(Frontend& fe) : SettingsPage(fe, "jpg/aud_bk.jpg", menu_id::kAudio) {
         Context& ctx = fe.ctx;
-        menu.defaultHelp = "jpg/opt_taud.jpg";
-        auto& dev = menu.add<ui::ValueBox>(
-            Box{kBoxX, 62, kBoxWide, kBoxH},
+        const auto& s = ctx.game->strings;
+        const int id = menu_id::kAudio;
+        auto& st = ctx.settings;
+
+        // 3-6: SOUND FX, COMMENTARY, MUSIC, CITY SOUNDS (silent toggles,
+        // greyed without a sound device). Music and city sounds exclude each
+        // other (AudioOptions::ToggleMusic / ToggleAmbient); both may be off.
+        addToggle(fe, 3, "texture/aud_fx.tga", 62, "jpg/aud_tfx.jpg", [&st] { return st.soundEffects; },
+                  [&st] { st.soundEffects = !st.soundEffects; });
+        addToggle(fe, 4, "texture/aud_com.tga", 91, "jpg/aud_tcom.jpg", [&st] { return st.commentary; },
+                  [&st] { st.commentary = !st.commentary; });
+        addToggle(fe, 5, "texture/aud_musc.tga", 125, "jpg/aud_tmus.jpg", [&st] { return st.music; }, [&st] {
+            st.music = !st.music;
+            if (st.music)
+                st.citySounds = false;
+        });
+        addToggle(fe, 6, "texture/aud_amb.tga", 152, "jpg/aud_tcty.jpg", [&st] { return st.citySounds; }, [&st] {
+            st.citySounds = !st.citySounds;
+            if (st.citySounds)
+                st.music = false;
+        });
+
+        // 7-9: DEVICE, STEREO FX (326 Mono / 327 Stereo), SOUND QUALITY
+        // (574-576). Quality picks 8/16/32 voices in MM2; OpenMM2 maps Low to
+        // the 11 kHz sounds and Medium/High to the 22 kHz ones.
+        auto& device = menu.add<ui::ValueBox>(
+            fe.layout.widget(id, 7, {kBoxX, 62, kBoxWide, kBoxH}),
             [&ctx] {
                 const std::string n = ctx.audioDevice.deviceName();
                 return std::vector<std::string>{n.empty() ? std::string("No sound device") : n};
             },
             [] { return 0; }, [](int) {});
-        dev.enabled = false;
-        const auto& s = ctx.game->strings;
         menu.add<ui::ValueBox>(
-            Box{kBoxX, 100, kBoxMid, kBoxH},
+            fe.layout.widget(id, 8, {kBoxX, 100, kBoxMid, kBoxH}),
             [s1 = s.get(326, "Mono"), s2 = s.get(327, "Stereo")] { return std::vector<std::string>{s1, s2}; },
-            [&ctx] { return iniBool(ctx, "Audio", "Stereo", true) ? 1 : 0; },
-            [&ctx](int i) { ctx.settings.ini.setBool("Audio", "Stereo", i == 1); });
+            [&st] { return st.stereo ? 1 : 0; }, [&st](int i) { st.stereo = i == 1; });
         menu.add<ui::ValueBox>(
-            Box{kBoxX, 134, kBoxMid, kBoxH},
-            [lo = s.get(390, "Low"), hi = s.get(392, "High")] { return std::vector<std::string>{lo, hi}; },
-            [&ctx] { return ctx.settings.audioHighQuality ? 1 : 0; },
-            [&ctx](int i) { ctx.settings.audioHighQuality = i == 1; });
-        // SOUND FX VOLUME drives every effects bus; MUSIC/CITY drives music and
-        // city ambience ("The original had one Music/City volume").
-        menu.add<ui::Slider>(Box{471, 210, 139, 33}, [&ctx] { return ctx.settings.effectsVolume; },
+            fe.layout.widget(id, 9, {kBoxX, 134, kBoxMid, kBoxH}),
+            [lo = s.get(574, "Low"), mid = s.get(575, "Medium"), hi = s.get(576, "High")] {
+                return std::vector<std::string>{lo, mid, hi};
+            },
+            [&st] { return st.soundQuality; },
+            [&st](int i) {
+                st.soundQuality = i;
+                st.audioHighQuality = i >= 1;
+            });
+
+        // 10-12: SOUND FX VOLUME (effects, engines, voices), MUSIC/CITY
+        // VOLUME (music and ambience), BALANCE -1..1 with the normal arrows.
+        // MM2 maps the volumes through a log-200 curve
+        // (AudManager::AssignWaveVolume); OpenMM2's mixer gains stay linear.
+        menu.add<ui::Slider>(fe.layout.widget(id, 10, {450, 212, 183, 29}), [&st] { return st.effectsVolume; },
                              [&ctx](float v) {
                                  ctx.settings.effectsVolume = ctx.settings.engineVolume = ctx.settings.voiceVolume = v;
-                                 applyAudio(ctx);
+                                 ctx.applyAudioSettings();
                              });
-        menu.add<ui::Slider>(Box{471, 243, 139, 33}, [&ctx] { return ctx.settings.musicVolume; },
+        menu.add<ui::Slider>(fe.layout.widget(id, 11, {450, 246, 183, 29}), [&st] { return st.musicVolume; },
                              [&ctx](float v) {
                                  ctx.settings.musicVolume = ctx.settings.ambientVolume = v;
-                                 applyAudio(ctx);
+                                 ctx.applyAudioSettings();
                              });
-        menu.add<ui::Slider>(Box{471, 276, 139, 33}, [&ctx] { return iniFloat(ctx, "Audio", "Balance", 0.5f); },
-                             [&ctx](float v) { ctx.settings.ini.setDouble("Audio", "Balance", v); })
-            .balance = true;
-        addToggle(ctx, "texture/aud_fx.tga", 64, "SoundEffects");
-        addToggle(ctx, "texture/aud_com.tga", 91, "Commentary");
-        addToggle(ctx, "texture/aud_musc.tga", 125, "Music");
-        addToggle(ctx, "texture/aud_amb.tga", 152, "CitySounds");
-        addDefaults(fe, 345, [&ctx] {
-            const Settings d;
-            ctx.settings.effectsVolume = d.effectsVolume;
-            ctx.settings.engineVolume = d.engineVolume;
-            ctx.settings.voiceVolume = d.voiceVolume;
-            ctx.settings.musicVolume = d.musicVolume;
-            ctx.settings.ambientVolume = d.ambientVolume;
-            ctx.settings.audioHighQuality = d.audioHighQuality;
-            for (const char* k : {"Stereo", "Balance", "SoundEffects", "Commentary", "Music", "CitySounds"})
-                ctx.settings.ini.remove("Audio", k);
-            applyAudio(ctx);
-        });
+        menu.add<ui::Slider>(
+            fe.layout.widget(id, 12, {450, 280, 183, 29}), [&st] { return st.balance; },
+            [&ctx](float v) {
+                ctx.settings.balance = v;
+                ctx.applyAudioSettings();
+            },
+            -1.0f, 1.0f);
+        finish(fe);
+        // MM2 appears to focus DEVICE on entry (inferred, as for Graphics).
+        menu.setInitialFocus(&device);
+    }
+
+protected:
+    void resetDefaults(Frontend& fe) override {
+        // AudioOptions::ResetDefaultAction: volumes 1, 1, balance 0; sound FX
+        // and commentary on, music off, city sounds on, stereo, high quality.
+        // Applied at once, saved only with DONE.
+        auto& st = fe.ctx.settings;
+        const Settings d;
+        st.effectsVolume = st.engineVolume = st.voiceVolume = 1.0f;
+        st.musicVolume = st.ambientVolume = 1.0f;
+        st.balance = 0.0f;
+        st.soundEffects = d.soundEffects;
+        st.commentary = d.commentary;
+        st.music = d.music;
+        st.citySounds = d.citySounds;
+        st.stereo = d.stereo;
+        st.soundQuality = d.soundQuality;
+        st.audioHighQuality = d.audioHighQuality;
+        fe.ctx.applyAudioSettings();
     }
 
 private:
-    void addToggle(Context& ctx, const char* sprite, float y, const char* key) {
-        menu.add<ui::LampItem>(
-            SpriteSheet{sprite, 5}, kLampX, y, [&ctx, key] { return iniBool(ctx, "Audio", key, true); },
-            [&ctx, key] {
-                ctx.settings.ini.setBool("Audio", key, !iniBool(ctx, "Audio", key, true));
-                applyAudio(ctx);
-            });
+    void addToggle(Frontend& fe, int index, const char* sprite, float y, const char* help, std::function<bool()> on,
+                   std::function<void()> flip) {
+        Context& ctx = fe.ctx;
+        const Vec2 p = fe.layout.position(menu_id::kAudio, index, {kLampX, y});
+        auto& lamp = menu.add<ui::LampItem>(SpriteSheet{sprite, 5}, p.x, p.y, std::move(on),
+                                            [&ctx, flip = std::move(flip)] {
+                                                flip();
+                                                ctx.applyAudioSettings();
+                                            });
+        lamp.help = help;
+        lamp.enabled = ctx.audioDevice.isOpen();
     }
 };
 
 // --- Controls --------------------------------------------------------------------------------
 
+// MM2's five controller types (mmInput devices 0-4; strings 580-584).
+enum class Controller { Mouse, Keyboard, Joystick, GamePad, Wheel };
+
+// [Controls] keys in MM2 units, with mmPlayerConfig::DefaultControls values.
+struct ControlDefaults {
+    static constexpr float kSensitivity = 1.0f; // 0.5 .. 2.0 (input gain is its inverse)
+    static constexpr float kDeadZone = 0.1f;    // 0 .. 0.33
+    static constexpr float kCollision = 1.0f;   // force feedback, 0 .. 2
+    static constexpr float kRoadForce = 1.0f;   // 0 .. 2
+};
+
+Controller controller(Context& ctx) {
+    return static_cast<Controller>(iniInt(ctx, "Controls", "Controller", static_cast<int>(Controller::Keyboard), 0, 4));
+}
+
+bool joystickConnected(Context& ctx) { return !ctx.input.gamepads().empty() || !ctx.input.joysticks().empty(); }
+
 class ControlPage final : public SettingsPage {
 public:
-    explicit ControlPage(Frontend& fe) : SettingsPage(fe, "jpg/ctrl_bk.jpg") {
+    explicit ControlPage(Frontend& fe) : SettingsPage(fe, "jpg/ctrl_bk.jpg", menu_id::kControl) {
         Context& ctx = fe.ctx;
-        menu.defaultHelp = "jpg/opt_tctl.jpg";
-        menu.add<ui::ValueBox>(
-            Box{kBoxX, 71, kBoxWide, kBoxH}, [&ctx] { return devices(ctx); },
-            [&ctx] {
-                const auto list = devices(ctx);
-                const std::string cur = ctx.settings.ini.getString("Controls", "Device", "Keyboard");
-                for (std::size_t i = 0; i < list.size(); ++i)
-                    if (list[i] == cur)
-                        return static_cast<int>(i);
-                return 0;
-            },
-            [&ctx](int i) { ctx.settings.ini.set("Controls", "Device", devices(ctx)[static_cast<std::size_t>(i)]); });
-        addSlider(ctx, Box{471, 105, 139, 34}, "SteeringSensitivity", 0.5f);
-        addSlider(ctx, Box{471, 139, 139, 34}, "DeadZone", 0.1f);
-        addSlider(ctx, Box{471, 242, 139, 33}, "CollisionIntensity", 0.5f);
-        addSlider(ctx, Box{471, 275, 139, 33}, "RoadForceIntensity", 0.5f);
-        addToggle(ctx, "texture/ctrl_aut.tga", 64, "AutoReverse");
-        addToggle(ctx, "texture/ctrl_pov.tga", 91, "UsePovHat");
-        addToggle(ctx, "texture/ctrl_fbk.tga", 118, "ForceFeedback");
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/ctrl_cal.tga", 4}, 460, 180, [&fe] {
+        const auto& s = ctx.game->strings;
+        const int id = menu_id::kControl;
+
+        // 3-5: AUTO REVERSE (on), POV HAT (off), FORCE FEEDBACK (off).
+        m_autoReverse = &addToggle(fe, 3, "texture/ctrl_aut.tga", 64, "AutoReverse", true, "jpg/ctl_trev.jpg");
+        m_pov = &addToggle(fe, 4, "texture/ctrl_pov.tga", 91, "UsePovHat", false, "jpg/ctl_tpov.jpg");
+        m_feedback = &addToggle(fe, 5, "texture/ctrl_fbk.tga", 118, "ForceFeedback", false, "jpg/ctl_tffb.jpg");
+
+        // 6: CONTROLLERS, the five fixed types; the joystick types are greyed
+        // without a joystick (ControlSetup::ControlSelect).
+        auto& device = menu.add<ui::ValueBox>(
+            fe.layout.widget(id, 6, {kBoxX, 71, kBoxWide, kBoxH}),
+            [names = std::vector<std::string>{s.get(580, "Mouse"), s.get(581, "Keyboard"), s.get(582, "Joystick"),
+                                              s.get(583, "Game Pad"), s.get(584, "Steering Wheel")}] { return names; },
+            [&ctx] { return static_cast<int>(controller(ctx)); },
+            [&ctx](int i) { ctx.settings.ini.setInt("Controls", "Controller", i); });
+        device.optionEnabled = [&ctx](int i) { return i < 2 || joystickConnected(ctx); };
+        device.help = "jpg/ctl_tcon.jpg";
+
+        // 7-8: STEERING SENSITIVITY, CONTROLLER DEAD ZONE.
+        m_sensitivity = &addSlider(fe, 7, {450, 108, 186, 29}, "Sensitivity", ControlDefaults::kSensitivity, 0.5f,
+                                   2.0f, "jpg/ctl_tss.jpg");
+        // The dead-zone picture is not named in the recovered list; ctl_dd's
+        // text describes it (inferred).
+        m_deadZone = &addSlider(fe, 8, {450, 142, 186, 29}, "DeadZone", ControlDefaults::kDeadZone, 0.0f, 0.33f,
+                                "jpg/ctl_dd.jpg");
+
+        // 9: CALIBRATE. MM2 opens the Windows game-controller panel; OpenMM2
+        // leaves calibration to the operating system.
+        const Vec2 cal = fe.layout.position(id, 9, {460, 180});
+        m_calibrate = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/ctrl_cal.tga", 4}, cal.x, cal.y, [&fe] {
             fe.message("Calibration is handled by the operating system; use the dead zone setting to adjust.");
         });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/ctrl_cus.tga", 4}, 346, 314,
-                                   [&fe] { fe.push(makeCustomizeControlsPage(fe)); });
-        addDefaults(fe, 345, [&ctx] {
-            for (const auto& k : ctx.settings.ini.keys("Controls"))
-                if (!k.starts_with("Bind."))
-                    ctx.settings.ini.remove("Controls", k);
-        });
+        m_calibrate->help = "jpg/ctl_tcal.jpg";
+
+        // 10-11: force-feedback COLLISION and ROAD FORCE intensity.
+        m_collision = &addSlider(fe, 10, {450, 246, 186, 29}, "FFCollision", ControlDefaults::kCollision, 0.0f, 2.0f,
+                                 "jpg/ctl_titn.jpg");
+        m_roadForce = &addSlider(fe, 11, {450, 280, 186, 29}, "FFRoadForce", ControlDefaults::kRoadForce, 0.0f, 2.0f,
+                                 "jpg/ctl_trf.jpg");
+
+        // 12: CUSTOMIZE CONTROLS.
+        const Vec2 cus = fe.layout.position(id, 12, {348, 315});
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/ctrl_cus.tga", 4}, cus.x, cus.y,
+                                   [&fe] { fe.push(makeCustomizeControlsPage(fe)); })
+            .help = "jpg/ctl_tcus.jpg";
+        finish(fe);
+    }
+
+    // Which widgets the controller type uses (ControlSetup::CreateDeviceOptions).
+    void update(Frontend& fe, double) override {
+        Context& ctx = fe.ctx;
+        const Controller c = controller(ctx);
+        const bool stick = c == Controller::Joystick || c == Controller::Wheel;
+        const bool feedbackDevice = stick && joystickConnected(ctx);
+        m_autoReverse->enabled = true;
+        m_sensitivity->enabled = c == Controller::Mouse || stick;
+        m_deadZone->enabled = c == Controller::Mouse || stick;
+        // OpenMM2 cannot tell whether a stick has a POV hat; any joystick may use it.
+        m_pov->enabled = c == Controller::Joystick;
+        m_feedback->enabled = feedbackDevice;
+        const bool feedbackOn = feedbackDevice && iniBool(ctx, "Controls", "ForceFeedback", false);
+        m_collision->enabled = feedbackOn;
+        m_roadForce->enabled = feedbackOn;
+        m_calibrate->enabled = stick;
+    }
+
+protected:
+    void cancel(Frontend& fe) override {
+        // Bindings kept with the customize page's DONE stay (MM2 restores
+        // from the driver's saved configuration, which DONE wrote).
+        auto& ini = fe.ctx.settings.ini;
+        for (const auto& k : m_savedSettings.ini.keys("Controls"))
+            if (k.starts_with("Bind."))
+                m_savedSettings.ini.remove("Controls", k);
+        for (const auto& k : ini.keys("Controls"))
+            if (k.starts_with("Bind."))
+                m_savedSettings.ini.set("Controls", k, ini.getString("Controls", k));
+        SettingsPage::cancel(fe);
+    }
+
+    void resetDefaults(Frontend& fe) override {
+        // The defaults, plus an automatic transmission and the keyboard
+        // (mmInput::AutoSetup); key bindings are left alone.
+        auto& ini = fe.ctx.settings.ini;
+        for (const auto& k : ini.keys("Controls"))
+            if (!k.starts_with("Bind."))
+                ini.remove("Controls", k);
+        ini.setInt("Controls", "Controller", static_cast<int>(Controller::Keyboard));
+        fe.config.automatic = true;
     }
 
 private:
-    static std::vector<std::string> devices(Context& ctx) {
-        const auto& s = ctx.game->strings;
-        std::vector<std::string> v = {s.get(581, "Keyboard"), s.get(580, "Mouse")};
-        for (const auto& pad : ctx.input.gamepads())
-            v.push_back(pad.name);
-        for (const auto& js : ctx.input.joysticks())
-            v.push_back(js.name);
-        return v;
+    ui::LampItem& addToggle(Frontend& fe, int index, const char* sprite, float y, const char* key, bool def,
+                            const char* help) {
+        Context& ctx = fe.ctx;
+        const Vec2 p = fe.layout.position(menu_id::kControl, index, {kLampX, y});
+        auto& lamp = menu.add<ui::LampItem>(
+            SpriteSheet{sprite, 5}, p.x, p.y, [&ctx, key, def] { return iniBool(ctx, "Controls", key, def); },
+            [&ctx, key, def] { ctx.settings.ini.setBool("Controls", key, !iniBool(ctx, "Controls", key, def)); });
+        lamp.help = help;
+        return lamp;
     }
-    void addSlider(Context& ctx, Box b, const char* key, float def) {
-        menu.add<ui::Slider>(b, [&ctx, key, def] { return iniFloat(ctx, "Controls", key, def); },
-                             [&ctx, key](float v) { ctx.settings.ini.setDouble("Controls", key, v); });
+
+    ui::Slider& addSlider(Frontend& fe, int index, Box code, const char* key, float def, float lo, float hi,
+                          const char* help) {
+        Context& ctx = fe.ctx;
+        auto& slider = menu.add<ui::Slider>(
+            fe.layout.widget(menu_id::kControl, index, code),
+            [&ctx, key, def, lo, hi] { return iniFloat(ctx, "Controls", key, def, lo, hi); },
+            [&ctx, key](float v) { ctx.settings.ini.setDouble("Controls", key, v); }, lo, hi);
+        slider.help = help;
+        return slider;
     }
-    void addToggle(Context& ctx, const char* sprite, float y, const char* key) {
-        menu.add<ui::LampItem>(
-            SpriteSheet{sprite, 5}, kLampX, y, [&ctx, key] { return iniBool(ctx, "Controls", key, true); },
-            [&ctx, key] { ctx.settings.ini.setBool("Controls", key, !iniBool(ctx, "Controls", key, true)); });
-    }
+
+    ui::LampItem* m_autoReverse = nullptr;
+    ui::LampItem* m_pov = nullptr;
+    ui::LampItem* m_feedback = nullptr;
+    ui::Slider* m_sensitivity = nullptr;
+    ui::Slider* m_deadZone = nullptr;
+    ui::Slider* m_collision = nullptr;
+    ui::Slider* m_roadForce = nullptr;
+    ui::SpriteButton* m_calibrate = nullptr;
 };
 
 // --- Customize controls ----------------------------------------------------------------------
 
-// Default keyboard bindings for the actions of string ids 276-309 (inferred
-// from common MM2 defaults; stored as [Controls] Bind.<id> = <key name>).
-platform::Key defaultKey(std::uint32_t id) {
-    using platform::Key;
-    switch (id) {
-    case 276: return Key::C;       // Change Camera
-    case 278: return Key::T;       // Transmission
-    case 279: return Key::H;       // Horn
-    case 280: return Key::Up;      // Throttle
-    case 281: return Key::Down;    // Brakes
-    case 283: return Key::Left;    // Steer Left
-    case 284: return Key::Right;   // Steer Right
-    case 285: return Key::X;       // Look Right
-    case 286: return Key::Z;       // Look Left
-    case 287: return Key::B;       // Look Back
-    case 290: return Key::D;       // Dashboard On/Off
-    case 291: return Key::A;       // Shift Up
-    case 292: return Key::Q;       // Shift Down
-    case 293: return Key::R;       // Reverse
-    case 296: return Key::M;       // Map Toggle
-    case 297: return Key::F2;      // HUD Toggle
-    case 298: return Key::F3;      // Full Screen Map
-    case 299: return Key::Equals;  // Map Zoom
-    case 305: return Key::F4;      // Rear View Mirror
-    case 307: return Key::Space;   // Handbrake
-    case 308: return Key::O;       // Opponent Position
-    case 309: return Key::Return;  // Enter Chat Msg
-    default: return Key::Unknown;
-    }
+// MM2's 34 action slots in list order with their keyboard defaults
+// (mmInput::SetDefaultConfig, device 1). Bindings are stored as
+// [Controls] Bind.<string id> = <key name>.
+struct ActionSlot {
+    std::uint32_t stringId;
+    platform::Key key;
+    bool keyboard; // listed for the keyboard (Steering and Camera Pan are not)
+};
+
+using platform::Key;
+constexpr std::array<ActionSlot, 34> kActions = {{
+    {296, Key::Tab, true},       // Map Toggle
+    {298, Key::Q, true},         // Full Screen Map
+    {299, Key::E, true},         // Map Zoom
+    {300, Key::F, true},         // Rotating Map
+    {297, Key::H, true},         // HUD Toggle
+    {282, Key::Unknown, false},  // Steering (an axis)
+    {283, Key::Left, true},      // Steer Left
+    {284, Key::Right, true},     // Steer Right
+    {280, Key::Up, true},        // Throttle
+    {281, Key::Down, true},      // Brakes
+    {307, Key::Space, true},     // Handbrake
+    {276, Key::C, true},         // Change Camera
+    {277, Key::V, true},         // Thrill Cam
+    {279, Key::Return, true},    // Horn
+    {286, Key::Kp4, true},       // Look Left
+    {285, Key::Kp6, true},       // Look Right
+    {287, Key::Kp2, true},       // Look Back
+    {288, Key::Kp8, true},       // Look Forward
+    {289, Key::W, true},         // Wide Angle
+    {290, Key::D, true},         // Dashboard On/Off
+    {278, Key::T, true},         // Transmission
+    {291, Key::A, true},         // Shift Up
+    {292, Key::Z, true},         // Shift Down
+    {293, Key::R, true},         // Reverse
+    {294, Key::S, true},         // Next Checkpoint
+    {295, Key::X, true},         // Prev. Checkpoint
+    {301, Key::Num2, true},      // Toggle CD Player
+    {302, Key::Num3, true},      // Start/Stop CD
+    {304, Key::Num4, true},      // Prev. CD Track
+    {303, Key::Num5, true},      // Next CD Track
+    {305, Key::Backspace, true}, // Rear View Mirror
+    {306, Key::Unknown, false},  // Camera Pan (the joystick's POV)
+    {308, Key::I, true},         // Opponent Position
+    {309, Key::Y, true},         // Enter Chat Msg
+}};
+
+constexpr const char* kUnbound = "Undefined";
+
+std::string bindKey(std::uint32_t id) { return std::format("Bind.{}", id); }
+
+Key binding(Context& ctx, const ActionSlot& a) {
+    const std::string name = ctx.settings.ini.getString("Controls", bindKey(a.stringId));
+    if (name.empty())
+        return a.key;
+    if (name == kUnbound)
+        return Key::Unknown;
+    return platform::keyFromName(name);
 }
 
-class CustomizePage final : public Page {
+// The action list (MM2's "CW Array", UICWArray): two columns, the action in
+// white and its key, red while it is focused or waiting for a key; 20 px
+// rows, 15 visible, scrolling with the arrows. Enter or a click waits for a
+// key; Escape cancels.
+class BindingList final : public ui::Widget {
 public:
-    explicit CustomizePage(Frontend& fe) {
-        Context& ctx = fe.ctx;
-        menu.background = "jpg/cuss_bk.jpg";
-        for (std::uint32_t id = 276; id <= 309; ++id) {
-            if (id == 277 || id == 282 || id == 288 || id == 289 || (id >= 300 && id <= 304) || id == 306)
-                continue; // axes and CD-player actions are not bindable keys here
-            m_actions.push_back(id);
-        }
-        auto& list = menu.add<ui::ListBox>(
-            Box{36, 56, 306, 313},
-            [this, &ctx] {
-                std::vector<std::string> v;
-                for (auto id : m_actions) {
-                    const std::string key = id == m_capturing ? "Press a key..." : platform::keyName(binding(ctx, id));
-                    v.push_back(std::format("{}  -  {}", ctx.game->strings.get(id), key));
-                }
-                return v;
-            },
-            [this] { return m_selected; }, [this](int i) { m_selected = i; });
-        list.rowHeight = 17;
-        list.onDoubleClick = [this] { m_capturing = m_actions[static_cast<std::size_t>(m_selected)]; };
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_def.tga", 4}, 33, 412, [&ctx] {
-            for (const auto& k : ctx.settings.ini.keys("Controls"))
-                if (k.starts_with("Bind."))
-                    ctx.settings.ini.remove("Controls", k);
-        });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_done.tga", 4}, kNext.x, kNext.y, [&fe] {
-            fe.ctx.saveSettings();
-            fe.pop();
-        });
-        // Escape while waiting for a key only cancels the capture.
-        menu.onBack = [this, &fe] {
-            if (!m_swallowBack)
-                fe.pop();
-        };
-        menu.focus(&list);
+    static constexpr int kRows = 15;
+    static constexpr float kRowH = 20.0f;
+
+    BindingList(Frontend& fe, Box b) : m_fe(fe) {
+        box = {b.x, b.y, b.w, kRowH * kRows};
+        for (const auto& a : kActions)
+            if (a.keyboard)
+                m_actions.push_back(&a);
     }
 
-    void update(Frontend& fe, double) override {
-        auto& in = fe.ctx.input;
-        m_swallowBack = m_capturing != 0;
-        if (m_capturing) {
-            for (auto k : in.keysPressedThisFrame()) {
-                if (k != platform::Key::Escape)
-                    fe.ctx.settings.ini.set("Controls", std::format("Bind.{}", m_capturing), platform::keyName(k));
-                m_capturing = 0;
-                in.beginFrame(); // swallow the key so the menu does not act on it
-                return;
-            }
-        } else if (in.keyPressed(platform::Key::Return) && m_selected >= 0) {
-            m_capturing = m_actions[static_cast<std::size_t>(m_selected)];
-            in.beginFrame();
+    // Opens the dialogs for a refused or duplicate key.
+    std::function<void(const ActionSlot&, Key)> onRefused;
+    std::function<void(const ActionSlot&, Key, const ActionSlot&)> onDuplicate;
+    std::function<void()> onEscape;
+
+    bool modal() const override { return m_active || m_capturing || m_swallow; }
+    void focusChanged(bool focused) override {
+        m_active = focused;
+        if (!focused)
+            m_capturing = false;
+    }
+
+    void draw(ui::UiFrame& f, bool focused) override {
+        Context& ctx = m_fe.ctx;
+        const auto font = ui::style::valueFont();
+        m_scroll = std::clamp(m_scroll, 0, std::max(0, static_cast<int>(m_actions.size()) - kRows));
+        for (int i = 0; i < kRows; ++i) {
+            const int idx = m_scroll + i;
+            if (idx >= static_cast<int>(m_actions.size()))
+                break;
+            const ActionSlot& a = *m_actions[static_cast<std::size_t>(idx)];
+            const float y = box.y + kRowH * static_cast<float>(i) + 2;
+            const bool selected = idx == m_selected && (focused || m_capturing);
+            f.text.draw(f.overlay, font, ctx.game->strings.get(a.stringId), box.x, y, ui::style::kRecordText);
+            const Key k = binding(ctx, a);
+            const std::string key = k == Key::Unknown ? ctx.game->strings.get(271, "UNDEFINED") : platform::keyName(k);
+            f.text.draw(f.overlay, font, key, box.x + 125, y,
+                        selected ? ui::style::kValueTextFocus : ui::style::kRecordText);
         }
+        // Scroll bar arrows (UIVScrollBar) right of the list: the arrow frame
+        // while there is more to scroll to, else the empty frame (the frame
+        // choice is inferred from the sprites).
+        const float sx = box.x + box.w + 10;
+        ui::drawSpriteFrame(f, {"texture/scroll_uarr.tga", 4}, m_scroll > 0 ? 1 : 3, sx, box.y);
+        ui::drawSpriteFrame(f, {"texture/scroll_darr.tga", 4},
+                            m_scroll + kRows < static_cast<int>(m_actions.size()) ? 1 : 3, sx, box.y + box.h - 21);
+    }
+
+    bool activate(ui::UiFrame&) override {
+        m_active = true;
+        m_capturing = true;
+        return true;
+    }
+
+    // Called every frame while the list has the focus but not the keyboard
+    // (the mouse went elsewhere): take the keyboard back on a click, the
+    // mouse returning, or an arrow key.
+    void mouse(ui::UiFrame& f, bool hovered) override {
+        const ui::NavInput& nav = f.nav;
+        if (hovered && nav.mousePressed) {
+            m_active = true;
+            select(rowAt(nav.mouse.y));
+            m_capturing = true;
+        } else if (nav.mousePressed && scrollArrow(nav.mouse) != 0) {
+            m_active = true;
+            m_scroll += scrollArrow(nav.mouse);
+        } else if (hovered && nav.mouseMoved) {
+            m_active = true;
+        } else if (nav.up || nav.down) {
+            m_active = true;
+            select(m_selected + (nav.up ? -1 : 1));
+        } else if (nav.accept) {
+            m_active = true;
+            m_capturing = true;
+        }
+    }
+
+    void modalInput(ui::UiFrame& f) override {
+        const ui::NavInput& nav = f.nav;
+        if (m_swallow) {
+            // The key that ended a capture must not also act on the page.
+            m_swallow = false;
+            return;
+        }
+        if (m_capturing) {
+            capture();
+            return;
+        }
+        // Scrolling and arrow clicks while the list has the keyboard.
+        if (nav.mousePressed) {
+            if (scrollArrow(nav.mouse) != 0) {
+                m_scroll += scrollArrow(nav.mouse);
+            } else if (box.contains(nav.mouse)) {
+                select(rowAt(nav.mouse.y));
+                m_capturing = true;
+            }
+            return;
+        }
+        if (nav.wheel != 0.0f)
+            m_scroll -= static_cast<int>(nav.wheel);
+        if (nav.up)
+            select(m_selected - 1);
+        if (nav.down)
+            select(m_selected + 1);
+        if (nav.accept)
+            m_capturing = true;
+        if (nav.tabNext)
+            m_active = false; // the menu moves the focus on
+        if (nav.back && onEscape)
+            onEscape();
+        // The mouse leaving the list hands it back to the page's widgets.
+        const float sx = box.x + box.w + 10;
+        if (nav.mouseMoved && !box.contains(nav.mouse) && !Box{sx, box.y, 21, box.h}.contains(nav.mouse))
+            m_active = false;
     }
 
 private:
-    static platform::Key binding(Context& ctx, std::uint32_t id) {
-        const std::string name = ctx.settings.ini.getString("Controls", std::format("Bind.{}", id));
-        if (!name.empty())
-            return platform::keyFromName(name);
-        return defaultKey(id);
+    int rowAt(float y) const { return m_scroll + static_cast<int>((y - box.y) / kRowH); }
+
+    // -1 / +1 when `p` is on the scroll bar's up / down arrow.
+    int scrollArrow(Vec2 p) const {
+        const float sx = box.x + box.w + 10;
+        if (Box{sx, box.y, 21, 21}.contains(p))
+            return -1;
+        if (Box{sx, box.y + box.h - 21, 21, 21}.contains(p))
+            return 1;
+        return 0;
     }
 
-    std::vector<std::uint32_t> m_actions;
+    void select(int i) {
+        m_selected = std::clamp(i, 0, static_cast<int>(m_actions.size()) - 1);
+        if (m_selected < m_scroll)
+            m_scroll = m_selected;
+        if (m_selected >= m_scroll + kRows)
+            m_scroll = m_selected - kRows + 1;
+    }
+
+    void capture() {
+        Context& ctx = m_fe.ctx;
+        const auto& keys = ctx.input.keysPressedThisFrame();
+        if (keys.empty())
+            return;
+        const Key k = keys.front();
+        m_capturing = false;
+        m_swallow = true;
+        if (k == Key::Escape)
+            return;
+        const ActionSlot& a = *m_actions[static_cast<std::size_t>(m_selected)];
+        // F1-F10 are reserved (xasn_dlg).
+        if (k >= Key::F1 && k <= Key::F10) {
+            if (onRefused)
+                onRefused(a, k);
+            return;
+        }
+        // A key another listed action uses: ctrl_dlg (mmInput::BuildCaptureIO).
+        for (const auto* other : m_actions)
+            if (other != &a && binding(ctx, *other) == k) {
+                if (onDuplicate)
+                    onDuplicate(a, k, *other);
+                return;
+            }
+        ctx.settings.ini.set("Controls", bindKey(a.stringId), platform::keyName(k));
+    }
+
+    Frontend& m_fe;
+    std::vector<const ActionSlot*> m_actions;
     int m_selected = 0;
-    std::uint32_t m_capturing = 0;
-    bool m_swallowBack = false;
+    int m_scroll = 0;
+    bool m_active = false;
+    bool m_capturing = false;
+    bool m_swallow = false;
+};
+
+class CustomizePage final : public SettingsPage {
+public:
+    explicit CustomizePage(Frontend& fe) : SettingsPage(fe, "jpg/cuss_bk.jpg", menu_id::kControlCustom) {
+        // Widget 3: the action list at 50,62, 250 wide (UICWArray::Init).
+        auto& list =
+            menu.add<BindingList>(fe, fe.layout.widget(menu_id::kControlCustom, 3, {50, 62, 250, 20}));
+        list.onEscape = [this, &fe] { cancel(fe); };
+        list.onRefused = [&fe](const ActionSlot&, Key) {
+            fe.dialog("jpg/xasn_dlg.jpg", kRefusedDialog, {{"texture/dlg_done.tga", {296, 38}, {}}});
+        };
+        list.onDuplicate = [&fe](const ActionSlot& a, Key k, const ActionSlot& other) {
+            // OK assigns the key anyway and leaves the other action unbound;
+            // CANCEL keeps the old binding.
+            auto& ini = fe.ctx.settings.ini;
+            fe.dialog("jpg/ctrl_dlg.jpg", kControlWarningDialog,
+                      {{"texture/dlg_ok.tga", {180, 176},
+                        [&ini, id = a.stringId, otherId = other.stringId, k] {
+                            ini.set("Controls", bindKey(id), platform::keyName(k));
+                            ini.set("Controls", bindKey(otherId), kUnbound);
+                        }},
+                       {"texture/dlg_can.tga", {18, 176}, {}}});
+        };
+        finish(fe);
+        menu.setInitialFocus(&list);
+    }
+
+protected:
+    void resetDefaults(Frontend& fe) override {
+        auto& ini = fe.ctx.settings.ini;
+        for (const auto& k : ini.keys("Controls"))
+            if (k.starts_with("Bind."))
+                ini.remove("Controls", k);
+    }
 };
 
 // --- About ------------------------------------------------------------------------------------
 
-// The credits picture (credits.jpg, 215x4582) scrolls in the large black box
-// under "Product ID:". OpenMM2 never reads CD keys, so no product ID is shown.
+// AboutMenu (menu 34): the credits picture (credits.jpg, 215x4582) scrolls
+// in the box at 39,203 (215x173): it starts at the top, holds for 1.5 s and
+// then scrolls, wrapping without a gap. The speed is not recovered from MM2;
+// 30 px/s is inferred. The product ID label shows string 325 "UNKNOWN":
+// OpenMM2 never reads CD keys. No navigation strip.
 class AboutPage final : public Page {
 public:
     explicit AboutPage(Frontend& fe) {
+        menuId = menu_id::kAbout;
         menu.background = "jpg/about_bk.jpg";
-        addBack(fe, *this);
+        m_credits = fe.layout.widget(menu_id::kAbout, 0, {39, 203, 215, 173});
+        menu.add<ui::Custom>([this, &fe](ui::UiFrame& f) { drawCredits(fe, f); });
+        const Vec2 done = fe.layout.position(menu_id::kAbout, 1, kNext);
+        auto& d = menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_done.tga", 4}, done.x, done.y, [&fe] { fe.pop(); });
+        d.sound = "Selectionmade";
+        m_pid = fe.layout.widget(menu_id::kAbout, 2, {130, 180, 300, 18});
+        menu.add<ui::TextBox>(m_pid, [&fe] { return fe.ctx.game->strings.get(325, "UNKNOWN"); }).font =
+            ui::FontSpec{"Arial Bold", 18, 18, 0, 400}; // GetFont(20): string 561
+        menu.onBack = [&fe] { fe.pop(); };
+        menu.setInitialFocus(&d);
     }
-    void update(Frontend&, double dt) override { m_scroll += static_cast<float>(dt) * 30.0f; }
-    void drawAbove(Frontend& fe, ui::UiFrame& f) override {
+
+    void update(Frontend&, double dt) override { m_time += dt; }
+
+private:
+    void drawCredits(Frontend& fe, ui::UiFrame& f) const {
         const ui::UiTexture& t = fe.textures.get("jpg/credits.jpg");
         if (!t)
             return;
-        const Box box{37, 199, 225, 178};
+        constexpr double kHold = 1.5, kSpeed = 30.0;
         const float h = static_cast<float>(t.height);
-        const float offset = std::fmod(m_scroll, h + box.h) - box.h; // starts below the box
-        const Vec4 clip{box.x, box.y, box.w, box.h};
+        const float offset = std::fmod(static_cast<float>(std::max(0.0, m_time - kHold) * kSpeed), h);
+        const Vec4 clip{m_credits.x, m_credits.y, m_credits.w, m_credits.h};
         f.overlay.setClip(&clip);
-        ui::drawImage(f.overlay, t, box.x + (box.w - static_cast<float>(t.width)) * 0.5f, box.y - offset);
+        ui::drawImage(f.overlay, t, m_credits.x, m_credits.y - offset);
+        if (h - offset < m_credits.h) // the top follows the bottom
+            ui::drawImage(f.overlay, t, m_credits.x, m_credits.y - offset + h);
         f.overlay.setClip(nullptr);
     }
 
-private:
-    float m_scroll = 0.0f;
+    Box m_credits, m_pid;
+    double m_time = 0.0;
 };
 
 } // namespace

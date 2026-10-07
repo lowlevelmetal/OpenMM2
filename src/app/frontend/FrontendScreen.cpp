@@ -9,6 +9,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <format>
 
@@ -18,22 +19,32 @@ namespace frontend {
 // --- Frontend --------------------------------------------------------------------------
 
 Frontend::Frontend(Context& c)
-    : ctx(c), textures(c.device(), c.game->vfs), text(c.device()), store(game::ProfileStore::defaultDir()),
-      progress(game::Progress::load(c.game->vfs)) {
+    : ctx(c), textures(c.device(), c.game->vfs), text(c.device()), layout(ui::MenuLayout::load(c.game->vfs)),
+      store(game::ProfileStore::defaultDir()), progress(game::Progress::load(c.game->vfs)) {
     cities = city::listCities(c.game->vfs);
+    // mmCityList::LoadAll reads sf.cinfo first, then the other tune/*.cinfo.
+    std::ranges::stable_partition(cities, [](const city::CityInfo& i) { return str::iequals(i.mapName, "sf"); });
     for (const auto& info : cities)
         races.push_back(city::listRaces(c.game->vfs, info));
+    hallOfFame.load(store.dir() / "records.ini");
 }
 
-void Frontend::push(std::unique_ptr<Page> page) { m_pages.push_back(std::move(page)); }
+void Frontend::push(std::unique_ptr<Page> page) {
+    m_pages.push_back(std::move(page));
+    topChanged();
+}
 
 void Frontend::pop() {
     if (m_pages.empty())
         return;
     m_graveyard.push_back(std::move(m_pages.back()));
     m_pages.pop_back();
-    if (!m_pages.empty())
+    if (!m_pages.empty()) {
+        // MM2 resets the focus every time a menu is entered (UIMenu::Enable).
+        m_pages.back()->menu.resetFocus();
         m_pages.back()->onEnter(*this);
+    }
+    topChanged();
 }
 
 void Frontend::replace(std::unique_ptr<Page> page) {
@@ -49,8 +60,66 @@ void Frontend::popTo(std::size_t d) {
         m_graveyard.push_back(std::move(m_pages.back()));
         m_pages.pop_back();
     }
-    if (!m_pages.empty())
+    if (!m_pages.empty()) {
+        m_pages.back()->menu.resetFocus();
         m_pages.back()->onEnter(*this);
+    }
+    topChanged();
+}
+
+void Frontend::topChanged() {
+    // MenuManager::Switch -> PlayMenuSwitchSound: entering a menu with a new
+    // id plays its sound unless that sound is already playing; dialogs do
+    // not switch menus.
+    int id = -1;
+    for (auto it = m_pages.rbegin(); it != m_pages.rend(); ++it)
+        if (!(*it)->dialog) {
+            id = (*it)->menuId;
+            break;
+        }
+    if (id == m_menuId)
+        return;
+    m_menuId = id;
+    if (quietSwitches)
+        return;
+    struct SwitchSound {
+        int menu;
+        const char* sound;
+        float volume;
+    };
+    static constexpr SwitchSound kSounds[] = {
+        {menu_id::kMain, "Selectionmade", 0.87f},  {menu_id::kOptions, "UIoptions", 0.9f},
+        {menu_id::kAudio, "UIoptions", 0.9f},      {menu_id::kGraphics, "UIoptions", 0.9f},
+        {menu_id::kControl, "UIoptions", 0.9f},    {menu_id::kRace, "UIraces", 0.9f},
+        {menu_id::kCrashIntro, "UIraces", 0.9f},   {menu_id::kVehicle, "UIvehicles", 0.9f},
+        {menu_id::kHostRace, "UIvehicles", 0.9f},  {menu_id::kNetSelect, "UImulti", 0.87f},
+        {menu_id::kNetArena, "UImulti", 0.87f},
+    };
+    for (const auto& e : kSounds)
+        if (e.menu == id && !soundPlaying(e.sound))
+            playSound(e.sound, e.volume);
+}
+
+void Frontend::playSound(std::string_view name, float volume) {
+    if (!ctx.mixer || name.empty())
+        return;
+    if (!m_soundBank)
+        m_soundBank = std::make_unique<audio::SoundBank>(ctx.game->vfs);
+    m_soundBank->setQuality(ctx.settings.audioHighQuality ? audio::SoundBank::Quality::High
+                                                          : audio::SoundBank::Quality::Low);
+    auto it = m_sounds.find(name);
+    if (it == m_sounds.end()) {
+        audio::game::SoundSlot slot;
+        slot.load(*ctx.mixer, *m_soundBank, name, audio::Bus::Effects);
+        it = m_sounds.emplace(std::string(name), std::move(slot)).first;
+    }
+    if (it->second.valid())
+        it->second.playOnce(volume);
+}
+
+bool Frontend::soundPlaying(std::string_view name) const {
+    const auto it = m_sounds.find(name);
+    return it != m_sounds.end() && it->second.playing();
 }
 
 int Frontend::cityIndex(std::string_view name) const {
@@ -110,14 +179,98 @@ void Frontend::configFromProfile() {
     config.difficulty = p.difficulty;
     config.city = cityIndex(p.city) >= 0 ? cities[static_cast<std::size_t>(cityIndex(p.city))].mapName : "london";
     config.mode = p.mode == game::GameMode::CopsAndRobbers ? game::GameMode::Cruise : p.mode;
-    config.raceIndex = p.raceIndex;
-    config.timeOfDay = p.timeOfDay;
-    config.weather = p.weather;
-    config.pedestrianDensity = p.pedestrianDensity;
-    config.trafficDensity = p.trafficDensity;
-    config.copDensity = p.copDensity;
-    config.opponents = p.opponents;
-    config.laps = p.laps;
+    config.raceIndex = config.mode == game::GameMode::Cruise ? -1 : std::max(0, p.raceIndex);
+    // mmInterface::PlayerSetState restores the event, city and car; the
+    // environment, laps and opponents come from the race's data again.
+    applyRaceDefaults(config);
+}
+
+void Frontend::applyRaceDefaults(game::RaceConfig& cfg) const {
+    using game::GameMode;
+    if (cfg.mode == GameMode::Cruise) {
+        // RaceMenuBase::SetStateRace for cruise.
+        cfg.timeOfDay = game::TimeOfDay::Noon;
+        cfg.weather = game::Weather::Clear;
+        cfg.pedestrianDensity = 0.25f;
+        cfg.trafficDensity = 0.5f;
+        cfg.copDensity = 1.0f;
+        return;
+    }
+    const auto list = racesFor(cfg.mode, cfg.city);
+    if (cfg.raceIndex < 0 || cfg.raceIndex >= static_cast<int>(list.size()))
+        return;
+    const auto* def = list[static_cast<std::size_t>(cfg.raceIndex)];
+    if (!def->settings)
+        return;
+    const auto& s = cfg.difficulty == game::Difficulty::Professional ? def->settings->professional
+                                                                       : def->settings->amateur;
+    cfg.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
+    cfg.weather = static_cast<game::Weather>(std::clamp(s.weather, 0, 3));
+    cfg.pedestrianDensity = std::clamp(s.pedDensity, 0.0f, 1.0f);
+    if (cfg.mode == GameMode::CrashCourse) {
+        // Lessons: the lesson table's time, weather and pedestrians, no
+        // traffic, all cops (mmInterface::Update, Crash Course GO).
+        cfg.trafficDensity = 0.0f;
+        cfg.copDensity = 1.0f;
+        cfg.opponents = 0;
+        return;
+    }
+    cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
+    // MM2 keeps the race's cop count in the cop density; OpenMM2's densities
+    // are 0..1, so the count is clamped (the slider shows full either way).
+    cfg.copDensity = std::clamp(static_cast<float>(s.cops), 0.0f, 1.0f);
+    if (cfg.mode == GameMode::Checkpoint) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = 1;
+    } else if (cfg.mode == GameMode::Circuit) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = std::max(1, s.numLaps);
+    }
+}
+
+std::string Frontend::raceName(const game::RaceConfig& cfg) const {
+    const auto& s = ctx.game->strings;
+    switch (cfg.mode) {
+    case game::GameMode::Cruise: return s.get(80, "Cruise");
+    case game::GameMode::CopsAndRobbers: return s.get(79, "Cops & Robbers");
+    case game::GameMode::CrashCourse: return s.get(78, "Crash Course");
+    default: break;
+    }
+    const auto list = racesFor(cfg.mode, cfg.city);
+    if (cfg.raceIndex >= 0 && cfg.raceIndex < static_cast<int>(list.size()))
+        return list[static_cast<std::size_t>(cfg.raceIndex)]->name;
+    return {};
+}
+
+std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& result) {
+    if (!profile)
+        return std::nullopt;
+    game::RaceConfig defaults = result.config;
+    applyRaceDefaults(defaults);
+    if (!game::Progress::recordable(result.config, defaults))
+        return std::nullopt;
+    auto reward = progress.record(*profile, result);
+    // The race records (mmMiscData::NewRecord): races only; a circuit enters
+    // every lap's time, the score with the first.
+    const auto& cfg = result.config;
+    const std::string mode = game::modeKey(cfg.mode);
+    const bool race = cfg.mode == game::GameMode::Blitz || cfg.mode == game::GameMode::Checkpoint ||
+                      cfg.mode == game::GameMode::Circuit;
+    if (race && result.finished) {
+        const int score = std::max(0, result.score);
+        if (cfg.mode == game::GameMode::Circuit && !result.lapSeconds.empty()) {
+            for (std::size_t i = 0; i < result.lapSeconds.size(); ++i)
+                hallOfFame.submit(cfg.difficulty, cfg.city, mode, cfg.raceIndex,
+                                  {profile->name, cfg.vehicle, result.lapSeconds[i], i == 0 ? score : 0});
+        } else {
+            hallOfFame.submit(cfg.difficulty, cfg.city, mode, cfg.raceIndex,
+                              {profile->name, cfg.vehicle, result.timeSeconds, score});
+        }
+        if (!hallOfFame.save(store.dir() / "records.ini"))
+            log::warn("frontend: cannot save the race records");
+    }
+    saveProfile();
+    return reward;
 }
 
 void Frontend::startRace() {
@@ -144,15 +297,6 @@ void Frontend::startRace() {
         p.city = config.city;
         p.mode = config.mode;
         p.raceIndex = config.raceIndex;
-        p.timeOfDay = config.timeOfDay;
-        p.weather = config.weather;
-        p.pedestrianDensity = config.pedestrianDensity;
-        p.trafficDensity = config.trafficDensity;
-        p.copDensity = config.copDensity;
-        if (config.mode != game::GameMode::Cruise) {
-            p.opponents = config.opponents;
-            p.laps = config.laps;
-        }
         config.difficulty = p.difficulty;
         saveProfile();
     }
@@ -166,15 +310,17 @@ void Frontend::update(double dt) {
     Page* page = top();
     if (!page)
         return;
-    const render::UiLayout layout = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
-    const ui::NavInput nav = navReader.read(ctx.input, layout, dt);
-    ui::UiFrame f{*ctx.overlay, textures, text, nav, time};
+    if (!m_soundFn)
+        m_soundFn = [this](std::string_view name, float volume) { playSound(name, volume); };
+    const render::UiLayout screen = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
+    const ui::NavInput nav = navReader.read(ctx.input, screen, dt);
+    ui::UiFrame f{*ctx.overlay, textures, text, nav, time, &m_soundFn};
     page->update(*this, dt);
     if (top() == page)
         page->menu.update(f);
 }
 
-void Frontend::drawPage(Page& p, ui::UiFrame& f) {
+void Frontend::drawPage(Page& p, ui::UiFrame& f, bool active) {
     if (!p.menu.background.empty())
         ui::drawImage(f.overlay, textures.get(p.menu.background), 0, 0, 640, 480);
     if (!p.dialogPicture.empty()) {
@@ -182,7 +328,9 @@ void Frontend::drawPage(Page& p, ui::UiFrame& f) {
         ui::drawImage(f.overlay, t, p.origin.x, p.origin.y);
     }
     p.drawBelow(*this, f);
-    p.menu.drawContent(f);
+    // A page under a dialog shows no focus and no help picture
+    // (MenuManager::OpenDialog clears them).
+    p.menu.drawContent(f, active);
     p.drawAbove(*this, f);
 }
 
@@ -196,87 +344,127 @@ void Frontend::draw() {
     while (first > 0 && m_pages[first]->dialog)
         --first;
     for (std::size_t i = first; i < m_pages.size(); ++i)
-        drawPage(*m_pages[i], f);
+        drawPage(*m_pages[i], f, i + 1 == m_pages.size());
     ov.end();
 }
 
 // --- Common widgets ------------------------------------------------------------------------
 
-void addNavStrip(Frontend& fe, Page& page, bool optionsButton) {
+void addNavStrip(Frontend& fe, Page& page, NavOptions options, std::function<void()> cancel) {
     using namespace layout;
-    // On option pages themselves the OPTIONS button is shown disabled.
-    auto& opt = page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_opt.tga", 5}, kNavOptions.x, kNavOptions.y,
-                                                 [&fe] { fe.push(makeOptionsPage(fe)); });
-    opt.enabled = optionsButton;
-    page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_hlp.tga", 3}, kNavHelp.x, kNavHelp.y, [&fe] {
-        fe.message("Help: use the arrow keys or the mouse to choose, Enter to select and Escape to go back.");
+    const auto before = page.menu.widgetsInGroup(1); // a PREV added earlier
+    auto pos = [&fe](int index, Vec2 code) { return fe.layout.position(menu_id::kNavBar, index, code); };
+    auto add = [&](ui::SpriteSheet sheet, int index, Vec2 code, std::function<void()> fn) -> ui::SpriteButton& {
+        const Vec2 p = pos(index, code);
+        auto& b = page.menu.add<ui::SpriteButton>(std::move(sheet), p.x, p.y, std::move(fn));
+        b.group = 1;
+        b.sound = "Selectionmade"; // UIBMButton sound slot 0
+        return b;
+    };
+    // OPTIONS is a 5-frame toggle that is never disabled: lit on the options
+    // menu, CANCEL on an option sub-page, otherwise it opens the options.
+    std::function<void()> onOptions;
+    switch (options) {
+    case NavOptions::Open: onOptions = [&fe] { fe.push(makeOptionsPage(fe)); }; break;
+    case NavOptions::Lit: onOptions = [] {}; break;
+    case NavOptions::Cancel: onOptions = std::move(cancel); break;
+    }
+    auto& opt = add({"texture/mnav_opt.tga", 5}, 0, kNavOptions, std::move(onOptions));
+    if (options == NavOptions::Lit)
+        opt.lit = [] { return true; };
+    // HELP: MM2 minimises and runs WinHelp on MM2HELP.HLP (MenuManager::Help);
+    // OpenMM2 shows a short message instead.
+    add({"texture/mnav_hlp.tga", 3}, 1, kNavHelp, [&fe] {
+        fe.message("Use the arrow keys or the mouse to choose, Enter to select and Escape to go back.");
     });
-    page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_sto.tga", 3}, kNavMinimize.x, kNavMinimize.y,
-                                    [&fe] { SDL_MinimizeWindow(fe.ctx.window().sdl()); });
-    page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_ext.tga", 3}, kNavExit.x, kNavExit.y, [&fe] {
-        fe.ask("jpg/quit_dlg.jpg", {400, 76}, "", [&fe] { fe.ctx.quit = true; });
-    });
+    add({"texture/mnav_sto.tga", 3}, 2, kNavMinimize, [&fe] { SDL_MinimizeWindow(fe.ctx.window().sdl()); });
+    add({"texture/mnav_ext.tga", 3}, 3, kNavExit, [&fe] { fe.askQuit(); });
+    // PREV, if the page has one, comes last in the strip's focus order.
+    for (const auto* w : before)
+        page.menu.moveToEnd(w);
 }
 
 ui::SpriteButton& addBack(Frontend& fe, Page& page, const char* sprite) {
-    auto& b = page.menu.add<ui::SpriteButton>(ui::SpriteSheet{sprite, 4}, layout::kBack.x, layout::kBack.y,
-                                              [&fe] { fe.pop(); });
+    const bool prev = std::string_view(sprite) == "texture/mnav_prv.tga";
+    const Vec2 p = prev ? fe.layout.position(menu_id::kNavBar, 4, layout::kBack) : layout::kBack;
+    auto& b = page.menu.add<ui::SpriteButton>(ui::SpriteSheet{sprite, 4}, p.x, p.y, [&fe] { fe.pop(); });
+    if (prev)
+        b.group = 1;
     page.menu.onBack = [&fe] { fe.pop(); };
     return b;
 }
 
-// --- Message and question dialogs ----------------------------------------------------------
+// --- Dialogs ----------------------------------------------------------------------------------
 
 namespace {
 
+Vec2 pictureSize(Frontend& fe, const std::string& picture) {
+    const ui::UiTexture& t = fe.textures.get(picture);
+    return t ? Vec2{static_cast<float>(t.width), static_cast<float>(t.height)} : Vec2{400, 76};
+}
+
+// MM2 Dialog_Message: a picture with one or two buttons.
+class PictureDialog final : public Page {
+public:
+    PictureDialog(Frontend& fe, std::string picture, int id, std::vector<Frontend::DialogButton> buttons) {
+        dialog = true;
+        menuId = id;
+        origin = ui::dialogOrigin(pictureSize(fe, picture));
+        dialogPicture = std::move(picture);
+        ui::SpriteButton* first = nullptr;
+        for (std::size_t i = 0; i < buttons.size(); ++i) {
+            auto& b = buttons[i];
+            const Vec2 p = fe.layout.position(id, static_cast<int>(i), b.position, origin);
+            auto& w = menu.add<ui::SpriteButton>(ui::SpriteSheet{b.sprite, 4}, p.x, p.y, [&fe, then = b.then] {
+                fe.pop();
+                if (then)
+                    then();
+            });
+            w.sound = "Selectionmade";
+            if (!first)
+                first = &w;
+        }
+        if (first)
+            menu.setInitialFocus(first);
+        auto cancel = buttons.empty() ? std::function<void()>{} : buttons.back().then;
+        menu.onBack = [&fe, cancel] {
+            fe.pop();
+            if (cancel)
+                cancel();
+        };
+    }
+};
+
+// OpenMM2's text messages: msg_dlg (unused by MM2 build 3393) with OK at the
+// position of MM2's 400x76 message boxes.
 class MessageDialog final : public Page {
 public:
-    MessageDialog(Frontend& fe, std::string text, std::function<void()> then) : m_text(std::move(text)) {
+    MessageDialog(Frontend& fe, std::string text, std::function<void()> then, bool question)
+        : m_text(std::move(text)) {
         dialog = true;
         dialogPicture = "jpg/msg_dlg.jpg";
-        origin = {120, 202};
-        auto done = [&fe, then = std::move(then)] {
+        origin = ui::dialogOrigin({400, 76});
+        auto ok = [&fe, then = std::move(then)] {
             fe.pop();
             if (then)
                 then();
         };
-        menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_ok.tga", 4}, origin.x + 290, origin.y + 40, done);
-        menu.onBack = done;
+        auto& okButton =
+            menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_ok.tga", 4}, origin.x + 296, origin.y + 38, ok);
+        okButton.sound = "Selectionmade";
+        menu.setInitialFocus(&okButton);
+        if (question) {
+            menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_can.tga", 4}, origin.x + 196, origin.y + 38,
+                                       [&fe] { fe.pop(); })
+                .sound = "Selectionmade";
+            menu.onBack = [&fe] { fe.pop(); };
+        } else {
+            menu.onBack = ok;
+        }
     }
     void drawAbove(Frontend&, ui::UiFrame& f) override {
-        f.text.drawWrapped(f.overlay, ui::style::valueFont(), m_text, origin.x + 80, origin.y + 10, 200,
+        f.text.drawWrapped(f.overlay, ui::style::smallFont(), m_text, origin.x + 20, origin.y + 10, 260,
                            ui::style::kValueText);
-    }
-
-private:
-    std::string m_text;
-};
-
-class QuestionDialog final : public Page {
-public:
-    QuestionDialog(Frontend& fe, std::string picture, Vec2 size, std::string text, std::function<void()> yes)
-        : m_text(std::move(text)) {
-        dialog = true;
-        dialogPicture = std::move(picture);
-        origin = {(640 - size.x) * 0.5f, (480 - size.y) * 0.5f};
-        // Small dialogs (400x76) put the buttons on the right; taller ones at the bottom.
-        const bool wide = size.y < 100;
-        const Vec2 yesPos = wide ? Vec2{origin.x + 180, origin.y + 23} : Vec2{origin.x + 40, origin.y + size.y - 50};
-        const Vec2 noPos = wide ? Vec2{origin.x + 290, origin.y + 23} : Vec2{origin.x + size.x - 140, origin.y + size.y - 50};
-        menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_yes.tga", 4}, yesPos.x, yesPos.y,
-                                   [&fe, yes = std::move(yes)] {
-                                       fe.pop();
-                                       yes();
-                                   });
-        auto& no = menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_no.tga", 4}, noPos.x, noPos.y,
-                                              [&fe] { fe.pop(); });
-        menu.focus(&no);
-        menu.onBack = [&fe] { fe.pop(); };
-    }
-    void drawAbove(Frontend&, ui::UiFrame& f) override {
-        if (!m_text.empty())
-            f.text.drawWrapped(f.overlay, ui::style::valueFont(), m_text, origin.x + 30, origin.y + 60, 240,
-                               ui::style::kValueText, ui::Align::Center);
     }
 
 private:
@@ -286,11 +474,27 @@ private:
 } // namespace
 
 void Frontend::message(std::string t, std::function<void()> then) {
-    push(std::make_unique<MessageDialog>(*this, std::move(t), std::move(then)));
+    push(std::make_unique<MessageDialog>(*this, std::move(t), std::move(then), false));
 }
 
-void Frontend::ask(std::string picture, Vec2 size, std::string t, std::function<void()> yes) {
-    push(std::make_unique<QuestionDialog>(*this, std::move(picture), size, std::move(t), std::move(yes)));
+void Frontend::question(std::string t, std::function<void()> yes) {
+    push(std::make_unique<MessageDialog>(*this, std::move(t), std::move(yes), true));
+}
+
+void Frontend::dialog(std::string picture, int id, std::vector<DialogButton> buttons) {
+    push(std::make_unique<PictureDialog>(*this, std::move(picture), id, std::move(buttons)));
+}
+
+void Frontend::askQuit() {
+    // quit_dlg: OK (first, focused) at +296,+38 quits; Cancel at +196,+38.
+    dialog("jpg/quit_dlg.jpg", menu_id::kQuit,
+           {{"texture/dlg_ok.tga", {296, 38}, [this] { ctx.quit = true; }}, {"texture/dlg_can.tga", {196, 38}, {}}});
+}
+
+void Frontend::notice(std::string picture, int id, std::function<void()> then) {
+    const Vec2 size = pictureSize(*this, picture);
+    const Vec2 ok = size.y > 100 ? Vec2{180, 176} : Vec2{296, 38};
+    dialog(std::move(picture), id, {{"texture/dlg_ok.tga", ok, std::move(then)}});
 }
 
 // --- Names ------------------------------------------------------------------------------------
@@ -330,10 +534,16 @@ std::string modeDisplayName(Frontend& fe, game::GameMode m) {
 }
 
 std::string formatTime(float seconds) {
-    if (seconds <= 0)
-        return "--:--.--";
-    const int total = static_cast<int>(seconds * 100.0f + 0.5f);
-    return std::format("{}:{:02}.{:02}", total / 6000, (total / 100) % 60, total % 100);
+    // GetLocTime: "M:SS:HH" (hundredths rounded by adding 0.005, then
+    // truncated); "  ---  " when there is no time.
+    if (!(seconds > 0.0f))
+        return "  ---  ";
+    double whole = 0.0;
+    const double fraction = std::modf(static_cast<double>(seconds) + 0.005, &whole);
+    const int hundredths = static_cast<int>(fraction * 100.0);
+    const int minutes = static_cast<int>(whole) / 60;
+    const int secs = static_cast<int>(whole - static_cast<double>(minutes * 60));
+    return std::format("{}:{:02}:{:02}", minutes, secs, hundredths);
 }
 
 // --- Automation ------------------------------------------------------------------------------
@@ -400,8 +610,10 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
                          : arg == "crash"   ? GameMode::CrashCourse
                                             : GameMode::Cruise;
         fe.config.raceIndex = fe.config.mode == GameMode::Cruise ? -1 : 0;
+        fe.applyRaceDefaults(fe.config);
     } else if (cmd == "city") {
         fe.config.city = arg;
+        fe.applyRaceDefaults(fe.config);
     } else if (cmd == "vehicle") {
         fe.config.vehicle = arg;
     } else if (cmd == "go") {
@@ -442,10 +654,12 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
     } else if (cmd == "result") {
         game::RaceResult r;
         r.config = fe.config;
-        r.finished = true;
+        r.ended = r.finished = true;
         r.position = static_cast<int>(str::parseInt(arg).value_or(1));
         r.won = r.position <= 3;
         r.timeSeconds = 125.43f;
+        for (int place = 1; place <= std::max(r.position, 4); ++place)
+            r.standings.push_back({place == r.position ? -1 : place - 1, place, 120.0f + 3.1f * static_cast<float>(place)});
         fe.push(makeResultsPage(fe, r, {}));
     } else if (cmd == "nav") {
         using platform::Key;
@@ -466,6 +680,8 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             fe.push(makeNewDriverDialog(fe));
         else if (arg == "stats")
             fe.push(makeDriverStatsDialog(fe));
+        else if (arg == "records")
+            fe.push(makeRaceRecordsDialog(fe));
         else if (arg == "races")
             fe.push(makeRacesPage(fe));
         else if (arg == "vehicle")
@@ -501,11 +717,12 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
         else if (arg == "eject" && fe.ctx.netGame && fe.ctx.netGame->inSession())
             fe.push(makeEjectDialog(fe));
         else if (arg == "quit")
-            fe.ask("jpg/quit_dlg.jpg", {400, 76}, "", [] {});
+            fe.askQuit();
         else if (arg == "message")
             fe.message("You cannot pick a locked vehicle");
         else if (arg == "delete")
-            fe.ask("jpg/delp_dlg.jpg", {300, 225}, "", [] {});
+            fe.dialog("jpg/delp_dlg.jpg", menu_id::kDeleteDriver,
+                      {{"texture/dlg_yes.tga", {180, 176}, {}}, {"texture/dlg_no.tga", {18, 176}, {}}});
         else
             log::warn("script: unknown page '{}'", arg);
     } else {
@@ -538,13 +755,25 @@ public:
             music->setAmbience("");
             music->playMenu();
         }
+        // mmInterface::InitPlayerInfo: the first start creates "DriverX"
+        // (strings 65, 66); afterwards the last-used driver is loaded, or the
+        // newest one if that name is gone.
+        if (m_fe.store.list().empty()) {
+            const auto& s = ctx.game->strings;
+            if (auto p = m_fe.store.create(s.get(65, "DriverX"))) {
+                p->netName = s.get(66, "DriverX");
+                if (!ctx.game->catalog.vehicles().empty())
+                    p->vehicle = ctx.game->catalog.vehicles().front().baseName;
+                p->save();
+            }
+        }
         const std::string last = m_fe.store.lastUsed();
         if (!last.empty())
             m_fe.selectProfile(last);
         if (!m_fe.profile) {
             auto all = m_fe.store.list();
             if (!all.empty())
-                m_fe.selectProfile(all.front().name);
+                m_fe.selectProfile(all.back().name);
         }
         if (result && result->config.multiplayer && ctx.netGame && ctx.netGame->inSession()) {
             // Back from a multiplayer race: the lobby, over the sessions list.
@@ -552,19 +781,34 @@ public:
             m_fe.push(frontend::makeDriverPage(m_fe));
             m_fe.push(frontend::makeSessionsPage(m_fe));
             m_fe.push(frontend::makeLobbyPage(m_fe));
-        } else if (result && m_fe.profile) {
-            // Back from a race: driver page underneath, then the results.
-            m_fe.config = result->config;
+        } else if (result && result->config.multiplayer) {
+            // The session ended during a multiplayer race: the sessions list.
             m_fe.push(frontend::makeDriverPage(m_fe));
-            m_fe.push(frontend::makeRacesPage(m_fe));
-            std::vector<game::Reward> earned;
-            if (recordable(*result))
-                earned = m_fe.progress.record(*m_fe.profile, *result);
-            m_fe.profile->lastRace = raceName(*result);
-            m_fe.saveProfile();
-            m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(earned)));
-            if (auto* music = ctx.music())
-                music->setState(audio::MusicState::Results);
+            m_fe.push(frontend::makeSessionsPage(m_fe));
+        } else if (result && m_fe.profile) {
+            // Back from a race (mmInterface::ShowMain): the race menu, or the
+            // Crash Course over its intro, with the main menu underneath; the
+            // results first when the race reached its end (MM2 shows them in
+            // the game; quitting goes straight back).
+            m_fe.config = result->config;
+            auto reward = m_fe.recordResult(*result);
+            // Only the page the player lands on plays its switch sound.
+            m_fe.quietSwitches = true;
+            m_fe.push(frontend::makeDriverPage(m_fe));
+            if (result->config.mode == game::GameMode::CrashCourse) {
+                m_fe.push(frontend::makeCrashIntroPage(m_fe));
+                m_fe.quietSwitches = result->ended;
+                m_fe.push(frontend::makeCrashCoursePage(m_fe, result->config.city));
+            } else {
+                m_fe.quietSwitches = result->ended;
+                m_fe.push(frontend::makeRacesPage(m_fe));
+            }
+            m_fe.quietSwitches = false;
+            if (result->ended) {
+                m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(reward)));
+                if (auto* music = ctx.music())
+                    music->setState(audio::MusicState::Results);
+            }
         } else if (m_script.active()) {
             // Automation starts from the driver page.
             m_fe.push(frontend::makeDriverPage(m_fe));
@@ -610,30 +854,6 @@ private:
         up.key.down = false;
         // Release on the next frame so keyDown() is seen once.
         SDL_PushEvent(&up);
-    }
-
-    // The driver record says statistics are kept "for races under default
-    // conditions only": customised laps or opponents are not recorded.
-    bool recordable(const game::RaceResult& r) {
-        const auto races = m_fe.racesFor(r.config.mode, r.config.city);
-        if (r.config.mode == game::GameMode::CrashCourse || r.config.mode == game::GameMode::Cruise)
-            return true;
-        if (r.config.raceIndex < 0 || r.config.raceIndex >= static_cast<int>(races.size()))
-            return false;
-        const auto* def = races[static_cast<std::size_t>(r.config.raceIndex)];
-        if (!def->settings)
-            return true;
-        const auto& s = r.config.difficulty == game::Difficulty::Professional ? def->settings->professional
-                                                                               : def->settings->amateur;
-        const bool lapsDefault = r.config.mode != game::GameMode::Circuit || s.numLaps <= 0 || r.config.laps == s.numLaps;
-        return lapsDefault && r.config.opponents == s.opponents;
-    }
-
-    std::string raceName(const game::RaceResult& r) {
-        const auto races = m_fe.racesFor(r.config.mode, r.config.city);
-        if (r.config.raceIndex >= 0 && r.config.raceIndex < static_cast<int>(races.size()))
-            return races[static_cast<std::size_t>(r.config.raceIndex)]->name;
-        return frontend::modeDisplayName(m_fe, r.config.mode);
     }
 
     Frontend m_fe;

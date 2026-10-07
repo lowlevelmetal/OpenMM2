@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace mm2::game {
 
@@ -53,16 +54,27 @@ struct RaceConfig {
     int pointLimit = 0;
 };
 
+// One line of the results table: a racer who reached the finish.
+struct RaceStanding {
+    int opponent = -1; // index of the AI opponent, -1 = the player
+    int place = 0;     // 1-based
+    float timeSeconds = 0.0f;
+};
+
 // Outcome of a session, shown by the results screens and recorded in the
 // driver's profile.
 struct RaceResult {
     RaceConfig config;
-    bool finished = false; // completed (not quit/aborted)
-    bool won = false;      // position within MustPlace / lesson passed
+    bool ended = false;    // the session reached its end (finish, lesson pass/fail, wreck, time up), not quit
+    bool finished = false; // crossed the finish / passed the lesson
+    bool won = false;      // race passed (amateur top 3, pro 1st, blitz in time) / lesson passed
     int position = 0;      // 1-based, 0 = not ranked
     float timeSeconds = 0.0f;
+    float bestLapSeconds = 0.0f;   // circuit races
+    std::vector<float> lapSeconds; // circuit races, every lap
     int score = 0;
     int damage = 0;
+    std::vector<RaceStanding> standings; // finishers by place (player and opponents)
 };
 
 } // namespace mm2::game

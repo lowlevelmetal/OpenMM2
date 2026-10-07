@@ -1,5 +1,7 @@
-// Crash Course (driving school): school selection (ilon_bk) and the lesson
-// screen (cclon_bk / ccsf_bk).
+// Crash Course (driving school): school selection (ilon_bk, MM2
+// CrashCourseIntro, menu 0x28) and the lesson screen (cclon_bk / ccsf_bk,
+// MM2 CrashCourse, menu 0x27). Widget positions come from tune/widget.csv by
+// the widget's creation index (given in the comments).
 #include "app/frontend/Frontend.h"
 #include "core/StringUtil.h"
 
@@ -12,146 +14,213 @@ namespace {
 using ui::Box;
 using ui::SpriteSheet;
 using game::GameMode;
-using namespace layout;
+
+constexpr int kLessons = 13;
 
 class CrashIntroPage final : public Page {
 public:
     explicit CrashIntroPage(Frontend& fe) {
+        menuId = menu_id::kCrashIntro;
         menu.background = "jpg/ilon_bk.jpg";
-        menu.defaultHelp = "jpg/mn_cc.jpg";
-        auto& lon = menu.add<ui::SpriteButton>(SpriteSheet{"texture/cci_lon.tga", 4}, kColumnX, kRow56,
-                                               [&fe] { fe.push(makeCrashCoursePage(fe, "london")); });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/cci_sf.tga", 4}, kColumnX, kRow65,
-                                   [&fe] { fe.push(makeCrashCoursePage(fe, "sf")); });
+        // Entering sets the event to the crash course, race 0.
+        fe.config.mode = GameMode::CrashCourse;
+        fe.config.raceIndex = 0;
+        const Vec2 lon = fe.layout.position(menuId, 0, {439, 359});
+        const Vec2 sf = fe.layout.position(menuId, 1, {439, 415});
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/cci_lon.tga", 4}, lon.x, lon.y, [&fe] {
+            fe.push(makeCrashCoursePage(fe, "london"));
+        }).sound = "Selectionmade";
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/cci_sf.tga", 4}, sf.x, sf.y, [&fe] {
+            fe.push(makeCrashCoursePage(fe, "sf"));
+        }).sound = "Selectionmade";
         addBack(fe, *this);
         addNavStrip(fe, *this);
-        menu.focus(&lon);
     }
 };
 
-// Rows of the curriculum painted on cclon_bk/ccsf_bk, in lesson order
-// (lesson1-3, midterm 1, lesson4-6, midterm 2, lesson7-9, midterm 3, final).
-constexpr float kLessonRowY[] = {102, 116, 130, 158, 186, 200, 214, 242, 270, 284, 298, 326, 354};
-constexpr float kPassX = 194, kFailX = 236;
+// Tops of the curriculum rows painted on cclon_bk/ccsf_bk, in lesson order
+// (lessons 1-3, midterm 1, lessons 4-6, midterm 2, lessons 7-9, midterm 3,
+// final), and the columns of the pass tick and the fail cross (ccStatus).
+constexpr float kLessonRowY[kLessons] = {98, 113, 128, 153, 183, 198, 213, 240, 267, 282, 297, 321, 351};
+constexpr float kPassX = 179, kFailX = 225;
 
 class CrashCoursePage final : public Page {
 public:
     CrashCoursePage(Frontend& fe, std::string city) : m_city(std::move(city)) {
+        menuId = menu_id::kCrashCourse;
         menu.background = m_city == "sf" ? "jpg/ccsf_bk.jpg" : "jpg/cclon_bk.jpg";
-        menu.defaultHelp = "jpg/mn_cc.jpg";
         fe.config.city = m_city;
+        constexpr int id = menu_id::kCrashCourse;
 
+        // 0: TRAINING; 1-3: the lesson and its arrows.
+        const Vec2 train = fe.layout.position(id, 0, {290, 109});
         menu.add<ui::LampItem>(
-            SpriteSheet{"texture/cc_train.tga", 5}, 290, 109, [this] { return m_training; },
-            [this] { m_training = true; });
-        menu.add<ui::LampItem>(
-            SpriteSheet{"texture/cc_blitz.tga", 5}, 290, 237, [this] { return !m_training && m_work == GameMode::Blitz; },
-            [this] {
-                m_training = false;
-                m_work = GameMode::Blitz;
-                m_workRace = 0;
-            });
-        menu.add<ui::LampItem>(
-            SpriteSheet{"texture/cc_cp.tga", 5}, 290, 271,
-            [this] { return !m_training && m_work == GameMode::Checkpoint; },
-            [this] {
-                m_training = false;
-                m_work = GameMode::Checkpoint;
-                m_workRace = 0;
-            });
+            SpriteSheet{"texture/cc_train.tga", 5}, train.x, train.y, [this] { return m_kind == Kind::Training; },
+            [this, &fe] { select(fe, Kind::Training); });
         m_lessonBox = &menu.add<ui::ValueBox>(
-            Box{kBoxX, 146, kBoxWide, kBoxH}, [this, &fe] { return lessonNames(fe); }, [this] { return m_lesson; },
-            [this](int i) { m_lesson = i; });
+            fe.layout.widget(id, 1, {404, 150, 205, 24}),
+            [this, &fe] {
+                std::vector<std::string> v;
+                for (int i = 0; i < kLessons; ++i)
+                    v.push_back(fe.ctx.game->strings.get(lessonStringId(i), std::format("Lesson {}", i + 1)));
+                return v;
+            },
+            [this] { return m_lesson; }, [this](int i) { m_lesson = i; });
+        m_lessonBox->optionEnabled = [this, &fe](int i) { return open(fe, "crash", i); };
+        m_lessonArrows = addArrows(fe, 2, {610, 143}, {610, 161}, *m_lessonBox);
+
+        // 4-5: the "work experience" blitz and checkpoint races; 6-8: the race
+        // and its arrows.
+        const Vec2 blitz = fe.layout.position(id, 4, {290, 237});
+        menu.add<ui::LampItem>(
+            SpriteSheet{"texture/cc_blitz.tga", 5}, blitz.x, blitz.y, [this] { return m_kind == Kind::Blitz; },
+            [this, &fe] { select(fe, Kind::Blitz); });
+        const Vec2 cp = fe.layout.position(id, 5, {290, 271});
+        menu.add<ui::LampItem>(
+            SpriteSheet{"texture/cc_cp.tga", 5}, cp.x, cp.y, [this] { return m_kind == Kind::Checkpoint; },
+            [this, &fe] { select(fe, Kind::Checkpoint); });
         m_raceBox = &menu.add<ui::ValueBox>(
-            Box{kBoxX, 310, kBoxWide, kBoxH}, [this, &fe] { return workRaceNames(fe); }, [this] { return m_workRace; },
-            [this](int i) { m_workRace = i; });
+            fe.layout.widget(id, 6, {404, 315, 205, 24}),
+            [this, &fe] {
+                std::vector<std::string> v;
+                for (const auto* r : fe.racesFor(workMode(), m_city))
+                    v.push_back(r->name);
+                return v;
+            },
+            [this] { return m_workRace; }, [this](int i) { m_workRace = i; });
+        m_raceBox->optionEnabled = [this, &fe](int i) { return open(fe, game::modeKey(workMode()), i); };
+        m_raceArrows = addArrows(fe, 7, {610, 307}, {610, 325}, *m_raceBox);
+
+        // 9: GO. veh_go starts a lesson not yet passed at once in the school's
+        // car; otherwise race_veh opens the garage (CrashCourse::SetVehicleNext).
+        const Vec2 go = fe.layout.position(id, 9, layout::kNext);
+        m_go = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/race_veh.tga", 4}, go.x, go.y,
+                                           [this, &fe] { proceed(fe); });
         addBack(fe, *this);
-        auto& next = menu.add<ui::SpriteButton>(SpriteSheet{"texture/race_veh.tga", 4}, kNext.x, kNext.y,
-                                                [this, &fe] { proceed(fe); });
         addNavStrip(fe, *this);
-        menu.focus(&next);
-        if (fe.profile)
-            m_lesson = std::max(0, fe.progress.availableRaces(*fe.profile, m_city, "crash") - 1);
+        update(fe, 0.0);
     }
 
-    void update(Frontend&, double) override {
-        m_lessonBox->enabled = m_training;
-        m_raceBox->enabled = !m_training;
+    void update(Frontend& fe, double) override {
+        const bool training = m_kind == Kind::Training;
+        // The inactive box and its arrows are hidden, not greyed.
+        m_lessonBox->visible = training;
+        m_lessonArrows.show(training);
+        m_raceBox->visible = !training;
+        m_raceArrows.show(!training);
+        const bool schoolCar = training && !lessonPassed(fe);
+        m_go->sheet.path = schoolCar ? "texture/veh_go.tga" : "texture/race_veh.tga";
+        m_go->sound = schoolCar ? "Uigo" : "";
+        m_go->soundVolume = 0.9f;
+        // The help label shows the lesson's picture in training only.
+        menu.defaultHelp = training ? std::format("jpg/{}_cc{}.jpg", m_city == "sf" ? "sf" : "lon", m_lesson) : "";
     }
 
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
         if (!fe.profile)
             return;
-        for (int i = 0; i < 13; ++i) {
-            const std::string key = std::format("{}.{}", m_city, i);
-            const float y = kLessonRowY[i] - 6;
-            const bool passed = fe.profile->crashPassed.contains(key);
-            const bool failed = !passed && fe.profile->crashFailed.contains(key);
-            ui::drawSpriteFrame(f, {"texture/cc_smchk.tga", 3}, passed ? 1 : 0, kPassX, y);
-            ui::drawSpriteFrame(f, {"texture/cc_smchk.tga", 3}, failed ? 2 : 0, kFailX, y);
+        // ccStatus: a tick for a passed lesson, a cross for one attempted and
+        // failed, nothing for one never driven.
+        for (int i = 0; i < kLessons; ++i) {
+            const auto* rec = fe.profile->record(m_city, "crash", i);
+            if (!rec)
+                continue;
+            ui::drawSpriteFrame(f, {"texture/cc_smchk.tga", 3}, rec->passed ? 1 : 2, rec->passed ? kPassX : kFailX,
+                                kLessonRowY[i]);
         }
     }
 
 private:
+    enum class Kind { Training, Blitz, Checkpoint };
+
+    struct Arrows {
+        ui::SpriteButton* up = nullptr;
+        ui::SpriteButton* down = nullptr;
+        void show(bool on) const {
+            up->visible = on;
+            down->visible = on;
+        }
+    };
+
+    // The roller_up / roller_down buttons beside a drop-down (clamping; they
+    // do not step onto a locked entry).
+    Arrows addArrows(Frontend& fe, int upIndex, Vec2 upCode, Vec2 downCode, ui::ValueBox& box) {
+        const Vec2 u = fe.layout.position(menuId, upIndex, upCode);
+        const Vec2 d = fe.layout.position(menuId, upIndex + 1, downCode);
+        Arrows a;
+        a.up = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/roller_up.tga", 3}, u.x, u.y,
+                                           [&box] { ui::stepOption(box, -1, false); });
+        a.down = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/roller_down.tga", 3}, d.x, d.y,
+                                             [&box] { ui::stepOption(box, 1, false); });
+        return a;
+    }
+
+    GameMode workMode() const { return m_kind == Kind::Checkpoint ? GameMode::Checkpoint : GameMode::Blitz; }
+
+    bool open(Frontend& fe, std::string_view mode, int i) const {
+        return fe.progress.raceOpen(fe.profile ? &*fe.profile : nullptr, m_city, mode, i);
+    }
+
+    bool lessonPassed(Frontend& fe) const {
+        const auto* rec = fe.profile ? fe.profile->record(m_city, "crash", m_lesson) : nullptr;
+        return rec && rec->passed;
+    }
+
     // String table 532-544 London, 545-557 San Francisco.
     std::uint32_t lessonStringId(int i) const {
         return game::Strings::kFirstCrashCourseLesson + (m_city == "sf" ? 13u : 0u) + static_cast<std::uint32_t>(i);
     }
 
-    std::vector<std::string> lessonNames(Frontend& fe) const {
-        std::vector<std::string> v;
-        const int n = fe.profile ? fe.progress.availableRaces(*fe.profile, m_city, "crash") : 1;
-        for (int i = 0; i < n && i < 13; ++i)
-            v.push_back(fe.ctx.game->strings.get(lessonStringId(i), std::format("Lesson {}", i + 1)));
-        return v;
-    }
-
-    std::vector<std::string> workRaceNames(Frontend& fe) const {
-        std::vector<std::string> v;
-        const auto races = fe.racesFor(m_work, m_city);
-        const int n = fe.profile ? fe.progress.availableRaces(*fe.profile, m_city, game::modeKey(m_work)) : 1;
-        for (int i = 0; i < n && i < static_cast<int>(races.size()); ++i)
-            v.push_back(races[static_cast<std::size_t>(i)]->name);
-        return v;
+    // The lamps are radio buttons; picking one goes back to the first
+    // (open) entry of its list.
+    void select(Frontend& fe, Kind kind) {
+        m_kind = kind;
+        m_lesson = 0;
+        m_workRace = 0;
+        if (kind != Kind::Training) {
+            const int n = static_cast<int>(fe.racesFor(workMode(), m_city).size());
+            for (int i = 0; i < n; ++i)
+                if (open(fe, game::modeKey(workMode()), i)) {
+                    m_workRace = i;
+                    break;
+                }
+        }
     }
 
     void proceed(Frontend& fe) {
         auto& cfg = fe.config;
         cfg.city = m_city;
-        if (m_training) {
-            // Lessons are driven in the school's car (inferred: the London
-            // school is a cab company; the San Francisco stunt school's car is
-            // not known, so the player's choice is kept there).
+        if (m_kind == Kind::Training) {
             cfg.mode = GameMode::CrashCourse;
             cfg.raceIndex = m_lesson;
-            cfg.opponents = 0;
-            if (m_city == "london")
-                cfg.vehicle = "vpcab";
-            const auto races = fe.racesFor(GameMode::CrashCourse, m_city);
-            if (m_lesson < static_cast<int>(races.size()) && races[static_cast<std::size_t>(m_lesson)]->settings) {
-                const auto& s = races[static_cast<std::size_t>(m_lesson)]->settings->amateur;
-                cfg.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
-                cfg.weather = static_cast<game::Weather>(std::clamp(s.weather, 0, 3));
-            }
-            if (m_city == "london")
+            fe.applyRaceDefaults(cfg);
+            if (!lessonPassed(fe)) {
+                // mmInterface::Update (Crash Course GO), mmSingleStunt::NextRace:
+                // a lesson not yet passed is driven in the school's car.
+                cfg.vehicle = m_city == "sf" ? "vpbullet" : "vpcab";
+                cfg.vehicleColor = 0;
                 fe.startRace();
-            else
-                fe.push(makeVehiclePage(fe));
-        } else {
-            // "Work experience": the city's regular races, not for credit.
-            cfg.mode = m_work;
-            cfg.raceIndex = m_workRace;
+                return;
+            }
             fe.push(makeVehiclePage(fe));
+            return;
         }
+        // "Work experience": the city's regular races with their defaults.
+        cfg.mode = workMode();
+        cfg.raceIndex = m_workRace;
+        fe.applyRaceDefaults(cfg);
+        fe.push(makeVehiclePage(fe));
     }
 
     std::string m_city;
-    bool m_training = true;
-    GameMode m_work = GameMode::Blitz;
+    Kind m_kind = Kind::Training;
     int m_lesson = 0;
     int m_workRace = 0;
     ui::ValueBox* m_lessonBox = nullptr;
     ui::ValueBox* m_raceBox = nullptr;
+    Arrows m_lessonArrows;
+    Arrows m_raceArrows;
+    ui::SpriteButton* m_go = nullptr;
 };
 
 } // namespace
