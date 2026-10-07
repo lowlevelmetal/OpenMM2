@@ -10,6 +10,10 @@
 
 namespace mm2::game::session {
 
+// vehCarSim's default InertiaBox (width, height, length), used when a car's
+// tune does not say.
+inline constexpr Vec3 kDefaultInertiaBox{2.0f, 1.0f, 3.0f};
+
 // What the session needs to know about the player's car every frame.
 struct PlayerState {
     Mat34 transform;          // car model matrix in the world (Angel convention, faces -Z)
@@ -21,24 +25,33 @@ struct PlayerState {
     bool automatic = true;
     float throttle = 0.0f;    // accelerator as pressed by the player, 0..1
     float damage01 = 0.0f;    // 0 (new) .. 1 (wrecked)
-    bool wrecked = false;
+    bool wrecked = false;     // mmPlayer::IsMaxDamaged: CurrentDamage > MaxDamage
     bool inWater = false;     // under the water plane of a water room (city/<map>.water)
     int vehicleImpacts = 0;   // running count of impacts against other vehicles
     int objectImpacts = 0;    // running count of impacts against props and buildings
+    Vec3 inertiaBox = kDefaultInertiaBox; // tune InertiaBox: the checkpoint hit test's car size
 };
 
 // The other cars the rules track: race opponents, or the crash course
-// target/chaser cars, in the order of Session::opponents().
+// target/chaser cars, in the order of Session::opponents(); police cars in
+// the order of Session::police().
 struct OpponentState {
     Mat34 transform;
     Vec3 velocity;
     float damage01 = 0.0f;
     bool wrecked = false;
+    float currentDamage = 0.0f; // vehCarDamage CurrentDamage (crash course "destroy" events)
+    // The AI driver reached the end of its route (aiRouteRacer::Finished);
+    // MM2 ranks an opponent as finished from this, not from the gates.
+    bool finished = false;
+    // Police: chasing the player (aiPoliceOfficer::InPersuit).
+    bool pursuing = false;
+    Vec3 inertiaBox = kDefaultInertiaBox;
 };
 
 // A checkpoint gate. Angel stores a position, a heading and a radius per
 // waypoint; the gate is the segment position +- radius * (cos h, sin h) in
-// the XZ plane (mmWaypoints::CalculateGatePoints), i.e. across the road.
+// the XZ plane (mmWaypointObject::CalculateGatePoints), i.e. across the road.
 struct Checkpoint {
     Vec3 position;
     float headingDeg = 0.0f; // as stored; driving direction is (sin h, 0, -cos h)
@@ -46,31 +59,38 @@ struct Checkpoint {
     Vec2 gateA, gateB;       // gate end points (x, z)
     bool finish = false;     // last waypoint of a race
     bool start = false;      // first waypoint (start line / circuit start-finish)
+    // Column 6 of the point list (mmWaypointObject hit flag): crash course
+    // any-order events clear this one by distance (RadiusHit) instead of the gate.
+    bool hitByRadius = false;
 };
 
-// Things that happened during an update, for audio, music and voice.
+// Things that happened during an update, for audio, music, voice and the
+// race screen.
 enum class EventType : std::uint8_t {
-    CountdownReady,    // "Ready..." (MM1: AudSound slot 0)
-    CountdownSet,      // "Set..."
-    CountdownGo,       // "Go!" (racers released)
-    FalseStart,        // throttle during the countdown: 5 s penalty
-    PenaltyOver,       // player released after the penalty
-    CheckpointCleared, // index = checkpoint
-    FinishActivated,   // all checkpoints cleared, the finish is open
-    LapCompleted,      // index = lap just completed (1-based), value = lap time
+    CountdownReady,      // first countdown message (sound "Startracelow")
+    CountdownSet,        // second countdown message ("Startracelow")
+    CountdownGo,         // "Go!": racers released, clocks running ("Startracehigh")
+    WreckPenalty,        // wrecked: the player is held for `value` seconds, then DamageReset
+    DamageReset,         // repair the player's car (mmPlayer::ResetDamage)
+    CheckpointCleared,   // index = checkpoint
+    FinishActivated,     // checkpoint race: all checkpoints cleared, the finish is open
+    LapCompleted,        // index = lap just completed (1-based), value = lap time
     FinalLap,
     FinalCheckpoint,
-    TimerWarning,      // value = seconds left (once per second below 10 s)
-    PlayerFinished,    // index = position (1-based), value = time
-    OpponentFinished,  // index = opponent, value = position
+    TimerWarning,        // value = seconds left; index 0 = one beep, 1 = continuous (<= 3 s)
+    PlayerFinished,      // index = position (1-based), value = time
+    OpponentFinished,    // index = opponent, value = position
     TimeUp,
     Wrecked,
     HitWater,
-    Respawn,           // the player must be placed at Session::respawnTransform()
-    LessonEventStarted,// index = crash course event
+    Respawn,             // the player must be placed at Session::respawnTransform()
+    Restart,             // the race starts over: every car back to its spawn (mmGame::Reset)
+    LessonEventStarted,  // index = crash course event
     LessonPassed,
     LessonFailed,
-    SessionOver,       // results can be shown
+    PlayerDamageLimits,  // value = MaxDamage for the player (MedDamage value / 2, ImpactThreshold 0)
+    OpponentDamageLimits,// index = opponent, value = MaxDamage (MedDamage value / 2)
+    SessionOver,         // results can be shown
 };
 
 struct Event {
@@ -79,11 +99,14 @@ struct Event {
     float value = 0.0f;
 };
 
-// The HUD's message lines (mmHUD::SetMessage / SetMessage2).
+// The HUD message (mmHUD::SetMessage / SetMessage2): one message at a time
+// with a duration and a placement flag (the original's third argument: 1 for
+// countdowns and finish lines, 0 for "Time's up!", penalties and failures),
+// plus an optional second line that SetMessage clears.
 struct HudMessage {
     std::string text;
     float timeLeft = 0.0f;
-    bool top = false; // upper line (true) or centre line
+    bool top = false; // placement flag 1
 };
 
 // Background music state the session suggests (audio::MusicState).

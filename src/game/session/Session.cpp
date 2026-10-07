@@ -6,81 +6,112 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <random>
 
 namespace mm2::game::session {
 namespace {
 
-// Countdown and post-race timings from MM1's mmSingleBlitz::UpdateGame:
-// 2.5 s of "Ready..." / "Set..." (1.25 s each), results 5 s after the end.
-constexpr float kCountdownStep = 1.25f;
-constexpr float kPostRaceDelay = 5.0f;
-constexpr float kTimerWarning = 10.0f;    // flt_61A534
-constexpr float kWaterRespawn = 4.0f;     // HitWaterTimer runs 1 -> 5
-constexpr float kFalseStartPenalty = 5.0f; // "Wait...5 second penalty!"
-constexpr float kIdleMusicDelay = 3.0f;   // inferred
-// Crash course distances (inferred).
-constexpr float kFollowEscapeDistance = 120.0f;
-constexpr float kEvadeClearDistance = 40.0f;
+// Countdown: each message lasts 1.25 s; the first one shows until the wait
+// that started at the mode's total drops to 1.25 s (mmSingleBlitz::UpdateGame
+// starts it at 5 s, the other modes at 2.5 s).
+constexpr float kStep = 1.25f;
+constexpr float kPostRace = 5.0f;
+constexpr float kDropY = -50.0f;           // mmGame::Update
+constexpr float kWaterHandler = 5.0f;      // seconds in the water before HitWaterHandler
+constexpr float kWaterLoseDelay = 0.5f;    // HitWaterHandler: menu 0.5 s later
+constexpr float kTimerWarning = 10.0f;     // PlayTimerWarning below 10 s
+constexpr float kTimerWarningLoop = 3.0f;  // continuous below 3 s
+constexpr float kWreckPenalty = 5.0f;      // "Wait...5 second penalty"
+constexpr float kWreckPause = 3.0f;        // cruise and some lessons: repaired after 3 s
+constexpr float kIdleMusicDelay = 3.0f;    // inferred
+constexpr float kChaseArrive2 = 10.0f * 10.0f;  // mmSingleStunt::UpdateChase
+constexpr float kChaseEscape2 = 100.0f * 100.0f;
+constexpr float kPursuitRange = 200.0f;    // mmSingleStunt::CheckCopPursuit
+constexpr float kPursuitEyeHeight = 3.5f;
+constexpr float kMinSpeedGrace = 1.0f;     // mmSingleStunt constructor: below the speed for 1 s fails
+constexpr float kCleanMaxDamage = 10.0f;   // mmSingleStunt::UpdateFrogger
+constexpr float kDestroyMaxDamage = 150000.0f; // mmSingleStunt::UpdateStop (mmSingleStunt constructor)
 
-// String table ids per mode (US build). See docs/gamemodes.md.
-struct ModeStrings {
-    std::uint32_t ready = 241, set = 242, go = 243;
-    std::uint32_t penalty = 0;
-    std::uint32_t timeUp = 244, gameOver = 245;
-    std::uint32_t won = 0;
-    std::uint32_t finishedFirst = 0; // "You finished 1st!" .. +7
-    std::uint32_t loaf = 0;
+// String table ids per mode (US build).
+struct ModeText {
+    std::uint32_t ready = 0, set = 0, go = 0;
+    std::uint32_t wreck = 0;    // single: race over; multiplayer: 5 s penalty
+    std::uint32_t timeUp = 0;
+    std::uint32_t won = 0;      // single Blitz
+    std::uint32_t place = 0;    // "You finished 1st!" .. +7
+    std::uint32_t loaf = 0;     // "You are a loaf"
+    std::uint32_t finishedIn = 0; // multiplayer "finished in"
+    float total = 2.5f;
 };
 
-ModeStrings modeStrings(GameMode m) {
-    ModeStrings s;
+ModeText modeText(GameMode m, bool multi) {
+    ModeText t;
+    if (multi) {
+        switch (m) {
+        case GameMode::Cruise: t.go = 154; t.wreck = 155; break;                     // mmMultiRoam
+        case GameMode::Blitz: t = {89, 90, 91, 92, 94, 0, 0, 0, 93}; break;          // mmMultiBlitz
+        case GameMode::Circuit: t = {101, 102, 103, 104, 108, 0, 0, 0, 105}; break;  // mmMultiCircuit
+        case GameMode::Checkpoint: t = {144, 145, 146, 147, 0, 0, 0, 0, 148}; break; // mmMultiRace
+        default: break;
+        }
+        return t;
+    }
     switch (m) {
-    case GameMode::Blitz:
-        s = {158, 159, 160, 0, 161, 162, 164, 0, 0};
-        break;
-    case GameMode::Circuit:
-        s = {165, 166, 167, 168, 0, 0, 0, 169, 177};
-        break;
-    case GameMode::Checkpoint:
-        // The checkpoint group has no penalty line; circuit's is used (inferred).
-        s = {179, 180, 181, 168, 0, 182, 0, 183, 191};
-        break;
+    case GameMode::Blitz: t = {158, 159, 160, 162, 161, 164, 0, 0, 0, 5.0f}; break; // mmSingleBlitz
+    case GameMode::Circuit: t = {165, 166, 167, 168, 0, 0, 169, 177, 0}; break;     // mmSingleCircuit
+    case GameMode::Checkpoint: t = {179, 180, 181, 182, 0, 0, 183, 191, 0}; break;  // mmSingleRace
     default: break;
     }
-    return s;
+    return t;
 }
 
-struct LessonStrings {
-    std::uint32_t intro = 0, intro2 = 0;
-    std::uint32_t ready = 241, set = 242, go = 243;
-    std::uint32_t win = 609, timeUp = 244, lose = 245;
+// mmSingleStunt::Update* countdown strings: the messages of states 1 and 2
+// and "Go".
+struct LessonText {
+    std::uint32_t intro = 0; // 0 = the lesson's name
+    std::uint32_t ready = 0, set = 0, go = 0;
+    float total = 5.0f;
 };
 
-LessonStrings lessonStrings(LessonType t) {
-    LessonStrings s;
+LessonText lessonText(LessonType t) {
     switch (t) {
-    case LessonType::Jump: s = {206, 0, 207, 0, 208, 209, 614, 615}; break;
-    case LessonType::Acceleration: s = {200, 201, 241, 242, 202, 204, 614, 615}; break;
-    case LessonType::Follow: s = {0, 0, 218, 219, 220, 221, 245, 223}; break;
-    case LessonType::Evade: s = {652, 0, 194, 0, 195, 196, 198, 245}; break;
-    case LessonType::MinimumSpeed: s = {232, 0, 241, 242, 233, 234, 244, 239}; break;
-    case LessonType::Clean: s = {225, 227, 241, 242, 243, 229, 228, 230}; break;
+    case LessonType::Jump: return {0, 206, 207, 208};
+    case LessonType::Collide: return {210, 211, 212, 213};
+    case LessonType::Follow: return {0, 218, 219, 220};
+    case LessonType::Evade: return {0, 193, 194, 195};
+    case LessonType::MinimumSpeed: return {0, 232, 0, 233};
+    case LessonType::Clean: return {0, 225, 226, 227};
+    case LessonType::Acceleration: return {199, 200, 201, 202};
     case LessonType::Course:
-    case LessonType::Map: s = {608, 0, 241, 242, 243, 609, 244, 245}; break;
-    case LessonType::Destroy: s = {0, 0, 617, 618, 619, 620, 623, 622}; break;
+    case LessonType::Map: return {0, 241, 242, 243, 2.5f};
+    case LessonType::Destroy: return {0, 617, 618, 619};
     }
-    return s;
+    return {};
 }
 
-float horizontalDistance(const Vec3& a, const Vec3& b) {
-    return std::sqrt(sq(a.x - b.x) + sq(a.z - b.z));
+// GetLocTime: "M:SS:HH" (hundredths, rounded by adding 0.005 and then
+// truncated), "  ---  " for no time.
+std::string formatTime(float seconds) {
+    if (!(seconds > 0.0f))
+        return "  ---  ";
+    double whole = 0.0;
+    const double fraction = std::modf(static_cast<double>(seconds) + 0.005, &whole);
+    const int hundredths = static_cast<int>(fraction * 100.0);
+    const int minutes = static_cast<int>(whole) / 60;
+    const int secs = static_cast<int>(whole - static_cast<double>(minutes * 60));
+    return std::format("{}:{:02}:{:02}", minutes, secs, hundredths);
 }
+
+float dist2(const Vec3& a, const Vec3& b) { return a.dist2(b); }
 
 } // namespace
 
 std::unique_ptr<Session> Session::create(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
                                          const Strings& strings, std::string* error, const SessionOptions& options) {
-    auto setup = loadRaceSetup(config, city, vfs, error);
+    std::uint32_t seed = options.seed;
+    if (seed == 0)
+        seed = std::random_device{}() | 1u;
+    auto setup = loadRaceSetup(config, city, vfs, error, seed);
     if (!setup)
         return nullptr;
     std::unique_ptr<Session> s(new Session());
@@ -88,15 +119,9 @@ std::unique_ptr<Session> Session::create(const RaceConfig& config, const city::C
     s->m_strings = &strings;
     s->m_city = str::lower(city.info.mapName);
     s->m_options = options;
-    // MM1 respawns the player below y = -50 (flt_61A3B0); keep that unless the
-    // city itself goes deeper.
-    if (city.psdl.bounds.valid())
-        s->m_dropY = std::min(-50.0f, city.psdl.bounds.min.y - 20.0f);
-    s->m_respawn = s->m_setup.playerSpawn;
-    for (std::size_t i = 0; i < s->m_setup.opponents.size(); ++i)
-        s->m_opponents.push_back(Racer{});
-    s->m_player.player = true;
-    s->beginEvent(0);
+    s->m_opponents.resize(s->m_setup.opponents.size());
+    s->m_oppEnabled.assign(s->m_setup.opponents.size(), 0);
+    s->resetRace();
     return s;
 }
 
@@ -105,10 +130,11 @@ std::string Session::str(std::uint32_t id, std::string_view fallback) const {
 }
 
 void Session::setMessage(std::string text, float seconds, bool top) {
-    HudMessage& m = top ? m_message2 : m_message;
-    m.text = std::move(text);
-    m.timeLeft = seconds;
-    m.top = top;
+    // mmHUD::SetMessage: replaces the message and clears the second line.
+    m_message.text = std::move(text);
+    m_message.timeLeft = seconds;
+    m_message.top = top;
+    m_message2 = HudMessage{{}, seconds, top};
 }
 
 void Session::setMessage(std::uint32_t id, std::string_view fallback, float seconds, bool top) {
@@ -117,9 +143,11 @@ void Session::setMessage(std::uint32_t id, std::string_view fallback, float seco
     setMessage(id ? str(id, fallback) : std::string(fallback), seconds, top);
 }
 
-bool Session::anyOrder() const { return mode() == GameMode::Blitz || mode() == GameMode::Checkpoint; }
-
-bool Session::hasOpponentRace() const { return mode() == GameMode::Circuit || mode() == GameMode::Checkpoint; }
+void Session::setMessage2(std::string text) {
+    m_message2.text = std::move(text);
+    m_message2.timeLeft = m_message.timeLeft;
+    m_message2.top = m_message.top;
+}
 
 const LessonEvent* Session::currentLesson() const {
     if (mode() != GameMode::CrashCourse || m_setup.lessonEvents.empty())
@@ -127,93 +155,145 @@ const LessonEvent* Session::currentLesson() const {
     return &m_setup.lessonEvents[static_cast<std::size_t>(m_lessonEvent)];
 }
 
-bool Session::opponentActive(std::size_t index) const {
-    if (index >= m_opponents.size())
-        return false;
-    if (const auto* lesson = currentLesson())
-        return lesson->targetCar || lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy;
-    return true;
+int Session::lessonOpponentOffset() const {
+    // mmSingleStunt::GetOpponentIndex: the opponents of the earlier events.
+    int offset = 0;
+    for (int i = 0; i < m_lessonEvent && i < static_cast<int>(m_setup.lessonEvents.size()); ++i)
+        offset += m_setup.lessonEvents[static_cast<std::size_t>(i)].opponents;
+    return offset;
 }
 
-bool Session::policeActive() const {
-    if (const auto* lesson = currentLesson())
-        return lesson->type == LessonType::Evade;
-    return true;
+bool Session::opponentActive(std::size_t index) const {
+    return index < m_oppEnabled.size() && m_oppEnabled[index] != 0;
+}
+
+Session::WaypointRule Session::rule() const {
+    switch (mode()) {
+    case GameMode::Blitz: return WaypointRule::Blitz;
+    case GameMode::Circuit: return WaypointRule::Circuit;
+    case GameMode::Checkpoint: return WaypointRule::CheckpointRace;
+    case GameMode::CrashCourse:
+        if (const auto* lesson = currentLesson(); lesson && lesson->hasCheckpoints)
+            return lesson->type == LessonType::Jump ? WaypointRule::AnyOrderEnd : WaypointRule::InOrder;
+        return WaypointRule::None;
+    default: return WaypointRule::None;
+    }
+}
+
+// --- Setup -------------------------------------------------------------------------
+
+void Session::resetRace() {
+    // mmGameSingle::Reset / DisableRacers and the modes' Reset: back to the
+    // first event and the countdown.
+    m_finishers = 0;
+    m_rank = 1;
+    for (auto& r : m_opponents)
+        r = Racer{};
+    std::fill(m_oppEnabled.begin(), m_oppEnabled.end(), 0);
+    m_released = false;
+    m_raceTime = 0.0f;
+    m_raceClock = false;
+    m_lapStart = m_lastLap = m_bestLap = 0.0f;
+    m_timeUp = false;
+    m_penaltyLeft = 0.0f;
+    m_penaltyHeld = false;
+    m_repairPending = false;
+    m_waterTimer = 0.0f;
+    m_waterHandled = false;
+    m_postWait = 0.0f;
+    m_resultFinished = m_resultWon = false;
+    m_resultPosition = 0;
+    m_resultTime = 0.0f;
+    m_message = m_message2 = HudMessage{};
+    m_vehicleHits = m_objectHits = 0;
+    m_baseVehicleImpacts = m_baseObjectImpacts = -1;
+    resetTimerWarning();
+    beginEvent(0);
+    m_respawn = m_setup.playerSpawn;
 }
 
 void Session::beginEvent(int index) {
+    // mmSingleStunt::InitNewEvent / InitHUD for lessons; the race modes'
+    // InitGameObjects otherwise.
     m_lessonEvent = index;
-    if (const auto* lesson = currentLesson())
-        m_checkpoints = lesson->checkpoints;
-    else
-        m_checkpoints = m_setup.checkpoints;
+    const LessonEvent* lesson = currentLesson();
+    m_checkpoints = lesson ? lesson->checkpoints : m_setup.checkpoints;
+    m_wp.singleVisible = lesson && lesson->singleCheckpoint;
+    resetWaypoints();
 
-    auto resetRacer = [&](Racer& r) {
-        r.cleared.assign(m_checkpoints.size(), 0);
-        r.clearedCount = 0;
-        r.lap = 0;
-        r.passedThisLap = 0;
-        r.finished = false;
-        r.dnf = false;
-        r.havePrev = false;
-        r.lapStart = 0.0f;
-        r.target = m_checkpoints.size() > 1 ? 1 : -1;
-    };
-    resetRacer(m_player);
-    for (auto& o : m_opponents)
-        resetRacer(o);
-
-    m_phase = Phase::Countdown;
-    m_countdownStep = 0;
-    m_stateWait = 2.0f * kCountdownStep;
-    m_released = false;
-    m_penalty = false;
-    m_raceTime = 0.0f;
-    m_lastWarnSecond = -1;
+    m_phase = mode() == GameMode::Cruise ? Phase::Racing : Phase::Countdown;
+    m_stage = Stage::Intro;
+    m_wait = 0.0f;
+    m_skipToGo = index > 0;
     m_reachedMinSpeed = false;
-    m_lessonFailed = false;
-    m_baseVehicleImpacts = m_baseObjectImpacts = -1;
-    m_vehicleHits = m_objectHits = 0;
+    m_belowMinSpeed = 0.0f;
+    m_lessonDone = false;
+    m_accelWait = -1.0f;
+
     m_hasClock = false;
+    m_clockRunning = false;
+    m_clock = 0.0f;
     if (mode() == GameMode::Blitz && m_setup.timeLimit > 0.0f) {
         m_hasClock = true;
         m_clock = m_setup.timeLimit;
-    } else if (const auto* lesson = currentLesson(); lesson && lesson->timeLimit > 0.0f) {
-        m_hasClock = true;
+    } else if (lesson) {
         m_clock = lesson->timeLimit;
+        switch (lesson->type) {
+        case LessonType::Follow: m_hasClock = false; break;
+        case LessonType::MinimumSpeed: m_hasClock = lesson->timeLimit != 0.0f; break;
+        default: m_hasClock = true; break;
+        }
     }
-    if (!m_checkpoints.empty())
-        m_respawn = spawnAt(m_checkpoints.front());
-    if (index > 0)
-        push(EventType::Respawn);
-    if (currentLesson())
+    resetTimerWarning();
+    if (lesson)
         push(EventType::LessonEventStarted, index);
+}
+
+void Session::resetWaypoints() {
+    // mmWaypoints::Reset.
+    const int n = static_cast<int>(m_checkpoints.size());
+    m_wp.cleared.assign(m_checkpoints.size(), 0);
+    m_wp.visible.assign(m_checkpoints.size(), m_wp.singleVisible ? 0 : 1);
+    m_wp.current = std::min(1, std::max(0, n - 1));
+    m_wp.count = 1;
+    m_wp.lastCleared = 0;
+    m_wp.lap = 0;
+    m_wp.finished = false;
+    m_wp.stopped = false;
+    const WaypointRule r = rule();
+    if (n == 0 || r == WaypointRule::None)
+        return;
+    if (r != WaypointRule::Circuit) {
+        m_wp.visible[0] = 0;
+        if (r == WaypointRule::CheckpointRace && n >= 3)
+            m_wp.visible[static_cast<std::size_t>(n - 1)] = 0; // the finish opens later
+        m_wp.cleared[0] = 1;
+    }
+    if (m_wp.singleVisible) {
+        std::fill(m_wp.visible.begin(), m_wp.visible.end(), 0);
+        m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
+    }
 }
 
 void Session::start() {
     m_started = true;
-    if (mode() == GameMode::Cruise || m_options.skipCountdown) {
-        // Cruise has no countdown (MM1 mmGameSingle roam starts driving at once).
+    if (mode() == GameMode::Cruise) {
+        // mmSingleRoam has no countdown; mmMultiRoam says "Go!".
         m_phase = Phase::Racing;
+        if (multiplayer())
+            setMessage(modeText(mode(), true).go, "Go!", kStep, false);
         m_released = true;
-        if (mode() != GameMode::Cruise)
-            push(EventType::CountdownGo);
         return;
     }
-    // Lesson introduction on the upper line.
-    if (const auto* lesson = currentLesson()) {
-        const LessonStrings ls = lessonStrings(lesson->type);
-        if (ls.intro) {
-            std::string text = str(ls.intro, "");
-            if (lesson->type == LessonType::MinimumSpeed) {
-                // "Maintain %.0f through the checkpoints"
-                const auto pos = text.find("%.0f");
-                if (pos != std::string::npos)
-                    text.replace(pos, 4, std::format("{:.0f}", lesson->minimumSpeedMph));
-            }
-            setMessage(text, 2.0f * kCountdownStep + 2.0f, true);
-        }
-    }
+    if (m_options.skipCountdown)
+        go();
+}
+
+void Session::restart() {
+    resetRace();
+    push(EventType::Restart);
+    if (m_started)
+        start();
 }
 
 bool Session::playerHeld() const {
@@ -221,305 +301,663 @@ bool Session::playerHeld() const {
         return true;
     if (m_phase == Phase::Countdown)
         return true;
-    return m_penalty && m_penaltyLeft > 0.0f;
+    // mmPlayer::Update brakes the car once the race is over (+0x2258).
+    if (m_phase == Phase::PostRace || m_phase == Phase::Done)
+        return true;
+    return m_penaltyHeld && m_penaltyLeft > 0.0f;
 }
 
-void Session::updateCountdown(float dt, const PlayerState& player) {
-    std::uint32_t ready = 0, set = 0, go = 0, penalty = 0;
-    if (const auto* lesson = currentLesson()) {
-        const LessonStrings ls = lessonStrings(lesson->type);
-        ready = ls.ready;
-        set = ls.set;
-        go = ls.go;
-    } else {
-        const ModeStrings ms = modeStrings(mode());
-        ready = ms.ready;
-        set = ms.set;
-        go = ms.go;
-        penalty = ms.penalty;
-    }
-    if (m_countdownStep == 0 && m_stateWait == 2.0f * kCountdownStep)
-        push(EventType::CountdownReady);
+// --- Countdown ---------------------------------------------------------------------
 
-    // False start (inferred trigger: throttle during the countdown, in modes
-    // whose string group has a penalty line).
-    if (penalty && !m_penalty && player.throttle > 0.1f) {
-        m_penalty = true;
-        m_penaltyLeft = kFalseStartPenalty;
-        setMessage(penalty, "Wait...5 second penalty!", kCountdownStep * 2.0f, true);
-        push(EventType::FalseStart);
-    }
-
-    m_stateWait -= dt;
-    if (m_countdownStep == 0) {
-        if (m_stateWait > kCountdownStep) {
-            setMessage(ready, "Ready...", kCountdownStep);
-            return;
-        }
-        m_countdownStep = 1;
-        push(EventType::CountdownSet);
-    }
-    if (m_stateWait > 0.0f) {
-        if (set)
-            setMessage(set, "Set...", kCountdownStep);
+void Session::updateCountdown(float dt) {
+    if (m_skipToGo) {
+        // Later events of an exam start at once (state 0 -> 2 with no wait).
+        go();
         return;
     }
-    // Go!
+    const LessonEvent* lesson = currentLesson();
+    ModeText mt = modeText(mode(), multiplayer());
+    LessonText lt;
+    if (lesson) {
+        lt = lessonText(lesson->type);
+        mt.ready = lt.ready;
+        mt.set = lt.set;
+        mt.total = lt.total;
+    }
+    switch (m_stage) {
+    case Stage::Intro:
+        if (lesson) {
+            if (lesson->type == LessonType::Collide) {
+                setMessage(lt.intro, "", kStep, true);
+            } else {
+                // The lesson's name (the menu's selection) or the event's own
+                // line, until 1.25 s have passed.
+                const auto lessonIndex = static_cast<std::uint32_t>(std::max(0, m_setup.config.raceIndex));
+                const std::uint32_t nameId =
+                    Strings::kFirstCrashCourseLesson + (m_city == "sf" ? 13u : 0u) + lessonIndex;
+                setMessage(lt.intro ? str(lt.intro, "") : str(nameId, ""), kStep, true);
+                if (m_wait <= kStep) {
+                    m_wait += dt;
+                    return;
+                }
+            }
+        }
+        m_stage = Stage::Ready;
+        m_wait = mt.total;
+        push(EventType::CountdownReady);
+        return;
+    case Stage::Ready:
+        m_wait -= dt;
+        if (m_wait > kStep) {
+            if (lesson && lesson->type == LessonType::MinimumSpeed) {
+                std::string text = str(mt.ready, "Maintain %.0f through the checkpoints");
+                if (const auto pos = text.find("%.0f"); pos != std::string::npos)
+                    text.replace(pos, 4, std::format("{:.0f}", lesson->minimumSpeedMph));
+                setMessage(text, 2.0f * kStep, true);
+            } else {
+                setMessage(mt.ready, "Ready...", kStep, true);
+            }
+            return;
+        }
+        m_stage = Stage::Set;
+        m_wait = kStep;
+        push(EventType::CountdownSet);
+        // mmSingleStunt::UpdateFrogger: from here a scrape wrecks the car.
+        if (lesson && lesson->type == LessonType::Clean)
+            push(EventType::PlayerDamageLimits, -1, kCleanMaxDamage);
+        return;
+    case Stage::Set: {
+        m_wait -= dt;
+        const bool corner = lesson && lesson->type == LessonType::MinimumSpeed;
+        if (corner ? m_wait >= 0.0f : m_wait > 0.0f) {
+            if (mt.set)
+                setMessage(mt.set, "Set...", kStep, true);
+            return;
+        }
+        go();
+        return;
+    }
+    }
+}
+
+void Session::go() {
     m_phase = Phase::Racing;
+    m_skipToGo = false;
     m_released = true;
-    setMessage(go, "Go!", kCountdownStep);
+    m_raceTime = 0.0f;
+    m_raceClock = true;
+    m_lapStart = 0.0f;
+    if (const LessonEvent* lesson = currentLesson()) {
+        const LessonText lt = lessonText(lesson->type);
+        if (lesson->type == LessonType::Evade && m_lessonEvent > 0)
+            setMessage(652, "Get going!  Lose the tail\\nbefore you finish", 3.0f, true);
+        else
+            setMessage(lt.go, "Go!", kStep, true);
+        m_clockRunning = m_hasClock;
+        // mmSingleStunt::EnableRacers: opponents from the earlier events'
+        // count up to this event's "numopp" (the original's loop bound).
+        const int enabled = std::min(lesson->opponents, static_cast<int>(m_oppEnabled.size()));
+        for (int i = lessonOpponentOffset(); i < enabled; ++i)
+            m_oppEnabled[static_cast<std::size_t>(i)] = 1;
+        if (lesson->type == LessonType::Destroy && !m_opponents.empty()) {
+            const int target = lessonOpponentOffset();
+            if (target < static_cast<int>(m_opponents.size()))
+                push(EventType::OpponentDamageLimits, target, kDestroyMaxDamage);
+        }
+    } else {
+        setMessage(modeText(mode(), multiplayer()).go, "Go!", kStep, true);
+        m_clockRunning = m_hasClock;
+        std::fill(m_oppEnabled.begin(), m_oppEnabled.end(), 1);
+    }
     push(EventType::CountdownGo);
 }
 
-void Session::updateTarget(Racer& r, const Vec3& pos) {
+// --- Checkpoints (mmWaypoints::Update) ---------------------------------------------
+
+void Session::setTarget(int index) {
+    // mmWaypoints::SetCurrentGoals.
     const int n = static_cast<int>(m_checkpoints.size());
-    if (n < 2) {
-        r.target = -1;
+    m_wp.current = index < 0 ? 0 : std::min(index, n - 1);
+}
+
+void Session::closestTarget(const Vec3& pos) {
+    // mmWaypoints::GetClosestWaypoint: the nearest shown, uncleared one.
+    const int n = static_cast<int>(m_checkpoints.size());
+    int best = m_wp.current, found = 0;
+    float bestD = 1e9f;
+    for (int i = 1; i < n; ++i) {
+        const auto k = static_cast<std::size_t>(i);
+        if (m_wp.cleared[k] || !m_wp.visible[k])
+            continue;
+        ++found;
+        const float d = dist2(m_checkpoints[k].position, pos);
+        if (d < bestD && best != 0) {
+            bestD = d;
+            best = i;
+        }
+    }
+    setTarget(found ? best : m_wp.current);
+}
+
+void Session::cycleTarget(bool forward) {
+    // mmWaypoints::CycleCurrentWaypoint; the input only reaches checkpoint
+    // races (mmSingleRace::UpdateGameInput; Blitz checks the same waypoint
+    // type and so never cycles).
+    const int n = static_cast<int>(m_checkpoints.size());
+    if (n < 3 || m_wp.finished)
+        return;
+    if (rule() != WaypointRule::CheckpointRace && rule() != WaypointRule::AnyOrderEnd)
+        return;
+    if (m_wp.count == n - 1) {
+        setTarget(n - 1);
         return;
     }
-    if (anyOrder()) {
-        // "The arrow will point toward the nearest checkpoint" (race help
-        // text); the finish once everything else is cleared.
-        int best = -1;
-        float bestD = 1e30f;
-        for (int i = 1; i < n - 1; ++i) {
-            if (r.cleared[static_cast<std::size_t>(i)])
-                continue;
-            const float d = horizontalDistance(pos, m_checkpoints[static_cast<std::size_t>(i)].position);
-            if (d < bestD) {
-                bestD = d;
-                best = i;
+    const int step = forward ? 1 : -1;
+    int i = m_wp.current;
+    for (int guard = 0;; ++guard) {
+        i = (i + step) % n;
+        if (i == 0 || i == n - 1)
+            i = forward ? 1 : n - 2;
+        if (!m_wp.cleared[static_cast<std::size_t>(i)])
+            break;
+        if (i == m_wp.current || guard > n)
+            return;
+    }
+    setTarget(i);
+}
+
+void Session::displayCleared(int index) {
+    // mmWaypoints::DisplayHUDMessage.
+    const auto k = static_cast<std::size_t>(index);
+    m_wp.lastCleared = index;
+    m_wp.cleared[k] = 1;
+    m_wp.visible[k] = 0;
+    ++m_wp.count;
+    push(EventType::CheckpointCleared, index);
+}
+
+void Session::updateWaypoints(const PlayerState& player) {
+    const int n = static_cast<int>(m_checkpoints.size());
+    const WaypointRule r = rule();
+    if (n < 2 || r == WaypointRule::None || m_wp.stopped)
+        return;
+    const Mat34& car = player.transform;
+    auto hit = [&](int i) {
+        const Checkpoint& cp = m_checkpoints[static_cast<std::size_t>(i)];
+        if (r == WaypointRule::AnyOrderEnd && cp.hitByRadius)
+            return radiusHit(cp, car.m3);
+        return playerGateHit(cp, car, player.inertiaBox);
+    };
+    // mmWaypoints::ClearWaypoint: the first uncleared waypoint hit.
+    auto firstHit = [&]() {
+        for (int i = 0; i < n; ++i)
+            if (!m_wp.cleared[static_cast<std::size_t>(i)] && hit(i))
+                return i;
+        return -1;
+    };
+
+    switch (r) {
+    case WaypointRule::Blitz: {
+        const int idx = firstHit();
+        if (idx >= 0 && !m_wp.finished) {
+            displayCleared(idx);
+            if (std::any_of(m_wp.cleared.begin(), m_wp.cleared.end(), [](char c) { return c == 0; })) {
+                closestTarget(car.m3);
+                if (m_wp.singleVisible)
+                    m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
+            } else {
+                m_wp.finished = true; // the last checkpoint ends a Blitz
             }
         }
-        if (best < 0)
-            best = n - 1;
-        r.target = best;
+        break;
     }
-    if (r.target >= 0)
-        r.distanceToTarget = horizontalDistance(pos, m_checkpoints[static_cast<std::size_t>(r.target)].position);
-}
-
-void Session::clearAnyOrder(Racer& r, int index, bool player) {
-    r.cleared[static_cast<std::size_t>(index)] = 1;
-    ++r.clearedCount;
-    if (!player)
-        return;
-    push(EventType::CheckpointCleared, index);
-    m_respawn = spawnAt(m_checkpoints[static_cast<std::size_t>(index)]);
-    const int intermediate = static_cast<int>(m_checkpoints.size()) - 2;
-    if (r.clearedCount == intermediate) {
-        push(EventType::FinishActivated);
-        push(EventType::FinalCheckpoint);
-    }
-}
-
-void Session::advanceInOrder(Racer& r, bool player) {
-    const int n = static_cast<int>(m_checkpoints.size());
-    const int hit = r.target;
-    if (player && hit > 0)
-        m_respawn = spawnAt(m_checkpoints[static_cast<std::size_t>(hit)]);
-    if (mode() == GameMode::Circuit) {
-        // mmWaypoints::Update, circuit: crossing waypoint 0 completes a lap.
-        if (hit == 0) {
-            ++r.lap;
-            r.passedThisLap = 0;
-            const float lapTime = m_raceTime - r.lapStart;
-            r.lastLap = lapTime;
-            r.bestLap = r.bestLap > 0.0f ? std::min(r.bestLap, lapTime) : lapTime;
-            r.lapStart = m_raceTime;
-            if (player)
-                push(EventType::LapCompleted, r.lap, lapTime);
-            if (r.lap >= m_setup.laps) {
-                finishRacer(r, player);
-                return;
+    case WaypointRule::CheckpointRace:
+    case WaypointRule::AnyOrderEnd: {
+        const int idx = firstHit();
+        if (idx < 0 || m_wp.finished)
+            break;
+        if (idx == n - 1 && m_wp.count == n - 1) {
+            m_wp.finished = true;
+        } else if (idx > 0 && idx < n - 1) {
+            displayCleared(idx);
+            if (r == WaypointRule::CheckpointRace) {
+                if (m_wp.count == n - 1) {
+                    m_wp.visible[static_cast<std::size_t>(n - 1)] = 1;
+                    push(EventType::FinishActivated);
+                }
+                closestTarget(car.m3);
+            } else if (idx == m_wp.current) {
+                cycleTarget(true);
             }
-            if (player) {
-                if (r.lap == m_setup.laps - 1) {
-                    setMessage(62, "Final lap!", 3.0f, true);
-                    push(EventType::FinalLap);
+            if (m_wp.singleVisible)
+                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
+            if (m_wp.count == n - 1) {
+                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
+                push(EventType::FinalCheckpoint);
+            }
+        }
+        break;
+    }
+    case WaypointRule::InOrder:
+        if (!m_wp.finished && hit(m_wp.current)) {
+            const int passed = m_wp.current;
+            m_wp.visible[static_cast<std::size_t>(passed)] = 0;
+            ++m_wp.current;
+            displayCleared(passed);
+            if (m_wp.count == n)
+                m_wp.finished = true;
+            else if (m_wp.singleVisible)
+                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
+            if (m_wp.current >= n)
+                m_wp.current = n - 1;
+        }
+        break;
+    case WaypointRule::Circuit:
+        if (!m_wp.finished && hit(m_wp.current)) {
+            const int passed = m_wp.current;
+            m_wp.visible[static_cast<std::size_t>(passed)] = 0;
+            displayCleared(passed);
+            if (passed == 0) {
+                ++m_wp.lap;
+                const float lapTime = m_raceTime - m_lapStart;
+                m_lastLap = lapTime;
+                m_bestLap = m_bestLap > 0.0f ? std::min(m_bestLap, lapTime) : lapTime;
+                m_lapStart = m_raceTime;
+                push(EventType::LapCompleted, m_wp.lap, lapTime);
+                if (m_wp.lap == m_setup.laps) {
+                    m_wp.finished = true;
                 } else {
-                    setMessage(std::format("{} {:d}:{:05.2f}", str(63, "Lap time"), static_cast<int>(lapTime) / 60,
-                                           std::fmod(lapTime, 60.0f)),
-                               3.0f, true);
+                    // mmHUD::PostLapTime: "Final lap!" or "Lap time" for 1 s
+                    // with the time under it.
+                    const bool final = m_wp.lap == m_setup.laps - 1;
+                    setMessage(final ? 62 : 63, final ? "Final lap!" : "Lap time", 1.0f, false);
+                    setMessage2(formatTime(lapTime));
+                    if (final)
+                        push(EventType::FinalLap);
+                    // mmWaypoints::ResetAllTags: every gate shows again.
+                    std::fill(m_wp.cleared.begin(), m_wp.cleared.end(), 0);
+                    std::fill(m_wp.visible.begin(), m_wp.visible.end(), m_wp.singleVisible ? 0 : 1);
+                }
+            } else if (passed == n - 1 && m_wp.lap == m_setup.laps - 1) {
+                push(EventType::FinalCheckpoint);
+            }
+            m_wp.current = passed + 1 == n ? 0 : passed + 1;
+            if (m_wp.singleVisible && !m_wp.finished)
+                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
+        }
+        break;
+    case WaypointRule::None: break;
+    }
+}
+
+// --- Opponents ---------------------------------------------------------------------
+
+void Session::updateOpponents(std::span<const OpponentState> opponents) {
+    // mmSingleCircuit / mmSingleRace::UpdateOpponentStatus.
+    const int n = static_cast<int>(m_checkpoints.size());
+    if (n < 2 || (mode() != GameMode::Circuit && mode() != GameMode::Checkpoint))
+        return;
+    for (std::size_t i = 0; i < m_opponents.size() && i < opponents.size(); ++i) {
+        Racer& r = m_opponents[i];
+        const OpponentState& s = opponents[i];
+        if (mode() == GameMode::Circuit) {
+            if (aiGateHit(m_checkpoints[static_cast<std::size_t>(r.count % n)], s.transform, s.inertiaBox))
+                ++r.count;
+        } else {
+            // mmWaypoints::AnyWPHits: the first unpassed one within 50 m.
+            for (int j = 1; j < n && j < 32; ++j) {
+                const std::uint32_t bit = 1u << j;
+                const Checkpoint& cp = m_checkpoints[static_cast<std::size_t>(j)];
+                if ((r.mask & bit) || dist2(s.transform.m3, cp.position) > sq(kAnyWaypointRange))
+                    continue;
+                if (aiGateHit(cp, s.transform, s.inertiaBox)) {
+                    r.mask |= bit;
+                    ++r.count;
+                    break;
                 }
             }
-        } else {
-            ++r.passedThisLap;
-            if (player) {
-                push(EventType::CheckpointCleared, hit);
-                if (hit == n - 1 && r.lap == m_setup.laps - 1)
-                    push(EventType::FinalCheckpoint);
+        }
+        // The AI decides when it is done (aiRouteRacer::Finished).
+        if (!r.finished && s.finished) {
+            r.finished = true;
+            r.place = ++m_finishers;
+            r.finishTime = m_raceTime;
+            push(EventType::OpponentFinished, static_cast<int>(i), static_cast<float>(r.place));
+            if (m_phase == Phase::Racing) {
+                // FinishMessage(opponent, place): "Opponent N" / "finished Nth".
+                setMessage(13 + static_cast<std::uint32_t>(std::min<std::size_t>(i, 7)),
+                           std::format("Opponent {}", i + 1), 5.0f, false);
+                setMessage2(str(21 + static_cast<std::uint32_t>(std::min(r.place - 1, 7)), "finished"));
             }
         }
-        r.target = (hit + 1) % n;
+    }
+}
+
+void Session::updateRank(const PlayerState& player, std::span<const OpponentState> opponents) {
+    // mmSingleCircuit / mmSingleRace::UpdateScore: opponents with more
+    // waypoints passed, or finished, or level and nearer the player's target.
+    const int n = static_cast<int>(m_checkpoints.size());
+    if (n < 2 || m_opponents.empty())
+        return;
+    const Vec3 target = m_checkpoints[static_cast<std::size_t>(std::clamp(m_wp.current, 0, n - 1))].position;
+    const float mine = dist2(player.transform.m3, target);
+    int rank = 1;
+    for (std::size_t i = 0; i < m_opponents.size(); ++i) {
+        const Racer& r = m_opponents[i];
+        if (m_wp.count < r.count || r.finished)
+            ++rank;
+        else if (m_wp.count == r.count && i < opponents.size() &&
+                 dist2(opponents[i].transform.m3, target) < mine)
+            ++rank;
+    }
+    m_rank = rank;
+}
+
+// --- Hazards (mmGame::Update) ------------------------------------------------------
+
+bool Session::updateHazards(float dt, const PlayerState& player) {
+    if (player.transform.m3.y < kDropY) {
+        dropThroughCity();
+        return true;
+    }
+    if (!player.inWater || m_waterHandled)
+        return false;
+    if (m_waterTimer < 0.1f) {
+        if (m_waterTimer == 0.0f)
+            push(EventType::HitWater);
+        if (m_city == "london")
+            setMessage(642, "More tea, vicar?", 3.0f, true);
+        else if (m_city == "sf")
+            setMessage(643, "Sleep with the fishes!", 3.0f, true);
+        else
+            setMessage(30, "Sleep with the fishes!", 3.0f, true);
+    }
+    m_waterTimer += dt;
+    if (m_waterTimer > kWaterHandler) {
+        m_waterHandled = true;
+        m_waterTimer = 0.0f;
+        hitWater();
+        return true;
+    }
+    return false;
+}
+
+void Session::hitWater() {
+    if (multiplayer()) {
+        // mmGameMulti::HitWaterHandler: back to the last checkpoint (cruise:
+        // the start, mmPlayer::Reset).
+        if (rule() == WaypointRule::None) {
+            m_respawn = m_setup.playerSpawn;
+            m_waterHandled = false;
+            push(EventType::Respawn);
+        } else {
+            respawnAtLastCheckpoint();
+        }
         return;
     }
-    // Crash course (inferred: checkpoints in order, the last is the finish).
-    if (player && hit > 0) {
-        const LessonEvent* lesson = currentLesson();
-        if (lesson && lesson->type == LessonType::MinimumSpeed &&
-            m_playerSpeedMph + 0.5f < lesson->minimumSpeedMph) {
-            failLesson(238, "You have not maintained \\n the minimum speed!");
-            return;
+    switch (mode()) {
+    case GameMode::Cruise:
+        // mmSingleRoam::HitWaterHandler resets the game.
+        restart();
+        break;
+    case GameMode::Blitz:
+    case GameMode::Checkpoint:
+        // mmSingleBlitz / mmSingleRace::HitWaterHandler: the race is lost.
+        m_wp.stopped = true;
+        endRace(false, false, kWaterLoseDelay);
+        break;
+    case GameMode::Circuit: respawnAtLastCheckpoint(); break;
+    case GameMode::CrashCourse:
+        if (!m_lessonDone)
+            lessonFailed(kWaterLoseDelay);
+        break;
+    default: break;
+    }
+}
+
+void Session::dropThroughCity() {
+    // mmGame::DropThruCityHandler resets the game; mmGameMulti's treats it
+    // as hitting the water.
+    if (multiplayer())
+        hitWater();
+    else
+        restart();
+}
+
+void Session::respawnAtLastCheckpoint() {
+    // mmSingleCircuit / mmGameMulti::HitWaterHandler: the last waypoint
+    // cleared, facing its heading.
+    if (!m_checkpoints.empty())
+        m_respawn = spawnAt(m_checkpoints[static_cast<std::size_t>(m_wp.lastCleared)]);
+    m_waterHandled = false;
+    m_waterTimer = 0.0f;
+    push(EventType::Respawn);
+}
+
+// --- Clocks ------------------------------------------------------------------------
+
+void Session::updateClock(float dt) {
+    if (m_raceClock)
+        m_raceTime += dt;
+    if (m_clockRunning) {
+        // mmTimer counting down stops at 0.
+        m_clock -= dt;
+        if (m_clock <= 0.0f) {
+            m_clock = 0.0f;
+            m_clockRunning = false;
         }
     }
-    ++r.clearedCount;
-    if (hit >= 0)
-        r.cleared[static_cast<std::size_t>(hit)] = 1;
-    if (hit == n - 1) {
-        finishRacer(r, player);
-        return;
-    }
-    if (player)
-        push(EventType::CheckpointCleared, hit);
-    r.target = hit + 1;
 }
 
-void Session::finishRacer(Racer& r, bool player) {
-    if (r.finished)
-        return;
-    r.finished = true;
-    r.finishTime = m_raceTime;
-    r.finishPosition = ++m_finishOrder;
-    if (!player) {
-        const auto idx = static_cast<int>(&r - m_opponents.data());
-        push(EventType::OpponentFinished, idx, static_cast<float>(r.finishPosition));
-        return;
-    }
-    if (mode() == GameMode::CrashCourse)
-        return; // the lesson rules decide
-    // MM1 ProgressCheck: a race counts as won within MustPlace for amateurs,
-    // only in first place for professionals.
-    const int pos = mode() == GameMode::Blitz ? 1 : r.finishPosition;
-    const int mustPlace = m_setup.config.difficulty == Difficulty::Professional ? 1 : m_setup.mustPlace;
-    const ModeStrings ms = modeStrings(mode());
-    if (mode() == GameMode::Blitz) {
-        endRace(true, true, ms.won, "You Won!");
-    } else {
-        const std::uint32_t id = pos <= 8 ? ms.finishedFirst + static_cast<std::uint32_t>(pos - 1) : ms.loaf;
-        endRace(true, pos <= mustPlace, id, std::format("You finished #{}", pos));
-    }
-    m_resultPosition = pos;
-    push(EventType::PlayerFinished, pos, m_raceTime);
+void Session::resetTimerWarning() {
+    m_warnAcc = 1.0f;
+    m_warnBeeped = false;
+    m_warnLoop = false;
 }
 
-void Session::endRace(bool finished, bool won, std::uint32_t messageId, std::string_view fallback) {
+void Session::timerWarning(float dt) {
+    // PlayTimerWarning: a beep about once a second, continuous from 3 s.
+    if (m_clock > kTimerWarningLoop) {
+        if (m_warnAcc >= 1.0f && !m_warnBeeped) {
+            m_warnBeeped = true;
+            push(EventType::TimerWarning, 0, m_clock);
+        }
+        if (m_warnAcc > 1.0f) {
+            m_warnAcc = 0.0f;
+            m_warnBeeped = false;
+        }
+        m_warnAcc += dt;
+    } else if (!m_warnLoop) {
+        m_warnLoop = true;
+        push(EventType::TimerWarning, 1, m_clock);
+    }
+}
+
+void Session::startPenalty(float seconds, bool held) {
+    m_penaltyLeft = seconds;
+    m_penaltyHeld = held;
+    push(EventType::WreckPenalty, -1, seconds);
+}
+
+float Session::timeRemaining() const { return m_hasClock ? m_clock : -1.0f; }
+
+float Session::lapTime() const { return m_raceTime - m_lapStart; }
+
+// --- Race modes --------------------------------------------------------------------
+
+void Session::endRace(bool finished, bool won, float delay) {
     if (m_phase == Phase::PostRace || m_phase == Phase::Done)
         return;
     m_phase = Phase::PostRace;
-    m_stateWait = kPostRaceDelay;
+    m_postWait = delay;
+    m_raceClock = false;
+    m_clockRunning = false;
+    m_penaltyLeft = 0.0f;
     m_resultFinished = finished;
     m_resultWon = won;
     m_resultTime = m_raceTime;
-    if (messageId || !fallback.empty())
-        setMessage(messageId, fallback, kPostRaceDelay);
 }
 
-void Session::updateRacer(Racer& r, const Mat34& car, bool player) {
-    const Vec3 pos = car.m3;
-    // A jump of more than 50 m in one update is a respawn or teleport, not
-    // driving: do not test the path in between against the gates.
-    if (!r.havePrev || pos.dist2(r.prevPos) > 50.0f * 50.0f) {
-        r.prevPos = pos;
-        r.havePrev = true;
-    }
-    const int n = static_cast<int>(m_checkpoints.size());
-    if (!r.finished && n >= 2 && m_phase == Phase::Racing) {
-        auto hits = [&](int i) {
-            const Checkpoint& cp = m_checkpoints[static_cast<std::size_t>(i)];
-            return player ? gateHit(cp, r.prevPos, car, m_options.playerExtent)
-                          : aiGateHit(cp, r.prevPos, pos, std::min(cp.radius, 5.0f));
-        };
-        if (!player && mode() == GameMode::CrashCourse) {
-            // Lesson cars (the cab to follow, the car to ram) only matter
-            // once they reach the destination (inferred).
-            const Checkpoint& last = m_checkpoints.back();
-            if (aiGateHit(last, r.prevPos, pos, last.radius))
-                finishRacer(r, player);
-        } else if (anyOrder()) {
-            // mmWaypoints types 2/3: any intermediate checkpoint, then the
-            // finish once all are cleared (AnyWPHits).
-            const int intermediate = n - 2;
-            for (int i = 1; i < n - 1; ++i)
-                if (!r.cleared[static_cast<std::size_t>(i)] && hits(i))
-                    clearAnyOrder(r, i, player);
-            if (r.clearedCount >= intermediate && hits(n - 1))
-                finishRacer(r, player);
-        } else if (r.target >= 0 && hits(r.target)) {
-            advanceInOrder(r, player);
+void Session::playerFinished() {
+    const int place = ++m_finishers;
+    m_resultPosition = place;
+    m_rank = place;
+    push(EventType::PlayerFinished, place, m_raceTime);
+}
+
+void Session::updateRace(float dt, const PlayerState& player) {
+    const ModeText mt = modeText(mode(), multiplayer());
+    const bool pro = m_setup.config.difficulty == Difficulty::Professional;
+    const bool penalty = m_penaltyLeft > 0.0f;
+    auto wreckPenalty = [&] {
+        if (wrecked(player) && !penalty) {
+            push(EventType::Wrecked);
+            setMessage(mt.wreck, "Wait...5 second penalty!", 5.0f, false);
+            startPenalty(kWreckPenalty);
         }
-    }
-    updateTarget(r, pos);
-    r.prevPos = pos;
-}
-
-void Session::updateRanks() {
-    const int n = std::max(1, static_cast<int>(m_checkpoints.size()));
-    std::vector<Racer*> all{&m_player};
-    for (std::size_t i = 0; i < m_opponents.size(); ++i)
-        if (opponentActive(i))
-            all.push_back(&m_opponents[i]);
-    auto progress = [&](const Racer& r) {
-        if (mode() == GameMode::Circuit)
-            return r.lap * n + r.passedThisLap;
-        return r.clearedCount;
     };
-    std::ranges::stable_sort(all, [&](const Racer* a, const Racer* b) {
-        if (a->finished != b->finished)
-            return a->finished;
-        if (a->finished)
-            return a->finishPosition < b->finishPosition;
-        if (progress(*a) != progress(*b))
-            return progress(*a) > progress(*b);
-        return a->distanceToTarget < b->distanceToTarget;
-    });
-    for (std::size_t i = 0; i < all.size(); ++i)
-        all[i]->rank = static_cast<int>(i) + 1;
-}
 
-void Session::checkHazards(float dt, const PlayerState& player) {
-    // Falling out of the city (mmGame::Update: y below -50).
-    if (player.transform.m3.y < m_dropY) {
-        setMessage(29, "That didn't happen!", 2.0f);
-        push(EventType::Respawn);
-        m_waterTimer = 0.0f;
+    if (multiplayer()) {
+        // mmMultiRoam / Blitz / Circuit / Race: wrecks cost 5 s, never the race.
+        if (mode() == GameMode::Blitz && m_hasClock && m_clock < kTimerWarning)
+            timerWarning(dt);
+        wreckPenalty();
+        if (m_wp.finished) {
+            playerFinished();
+            setMessage(std::format("{} {}", str(mt.finishedIn, "finished in"), formatTime(m_raceTime)), 5.0f,
+                       false);
+            // Blitz shows the results when the clock would have run out;
+            // the others 3 s after the finish.
+            const float wait = mode() == GameMode::Blitz ? m_clock : 3.0f;
+            endRace(true, true, wait);
+            return;
+        }
+        if (mode() == GameMode::Blitz && m_hasClock && m_clock <= 0.0f) {
+            m_wp.stopped = true;
+            m_timeUp = true;
+            push(EventType::TimeUp);
+            setMessage(mt.timeUp, "Time's up!", 5.0f, false);
+            endRace(false, false, kPostRace);
+        }
         return;
     }
-    // Water: message at once, respawn 4 s later (HitWaterTimer 1 -> 5).
-    if (player.inWater || m_waterTimer > 0.0f) {
-        if (m_waterTimer == 0.0f) {
-            // London's line is "More tea, vicar?" (string 642), the generic
-            // one "Sleep with the fishes!" (30/643) - assignment inferred.
-            if (m_city == "london")
-                setMessage(642, "More tea, vicar?", 3.0f);
-            else
-                setMessage(30, "Sleep with the fishes!", 3.0f);
-            push(EventType::HitWater);
+
+    switch (mode()) {
+    case GameMode::Cruise:
+        // mmSingleRoam::UpdateGame: a wreck parks the car for 3 s, then it
+        // is repaired.
+        if (wrecked(player) && !penalty) {
+            push(EventType::Wrecked);
+            startPenalty(kWreckPause);
         }
-        m_waterTimer += dt;
-        if (m_waterTimer > kWaterRespawn) {
-            m_waterTimer = 0.0f;
-            push(EventType::Respawn);
+        break;
+    case GameMode::Blitz:
+        // mmSingleBlitz::UpdateGame state 3.
+        if (m_hasClock && m_clock < kTimerWarning && !m_timeUp)
+            timerWarning(dt);
+        if (m_wp.finished) {
+            if (m_timeUp) {
+                m_wp.stopped = true;
+                setMessage(mt.timeUp, "Time's up!", 5.0f, false);
+                endRace(false, false, kPostRace);
+            } else {
+                playerFinished();
+                setMessage(mt.won, "You Won!", 5.0f, true);
+                endRace(true, true, kPostRace);
+            }
+            return;
         }
+        if (m_hasClock && m_clock <= 0.0f && !m_timeUp) {
+            // Time's up, but the race goes on: finishing now only ends it.
+            m_timeUp = true;
+            push(EventType::TimeUp);
+            setMessage(mt.timeUp, "Time's up!", 5.0f, false);
+        }
+        if (wrecked(player)) {
+            m_wp.stopped = true;
+            push(EventType::Wrecked);
+            setMessage(mt.wreck, "Game over!", 5.0f, false);
+            endRace(false, false, kPostRace);
+        }
+        break;
+    case GameMode::Circuit:
+        // mmSingleCircuit::UpdateGame states 3 and 6.
+        wreckPenalty();
+        if (m_wp.finished) {
+            playerFinished();
+            const int place0 = m_resultPosition - 1;
+            setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
+                       std::format("You finished #{}", m_resultPosition), 5.0f, true);
+            // mmSingleCircuit::ProgressCheck: top three, professionals first.
+            endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
+        }
+        break;
+    case GameMode::Checkpoint:
+        // mmSingleRace::UpdateGame state 3.
+        if (m_wp.finished) {
+            playerFinished();
+            const int place0 = m_resultPosition - 1;
+            setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
+                       std::format("You finished #{}", m_resultPosition), 5.0f, place0 < 8);
+            endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
+            return;
+        }
+        if (wrecked(player)) {
+            m_wp.stopped = true;
+            push(EventType::Wrecked);
+            setMessage(mt.wreck, "Game over!", 5.0f, false);
+            endRace(false, false, kPostRace);
+        }
+        break;
+    default: break;
     }
 }
 
-void Session::failLesson(std::uint32_t id, std::string_view fallback) {
-    m_lessonFailed = true;
-    endRace(false, false, id, fallback);
+// --- Crash course (mmSingleStunt) --------------------------------------------------
+
+bool Session::copPursuit(const PlayerState& player, std::span<const OpponentState> police) const {
+    // mmSingleStunt::CheckCopPursuit: a pursuing cop in sight within 200 m.
+    const Vec3 eye = player.transform.m3 + Vec3{0.0f, kPursuitEyeHeight, 0.0f};
+    for (const auto& cop : police) {
+        if (!cop.pursuing)
+            continue;
+        const Vec3 copEye = cop.transform.m3 + Vec3{0.0f, kPursuitEyeHeight, 0.0f};
+        if (m_options.lineOfSight && !m_options.lineOfSight(eye, copEye))
+            continue;
+        if (eye.dist(copEye) < kPursuitRange)
+            return true;
+    }
+    return false;
+}
+
+void Session::lessonFailed(float delay) {
+    m_lessonDone = true;
+    m_wp.stopped = true;
     push(EventType::LessonFailed, m_lessonEvent);
+    endRace(false, false, delay);
 }
 
-void Session::updateLesson(float dt, const PlayerState& player, std::span<const OpponentState> opponents) {
-    const LessonEvent* lesson = currentLesson();
-    if (!lesson || m_phase != Phase::Racing)
+void Session::lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay) {
+    m_lessonDone = true;
+    const int events = static_cast<int>(m_setup.lessonEvents.size());
+    if (m_lessonEvent == events - 1) {
+        setMessage(passMessage, "Good driving!", seconds, top);
+        push(EventType::LessonPassed, m_lessonEvent);
+        endRace(true, true, delay);
         return;
-    const LessonStrings ls = lessonStrings(lesson->type);
-    (void)dt;
+    }
+    // An exam continues with its next event where the car is
+    // (mmSingleStunt::InitNewEvent; no respawn).
+    beginEvent(m_lessonEvent + 1);
+}
 
-    auto fail = [&](std::uint32_t id, std::string_view fallback) { failLesson(id, fallback); };
+void Session::updateLesson(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
+                           std::span<const OpponentState> police) {
+    const LessonEvent* lesson = currentLesson();
+    if (!lesson)
+        return;
 
-    // Collision counters (Clean lessons show them; "Hit Objects:", "Hit Vehicles:").
+    // Collision counters (the Clean lesson's HUD; "Hit Objects:", "Hit Vehicles:").
     if (m_baseVehicleImpacts < 0) {
         m_baseVehicleImpacts = player.vehicleImpacts;
         m_baseObjectImpacts = player.objectImpacts;
@@ -527,83 +965,245 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
     m_vehicleHits = player.vehicleImpacts - m_baseVehicleImpacts;
     m_objectHits = player.objectImpacts - m_baseObjectImpacts;
 
+    // A wrecked car waits (state 5) before it is repaired.
+    if (m_penaltyLeft > 0.0f)
+        return;
+    auto pause = [&] {
+        push(EventType::Wrecked);
+        startPenalty(kWreckPause);
+    };
+    const bool timeOut = m_hasClock && m_clock <= 0.0f;
+    const int targetIndex = lessonOpponentOffset();
+    const OpponentState* target = targetIndex < static_cast<int>(opponents.size())
+                                      ? &opponents[static_cast<std::size_t>(targetIndex)]
+                                      : nullptr;
+
     switch (lesson->type) {
-    case LessonType::Clean:
-        if (m_vehicleHits > 0) {
-            fail(ls.lose, "You scraped the paint!");
-            return;
+    case LessonType::Jump: // UpdateJump
+        if (m_wp.finished) {
+            lessonPassedOrNext(209, 5.0f, true, kPostRace);
+        } else if (timeOut) {
+            setMessage(614, "Time's up!", 5.0f, false);
+            push(EventType::TimeUp);
+            lessonFailed();
+        } else if (wrecked(player)) {
+            push(EventType::Wrecked);
+            setMessage(615, "Game over!", 5.0f, false);
+            lessonFailed();
         }
         break;
-    case LessonType::MinimumSpeed:
-        if (!m_reachedMinSpeed && player.speedMph >= lesson->minimumSpeedMph) {
-            m_reachedMinSpeed = true;
-            setMessage(237, "You have reached the minimum speed!", 2.0f, true);
-        } else if (!m_reachedMinSpeed && m_raceTime < 0.1f) {
-            setMessage(str(235, "You need to get up to speed") + " " + str(236, "before hitting a checkpoint"), 3.0f,
-                       true);
+    case LessonType::Collide: // UpdateCollide (no retail lesson; nothing is recorded)
+        if (m_hasClock && m_clock < kTimerWarning && !m_lessonDone)
+            timerWarning(dt);
+        if (timeOut && !m_lessonDone) {
+            m_lessonDone = true;
+            setMessage(214, "Time's up!", kStep, true);
+            push(EventType::TimeUp);
+            endRace(false, false, kPostRace);
+        } else if (m_wp.finished) {
+            m_lessonDone = true;
+            setMessage(215, "Good driving!", kStep, true);
+            endRace(true, false, 3.0f);
+        } else if (wrecked(player)) {
+            push(EventType::Wrecked);
+            setMessage(216, "Wait...5 second penalty", 5.0f, false);
+            startPenalty(kWreckPenalty);
         }
         break;
-    case LessonType::Follow:
-    case LessonType::Destroy: {
-        if (opponents.empty() || m_opponents.empty())
+    case LessonType::Follow: { // UpdateChase
+        if (wrecked(player)) {
+            pause();
             break;
-        const OpponentState& target = opponents[0];
-        const Racer& tr = m_opponents[0];
-        if (lesson->type == LessonType::Destroy) {
-            if (target.wrecked || target.damage01 >= 1.0f) {
-                endRace(true, true, ls.win, "You did it!");
-                push(EventType::LessonPassed, m_lessonEvent);
-                return;
-            }
-            if (tr.finished) {
-                fail(621, "Car reached destination");
-                return;
-            }
-        } else {
-            const float d = horizontalDistance(player.transform.m3, target.transform.m3);
-            if (d > kFollowEscapeDistance) {
-                fail(222, "Car escaped!");
-                return;
-            }
-            if (tr.finished) {
-                endRace(true, true, ls.win, "You Won!");
-                push(EventType::LessonPassed, m_lessonEvent);
-                return;
-            }
+        }
+        if (!target)
+            break;
+        const float d2 = dist2(player.transform.m3, target->transform.m3);
+        if ((target->finished || m_wp.finished) && d2 < kChaseArrive2) {
+            lessonPassedOrNext(221, 5.0f, true, kPostRace);
+            break;
+        }
+        if (d2 > kChaseEscape2) {
+            setMessage(222, "Car escaped!", 5.0f, true);
+            setMessage2(str(223, "Game over"));
+            lessonFailed();
         }
         break;
     }
-    default: break;
+    case LessonType::Evade: // UpdateEvade
+        if (wrecked(player))
+            pause();
+        if (m_wp.finished) {
+            if (copPursuit(player, police)) {
+                setMessage(197, "Lose your pursuers before you finish!", 5.0f, true); // HUDMessage
+                lessonFailed();
+            } else {
+                setMessage(196, "You survived the gauntlet!", 5.0f, true);
+                lessonPassedOrNext(196, 5.0f, true, kPostRace);
+            }
+        } else if (timeOut) {
+            setMessage(198, "Time's up!  Drive faster to win!", 5.0f, false);
+            push(EventType::TimeUp);
+            lessonFailed();
+        }
+        break;
+    case LessonType::MinimumSpeed: { // UpdateCorner
+        const float speed = player.speedMph;
+        const float minimum = lesson->minimumSpeedMph;
+        if (m_wp.finished) {
+            if (copPursuit(player, police)) {
+                setMessage(197, "Lose your pursuers before you finish!", 5.0f, true);
+                lessonFailed();
+            } else {
+                lessonPassedOrNext(234, 5.0f, true, kPostRace);
+            }
+            break;
+        }
+        if (lesson->timeLimit != 0.0f && timeOut) {
+            setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
+            push(EventType::TimeUp);
+            lessonFailed();
+            break;
+        }
+        if (!m_reachedMinSpeed) {
+            if (m_wp.count > 1) {
+                setMessage(235, "You need to get up to speed", 3.0f, true);
+                setMessage2(str(236, "before hitting a checkpoint"));
+                lessonFailed();
+                break;
+            }
+            if (minimum < speed) {
+                m_reachedMinSpeed = true;
+                setMessage(237, "You have reached the minimum speed!", 3.0f, false);
+            }
+        }
+        if (m_belowMinSpeed > 0.0f && minimum < speed)
+            m_belowMinSpeed = 0.0f;
+        if (m_reachedMinSpeed && speed < minimum) {
+            m_belowMinSpeed += dt;
+            if (m_belowMinSpeed > kMinSpeedGrace) {
+                setMessage(238, "You have not maintained \\n the minimum speed!", 5.0f, true);
+                setMessage2(str(239, "You lost!"));
+                lessonFailed();
+                break;
+            }
+        }
+        if (wrecked(player)) {
+            push(EventType::Wrecked);
+            setMessage(240, "Game over!", 5.0f, true);
+            lessonFailed();
+        }
+        break;
+    }
+    case LessonType::Clean: // UpdateFrogger
+        if (m_hasClock && m_clock < kTimerWarning && !m_lessonDone)
+            timerWarning(dt);
+        if (timeOut && !m_lessonDone) {
+            setMessage(228, "Time's up!", kStep, true);
+            push(EventType::TimeUp);
+            lessonFailed();
+        } else if (m_wp.finished) {
+            lessonPassedOrNext(229, kStep, true, 3.0f);
+        } else if (wrecked(player)) {
+            push(EventType::Wrecked);
+            setMessage(230, "You scraped the paint!", 5.0f, false);
+            lessonFailed();
+        }
+        break;
+    case LessonType::Acceleration: // UpdateAccel (no retail lesson)
+        if (m_accelWait >= 0.0f) {
+            m_accelWait -= dt;
+            if (m_accelWait < 0.0f)
+                lessonPassedOrNext(204, 5.0f, true, kPostRace);
+            break;
+        }
+        if (wrecked(player))
+            pause();
+        if (m_wp.finished) {
+            m_accelWait = 2.0f;
+        } else if (timeOut) {
+            setMessage(203, "Put the pedal to the metal!", 5.0f, false);
+            push(EventType::TimeUp);
+            lessonFailed();
+        }
+        break;
+    case LessonType::Course:
+    case LessonType::Map: // UpdateBlitz
+        if (m_wp.finished) {
+            lessonPassedOrNext(609, 5.0f, false, kPostRace);
+        } else if (timeOut) {
+            setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
+            push(EventType::TimeUp);
+            lessonFailed();
+        } else if (wrecked(player)) {
+            push(EventType::Wrecked);
+            setMessage(245, "Game over!", 5.0f, false);
+            lessonFailed();
+        }
+        break;
+    case LessonType::Destroy: // UpdateStop
+        if (target && target->currentDamage >= kDestroyMaxDamage) {
+            m_oppEnabled[static_cast<std::size_t>(targetIndex)] = 0; // the car stops
+            lessonPassedOrNext(620, 5.0f, true, kPostRace);
+            break;
+        }
+        if (target && target->finished) {
+            setMessage(621, "Car reached destination", 5.0f, true);
+            setMessage2(str(622, "You lost!"));
+            lessonFailed();
+            break;
+        }
+        if (timeOut) {
+            setMessage(244, "Time's up!", 5.0f, false);
+            push(EventType::TimeUp);
+            lessonFailed();
+            break;
+        }
+        if (wrecked(player))
+            pause();
+        break;
     }
 }
+
+// --- Frame -------------------------------------------------------------------------
 
 void Session::update(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
                      std::span<const OpponentState> police) {
     if (!m_started)
         return;
-    m_playerSpeedMph = player.speedMph;
-    if (m_message.timeLeft > 0.0f)
+    if (m_message.timeLeft > 0.0f) {
         m_message.timeLeft -= dt;
-    if (m_message2.timeLeft > 0.0f)
-        m_message2.timeLeft -= dt;
+        m_message2.timeLeft = m_message.timeLeft;
+        if (m_message.timeLeft <= 0.0f)
+            m_message = m_message2 = HudMessage{};
+    }
     m_resultDamage = player.damage01;
+    m_idleTime = player.speedMph < 2.0f ? m_idleTime + dt : 0.0f;
+
+    // The DamageReset of the previous update has been applied by now.
+    m_repairPending = false;
+    if (m_penaltyLeft > 0.0f) {
+        m_penaltyLeft -= dt;
+        if (m_penaltyLeft <= 0.0f) {
+            m_penaltyLeft = 0.0f;
+            m_penaltyHeld = false;
+            m_repairPending = true;
+            push(EventType::DamageReset);
+        }
+    }
 
     switch (m_phase) {
     case Phase::Countdown:
-        updateCountdown(dt, player);
-        updateRacer(m_player, player.transform, true);
+        updateCountdown(dt);
+        if (updateHazards(dt, player))
+            return;
+        updateWaypoints(player);
+        updateRank(player, opponents);
         return;
     case Phase::PostRace:
-        m_stateWait -= dt;
-        if (m_stateWait <= 0.0f) {
-            // Crash course exams: continue with the next event after a pass.
-            if (mode() == GameMode::CrashCourse && m_resultWon && !m_lessonFailed &&
-                m_lessonEvent + 1 < static_cast<int>(m_setup.lessonEvents.size())) {
-                beginEvent(m_lessonEvent + 1);
-                m_resultWon = m_resultFinished = false;
-                start();
-                return;
-            }
+        updateClock(dt);
+        updateOpponents(opponents);
+        m_postWait -= dt;
+        if (m_postWait <= 0.0f) {
             m_phase = Phase::Done;
             push(EventType::SessionOver);
         }
@@ -612,87 +1212,21 @@ void Session::update(float dt, const PlayerState& player, std::span<const Oppone
     case Phase::Racing: break;
     }
 
-    m_raceTime += dt;
-    m_idleTime = player.speedMph < 2.0f ? m_idleTime + dt : 0.0f;
-    if (m_penalty && m_penaltyLeft > 0.0f) {
-        m_penaltyLeft -= dt;
-        if (m_penaltyLeft <= 0.0f)
-            push(EventType::PenaltyOver);
-    }
-
-    // Player and opponent progress.
-    updateRacer(m_player, player.transform, true);
-    for (std::size_t i = 0; i < m_opponents.size() && i < opponents.size(); ++i)
-        if (opponentActive(i))
-            updateRacer(m_opponents[i], opponents[i].transform, false);
-    updateRanks();
-    if (m_phase != Phase::Racing)
-        return;
-
-    checkHazards(dt, player);
-
-    // Count-down clock (Blitz, timed lessons).
-    if (m_hasClock) {
-        m_clock -= dt;
-        if (m_clock < kTimerWarning && m_clock > 0.0f) {
-            const int second = static_cast<int>(std::ceil(m_clock));
-            if (second != m_lastWarnSecond) {
-                m_lastWarnSecond = second;
-                push(EventType::TimerWarning, -1, m_clock);
-            }
-        }
-        if (m_clock <= 0.0f) {
-            m_clock = 0.0f;
-            push(EventType::TimeUp);
-            if (const auto* lesson = currentLesson()) {
-                m_lessonFailed = true;
-                endRace(false, false, lessonStrings(lesson->type).timeUp, "Time's up!");
-                push(EventType::LessonFailed, m_lessonEvent);
-            } else {
-                endRace(false, false, modeStrings(mode()).timeUp, "Time's up!");
-            }
+    // The rules see the checkpoints as they were after the previous frame's
+    // mmWaypoints::Update (it runs after UpdateGame in the original).
+    if (mode() == GameMode::CrashCourse)
+        updateLesson(dt, player, opponents, police);
+    else
+        updateRace(dt, player);
+    if (m_phase == Phase::Racing) {
+        updateOpponents(opponents);
+        updateRank(player, opponents);
+        if (updateHazards(dt, player))
             return;
-        }
     }
-
-    // Wrecked: the race is over (mmSingleBlitz: IsMaxDamaged).
-    if (player.wrecked && mode() != GameMode::Cruise) {
-        push(EventType::Wrecked);
-        const ModeStrings ms = modeStrings(mode());
-        if (currentLesson()) {
-            m_lessonFailed = true;
-            endRace(false, false, 226, "Your warranty just ran out!");
-            push(EventType::LessonFailed, m_lessonEvent);
-        } else {
-            endRace(false, false, ms.gameOver ? ms.gameOver : ms.loaf, "Game over!");
-        }
-        return;
-    }
-
-    if (mode() == GameMode::CrashCourse) {
-        updateLesson(dt, player, opponents);
-        if (m_phase != Phase::Racing)
-            return;
-        const LessonEvent* lesson = currentLesson();
-        if (lesson && m_player.finished) {
-            // Reached the last checkpoint.
-            if (lesson->type == LessonType::Evade) {
-                for (const auto& chaser : police)
-                    if (horizontalDistance(chaser.transform.m3, player.transform.m3) < kEvadeClearDistance) {
-                        // Not yet: lose them first, then come back.
-                        m_player.finished = false;
-                        m_player.target = static_cast<int>(m_checkpoints.size()) - 1;
-                        setMessage(197, "Lose your pursuers before you finish!", 2.0f, true);
-                        return;
-                    }
-            }
-            if (lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy)
-                return; // decided by the target car
-            const bool final = m_lessonEvent + 1 >= static_cast<int>(m_setup.lessonEvents.size());
-            const bool exam = m_setup.config.raceIndex == 12 && final;
-            endRace(true, true, exam ? 610 : lessonStrings(lesson->type).win, "Good driving!");
-            push(EventType::LessonPassed, m_lessonEvent);
-        }
+    if (m_phase == Phase::Racing || m_phase == Phase::Countdown) {
+        updateClock(dt);
+        updateWaypoints(player);
     }
 }
 
@@ -702,56 +1236,44 @@ std::vector<Event> Session::takeEvents() {
     return out;
 }
 
+// --- Queries -----------------------------------------------------------------------
+
 bool Session::checkpointCleared(std::size_t i) const {
-    return i < m_player.cleared.size() && m_player.cleared[i] != 0;
+    return i < m_wp.cleared.size() && m_wp.cleared[i] != 0;
 }
 
 bool Session::checkpointVisible(std::size_t i) const {
-    const std::size_t n = m_checkpoints.size();
-    if (i >= n || n < 2 || mode() == GameMode::Cruise)
+    if (i >= m_wp.visible.size() || rule() == WaypointRule::None || m_phase == Phase::Done)
         return false;
-    if (m_phase == Phase::Done)
-        return false;
-    if (mode() == GameMode::Circuit)
-        return true; // all gates stay up for every lap
-    if (i == 0)
-        return false; // the start line
-    if (anyOrder()) {
-        if (i == n - 1)
-            return m_player.clearedCount >= static_cast<int>(n) - 2; // MM1 activates the finish when the rest are done
-        return !checkpointCleared(i);
-    }
-    // In-order lessons: the next one and those after it.
-    return static_cast<int>(i) >= m_player.target && !checkpointCleared(i);
+    return m_wp.visible[i] != 0;
 }
 
 std::optional<Vec3> Session::arrowTarget() const {
-    if (mode() == GameMode::Cruise || m_player.target < 0 || m_phase == Phase::Done ||
-        static_cast<std::size_t>(m_player.target) >= m_checkpoints.size())
+    // mmWaypoints::SetArrow, while the waypoints are not finished.
+    if (rule() == WaypointRule::None || m_wp.finished || m_phase == Phase::Done || m_wp.current < 0 ||
+        static_cast<std::size_t>(m_wp.current) >= m_checkpoints.size())
         return std::nullopt;
-    return m_checkpoints[static_cast<std::size_t>(m_player.target)].position;
+    return m_checkpoints[static_cast<std::size_t>(m_wp.current)].position;
 }
 
 int Session::checkpointsCleared() const {
+    const int n = static_cast<int>(m_checkpoints.size());
     if (mode() == GameMode::Circuit)
-        return m_player.passedThisLap;
-    return m_player.clearedCount;
+        return m_wp.current == 0 ? std::max(0, n - 1) : std::max(0, m_wp.current - 1);
+    // mmWPHUD counts every change of the cleared mask; a checkpoint race's
+    // finish adds its bit too.
+    const int finish = rule() == WaypointRule::CheckpointRace && m_wp.finished ? 1 : 0;
+    return std::max(0, m_wp.count - 1 + finish);
 }
 
 int Session::checkpointsTotal() const {
+    // mmSingleBlitz / mmSingleRace::InitHUD: mmWPHUD::Init(waypoints - 1);
+    // mmCircuitHUD::SetWPCleared shows waypoints - 1 too.
     const int n = static_cast<int>(m_checkpoints.size());
-    if (mode() == GameMode::Circuit)
-        return std::max(0, n - 1);
-    if (anyOrder())
-        return std::max(0, n - 2);
     return std::max(0, n - 1);
 }
 
-int Session::lap() const { return std::min(m_player.lap + 1, std::max(1, m_setup.laps)); }
-
-float Session::timeRemaining() const { return m_hasClock ? m_clock : -1.0f; }
-
-float Session::lapTime() const { return m_raceTime - m_player.lapStart; }
+int Session::lap() const { return std::min(m_wp.lap + 1, std::max(1, m_setup.laps)); }
 
 MusicHint Session::musicHint() const {
     if (m_phase == Phase::PostRace || m_phase == Phase::Done)
@@ -767,13 +1289,17 @@ RaceResult Session::result() const {
     r.position = m_resultFinished ? (m_resultPosition > 0 ? m_resultPosition : 1) : 0;
     r.timeSeconds = m_resultTime;
     r.damage = static_cast<int>(std::lround(clampf(m_resultDamage, 0.0f, 1.0f) * 100.0f));
-    // mmGame::CalculateRaceScore: 50 / 25 / 10 points for 1st / 2nd / 3rd,
-    // times the car's ScoringBias, times a multiplier (here: 2 for
-    // professionals, inferred).
-    if (r.finished && mode() != GameMode::CrashCourse && mode() != GameMode::Cruise) {
-        const int base = r.position == 1 ? 50 : r.position == 2 ? 25 : r.position == 3 ? 10 : 0;
-        const int mult = m_setup.config.difficulty == Difficulty::Professional ? 2 : 1;
-        r.score = static_cast<int>(static_cast<float>(base) * m_options.scoringBias * static_cast<float>(mult));
+    // mmGame::CalculateRaceScore: the car's ScoringBias and the race's
+    // Difficulty column, both truncated to integers, times 50 / 25 / 10 for
+    // 1st / 2nd / 3rd (Blitz always counts as 1st).
+    const bool raced =
+        mode() == GameMode::Blitz || mode() == GameMode::Circuit || mode() == GameMode::Checkpoint;
+    if (r.finished && raced && !m_setup.config.multiplayer) {
+        static constexpr int kPlacePoints[] = {0, 50, 25, 10};
+        const int place = mode() == GameMode::Blitz ? 1 : r.position;
+        const int points = place >= 1 && place <= 3 ? kPlacePoints[place] : 0;
+        const int difficulty = static_cast<int>(m_setup.settings.difficulty);
+        r.score = static_cast<int>(m_options.scoringBias) * points * difficulty;
     }
     return r;
 }
