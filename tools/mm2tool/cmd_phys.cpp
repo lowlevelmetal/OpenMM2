@@ -10,7 +10,6 @@
 
 #include "Command.h"
 #include "Common.h"
-#include "asset/Pkg.h"
 #include "core/File.h"
 #include "core/StringUtil.h"
 #include "data/DatFile.h"
@@ -97,7 +96,6 @@ struct LoadedCar {
     TrailerParams trailer;
     TrailerJointParams joint;
     TrailerGeometry trailerGeometry;
-    Aabb trailerMesh; // TRAILER (H) mesh box, for --trailer-cg mesh
 };
 
 std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& car) {
@@ -131,12 +129,17 @@ std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& c
         out.geometry.body = body;
     out.realGeometry = found == 4 && body.valid();
 
-    // Semi trailers (vpsemi, vpcentury).
+    // Semi trailers (vpsemi, vpcentury). vehCar::Init builds one only for a
+    // car with a trailer_hitch pivot.
     auto trailer = readDat(fs, "tune/vehicle/" + car + ".vehtrailer");
     auto joint = readDat(fs, "tune/vehicle/" + car + ".dgtrailerjoint");
-    if (trailer && trailer->top() && joint && joint->top() &&
+    auto carHitch = readMtx(fs, "geometry/" + model + "_trailer_hitch.mtx");
+    if (carHitch && trailer && trailer->top() && joint && joint->top() &&
         loadTrailerParams(*trailer->top(), out.trailer) && loadTrailerJointParams(*joint->top(), out.joint)) {
         out.hasTrailer = true;
+        out.trailerGeometry.carHitch = carHitch->m3;
+        if (auto m = readMtx(fs, "geometry/" + model + "_trailer_trailer_hitch.mtx"))
+            out.trailerGeometry.trailerHitch = m->m3;
         for (int i = 0; i < 4; ++i) {
             auto m = readMtx(fs, std::format("geometry/{}_trailer_twhl{}.mtx", model, i));
             out.trailerGeometry.wheels[static_cast<std::size_t>(i)] =
@@ -144,10 +147,6 @@ std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& c
                   : WheelGeometry{{i % 2 ? 1.0f : -1.0f, 0.5f, i < 2 ? 2.0f : 4.0f}, 0.5f, 0.3f, true};
         }
         out.trailerGeometry.body = readBoundBox(fs, "bound/" + model + "_trailer_bound.bnd");
-        if (auto bytes = readFile(fs, "geometry/" + model + "_trailer.pkg"))
-            if (auto pkg = asset::parsePkg(*bytes, nullptr))
-                if (const auto* mesh = pkg->findBest("TRAILER"))
-                    out.trailerMesh = mesh->bounds();
     }
     return out;
 }
@@ -176,10 +175,11 @@ struct RunResult {
     float topSpeedMph = 0;
     float quarterMileTime = -1;
     // Trailer diagnostics (max over the run).
-    float maxHitchGap = 0;
-    float maxHitchAngle = 0; // |Joint3Dof roll| (yaw articulation), rad
-    float maxLean = 0;       // Joint3Dof lean (relative tilt), rad
+    float maxHitchGap = 0;   // m, before the joint's FreeRange correction
+    float maxHitchAngle = 0; // |yaw of the trailer relative to the tractor|, rad
+    float maxLean = 0;       // dgTrailerJoint lean (angle between the bodies' Z axes), rad
     float minTrailerUp = 1;  // trailer up . world up
+    int bottomedSamples = 0; // samples with a trailer wheel bottomed out
 };
 
 struct RunOptions {
@@ -193,10 +193,8 @@ struct RunOptions {
     bool print = true;
     bool debug = false;
     std::string csv;
-    // Trailer centre of gravity: "origin" (model origin, the default),
-    // "mesh" (TRAILER mesh box centre, MM1's choice) or "x,y,z".
-    std::string trailerCg = "origin";
     bool noTrailer = false;
+    TrailerOptions trailer;
 };
 
 RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptions& opt) {
@@ -211,22 +209,14 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
     world.add(&sim.body);
     std::unique_ptr<Trailer> trailer;
     if (car.hasTrailer && !opt.noTrailer) {
-        TrailerGeometry tg = car.trailerGeometry;
-        if (opt.trailerCg == "mesh" && car.trailerMesh.valid()) {
-            tg.centerOfGravity = car.trailerMesh.center();
-        } else if (opt.trailerCg != "origin") {
-            const auto parts = str::split(opt.trailerCg, ',');
-            if (parts.size() == 3)
-                tg.centerOfGravity = {static_cast<float>(str::parseDouble(parts[0]).value_or(0.0)),
-                                      static_cast<float>(str::parseDouble(parts[1]).value_or(0.0)),
-                                      static_cast<float>(str::parseDouble(parts[2]).value_or(0.0))};
-        }
-        if (opt.print)
-            std::println("trailer CG ({:.3f} {:.3f} {:.3f})", tg.centerOfGravity.x, tg.centerOfGravity.y,
-                         tg.centerOfGravity.z);
         trailer = std::make_unique<Trailer>();
-        trailer->init(car.trailer, car.joint, tg, sim);
+        trailer->init(car.trailer, car.joint, car.trailerGeometry, sim, opt.trailer);
         trailer->addTo(world);
+        if (opt.print)
+            std::println("trailer: car hitch ({:.3f} {:.3f} {:.3f}) trailer hitch ({:.3f} {:.3f} {:.3f})",
+                         trailer->carHitchOffset.x, trailer->carHitchOffset.y, trailer->carHitchOffset.z,
+                         trailer->trailerHitchOffset.x, trailer->trailerHitchOffset.y,
+                         trailer->trailerHitchOffset.z);
     }
     ArcadeControls controls;
 
@@ -271,9 +261,11 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
                                pos.z, sim.body.ics.angularVelocity.y);
         if (trailer) {
             res.maxHitchGap = std::max(res.maxHitchGap, trailer->hitchGap());
-            res.maxHitchAngle = std::max(res.maxHitchAngle, std::abs(trailer->joint.roll));
+            res.maxHitchAngle = std::max(res.maxHitchAngle, std::abs(trailer->hitchAngle()));
             res.maxLean = std::max(res.maxLean, trailer->joint.lean);
             res.minTrailerUp = std::min(res.minTrailerUp, trailer->body.ics.matrix.m1.y);
+            if (trailer->bottomedOut() > 0)
+                ++res.bottomedSamples;
         }
         if (opt.print && t >= nextPrint) {
             std::println("{:6.2f} {:8.2f} {:7.0f} {:5} {:8.1f}", t, mph, sim.engine.rpm,
@@ -283,10 +275,12 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
                 const float ke = 0.5f * ti.mass * ti.linearVelocity.mag2() +
                                  0.5f * sim.body.ics.mass * sim.body.ics.linearVelocity.mag2();
                 std::println("       trailer gap {:.4f} m  hitch {:6.1f} deg  lean {:5.2f} deg  up.y {:.4f}  "
-                             "tractor up.y {:.4f}  KE {:.0f} kJ",
-                             trailer->hitchGap(), trailer->joint.roll * 57.29578f,
+                             "tractor up.y {:.4f}  trailer {:.1f} m/s  KE {:.0f} kJ  "
+                             "joint F ({:.0f} {:.0f} {:.0f})",
+                             trailer->hitchGap(), trailer->hitchAngle() * 57.29578f,
                              trailer->joint.lean * 57.29578f, ti.matrix.m1.y, sim.body.ics.matrix.m1.y,
-                             ke * 0.001f);
+                             ti.linearVelocity.mag(), ke * 0.001f, trailer->joint.jointForce.x,
+                             trailer->joint.jointForce.y, trailer->joint.jointForce.z);
             }
             if (opt.debug) {
                 const auto& ics = sim.body.ics;
@@ -294,13 +288,22 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
                     "       pos ({:.2f} {:.2f} {:.2f}) up ({:.2f} {:.2f} {:.2f}) brakes {:.2f} torque {:.0f}",
                     ics.matrix.m3.x, ics.matrix.m3.y, ics.matrix.m3.z, ics.matrix.m1.x, ics.matrix.m1.y,
                     ics.matrix.m1.z, sim.brakes, sim.engine.torque);
-                if (trailer)
+                if (trailer) {
+                    const auto& ti = trailer->body.ics;
+                    std::println("       trailer pos ({:.2f} {:.2f} {:.2f}) v ({:.2f} {:.2f} {:.2f}) "
+                                 "w ({:.2f} {:.2f} {:.2f}) last push ({:.3f} {:.3f} {:.3f})",
+                                 ti.matrix.m3.x, ti.matrix.m3.y, ti.matrix.m3.z, ti.linearVelocity.x,
+                                 ti.linearVelocity.y, ti.linearVelocity.z, ti.angularVelocity.x,
+                                 ti.angularVelocity.y, ti.angularVelocity.z, ti.lastPush.x, ti.lastPush.y,
+                                 ti.lastPush.z);
                     for (const auto& w : trailer->wheels)
                         std::println(
                             "       trailer wheel centre ({:.2f} {:.2f} {:.2f}) r {:.3f} hit {} susp {:6.3f} "
-                            "load {:7.0f} rot {:8.2f} roll {:8.2f} dLat {:7.4f} gLat {:7.0f}",
+                            "load {:7.0f} static {:6.0f} rot {:8.2f} roll {:8.2f} dLat {:7.4f} gLat {:7.0f}",
                             w.center.x, w.center.y, w.center.z, w.radius, w.hit, w.suspension, w.currentLoad,
-                            w.rotationSpeed, -(w.fwdVelocity / w.radius), w.currentTireDispLat, w.tireGripLat);
+                            w.normalLoad, w.rotationSpeed, -(w.fwdVelocity / w.radius), w.currentTireDispLat,
+                            w.tireGripLat);
+                }
                 for (const auto& w : sim.wheels)
                     std::println(
                         "       centre ({:5.2f} {:5.2f} {:5.2f}) hit {} susp {:6.3f} load {:7.0f} rot {:8.2f} "
@@ -353,10 +356,12 @@ int cmdSimcar(std::span<char* const> args) {
             opt.debug = true;
         else if (a == "--csv" && i + 1 < args.size())
             opt.csv = args[++i];
-        else if (a == "--trailer-cg" && i + 1 < args.size())
-            opt.trailerCg = args[++i];
         else if (a == "--no-trailer")
             opt.noTrailer = true;
+        else if (a == "--mm2-trailer-loads")
+            opt.trailer.mm2StaticLoads = true;
+        else if (a == "--plain-hitch-rotation")
+            opt.trailer.mm2ForceRotation = false;
         else
             ok = false;
         if (!ok) {
@@ -375,8 +380,9 @@ int cmdSimcar(std::span<char* const> args) {
                  r.quarterMileTime >= 0 ? std::format("{:.2f} s", r.quarterMileTime) : "n/a");
     if (car->hasTrailer && !opt.noTrailer)
         std::println("trailer: max hitch gap {:.4f} m  max hitch angle {:.1f} deg  max lean {:.2f} deg  "
-                     "min up.y {:.4f}",
-                     r.maxHitchGap, r.maxHitchAngle * 57.29578f, r.maxLean * 57.29578f, r.minTrailerUp);
+                     "min up.y {:.4f}  bottomed out {:.1f} s",
+                     r.maxHitchGap, r.maxHitchAngle * 57.29578f, r.maxLean * 57.29578f, r.minTrailerUp,
+                     static_cast<float>(r.bottomedSamples) * opt.step);
     return 0;
 }
 
@@ -423,8 +429,8 @@ int cmdSimcars(std::span<char* const> args) {
 
 const Registrar r1({"simcar",
                     "<container> <car> [--seconds N] [--throttle T] [--steer S] [--brake-at T] [--step S] "
-                    "[--print-every S] [--settle S] [--csv FILE] "
-                    "[--trailer-cg origin|mesh|x,y,z] [--no-trailer] [--debug]",
+                    "[--print-every S] [--settle S] [--csv FILE] [--no-trailer] [--mm2-trailer-loads] "
+                    "[--plain-hitch-rotation] [--debug]",
                     "drive a car on a flat plane and print speed/RPM/gear", &cmdSimcar});
 const Registrar r2({"simcars", "<container> [seconds]",
                     "acceleration test for every player car (markdown table)", &cmdSimcars});
