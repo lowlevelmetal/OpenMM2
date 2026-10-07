@@ -9,12 +9,13 @@
 namespace mm2::audio::game {
 
 float clampPitch(float pitch, int sampleRate) {
-    pitch = std::clamp(pitch, 0.0f, 10.0f);
-    if (sampleRate > 0) {
-        const float hz = std::clamp(pitch * static_cast<float>(sampleRate), 100.0f, 100000.0f);
-        pitch = hz / static_cast<float>(sampleRate);
-    }
-    return pitch;
+    if (sampleRate <= 0)
+        return std::max(pitch, 0.0f);
+    float hz = pitch * static_cast<float>(sampleRate);
+    if (hz < 0.0f)
+        hz = 100000.0f;
+    hz = std::clamp(hz, 100.0f, 100000.0f);
+    return hz / static_cast<float>(sampleRate);
 }
 
 SoundSlot::SoundSlot(SoundSlot&& o) noexcept { *this = std::move(o); }
@@ -30,6 +31,7 @@ SoundSlot& SoundSlot::operator=(SoundSlot&& o) noexcept {
         m_looping = o.m_looping;
         m_volume = o.m_volume;
         m_pitch = o.m_pitch;
+        m_pan = o.m_pan;
     }
     return *this;
 }
@@ -42,10 +44,24 @@ bool SoundSlot::load(Mixer& mixer, SoundBank& bank, std::string_view wave, Bus b
     m_bus = bus;
     m_priority = priority;
     m_buffer.reset();
+    m_pan = 0.0f;
     if (wave.empty() || str::iequals(wave, "NOSOUND"))
         return false;
     m_buffer = bank.get(wave);
     return m_buffer != nullptr;
+}
+
+VoiceParams SoundSlot::params(bool loop, const Emitter3D* emitter) const {
+    VoiceParams p;
+    p.volume = ageVolumeToGain(m_volume);
+    p.pitch = m_pitch;
+    p.pan = agePanToMixer(m_pan);
+    p.loop = loop;
+    p.bus = m_bus;
+    p.priority = m_priority;
+    if (emitter)
+        p.spatial = *emitter;
+    return p;
 }
 
 void SoundSlot::playLoop(float volume, float pitch, const Emitter3D* emitter) {
@@ -56,20 +72,13 @@ void SoundSlot::playLoop(float volume, float pitch, const Emitter3D* emitter) {
     if (m_voice && m_looping && m_mixer->isPlaying(m_voice)) {
         m_mixer->setVolume(m_voice, ageVolumeToGain(m_volume));
         m_mixer->setPitch(m_voice, m_pitch);
+        m_mixer->setPan(m_voice, agePanToMixer(m_pan));
         if (emitter)
             m_mixer->setEmitter(m_voice, *emitter);
         return;
     }
     stop();
-    VoiceParams p;
-    p.volume = ageVolumeToGain(m_volume);
-    p.pitch = m_pitch;
-    p.loop = true;
-    p.bus = m_bus;
-    p.priority = m_priority;
-    if (emitter)
-        p.spatial = *emitter;
-    m_voice = m_mixer->play(m_buffer, p);
+    m_voice = m_mixer->play(m_buffer, params(true, emitter));
     m_looping = true;
 }
 
@@ -79,14 +88,7 @@ void SoundSlot::playOnce(float volume, float pitch, const Emitter3D* emitter) {
     stop();
     m_volume = volume;
     m_pitch = clampPitch(pitch, m_buffer->sampleRate);
-    VoiceParams p;
-    p.volume = ageVolumeToGain(m_volume);
-    p.pitch = m_pitch;
-    p.bus = m_bus;
-    p.priority = m_priority;
-    if (emitter)
-        p.spatial = *emitter;
-    m_voice = m_mixer->play(m_buffer, p);
+    m_voice = m_mixer->play(m_buffer, params(false, emitter));
     m_looping = false;
 }
 
@@ -110,6 +112,12 @@ void SoundSlot::setPitch(float pitch) {
     m_pitch = clampPitch(pitch, m_buffer->sampleRate);
     if (m_voice && m_mixer)
         m_mixer->setPitch(m_voice, m_pitch);
+}
+
+void SoundSlot::setPan(float pan) {
+    m_pan = pan;
+    if (m_voice && m_mixer)
+        m_mixer->setPan(m_voice, agePanToMixer(pan));
 }
 
 void SoundSlot::setEmitter(const Emitter3D& emitter) {

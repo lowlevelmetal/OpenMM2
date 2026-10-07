@@ -3,6 +3,7 @@
 #include "core/StringUtil.h"
 #include "data/TextTables.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 
@@ -62,6 +63,13 @@ float ageVolumeToGain(float v) {
         return 1.0f;
     // (v - 1) * 10000 hundredths of a decibel -> amplitude.
     return std::pow(10.0f, (v - 1.0f) * 5.0f);
+}
+
+float agePanToMixer(float pan) {
+    // pan * 10000 hundredths of a decibel on the far channel -> its gain.
+    const float a = std::min(std::abs(pan), 1.0f);
+    const float far = std::pow(10.0f, -a * 5.0f);
+    return pan < 0.0f ? -(1.0f - far) : 1.0f - far;
 }
 
 std::optional<std::string> readText(const vfs::Vfs& vfs, std::string_view path) {
@@ -128,6 +136,14 @@ const BangerSoundDef* ImpactTable::find(int id) const {
         if (b.id == id)
             return &b;
     return nullptr;
+}
+
+const BangerSoundDef* ImpactTable::byIndex(int index) const {
+    if (bangers.empty())
+        return nullptr;
+    if (index < 0 || static_cast<std::size_t>(index) >= bangers.size())
+        index = 0;
+    return &bangers[static_cast<std::size_t>(index)];
 }
 
 std::optional<ImpactTable> parseImpactTable(std::string_view text, std::string* error) {

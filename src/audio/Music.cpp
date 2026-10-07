@@ -305,6 +305,8 @@ const char* toString(MusicState s) {
     case MusicState::CopChase: return "cop-chase";
     case MusicState::Paused: return "paused";
     case MusicState::Results: return "results";
+    case MusicState::Start: return "start";
+    case MusicState::Return: return "return";
     }
     return "?";
 }
@@ -349,6 +351,8 @@ std::string MusicEngine::segmentFor(MusicState state) const {
         return {};
     switch (state) {
     case MusicState::Racing: return m_startedSong ? s->ret : s->start;
+    case MusicState::Start: return s->start;
+    case MusicState::Return: return s->ret;
     case MusicState::Idle: return s->idle;
     case MusicState::IdleCops: return s->idleCops.empty() ? s->idle : s->idleCops;
     case MusicState::CopChase: return s->cops;
@@ -384,7 +388,7 @@ bool MusicEngine::loadMotifStyle() {
     return m_motifStyle != nullptr;
 }
 
-void MusicEngine::transitionTo(const std::string& name, bool immediate) {
+void MusicEngine::transitionTo(const std::string& name, MusicTiming timing) {
     if (!m_music)
         return;
     if (name.empty()) {
@@ -392,44 +396,58 @@ void MusicEngine::transitionTo(const std::string& name, bool immediate) {
         m_playing.clear();
         return;
     }
+    // DMusicObject::SegmentSwitch does nothing for the segment already playing.
     if (str::iequals(name, m_playing))
         return;
     DmSegment* sgt = m_library->segment(name);
     if (!sgt)
         return;
-    // Inferred: the original switches segments on the next measure boundary
-    // (DMUS_SEGF_MEASURE), and immediately when a race starts or the game is
-    // paused/resumed. MM2 ships dedicated "Return"/"Restart" segments that
-    // resume a song mid-way instead of relying on composed transitions, and
-    // dmusic's composed FILL transitions are silent for styles without fill
-    // patterns, so they are not used.
-    DmPerformance_playSegment(m_music, sgt, immediate ? DmTiming_INSTANT : DmTiming_MEASURE);
+    // MM2's composer transitions use the groove command without embellishment
+    // (DMUS_COMMANDT_GROOVE); dmusic's composed FILL transitions are silent for
+    // styles without fill patterns, so the new segment simply starts on the
+    // boundary.
+    DmTiming t = DmTiming_INSTANT;
+    switch (timing) {
+    case MusicTiming::Beat: t = DmTiming_BEAT; break;
+    case MusicTiming::Measure: t = DmTiming_MEASURE; break;
+    default: break;
+    }
+    // Nothing playing: start at once (there is no beat to wait for).
+    if (m_playing.empty())
+        t = DmTiming_INSTANT;
+    DmPerformance_playSegment(m_music, sgt, t);
     DmSegment_release(sgt);
     m_playing = name;
 }
 
-void MusicEngine::setState(MusicState state) {
+void MusicEngine::setState(MusicState state, MusicTiming timing) {
     const MusicState previous = m_state;
     m_state = state;
     if (state == MusicState::Silent) {
-        transitionTo({}, true);
+        transitionTo({}, MusicTiming::Immediate);
         return;
     }
-    const bool immediate = state == MusicState::Menu || state == MusicState::Paused ||
-                           previous == MusicState::Paused || previous == MusicState::Menu ||
-                           previous == MusicState::Silent || state == MusicState::Results;
-    transitionTo(segmentFor(state), immediate);
-    if (state == MusicState::Racing)
+    if (timing == MusicTiming::Auto) {
+        // Callers without a MusicDirector (frontend, tools): menus and pauses
+        // switch at once, everything else on the next measure.
+        const bool immediate = state == MusicState::Menu || state == MusicState::Paused ||
+                               previous == MusicState::Paused || previous == MusicState::Menu ||
+                               previous == MusicState::Silent || state == MusicState::Results;
+        timing = immediate ? MusicTiming::Immediate : MusicTiming::Measure;
+    }
+    transitionTo(segmentFor(state), timing);
+    if (state == MusicState::Racing || state == MusicState::Start)
         m_startedSong = true;
 }
 
 void MusicEngine::triggerMotif() {
     if (!m_motif || !loadMotifStyle())
         return;
-    // DirectMusic played the motif as a secondary segment, by default from
-    // the next beat of the primary segment (inferred: the game's exact
-    // DMUS_SEGF_* timing flags are unknown).
+    // DMusicObject::PlayMotif plays the motif as a secondary segment from the
+    // next beat (DMUS_SEGF_SECONDARY | GRID | BEAT; the beat is assumed to win
+    // over the grid), with one repeat.
     m_motifDelay = m_playing.empty() ? 0 : OpenMM2_DmPerformance_samplesToBeat(m_music);
+    m_motifRepeats = 1;
 }
 
 void MusicEngine::startMotif() {
@@ -445,6 +463,11 @@ void MusicEngine::startMotif() {
     }
     // Let the last notes ring out before stopping the motif's performance.
     m_motifRemaining = static_cast<std::int64_t>((seconds + 1.5) * m_rate);
+    // The repeat starts where the first play ends.
+    if (m_motifRepeats > 0) {
+        --m_motifRepeats;
+        m_motifDelay = static_cast<std::int64_t>(seconds * m_rate);
+    }
 }
 
 // Renders the motif performance into `out` (adds to it), starting a pending
@@ -462,6 +485,8 @@ void MusicEngine::renderMotif(float* out, int frames) {
         done = before;
         m_motifDelay = -1;
         startMotif();
+        if (m_motifDelay >= 0) // a repeat is pending: count the rest of this block
+            m_motifDelay -= frames - done;
     } else if (m_motifDelay >= 0) {
         m_motifDelay -= frames;
     }
@@ -510,6 +535,7 @@ void MusicEngine::stopAll() {
     m_ambienceSegment.clear();
     m_motifRemaining = 0;
     m_motifDelay = -1;
+    m_motifRepeats = 0;
     m_state = MusicState::Silent;
 }
 
@@ -696,25 +722,30 @@ void MusicPlayer::playMenu() {
     loadThen({m_tables.menu}, [](MusicEngine& e) { e.setState(MusicState::Menu); });
 }
 
-void MusicPlayer::startRace(int song, bool cruise) {
-    // Pick a random song here so the right segments are preloaded.
+void MusicPlayer::startRace(int song, bool cruise, bool play) {
+    // Pick a random song here so the right segments are preloaded
+    // (mmSingleRaceMusicData / mmSingleRoamMusicData::LoadMusic pick a table
+    // row uniformly at random).
     const auto& songs = cruise ? m_tables.cruise : m_tables.race;
     if (song < 0 && !songs.empty()) {
         static std::mt19937 rng{std::random_device{}()};
         song = static_cast<int>(rng() % songs.size());
     }
-    loadThen(songSegments(song, cruise), [song, cruise](MusicEngine& e) {
+    loadThen(songSegments(song, cruise), [song, cruise, play](MusicEngine& e) {
         e.selectSong(song, cruise);
-        e.setState(MusicState::Racing);
+        if (play)
+            e.setState(MusicState::Racing);
+        else
+            e.setState(MusicState::Silent);
     });
 }
 
 // Every command goes through the loader queue, even without segments to load,
 // so commands reach the engine in the order they were issued (a setState()
 // right after startRace() must not overtake the race start).
-void MusicPlayer::setState(MusicState state) {
+void MusicPlayer::setState(MusicState state, MusicTiming timing) {
     // The current song's segments were preloaded by startRace.
-    loadThen({}, [state](MusicEngine& e) { e.setState(state); });
+    loadThen({}, [state, timing](MusicEngine& e) { e.setState(state, timing); });
 }
 
 void MusicPlayer::triggerBigAir() {

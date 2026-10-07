@@ -6,7 +6,8 @@ add_library(mm2_audio STATIC
     Mixer.cpp
     SoundBank.cpp
     AudioDevice.cpp
-    Music.cpp)
+    Music.cpp
+    MusicDirector.cpp)
 target_link_libraries(mm2_audio
     PUBLIC OpenMM2::core OpenMM2::vfs
     PRIVATE SDL3::SDL3 OpenMM2::data OpenMM2::dmusic)

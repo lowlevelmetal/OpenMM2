@@ -2,6 +2,7 @@
 #include "audio/game/Ambience.h"
 #include "audio/game/AudioTables.h"
 #include "audio/game/CarAudio.h"
+#include "audio/game/Object3D.h"
 #include "audio/game/Voices.h"
 #include "core/File.h"
 #include "core/StringUtil.h"
@@ -55,13 +56,13 @@ struct FakeData {
     std::filesystem::path root;
     vfs::Vfs vfs;
     explicit FakeData(std::initializer_list<std::pair<const char*, std::string>> files,
-                      std::initializer_list<const char*> sounds) {
+                      std::initializer_list<const char*> sounds, int frames = 2205) {
         root = std::filesystem::temp_directory_path() /
                ("openmm2_gameaudio_" + std::to_string(std::rand()) + std::to_string(reinterpret_cast<std::uintptr_t>(this)));
         for (const auto& [path, text] : files)
             file::writeAtomic(root / path, text);
         for (const char* s : sounds)
-            file::writeAtomic(root / "aud/aud22" / (std::string(s) + ".22k.wav"), std::span<const std::byte>(wav(2205)));
+            file::writeAtomic(root / "aud/aud22" / (std::string(s) + ".22k.wav"), std::span<const std::byte>(wav(frames)));
         vfs.mount(std::make_shared<vfs::DirectoryFs>(root));
     }
     ~FakeData() {
@@ -93,7 +94,14 @@ const char* kImpacts = "***\nBanger name,Num samples,ID\nWALL,3,0\n"
                        "soft,0.91,0.93,1000,8000,1\nmed,0.92,0.95,8000,20000,1\nhuge,0.94,1,20000,999999,1\n"
                        "***\nBanger name,Num samples,ID\nTREE,2,8\n"
                        "sample name,min volume,max volume,min force,max force,frequency\n"
-                       "bush,0.9,1,0,999999,1\nmed,0.95,1,0,999999,1\n***\nBanger name,Num samples,ID\nENDOFDATA,0,0\n";
+                       "bush,0.9,1,0,999999,1\nleaves,0.95,1,0,999999,1\n***\nBanger name,Num samples,ID\nENDOFDATA,0,0\n";
+
+CarAudioInputs grounded() {
+    CarAudioInputs in;
+    for (auto& w : in.wheels)
+        w.onGround = true;
+    return in;
+}
 
 } // namespace
 
@@ -105,7 +113,23 @@ TEST(GameAudio, AngelVolumeIsDecibelLinear) {
     EXPECT_EQ(ageVolumeToGain(0.0f), 0.0f);
 }
 
-TEST(GameAudio, EngineCurvesFollowTheTable) {
+TEST(GameAudio, AngelPanAttenuatesTheFarChannelInDecibels) {
+    // audSound::SetPan: pan * 10000 hundredths of a decibel on the far channel.
+    EXPECT_FLOAT_EQ(agePanToMixer(0.0f), 0.0f);
+    EXPECT_NEAR(1.0f - agePanToMixer(0.2f), 0.1f, 1e-5f);   // right: left at -20 dB
+    EXPECT_NEAR(1.0f + agePanToMixer(-0.1f), 0.31623f, 1e-4f); // left: right at -10 dB
+    EXPECT_NEAR(agePanToMixer(1.0f), 1.0f, 1e-4f);
+}
+
+TEST(GameAudio, PitchClampsToTheBufferFrequencyRange) {
+    // audSound::SetPitch: 100..100000 Hz, no clamp of the multiplier itself.
+    EXPECT_NEAR(clampPitch(2.0f, 22050), 2.0f, 1e-6f);
+    EXPECT_NEAR(clampPitch(0.001f, 22050), 100.0f / 22050.0f, 1e-6f);
+    EXPECT_NEAR(clampPitch(12.0f, 8000), 12.0f, 1e-5f); // MM1 clamped the multiplier to 10
+    EXPECT_NEAR(clampPitch(12.0f, 11025), 100000.0f / 11025.0f, 1e-4f);
+}
+
+TEST(GameAudio, EngineCurvesFollowVehEngineSampleWrapper) {
     auto def = parseCarAudio(kDefaultCar);
     ASSERT_TRUE(def);
     EXPECT_EQ(def->horn, "RACECARHORN");
@@ -114,142 +138,287 @@ TEST(GameAudio, EngineCurvesFollowTheTable) {
     const auto& idle = def->engine[0];
     const auto& drive = def->engine[1];
 
-    // Idle: below the fade-in start it is silent; full volume between the
-    // fade ranges; fades back to its minimum volume at fade-out end; silent after.
-    EXPECT_FALSE(EngineSound::evaluate(idle, 0.0f).audible);
+    // CalculateVolume: min volume outside the fades (still audible above 0.25),
+    // max between them, linear in the fades.
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(idle, 0.0f).volume, 0.65f);
+    EXPECT_TRUE(EngineSound::evaluate(idle, 0.0f).audible);
     EXPECT_FLOAT_EQ(EngineSound::evaluate(idle, 1000.0f).volume, 0.96f);
-    EXPECT_NEAR(EngineSound::evaluate(idle, 4750.0f).volume, 0.805f, 1e-4f); // halfway down the fade out
-    EXPECT_NEAR(EngineSound::evaluate(idle, 7000.0f).volume, 0.65f, 1e-5f);
-    EXPECT_FALSE(EngineSound::evaluate(idle, 7001.0f).audible);
-    // Pitch rises linearly over the shift range.
-    EXPECT_NEAR(EngineSound::evaluate(idle, 3500.5f).pitch, 0.8f + 0.84f * 0.5f, 1e-3f);
-    // Drive sample fades in from 500 to 3500 RPM.
-    EXPECT_FALSE(EngineSound::evaluate(drive, 400.0f).audible);
+    EXPECT_NEAR(EngineSound::evaluate(idle, 4750.0f).volume, 0.805f, 1e-4f);
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(idle, 7000.0f).volume, 0.65f);
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(idle, 9000.0f).volume, 0.65f);
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(drive, 400.0f).volume, 0.7f);
     EXPECT_NEAR(EngineSound::evaluate(drive, 2000.0f).volume, 0.82f, 1e-5f);
-    // Monotonic pitch over a sweep.
-    float prev = 0;
-    for (float rpm = 500; rpm <= 12000; rpm += 250) {
-        const float p = EngineSound::evaluate(drive, rpm).pitch;
-        EXPECT_GE(p, prev);
-        prev = p;
-    }
+
+    // CalculatePitch: min + rpm * slope inside the shift range (the slope
+    // applies to the whole RPM), so the pitch jumps at the range's start.
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(drive, 500.0f).pitch, 0.65f);
+    EXPECT_NEAR(EngineSound::evaluate(drive, 600.0f).pitch, 0.65f + 600.0f * 3.85f / 39500.0f, 1e-5f);
+    EngineSampleDef high{"HIGH", 0.55f, 0.91f, 3000, 8000, 15000, 15000, 0.65f, 2.25f, 3000, 12000};
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(high, 3000.0f).pitch, 0.65f);
+    EXPECT_NEAR(EngineSound::evaluate(high, 3001.0f).pitch, 0.65f + 3001.0f * 1.6f / 9000.0f, 1e-4f);
+    EXPECT_NEAR(EngineSound::evaluate(high, 11999.0f).pitch, 2.783f, 1e-3f); // above max pitch
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(high, 12000.0f).pitch, 2.25f);
+
+    // A table volume below 0.25 stops the sample.
+    EngineSampleDef quiet{"Q", 0.2f, 0.9f, 1000, 2000, 3000, 4000, 1, 1, 0, 1};
+    EXPECT_FALSE(EngineSound::evaluate(quiet, 500.0f).audible);
+    EXPECT_TRUE(EngineSound::evaluate(quiet, 2500.0f).audible);
 }
 
-TEST(GameAudio, SkidSelectionAndVolume) {
+TEST(GameAudio, SkidSamplesAndVolumes) {
     auto table = parseSurfaceTable(kSurfaceDry);
     ASSERT_TRUE(table);
     EXPECT_FALSE(table->ice);
     ASSERT_EQ(table->surfaces.size(), 2u);
     const auto& road = table->surfaces[0];
     EXPECT_FALSE(road.hasSurfaceSound());
-    EXPECT_EQ(SurfaceSounds::chooseSkid(road, 0.5f), -1);
-    EXPECT_EQ(SurfaceSounds::chooseSkid(road, 0.6f), 0);
-    EXPECT_EQ(SurfaceSounds::chooseSkid(road, 0.7f), 1);
-    EXPECT_EQ(SurfaceSounds::chooseSkid(road, 0.9f), 2);
-    EXPECT_EQ(SurfaceSounds::chooseSkid(road, 1.0f), 2);
-    EXPECT_NEAR(SurfaceSounds::skidVolumeFor(road, 0.55f), 0.5f, 1e-5f);
+    // vehSurfaceAudioData::UpdateSkid: inclusive ranges; 0.65 is in two.
+    EXPECT_FALSE(SurfaceSounds::skidInRange(road.skids[0], 0.5f));
+    EXPECT_TRUE(SurfaceSounds::skidInRange(road.skids[0], 0.65f));
+    EXPECT_TRUE(SurfaceSounds::skidInRange(road.skids[1], 0.65f));
+    EXPECT_TRUE(SurfaceSounds::skidInRange(road.skids[2], 1.0f));
+    // Volume: min + slip * (max - min).
+    EXPECT_NEAR(SurfaceSounds::skidVolumeFor(road, 0.55f), 0.5f + 0.55f * 0.38f, 1e-5f);
     EXPECT_NEAR(SurfaceSounds::skidVolumeFor(road, 1.0f), 0.88f, 1e-5f);
-    EXPECT_TRUE(table->surfaces[1].hasSurfaceSound());
+    // Rolling sound: linear in speed up to max speed.
+    const auto& grass = table->surfaces[1];
+    EXPECT_NEAR(SurfaceSounds::surfaceVolumeFor(grass, 12.5f), 0.55f, 1e-5f);
+    EXPECT_FLOAT_EQ(SurfaceSounds::surfaceVolumeFor(grass, 30.0f), 0.75f);
+    EXPECT_NEAR(SurfaceSounds::surfacePitchFor(grass, 12.5f), 1.05f, 1e-5f);
 }
 
-TEST(GameAudio, SurfaceSoundsPlayAboveThresholds) {
+TEST(GameAudio, SurfaceAndSkidSounds) {
     FakeData data({}, {"tireskid1", "tireskid2", "tireskid3", "surfacegrass", "surfacegrassskid"});
     SoundBank bank(data.vfs);
     Mixer mixer(48000);
     SurfaceSounds s;
     s.load(mixer, bank, *parseSurfaceTable(kSurfaceDry), Bus::Effects);
 
-    CarAudioInputs in;
-    for (auto& w : in.wheels)
-        w.onGround = true;
+    CarAudioInputs in = grounded();
     in.speed = 10.0f;
     for (auto& w : in.wheels)
         w.slip = 0.3f;
-    s.update(in);
-    EXPECT_FALSE(s.skidding()); // below the first skid threshold
+    s.update(in, 0.02f);
+    EXPECT_TRUE(s.skidding()); // any slip counts, but no range holds 0.3
+    EXPECT_EQ(mixer.activeVoices(), 0);
+    in.wheels[2].slip = 0.65f; // the largest wheel decides: two ranges at once
+    s.update(in, 0.02f);
+    EXPECT_TRUE(s.skidPlaying(0));
+    EXPECT_TRUE(s.skidPlaying(1));
+    EXPECT_EQ(mixer.activeVoices(), 2);
     for (auto& w : in.wheels)
         w.slip = 0.8f;
-    s.update(in);
-    EXPECT_TRUE(s.skidding());
-    EXPECT_EQ(s.skidSample(), 2);
+    in.speed = 0.5f; // MM2 has no speed threshold for skids
+    s.update(in, 0.02f);
+    EXPECT_TRUE(s.skidPlaying(2));
     EXPECT_EQ(mixer.activeVoices(), 1);
-    in.speed = 0.5f; // too slow to skid (MM1: speed > 1 m/s)
-    s.update(in);
+    for (auto& w : in.wheels)
+        w.slip = 0.0f;
+    s.update(in, 0.02f);
     EXPECT_FALSE(s.skidding());
     EXPECT_EQ(mixer.activeVoices(), 0);
 
-    // Grass: rolling sound above 2 m/s with two wheels down, none while skidding.
-    for (auto& w : in.wheels) {
+    // Grass (sound index 1 here): rolling above 2 m/s with two wheels down.
+    for (auto& w : in.wheels)
         w.surface = 1;
-        w.slip = 0.0f;
-    }
     in.speed = 10.0f;
-    s.update(in);
+    s.update(in, 0.02f);
     EXPECT_EQ(s.currentSurface(), 1);
     EXPECT_EQ(mixer.activeVoices(), 1);
     in.wheels[0].onGround = in.wheels[1].onGround = in.wheels[2].onGround = false;
-    s.update(in);
+    s.update(in, 0.02f);
     EXPECT_EQ(mixer.activeVoices(), 0);
 }
 
-TEST(GameAudio, ImpactsTriggerByForce) {
+TEST(GameAudio, AirborneNeedsGroundThreeMetresBelow) {
+    FakeData data({}, {"tireskid1"});
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    SurfaceSounds s;
+    s.load(mixer, bank, *parseSurfaceTable(kSurfaceDry), Bus::Effects);
+    CarAudioInputs in; // no wheel on the ground
+    in.groundBelow = 1.0f;
+    s.update(in, 0.02f);
+    EXPECT_FALSE(s.airborne());
+    in.groundBelow = 5.0f;
+    s.update(in, 0.02f);
+    EXPECT_TRUE(s.airborne());
+    in.groundBelow.reset(); // stays set until a wheel lands
+    s.update(in, 0.02f);
+    EXPECT_TRUE(s.airborne());
+    in.wheels[3].onGround = true;
+    s.update(in, 0.02f);
+    EXPECT_FALSE(s.airborne());
+}
+
+TEST(GameAudio, SuspensionThumpUsesTheAverageCompression) {
+    FakeData data({}, {"thump"});
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    SurfaceSounds s;
+    s.load(mixer, bank, *parseSurfaceTable(kSurfaceDry), Bus::Effects);
+    s.loadSuspension(mixer, bank, {"thump", 2, 3, 0.85f, 0.9f, 3}, Bus::Effects);
+    CarAudioInputs in = grounded();
+    in.wheels[0].suspensionSpeed = 6.0f; // one wheel: average 1.5 < 2
+    s.update(in, 0.02f);
+    EXPECT_EQ(mixer.activeVoices(), 0);
+    for (auto& w : in.wheels)
+        w.suspensionSpeed = 2.5f;
+    s.update(in, 0.02f);
+    EXPECT_EQ(mixer.activeVoices(), 1);
+}
+
+TEST(GameAudio, TireWobbleThumpsOncePerRevolution) {
+    FakeData data({}, {"wobble"}, 200);
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    SurfaceSounds s;
+    s.load(mixer, bank, *parseSurfaceTable(kSurfaceDry), Bus::Effects);
+    s.loadTireWobble(mixer, bank, {"wobble", 0.97f, 1, 0.75f, 1.5f, 15}, Bus::Effects);
+    CarAudioInputs in = grounded();
+    in.speed = 10.0f;
+    in.wheelRadius = 0.3f; // 1.885 m per revolution
+    in.tireWobble = 0.05f; // not past the threshold
+    s.update(in, 0.5f);
+    EXPECT_EQ(mixer.activeVoices(), 0);
+    in.tireWobble = 0.5f;
+    s.update(in, 0.1f); // 1 m
+    EXPECT_EQ(mixer.activeVoices(), 0);
+    s.update(in, 0.1f); // 2 m: a thump
+    EXPECT_EQ(mixer.activeVoices(), 1);
+}
+
+TEST(GameAudio, ImpactsByTableIndexAndForce) {
     auto table = parseImpactTable(kImpacts);
     ASSERT_TRUE(table);
     ASSERT_EQ(table->bangers.size(), 2u);
-    EXPECT_EQ(table->find(8)->samples.size(), 2u);
-    EXPECT_NEAR(ImpactSounds::volumeFor(table->find(0)->samples[0], 1000), 0.91f, 1e-5f);
-    EXPECT_NEAR(ImpactSounds::volumeFor(table->find(0)->samples[0], 8000), 0.93f, 1e-5f);
+    EXPECT_EQ(table->byIndex(1)->name, "TREE");
+    EXPECT_EQ(table->byIndex(1000)->name, "WALL"); // out of range: WALL
+    // PlaySample: min volume + force * slope.
+    const auto& soft = table->byIndex(0)->samples[0];
+    EXPECT_NEAR(ImpactSounds::volumeFor(soft, 1000), 0.91f + 1000 * 0.02f / 7000, 1e-5f);
+    EXPECT_NEAR(ImpactSounds::volumeFor(soft, 8000), 0.91f + 8000 * 0.02f / 7000, 1e-5f);
 
-    FakeData data({}, {"soft", "med", "huge", "bush"});
+    FakeData data({}, {"soft", "med", "huge", "bush", "leaves"});
     SoundBank bank(data.vfs);
     Mixer mixer(48000);
     ImpactSounds impacts;
     impacts.load(mixer, bank, *table, Bus::Effects);
     impacts.play({500.0f, 0, {}});
     EXPECT_EQ(mixer.activeVoices(), 0); // below the softest sample
-    impacts.play({12000.0f, 0, {}});
-    EXPECT_EQ(mixer.activeVoices(), 1);
-    impacts.play({12000.0f, 0, {}}); // the same sample is still playing
-    EXPECT_EQ(mixer.activeVoices(), 1);
-    impacts.play({100.0f, 8, {}}); // tree: both samples at once
-    EXPECT_EQ(mixer.activeVoices(), 3);
-    EXPECT_EQ(impacts.lastPlayed(), 8);
+    impacts.play({8000.0f, 0, {}});     // both ends inclusive: soft and med
+    EXPECT_EQ(mixer.activeVoices(), 2);
+    impacts.play({12000.0f, 0, {}}); // med is still playing
+    EXPECT_EQ(mixer.activeVoices(), 2);
+    impacts.play({100.0f, 1, {}}); // the tree, by position in the table
+    EXPECT_EQ(mixer.activeVoices(), 4);
+    EXPECT_EQ(impacts.lastPlayed(), 1);
+    EXPECT_FLOAT_EQ(impactStrength({-3, 4, 0.5f}), 7.5f);
 }
 
-TEST(GameAudio, SirenFollowsItsSteps) {
-    const char* text = "Explosion sample,volume\nexplosion,0.95\nSample name,\nsirena,0.95\nplay time,next index\n2,1\n"
-                       "Sample name,\nsirenb,0.95\nplay time,next index\n1,0\n";
+TEST(GameAudio, SirenStepsThroughItsTable) {
+    const char* text = "Explosion sample,volume\nexplosion,0.95\nSample name,\nsirena,0.95\nplay time,next index\n1,1\n"
+                       "play time,next index\n2,1\nSample name,\nsirenb,0.95\nplay time,next index\n0.5,0\n";
     auto table = parseSirenTable(text);
     ASSERT_TRUE(table);
     ASSERT_EQ(table->samples.size(), 2u);
-    FakeData data({}, {"sirena", "sirenb", "explosion"});
+    ASSERT_EQ(table->samples[0].steps.size(), 2u);
+    FakeData data({}, {"sirena", "sirenb", "explosion"}, 22050);
     SoundBank bank(data.vfs);
     Mixer mixer(48000);
     SirenPlayer siren;
     siren.load(mixer, bank, *table, Bus::Effects);
-    siren.update(true, false, 0.0f);
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 0);
+    siren.start(true);
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 1);
     EXPECT_EQ(siren.currentSample(), 0);
-    siren.update(true, false, 1.5f);
-    EXPECT_EQ(siren.currentSample(), 0);
-    siren.update(true, false, 1.0f);
-    EXPECT_EQ(siren.currentSample(), 1);
-    siren.update(true, false, 1.1f);
-    EXPECT_EQ(siren.currentSample(), 0);
-    siren.update(false, false, 0.1f);
-    EXPECT_EQ(siren.currentSample(), -1);
-    EXPECT_EQ(mixer.activeVoices(), 0);
-    siren.update(true, true, 0.1f); // wrecked: explosion, siren off
+    // FluctuateSiren: a's first entry (1 s) -> b (0.5 s) -> a's second entry
+    // (2 s) -> b -> a's first entry again.
+    std::vector<int> seen;
+    for (int i = 0; i < 90; ++i) {
+        siren.update(0.05f);
+        if (seen.empty() || seen.back() != siren.currentSample())
+            seen.push_back(siren.currentSample());
+    }
+    EXPECT_EQ(seen, (std::vector<int>{0, 1, 0, 1, 0}));
     EXPECT_EQ(mixer.activeVoices(), 1);
+    siren.stop();
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 0);
+    EXPECT_EQ(mixer.activeVoices(), 0);
+
+    // PerpEscapes counts an exploding cop twice.
+    SirenPlayer other;
+    other.load(mixer, bank, *table, Bus::Effects); // resets the count, like MM2's constructor
+    siren.start(true);
+    other.start(true);
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 2);
+    siren.explode(true, 1.0f);
+    siren.stop();
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 0);
+    EXPECT_TRUE(siren.explosionPlaying());
+    other.stopAll();
+    siren.stopAll();
 }
 
-TEST(GameAudio, AmbientEngineAndHornPatterns) {
+TEST(GameAudio, PositionedSoundsAttenuateWithSquaredDistance) {
+    Audio3D a;
+    a.setDropOffs(0.0f, 150.0f);
+    Mat34 listener = Mat34::identity();
+    a.updateDistance({75, 0, 0}, listener.m3);
+    ASSERT_TRUE(a.withinMaxDistance());
+    EXPECT_NEAR(a.attenuation(), 0.75f, 1e-5f); // 1 - 75^2 / 150^2
+    // Pan: 0.2 * x / (|dx| + |dy| + |dz|).
+    EXPECT_NEAR(a.pan(listener, {75, 0, 0}), 0.2f, 1e-6f);
+    a.updateDistance({30, 0, -30}, listener.m3);
+    EXPECT_NEAR(a.pan(listener, {30, 0, -30}), 0.1f, 1e-6f);
+    // Doppler: the pseudo distance closed since the last update.
+    a.updateDistance({20, 0, -30}, listener.m3);
+    EXPECT_NEAR(a.doppler(1.0f / kDopplerSpeed, 0.5f), 1.0f + 10.0f / kDopplerSpeed * 0.5f, 1e-5f);
+    a.updateDistance({200, 0, 0}, listener.m3);
+    EXPECT_TRUE(a.pastMaxDistance());
+    a.alwaysAudible = true; // a siren keeps the slot
+    EXPECT_FALSE(a.pastMaxDistance());
+}
+
+namespace {
+struct TestClient : Object3DManager::Client {
+    float d2 = 0;
+    int priority = 9;
+    bool lost = false;
+    float slotDistance2() const override { return d2; }
+    int slotPriority() const override { return priority; }
+    void slotLost() override { lost = true; }
+};
+} // namespace
+
+TEST(GameAudio, SlotManagerKeepsTheNearestAndHighestPriority) {
+    Object3DManager m(3);
+    TestClient a, b, c, d, e;
+    a.d2 = 100, b.d2 = 400, c.d2 = 900, d.d2 = 1600, e.d2 = 50;
+    EXPECT_TRUE(m.add(&a));
+    EXPECT_TRUE(m.add(&b));
+    EXPECT_TRUE(m.add(&c));
+    EXPECT_FALSE(m.add(&d)); // equal priority and farther than everyone
+    EXPECT_TRUE(m.add(&e));  // equal priority but closer than the farthest (c)
+    EXPECT_TRUE(c.lost);
+    EXPECT_FALSE(m.holds(&c));
+    d.priority = 10; // a siren: higher priority wins even from far away
+    EXPECT_TRUE(m.add(&d));
+    EXPECT_TRUE(b.lost);
+    EXPECT_EQ(m.used(), 3);
+}
+
+TEST(GameAudio, AmbientEnginePitchBands) {
     auto engine = parseAmbientEngine("Engine sample,engine volume,,\nENGINEFERRARI1,0.97,,\nmin speed,max speed,min pitch,max "
                                      "pitch\n0,15,0.27,1\n15,35,1,1.25\n35,500,1.25,1.5\n0,500,0.27,24.603\n");
     ASSERT_TRUE(engine);
     EXPECT_EQ(engine->bands.size(), 4u);
-    EXPECT_NEAR(AmbientCarAudio::pitchFor(*engine, 0.0f), 0.27f, 1e-5f);
-    EXPECT_NEAR(AmbientCarAudio::pitchFor(*engine, 7.5f), 0.635f, 1e-4f);
-    EXPECT_NEAR(AmbientCarAudio::pitchFor(*engine, 25.0f), 1.125f, 1e-4f);
+    EXPECT_NEAR(*AmbientCarAudio::pitchFor(*engine, 0.0f), 0.27f, 1e-5f);
+    EXPECT_NEAR(*AmbientCarAudio::pitchFor(*engine, 7.5f), 0.635f, 1e-4f);
+    EXPECT_NEAR(*AmbientCarAudio::pitchFor(*engine, 25.0f), 1.125f, 1e-4f);
+    EXPECT_FALSE(AmbientCarAudio::pitchFor(*engine, 600.0f)); // no band: the pitch stays
+    // Slowing down: the last band.
+    EXPECT_NEAR(*AmbientCarAudio::pitchFor(*engine, 10.0f, true), 0.27f + 10.0f * 24.333f / 500.0f, 1e-4f);
     auto horn = parseHorn("Horn sample,horn volume,horn pitch,min stuck horn impact force\nBUSHORN,0.97,0.9,5500\n"
                           "horn play duration,horn pause duration,,\n0.5,0.2,,\n1,0,,\n"
                           "horn play duration,horn pause duration,,\n0,0.15,,\n3,0,,\n");
@@ -259,27 +428,96 @@ TEST(GameAudio, AmbientEngineAndHornPatterns) {
     EXPECT_FLOAT_EQ(horn->stuckImpactForce, 5500.0f);
 }
 
-TEST(GameAudio, CreatureVoiceTriggersAfterTimeInRange) {
-    auto def = parseCreatureVoice("Min speed,Max speed,min time in range,max time out of range\n0,20,5,0\n"
+TEST(GameAudio, AmbientHornPatternTiming) {
+    FakeData data({{"aud/cardata/ambient/default_engine.csv",
+                    "Engine sample,engine volume,,\nengine,0.98,,\nmin speed,max speed,min pitch,max pitch\n"
+                    "0,33,0.317,1\n33,500,1,1.25\n0,500,0.317,13.977\n"},
+                   {"aud/cardata/ambient/default_horn.csv",
+                    "Horn sample,horn volume,horn pitch,min stuck horn impact force\nhorn,0.97,1,5500\n"
+                    "horn play duration,horn pause duration,,\n0.5,0.2,,\n1,0,,\n"}},
+                  {"engine", "horn"}, 22050);
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    AmbientCarAudio car;
+    ASSERT_TRUE(car.load(data.vfs, bank, mixer, "va_test"));
+    Mat34 at = Mat34::identity();
+    at.m3 = {10, 0, 0};
+    const Mat34 listener = Mat34::identity();
+    EXPECT_FALSE(car.honk(0)); // no slot yet
+    car.update(12.0f, at, {}, 0.05f, listener);
+    EXPECT_TRUE(car.audible());
+    EXPECT_EQ(mixer.activeVoices(), 1);
+    EXPECT_TRUE(car.honk(0));
+    EXPECT_EQ(mixer.activeVoices(), 2);
+    EXPECT_FALSE(car.honk(0)); // already honking
+    // 0.5 s on, 0.2 s off, 1 s on.
+    int voices = 0;
+    for (int i = 0; i < 12; ++i) { // 0.6 s
+        car.update(12.0f, at, {}, 0.05f, listener);
+        voices = mixer.activeVoices();
+    }
+    EXPECT_EQ(voices, 1); // pausing
+    for (int i = 0; i < 6; ++i)
+        car.update(12.0f, at, {}, 0.05f, listener);
+    EXPECT_EQ(mixer.activeVoices(), 2); // second beep
+    for (int i = 0; i < 30; ++i)
+        car.update(12.0f, at, {}, 0.05f, listener);
+    EXPECT_EQ(mixer.activeVoices(), 1); // done
+    at.m3 = {150, 0, 0};                // beyond 100 m
+    car.update(12.0f, at, {}, 0.05f, listener);
+    EXPECT_FALSE(car.audible());
+    EXPECT_EQ(mixer.activeVoices(), 0);
+}
+
+TEST(GameAudio, CreatureVoicesAnswerNearMisses) {
+    auto def = parseCreatureVoice("Min speed,Max speed,min time in range,max time out of range\n0,20,5,1\n"
                                   "sample name,volume,,\nline1,0.98,,\nline2,0.98,,\n"
                                   "min impact force,,,\n5500,,,\nsample name,volume,play after seconds,\nouch,0.98,1,\n");
     ASSERT_TRUE(def);
     ASSERT_EQ(def->triggers.size(), 1u);
     EXPECT_EQ(def->triggers[0].lines.size(), 2u);
     EXPECT_EQ(def->impactLines.size(), 1u);
-    FakeData data({}, {"line1", "line2", "ouch"});
+    FakeData data({}, {"line1", "line2", "ouch"}, 22050);
     SoundBank bank(data.vfs);
     Mixer mixer(48000);
+    CreatureVoice::resetGlobals();
     CreatureVoice voice;
     voice.load(mixer, bank, *def);
-    Emitter3D at;
-    voice.update(10, 4.0f, at);
+    const Mat34 listener = Mat34::identity();
+    const Vec3 at{10, 0, 0};
+    // Nothing is said without a near miss, however long the speed stays in range.
+    for (int i = 0; i < 100; ++i)
+        voice.update(10, 0.1f, at, listener);
     EXPECT_FALSE(voice.speaking());
-    voice.update(10, 1.5f, at);
-    EXPECT_TRUE(voice.speaking());
+    // A near miss queues a line half of the time (RandomizeNumber(2n) < n).
+    bool spoke = false;
+    for (unsigned seed = 1; seed < 20 && !spoke; ++seed) {
+        voice.seed(seed);
+        voice.avoid();
+        voice.update(10, 0.05f, at, listener);
+        spoke = voice.speaking();
+    }
+    EXPECT_TRUE(spoke);
+
+    // Impact lines: none during the first minute (the shared clock starts at 0).
+    CreatureVoice hit;
+    hit.load(mixer, bank, *def);
+    hit.impact(9000.0f);
+    for (int i = 0; i < 30; ++i)
+        hit.update(10, 0.1f, at, listener);
+    EXPECT_FALSE(hit.speaking());
+    CreatureVoice::advanceClock(60.0f);
+    hit.impact(1000.0f); // too soft
+    hit.update(10, 2.0f, at, listener);
+    EXPECT_FALSE(hit.speaking());
+    hit.impact(9000.0f);
+    hit.update(10, 0.5f, at, listener); // the line waits 1 s
+    EXPECT_FALSE(hit.speaking());
+    hit.update(10, 0.6f, at, listener);
+    EXPECT_TRUE(hit.speaking());
 }
 
-TEST(GameAudio, AnnouncerLineNames) {
+TEST(GameAudio, AnnouncerLineNamesAndChoice) {
     SpeechLineSet pre{"pre", 11, 0};
     auto names = Announcer::lineNames("al1", pre);
     ASSERT_EQ(names.size(), 11u);
@@ -294,6 +532,74 @@ TEST(GameAudio, AnnouncerLineNames) {
     ASSERT_TRUE(t);
     ASSERT_TRUE(t->find("robgetloot"));
     EXPECT_EQ(t->find("ROBGETLOOT")->front().prefix, "al1cops");
+    // AudSpeechData::GetRandomName: (add, end], the last number moves up one
+    // and wraps to 1, not to add + 1.
+    SpeechLineSet laps{"racelaps01", 10, 8};
+    EXPECT_EQ(Announcer::pickLine(laps, -1, 0.0f), 9);
+    EXPECT_EQ(Announcer::pickLine(laps, -1, 0.999f), 10);
+    EXPECT_EQ(Announcer::pickLine(laps, 9, 0.0f), 10);
+    EXPECT_EQ(Announcer::pickLine(laps, 10, 0.999f), 1);
+    SpeechLineSet single{"x", 1, 0};
+    EXPECT_EQ(Announcer::pickLine(single, 1, 0.5f), 1); // one line repeats
+}
+
+TEST(GameAudio, AnnouncerPreRaceWaitsAndEventsInterrupt) {
+    const char* blitz = "Name prefix/type header,end sufix value,sufix add value\nPRERACE header,,\nPRE,2,0\n"
+                        "FINALCHECKPOINT header,,\nRACECHECK,1,0\nRESULTSWIN header,,\nRESULTWIN,1,0\n";
+    FakeData data({{"aud/spchdata/london.csv", "Num announcers\n1\nprefix\nAL\n"}, {"aud/spchdata/al1/blitz.csv", blitz}},
+                  {"al1pre01", "al1pre02", "al1racecheck01", "al1resultwin01"}, 22050);
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    Announcer a;
+    ASSERT_TRUE(a.load(data.vfs, bank, mixer, "london"));
+    EXPECT_EQ(a.announcerId(), "al1");
+    a.beginRace(AnnouncerMode::Blitz, {}, 1, 4); // snow: no weather lines; no time-of-day table
+    a.seed(3);
+    std::string line;
+    for (int i = 0; i < 20 && line.empty(); ++i)
+        line = a.playPreRace(); // the time-of-day / weather branches play nothing
+    ASSERT_TRUE(line.starts_with("al1pre")) << line;
+    EXPECT_TRUE(a.speaking());
+    a.update(1.0f);
+    EXPECT_EQ(mixer.activeVoices(), 0); // waits 1.5 s
+    a.update(0.6f);
+    EXPECT_EQ(mixer.activeVoices(), 1);
+    EXPECT_EQ(a.playFinalCheckpoint(), "al1racecheck01"); // cuts the pre-race line off
+    EXPECT_EQ(mixer.activeVoices(), 1);
+    EXPECT_EQ(a.playResults(1, 4), "al1resultwin01");
+    EXPECT_EQ(a.playResults(2, 4), ""); // blitz has no "mid" lines: nothing
+}
+
+TEST(GameAudio, RainThunderAtNight) {
+    FakeData data({}, {"Rainexterior", "Raininterior", "Thunder"}, 22050);
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    RainAudio day;
+    day.load(bank, mixer, false);
+    for (int i = 0; i < 400; ++i)
+        day.update(true, false, false, 0.1f);
+    EXPECT_EQ(mixer.activeVoices(), 1); // just the rain loop
+    day.stop();
+
+    RainAudio night;
+    night.load(bank, mixer, true);
+    double flash = -1, firstClap = -1, secondClap = -1;
+    int voices = 1;
+    for (int i = 1; i <= 200; ++i) {
+        night.update(true, false, false, 0.1f);
+        const double t = i * 0.1;
+        if (night.lightningFlash() && flash < 0)
+            flash = t;
+        const int v = mixer.activeVoices();
+        if (v > voices && firstClap < 0)
+            firstClap = t;
+        else if (v > voices && firstClap >= 0 && secondClap < 0)
+            secondClap = t;
+        voices = v;
+    }
+    EXPECT_NEAR(flash, 13.2, 0.15);
+    EXPECT_NEAR(firstClap, 15.1, 0.15);
+    EXPECT_NEAR(secondClap, 16.2, 0.15);
 }
 
 // --- Retail data ---------------------------------------------------------------
@@ -412,26 +718,23 @@ TEST(GameAudioRetail, PlayerCarSweepSkidAndImpact) {
     std::string err;
     ASSERT_TRUE(car.load(v, bank, mixer, "vpbug", {}, &err)) << err;
     ASSERT_EQ(car.engine().sampleCount(), 4u); // VWIDLE, VWDRIVE, VWMID, VWHIGH
+    EXPECT_FALSE(car.police());
 
-    CarAudioInputs in;
-    for (auto& w : in.wheels)
-        w.onGround = true;
-    in.rpm = 0; // at rest: the idle sample keeps playing at idle RPM
+    CarAudioInputs in = grounded();
+    in.rpm = 0; // at rest: the samples play at idle RPM
     car.update(in, 0.016f);
-    EXPECT_TRUE(car.engine().state(0).audible);
-    int audibleSamples = 0;
+    // Every vpbug sample has a minimum volume of 0.55: all four loop at once.
+    for (std::size_t i = 0; i < 4; ++i)
+        EXPECT_TRUE(car.engine().state(i).audible) << i;
     float lastPitch = 0;
     for (float rpm = 800; rpm <= 8500; rpm += 100) {
         in.rpm = rpm;
         car.update(in, 0.016f);
-        audibleSamples = 0;
-        for (std::size_t i = 0; i < 4; ++i)
-            audibleSamples += car.engine().state(i).audible ? 1 : 0;
-        EXPECT_GE(audibleSamples, 1) << rpm;
         EXPECT_GE(car.engine().state(1).pitch, lastPitch - 1e-4f);
         lastPitch = car.engine().state(1).pitch;
     }
     const int engineVoices = mixer.activeVoices();
+    EXPECT_EQ(engineVoices, 4);
 
     in.speed = 15.0f;
     for (auto& w : in.wheels)
@@ -443,6 +746,33 @@ TEST(GameAudioRetail, PlayerCarSweepSkidAndImpact) {
     in.impacts = {{25000.0f, 0, {}}};
     car.update(in, 0.016f);
     EXPECT_EQ(mixer.activeVoices(), engineVoices + 2);
+}
+
+TEST(GameAudioRetail, PoliceAndFireTruckHornsToggleTheSiren) {
+    MM2_REQUIRE_GAME_DATA();
+    const auto& v = *test::gameData();
+    SoundBank bank(v);
+    Mixer mixer(48000);
+    for (const char* name : {"vpcop", "vpsemi"}) {
+        PlayerCarAudio car;
+        std::string err;
+        ASSERT_TRUE(car.load(v, bank, mixer, name, {}, &err)) << err;
+        EXPECT_TRUE(car.police()) << name; // vehtypes.csv lists both as police
+        CarAudioInputs in = grounded();
+        in.rpm = 2000;
+        car.update(in, 0.02f);
+        in.horn = true;
+        car.update(in, 0.02f);
+        EXPECT_TRUE(car.sirenOn()) << name;
+        car.update(in, 0.02f); // held: no change
+        EXPECT_TRUE(car.sirenOn()) << name;
+        in.horn = false;
+        car.update(in, 0.02f);
+        in.horn = true;
+        car.update(in, 0.02f);
+        EXPECT_FALSE(car.sirenOn()) << name;
+        car.stop();
+    }
 }
 
 TEST(GameAudioRetail, AnnouncerAndAmbience) {
@@ -459,11 +789,14 @@ TEST(GameAudioRetail, AnnouncerAndAmbience) {
                           "/cruise.csv"))
                 continue; // SF lists five announcers but ships four
             a.beginSession(i);
-            a.stop();
-            const auto line = a.playPreRace(AnnouncerMode::Blitz, "vpbug", 1, 0);
+            a.beginRace(AnnouncerMode::Blitz, "vpbug", 1, 0);
+            std::string line;
+            for (int k = 0; k < 30 && line.empty(); ++k)
+                line = a.playPreRace();
             EXPECT_FALSE(line.empty()) << city << " announcer " << i;
             a.stop();
-            EXPECT_FALSE(a.playResults(AnnouncerMode::Circuit, RaceOutcome::Win, {}).empty()) << city << i;
+            a.beginRace(AnnouncerMode::Circuit, {}, 1, 0);
+            EXPECT_FALSE(a.playResults(RaceOutcome::Win).empty()) << city << i;
             a.stop();
         }
         a.beginSession(1);
@@ -483,28 +816,40 @@ TEST(GameAudioRetail, OpponentAmbientAndCityEmitters) {
     const auto& v = *test::gameData();
     SoundBank bank(v);
     Mixer mixer(48000);
+    const Mat34 listener = Mat34::identity();
 
     OpponentCarAudio cop;
     std::string err;
     ASSERT_TRUE(cop.load(v, bank, mixer, "vpcop", true, {}, &err)) << err;
-    CarAudioInputs in;
+    CarAudioInputs in = grounded();
     in.rpm = 3000;
-    in.siren = true;
     in.transform.m3 = {10, 0, 0};
-    cop.update(in, 0.02f, {0, 0, 0});
-    const int near = mixer.activeVoices();
-    EXPECT_GE(near, 2); // engine + siren
-    cop.update(in, 0.02f, {1000, 0, 0}); // out of earshot
+    cop.update(in, 0.02f, listener);
+    EXPECT_GE(mixer.activeVoices(), 1); // the engine
+    in.siren = true;
+    cop.update(in, 0.02f, listener);
+    EXPECT_TRUE(cop.sirenOn());
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 1);
+    const int withSiren = mixer.activeVoices(); // the siren replaces the engine
+    EXPECT_GE(withSiren, 1);
+    in.transform.m3 = {1000, 0, 0}; // a siren stays audible at any distance
+    cop.update(in, 0.02f, listener);
+    EXPECT_TRUE(cop.audible());
+    EXPECT_GE(mixer.activeVoices(), 1);
+    in.siren = false;
+    cop.update(in, 0.02f, listener);
+    EXPECT_FALSE(cop.audible());
     EXPECT_EQ(mixer.activeVoices(), 0);
+    EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 0);
 
     AmbientCarAudio sedan; // tune name va_sedans_s, audio files va_sedan_s_*
     ASSERT_TRUE(sedan.load(v, bank, mixer, "va_sedans_s"));
-    Mat34 at;
+    Mat34 at = Mat34::identity();
     at.m3 = {5, 0, 0};
-    sedan.update(12.0f, at, {}, 0.02f, {0, 0, 0});
+    sedan.update(12.0f, at, {}, 0.02f, listener);
     EXPECT_EQ(mixer.activeVoices(), 1);
-    sedan.honk(0);
-    sedan.update(12.0f, at, {}, 0.02f, {0, 0, 0});
+    EXPECT_TRUE(sedan.honk(0));
+    sedan.update(12.0f, at, {}, 0.02f, listener);
     EXPECT_EQ(mixer.activeVoices(), 2);
     sedan.stop();
 
@@ -515,7 +860,19 @@ TEST(GameAudioRetail, OpponentAmbientAndCityEmitters) {
     ASSERT_TRUE(river);
     ASSERT_FALSE(river->points.empty());
     amb.seed(1);
+    Mat34 there = Mat34::identity();
+    there.m3 = river->points.front();
     for (int i = 0; i < 30 * 50; ++i) // 30 s next to the first river point
-        amb.update(river->points.front(), 0.02f);
+        amb.update(there, 0.02f);
+    EXPECT_TRUE(amb.audible("londonriver"));
     EXPECT_GE(mixer.activeVoices(), 1);
+    // The tube voices are only heard underground.
+    const auto* tube = amb.set("tubevoices");
+    ASSERT_TRUE(tube);
+    EXPECT_EQ(tube->audibleArea, 1);
+    there.m3 = tube->points.front();
+    amb.update(there, 0.02f, false);
+    EXPECT_FALSE(amb.audible("tubevoices"));
+    amb.update(there, 0.02f, true);
+    EXPECT_TRUE(amb.audible("tubevoices"));
 }
