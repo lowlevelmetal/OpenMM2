@@ -145,5 +145,28 @@ OpenMM2's snow option draws MM1's leftover `tune/snow.asbirthrule` (frames
 | `tune/vehicle/*.vehCarDamage` | smoke rule fields, SmokeOffset/SmokeOffset2/DoublePivot |
 | `texture/tire_track.tga` | tyre tracks |
 
-Not done: sparks (`asLineSparks`), glass shards (`fxShardManager`), parts
-flying off (`vehBreakableMgr`).
+## Impacts (vehCarDamage::ApplyImpact)
+
+An impact the car reports counts when its impulse, scaled by the other
+body's share of the two masses, exceeds ImpactThreshold, at 10 mph or more
+unless the other party is a vehicle. Then:
+
+* **Sparks** (`asLineSparks`, `fx/LineSparks`), above 15 mph: ftol(16 ×
+  impact × frame seconds) of them, at most 64 per car, born within 5 cm of
+  the contact, flying 4–5 m/s along the contact normal and 6–7 m/s across it.
+  They update in steps of at least 1/30 s: gravity 20 m/s², a bounce off
+  y = 0 keeping 80%, and an age byte falling 650 per second from 192–255
+  that picks the colour column of `texture/spark.tga` (8×8 ramps, 24-bit
+  pixels with alpha 0x80; asSparkLut). Drawn as lines from just behind the
+  previous position to the new one.
+* **Shards** (`fxShardManager`, `fx/Shards`): above impact 500 and 5 m/s,
+  impact / 300 of them (at most 2), from a ring of 16 per car: velocity
+  (±0.3, 0.15–0.3, 0.02–0.2) × car speed sideways/up/back in the body frame,
+  tumbling at 10.8–54 rad/s about a random axis, falling at 20 m/s², for
+  1.8 s. Each is a 0.1 m right triangle showing a random 0.3 × 0.3 patch of
+  the paint job's material of its index, both sides drawn.
+* **Texel damage** at the first such impact point of the frame (see
+  rendering.md).
+
+Not done: parts breaking off (`vehBreakableMgr`), the wheels and fenders
+ejected when a car is wrecked (`vehCarModel::EjectOneshot`).

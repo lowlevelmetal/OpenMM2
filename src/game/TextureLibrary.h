@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asset/Image.h"
 #include "render/Device.h"
 #include "vfs/Vfs.h"
 
@@ -47,6 +48,14 @@ public:
     // Advances animated textures to `time` seconds.
     void update(double time);
 
+    // The pixels `name` loads as (variants and night darkening applied), for
+    // textures that are modified at run time (fxTexelDamage).
+    std::optional<asset::Image> image(std::string_view name);
+    // Adds a texture made elsewhere under `name` (kept across variant
+    // changes); the library destroys it.
+    const WorldTexture* adopt(const std::string& name, const WorldTexture& texture);
+    void release(const std::string& name);
+
     std::size_t loadedCount() const { return m_textures.size(); }
 
 private:
@@ -64,6 +73,7 @@ private:
     const vfs::Vfs& m_vfs;
     std::unordered_map<std::string, std::optional<WorldTexture>> m_textures;
     std::unordered_map<std::string, Animation> m_animations;
+    std::unordered_map<std::string, WorldTexture> m_adopted;
     bool m_night = false;
     bool m_rain = false;
 };

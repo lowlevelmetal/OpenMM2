@@ -26,7 +26,7 @@ BirthRule VehicleFxSetup::engineSmokeDefaults() {
 }
 
 VehicleEffects::VehicleEffects(const EffectLibrary& library, const VehicleFxSetup& setup)
-    : m_smokeRule(setup.smokeRule), m_setup(setup) {
+    : m_smokeRule(setup.smokeRule), m_setup(setup), m_sparks(setup.sparkColors) {
     const ParticleSheet sheet = EffectLibrary::wheelSheet();
     m_wheelPtx.init(kWheelParticles, sheet.framesWide, sheet.framesHigh);
     m_wheelPtx.rng().seed(0x1234u);
@@ -51,6 +51,34 @@ void VehicleEffects::reset() {
     m_smokeFraction = 0.0f;
     m_smokeRule.texFrameStart = m_smokeRule.texFrameEnd = 0;
     m_ticker.reset();
+    m_sparks.reset();
+    m_shards.reset();
+    m_damagePoint.reset();
+}
+
+void VehicleEffects::impact(const phys::Impact& impact, const phys::CarSim& car) {
+    // vehCarDamage::InsertImpact/ApplyImpact: the impulse scaled by the other
+    // body's share of the masses must pass ImpactThreshold, at 10 mph or
+    // more unless the other party is a vehicle.
+    float share = 1.0f;
+    if (impact.other)
+        share = impact.other->ics.mass / (car.body.ics.mass + impact.other->ics.mass);
+    const float value = std::abs(impact.impulse) * share;
+    const float mph = car.speedMph();
+    if (!(car.damage.params.impactThreshold < value) || (mph < 10.0f && !impact.other))
+        return;
+    // Sparks: 16 x impact x frame seconds of them (at most the pool's 64).
+    if (15.0f < mph)
+        m_sparks.radialBlast(static_cast<int>(16.0f * value * FixedTicker::kStep), impact.point, impact.normal);
+    m_shards.emit(impact.point, value, car.speed(), car.body.ics.matrix);
+    if (!m_damagePoint)
+        m_damagePoint = car.modelMatrix().untransform(impact.point);
+}
+
+std::optional<Vec3> VehicleEffects::takeDamagePoint() {
+    auto p = m_damagePoint;
+    m_damagePoint.reset();
+    return p;
 }
 
 void VehicleEffects::update(float dt, const phys::CarSim& car, const VehicleFxContext& context) {
@@ -154,6 +182,8 @@ void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxCont
         spewSmoke(body, offset, 1.0f); // ParticleMultiplier = 1
     }
     m_smoke.update(dt);
+    m_sparks.update(dt);
+    m_shards.update(dt);
     // Exhaust pivots smoke with the revs above 2000 rpm, whatever the damage
     // (with the frame the damage level last chose).
     if (m_setup.exhaust[0] || m_setup.exhaust[1]) {
@@ -171,6 +201,8 @@ void VehicleEffects::draw(render::Device& device, TextureLibrary& textures, Part
         cards.draw(device, cameraBasis, m_wheelPtx, textures.get(EffectLibrary::wheelSheet().texture));
     if (m_smoke.count())
         cards.draw(device, cameraBasis, m_smoke, textures.get("fxpt8"));
+    m_sparks.draw(device);
+    m_shards.draw(device, textures, m_setup.shardTextures);
 }
 
 } // namespace mm2::game::fx

@@ -57,7 +57,8 @@ object once from every room it touches).
 
 | Topic | Behaviour | Evidence |
 |---|---|---|
-| Car bodies | at the high and medium LODs each body material draws its clean texture (`vpbugyellow_sd` for both `vpbugyellow_sd` and `vpbugyellow_sd_dmg`); the low and very low LODs draw the paint job's materials as stored | MM2 (`vehCarModel::Draw`, `fxTexelDamage::Init`): fxTexelDamage keeps a clean copy per material that impacts patch with `_dmg` texels (not ported yet) |
+| Car bodies | at the high and medium LODs each body material draws its clean texture (`vpbugyellow_sd` for both `vpbugyellow_sd` and `vpbugyellow_sd_dmg`); the low and very low LODs draw the paint job's materials as stored | MM2 (`vehCarModel::Draw`, `fxTexelDamage::Init`) |
+| Texel damage | each body material with a `_dmg` pair draws a private copy of its clean texture; at the first counted impact of a frame (effects.md) every high LOD body triangle with a damage texture and a corner within TextelDamageRadius of the impact point (model space) gets one 7-row patch of `_dmg` texels copied around a random point of it (small or large at random, clipped, no wrap); a `_dmg` material whose clean texture is missing starts damaged; resetting the car repaints it | MM2 (`fxTexelDamage::Init`, `ApplyDamage`, `Reset`) |
 | Car parts | `vehCarModel::Draw`: body; DECAL (alpha blended); BREAK0-3, BREAK01/12/23/03 and VARIANT<paint> at their pivots; at H the refl_dc reflection pass and the fenders (FNDR0/1 turned with the front wheels, offset from wheel 0's pivot + 2.5 cm, mirrored); wheels and HUB0-3 at the simulation's wheel matrices. VL draws the body only. HLIGHT, SLIGHT, SIREN, SRN and HEADLIGHT meshes are never drawn | MM2 |
 | Car reflections | the high LOD body again with `texture/refl_dc` sphere-mapped from the view-space normals, added (ONE/ONE) at the material's power (0.5 for car paint), "Vehicle Reflections" option | MM2 (`modStatic::DrawEnvMapped`, `cityLevel::GetEnvMap`) |
 | Car shadow | the high LOD SHADOW mesh turned onto the ground found 1 m above to 1 m (else 5 m) below the car, none on ground steeper than normal.y 0.7; alpha blended, depth tested, no depth writes, pulled forward | MM2 (`vehCarModel::DrawShadow`, `lvlInstance::DrawPhysics`) |
@@ -66,11 +67,10 @@ object once from every room it touches).
 | Police lights | an ltLight per SRN0-3 part (pivot, part colour) whose world-space direction turns 2.5 pi rad/s about Y, a quarter turn apart, drawn as above; the lens flares (`lt_flare`, within ~13 m) are not ported | MM2 (`vehSiren`) |
 | Car LOD | as objects (above), culled beyond NoDraw | MM2 (`lvlInstance::IsVisible`); the radius is the high LOD body's bounding box half-diagonal (inferred) |
 
-Not ported yet: texel damage (`fxTexelDamage::ApplyDamage` copies 7-row
-patches of `_dmg` texels around random points of the triangles within
-TextelDamageRadius of an impact), suspension and engine parts (SHOCK, ARM,
-SHAFT, AXLE, ENGINE need the suspension matrices), parts breaking off
-(`vehBreakableMgr`), glass shards (`fxShardManager`) and sparks
-(`asLineSparks`). Traffic cars (`aiVehicleInstance`) use the same light
+Not ported yet: suspension and engine parts (SHOCK, ARM, SHAFT, AXLE,
+ENGINE need the suspension matrices) and parts breaking off
+(`vehBreakableMgr`; with damage above 10000 the breakable nearest an impact
+flies off as a banger, and a wrecked car loses wheels and fenders by
+speed). Traffic cars (`aiVehicleInstance`) use the same light
 rules here; MM2 draws their turn signals (SLIGHT0/1) and a shared headlight
 glow, not ported.

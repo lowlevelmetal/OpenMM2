@@ -3,6 +3,7 @@
 #include "asset/VehicleModel.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
+#include "game/TexelDamage.h"
 #include "game/TextureLibrary.h"
 #include "game/fx/ParticleRenderer.h"
 
@@ -62,6 +63,14 @@ public:
     // ("Vehicle Reflections" option).
     void setReflections(bool on) { m_reflections = on; }
 
+    // fxTexelDamage::ApplyDamage at a point in the car's model space with
+    // TextelDamageRadius; resetDamage() repaints the car clean.
+    void applyDamage(const Vec3& modelPoint, float radius);
+    void resetDamage();
+    bool hasTexelDamage() const { return m_texelDamage && m_texelDamage->active(); }
+    // The paint job's material textures in order (fxShardManager's shards).
+    std::vector<std::string> materialTextures() const;
+
     // Draws everything for the camera placed at `camera`.
     void draw(const VehiclePose& pose, const Mat34& camera);
 
@@ -98,6 +107,7 @@ private:
     std::vector<Light> m_sirens;
     std::optional<Vec3> m_fenderOffset; // fndr0 pivot relative to wheel 0
     fx::ParticleRenderer m_cards;
+    std::unique_ptr<TexelDamage> m_texelDamage;
 };
 
 } // namespace mm2::game

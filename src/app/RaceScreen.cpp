@@ -497,7 +497,10 @@ private:
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
             setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
-            opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model());
+            opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
+            opp.sim->sim().onImpactCallback = [fx = opp.fx.get(), sim = &opp.sim->sim()](const phys::Impact& impact) {
+                fx->impact(impact, *sim);
+            };
             if (m_ai) {
                 std::string error;
                 opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
@@ -550,7 +553,10 @@ private:
                                                                     cop.sim->model(), livery);
             setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
-            cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model());
+            cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model(), *cop.renderer);
+            cop.sim->sim().onImpactCallback = [fx = cop.fx.get(), sim = &cop.sim->sim()](const phys::Impact& impact) {
+                fx->impact(impact, *sim);
+            };
             m_cops.push_back(std::move(cop));
         }
         log::info("race: {} police cars", m_cops.size());
@@ -723,16 +729,21 @@ private:
                 m_player->reset(m_session->respawnTransform());
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
+                if (m_vehicle)
+                    m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
                 // The race starts over (mmGame::Reset): every car to its start.
                 m_player->reset(m_spawn);
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
+                if (m_vehicle)
+                    m_vehicle->resetDamage();
                 for (auto& o : m_opponents) {
                     o.sim->reset(o.spawn);
                     if (o.fx)
                         o.fx->reset();
+                    o.renderer->resetDamage();
                     if (o.driver)
                         o.driver->reset();
                 }
@@ -741,6 +752,8 @@ private:
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
+                if (m_vehicle)
+                    m_vehicle->resetDamage(); // vehCar::ClearDamage
             } else if (e.type == EventType::PlayerDamageLimits) {
                 auto& d = m_player->sim().damage.params;
                 d.maxDamage = e.value;
@@ -812,8 +825,12 @@ private:
             m_bangers->add(game::bangers::placeCityProps(*m_city, ctx.game->vfs, *m_bangerData));
             m_bangers->setWorld(m_world.get());
         }
-        if (m_player)
-            m_vehicleFx = loadVehicleFx(ctx, m_result.config.vehicle, m_player->model());
+        if (m_player && m_vehicle) {
+            m_vehicleFx = loadVehicleFx(ctx, m_result.config.vehicle, m_player->model(), *m_vehicle);
+            m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
+                m_vehicleFx->impact(impact, m_player->sim());
+            };
+        }
         const auto w = m_result.config.weather;
         m_weather = std::make_unique<game::fx::Weather>(
             m_effects, w == game::Weather::Rain   ? game::fx::Weather::Kind::Rain
@@ -858,8 +875,13 @@ private:
     // one car: the .vehCarDamage particle fields over the engine smoke
     // defaults, the exhaust pivots of its model.
     std::unique_ptr<game::fx::VehicleEffects> loadVehicleFx(Context& ctx, const std::string& vehicle,
-                                                            const asset::VehicleModel& model) {
+                                                            const asset::VehicleModel& model,
+                                                            const game::VehicleRenderer& renderer) {
         game::fx::VehicleFxSetup setup;
+        if (!m_sparkColors)
+            m_sparkColors = game::fx::SparkLut::load(ctx.game->vfs);
+        setup.sparkColors = *m_sparkColors;
+        setup.shardTextures = renderer.materialTextures();
         if (auto bytes = ctx.game->vfs.readAll("tune/vehicle/" + vehicle + ".vehcardamage"))
             if (auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
                 f && f->top())
@@ -876,14 +898,27 @@ private:
     game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim&) const { return {}; }
 
     void updateEffects(float dt) {
-        if (m_player && m_vehicleFx)
+        // vehCarDamage::Update paints the first impact since the last frame
+        // into the body (fxTexelDamage::ApplyDamage, TextelDamageRadius).
+        auto paint = [](game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim) {
+            if (auto p = fx.takeDamagePoint())
+                r.applyDamage(*p, sim.damage.params.textelDamageRadius);
+        };
+        if (m_player && m_vehicleFx) {
             m_vehicleFx->update(dt, m_player->sim(), vehicleFxContext(m_player->sim()));
+            if (m_vehicle)
+                paint(*m_vehicleFx, *m_vehicle, m_player->sim());
+        }
         for (auto& o : m_opponents)
-            if (o.fx)
+            if (o.fx) {
                 o.fx->update(dt, o.sim->sim(), vehicleFxContext(o.sim->sim()));
+                paint(*o.fx, *o.renderer, o.sim->sim());
+            }
         for (auto& c : m_cops) {
-            if (c.fx)
+            if (c.fx) {
                 c.fx->update(dt, c.sim->sim(), vehicleFxContext(c.sim->sim()));
+                paint(*c.fx, *c.renderer, c.sim->sim());
+            }
             if (c.driver->siren())
                 c.sirenAngle = std::fmod(c.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
         }
@@ -909,6 +944,8 @@ private:
         m_rain.load(*m_bank, *ctx.mixer, m_result.config.timeOfDay == game::TimeOfDay::Night);
         // Impacts reported by the simulation feed the impact sounds.
         m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
+            if (m_vehicleFx)
+                m_vehicleFx->impact(impact, m_player->sim());
             m_impacts.push_back({audio::game::impactStrength(impact.normal * impact.impulse), 0, impact.point});
             if (impact.speed > 1.0f)
                 ++(impact.other ? m_vehicleImpacts : m_objectImpacts);
@@ -1322,6 +1359,7 @@ private:
     std::unique_ptr<game::bangers::BangerDataLibrary> m_bangerData;
     std::unique_ptr<game::bangers::BangerSet> m_bangers;
     game::bangers::RoadDecals m_roadDecals;
+    std::optional<game::fx::SparkLut> m_sparkColors;
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;
     std::unique_ptr<game::fx::Weather> m_weather;

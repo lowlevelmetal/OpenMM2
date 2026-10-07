@@ -1,8 +1,10 @@
 #include "TestData.h"
 #include "game/fx/BirthRule.h"
 #include "game/fx/EffectLibrary.h"
+#include "game/fx/LineSparks.h"
 #include "game/fx/Particles.h"
 #include "game/fx/Random.h"
+#include "game/fx/Shards.h"
 #include "game/fx/SkidMarks.h"
 #include "game/fx/VehicleEffects.h"
 #include "phys/Material.h"
@@ -306,4 +308,56 @@ TEST(FxRetail, SlidingWheelThrowsItsSurface) {
         // Radius: load x width x Radius x 0.5, plus the rule's RadiusVar 0.2.
         EXPECT_NEAR(p.radius, 0.5f * 0.2f * 1.0f * 0.5f, 0.1f + 1e-4f);
     }
+}
+
+TEST(FxSparks, RadialBlastAgesAndBounces) {
+    LineSparks sparks;
+    sparks.radialBlast(100, {0, 0.5f, 0}, {0, 0, 1});
+    EXPECT_EQ(sparks.count(), LineSparks::kMax); // the pool holds 64
+    for (const auto& s : sparks.sparks()) {
+        EXPECT_GE(s.age, 192); // (irand & 0x3f) - 0x40 as a byte
+        // 4-5 m/s along the normal (+Z here), 6-7 m/s across it.
+        EXPECT_GT(s.velocity.z, 0.0f);
+        EXPECT_LE(s.velocity.mag(), std::sqrt(7.0f * 7.0f + 5.0f * 5.0f) + 1e-3f);
+    }
+    // Updates come in steps of at least 1/30 s; the age falls 650 per second.
+    const auto before = sparks.sparks()[0].position;
+    sparks.update(1.0f / 60.0f);
+    EXPECT_EQ(sparks.sparks()[0].position, before); // no step yet
+    sparks.update(1.0f / 60.0f);
+    EXPECT_NE(sparks.sparks()[0].position, before);
+    for (int i = 0; i < 12; ++i)
+        sparks.update(1.0f / 30.0f);
+    EXPECT_EQ(sparks.count(), 0); // gone within 0.4 s
+}
+
+TEST(FxSparks, BuiltinTableAndRetailLut) {
+    const auto b = SparkLut::builtin();
+    EXPECT_EQ(b.colors.size(), 32u);
+    EXPECT_EQ(b.rows, 4);
+    EXPECT_EQ(b.shift, 5);
+    MM2_REQUIRE_GAME_DATA();
+    const auto lut = SparkLut::load(*test::gameData());
+    EXPECT_EQ(lut.rows, 8); // spark.tga is 8 x 8
+    EXPECT_EQ(lut.shift, 5);
+    ASSERT_EQ(lut.colors.size(), 64u);
+    EXPECT_EQ(lut.colors[0] >> 24, 0x80u); // 24-bit pixels get alpha 0x80
+}
+
+TEST(FxShards, ThresholdsAndLifetime) {
+    Shards shards;
+    const Mat34 body;
+    shards.emit({0, 1, 0}, 500.0f, 20.0f, body); // impact must exceed 500
+    shards.emit({0, 1, 0}, 2000.0f, 5.0f, body); // and the speed 5 m/s
+    EXPECT_EQ(shards.live(), 0);
+    shards.emit({0, 1, 0}, 550.0f, 20.0f, body); // 550 / 300 = 1
+    EXPECT_EQ(shards.live(), 1);
+    shards.emit({0, 1, 0}, 5000.0f, 20.0f, body); // at most 2
+    EXPECT_EQ(shards.live(), 3);
+    for (int i = 0; i < 107; ++i)
+        shards.update(1.0f / 60.0f);
+    EXPECT_EQ(shards.live(), 3);
+    for (int i = 0; i < 2; ++i)
+        shards.update(1.0f / 60.0f);
+    EXPECT_EQ(shards.live(), 0); // 1.8 s
 }

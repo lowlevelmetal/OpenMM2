@@ -5,8 +5,10 @@
 #pragma once
 
 #include "game/fx/EffectLibrary.h"
+#include "game/fx/LineSparks.h"
 #include "game/fx/ParticleRenderer.h"
 #include "game/fx/Particles.h"
+#include "game/fx/Shards.h"
 #include "game/fx/SkidMarks.h"
 #include "phys/vehicle/CarSim.h"
 
@@ -23,6 +25,10 @@ struct VehicleFxSetup {
     std::array<std::optional<Vec3>, 2> exhaust;
     // mmGame::InitWeather in rain: the road's tyre smoke turns into splash.
     bool rain = false;
+    // asSparkLut "spark" colours.
+    SparkLut sparkColors = SparkLut::builtin();
+    // The paint job's material textures (the shards' pictures).
+    std::vector<std::string> shardTextures;
 
     // vehCarDamage::Init's EngineSmokeRule before the car's file is read.
     static BirthRule engineSmokeDefaults();
@@ -47,6 +53,12 @@ public:
     void reset();
     // Runs the original per-frame updates at a fixed 60 Hz (FixedTicker).
     void update(float dt, const phys::CarSim& car, const VehicleFxContext& context = {});
+    // vehCarDamage::ApplyImpact's effects for an impact the car reported:
+    // sparks above 15 mph, shards, and texel damage at the first such point
+    // since the last takeDamagePoint().
+    void impact(const phys::Impact& impact, const phys::CarSim& car);
+    // The model-space point texel damage should be painted at, once.
+    std::optional<Vec3> takeDamagePoint();
     // Tracks and particles; call inside the scene pass.
     void draw(render::Device& device, TextureLibrary& textures, ParticleRenderer& cards, SkidRenderer& skids,
               const Mat34& cameraBasis);
@@ -54,6 +66,8 @@ public:
     const std::array<SkidTrack, 4>& tracks() const { return m_tracks; }
     const ParticleSystem& wheelParticles() const { return m_wheelPtx; }
     const ParticleSystem& smoke() const { return m_smoke; }
+    const LineSparks& sparks() const { return m_sparks; }
+    const Shards& shards() const { return m_shards; }
     int liveParticles() const { return m_wheelPtx.count() + m_smoke.count(); }
 
 private:
@@ -71,6 +85,9 @@ private:
     float m_smokeFraction = 0.0f;
     int m_nextPivot = 0; // DoublePivot alternation
     FixedTicker m_ticker;
+    LineSparks m_sparks;
+    Shards m_shards;
+    std::optional<Vec3> m_damagePoint;
 };
 
 } // namespace mm2::game::fx

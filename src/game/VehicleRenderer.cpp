@@ -97,9 +97,35 @@ void VehicleRenderer::setPaintjob(int paintjob) {
     // material) into which impacts copy patches of "<name>_dmg". The low
     // LODs draw the paint job's materials as stored.
     m_live = m_paint;
+    m_texelDamage.reset();
+    for (const auto& mesh : m_model.pkg.meshes)
+        if (str::iequals(mesh.part, m_bodyPart) && mesh.lod == asset::Lod::High) {
+            static int serial = 0;
+            m_texelDamage = std::make_unique<TexelDamage>(m_device, m_textures, mesh, m_live,
+                                                          std::format("{}{}", m_model.baseName, ++serial));
+            break;
+        }
+    // Materials without a damage pair: "_dmg" ones draw their clean texture.
     for (auto& m : m_live)
         if (str::iendsWith(m.texture, "_dmg") && m_textures.get(m.texture.substr(0, m.texture.size() - 4)))
             m.texture.resize(m.texture.size() - 4);
+}
+
+void VehicleRenderer::applyDamage(const Vec3& modelPoint, float radius) {
+    if (m_texelDamage)
+        m_texelDamage->apply(modelPoint, radius);
+}
+
+void VehicleRenderer::resetDamage() {
+    if (m_texelDamage)
+        m_texelDamage->reset();
+}
+
+std::vector<std::string> VehicleRenderer::materialTextures() const {
+    std::vector<std::string> out;
+    for (const auto& m : m_paint)
+        out.push_back(m.texture);
+    return out;
 }
 
 std::optional<asset::Lod> VehicleRenderer::lodFor(const VehiclePose& pose, const Mat34& camera) const {

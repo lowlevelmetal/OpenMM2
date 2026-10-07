@@ -13,7 +13,54 @@ namespace mm2::game {
 
 TextureLibrary::TextureLibrary(render::Device& device, const vfs::Vfs& vfs) : m_device(device), m_vfs(vfs) {}
 
-TextureLibrary::~TextureLibrary() { clear(); }
+TextureLibrary::~TextureLibrary() {
+    clear();
+    for (auto& [name, t] : m_adopted)
+        m_device.destroyTexture(t.handle);
+}
+
+const WorldTexture* TextureLibrary::adopt(const std::string& name, const WorldTexture& texture) {
+    release(name);
+    return &(m_adopted[str::lower(name)] = texture);
+}
+
+void TextureLibrary::release(const std::string& name) {
+    if (auto it = m_adopted.find(str::lower(name)); it != m_adopted.end()) {
+        m_device.destroyTexture(it->second.handle);
+        m_adopted.erase(it);
+    }
+}
+
+std::optional<asset::Image> TextureLibrary::image(std::string_view nameIn) {
+    // The same choice as loadVariant, without uploading.
+    const std::string name = str::lower(nameIn);
+    auto read = [&](const std::string& n, bool darken) -> std::optional<asset::Image> {
+        std::optional<asset::Image> img;
+        if (auto bytes = m_vfs.readAll("texture/" + n + ".tex")) {
+            if (auto tex = asset::parseTex(*bytes))
+                img = std::move(tex->image);
+        } else if (auto tga = m_vfs.readAll("texture/" + n + ".tga")) {
+            img = asset::decodeTga(*tga);
+        }
+        if (!img || img->empty())
+            return std::nullopt;
+        if (darken)
+            for (auto& level : img->levels)
+                for (std::size_t i = 0; i + 3 < level.rgba.size(); i += 4) {
+                    level.rgba[i] >>= 1;
+                    level.rgba[i + 1] >>= 1;
+                    level.rgba[i + 2] >>= 1;
+                }
+        return img;
+    };
+    if (m_rain && !str::iendsWith(name, "_fa"))
+        if (auto t = read(name + "_fa", m_night))
+            return t;
+    if (m_night && !str::iendsWith(name, "_ni"))
+        if (auto t = read(name + "_ni", false))
+            return t;
+    return read(name, m_night && !str::iendsWith(name, "_ni"));
+}
 
 void TextureLibrary::clear() {
     for (auto& [name, t] : m_textures)
@@ -109,6 +156,8 @@ const WorldTexture* TextureLibrary::get(std::string_view nameIn) {
     if (nameIn.empty())
         return nullptr;
     const std::string name = str::lower(nameIn);
+    if (auto it = m_adopted.find(name); it != m_adopted.end())
+        return &it->second;
     if (auto it = m_animations.find(name); it != m_animations.end())
         return &it->second.current;
     if (auto it = m_textures.find(name); it != m_textures.end())
