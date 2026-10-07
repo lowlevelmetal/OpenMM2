@@ -871,10 +871,12 @@ private:
             const auto& w = sim.wheels[i];
             auto& wi = in.wheels[i];
             wi.onGround = w.onGround;
-            wi.slip = std::max(std::abs(w.latSlipPercent), std::abs(w.longSlipPercent));
+            // vehWheel's sliding amount (0 while the tyre grips), as
+            // vehSurfaceAudio reads it.
+            wi.slip = w.slide;
             wi.surface = w.material ? audio::game::surfaceSoundIndex(w.material->name, w.material->sound) : 0;
             wi.suspensionSpeed = w.suspensionVelocity;
-            wi.brakeCoef = w.brakeRatio;
+            wi.brakeCoef = w.params.brakeCoef;
         }
         // vehSurfaceAudio::UpdateTireWobble: damage past MedDamage.
         const float damageRange = sim.damage.maxScaled() - sim.damage.medScaled();
