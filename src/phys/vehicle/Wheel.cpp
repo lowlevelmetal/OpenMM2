@@ -16,7 +16,8 @@
 namespace mm2::phys {
 namespace {
 
-// The gravity vehWheel uses for its static loads (_DAT_005c6c1c).
+// The gravity vehWheel uses for its static loads (a global, also used by
+// dgPhysEntity::Update).
 constexpr float kWheelGravity = -19.6f;
 // Probe start above the top of the suspension travel.
 constexpr float kProbeAbove = 0.3f;

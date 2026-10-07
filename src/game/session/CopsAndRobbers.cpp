@@ -85,7 +85,7 @@ float CopsAndRobbers::carrierThrottleCap() const {
 }
 
 Vec3 CopsAndRobbers::randomPoint() {
-    // FUN_00424cd0 (GetRandomPoints' picker): a coin flip between an AI
+    // GetRandomPoints' picker (an unnamed helper): a coin flip between an AI
     // intersection and a row of the pool other than the last.
     const auto& pool = m_locations.points;
     const bool coin = (nextRandom(m_rng) & 1u) != 0;

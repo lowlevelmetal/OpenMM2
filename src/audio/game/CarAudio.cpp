@@ -31,7 +31,7 @@ constexpr float kAmbientSpeedDrop = 4.0f;
 constexpr float kImpactHornChance = 7.5f;
 
 // vehSemiCarAudio's air brake latch is a single global in MM2, shared by
-// every semi (DAT_006b0088).
+// every semi.
 bool g_airBlown = false;
 // vehPoliceCarAudio::s_iNumCopsPursuingPlayer.
 int g_copsPursuingPlayer = 0;

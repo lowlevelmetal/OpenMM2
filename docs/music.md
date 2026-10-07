@@ -98,12 +98,12 @@ commands to `MusicPlayer`.
 | Rule | Evidence |
 |------|----------|
 | The song is a uniformly random row of `singlerace.csv` / `singleroam.csv` | MM2 (`mmGameMusicData::RandomizeNumber`, `mmSingleRaceMusicData::LoadMusic`) |
-| The Start segment begins 1.25 s into the game, on the next beat | MM2 (`mmGame::StartMusic`, `DAT_005c3c20`) |
-| Idle: speed at or below 5 m/s for 5 s; the switch waits for the next measure. The idle timer starts expired, so in cruise (no countdown) a stationary player gets the idle segment at once; the race modes hold the idle logic from the music start until "Go!", which also resets the timer | MM2 (`MatchMusicToPlayerSpeed`, `DAT_005d3a7c` / `DAT_005d3a80` = 5.0; flag +0x50 set by `StartMusic` for races, cleared by `mmSingleCircuit` / `mmSingleBlitz` / `mmMultiRace` at the start) |
+| The Start segment begins 1.25 s into the game, on the next beat | MM2 (`mmGame::StartMusic`) |
+| Idle: speed at or below 5 m/s for 5 s; the switch waits for the next measure. The idle timer starts expired, so in cruise (no countdown) a stationary player gets the idle segment at once; the race modes hold the idle logic from the music start until "Go!", which also resets the timer | MM2 (`MatchMusicToPlayerSpeed`, both constants 5.0; flag +0x50 set by `StartMusic` for races, cleared by `mmSingleCircuit` / `mmSingleBlitz` / `mmMultiRace` at the start) |
 | Leaving idle (above 5 m/s): Idle → Return, IdleCops → CopChase, on the next measure | MM2 (`MatchMusicToPlayerSpeed`) |
 | Stopping during a chase gives IdleCops in races; cruise has no idle-cop segment (the cruise table's column is loaded but its index never set), so the chase music keeps playing | MM2 (`mmSingleRoamMusicData::LoadMusic` leaves +0x30 at -1) |
 | Cop chase: when the pursuing-cop count goes from 0 to exactly 1; Return when it goes from 1 to 0, both on the next beat. Other changes (0 → 2, 2 → 0) switch nothing | MM2 (`UpdateMusic`) |
-| Big Air: when the car becomes airborne (once per jump); the motif plays as a secondary segment with one repeat (twice) from the next beat (flags DMUS_SEGF_SECONDARY, GRID and BEAT; the beat is assumed to win) | MM2 (`UpdateMusic`, `DMusicObject::PlayMotif`, `DAT_005d3a78` = 0x880) |
+| Big Air: when the car becomes airborne (once per jump); the motif plays as a secondary segment with one repeat (twice) from the next beat (flags DMUS_SEGF_SECONDARY, GRID and BEAT; the beat is assumed to win) | MM2 (`UpdateMusic`, `DMusicObject::PlayMotif`, flags 0x880) |
 | Pause: the Pause segment on the next beat; resuming restarts the previous segment from its beginning | MM2 (`mmPopup::PlayPauseMusic`, `PlayReturnMusic`) |
 | Finish: the race modes stop the music at once; the results roster then starts the results segment on the next beat (with an END embellishment, not rendered by dmusic) | MM2 (`mmSingleCircuit` / `mmSingleBlitz` `StopSegment`, `mmPopup::ShowRoster`) |
 | A segment switch to the segment already playing does nothing | MM2 (`DMusicObject::SegmentSwitch`) |

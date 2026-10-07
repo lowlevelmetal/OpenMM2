@@ -22,7 +22,7 @@ const char* modeTable(AnnouncerMode m) {
     }
 }
 
-// mmRaceSpeech::PlayPreRace waits this long (DAT_005d3a84).
+// mmRaceSpeech::PlayPreRace waits this long (a constant it reads).
 constexpr float kPreRaceDelay = 1.5f;
 // PlayUnlockRace / PlayUnlockVehicle.
 constexpr float kUnlockDelay = 0.1f;
@@ -36,9 +36,8 @@ constexpr float kAvoidMaxDistance2 = 2500.0f;
 // AudCreatureImpact::QueuePlay: one impact line a minute across all creatures.
 constexpr float kImpactCooldown = 60.0f;
 
-// The shared creature state: the impact clock (DAT_006b1540) and the last
-// lines chosen (DAT_006b1578 avoidance, DAT_006b1544 impact), which the next
-// pick avoids.
+// The shared creature state (globals in MM2): the impact clock and the last
+// avoidance and impact lines chosen, which the next pick avoids.
 float g_impactClock = 0.0f;
 int g_lastAvoidLine = -1;
 int g_lastImpactLine = -1;

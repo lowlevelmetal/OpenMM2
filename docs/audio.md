@@ -113,7 +113,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 |---|---|
 | Engine: speed bands (inclusive) except the last while holding or gaining speed; the last band (0..500 in every file) while slowing; a drop of more than 4 m/s per update (a crash) decays the pitch from the previous speed by 5% per update; no band → pitch unchanged; the pitch applies one update late | MM2 (`aiAmbientVehicleAudio::UpdateAudio`, `aiEngineAudio::CalculatePitch`, `UpdateDoppler`) |
 | Horn on a near miss: a random pattern, but half the time none; not while a pattern sounds | MM2 (`vehHornAudio::PlayAvoidance`, called by `aiGoalAvoidPlayer`) |
-| Horn after a hit ≥ "min stuck horn impact force": the last pattern (a 3 s blast) one time in four | MM2 (`vehHornAudio::PlayImpact`, `DAT_005cfbc8` = 7.5 of 10) |
+| Horn after a hit ≥ "min stuck horn impact force": the last pattern (a 3 s blast) one time in four | MM2 (`vehHornAudio::PlayImpact`, a constant 7.5 of 10) |
 | Patterns: (play, pause) pairs; a play time of 0 sounds for one update | MM2 (`vehHornAudioTiming::Update`) |
 | Engine/horn files `aud/cardata/ambient/<type>_engine.csv`, plural model names mapped to the singular files (`va_sedans_s` → `va_sedan_s`), else `default_*` | file lookup MM2 (`aiEngineAudio::Load`, `vehHornAudio::Load`); the name mapping **inferred** |
 
@@ -157,7 +157,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 |---|---|
 | Lines are said only when the AI reports a near miss (ambient car honking at the player, pedestrian diving); each eligible block queues one of its lines half of the time, avoiding the line any creature said last; a queued line plays within 50 m, or is dropped after 5 s | MM2 (`AudCreature::PlayAvoidance`, `AudCreatureAvoid::QueuePlay`, `Update`, `Play`) |
 | A block is eligible unless its speed was in range for less than "min time in range" while out of it for more than "max time out of range"; the speed is the player's | MM2 (`AudCreatureAvoid::IsEligible`, `InSpeedRange`; `aiMap` passes the player's speed) |
-| Impact lines: a hit at least "min impact force", the line after its delay, at most once a minute across all creatures (the clock starts at 0, so none in the first minute) | MM2 (`AudCreatureImpact::QueuePlay`, `Update`, `UpdateStatics`; `DAT_005d24c4` = 60) |
+| Impact lines: a hit at least "min impact force", the line after its delay, at most once a minute across all creatures (the clock starts at 0, so none in the first minute) | MM2 (`AudCreatureImpact::QueuePlay`, `Update`, `UpdateStatics`; a constant 60 s) |
 
 ## Not implemented
 
