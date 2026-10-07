@@ -36,6 +36,7 @@
 #include <cstdint>
 #include <functional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace mm2::phys {
@@ -105,6 +106,12 @@ struct RouteParams {
     float stopShort = 0.0f;         // aim this far short of the destination (m)
 };
 
+// aiVehiclePhysics::Init sorts its car into types by name (vppanoz 0,
+// vpford 1, vpmustang99 2, vppanozgt 3, vpsemi 4, vpcaddie 5, vpbug 6,
+// vppolice 7, vpbullet 8, vpbus 9, others none). EnumRoutes lets every type
+// but 3, the Panoz GTR-1 (vppanozgt), go over the sidewalk round an obstacle.
+bool goesOverSidewalks(std::string_view vehicle);
+
 // vehStuck settings MM2 gives AI cars (aiVehiclePhysics::Init: TimeThresh
 // 0.5 s, PosThresh 1 m, no rotation recovery; aiPoliceOfficer::Init raises
 // TimeThresh to 0.75 s for police).
@@ -166,7 +173,7 @@ struct DriveContext {
     bool repairWhenWrecked = false;   // aiVehiclePhysics::Init param_4 (circuits)
     bool touchingPlayer = false;      // collided with the player since the last frame
     int waypointsPassed = 0;          // aiVehiclePhysics 0x967a (other racers are avoided after 3)
-    bool semi = false;                // vpsemi: may not use the sidewalk (aiVehiclePhysics type 3)
+    bool noSidewalk = false;          // never over the sidewalk round an obstacle (goesOverSidewalks)
 };
 
 // aiVehiclePhysics: one AI car's controller.

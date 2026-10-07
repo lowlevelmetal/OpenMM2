@@ -83,12 +83,13 @@ Opponent::~Opponent() {
 std::unique_ptr<Opponent> Opponent::create(const RoadNetwork& net, phys::CarSim& car,
                                            std::span<const city::OpponentPoint> path, std::span<const float> params,
                                            int laps, int selfId, std::string* error,
-                                           const phys::GroundQuery* world) {
+                                           const phys::GroundQuery* world, std::string_view vehicle) {
     auto course = Course::fromOpponentPath(net, path, laps > 0, error);
     if (!course)
         return nullptr;
     OpponentSettings s = OpponentSettings::fromData(params, laps);
     s.world = world;
+    s.noSidewalk = !goesOverSidewalks(vehicle);
     return std::make_unique<Opponent>(car, std::move(*course), s, selfId);
 }
 
@@ -243,7 +244,7 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     ctx.repairWhenWrecked = m_settings.repairWhenWrecked;
     ctx.touchingPlayer = touching;
     ctx.waypointsPassed = waypointsPassed();
-    ctx.semi = m_settings.semi;
+    ctx.noSidewalk = m_settings.noSidewalk;
 
     if (!m_finished && ctx.finalApproach && remaining <= kFinishRadius)
         finish();

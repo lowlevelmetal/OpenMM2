@@ -469,7 +469,7 @@ private:
             if (m_ai) {
                 std::string error;
                 opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
-                                                  1 + static_cast<int>(i), &error, m_world.get());
+                                                  1 + static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
                     opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
                 else

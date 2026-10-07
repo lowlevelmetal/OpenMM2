@@ -224,22 +224,45 @@ struct AiRacer {
     int lapsSeen = 0;
     float lastLapStart = 0.0f;
     float finishTime = -1.0f;
-    float worstOffRoad = 0.0f; // metres beyond the curb
+    // Excursions more than 1 m beyond the sidewalk: those that stay at road
+    // level, and those that drop below a raised road (see beyondCurb).
+    float worstOffRoad = 0.0f; // metres beyond the sidewalk, at road level
     float offRoadSeconds = 0.0f;
     float offRoadFirstLap = 0.0f; // part of offRoadSeconds in excursions that began on the first lap
-    bool offRoad = false, excursionOnFirstLap = false;
+    float belowRoadSeconds = 0.0f;
+    struct Excursion {
+        float seconds = 0.0f, worst = 0.0f;
+        bool onFirstLap = false, dropped = false;
+    } excursion;
+    bool offRoad = false;
     int seenResets = 0, seenBackups = 0;
+
+    void endExcursion() {
+        if (excursion.dropped) {
+            belowRoadSeconds += excursion.seconds;
+        } else {
+            offRoadSeconds += excursion.seconds;
+            if (excursion.onFirstLap)
+                offRoadFirstLap += excursion.seconds;
+            worstOffRoad = std::max(worstOffRoad, excursion.worst);
+        }
+        excursion = {};
+    }
 };
 
 // Distance beyond the course's sidewalks (0 on the road or a sidewalk: MM2's
 // racers take the sidewalk to get round an obstacle, CalcObstacleAvoidPoints
-// accepting points there).
-float beyondCurb(const ai::Opponent& o, const Vec3& pos) {
+// accepting points there). `below` is set when the car is also more than
+// 2.5 m under the road there: it has dropped off a raised road (London's
+// are 5-7 m up without barriers), not driven off at road level.
+float beyondCurb(const ai::Opponent& o, const Vec3& pos, bool* below = nullptr) {
     const ai::Course& c = o.course();
     float lateral = 0.0f;
     const float s = c.locate(pos, o.courseDistance(), 40.0f, &lateral);
     float left, right, leftEdge, rightEdge;
     c.edges(s, left, right, &leftEdge, &rightEdge);
+    if (below)
+        *below = pos.y < c.pointAt(s).y - 2.5f;
     return std::max(0.0f, lateral > 0.0f ? lateral - rightEdge : -lateral - leftEdge);
 }
 
@@ -300,7 +323,7 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
         r.id = id++;
         std::string error;
         r.driver = ai::Opponent::create(net, r.vehicle->sim(), o.path, o.params, setup.laps, r.id, &error,
-                                        cw.world.get());
+                                        cw.world.get(), o.vehicle);
         EXPECT_TRUE(r.driver) << o.pathFile << ": " << error;
         if (!r.driver)
             continue;
@@ -316,7 +339,11 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
         cars.clear();
         bodies.clear();
         for (const auto& r : run.racers) {
-            cars.push_back(track(*r.vehicle, r.id));
+            // Racers are suspects to the police, as RaceScreen flags them (and
+            // so other racers, not ambient traffic, to the planner).
+            ai::TrackedCar t = track(*r.vehicle, r.id);
+            t.suspect = true;
+            cars.push_back(t);
             bodies.push_back(&r.vehicle->sim().body);
         }
         addAmbient(cars, *cw.ai);
@@ -342,23 +369,32 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
                 r.finishTime = run.time;
             if (debugLevel() == 3)
                 printStuck(r, run.time, pos);
+            bool off = false;
             if (!r.driver->finished()) {
-                const float off = beyondCurb(*r.driver, pos);
-                r.worstOffRoad = std::max(r.worstOffRoad, off);
-                if (off > 1.0f) {
-                    if (!r.offRoad)
-                        r.excursionOnFirstLap = r.lapsSeen == 0;
-                    r.offRoadSeconds += kDt;
-                    if (r.excursionOnFirstLap)
-                        r.offRoadFirstLap += kDt;
+                bool below = false;
+                const float beyond = beyondCurb(*r.driver, pos, &below);
+                off = beyond > 1.0f;
+                if (off) {
+                    if (!r.offRoad) {
+                        r.excursion = {};
+                        r.excursion.onFirstLap = r.lapsSeen == 0;
+                    }
+                    r.excursion.seconds += kDt;
+                    r.excursion.worst = std::max(r.excursion.worst, beyond);
+                    r.excursion.dropped = r.excursion.dropped || below;
                 }
-                r.offRoad = off > 1.0f;
             }
+            if (r.offRoad && !off)
+                r.endExcursion();
+            r.offRoad = off;
             allDone = allDone && r.driver->finished() && r.vehicle->sim().speed() < 1.0f;
         }
         if (allDone)
             break;
     }
+    for (auto& r : run.racers)
+        if (r.offRoad)
+            r.endExcursion();
     return run;
 }
 
@@ -368,9 +404,10 @@ void report(const char* title, const RaceRun& run) {
         std::printf("  car %d %-9s laps", r.id, r.vehicle->model().baseName.c_str());
         for (float t : r.lapTimes)
             std::printf(" %.1f", t);
-        std::printf("  finish %.1f s  line %.0f m  beyond sidewalk worst %.1f m (%.1f s)  backups %d resets %d\n",
+        std::printf("  finish %.1f s  line %.0f m  beyond sidewalk worst %.1f m (%.1f s)  "
+                    "below a raised road %.1f s  backups %d resets %d\n",
                     r.finishTime, r.driver->course().raceDistance(1), r.worstOffRoad, r.offRoadSeconds,
-                    r.driver->backups(), r.driver->resets());
+                    r.belowRoadSeconds, r.driver->backups(), r.driver->resets());
     }
 }
 
@@ -453,7 +490,15 @@ TEST(OpponentRace, LondonCircuitLaps) {
 }
 
 // race1's opponents steer round ambient traffic ([Opponent] avoid flags
-// 1 1 0 0; race0's, with 0 0 0 0, plough through it as in MM2).
+// 1 1 0 0; race0's, with 0 0 0 0, plough through it as in MM2), keeping to
+// the road and its sidewalks at road level. Its two vpcab racers (MaxThrottle
+// 0.75) may drop off the raised road east of the course (paths 404 on): MM2's
+// engine gives a cab at 0.75 throttle no torque above ~7580 rpm, under its
+// 7650 rpm 1-2 upshift (vehEngine::CalcTorque, vehTransmission::
+// ComputeConstants), so it runs at 11.6 m/s in first gear until a bump gets
+// it into second, and then at up to 37 m/s in third; MM2's Forward pulls the
+// handbrake above 30 m/s at full lock, and ambient cars turn solid when
+// touched. That is counted apart (belowRoadSeconds); they still finish.
 TEST(OpponentRace, LondonRaceThroughTraffic) {
     MM2_REQUIRE_GAME_DATA();
     const vfs::Vfs& vfs = *test::gameData();

@@ -31,6 +31,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <string_view>
 
 namespace mm2::phys {
 class CarSim;
@@ -49,8 +50,9 @@ struct OpponentSettings {
     // aiVehiclePhysics::Init param_4 (game mode 3, circuits): a wrecked car
     // is repaired after 5 s; elsewhere it stays wrecked.
     bool repairWhenWrecked = false;
-    // vpsemi: never takes the sidewalk round an obstacle.
-    bool semi = false;
+    // Never takes the sidewalk round an obstacle (vppanozgt; see
+    // goesOverSidewalks).
+    bool noSidewalk = false;
     // OpenMM2: top speed for scripted cars (m/s, 0 = none); not in MM2.
     float speedLimit = 0.0f;
     // OpenMM2 recovery (not in MM2): no progress for this long puts the car
@@ -90,11 +92,13 @@ public:
     Opponent& operator=(const Opponent&) = delete;
 
     // From the session's OpponentSetup: .opp rows and aimap numbers.
-    // `world` is OpponentSettings::world.
+    // `world` is OpponentSettings::world; `vehicle` the car's name
+    // (aiVehiclePhysics::Init's type, see goesOverSidewalks).
     static std::unique_ptr<Opponent> create(const RoadNetwork& net, phys::CarSim& car,
                                             std::span<const city::OpponentPoint> path, std::span<const float> params,
                                             int laps, int selfId, std::string* error = nullptr,
-                                            const phys::GroundQuery* world = nullptr);
+                                            const phys::GroundQuery* world = nullptr,
+                                            std::string_view vehicle = {});
 
     // Call after placing the car on its grid spot (aiRouteRacer::Reset).
     void reset();

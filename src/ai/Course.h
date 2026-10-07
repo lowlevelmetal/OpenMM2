@@ -61,6 +61,10 @@ struct CoursePoint {
     int lanes = 1;           // most lanes on one side of that road
     std::uint16_t flags = 0; // aiPath flags of that road: 0x1 divided (the centre is a curb), 0x2 alley
     Vec3 across;             // unit right of travel in the road section's frame (zero off the roads)
+    // aiPath::IsPosOnRoad: a point this close to the line (either side) is
+    // on the road, this close on the sidewalk (see pathOnRoadLimits).
+    float onRoad = 5.0f;
+    float onSidewalk = 9.0f;
 };
 
 class Course {
@@ -103,6 +107,8 @@ public:
     // Road edges at `s` (distances from the line to the left and right curb,
     // and optionally to the outer edges beyond the sidewalks).
     void edges(float s, float& left, float& right, float* leftEdge = nullptr, float* rightEdge = nullptr) const;
+    // aiPath::IsPosOnRoad's limits at `s` (CoursePoint::onRoad, onSidewalk).
+    void onRoadLimits(float s, float& road, float& sidewalk) const;
     // Narrowest edges over [s, s + distance] (merge in before the road narrows).
     void edgesAhead(float s, float distance, float& left, float& right) const;
     int lanesAt(float s) const;
@@ -168,5 +174,17 @@ RoadSpot locateOnRoads(const RoadNetwork& net, const Vec3& p);
 void pathCurbs(const city::AiPath& path, std::size_t k, float& left, float& right);
 // And to the outer edges beyond the sidewalks (at least the curbs).
 void pathOuterEdges(const city::AiPath& path, std::size_t k, float& left, float& right);
+// aiPath::IsPosOnRoad's limits for a road: a point is on the road while its
+// distance from the centre line is under `road`, on the sidewalk under
+// `sidewalk` (each less a margin the caller takes off). MM2 reads them from
+// the right side's lateral layout (AiRoadSide::params, the boundaries of its
+// lanes and sidewalk in turn): with n lanes, road = params[2n - 1] and
+// sidewalk = params[2n + 1], for both sides of the road. A side without
+// lanes (nine one-way SF alleys) has no road part (MM2 reads the word
+// before the layout there, a pointer: a denormal float) and its sidewalk
+// ends at params[1]. Layouts that are missing or implausible (none in the
+// retail maps; hand-built test maps) fall back to the curbs and the outer
+// edges at the middle section.
+void pathOnRoadLimits(const city::AiPath& path, float& road, float& sidewalk);
 
 } // namespace mm2::ai

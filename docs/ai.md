@@ -285,7 +285,8 @@ chord, where MM2 fits a turn circle (`CalcTurnIntersection`,
 | Route points (`CalcRoadTarget`): the farthest point of the road reachable in a straight line between the curbs, each moved in by the car's side distance + 1 m; when the road bends, the curb point at the inside of the bend; on a straight, at the look-ahead distance, keeping the car's place across the road. Points are chained (`EnumRoutes`/`ContinueCheck`) until the look-ahead is covered, 1 m above the road | MM2 (the end of an unbent walk: a point within the window of directions, **inferred** detail) |
 | Divided roads (`aiPath` flag 0x1, ten SF roads): the centre line is a curb on the car's side | MM2 |
 | Obstacles (`IsTargetBlocked`, `aiVehicle::IsBlockingTarget`): a vehicle whose box corner lies ahead within the way + 2 car lengths, within half the car's width + 1 m and 0.7 rad of the way; the nearest. Classes by the aimap flags; police cars are no obstacle; other racers only after the third waypoint of a lap | MM2 (props not modelled) |
-| Going round (`CalcObstacleAvoidPoints`, `aiVehicle::PreAvoid`, `EnumTargets`): the box corners pushed out by the side distance + 2 m; the leftmost and rightmost each start a route if within 1.57 rad of the road and on the road or the sidewalk (not for semis); a further vehicle in the way is passed on the same side (ten deep); no way round keeps the point, marked | MM2 (the recursion's special cases simplified) |
+| Going round (`CalcObstacleAvoidPoints`, `aiVehicle::PreAvoid`, `EnumTargets`): the box corners pushed out by the side distance + 2 m; the leftmost and rightmost each start a route if within 1.57 rad of the road and on the road or the sidewalk (never the sidewalk for `vppanozgt`, `aiVehiclePhysics::Init`'s type 3 of its ten named cars); a further vehicle in the way is passed on the same side (ten deep); no way round keeps the point, marked | MM2 (the recursion's special cases simplified) |
+| On the road (`aiPath::IsPosOnRoad`, margin the car's side distance): the road's right side layout (`.bai` side params, lane and sidewalk boundaries in turn) gives, with n lanes, the road to params[2n − 1] from the centre line and the sidewalk to params[2n + 1], on both sides; a side without lanes (nine one-way SF alleys) has no road part. The road part ends inside the curb on 325 of 540 London paths (lanes to 5 m, curb at 6 m, typically); the sidewalk ends at the outer edge on all but 24 London and 3 SF paths | MM2; asked of the course's road at the point, where MM2 asks the road the obstacle is on (if it is one of the car's next three, else no point) **inferred** |
 | Best route (`DetermineBestRoute`): least total turning; first among routes over the sidewalk when preferred, then among those with a way round every obstacle | MM2 |
 | Corner speed at the first route point (`CalcSpeed`): bend angle a > 0.7 rad → v = sqrt(10 tan((3.14 − a)/2) × 23.76) × factor; brake = (speed − v) / (t × 23.76), t = distance / speed; braking when it exceeds the threshold: brakes clamp(brake), throttle 0, yaw momentum × 0.85 | MM2 |
 | Road bends (`CalcRoadSpeed`): turns over 0.7 rad within their set-back + the look-ahead; r = R / (1 − sin((3.14 − d)/2)), v = sqrt(23.76 r) × factor, halved into an alley (`aiPath` flag 0x2); turns already entered are not braked for | MM2 formula; R (room to the inside curb) and the merged turns of the course **inferred** (MM2: `CalcTurnIntersection`, `aiPath::SharpTurnRadius`) |
@@ -333,24 +334,41 @@ earlier `BrakeMeter` fitted to the old physics is gone.
 
 ### Evidence (retail data, `test_game`, physics as of this commit)
 
-* London circuit0, amateur, 7 opponents, 3 laps: all finish in 49–61 s;
-  flying laps 13.6–23 s on a 412–449 m line; the field hugs the inside of
+* London circuit0, amateur, 7 opponents, 3 laps: all finish in 48–53 s;
+  flying laps 13–15 s on a 412–449 m line; the field hugs the inside of
   the loop; no resets.
 * London race1 with full ambient traffic (whose racers steer round
-  traffic): all 6 finish in 77–108 s over 2.0 km, using the sidewalk to get
-  round cars, none beyond it.
+  traffic): the four vpcoop racers (MaxThrottle 0.78–0.8) finish in
+  83–106 s over 2.0 km, using the sidewalk to get round cars, none more
+  than 1.4 m beyond it. The two vpcab racers (0.75) finish in 137–207 s.
+  With MM2's engine and gearbox (`vehEngine::CalcTorque` mixes full- and
+  zero-throttle torque by the throttle; `vehTransmission::ComputeConstants`)
+  a cab at 0.75 throttle has no net torque above about 7580 rpm, while its
+  wide-ratio three-speed box upshifts from first at 7650 rpm: it runs at
+  11.6 m/s in first gear until a bump gets it into second, then at up to
+  37 m/s in third. Both drop off the raised road east of the course
+  (`aiPath` 404 on, 5–7 m up, no barriers): one spins into the narrow
+  road's mouth at 35 m/s (no braking for its 0.5 rad bend, under
+  `CalcRoadSpeed`'s 0.7; `Forward` pulls the handbrake above 30 m/s at
+  full lock), the other is thrown 4 m up by an ambient car it hits at
+  11 m/s. They drive on below until they can climb back; the test counts
+  that apart from leaving the road at road level. The run depends on the
+  physics' shared random stream (MM2's `rand`), so it differs after
+  another race in the same process.
 * A car put nose-first against a wall: backs up (vehStuck → `Backup`) and
-  is 150 m along its line after 13 s.
+  is 150 m along its line after 14.4 s.
 * A player-flagged car driven past a parked London cop at 13 m/s (lawful):
-  pursued from 6.7 s (in view within 75 m), followed to within 15 m once
-  it slows; at 15 m/s the nearest cop apprehends and blocks it. A suspect
-  70 m behind the cop is not pursued; one moved beyond the chase distance
-  escapes (siren off, the cop stops).
+  pursued once in view within 75 m (22 s into the run, the scripted car
+  being slow to get there), followed to within 15 m once it slows; at
+  15 m/s the nearest cop apprehends and blocks it. A suspect 70 m behind
+  the cop is not pursued; one moved beyond the chase distance escapes
+  (siren off, the cop stops).
 * Sweep of every circuit and checkpoint race, both cities and
   difficulties, one lap, all opponents (`OPENMM2_AI_SWEEP=1`): 498 of 517
-  opponents finish (488 with the MM1 port). The rest are wrecked
-  (point-to-point opponents stay wrecked, as in MM2), mostly SF race11 (a
-  crash at about 47 m/s) and race8.
+  opponents finish (488 with the MM1 port; 498 also on the earlier
+  physics). The rest are wrecked (point-to-point opponents stay wrecked, as
+  in MM2): SF race11 (all twelve, on its 8 km line), race8 (six) and race2
+  professional (one).
 
 `OPENMM2_AI_TRAILS=<dir>` writes top-down plots of these runs (see the
 header of `tests/game/test_opponent_race.cpp`).

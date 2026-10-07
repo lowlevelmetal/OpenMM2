@@ -117,6 +117,31 @@ void pathOuterEdges(const city::AiPath& path, std::size_t k, float& left, float&
     right = std::max(curbR, curbOffset(path.right, path.center[k], x, curbR, true));
 }
 
+void pathOnRoadLimits(const city::AiPath& path, float& road, float& sidewalk) {
+    const auto& layout = path.right.params;
+    const int n = path.right.numLanes;
+    auto plausible = [](float v) { return std::isfinite(v) && v >= 0.0f && v < 100.0f; };
+    if (n == 0 && plausible(layout[1])) {
+        road = 0.0f;
+        sidewalk = layout[1];
+        return;
+    }
+    const auto roadAt = static_cast<std::size_t>(2 * n - 1);
+    const auto walkAt = static_cast<std::size_t>(2 * n + 1);
+    if (n > 0 && walkAt < layout.size() && plausible(layout[roadAt]) && plausible(layout[walkAt]) &&
+        layout[roadAt] > 0.0f && layout[roadAt] <= layout[walkAt]) {
+        road = layout[roadAt];
+        sidewalk = layout[walkAt];
+        return;
+    }
+    const std::size_t k = path.center.size() / 2;
+    float l, r, el, er;
+    pathCurbs(path, k, l, r);
+    pathOuterEdges(path, k, el, er);
+    road = std::min(l, r);
+    sidewalk = std::max(el, er);
+}
+
 int nearestIntersection(const RoadNetwork& net, const Vec3& p, float* distance) {
     int best = -1;
     float bestD = std::numeric_limits<float>::max();
@@ -404,6 +429,7 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
         cp.path = pathIndex;
         cp.lanes = lanesOf(src);
         cp.flags = src.flags;
+        pathOnRoadLimits(src, cp.onRoad, cp.onSidewalk);
         // The section's x axis points to the left of travel in increasing
         // section order.
         if (sec < src.xAxis.size())
@@ -464,6 +490,8 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
         c.m_points.front().leftEdge = c.m_points[1].leftEdge;
         c.m_points.front().rightEdge = c.m_points[1].rightEdge;
         c.m_points.front().flags = c.m_points[1].flags;
+        c.m_points.front().onRoad = c.m_points[1].onRoad;
+        c.m_points.front().onSidewalk = c.m_points[1].onSidewalk;
     }
     if (pts.size() == 1) {
         pts.push_back(pts.front() + Vec3{0, 0, -1});
@@ -564,6 +592,7 @@ std::optional<Course> Course::alongRoad(const RoadNetwork& net, const Vec3& star
         cp.path = a.path;
         cp.lanes = lanesOf(src);
         cp.flags = src.flags;
+        pathOnRoadLimits(src, cp.onRoad, cp.onSidewalk);
         if (sec < src.xAxis.size())
             cp.across = flatUnit(src.xAxis[sec]) * (forward ? -1.0f : 1.0f);
         return cp;
@@ -657,6 +686,20 @@ void Course::edges(float s, float& left, float& right, float* leftEdge, float* r
         *leftEdge = lerp(m_points[i].leftEdge, m_points[i + 1].leftEdge, t);
     if (rightEdge)
         *rightEdge = lerp(m_points[i].rightEdge, m_points[i + 1].rightEdge, t);
+}
+
+void Course::onRoadLimits(float s, float& road, float& sidewalk) const {
+    s = wrap(s);
+    if (m_points.size() < 2) {
+        road = m_points.empty() ? 5.0f : m_points[0].onRoad;
+        sidewalk = m_points.empty() ? 9.0f : m_points[0].onSidewalk;
+        return;
+    }
+    const std::size_t i = segmentAt(s);
+    const float seg = m_line.distances[i + 1] - m_line.distances[i];
+    const float t = seg > 1e-6f ? clampf((s - m_line.distances[i]) / seg, 0.0f, 1.0f) : 0.0f;
+    road = lerp(m_points[i].onRoad, m_points[i + 1].onRoad, t);
+    sidewalk = lerp(m_points[i].onSidewalk, m_points[i + 1].onSidewalk, t);
 }
 
 std::size_t Course::vertexCount() const {
