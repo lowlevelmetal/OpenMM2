@@ -16,7 +16,7 @@ namespace mm2::game::session {
 
 // A race opponent: car, driving line (race/<dir>/<race>-a|p-<n>.opp) and
 // starting place. `params` are the remaining numbers of its [Opponent] line
-// in the race's .aimap (meaning partly unknown; see docs/gamemodes.md).
+// in the race's .aimap (ai::OpponentSettings::fromData, docs/ai.md).
 struct OpponentSetup {
     std::string vehicle;
     std::string pathFile; // virtual path

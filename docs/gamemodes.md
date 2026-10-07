@@ -73,7 +73,8 @@ each frame (dt):
   than 50 m in one update (respawns) are not tested.
 * **Start**: the first waypoint, facing its heading. The driving direction
   of heading h is `(sin h, 0, -cos h)` (verified against every race's first
-  two waypoints). Opponents start at the first point of their `.opp` line.
+  two waypoints). Opponents start at the first point of their `.opp` line,
+  facing its heading (MM2 `aiRouteRacer::Init`, see docs/ai.md).
 * **Winning** (`ProgressCheck`): within `MustPlace` (3, `tune/<city>.cinfo`)
   for amateurs, first place for professionals.
 * **Score** (`CalculateRaceScore`): 50 / 25 / 10 points for 1st / 2nd / 3rd,

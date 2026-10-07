@@ -8,9 +8,11 @@ pedestrians. Opponents and police (phase 2) will drive physics cars through
 Sources: MM1's AI from Open1560 (`code/midtown/mmai/*.h` for class layouts,
 `code/midtown/game.asm` for the routines it has not rewritten; GPL-3.0), the
 retail MM2 data, and mm2hook's MM2 `aiPath` layout (documentation only).
-Nothing comes from the MM2 executable.
+The opponents and police (last section) follow MM2's own code (build 3393
+through MM2Recomp, documentation only, function names from its linker map).
 
-Evidence levels: **ported** = translated from MM1's code with its constants;
+Evidence levels: **MM2** = verified against MM2's code (the function is
+named); **ported** = translated from MM1's code with its constants;
 **data** = verified on the retail files; **inferred** = reasoned, to be
 checked against the original game.
 
@@ -189,8 +191,9 @@ world->traffic().impact(carId, impulse);
 
 Opponents and police are full physics cars in both games. The drivers
 (`ai::Opponent`, `ai::PoliceCar`, below) write a `phys::CarSim`'s inputs
-directly, as MM1's AI wrote `mmCarSim::Steering` / `Brakes` /
-`Engine.Throttle`, so they obey exactly the player's car simulation.
+directly, as MM2's aiVehiclePhysics writes vehCarSim Steering / Brakes /
+HandBrake / Engine Throttle, so they obey exactly the player's car
+simulation.
 `ai/VehicleControl.h` (an earlier proposal) is not used by them.
 
 ## Verification
@@ -219,109 +222,141 @@ and ends.
 
 ## Opponents and police (phase 2)
 
-Code: `ai/Course` (driving lines), `ai/Driving` (shared goals),
-`ai/Opponent`, `ai/Police`. Ported from MM1 (Open1560 `code/midtown/mmai`
-and `game.asm`, GPL-3.0, Copyright (C) 2020 Brick); constants are decoded
-from the x87 code where named. Everything not listed as ported is an
-OpenMM2 reconstruction (**inferred**).
+Code: `ai/Course` (the roads a car drives), `ai/Driving` (MM2's
+`aiVehiclePhysics`, the controller both share: `PhysicsDriver`),
+`ai/Opponent` (`aiRouteRacer`), `ai/Police` (`aiPoliceOfficer`,
+`aiPoliceForce`). Ported from MM2 build 3393 (MM2Recomp, documentation
+only); where OpenMM2 still reconstructs, the table says **inferred**.
+
+MM2 plans on its `aiPath` road segments, three at a time (the road the car
+is on and the next two of its waypoint list), with vertex indices and
+per-road sharp-turn circles. OpenMM2 plans the same way on an `ai::Course`:
+the same roads joined into one line, with the curbs, sidewalk edges, road
+section frames and `aiPath` flags along it. Intersections are crossed by a
+chord, where MM2 fits a turn circle (`CalcTurnIntersection`,
+`CalcSharpTurnTarget`; **not ported**).
 
 ### Data
 
-* `race/<city>/<race>-<a|p>-<n>.opp`: row 0 is the car's grid place; the
-  other rows lie on AI-map intersections (0–12 m from a centre on every
-  London and SF file), and consecutive ones are joined by a single road in
-  94 % (London) / 89 % (SF) of the pairs, i.e. MM1's waypoint lists. The
-  last row is the finish line when it is not on an intersection (circuits:
-  on the start road, ahead of the staggered grid). The car starts on the
-  road from row 1 to row 2 (MM1 `aiGoalFollowWayPts::Reset` starts at the
-  first waypoint equal to the intersection the car is heading for).
-* `.aimap [Opponent]`: `car path.opp 0.86 0 50.0 0.7 1 1 1 1 0 1.0`. The
-  first number is read as MM1's `MaxThrottle` (0.84–1.0, amateur lower than
-  professional; **inferred**); the rest are unused.
-* `.aimap [Police]` (MM2 layout, the header comment is MM1's): `vpcop x y z
-  heading 0 15 0.5 50`. Only the position and heading are used; the four
-  numbers are unknown (the first is 0 everywhere, read as "parked").
+* `race/<city>/<race>-<a|p>-<n>.opp` (`aiRouteRacer::Init`; **MM2**): after
+  the header line, row 0 is the car's grid place, its fourth number the
+  heading in degrees (reset heading = value × 0.017444445, i.e. 3.14 / 180,
+  in `Mat34::rotationY`'s sense; checked against the races' start
+  headings); the last row is the destination; every row between is a
+  waypoint, the intersection whose room holds it. Circuits drive the
+  waypoints `laps` times (`PlanRoute` starts every new lap at waypoint 1).
+* `.aimap [Opponent]` (`aiRaceData::aiRaceData`, `"%s %s %f %d %f %f %d
+  %d %d %d %d %f"`; **MM2**), e.g. `vpcoop circuit0-a-0.opp 0.86 0 50.0 0.7
+  1 1 1 1 0 1.0`: car, path, then `RegisterRoute`'s settings
+  (`OpponentSettings::fromData`):
 
-### Driving line (`Course`)
+  | # | Meaning | Retail values |
+  |---|---|---|
+  | 1 | MaxThrottle, written to the car every frame | 0.75 – 1.0 |
+  | 2 | a flag `RegisterRoute` stores and never reads | 0 |
+  | 3 | look-ahead: the route is planned this far (m) | 50, 99, 101, 150 |
+  | 4 | brake threshold (brake when the demand exceeds it) | 0.07 – 1.0, mostly 0.68 – 0.7 |
+  | 5 | steer round ambient traffic | 0 / 1 |
+  | 6 | steer round props (unbreakable ones; not modelled) | 0 / 1 |
+  | 7 | steer round the players | 0 / 1 |
+  | 8 | steer round other racers (after the third waypoint of a lap) | 0 / 1 |
+  | 9 | prefer routes over the sidewalk | 0 |
+  | 10 | corner speed factor | 0.89 – 2.29 (professional races higher) |
 
-The waypoint intersections are joined by their roads (centre lines, with
-the curbs of each section as the edges); across intersections the line is a
-chord. Gaps between non-adjacent waypoints are filled with the shortest
-route that avoids roads the line uses elsewhere (otherwise SF circuit7
-doubles back along its next road); a start or finish off the waypoint roads
-is joined along its own road (**inferred**: MM1's `LocateWayPtFromRoad` is
-not decoded). Bends closer than 25 m (within 40 m) are merged into turns.
+  Defaults when missing: 1.0, 0, 50, 0.7, 1, 1, 1, 1, 0, 1.0.
+* `.aimap [Police]` (**MM2**): `car x y z heading n behaviours chance
+  range`: `heading` in degrees (× −0.017444445), `n` unused, `behaviours`
+  bits of apprehend behaviours (15 everywhere; 0 = follow only), `chance`
+  of pursuing an opponent (0, 0.5 or 1), `range` the player must be within
+  for that (50, 70, 100). Defaults 0, 15, 0.5, 50.
+* `.aimap [CopChaseDistance]` (only `sf/crash5`: 150): where a suspect
+  escapes; default 250 m (**MM2**).
+* MM2 builds every AI car with its base tune (`aiVehiclePhysics::Init` →
+  `vehCar::Init(<car>)`); the retail `*_opp` / `*_cop` tunes are MM1
+  leftovers (**MM2**).
 
-### Opponent (`aiVehicleOpponent`)
-
-| Behaviour | Status |
-|---|---|
-| Goals: FollowWayPts, then Stop once finished, Backup while backing up | ported |
-| Steering = clamp(atan2(d·m0, d·−m2), −1, 1) towards the target point | ported |
-| Realism 0 unless the car hit the player; yaw momentum × 0.1 when within 0.1 rad of the target | ported (per-frame factors scaled by 30·dt as Open1560 does; full realism for 2 s after touching the player is **inferred**) |
-| Damage: wrecked → no inputs, momentum × 0.95; circuits repair after 5 s | ported |
-| Laps: loop the waypoints, then stop within 10 m of the last row (`PlanRoute`, flt_61BC94) | ported |
-| `CalcSpeed`: for the next turn of deflection d (or the one after when \|d\| ≤ 0.5): R = max(W − sign·side, 0.5), r = R / (1 − sin((π − \|d\|)/2)), vmax = √(23.76 r), braking from r·cos(h) before it; brake only when (v − vmax)/(a·T) > 0.7, then angular momentum × 0.85; else MaxThrottle | ported; `a` is the car's measured braking deceleration instead of 23.76 (**inferred**, see below); full brake when already inside a turn too fast and W = narrowest road around the turn are **inferred** |
-| Target point TargetPtOffset ahead (7–20 m, flt_61B26C/70), at DistToSide across | ported limits; speed term 7 + v²·0.488/23.76 **inferred** |
-| DistToSide = the car's place across the road, inside the curbs less half width + 1.5 m | ported idea (DetermineOppMapComponent not decoded); looking ahead for narrowing roads **inferred** |
-| Obstacles: blocked lateral ranges of cars ahead → nearest free gap, else follow (`DetectCollision`/`AvoidCollision`/`AddToBlockedRange`; skipped for vpsemi) | structure ported, details **inferred**; a stopped car is crept up to and nudged |
-| `aiStuck` (0.3 s, 0.6 m, 1.0 m, 1.0 rad/s; Pegged = throttle > ¾ MaxThrottle, \|steer\| < 0.5) → full lock + throttle | ported |
-| vehStuck fires → `aiGoalBackup`: reverse with steering −angle·20/7, throttle clamp(\|angle\|, 0.1, 0.85) for 3 s (5 s above 2 m/s), then brake to < 2 m/s | ported (aims at the line 8 m ahead instead of the nearest path vertex) |
-| No progress for 10 s, or fallen 15 m below the line → put back on the line, further along each time it recurs, clear of cars and walls | **inferred** (OpenMM2 recovery) |
-| Target behind a wall or median → pulled closer (needs `settings.world`) | **inferred** |
-| Rubber-banding | none: MM1 has no code that scales opponents by position |
-
-**Braking capability.** MM1's CalcSpeed assumes every car can lose
-23.76 m/s². The opponents' `*_opp.vehCarSim` tunes (MM1-format files) brake
-at about 11 m/s² in this physics (vpcoop_opp: 30→1 m/s in about 2.7 s),
-so `BrakeMeter` measures what the car achieves under braking (starting from
-a cautious 6 m/s²) and CalcSpeed uses that. Until the drivetrain fix in
-`docs/physics.md` ("Wheel spin and the stiff `*_opp` tyres") these tunes
-braked and launched several times more weakly; the meter adapted then and
-adapts to any later physics change.
-
-### Police (`aiVehiclePolice`, `aiGoalChase`, `aiPoliceForce`)
+### The controller (`PhysicsDriver`, `aiVehiclePhysics`)
 
 | Behaviour | Status |
 |---|---|
-| A suspect within 75 m (sym_63A3C8 = 75²), not a cop: hit me → chase; else if in view (±90°, line of sight 3.5 m above both cars) and speeding (> 70 mph when the cop's road has 4 lanes a side, else > 40 mph), collided this frame, or off the road → chase. The player is checked before the opponents | ported (`Context`, `Fov`, `Speeding`, `Collision`, `OffRoad` meaning **inferred**; "4 lanes" read per side) |
-| MM1 also chases a stopped player in view | ported but off by default (`chaseStoppedPlayer`) — not confirmed for MM2 |
-| `aiPoliceForce`: ≤ 3 cops per suspect, ≤ 3 suspects; State 3 (close in) for the nearest pursuer within 25 m, else 4 | ported |
-| Follow at the suspect's speed, +10 m/s beyond 20 m; CopSpeedBoost 1.01 (throttle 1, < 50 m/s), CopSteerBoost1 0.5 (\|angle\| < 0.05), CopBrakeBoost 0.95 per 30 Hz frame | ported |
-| Wrecked cop gives up | ported |
-| Parked at the post until a suspect appears; road route (shortest path, replanned every 1.5 s) while far; straight at the suspect when within 40 m and in sight; the closing-in cop rams; escape beyond 150 m or after 5 s out of sight; then drive back and park | **inferred** (the 1000-line chase update, its Push/Block/Barricade behaviours and MM2's police numbers are not decoded) |
-| Siren while chasing | ported (MM1 starts it with the chase) |
-| Cruise cop density: round(count × density) posts, evenly spaced | **inferred** |
+| States Forward, Backup, Shortcut (off the roads: straight for the next waypoint), Stop (brake, steer for the destination) (`DriveRoute`) | MM2; Shortcut's trigger (more than 10 m beyond the curb) **inferred** |
+| Steering = clamp(heading error × 1.33 × 1.428, ±1); handbrake over 30 m/s when that exceeds full lock (`Forward`) | MM2 |
+| Target = the first point of the best planned route (`SolveRoadTargetPoint`) | MM2 |
+| Route points (`CalcRoadTarget`): the farthest point of the road reachable in a straight line between the curbs, each moved in by the car's side distance + 1 m; when the road bends, the curb point at the inside of the bend; on a straight, at the look-ahead distance, keeping the car's place across the road. Points are chained (`EnumRoutes`/`ContinueCheck`) until the look-ahead is covered, 1 m above the road | MM2 (the end of an unbent walk: a point within the window of directions, **inferred** detail) |
+| Divided roads (`aiPath` flag 0x1, ten SF roads): the centre line is a curb on the car's side | MM2 |
+| Obstacles (`IsTargetBlocked`, `aiVehicle::IsBlockingTarget`): a vehicle whose box corner lies ahead within the way + 2 car lengths, within half the car's width + 1 m and 0.7 rad of the way; the nearest. Classes by the aimap flags; police cars are no obstacle; other racers only after the third waypoint of a lap | MM2 (props not modelled) |
+| Going round (`CalcObstacleAvoidPoints`, `aiVehicle::PreAvoid`, `EnumTargets`): the box corners pushed out by the side distance + 2 m; the leftmost and rightmost each start a route if within 1.57 rad of the road and on the road or the sidewalk (not for semis); a further vehicle in the way is passed on the same side (ten deep); no way round keeps the point, marked | MM2 (the recursion's special cases simplified) |
+| Best route (`DetermineBestRoute`): least total turning; first among routes over the sidewalk when preferred, then among those with a way round every obstacle | MM2 |
+| Corner speed at the first route point (`CalcSpeed`): bend angle a > 0.7 rad → v = sqrt(10 tan((3.14 − a)/2) × 23.76) × factor; brake = (speed − v) / (t × 23.76), t = distance / speed; braking when it exceeds the threshold: brakes clamp(brake), throttle 0, yaw momentum × 0.85 | MM2 |
+| Road bends (`CalcRoadSpeed`): turns over 0.7 rad within their set-back + the look-ahead; r = R / (1 − sin((3.14 − d)/2)), v = sqrt(23.76 r) × factor, halved into an alley (`aiPath` flag 0x2); turns already entered are not braked for | MM2 formula; R (room to the inside curb) and the merged turns of the course **inferred** (MM2: `CalcTurnIntersection`, `aiPath::SharpTurnRadius`) |
+| Destination (`CalcRoadSpeed`, final approach within 70.7 m): brake to the destination speed at the destination less the stop distance when the demand exceeds 0.014 × distance; within 2.5 m with speed 0 wanted, brakes full on | MM2 |
+| Past the destination within 25 m heading its way: brake, steer away (`Forward`) | MM2 |
+| Throttle otherwise = MaxThrottle | MM2 |
+| CarFrictionHandling 2 while touching the player, else 1 (`Forward`; the 0x8000 instance flag set by `dgPhysManager::CollideInstances`) | MM2 (MM1 switched Realism instead; MM2 has none) |
+| vehStuck tuned for AI: TimeThresh 0.5 s (police 0.75), PosThresh 1 m, no rotation recovery (`aiVehiclePhysics::Init`, `aiPoliceOfficer::Init`) | MM2 |
+| `aiStuck` (0.3 s, 0.6 m, 1.0 m, 1 rad/s): watches from when vehStuck starts watching; stuck and pegged → steering 1, throttle 1, vehStuck cleared | MM2 |
+| vehStuck stuck → Backup with momenta cleared (`Forward`); Backup (`Backup`): reverse at throttle 0.85, steering −2.857 × angle, until within 0.1 rad of the target (then turned onto it) or 65 frames; `FinishedBackingUp`: momenta × 0.25, brakes on, forward | MM2 (65 frames = 66/30 s) |
+| Wrecked: no inputs, momentum × 0.95 a frame; circuits repair after 5 s (`DriveRoute`) | MM2 |
+| Per-frame factors scaled to the frame time as for 30 Hz | **inferred** (MM2 ran the AI every frame) |
 
-### Evidence (retail data, `test_game`)
+The braking deceleration is MM2's 23.76 m/s² (1.2 × 19.8) throughout; the
+earlier `BrakeMeter` fitted to the old physics is gone.
 
-* London circuit0, amateur, 7 opponents, 3 laps: all finish in 44–50 s;
-  first laps 18–20 s from the grid, flying laps 12.2–15.5 s on a 412–449 m
-  line (27–35 m/s), no resets. The field reaches the first bend together:
-  car 7, three abreast with cars 5 and 6 at 25–30 m/s, rides up on car 5 and
-  runs up to 22 m wide for 4.7 s before rejoining (a first-lap racing
-  incident, tolerated by the test); otherwise no car is more than 1 m beyond
-  a curb for longer than 2 s.
-* London race0 with full ambient traffic (solid traffic bodies): all 4
-  finish in 34–37 s over 945–973 m, no backups or resets.
-* A car put nose-first against a wall: backs up after 3.2 s, is put back on
-  its line at 10 s, and is 150 m along it at 30 s.
-* A player-tuned car passing a parked London cop at up to 26 m/s: the chase
-  starts at 5.5 s (reason: speeding); the suspect slows to 8 m/s at 10 s and
-  the cop is within 8 m at 10.7 s, closing in. At 13 m/s no chase starts.
-* Sweep of every circuit and checkpoint race, both cities and difficulties,
-  one lap, all opponents (`OPENMM2_AI_SWEEP=1`): 488 of 517 opponents
-  finish. Nearly all others end wrecked (point-to-point opponents stay
-  wrecked in MM1), mostly at SF hairpins and jumps.
+### Opponent (`aiRouteRacer`)
+
+| Behaviour | Status |
+|---|---|
+| One route for the race: waypoints, destination, laps (`DriveRoute` → `RegisterRoute`) | MM2 |
+| Final approach (plan to the destination) past the last waypoint of the last lap | MM2 |
+| Fallen below y = −200: disabled, stops (`DriveRoute`, `Disabled`) | MM2 |
+| The race result is the game's (finish line); the AI drives on to its destination and stops there | MM2 (`Finished` is only read by the game) |
+| No progress for 10 s, or fallen 15 m below the line: put back on the line, further along each time it recurs | **OpenMM2** recovery, not in MM2 |
+| Rubber-banding | none in MM2 |
+
+### Police (`aiPoliceOfficer`, `aiPoliceForce`)
+
+| Behaviour | Status |
+|---|---|
+| At its post braked (Stop) until a suspect appears (`Reset`) | MM2 |
+| Detection (`DetectPerpetrator`, `Fov`): the players first, any within 75 m (3D) and within 1.57 rad of the cop's heading. No speeding, collision or line-of-sight test (`Speeding`, `OffRoad`, `IsPerpACop` return 0, `HitMe` is never called) | MM2 |
+| Opponents: the same test, while the player is within `range` of the cop, with probability `chance`; one that loses the roll is ignored until the cop resets | MM2 |
+| `aiPoliceForce`: at most three cops per suspect and three suspects; the nearest pursuer within 25 m apprehends (`State` 1), the others follow (2) | MM2 |
+| Follow only while the player reverses, the cop backs up, it has no apprehend behaviours, or the suspect is under 10 m/s (`Update`) | MM2 |
+| Follow (`FollowPerpetrator`): siren on; the road route to the suspect (`aiMap::CalcRoute`), arriving 5 m short at its speed + distance − 12.5 m; corner factor 2.0, look-ahead 75 m, steering round traffic but not the player | MM2; the route rebuilt every second or when the goal moves 15 m (MM2: every frame) **inferred** |
+| Apprehend (`ApprehendPerpetrator`, `Block`): to 12 m ahead of the suspect when level with or ahead of it, else beside its tail (more than 20 m behind on a road: the side that is on the road), at its speed (+25 m/s from behind); within 3 m, hold its heading 3 m/s slower (`aiVehiclePhysics::Mirror`) until it gets ahead again | MM2 (`Push` and `Barricade` are never chosen in this build) |
+| Full throttle under 50 m/s: momentum × 1.03 a frame (`Update`) | MM2 |
+| Escape beyond `[CopChaseDistance]` (XZ), or the cop wrecked: siren off, out of the force, the cop stops where it is and watches again; a wrecked cop is out of action (`PerpEscapes`) | MM2 |
+| Fallen below y = −200: back to its post (`Update` → `Reset`) | MM2 |
+| A cop in a room with flag 4 drops out | **not ported** |
+| Siren while following and apprehending (`StartSiren` / `StopSiren`) | MM2 |
+| Cops placed: the first trunc(count × clamp(density, 0, 1)) of the `[Police]` entries (`aiMap::Init`): cruise uses the menu's cop density, races their table's cop count (0 none, 1+ all), the crash course all | MM2 |
+
+### Evidence (retail data, `test_game`, physics as of this commit)
+
+* London circuit0, amateur, 7 opponents, 3 laps: all finish in 49–61 s;
+  flying laps 13.6–23 s on a 412–449 m line; the field hugs the inside of
+  the loop; no resets.
+* London race1 with full ambient traffic (whose racers steer round
+  traffic): all 6 finish in 77–108 s over 2.0 km, using the sidewalk to get
+  round cars, none beyond it.
+* A car put nose-first against a wall: backs up (vehStuck → `Backup`) and
+  is 150 m along its line after 13 s.
+* A player-flagged car driven past a parked London cop at 13 m/s (lawful):
+  pursued from 6.7 s (in view within 75 m), followed to within 15 m once
+  it slows; at 15 m/s the nearest cop apprehends and blocks it. A suspect
+  70 m behind the cop is not pursued; one moved beyond the chase distance
+  escapes (siren off, the cop stops).
+* Sweep of every circuit and checkpoint race, both cities and
+  difficulties, one lap, all opponents (`OPENMM2_AI_SWEEP=1`): 498 of 517
+  opponents finish (488 with the MM1 port). The rest are wrecked
+  (point-to-point opponents stay wrecked, as in MM2), mostly SF race11 (a
+  crash at about 47 m/s) and race8.
 
 `OPENMM2_AI_TRAILS=<dir>` writes top-down plots of these runs (see the
 header of `tests/game/test_opponent_race.cpp`).
 
 ### In the race (`app/RaceScreen`)
 
-* Cars: opponents load the `_opp` tune, police the `_cop` tune when one
-  exists (only `vpcop_cop.vehcarsim` in the retail data), otherwise the base
-  tune. Cops stay at their posts for the whole race.
 * Each frame: player input, then every AI driver reads all cars (player id
   0, opponents 1 + their index in `Session::opponents()`, police 100 + n,
   ambient traffic 10000 + id) and writes its car's inputs, then the props
