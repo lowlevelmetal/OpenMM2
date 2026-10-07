@@ -7,6 +7,7 @@
 #include "phys/Joint3Dof.h"
 #include "phys/Material.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace mm2::phys {
@@ -136,7 +137,14 @@ public:
     float pushFactor = 0.8f;
     float pushSlop = 0.005f;
 
+    // The game's random generator for the simulation (irand / frand). MM2
+    // shares one rand() across the whole game; OpenMM2 keeps one stream per
+    // world so a race, replay or test is reproducible on its own.
+    std::uint32_t* randomSeed() const { return &m_randomSeed; }
+    void seedRandom(std::uint32_t seed) { m_randomSeed = seed; }
+
 private:
+    mutable std::uint32_t m_randomSeed = 1;
     struct ContactPoint {
         Body* a;
         Body* b; // nullptr = static

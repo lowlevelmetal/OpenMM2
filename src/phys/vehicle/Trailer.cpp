@@ -179,6 +179,7 @@ void Trailer::afterIntegrate(Body& b, float dt, const World& world) {
     env.invDt = 1.0f / dt;
     env.weatherFriction = m_tractor->options.weatherFriction;
     env.hasCar = false;
+    env.randomSeed = world.randomSeed();
     for (Drivetrain& d : drivetrains)
         d.update(env, m_tractor->params.mass);
 }

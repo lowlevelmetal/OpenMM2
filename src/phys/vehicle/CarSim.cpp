@@ -201,6 +201,7 @@ WheelEnv CarSim::makeEnv(float dt, const World& world) {
     env.weatherFriction = options.weatherFriction;
     env.hasCar = true;
     env.carFrictionHandling = params.carFrictionHandling;
+    env.randomSeed = world.randomSeed();
     return env;
 }
 
