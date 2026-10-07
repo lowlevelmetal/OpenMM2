@@ -1,10 +1,10 @@
-#include "game/RoomLocator.h"
+#include "city/RoomLocator.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
 
-namespace mm2::game {
+namespace mm2::city {
 namespace {
 
 bool pointInPolygon(const std::vector<Vec2>& poly, float x, float z) {
@@ -19,7 +19,7 @@ bool pointInPolygon(const std::vector<Vec2>& poly, float x, float z) {
 
 } // namespace
 
-RoomLocator::RoomLocator(const city::Psdl& psdl, float cellSize) : m_cell(cellSize) {
+RoomLocator::RoomLocator(const Psdl& psdl, float cellSize) : m_cell(cellSize) {
     m_rooms.resize(psdl.rooms.size());
     float minX = std::numeric_limits<float>::max(), minZ = minX;
     float maxX = std::numeric_limits<float>::lowest(), maxZ = maxX;
@@ -98,4 +98,4 @@ int RoomLocator::find(const Vec3& p) const {
     return best ? best : fallback;
 }
 
-} // namespace mm2::game
+} // namespace mm2::city

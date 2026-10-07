@@ -179,20 +179,16 @@ bool loadTrailerParams(const DatNode& b, TrailerParams& t) {
         loadWheelParams(*c, t.wheelFront);
     if (const auto* c = b.child("WheelBack"))
         loadWheelParams(*c, t.wheelBack);
-    if (const auto* c = b.child("Drivetrain")) {
-        DrivetrainParams d;
-        loadDrivetrain(*c, d);
-        t.drivetrain = d;
-    }
+    if (const auto* c = b.child("Drivetrain"))
+        loadDrivetrain(*c, t.drivetrain);
     return true;
 }
 
 bool loadTrailerJointParams(const DatNode& b, TrailerJointParams& j) {
+    // dgTrailerJoint::FileIO reads only these fields (no Offset0/Offset1,
+    // no roll limits).
     if (b.name != "dgTrailerJoint")
         return false;
-    const bool has0 = b.read("Offset0", j.offset0);
-    const bool has1 = b.read("Offset1", j.offset1);
-    j.hasOffsets = has0 && has1;
     b.read("ForceLimit", j.forceLimit);
     b.read("JointStatus", j.jointStatus);
     b.read("RestoreForceLean", j.restoreForceLean);
@@ -204,11 +200,6 @@ bool loadTrailerJointParams(const DatNode& b, TrailerJointParams& j) {
     b.read("LeanLimit", j.leanLimit);
     b.read("LimitElasticityLean", j.limitElasticityLean);
     b.read("LimitElasticityRoll", j.limitElasticityRoll);
-    float v = 0.0f;
-    if (b.read("NegativeRollLimit", v))
-        j.negativeRollLimit = v;
-    if (b.read("PositiveRollLimit", v))
-        j.positiveRollLimit = v;
     b.read("FreeRange", j.freeRange);
     b.read("FreeLean", j.freeLean);
     b.read("FreeRoll", j.freeRoll);

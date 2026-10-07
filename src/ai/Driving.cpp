@@ -99,6 +99,11 @@ float forwardSpeed(const phys::CarSim& car) {
     return -car.body.ics.linearVelocity.dot(car.body.ics.matrix.m2);
 }
 
+bool goesOverSidewalks(std::string_view vehicle) {
+    // The type names are compared case-sensitively (inlined strcmp).
+    return vehicle != "vppanozgt";
+}
+
 void configureAiVehStuck(phys::CarSim& car, float timeThresh) {
     // aiVehiclePhysics::Init: TimeThresh 0.5, squared PosThresh 1.0 and
     // Rotation 0 (an AI car on its side is set upright rather than nudged).
@@ -676,20 +681,19 @@ void PhysicsDriver::finishRoute(const std::vector<RouteNode>& nodes) {
 }
 
 int PhysicsDriver::roadState(const Vec3& p, const DriveContext& ctx, float hint) const {
-    // aiPath::IsPosOnRoad: 1 between the curbs, 2 on the sidewalk, 3 beyond,
-    // each less the car's side distance.
+    // aiPath::IsPosOnRoad with the car's side distance as the margin: 1 on
+    // the road, 2 on the sidewalk, 3 beyond (Course::onRoadLimits). MM2 asks
+    // the road the obstacle is on; OpenMM2 the course's road at the point.
     const Course& c = *ctx.course;
     float lateral = 0.0f;
     const float s = c.locate(p, hint, 60.0f, &lateral);
-    float left, right, leftEdge, rightEdge;
-    c.edges(s, left, right, &leftEdge, &rightEdge);
+    float road, sidewalk;
+    c.onRoadLimits(s, road, sidewalk);
     const float side = m_car.body.shape.half.x;
     const float a = std::abs(lateral);
-    const float curb = (lateral > 0.0f ? right : left) - side;
-    const float edge = (lateral > 0.0f ? rightEdge : leftEdge) - side;
-    if (a < curb)
+    if (a < road - side)
         return 1;
-    if (a < edge)
+    if (a < sidewalk - side)
         return 2;
     return 3;
 }
@@ -949,7 +953,7 @@ void PhysicsDriver::enumRoutes(std::vector<RouteNode>& nodes, std::span<const Tr
     // CalcObstacleAvoidPoints / EnumTargets: pass the obstacle on the left
     // and on the right (each corner 2 m clear of the car's side), each a
     // route of its own, as long as the point is on the road (or on the
-    // sidewalk, except for semis) and the way to it is clear; a way blocked
+    // sidewalk, except for vppanozgt) and the way to it is clear; a way blocked
     // by a further vehicle goes round that one on the same side.
     Vec3 roadDir;
     ctx.course->pointAt(ctx.s + from.s, &roadDir);
@@ -981,7 +985,7 @@ void PhysicsDriver::enumRoutes(std::vector<RouteNode>& nodes, std::span<const Tr
         if (++level == kMaxAvoidDepth)
             return;
         const int onRoad = roadState(p, ctx, ctx.s + from.s);
-        if (onRoad == 3 || (onRoad == 2 && ctx.semi))
+        if (onRoad == 3 || (onRoad == 2 && ctx.noSidewalk))
             return;
         const TrackedCar* next = blocking(from.pos, p, cars, ctx, nullptr);
         if (!next || next == &by || next->isOpponent()) {

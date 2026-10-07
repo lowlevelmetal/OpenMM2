@@ -194,6 +194,7 @@ void Session::resetRace() {
     m_raceTime = 0.0f;
     m_raceClock = false;
     m_lapStart = m_lastLap = m_bestLap = 0.0f;
+    m_lapTimes.clear();
     m_timeUp = false;
     m_penaltyLeft = 0.0f;
     m_penaltyHeld = false;
@@ -562,6 +563,7 @@ void Session::updateWaypoints(const PlayerState& player) {
                 const float lapTime = m_raceTime - m_lapStart;
                 m_lastLap = lapTime;
                 m_bestLap = m_bestLap > 0.0f ? std::min(m_bestLap, lapTime) : lapTime;
+                m_lapTimes.push_back(lapTime);
                 m_lapStart = m_raceTime;
                 push(EventType::LapCompleted, m_wp.lap, lapTime);
                 if (m_wp.lap == m_setup.laps) {
@@ -1284,10 +1286,13 @@ MusicHint Session::musicHint() const {
 RaceResult Session::result() const {
     RaceResult r;
     r.config = m_setup.config;
+    r.ended = m_phase == Phase::PostRace || m_phase == Phase::Done;
     r.finished = m_resultFinished;
     r.won = m_resultWon;
     r.position = m_resultFinished ? (m_resultPosition > 0 ? m_resultPosition : 1) : 0;
     r.timeSeconds = m_resultTime;
+    r.bestLapSeconds = m_bestLap;
+    r.lapSeconds = m_lapTimes;
     r.damage = static_cast<int>(std::lround(clampf(m_resultDamage, 0.0f, 1.0f) * 100.0f));
     // mmGame::CalculateRaceScore: the car's ScoringBias and the race's
     // Difficulty column, both truncated to integers, times 50 / 25 / 10 for
@@ -1300,6 +1305,15 @@ RaceResult Session::result() const {
         const int points = place >= 1 && place <= 3 ? kPlacePoints[place] : 0;
         const int difficulty = static_cast<int>(m_setup.settings.difficulty);
         r.score = static_cast<int>(m_options.scoringBias) * points * difficulty;
+    }
+    // The results list (PUResults::AddName): everyone who finished, by place.
+    if (raced) {
+        if (r.finished && r.position > 0)
+            r.standings.push_back({-1, r.position, m_resultTime});
+        for (std::size_t i = 0; i < m_opponents.size(); ++i)
+            if (m_opponents[i].finished)
+                r.standings.push_back({static_cast<int>(i), m_opponents[i].place, m_opponents[i].finishTime});
+        std::ranges::sort(r.standings, {}, &RaceStanding::place);
     }
     return r;
 }

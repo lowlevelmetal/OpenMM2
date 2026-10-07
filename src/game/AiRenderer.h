@@ -4,6 +4,7 @@
 #include "asset/Ped.h"
 #include "asset/VehicleModel.h"
 #include "game/Camera.h"
+#include "game/RaceConfig.h"
 #include "game/ModelLibrary.h"
 #include "game/TextureLibrary.h"
 #include "game/VehicleRenderer.h"
@@ -27,7 +28,9 @@ public:
 
     // `physicalTransform` returns the transform of cars that the physics
     // simulation has taken over (null for cars on their rails).
-    void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, bool night,
+    // Headlights at night; the signals switch to their night glows from the
+    // evening on (aiTrafficLightInstance::DrawGlow: time of day > 1).
+    void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time,
               const std::function<const Mat34*(int)>& physicalTransform = {});
 
     struct Stats {
@@ -46,7 +49,7 @@ private:
     CarModel* carModel(const std::string& name);
     const asset::PedType* pedType(const std::string& name);
     void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
-    void drawSignal(const ai::Signal& signal, const Camera& camera, bool night);
+    void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows);
 
     render::Device& m_device;
     TextureLibrary& m_textures;

@@ -6,12 +6,9 @@
 
 namespace mm2::phys {
 
-class Joint3Dof;
-
 // Rigid body: MM2's phInertialCS (verified against the build 3393 code,
-// see docs/physics.md). The sleep test, constraints and the CMatrix helpers
-// used by Joint3Dof are kept from MM1's asInertialCS (Open1560 game.asm),
-// which phInertialCS replaced.
+// see docs/physics.md). The sleep test and constraints are kept from MM1's
+// asInertialCS (Open1560 game.asm), which phInertialCS replaced.
 //
 // The frame `matrix` is centred on the centre of gravity: rows m0..m2 are the
 // body axes (right, up, back), m3 the CG in world space.
@@ -20,7 +17,8 @@ class Joint3Dof;
 // integrated by update(): finishForces (sleep test, gravity) then
 // finishUpdate (phInertialCS::Update). Bodies that registered contact
 // stiffness this sample (applyContactForce: the car wheels' suspension)
-// integrate implicitly against it, as phInertialCS::Update does.
+// integrate implicitly against it, as phInertialCS::Update does; that
+// includes bodies linked by a TrailerJoint, whose force joins the others.
 class InertialCS {
 public:
     enum State : int { Off = 0, Awake = 1, Asleep = 2 }; // ICS_STATE_*
@@ -28,7 +26,7 @@ public:
     // ICS_CONSTRAIN_* bits.
     static constexpr int kConstrainTX = 0x1, kConstrainTY = 0x2, kConstrainTZ = 0x4;
     static constexpr int kConstrainRX = 0x8, kConstrainRY = 0x10, kConstrainRZ = 0x20;
-    static constexpr int kConstrainAll = 0x3F, kConstrainLink = 0x40, kConstrainZeroDof = 0x400;
+    static constexpr int kConstrainAll = 0x3F, kConstrainZeroDof = 0x400;
 
     InertialCS();
 
@@ -72,16 +70,23 @@ public:
     // part along last sample's push removed (or, moving into the push faster
     // than it, the push rate added).
     Vec3 filteredVelocity(const Vec3& worldPos, float invDt) const;
+    // phInertialCS::GetLocalAcceleration: a point's acceleration under this
+    // sample's accumulated force and torque (impulses not included):
+    // F / m + w x (w x r) + (I^-1 (T - w x L)) x r.
+    Vec3 localAcceleration(const Vec3& worldPos) const;
+    // phInertialCS::GetForce / GetTorque: the accumulated force (torque)
+    // plus the accumulated impulse spread over the sample (impulse * invDt).
+    // The ApplyContactForce accumulators are not included.
+    Vec3 getForce(float invDt) const;
+    Vec3 getTorque(float invDt) const;
     // phInertialCS::GetInertiaMatrix: world inertia tensor R^T diag(I) R.
     Mat34 worldInertia() const;
 
-    // asInertialCS::CalcCMatrix: the 3x3 "collision matrix" C at a world
-    // point: an impulse j applied there changes that point's velocity by
-    // j * C. C = InvMass * I + (R X)^T diag(InvInertia) (R X), X = [r]x.
+    // phInertialCS::GetInvMassMatrix (MM1: asInertialCS::CalcCMatrix): the
+    // inverse mass matrix C at a world point: an impulse j applied there
+    // changes that point's velocity by j * C.
+    // C = InvMass * I + (R X)^T diag(InvInertia) (R X), X = [r]x.
     void calcCMatrix(Mat34& out, const Vec3& worldPos) const;
-    // asInertialCS::GetCMatrix: as calcCMatrix, but through the joint when
-    // the body is linked to another one.
-    void getCMatrix(Mat34& out, const Vec3& worldPos) const;
 
     // --- OpenMM2 additions for the contact solver (not in the original) ---
     // Applies an impulse to momentum immediately and refreshes velocities.
@@ -139,7 +144,6 @@ public:
     float maxSpeed = 500.0f; // phInertialCS +0x2c
     Vec3 maxAngVelocity{3.14159265f * 10.0f, 3.14159265f * 10.0f, 3.14159265f * 10.0f};
     bool limitAngVelocity = false;
-    Joint3Dof* joint = nullptr; // asInertialCS::Joint (set by Joint3Dof::initJoint3Dof)
 
 private:
     void clearAccumulators();

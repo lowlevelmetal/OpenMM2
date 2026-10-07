@@ -43,14 +43,15 @@ struct CityInfo {
     std::vector<std::string> blitzNames;
     std::vector<std::string> circuitNames;
     std::vector<std::string> checkpointNames;
-    int mustPlace = 0;   // finishing position needed to count a race as won (inferred)
-    int unlockGroup = 0; // races unlocked per group (inferred)
+    int mustPlace = 0;   // parsed, but never read by MM2 (pass rules are fixed, see game/Profile.h)
+    int unlockGroup = 0; // parsed, but never read by MM2
 };
 
 class Catalog {
 public:
-    // Loads tune/cars.txt + tune/*.info and tune/*.cinfo. Missing or malformed
-    // entries are logged and skipped.
+    // Loads the vehicles in MM2's order (mmVehList::LoadAll: its built-in list,
+    // then other tune/vp*.info) and tune/*.cinfo. Missing or malformed entries
+    // are logged and skipped.
     static Catalog load(const vfs::Vfs& vfs);
 
     const std::vector<VehicleInfo>& vehicles() const { return m_vehicles; }
@@ -59,7 +60,7 @@ public:
     const CityInfo* city(std::string_view name) const;
 
 private:
-    std::vector<VehicleInfo> m_vehicles; // in tune/cars.txt order
+    std::vector<VehicleInfo> m_vehicles; // in MM2's vehicle list order
     std::vector<CityInfo> m_cities;
 };
 

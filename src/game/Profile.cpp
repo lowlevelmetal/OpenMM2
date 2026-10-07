@@ -8,12 +8,11 @@
 #include "core/StringUtil.h"
 
 #include <algorithm>
+#include <bit>
 #include <format>
 
 namespace mm2::game {
 namespace {
-
-const char* difficultyKey(Difficulty d) { return d == Difficulty::Professional ? "pro" : "amateur"; }
 
 template <class E>
 E clampEnum(long long v, E max) {
@@ -21,6 +20,27 @@ E clampEnum(long long v, E max) {
 }
 
 std::string_view asText(const std::vector<std::byte>& b) { return {reinterpret_cast<const char*>(b.data()), b.size()}; }
+
+// MM2 keeps at most 32 races per mode (one bit each in the passed masks).
+constexpr int kMaxRaces = 32;
+
+RaceMask bit(int i) { return i >= 0 && i < kMaxRaces ? RaceMask{1} << i : RaceMask{0}; }
+
+// Merges a finish into a record (MM2 `mmPlayerCityRecord::NewRecord`): the
+// first result is taken as it is; afterwards the lower time is kept with the
+// car that set it, the higher score, and the passed flag once set.
+void merge(RaceRecord& r, bool fresh, const RaceRecord& n) {
+    if (fresh) {
+        r = n;
+        return;
+    }
+    if (n.time < r.time) {
+        r.time = n.time;
+        r.vehicle = n.vehicle;
+    }
+    r.score = std::max(r.score, n.score);
+    r.passed = r.passed || n.passed;
+}
 
 } // namespace
 
@@ -38,12 +58,12 @@ const char* modeKey(GameMode mode) {
 
 // --- Profile ---------------------------------------------------------------------
 
-std::string Profile::raceKey(Difficulty d, std::string_view city, std::string_view mode, int index) {
-    return std::format("{}.{}.{}.{}", difficultyKey(d), str::lower(city), mode, index);
+std::string Profile::raceKey(std::string_view cityName, std::string_view mode, int index) {
+    return std::format("{}.{}.{}", str::lower(cityName), mode, index);
 }
 
-const RaceRecord* Profile::record(Difficulty d, std::string_view cityName, std::string_view modeName, int index) const {
-    const auto it = races.find(raceKey(d, cityName, modeName, index));
+const RaceRecord* Profile::record(std::string_view cityName, std::string_view modeName, int index) const {
+    const auto it = races.find(raceKey(cityName, modeName, index));
     return it == races.end() ? nullptr : &it->second;
 }
 
@@ -56,10 +76,8 @@ bool Profile::load(const std::filesystem::path& path) {
     name = ini.getString("Driver", "Name");
     if (name.empty())
         return false;
-    score = static_cast<int>(ini.getInt("Driver", "Score", 0));
-    lastRace = ini.getString("Driver", "LastRace");
-    lastVehicle = ini.getString("Driver", "LastVehicle");
     netName = ini.getString("Driver", "NetName", name);
+    order = static_cast<int>(ini.getInt("Driver", "Order", 0));
 
     vehicle = ini.getString("Prefs", "Vehicle", vehicle);
     vehicleColor = static_cast<int>(ini.getInt("Prefs", "Color", 0));
@@ -68,32 +86,43 @@ bool Profile::load(const std::filesystem::path& path) {
     city = ini.getString("Prefs", "City", city);
     mode = clampEnum(ini.getInt("Prefs", "Mode", 0), GameMode::CopsAndRobbers);
     raceIndex = static_cast<int>(ini.getInt("Prefs", "Race", 0));
-    timeOfDay = clampEnum(ini.getInt("Prefs", "TimeOfDay", 1), TimeOfDay::Night);
-    weather = clampEnum(ini.getInt("Prefs", "Weather", 0), Weather::Snow);
-    pedestrianDensity = std::clamp(static_cast<float>(ini.getDouble("Prefs", "Pedestrians", 0.5)), 0.0f, 1.0f);
-    trafficDensity = std::clamp(static_cast<float>(ini.getDouble("Prefs", "Traffic", 0.5)), 0.0f, 1.0f);
-    copDensity = std::clamp(static_cast<float>(ini.getDouble("Prefs", "Cops", 0.5)), 0.0f, 1.0f);
-    opponents = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Opponents", 3), 0, 7));
-    laps = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Laps", 3), 1, 10));
 
     for (const auto& key : ini.keys("Races")) {
         const std::string value = ini.getString("Races", key); // split() returns views into it
         const auto parts = str::split(value, ',');
+        std::string k = str::lower(key);
+        const auto dots = std::ranges::count(k, '.');
+        if (dots == 3) {
+            // Earlier OpenMM2 files: <difficulty>.<city>.<mode>.<index> =
+            // <bestPosition>,<bestTime>,<wins>. A win was a pass.
+            k = k.substr(k.find('.') + 1);
+            RaceRecord r;
+            if (parts.size() > 1)
+                r.time = static_cast<float>(str::parseDouble(parts[1]).value_or(0.0));
+            r.passed = parts.size() > 2 && str::parseInt(parts[2]).value_or(0) > 0;
+            const bool fresh = !races.contains(k);
+            merge(races[k], fresh, r);
+            continue;
+        }
         RaceRecord r;
         if (!parts.empty())
-            r.bestPosition = static_cast<int>(str::parseInt(parts[0]).value_or(0));
+            r.time = static_cast<float>(str::parseDouble(parts[0]).value_or(0.0));
         if (parts.size() > 1)
-            r.bestTime = static_cast<float>(str::parseDouble(parts[1]).value_or(0.0));
+            r.vehicle = std::string(str::trim(parts[1]));
         if (parts.size() > 2)
-            r.wins = static_cast<int>(str::parseInt(parts[2]).value_or(0));
-        races[str::lower(key)] = r;
+            r.score = static_cast<int>(str::parseInt(parts[2]).value_or(0));
+        if (parts.size() > 3)
+            r.passed = str::parseInt(parts[3]).value_or(0) != 0;
+        races[k] = r;
     }
+    // Earlier OpenMM2 files: [Crash] <city>.<lesson> = passed | failed.
     for (const auto& key : ini.keys("Crash")) {
-        const std::string v = str::lower(ini.getString("Crash", key));
-        if (v == "passed")
-            crashPassed.insert(str::lower(key));
-        else if (v == "failed")
-            crashFailed.insert(str::lower(key));
+        const std::string k = str::lower(key);
+        const auto dot = k.find('.');
+        if (dot == std::string::npos)
+            continue;
+        RaceRecord r{1.0f, {}, 1, str::lower(ini.getString("Crash", key)) == "passed"};
+        races[std::format("{}.crash.{}", k.substr(0, dot), k.substr(dot + 1))] = r;
     }
     return true;
 }
@@ -102,10 +131,8 @@ bool Profile::save() const {
     IniFile ini;
     ini.parse("; OpenMM2 driver profile\n");
     ini.set("Driver", "Name", name);
-    ini.setInt("Driver", "Score", score);
-    ini.set("Driver", "LastRace", lastRace);
-    ini.set("Driver", "LastVehicle", lastVehicle);
     ini.set("Driver", "NetName", netName);
+    ini.setInt("Driver", "Order", order);
     ini.set("Prefs", "Vehicle", vehicle);
     ini.setInt("Prefs", "Color", vehicleColor);
     ini.setBool("Prefs", "Automatic", automatic);
@@ -113,20 +140,8 @@ bool Profile::save() const {
     ini.set("Prefs", "City", city);
     ini.setInt("Prefs", "Mode", static_cast<int>(mode));
     ini.setInt("Prefs", "Race", raceIndex);
-    ini.setInt("Prefs", "TimeOfDay", static_cast<int>(timeOfDay));
-    ini.setInt("Prefs", "Weather", static_cast<int>(weather));
-    ini.setDouble("Prefs", "Pedestrians", pedestrianDensity);
-    ini.setDouble("Prefs", "Traffic", trafficDensity);
-    ini.setDouble("Prefs", "Cops", copDensity);
-    ini.setInt("Prefs", "Opponents", opponents);
-    ini.setInt("Prefs", "Laps", laps);
     for (const auto& [key, r] : races)
-        ini.set("Races", key, std::format("{},{:.2f},{}", r.bestPosition, r.bestTime, r.wins));
-    for (const auto& key : crashFailed)
-        if (!crashPassed.contains(key))
-            ini.set("Crash", key, "failed");
-    for (const auto& key : crashPassed)
-        ini.set("Crash", key, "passed");
+        ini.set("Races", key, std::format("{:.2f},{},{},{}", r.time, r.vehicle, r.score, r.passed ? 1 : 0));
     return ini.save(file);
 }
 
@@ -147,22 +162,35 @@ std::vector<Profile> ProfileStore::list() const {
         if (prof.load(p))
             out.push_back(std::move(prof));
     }
-    std::ranges::sort(out, [](const Profile& a, const Profile& b) { return str::lower(a.name) < str::lower(b.name); });
+    // Creation order; profiles from earlier versions (order 0) by name.
+    std::ranges::sort(out, [](const Profile& a, const Profile& b) {
+        if (a.order != b.order)
+            return a.order < b.order;
+        return str::lower(a.name) < str::lower(b.name);
+    });
     return out;
 }
 
-std::optional<Profile> ProfileStore::create(std::string_view rawName, std::string* error) {
+std::optional<Profile> ProfileStore::create(std::string_view rawName, CreateError* error) {
     const std::string name(str::trim(rawName));
-    auto fail = [&](std::string msg) -> std::optional<Profile> {
+    auto fail = [&](CreateError e) -> std::optional<Profile> {
         if (error)
-            *error = std::move(msg);
+            *error = e;
         return std::nullopt;
     };
+    if (error)
+        *error = CreateError::None;
     if (name.empty())
-        return fail("Please enter a name.");
-    for (const auto& p : list())
-        if (str::iequals(p.name, name))
-            return fail("A driver with that name already exists.");
+        return fail(CreateError::EmptyName);
+    const auto existing = list();
+    if (static_cast<int>(existing.size()) >= kMaxDrivers)
+        return fail(CreateError::TooMany);
+    int order = 0;
+    for (const auto& p : existing) {
+        if (p.name == name)
+            return fail(CreateError::Duplicate);
+        order = std::max(order, p.order);
+    }
     // File name: the name reduced to safe characters, made unique.
     std::string base;
     for (char c : name) {
@@ -182,8 +210,9 @@ std::optional<Profile> ProfileStore::create(std::string_view rawName, std::strin
     p.name = name;
     p.netName = name;
     p.file = file;
+    p.order = order + 1;
     if (!p.save())
-        return fail("Cannot save the driver profile.");
+        return fail(CreateError::CannotSave);
     return p;
 }
 
@@ -205,6 +234,95 @@ void ProfileStore::setLastUsed(std::string_view name) {
     ini.save(m_dir / "players.ini");
 }
 
+// --- HallOfFame -------------------------------------------------------------------------
+
+std::string HallOfFame::key(Difficulty d, std::string_view cityName, std::string_view mode, int index) {
+    return std::format("{}.{}.{}.{}", d == Difficulty::Professional ? "pro" : "amateur", str::lower(cityName), mode,
+                       index);
+}
+
+void HallOfFame::submit(Difficulty d, std::string_view cityName, std::string_view mode, int index,
+                        const HallEntry& e) {
+    Table& t = m_tables[key(d, cityName, mode, index)];
+    auto insert = [](std::array<HallEntry, kEntries>& list, std::size_t at, const HallEntry& entry) {
+        for (std::size_t i = list.size() - 1; i > at; --i)
+            list[i] = list[i - 1];
+        list[at] = entry;
+    };
+    for (std::size_t i = 0; i < t.byTime.size(); ++i) {
+        if (t.byTime[i].time == 0.0f || t.byTime[i].time > e.time) {
+            insert(t.byTime, i, e);
+            break;
+        }
+    }
+    for (std::size_t i = 0; i < t.byScore.size(); ++i) {
+        if (t.byScore[i].score < e.score) {
+            insert(t.byScore, i, e);
+            break;
+        }
+    }
+}
+
+const HallOfFame::Table* HallOfFame::table(Difficulty d, std::string_view cityName, std::string_view mode,
+                                           int index) const {
+    const auto it = m_tables.find(key(d, cityName, mode, index));
+    return it == m_tables.end() ? nullptr : &it->second;
+}
+
+bool HallOfFame::load(const std::filesystem::path& path) {
+    m_tables.clear();
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec))
+        return true;
+    // Sections are not enumerable through IniFile, so they are found by name.
+    IniFile ini;
+    if (!ini.load(path))
+        return false;
+    auto parse = [&](const std::string& section, const std::string& k) {
+        HallEntry e;
+        const std::string v = ini.getString(section, k);
+        const auto parts = str::split(v, '|');
+        if (parts.size() >= 4) {
+            e.driver = std::string(parts[0]);
+            e.vehicle = std::string(parts[1]);
+            e.time = static_cast<float>(str::parseDouble(parts[2]).value_or(0.0));
+            e.score = static_cast<int>(str::parseInt(parts[3]).value_or(0));
+        }
+        return e;
+    };
+    for (const auto& k : ini.keys("Index")) {
+        const std::string section = str::lower(k);
+        Table& t = m_tables[section];
+        for (int i = 0; i < kEntries; ++i) {
+            t.byTime[static_cast<std::size_t>(i)] = parse(section, std::format("time{}", i));
+            t.byScore[static_cast<std::size_t>(i)] = parse(section, std::format("score{}", i));
+        }
+    }
+    return true;
+}
+
+bool HallOfFame::save(const std::filesystem::path& path) const {
+    IniFile ini;
+    ini.parse("; OpenMM2 race records (hall of fame)\n");
+    auto format = [](const HallEntry& e) {
+        return std::format("{}|{}|{:.2f}|{}", e.driver, e.vehicle, e.time, e.score);
+    };
+    for (const auto& [section, t] : m_tables) {
+        ini.set("Index", section, "1");
+        for (int i = 0; i < kEntries; ++i) {
+            const auto& te = t.byTime[static_cast<std::size_t>(i)];
+            const auto& se = t.byScore[static_cast<std::size_t>(i)];
+            if (te.time > 0.0f)
+                ini.set(section, std::format("time{}", i), format(te));
+            if (se.score > 0)
+                ini.set(section, std::format("score{}", i), format(se));
+        }
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+    return ini.save(path);
+}
+
 // --- Progress --------------------------------------------------------------------------
 
 Progress::Progress(std::vector<CityProgressInfo> cities, std::vector<Reward> rewards)
@@ -216,18 +334,21 @@ Progress Progress::load(const vfs::Vfs& vfs) {
     for (const auto& info : city::listCities(vfs)) {
         CityProgressInfo c;
         c.name = str::lower(info.mapName);
-        c.mustPlace = info.mustPlace > 0 ? info.mustPlace : 3;
-        c.unlockGroup = info.unlockGroup > 0 ? info.unlockGroup : 3;
         c.blitzCount = info.blitzCount;
         c.circuitCount = info.circuitCount;
         c.checkpointCount = info.checkpointCount;
         const std::string dir = "race/" + str::lower(info.raceDir) + "/";
-        while (vfs.exists(std::format("{}crash{}data.csv", dir, c.crashCount)))
-            ++c.crashCount;
-        if (auto bytes = vfs.readAll(std::format("{}{}_rewards.csv", dir, c.name)))
-            for (const auto& r : city::parseRewards(asText(*bytes)))
+        // mmRewardList::Load: at most 32 rows; the message ends at the next comma.
+        if (auto bytes = vfs.readAll(std::format("{}{}_rewards.csv", dir, c.name))) {
+            int rows = 0;
+            for (const auto& r : city::parseRewards(asText(*bytes))) {
+                if (++rows > 32)
+                    break;
+                const std::string message = r.message.substr(0, r.message.find(','));
                 rewards.push_back({c.name, str::lower(r.raceType), str::lower(r.raceNum), str::lower(r.car), r.variant,
-                                   r.message});
+                                   std::string(str::trim(message))});
+            }
+        }
         cities.push_back(std::move(c));
     }
     log::info("progress: {} cities, {} rewards", cities.size(), rewards.size());
@@ -239,12 +360,6 @@ const CityProgressInfo* Progress::city(std::string_view name) const {
         if (str::iequals(c.name, name))
             return &c;
     return nullptr;
-}
-
-bool Progress::isWin(const CityProgressInfo& c, Difficulty d, int position) const {
-    if (position <= 0)
-        return false;
-    return position <= (d == Difficulty::Professional ? 1 : c.mustPlace);
 }
 
 int Progress::raceCount(const CityProgressInfo& c, std::string_view mode) const {
@@ -259,107 +374,154 @@ int Progress::raceCount(const CityProgressInfo& c, std::string_view mode) const 
     return 0;
 }
 
-int Progress::wins(const Profile& p, std::string_view cityName, std::string_view mode, Difficulty d) const {
-    const CityProgressInfo* c = city(cityName);
-    if (!c)
-        return 0;
-    int n = 0;
-    for (int i = 0; i < raceCount(*c, mode); ++i)
-        if (const RaceRecord* r = p.record(d, cityName, mode, i); r && isWin(*c, d, r->bestPosition))
-            ++n;
-    return n;
+RaceMask Progress::passedMask(const Profile& p, std::string_view cityName, std::string_view mode) const {
+    RaceMask m = 0;
+    for (int i = 0; i < kMaxRaces; ++i)
+        if (const RaceRecord* r = p.record(cityName, mode, i); r && r->passed)
+            m |= bit(i);
+    return m;
 }
 
-bool Progress::rewardEarned(const Profile& p, const Reward& r) const {
+int Progress::passedCount(const Profile& p, std::string_view cityName, std::string_view mode) const {
+    return std::popcount(passedMask(p, cityName, mode));
+}
+
+RaceMask Progress::openMask(const Profile* p, std::string_view cityName, std::string_view mode) const {
+    if (!p || !city(cityName))
+        return ~RaceMask{0};
+    const RaceMask passed = passedMask(*p, cityName, mode);
+    auto all = [&](RaceMask bits) { return (passed & bits) == bits; };
+    if (mode == "race") {
+        // mmPlayerData::ResolveCheckpointProgress: groups of three.
+        RaceMask open = 0x7;
+        if (all(0x7))
+            open |= 0x38;
+        if (all(0x38))
+            open |= 0x1c0;
+        if (all(0x1c0))
+            open |= 0xe00;
+        return open;
+    }
+    if (mode == "crash") {
+        // mmPlayerData::ResolveCrashProgress: lessons 0-2, 4-6 and 8-10 are
+        // open; midterms 3, 7 and 11 follow their lessons; the final (12)
+        // needs everything before it.
+        if (all(0xfff))
+            return ~RaceMask{0};
+        RaceMask open = 0x777;
+        if (all(0x7))
+            open |= 0x8;
+        if (all(0x70))
+            open |= 0x80;
+        if (all(0x700))
+            open |= 0x800;
+        return open;
+    }
+    return ~RaceMask{0};
+}
+
+bool Progress::raceOpen(const Profile* p, std::string_view cityName, std::string_view mode, int index) const {
+    return (openMask(p, cityName, mode) & bit(index)) != 0;
+}
+
+bool Progress::rewardMet(const Profile& p, const Reward& r) const {
     const CityProgressInfo* c = city(r.city);
     if (!c)
         return false;
-    if (r.raceType == "crash")
-        return p.crashPassed.contains(std::format("{}.{}", r.city, r.raceNum));
+    const RaceMask passed = passedMask(p, r.city, r.raceType);
     const int count = raceCount(*c, r.raceType);
-    int need = count;
     if (r.raceNum == "half")
-        need = (count + 1) / 2;
-    else if (r.raceNum != "all")
-        need = static_cast<int>(str::parseInt(r.raceNum).value_or(count));
-    if (need <= 0)
-        return false;
-    return wins(p, r.city, r.raceType, Difficulty::Amateur) >= need ||
-           wins(p, r.city, r.raceType, Difficulty::Professional) >= need;
-}
-
-const Reward* Progress::lockingReward(std::string_view vehicle, int variant) const {
-    for (const auto& r : m_rewards)
-        if (str::iequals(r.vehicle, vehicle) && r.variant == variant)
-            return &r;
-    return nullptr;
+        return std::popcount(passed) >= count / 2;
+    if (r.raceNum == "all")
+        return std::popcount(passed) >= count;
+    const auto index = str::parseInt(r.raceNum);
+    return index && (passed & bit(static_cast<int>(*index))) != 0;
 }
 
 bool Progress::vehicleUnlocked(const Profile& p, std::string_view vehicle) const {
-    const Reward* r = lockingReward(vehicle, 0);
-    return !r || rewardEarned(p, *r);
+    return variantUnlocked(p, vehicle, 0);
 }
 
 bool Progress::variantUnlocked(const Profile& p, std::string_view vehicle, int variant) const {
-    if (variant == 0)
-        return true;
-    const Reward* r = lockingReward(vehicle, variant);
-    return !r || rewardEarned(p, *r);
-}
-
-int Progress::availableRaces(const Profile& p, std::string_view cityName, std::string_view mode) const {
-    const CityProgressInfo* c = city(cityName);
-    if (!c)
-        return 0;
-    const int count = raceCount(*c, mode);
-    if (mode == "crash") {
-        int open = 1;
-        while (open < count && p.crashPassed.contains(std::format("{}.{}", c->name, open - 1)))
-            ++open;
-        return std::min(open, count);
-    }
-    int won = 0;
-    for (int i = 0; i < count; ++i) {
-        const RaceRecord* a = p.record(Difficulty::Amateur, cityName, mode, i);
-        const RaceRecord* pr = p.record(Difficulty::Professional, cityName, mode, i);
-        if ((a && isWin(*c, Difficulty::Amateur, a->bestPosition)) ||
-            (pr && isWin(*c, Difficulty::Professional, pr->bestPosition)))
-            ++won;
-    }
-    return std::min(count, c->unlockGroup + won);
-}
-
-std::vector<Reward> Progress::record(Profile& p, const RaceResult& result) const {
-    const RaceConfig& cfg = result.config;
-    std::vector<const Reward*> before;
     for (const auto& r : m_rewards)
-        if (rewardEarned(p, r))
-            before.push_back(&r);
+        if (r.variant == variant && str::iequals(r.vehicle, vehicle) && !rewardMet(p, r))
+            return false;
+    return true;
+}
+
+bool Progress::recordable(const RaceConfig& played, const RaceConfig& defaults) {
+    if (played.multiplayer || played.raceIndex < 0)
+        return false;
+    // The checks of the modes' RegisterFinish: time of day, weather, cops and
+    // traffic must be the race's defaults; circuits also check laps and
+    // opponents.
+    const bool environment = played.timeOfDay == defaults.timeOfDay && played.weather == defaults.weather &&
+                             played.copDensity == defaults.copDensity &&
+                             played.trafficDensity == defaults.trafficDensity;
+    switch (played.mode) {
+    case GameMode::CrashCourse: return played.raceIndex < 13;
+    case GameMode::Blitz: return played.raceIndex < 12 && environment;
+    case GameMode::Checkpoint: return environment;
+    case GameMode::Circuit:
+        return environment && played.laps == defaults.laps && played.opponents == defaults.opponents;
+    case GameMode::Cruise:
+    case GameMode::CopsAndRobbers: return false;
+    }
+    return false;
+}
+
+std::optional<Reward> Progress::record(Profile& p, const RaceResult& result) const {
+    const RaceConfig& cfg = result.config;
+    const bool crash = cfg.mode == GameMode::CrashCourse;
+    const bool race = cfg.mode == GameMode::Blitz || cfg.mode == GameMode::Circuit || cfg.mode == GameMode::Checkpoint;
+    // Races are recorded at the finish line (also when lost); a lesson when it
+    // is passed or failed. Quitting records nothing.
+    if (cfg.multiplayer || cfg.raceIndex < 0 || cfg.raceIndex >= kMaxRaces || !(crash ? result.ended : race && result.finished))
+        return std::nullopt;
 
     const std::string mode = modeKey(cfg.mode);
-    p.score += std::max(0, result.score);
-    p.lastVehicle = cfg.vehicle;
-    if (cfg.mode == GameMode::CrashCourse) {
-        const std::string key = std::format("{}.{}", str::lower(cfg.city), cfg.raceIndex);
-        if (cfg.raceIndex >= 0 && result.won)
-            p.crashPassed.insert(key);
-        else if (cfg.raceIndex >= 0 && !p.crashPassed.contains(key))
-            p.crashFailed.insert(key);
-    } else if (cfg.raceIndex >= 0 && cfg.mode != GameMode::Cruise && result.finished) {
-        RaceRecord& r = p.races[Profile::raceKey(cfg.difficulty, cfg.city, mode, cfg.raceIndex)];
-        if (result.position > 0 && (r.bestPosition == 0 || result.position < r.bestPosition))
-            r.bestPosition = result.position;
-        if (result.timeSeconds > 0 && (r.bestTime == 0 || result.timeSeconds < r.bestTime))
-            r.bestTime = result.timeSeconds;
-        if (const CityProgressInfo* c = city(cfg.city); c && isWin(*c, cfg.difficulty, result.position))
-            ++r.wins;
-    }
-
-    std::vector<Reward> earned;
+    std::vector<const Reward*> lockedBefore;
     for (const auto& r : m_rewards)
-        if (rewardEarned(p, r) && std::ranges::find(before, &r) == before.end())
-            earned.push_back(r);
-    return earned;
+        if (r.raceType == mode && str::iequals(r.city, cfg.city) && !variantUnlocked(p, r.vehicle, r.variant))
+            lockedBefore.push_back(&r);
+
+    RaceRecord n;
+    if (crash) {
+        n.time = 1.0f;
+        n.score = 1;
+    } else {
+        n.time = cfg.mode == GameMode::Circuit && result.bestLapSeconds > 0.0f ? result.bestLapSeconds
+                                                                               : result.timeSeconds;
+        n.score = std::max(0, result.score);
+    }
+    n.vehicle = cfg.vehicle;
+    n.passed = result.won;
+    const std::string key = Profile::raceKey(cfg.city, mode, cfg.raceIndex);
+    const bool fresh = !p.races.contains(key);
+    merge(p.races[key], fresh, n);
+
+    // mmRewardList::CheckReward: the first row of this mode, in table order,
+    // that is now met and whose vehicle or paint job was locked.
+    for (const Reward* r : lockedBefore)
+        if (rewardMet(p, *r))
+            return *r;
+    return std::nullopt;
+}
+
+int Progress::totalScore(const Profile& p, std::string_view cityName) const {
+    int total = 0;
+    for (const char* mode : {"race", "blitz", "circuit"})
+        for (int i = 0; i < kMaxRaces; ++i)
+            if (const RaceRecord* r = p.record(cityName, mode, i))
+                total += r->score;
+    return total;
+}
+
+int Progress::totalScore(const Profile& p) const {
+    int total = 0;
+    for (const auto& c : m_cities)
+        total += totalScore(p, c.name);
+    return total;
 }
 
 } // namespace mm2::game

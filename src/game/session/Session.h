@@ -225,6 +225,7 @@ private:
     float m_raceTime = 0.0f;
     bool m_raceClock = false;
     float m_lapStart = 0.0f, m_lastLap = 0.0f, m_bestLap = 0.0f;
+    std::vector<float> m_lapTimes;
 
     // Count-down clock (mmPlayer's timer at 0xd0c in the original).
     bool m_hasClock = false;

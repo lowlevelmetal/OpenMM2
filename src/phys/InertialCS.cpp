@@ -1,14 +1,14 @@
 // phInertialCS (Midtown Madness 2): Update, ApplyContactForce, CalcNetPush,
-// CalcNetTurn, MoveICS, GetLocalFilteredVelocity2, GetInertiaMatrix,
-// InitBoxMass, verified against the build 3393 code (MM2Recomp). The sleep
-// test, constraints and CMatrix helpers come from MM1's asInertialCS
-// (Open1560, https://github.com/0x1F9F1/Open1560, GPL-3.0, code/midtown/game.asm).
+// CalcNetTurn, MoveICS, GetLocalFilteredVelocity2, GetLocalAcceleration,
+// GetForce, GetTorque, GetInertiaMatrix, GetInvMassMatrix, InitBoxMass,
+// verified against the build 3393 code (MM2Recomp). The sleep test and
+// constraints come from MM1's asInertialCS (Open1560,
+// https://github.com/0x1F9F1/Open1560, GPL-3.0, code/midtown/game.asm).
 // Operation order and float32 arithmetic follow the originals.
 
 #include "phys/InertialCS.h"
 
 #include "phys/AgeMath.h"
-#include "phys/Joint3Dof.h"
 
 #include <algorithm>
 #include <cmath>
@@ -131,8 +131,6 @@ void InertialCS::update(float dt, float invDt) {
         clearAccumulators();
         return;
     }
-    if (constraints & kConstrainLink)
-        return;
     finishForces(dt, invDt);
     finishUpdate(dt);
 }
@@ -182,7 +180,7 @@ void InertialCS::finishForces(float dt, float invDt) {
     // dgPhysEntity::Update: Mass * gravity added before the integration.
     applyForce({gravity.x * mass, gravity.y * mass, gravity.z * mass});
     // phInertialCS::Update(): the contact accumulators join this sample's
-    // forces (here already, so that a Joint3Dof sees them).
+    // forces.
     linearForce = {linearForce.x + contactForce.x, linearForce.y + contactForce.y, linearForce.z + contactForce.z};
     angularTorque = {angularTorque.x + contactTorque.x, angularTorque.y + contactTorque.y,
                      angularTorque.z + contactTorque.z};
@@ -274,10 +272,10 @@ void InertialCS::integrateImplicit(float h) {
 void InertialCS::finishUpdate(float h) {
     if (state == Asleep || (constraints & kConstrainZeroDof))
         return;
-    // OpenMM2: bodies linked by a Joint3Dof (MM1's joint, standing in for
-    // MM2's dgTrailerJoint, which is not ported) integrate explicitly, as the
-    // joint's constraint force assumes.
-    if (implicitContact && !(constraints & kConstrainLink))
+    // phInertialCS::Update(float): implicit with this sample's contacts,
+    // explicit otherwise. MM2 integrates bodies linked by a dgTrailerJoint
+    // the same way: the joint only adds forces and torques.
+    if (implicitContact)
         integrateImplicit(h);
     else
         integrateExplicit(h);
@@ -425,6 +423,39 @@ Vec3 InertialCS::getVelocity(const Vec3* pos) const {
             (w.x * r.y - w.y * r.x) + linearVelocity.z};
 }
 
+Vec3 InertialCS::localAcceleration(const Vec3& pos) const {
+    const Vec3 r{pos.x - matrix.m3.x, pos.y - matrix.m3.y, pos.z - matrix.m3.z};
+    const Vec3& w = angularVelocity;
+    // Centripetal part w x (w x r).
+    const Vec3 u{r.z * w.y - r.y * w.z, r.x * w.z - r.z * w.x, r.y * w.x - r.x * w.y};
+    Vec3 a{w.y * u.z - u.y * w.z, u.x * w.z - u.z * w.x, u.y * w.x - u.x * w.y};
+    a = {invMass * linearForce.x + a.x, invMass * linearForce.y + a.y, invMass * linearForce.z + a.z};
+    // Angular acceleration from the torque less the gyroscopic term w x L,
+    // through the world inverse inertia R^T diag(1/I) R.
+    const Vec3& l = angularMomentum;
+    const Vec3 tau{(w.z * l.y - w.y * l.z) + angularTorque.x, (w.x * l.z - l.x * w.z) + angularTorque.y,
+                   (l.x * w.y - w.x * l.y) + angularTorque.z};
+    const Mat34& m = matrix;
+    const float bx = (tau.x * m.m0.x + tau.y * m.m0.y + tau.z * m.m0.z) * invInertia.x;
+    const float by = (tau.x * m.m1.x + tau.y * m.m1.y + tau.z * m.m1.z) * invInertia.y;
+    const float bz = (tau.x * m.m2.x + tau.y * m.m2.y + tau.z * m.m2.z) * invInertia.z;
+    const Vec3 alpha{bz * m.m2.x + by * m.m1.x + bx * m.m0.x, bz * m.m2.y + by * m.m1.y + bx * m.m0.y,
+                     bz * m.m2.z + by * m.m1.z + bx * m.m0.z};
+    // Tangential part alpha x r.
+    return {(alpha.y * r.z - alpha.z * r.y) + a.x, (alpha.z * r.x - r.z * alpha.x) + a.y,
+            (r.y * alpha.x - alpha.y * r.x) + a.z};
+}
+
+Vec3 InertialCS::getForce(float invDt) const {
+    return {invDt * linearImpulse.x + linearForce.x, invDt * linearImpulse.y + linearForce.y,
+            invDt * linearImpulse.z + linearForce.z};
+}
+
+Vec3 InertialCS::getTorque(float invDt) const {
+    return {invDt * angularImpulse.x + angularTorque.x, invDt * angularImpulse.y + angularTorque.y,
+            invDt * angularImpulse.z + angularTorque.z};
+}
+
 Vec3 InertialCS::filteredVelocity(const Vec3& pos, float invDt) const {
     Vec3 v = getVelocity(&pos);
     const float p2 = lastPush.mag2();
@@ -461,13 +492,6 @@ void InertialCS::calcCMatrix(Mat34& out, const Vec3& pos) const {
     out.m1.y = out.m1.y + invMass;
     out.m2.z = invMass + out.m2.z;
     out.m3 = {};
-}
-
-void InertialCS::getCMatrix(Mat34& out, const Vec3& pos) const {
-    if (joint && (constraints & kConstrainLink) && !joint->isBroken())
-        joint->getCMatrix(this, out, pos);
-    else
-        calcCMatrix(out, pos);
 }
 
 Vec3 InertialCS::invInertiaWorld(const Vec3& v) const {

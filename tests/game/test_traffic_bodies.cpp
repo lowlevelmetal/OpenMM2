@@ -71,4 +71,22 @@ TEST(TrafficBodies, ContactActivatesAndPushesTrafficCar) {
     const float pushed = (moved->m3 - carFrame.m3).dot(forward);
     EXPECT_GT(pushed, 0.2f) << "the hit car should move forward";
     EXPECT_LT(std::abs(moved->m3.y - carFrame.m3.y), 1.0f) << "the hit car should stay on the road";
+
+    // Once it has come to rest (15 still physics steps) the AI takes it back:
+    // standing upright on the road it drives back onto its lane
+    // (aiVehicleActive::Detach -> aiGoalRegainRail -> aiGoalRandomDrive).
+    const Vec3 away = player->sim().modelMatrix().m3; // stays in the same room
+    bool handedBack = false, backOnRail = false;
+    for (int i = 0; i < 120 * 20 && !backOnRail; ++i) {
+        world.step(1.0f / 120.0f);
+        traffic.afterStep(away);
+        if (i % 4 == 0)
+            ai->update(1.0f / 30.0f, away, {});
+        handedBack = handedBack || traffic.transformOf(id) == nullptr;
+        for (const auto& c : ai->cars())
+            if (c.id == id && handedBack && c.goal == ai::AmbientGoal::RandomDrive)
+                backOnRail = true;
+    }
+    EXPECT_TRUE(handedBack) << "the car should come to rest";
+    EXPECT_TRUE(backOnRail) << "the car should regain its lane";
 }

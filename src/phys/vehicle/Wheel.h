@@ -26,6 +26,9 @@ struct WheelEnv {
     // vehCarSim CarFrictionHandling; wheels without a car do not apply it.
     bool hasCar = true;
     float carFrictionHandling = 1.0f;
+    // State of the game's random generator (World::randomSeed); null uses a
+    // private stream.
+    std::uint32_t* randomSeed = nullptr;
 };
 
 // vehWheel (Midtown Madness 2), verified against the build 3393 code:
@@ -65,6 +68,9 @@ public:
     void computeConstants();
     // vehWheel::SetNormalLoad: derives the spring, damper and tyre constants.
     void setNormalLoad(float load);
+    // vehWheel::AddNormalLoad: SetNormalLoad(static load + load), at least 1 N
+    // (vehTrailer::Init adds the trailer's share to the tractor's wheels).
+    void addNormalLoad(float load);
     void reset();
 
     // vehWheel::SetInputs: steering (-1..1, before SteeringLimit), foot brake
@@ -160,12 +166,11 @@ public:
 
 private:
     void calcSuspensionForce(float disp, bool contact, float cosNormal, const WheelEnv& env);
-    float bumpDisplacement(float speed, float dt);
+    float bumpDisplacement(float speed, float dt, std::uint32_t* seed);
     void noContact();
 };
 
-// The game's random generator (irand/frand: MSVC rand(), shared by the
-// whole game in the original; one stream for the vehicle physics here).
-float physFrand();
+// The game's frand (irand: MSVC rand(), times 2^-15) on the given state.
+float physFrand(std::uint32_t& seed);
 
 } // namespace mm2::phys

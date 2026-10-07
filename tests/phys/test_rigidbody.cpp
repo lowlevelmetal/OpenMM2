@@ -243,10 +243,12 @@ TEST(World, BounceUsesElasticity) {
 
 TEST(World, OversampleSplitsFrames) {
     World world;
-    // dgPhysManager::Update: ceil((frame - 0.001) / (1/60)), at most 6.
+    // dgPhysManager::Update with mmGame::Init's settings:
+    // ceil((frame - 0.001) / (1/35)), at most 3.
     EXPECT_EQ(world.advanceOversampled(1.0f / 60.0f), 1);
     EXPECT_EQ(world.advanceOversampled(1.0f / 30.0f), 2);
-    EXPECT_EQ(world.advanceOversampled(1.0f / 20.0f), 3);
-    EXPECT_EQ(world.advanceOversampled(2.0f), 6); // MaxSamples
+    EXPECT_EQ(world.advanceOversampled(1.0f / 20.0f), 2);
+    EXPECT_EQ(world.advanceOversampled(1.0f / 10.0f), 3);
+    EXPECT_EQ(world.advanceOversampled(2.0f), 3); // MaxSamples
     EXPECT_EQ(world.advanceFixed(0.051f), 3);
 }

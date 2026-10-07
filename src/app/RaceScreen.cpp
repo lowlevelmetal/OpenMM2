@@ -134,8 +134,21 @@ public:
         if (m_trafficBodies && m_player)
             m_trafficBodies->afterStep(m_player->sim().modelMatrix().m3);
         if (m_ai && m_player) {
-            const auto& ics = m_player->sim().body.ics;
-            m_ai->update(static_cast<float>(dt), ics.matrix.m3, ics.frameVelocity);
+            const auto& sim = m_player->sim();
+            ai::PlayerCar pc;
+            pc.transform = sim.body.ics.matrix;
+            pc.velocity = sim.body.ics.frameVelocity;
+            pc.width = sim.body.shape.half.x * 2.0f;
+            pc.length = sim.body.shape.half.z * 2.0f;
+            pc.radius = sim.body.shape.half.mag();
+            pc.steering = sim.steering;
+            pc.reversing = sim.trans.getCurrentGear() < 0;
+            pc.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
+            std::vector<Vec3> racers;
+            for (const auto& o : m_opponents)
+                racers.push_back(o.sim->sim().body.ics.matrix.m3);
+            m_ai->setOpponents(racers);
+            m_ai->update(static_cast<float>(dt), pc);
         }
         if (m_player) {
             m_pose = m_player->pose();
@@ -203,7 +216,7 @@ public:
         m_cityRenderer->draw(m_camera, frustum, m_env, m_detail);
         m_roadDecals.draw(dev, *m_textures);
         if (m_ai && m_aiRenderer)
-            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay == game::TimeOfDay::Night,
+            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay,
                                [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
         drawRemoteCars(ctx, m_frameDt);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
@@ -504,7 +517,7 @@ private:
             if (m_ai) {
                 std::string error;
                 opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
-                                                  1 + static_cast<int>(i), &error, m_world.get());
+                                                  1 + static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
                     opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
                 else
@@ -803,15 +816,29 @@ private:
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // aiMap::Init: no pedestrians in circuit races; the winter models in snow.
+        if (m_result.config.mode == game::GameMode::Circuit)
+            settings.pedestrianDensity = 0.0f;
+        settings.winterPeds = m_result.config.weather == game::Weather::Snow;
         std::string error;
-        m_ai = ai::World::create(*m_city, ctx.game->vfs, settings, nullptr, &error);
+        const city::AiMapConfig* raceMap =
+            m_session && m_session->setup().aiMap ? &*m_session->setup().aiMap : nullptr;
+        m_ai = ai::World::create(*m_city, ctx.game->vfs, settings, raceMap, &error);
         if (!m_ai) {
             log::warn("race: AI unavailable: {}", error);
             return;
         }
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
-        if (m_world)
+        if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
+            m_ai->setProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
+                phys::RayHit hit;
+                if (!m_world->probe(from, to, hit))
+                    return false;
+                at = hit.position;
+                return true;
+            });
+        }
     }
 
     void loadEffects(Context& ctx) {
@@ -1175,10 +1202,10 @@ private:
     game::CameraTarget cameraTarget() const {
         const auto& sim = m_player->sim();
         game::CameraTarget t;
-        t.matrix = sim.body.ics.matrix;
+        // camCarCS tracks vehCarSim's world matrix (the model origin).
+        t.matrix = sim.modelMatrix();
         t.angularVelocity = sim.body.ics.angularVelocity;
-        const Vec3& v = sim.body.ics.frameVelocity;
-        t.speed = std::abs((t.matrix.m2.x * v.x + t.matrix.m2.y * v.y) + t.matrix.m2.z * v.z);
+        t.speed = sim.speed(); // vehCarSim: |velocity . Z|
         t.steering = sim.steering;
         t.throttle = sim.engine.throttle;
         t.handBrake = sim.handBrake;

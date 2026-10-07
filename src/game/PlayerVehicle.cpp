@@ -73,9 +73,11 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
     v->m_sim.init(params, geom);
 
     // Semi trailer: vehTrailer + dgTrailerJoint tunes, <base>_trailer model.
+    // vehCar::Init builds one only for a car with a trailer_hitch pivot.
     auto trailerTune = readDat(vfs, "tune/vehicle/" + base + ".vehtrailer");
     auto jointTune = readDat(vfs, "tune/vehicle/" + base + ".dgtrailerjoint");
-    if (trailerTune && trailerTune->top() && jointTune && jointTune->top()) {
+    const asset::Mtx* carHitch = v->m_model.pivot("trailer_hitch");
+    if (carHitch && trailerTune && trailerTune->top() && jointTune && jointTune->top()) {
         phys::TrailerParams tp;
         phys::TrailerJointParams jp;
         auto trailerModel = asset::loadVehicleModel(base + "_trailer", read, nullptr);
@@ -95,12 +97,9 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
             if (!tg.body.valid())
                 if (const auto* body = trailerModel->pkg.findBest("TRAILER"))
                     tg.body = body->bounds();
-            // vehTrailer has no CG field. MM1 uses the TRAILER_H box centre,
-            // which puts vpsemi's ladder trailer's CG 2.26 m up and rolls it
-            // over at MM2's tyre grip; the model origin (ground level, like
-            // MM2's low tractor CGs) is used instead (inferred, see
-            // docs/physics.md "Trailers").
-            tg.centerOfGravity = {};
+            tg.carHitch = carHitch->origin;
+            if (const auto* hitch = trailerModel->pivot("trailer_hitch"))
+                tg.trailerHitch = hitch->origin;
             v->m_trailerModel = std::make_unique<asset::VehicleModel>(std::move(*trailerModel));
             v->m_trailer = std::make_unique<phys::Trailer>();
             v->m_trailer->init(tp, jp, tg, v->m_sim);

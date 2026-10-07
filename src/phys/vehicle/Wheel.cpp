@@ -27,7 +27,7 @@ float signOf(float v) {
     return v > 0.0f ? 1.0f : (v < 0.0f ? -1.0f : 0.0f);
 }
 
-std::uint32_t g_randSeed = 1;
+std::uint32_t g_privateSeed = 1;
 
 // Matrix34::MakeRotateY (3x3 only).
 void makeRotateY(Mat34& m, float a) {
@@ -48,10 +48,10 @@ void rotateAbout(Mat34& m, const Vec3& axis, float angle) {
 
 } // namespace
 
-float physFrand() {
+float physFrand(std::uint32_t& seed) {
     // irand: MSVC rand(); frand = irand * 2^-15.
-    g_randSeed = g_randSeed * 214013u + 2531011u;
-    const int r = static_cast<int>((g_randSeed >> 16) & 0x7FFFu);
+    seed = seed * 214013u + 2531011u;
+    const int r = static_cast<int>((seed >> 16) & 0x7FFFu);
     return static_cast<float>(r) * 3.0517578e-05f;
 }
 
@@ -83,6 +83,13 @@ void Wheel::computeConstants() {
     }
     const float az = std::abs(z);
     setNormalLoad((-(mass * kWheelGravity) * az * 0.5f) / (az + az));
+}
+
+void Wheel::addNormalLoad(float load) {
+    float l = load + normalLoad;
+    if (l < 1.0f)
+        l = 1.0f;
+    setNormalLoad(l);
 }
 
 void Wheel::setNormalLoad(float load) {
@@ -247,10 +254,10 @@ void Wheel::calcSuspensionForce(float disp, bool contact, float cosNormal, const
     }
 }
 
-float Wheel::bumpDisplacement(float speed, float dt) {
+float Wheel::bumpDisplacement(float speed, float dt, std::uint32_t* seed) {
     if (!material || material->height == 0.0f)
         return 0.0f;
-    bumpPhase = (physFrand() + 0.618f) * dt * speed + bumpPhase;
+    bumpPhase = (physFrand(seed ? *seed : g_privateSeed) + 0.618f) * dt * speed + bumpPhase;
     bumpPhase = std::fmod(bumpPhase, material->width);
     const float b = std::sin((bumpPhase * 6.2831855f) / material->width) * material->height;
     return speed < 1.0f ? b * speed : b;
@@ -328,7 +335,8 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     slipVelocity = (flags & kFixed) ? fwdVelocity : rotationSpeed * radius + fwdVelocity;
 
     // Surface: bumps, drag, friction, sinking into soft ground while skidding.
-    bump = bumpDisplacement(std::sqrt(latVelocity * latVelocity + fwdVelocity * fwdVelocity), env.dt);
+    bump = bumpDisplacement(std::sqrt(latVelocity * latVelocity + fwdVelocity * fwdVelocity), env.dt,
+                            env.randomSeed);
     drag = material->drag;
     friction = material->friction;
     const float sinkTo = skidding ? material->depth : 0.0f;

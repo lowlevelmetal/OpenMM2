@@ -13,14 +13,16 @@ void Context::saveSettings() {
 void Context::applyAudioSettings() {
     if (!mixer)
         return;
+    // Options > Audio: the volumes, with the toggles muting their buses
+    // (sound FX: effects and engines; commentary: voices; music; city sounds:
+    // the ambient sounds and the city's ambience segment).
     mixer->setMasterVolume(settings.masterVolume);
-    mixer->setBusVolume(audio::Bus::Effects, settings.effectsVolume);
-    mixer->setBusVolume(audio::Bus::Engine, settings.engineVolume);
-    mixer->setBusVolume(audio::Bus::Ambient, settings.ambientVolume);
-    mixer->setBusVolume(audio::Bus::Voice, settings.voiceVolume);
-    mixer->setBusVolume(audio::Bus::Music, settings.musicVolume);
-    // Options > Audio "Balance" slider: 0 (left) .. 0.5 (centre) .. 1 (right).
-    mixer->setBalance(static_cast<float>(settings.ini.getDouble("Audio", "Balance", 0.5)) * 2.0f - 1.0f);
+    mixer->setBusVolume(audio::Bus::Effects, settings.soundEffects ? settings.effectsVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Engine, settings.soundEffects ? settings.engineVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Ambient, settings.citySounds ? settings.ambientVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Voice, settings.commentary ? settings.voiceVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Music, settings.music ? settings.musicVolume : 0.0f);
+    mixer->setBalance(settings.balance);
 }
 
 audio::MusicPlayer* Context::music() {
@@ -30,7 +32,8 @@ audio::MusicPlayer* Context::music() {
             log::warn("music: soundtrack unavailable");
         } else {
             m_musicStream = mixer->addStream(m_music->musicStream(), audio::Bus::Music);
-            m_ambienceStream = mixer->addStream(m_music->ambienceStream(), audio::Bus::Music);
+            // The city ambience segment follows the CITY SOUNDS option, not MUSIC.
+            m_ambienceStream = mixer->addStream(m_music->ambienceStream(), audio::Bus::Ambient);
         }
     }
     return m_music.get();

@@ -20,8 +20,12 @@ Four types exist. Each consists of `pedmodel_<type>.{skel,mod,shaders,rays,csv}`
 | `pedmodel_womanw` | winter woman | flat | 24 |
 
 `pedmodel_wolf.skel` is a skeleton with no mesh or animations. The `w` types
-share the animations of their base type. Which type and variant the game
-spawns where is decided by the executable and is **not known**.
+share the animations of their base type. MM2 (build 3393, `aiMap::Init`,
+`aiPedestrian::Init`) picks each pedestrian's type uniformly from the AI
+map's `[GoodWeatherPedName / BadWeatherPedName]` list (man and woman in both
+cities), the second name of each pair (the `w` winter models) in snow, and
+its variant as trunc(frand x (variants - 1)), so the last variant is never
+used. See docs/ai.md.
 `anim/pedanim_manantrnch.anim` is a 104-byte text file with an `.anim` name.
 It is broken as shipped and unreferenced (`isKnownBrokenPedAsset`).
 
@@ -79,10 +83,13 @@ most files: the forward travel of the root over n frame steps, i.e. one full
 loop including the step back to frame 0. A few files differ by up to 0.15
 (`manwalk`, `manrun`, `manw2bk`). This value is **inferred**.
 
-The playback rate is **unknown**. The walk covers 1.41 m in 20 frames, which
-gives a normal walking pace (≈1.4 m/s) at 20 fps. The original's
-interpolation between frames is also unknown; `posePed` interpolates channels
-linearly.
+MM2 (`pedAnimation::Load`, `pedAnimationInstance`) plays the animations at
+**30 frames per second**, in whole frames (no interpolation), from frame 0
+of the `.anim` whatever the CSV's first frame says. At load it subtracts the
+root's straight-line x/z drift between the first and the last frame from
+every frame, so the pose stays in place and the pedestrian is moved by the
+sequence's speed instead (below). `posePed` interpolates channels linearly;
+the AI hands it whole frames.
 
 ## Animation table (`pedmodel_*.csv`)
 
@@ -102,8 +109,10 @@ WALK_LDIVE,pedanim_manw2dl,1,24,0,0,0,2.224,LDIVE_GROUNDL
   root travel within 0.01 for most moving states. They are hand-entered and
   some are off; for example, the dive side distances say 2.2 where the root
   moves 1.2–1.9. The offsets are close to the root's start position (WALK:
-  0.281 = −z₀). Use the animation data for root motion; how the original
-  consumed these columns is **unknown**.
+  0.281 = −z₀). MM2 moves a pedestrian by distance / (frames x 0.03333 s)
+  per second forward and sideways, frames = last - first + 1 (WALK: man
+  1.409 m over 20 frames = 2.11 m/s); the offsets are not used
+  (`pedAnimation::Load`).
 
 ## Mesh (`.mod`, text, "version: 1.09")
 

@@ -49,7 +49,11 @@ simulation state at a fixed rate independent of the frame rate.
 
 ## Accuracy
 
-Behaviour is reproduced from evidence: the game's own data files, Open1560
-(the Midtown Madness 1 reimplementation on the same engine), community
-documentation and observation of the original game. Anything inferred is
-marked as such in code comments and in `docs/`, so it can be checked later.
+Behaviour is reproduced from evidence, in this order: MM2's own code (the
+symbol-named disassembly of the unprotected build 3393 executable kept in the
+maintainer's private MM2Recomp repository, used as documentation and ported
+to readable C++, see CLAUDE.md), the game's data files, Open1560 (the
+Midtown Madness 1 reimplementation on the same engine), community
+documentation and observation of the original game. Code and docs cite the
+original function each rule comes from; anything inferred is marked as such,
+so it can be checked later.

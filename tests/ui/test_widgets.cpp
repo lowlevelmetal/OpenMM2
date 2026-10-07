@@ -71,50 +71,71 @@ ui::ValueBox& addBox(ui::Menu& m, float x, float y, int* value, int count) {
 
 } // namespace
 
-TEST(Menu, InitialFocusSkipsNavigationStrip) {
+TEST(Menu, InitialFocusIsTheFirstPageWidget) {
     Fixture fx;
     ui::Menu m;
     int a = 0, b = 0;
-    addBox(m, 439, 1, &a, 2);   // in the top strip
+    auto& strip = addBox(m, 439, 1, &a, 2);
+    strip.group = 1; // navigation strip
     auto& content = addBox(m, 400, 62, &b, 2);
     auto f = fx.frame();
     m.update(f);
     EXPECT_EQ(m.focused(), &content);
 }
 
-TEST(Menu, SpatialNavigationAndAdjust) {
+TEST(Menu, FocusFollowsCreationOrderAndCrossesToTheStrip) {
     Fixture fx;
     ui::Menu m;
-    int top = 0, bottom = 0, right = 0;
-    auto& t = addBox(m, 100, 100, &top, 3);
-    auto& bo = addBox(m, 100, 200, &bottom, 3);
-    auto& r = addBox(m, 400, 210, &right, 3);
+    int v[4] = {};
+    auto& first = addBox(m, 400, 300, &v[0], 3); // creation order, not position
+    auto& second = addBox(m, 100, 100, &v[1], 3);
+    auto& nav1 = addBox(m, 439, 1, &v[2], 3);
+    auto& nav2 = addBox(m, 540, 1, &v[3], 3);
+    nav1.group = nav2.group = 1;
     auto f = fx.frame();
     m.update(f);
-    ASSERT_EQ(m.focused(), &t);
+    ASSERT_EQ(m.focused(), &first);
 
-    fx.nav = {};
-    fx.nav.down = true;
-    m.update(f);
-    EXPECT_EQ(m.focused(), &bo);
+    auto press = [&](auto setter) {
+        fx.nav = {};
+        setter(fx.nav);
+        m.update(f);
+    };
+    press([](ui::NavInput& n) { n.down = true; });
+    EXPECT_EQ(m.focused(), &second);
+    // Past the page's last widget: the strip's first.
+    press([](ui::NavInput& n) { n.tabNext = true; });
+    EXPECT_EQ(m.focused(), &nav1);
+    press([](ui::NavInput& n) { n.down = true; });
+    EXPECT_EQ(m.focused(), &nav2);
+    // Past the strip's last: the page's first.
+    press([](ui::NavInput& n) { n.down = true; });
+    EXPECT_EQ(m.focused(), &first);
+    // Up before the first: the other group's first (MenuManager::ToggleFocus).
+    press([](ui::NavInput& n) { n.up = true; });
+    EXPECT_EQ(m.focused(), &nav1);
+    // Escape on the strip returns to the page.
+    press([](ui::NavInput& n) { n.back = true; });
+    EXPECT_EQ(m.focused(), &first);
+    // Left/Right never move focus, and do nothing on a closed drop-down.
+    press([](ui::NavInput& n) { n.right = true; });
+    EXPECT_EQ(m.focused(), &first);
+    EXPECT_EQ(v[0], 0);
+}
 
-    // Right on a value box changes the value instead of moving focus.
-    fx.nav = {};
-    fx.nav.right = true;
+TEST(Menu, ResetFocusReturnsToTheInitialWidget) {
+    Fixture fx;
+    ui::Menu m;
+    int a = 0, b = 0;
+    addBox(m, 10, 10, &a, 2);
+    auto& chosen = addBox(m, 10, 50, &b, 2);
+    m.setInitialFocus(&chosen);
+    auto f = fx.frame();
+    fx.nav.up = true;
     m.update(f);
-    EXPECT_EQ(bottom, 1);
-    EXPECT_EQ(m.focused(), &bo);
-
-    // Values clamp at the end of the list (no wrap by default).
-    bottom = 2;
-    m.update(f);
-    EXPECT_EQ(bottom, 2);
-
-    // Tab moves focus in widget order.
-    fx.nav = {};
-    fx.nav.tabNext = true;
-    m.update(f);
-    EXPECT_EQ(m.focused(), &r);
+    EXPECT_NE(m.focused(), &chosen);
+    m.resetFocus();
+    EXPECT_EQ(m.focused(), &chosen);
 }
 
 TEST(Menu, BackCallsHandler) {
@@ -130,11 +151,13 @@ TEST(Menu, BackCallsHandler) {
     EXPECT_TRUE(back);
 }
 
-TEST(ValueBox, DropDownSelectsWithKeyboard) {
+TEST(ValueBox, DropDownSelectsWithKeyboardSkippingDisabledOptions) {
     Fixture fx;
     ui::Menu m;
     int v = 0;
     auto& box = addBox(m, 100, 100, &v, 5);
+    box.optionEnabled = [](int i) { return i != 1; };
+    EXPECT_FLOAT_EQ(box.box.h, 23.0f); // UITextDropdown: drop_arrow height + 2
     auto f = fx.frame();
     m.update(f); // focus
     fx.nav = {};
@@ -143,32 +166,126 @@ TEST(ValueBox, DropDownSelectsWithKeyboard) {
     ASSERT_TRUE(box.modal());
     fx.nav = {};
     fx.nav.down = true;
-    m.update(f);
-    m.update(f);
+    m.update(f); // skips option 1
     fx.nav = {};
     fx.nav.accept = true;
     m.update(f);
     EXPECT_FALSE(box.modal());
     EXPECT_EQ(v, 2);
+    // Escape closes without picking.
+    fx.nav = {};
+    fx.nav.accept = true;
+    m.update(f);
+    fx.nav = {};
+    fx.nav.right = true;
+    m.update(f);
+    fx.nav = {};
+    fx.nav.back = true;
+    m.update(f);
+    EXPECT_FALSE(box.modal());
+    EXPECT_EQ(v, 2);
 }
 
-TEST(TextEntry, TypingAndBackspace) {
+TEST(ValueBox, RollerButtonsStepOverLockedEntries) {
+    Fixture fx;
+    ui::Menu m;
+    int v = 0;
+    auto& box = addBox(m, 100, 100, &v, 4);
+    box.optionEnabled = [](int i) { return i != 2; };
+    EXPECT_TRUE(ui::stepOption(box, 1, false));
+    EXPECT_EQ(v, 1);
+    EXPECT_FALSE(ui::stepOption(box, 1, false)); // clamping arrows stop at a locked entry
+    EXPECT_EQ(v, 1);
+    v = 3;
+    EXPECT_FALSE(ui::stepOption(box, 1, false));
+    EXPECT_TRUE(ui::stepOption(box, 1, true)); // wrapping arrows go round
+    EXPECT_EQ(v, 0);
+    EXPECT_TRUE(ui::stepOption(box, -1, true));
+    EXPECT_EQ(v, 3);
+}
+
+TEST(Roller, StepsAndClamps) {
+    Fixture fx;
+    ui::Menu m;
+    int v = 1;
+    auto& r = m.add<ui::Roller>(
+        ui::Box{418, 98, 60, 32}, [] { return std::vector<std::string>{"1", "2", "3", "4"}; }, [&] { return v; },
+        [&](int i) { v = i; });
+    r.maxIndex = 2;
+    EXPECT_FLOAT_EQ(r.box.h, 34.0f);
+    auto f = fx.frame();
+    m.update(f);
+    fx.nav.right = true;
+    m.update(f);
+    m.update(f);
+    EXPECT_EQ(v, 2); // capped at maxIndex
+    fx.nav = {};
+    fx.nav.left = true;
+    for (int i = 0; i < 4; ++i)
+        m.update(f);
+    EXPECT_EQ(v, 0);
+}
+
+TEST(Slider, TwentyPositionsOnTwoPixelSegments) {
+    float value = 0.0f;
+    ui::Slider s(ui::Box{450, 212, 183, 29}, [&] { return value; }, [&](float v) { value = v; });
+    EXPECT_EQ(s.segments(), 66); // 132 px track between 25 px arrows
+    EXPECT_FLOAT_EQ(s.step(), 1.0f / 19.0f);
+    ui::Slider far(ui::Box{450, 179, 184, 29}, [&] { return value; }, [&](float v) { value = v; }, 100.0f, 1000.0f);
+    EXPECT_NEAR(far.step(), 900.0f / 19.0f, 1e-3f);
+    Fixture fx;
+    auto f = fx.frame();
+    s.adjust(f, 1);
+    EXPECT_FLOAT_EQ(value, 1.0f / 19.0f);
+    s.adjust(f, -1);
+    s.adjust(f, -1);
+    EXPECT_FLOAT_EQ(value, 0.0f);
+}
+
+TEST(TextEntry, FirstKeyReplacesTheText) {
     Fixture fx;
     ui::Menu m;
     std::string name = "Ab";
     auto& entry = m.add<ui::TextEntry>(ui::Box{10, 10, 200, 26}, &name, 5);
-    entry.beginEdit();
+    bool committed = false;
+    entry.onCommit = [&] { committed = true; };
     auto f = fx.frame();
-    m.update(f); // focus
-    fx.nav.text = "cdefg";
+    m.update(f); // focus = editing
+    ASSERT_TRUE(entry.modal());
+    fx.nav.text = "cdefgh";
     m.update(f);
-    EXPECT_EQ(name, "Abcde"); // max length 5
+    EXPECT_EQ(name, "cdefg"); // replaced, max length 5
     fx.nav = {};
     fx.nav.backspace = true;
     m.update(f);
-    EXPECT_EQ(name, "Abcd");
+    EXPECT_EQ(name, "cdef");
     fx.nav = {};
     fx.nav.enter = true;
     m.update(f);
     EXPECT_FALSE(entry.modal());
+    EXPECT_TRUE(committed);
+}
+
+TEST(TextEntry, ClickOnAnotherWidgetTakesTheFocus) {
+    Fixture fx;
+    ui::Menu m;
+    std::string name;
+    auto& entry = m.add<ui::TextEntry>(ui::Box{10, 10, 200, 26}, &name, 18);
+    bool clicked = false;
+    auto& button = m.add<ui::SpriteButton>(ui::SpriteSheet{"texture/none.tga", 4}, 10, 100, [&] { clicked = true; });
+    button.box.w = button.box.h = 30; // no texture in the test: give it a size
+    auto f = fx.frame();
+    m.update(f);
+    ASSERT_EQ(m.focused(), &entry);
+    fx.nav = {};
+    fx.nav.mouse = {20, 110};
+    fx.nav.mouseMoved = fx.nav.mousePressed = fx.nav.mouseDown = true;
+    m.update(f);
+    EXPECT_EQ(m.focused(), &button);
+    EXPECT_FALSE(entry.modal());
+    fx.nav = {};
+    fx.nav.mouse = {20, 110};
+    fx.nav.mouseReleased = true;
+    m.update(f);
+    EXPECT_TRUE(clicked);
 }

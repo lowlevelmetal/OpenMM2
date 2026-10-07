@@ -5,10 +5,11 @@ and Midtown Madness 2 vehicles. The vehicle model is a port of MM2's own
 classes, verified against the code of `midtown2.exe` build 3393 (the
 MM2Recomp reference, see CLAUDE.md): `phInertialCS`, `vehCarSim`, `vehWheel`,
 `vehDrivetrain`, `vehEngine`, `vehTransmission`, `vehAero`, `vehAxle`,
-`vehGyro`, `vehStuck` and parts of `vehCar`, `vehCarDamage`, `vehTrailer` and
-`dgPhysManager`. The code follows the original's operation order and 32-bit
-float arithmetic (the game runs the x87 in single precision); `mm2_phys` is
-built with `-ffp-contract=off`.
+`vehGyro`, `vehStuck`, `vehTrailer`, `dgTrailerJoint`, `phJoint` and parts of
+`vehCar`, `vehCarDamage`, `phColliderJointed` and `dgPhysManager`. The code
+follows the original's operation order and 32-bit float arithmetic (the game
+runs the x87 in single precision); `mm2_phys` is built with
+`-ffp-contract=off`.
 
 ## Evidence levels
 
@@ -33,14 +34,16 @@ calls `vehCar::Update` for each mover, then collides them):
    and the engine-driven one (each probes its wheels, solves its speed and
    updates the wheels, which apply their forces for the next sample),
    `vehAxle` — followed by `vehCar::Update`'s `vehGyro`, `vehStuck` and
-   `vehCarDamage`.
+   `vehCarDamage`. A trailer is the next mover: its `vehTrailer::Update`
+   runs the same three steps and ends with the hitch joint (see Trailers).
 4. Collisions (OpenMM2), impact reports.
 
-MM2 oversamples each frame: n = min(ceil((frame - 0.001) / (1/60)),
-6) samples of frame / n (`dgPhysManager` SampleStep 1/60 s, MaxSamples 6).
-At 60 fps that is one 1/60 s sample per frame. `World::advanceFixed` (default
-1/60 s) therefore behaves exactly as the original did at 60 fps, whatever the
-display rate, and is deterministic for replays and network play;
+MM2 oversamples each frame: n = min(ceil((frame - 0.001) / SampleStep),
+MaxSamples) samples of frame / n. `mmGame::Init` sets SampleStep 1/35 s and
+MaxSamples 3 (overriding `dgPhysManager`'s own 1/60 s and 6), so a frame is
+split only below 35 fps; at 60 fps it is one 1/60 s sample.
+`World::advanceFixed` (default 1/60 s) therefore behaves exactly as the
+original did at 60 fps, whatever the display rate, and is deterministic for replays and network play;
 `World::advanceOversampled` reproduces the original's frame-rate dependent
 scheme. (Several terms below scale with the sample length, e.g. the
 drivetrain's AngInertia * dt, so the original drove slightly differently at
@@ -65,9 +68,13 @@ other frame rates.)
   part along the last sample's push removed, used by the wheels.
 * Pushes (`applyPush`, CalcNetPush) and turns (`applyTurn`) only add the part
   of a new correction not already covered by the pending one.
+* `GetInvMassMatrix` (`calcCMatrix`): the 3x3 inverse mass matrix at a point;
+  `GetLocalAcceleration`, `GetForce`/`GetTorque` (the accumulated force plus
+  the accumulated impulse over the sample; the `ApplyContactForce` part is
+  not included) serve the joints.
 * Kept from MM1's asInertialCS: the sleep test (MM2 moved sleeping to
-  `phSleep`, not ported), constraints, and the CMatrix helpers the trailer
-  joint uses. OpenMM2 re-orthonormalises the matrix when it drifts.
+  `phSleep`, not ported) and constraints. OpenMM2 re-orthonormalises the
+  matrix when it drifts.
 
 ## Car (vehCarSim) — MM2
 
@@ -264,125 +271,168 @@ MM2 builds AI cars with `vehCar::Init(<car>)` (`aiVehiclePhysics::Init`):
 the same tune as the player's. The retail `*_opp.vehCarSim` and
 `vpcop_cop.vehCarSim` files (MM1-era layouts) are never loaded by the game.
 
-## Trailers (Joint3Dof and mmTrailer)
+## Trailers (vehTrailer and dgTrailerJoint) — MM2
 
 vpsemi (a tiller ladder truck) and vpcentury (a semi with a flatbed) tow a
-trailer. `phys/Joint3Dof` and `phys/vehicle/Trailer` port MM1's `Joint3Dof`
-(`Init`, `InitJoint3Dof`, `SetPosition`, `SetFrictionLean/Roll`,
-`SetLeanLimit`, `SetRollLimit`, `SetRestOrientMat` (both), `SetJointForceFlag`,
-`Break/UnbreakJoint`, `Update`, `DoJointTorque`, `DoJointLimits`, both
-`GetCMatrix` overloads, the `discrepancy` global, `CrossProdMatrix`) and
-`mmTrailer` (`Init`, `Reset`, `Update`, `RestoreImpactParams`,
-`SetHackedImpactParams`) plus the trailer setup in `mmCar::Init`, with the
-Matrix34 routines they use (`Inverse`, `Dot`, `Dot3x3`, `Transpose`,
-`RotateAbs`) and `asInertialCS::CalcCMatrix`/`GetCMatrix`. MM2's
-`dgTrailerJoint` derives from `phJoint`, MM2's name for the same base
-(ICS1/ICS2/Offset1/Offset2 in mm2hook's layout).
+trailer. `phys/vehicle/Trailer` ports `vehTrailer` (`Init`, `Reset`,
+`Update`, `BottomedOut`, `SetCarHitchOffset`, `SetTrailerHitchOffset`,
+`FileIO`) and the trailer setup of `vehCar::Init`; `phys/TrailerJoint` ports
+`dgTrailerJoint` (`Init`, `Reset`, `SetPosition`, `SetCosFreeLean`,
+`SetRotate1/2`, `SetFrictionLean/Roll`, `SetLeanLimit`, both `SetRollLimit`,
+`SetRestOrientation`, both `SetRestOrientMat`, `SetForceLimit`,
+`SetJointForceFlag`, `Update`, `MoveICS`, `Break/UnbreakJoint`, `IsBroken`,
+`DoJointTorque`, `DoJointLimits`, both `ComputeInvMassMatrix`, `FileIO`) and
+`phys/Joint` its base `phJoint` (`Init`, `Reset`, `Update`,
+`ComputeInvMassMatrix`, `ComputeJointForce`, `ComputeJointPush`,
+`GetInvMassMatrix`, `IsBroken`). `Body::joint` and `Body::invMassMatrix` are
+`phColliderJointed`'s `Attach` and `GetInvMassMatrix`. MM1's `Joint3Dof`,
+which OpenMM2 used before, is gone; `dgTrailerJoint` descends from it.
 
-**How the joint works.** `InitJoint3Dof` marks both bodies
-`ICS_CONSTRAIN_LINK`, so `asInertialCS::Update` skips them, and
-`Joint3Dof::Update` integrates them instead, once per sample:
+**Integration.** MM2's joint does not integrate anything. The trailer is its
+own mover: `mmGame::Update` declares the player's car and then its trailer
+to `dgPhysManager` every frame, so each sample runs the tractor's
+`vehCar::Update`, then `vehTrailer::Update`: the back wheels' inputs (only
+while hitched), gravity, `phInertialCS::Update` (implicit with the wheel
+contacts, like a car), the four drivetrains and their wheels, and last
+`dgTrailerJoint::Update`, which adds forces and torques to both bodies for
+the next sample. OpenMM2 runs the joint at the end of `Trailer::afterIntegrate`
+(the trailer body is added to the World after the tractor's). Bodies sharing
+an unbroken joint do not collide (`dgPhysManager::Update`).
 
-1. `FinishForces` on both bodies; collision matrices C1, C2 at the joint
-   (`CalcCMatrix`: InvMass·I + (R X)ᵀ diag(InvInertia) (R X)) and
-   K = (C1 + C2)⁻¹; world inertia tensors Rᵀ diag(I) R and their inverses.
-2. If friction or a lean limit is set: `DoJointTorque`. With the rest
-   orientation O = rows (1,0,0) (0,0,−1) (0,1,0) used for trailers, the joint
-   axis of each body is its up axis: **lean** = angle between the two up axes
-   (relative pitch/roll), **roll** = rotation about the trailer's up axis (the
-   hitch angle). Lean torque = (RestoreForceLean·lean·kS)·axis −
-   DampConstLean·kC·unit(rate) − DampLinearLean·kD·rate with
-   kS = m_eff·40/π, kD = m_eff·2·√(40/π), kC = 10·m_eff,
-   m_eff = (|o1||o2|)/(|o2|/m1 + |o1|/m2); the constant term only acts when
-   some component of the relative rate is ≥ 1 rad/s (the original truncates
-   to int). The roll torque uses the same constants over
-   1/(InvInertia1.z + InvInertia2.z) and a sign(rate) constant term.
-3. The constraint force: K · (free relative acceleration of the two joint
-   points, including ω×(ω×r) and gyroscopic terms, + 0.33·relative
-   velocity/dt).
-4. Lean/roll limits (`DoJointLimits`): an angular impulse that stops the
-   approach to the limit, scaled by (elasticity + 1), coupled back into the
-   force through K.
-5. Break test (ForceLimit), torques r×F, the force rotated by half the
-   sample's mean rotation (and scaled by 1 − θ²/24 or 2 sin(θ/2)/θ), applied
-   ±F; the bodies share their pushes; `FinishUpdate` on both.
-6. `discrepancy` = trailer hitch − tractor hitch, then `SetPosition` moves
-   the trailer onto the tractor's hitch point (the original computes
-   ½(p1 + p1), i.e. the tractor's point).
+**The joint** (`dgTrailerJoint::Update`, per sample, unless broken):
 
-World runs the joints right after the free bodies' integration, and bodies
-sharing an unbroken joint do not collide with each other (their boxes
-overlap at the hitch). MM1 collides them through the two-body
-`GetCMatrix(ics1, ics2, …)`, which is ported (it builds both couplings from
-the first body's lever, as the original does) but not used: tractor/trailer
-collision is not implemented. Contacts with the world still use each body's
-own effective mass, not the joint-aware `GetCMatrix`.
+1. K = (C1 + C2)⁻¹ at the joint point (C: `phInertialCS::GetInvMassMatrix`),
+   the world inertia tensors and their inverses.
+2. With the force flag (JointStatus bit 2): `DoJointTorque`. MM2 leaves both
+   rest orientations at identity (nothing calls `SetRestOrientMat`), so the
+   joint axis is each body's Z axis and **lean** = the angle between the
+   tractor's and the trailer's length: the hitch angle and the relative
+   pitch together. Only while |cos lean| < cos FreeLean, i.e. lean beyond
+   FreeLean: torque = RestoreForceLean·lean·kS about the axis normal to both
+   Z axes, minus DampConstLean·kC along the unit relative turn rate (less
+   its part about the trailer's Z axis), with kS = m_eff·40/π, kC =
+   10·m_eff, m_eff = |o1||o2| / (|o2|/m1 + |o1|/m2). The torque jumps in at
+   FreeLean (it is not reduced by it). MM2 also computes the DampLinearLean
+   term (−DampLinearLean·2√(40/π)·m_eff·rate) but never adds it. The roll
+   torque (relative roll about the trailer's Z axis) runs only when the
+   roll passed in exceeds FreeRoll; `Update` always passes 0, so relative
+   roll is free in MM2 and the roll limits never engage.
+3. The joint force F = K·(free relative acceleration of the two joint
+   points from `GetForce`/`GetTorque`, with the ω×(ω×r) and gyroscopic
+   terms, + ⅓·relative velocity/dt). Gravity is added at the start of the
+   next sample and accelerates both points alike.
+4. Lean limit (`DoJointLimits`): once lean ≥ LeanLimit and still closing, an
+   angular impulse (LimitElasticityLean + 1)·(error/axis·M·axis) and the
+   matching change of F.
+5. Breaks when |F| > ForceLimit·10000 N (vpsemi's 40: 400 kN; 0: never).
+6. Torques (p − x1)×F and (x2 − p)×F; F turned by half the sample's mean
+   rotation θ = (ω1 + ω2)·dt/2 when |θ|² > 10⁻⁵ (scaled by 1 − θ²/24, or
+   2 sin(θ/2)/θ), then +F on the tractor and −F on the trailer.
+7. The joint point moves to the middle of the two hitch points; if they are
+   more than FreeRange apart, each body's position moves half the excess
+   towards the other (no velocity change, no push).
 
-**MM2 data mapping.**
+**MM2's force rotation.** Step 6 calls `Matrix34::RotateUnitAxis` (this = this
+· R) on a matrix that still holds C2, the trailer's inverse mass matrix from
+step 1 (MM1 built a fresh rotation with `RotateAbs`). The part of F across the
+turning axis is therefore multiplied by C2 (≈ 10⁻³/kg): while the pair turns
+faster than about 0.2 rad/s the joint transmits only the force along the
+turning axis, and the FreeRange correction holds the hitch. OpenMM2 does the
+same (`TrailerJoint::mm2ForceRotation`, on by default); `simcar
+--plain-hitch-rotation` applies the plain rotation for comparison. In a
+steady circle vpsemi's trailer then lags (its body velocity reads 10 m/s at
+14 m/s) and its hitch opens up to 0.21 m before each correction, against
+0.14 m with the plain rotation.
 
-| MM2 field | Joint3Dof / mmTrailer | Evidence |
+**vehTrailer::Init.**
+
+* The hitches: `vehCar::Init` builds a trailer only if the car model has a
+  `trailer_hitch` pivot (`vehCarModel::GetTrailerHitch`) and passes it as
+  CarHitchOffset; TrailerHitchOffset is the trailer model's own
+  `trailer_hitch` pivot (`vehTrailerInstance::GetTrailerHitch`). The
+  `.vehTrailer` fields replace them when present (vpsemi). The joint takes
+  CarHitchOffset in the tractor's **InertialCS** frame, i.e. relative to its
+  centre of mass, so the hitch sits at model + (CarHitchOffset −
+  CenterOfGravity): 0.2 m above and 0.5 m ahead of vpcentury's
+  `trailer_hitch` pivot. MM2 draws it that way too.
+* The trailer's rigid body is its model: centre of mass at the model origin
+  (vehTrailer has no CG field), `InitBoxMass(Mass, InertiaBox)`, the
+  phInertialCS default angular velocity limit (5 rad/s per axis), gravity
+  19.6. `Reset` puts it at the tractor's InertialCS position + R·(CarHitch −
+  TrailerHitch), in line, hitched; `Init` uses the tractor's model matrix
+  instead (OpenMM2's `Trailer::init` ends with a reset).
+* Wheels TWHL0–3 without a vehCarSim (body frame; static load Mass·19.6/4),
+  TWHL1/TWHL3 copying TWHL0/TWHL2's tune; four free drivetrains with the
+  `Drivetrain` block (constructor defaults otherwise), initialised with the
+  tractor's vehCarSim (its Mass sets the wheel inertia).
+* `vehTrailer::Update` gives only the back wheels the tractor's inputs
+  (steering opposite, with its speed-sensitive factor; brakes; the handbrake
+  eased on the inside wheel), so vpsemi's tiller axle and vpcentury's trailer
+  axle steer against the tractor.
+* **Static loads.** When TWHL0 and TWHL2 lie on the same side of the origin
+  (vpcentury; vpsemi's tiller axle is in front of it), with zm their mean z,
+  hz the trailer hitch's z and L = |hz − zm|, MM2 sets each trailer wheel to
+  W|zm|/(4L) and adds W|hz|/L to the tractor's wheels
+  (`vehWheel::AddNormalLoad`), split between its axles by the hitch position.
+  With the centre of mass at the origin these are swapped: the hitch carries
+  W|zm|/L and the axle W|hz|/L. vpcentury's trailer wheels get 3511 N each
+  while its two real wheels (TWHL0/1 are 3 cm pivots that never reach the
+  ground) carry 12.6 kN each, so they ride on their bump stops; there the
+  bottoming push hides the sinking from the wheel's filtered velocity, the
+  trailer's velocity runs away, and the push and the joint's FreeRange
+  correction lift the whole rig (at rest the tractor's front wheels leave the
+  ground; at full throttle 0–60 mph takes 44 s). **OpenMM2 corrects this by
+  default** (`TrailerOptions::mm2StaticLoads`, `simcar --mm2-trailer-loads`
+  for MM2's values): the tractor gets W|zm|/L and the axle's W|hz|/L is
+  shared by the wheels that reach the ground with the lowest one (within
+  their SuspensionExtent). Whether MM2 itself showed the runaway is not
+  known.
+
+**Tune fields.**
+
+| Field | Use | Evidence |
 |---|---|---|
-| dgTrailerJoint Offset0 / Offset1, or vehTrailer CarHitchOffset / TrailerHitchOffset | hitch in tractor / trailer model space; `InitJoint3Dof` takes them relative to each body's CG. vpcentury has the former, vpsemi the latter; the joint file wins if both exist | MM2 adaptation (inferred) |
-| RestoreForceLean, DampConstLean, DampLinearLean | `SetFrictionLean(restore, const, linear)` | names match; MM1's hard-coded values (2, 0.9, 2) equal vpcentury's old `tune/vpcentury.dgTrailerJoint` |
-| RestoreForceRoll, DampConstRoll, DampLinearRoll | `SetFrictionRoll` | as above (MM1: 2, 0.1, 2) |
-| LeanLimit, LimitElasticityLean | `SetLeanLimit` | as above (MM1: 0.3, 0; retail files: 3.0, 0) |
-| LimitElasticityRoll | `SetRollLimit` elasticity | names match |
-| NegativeRollLimit, PositiveRollLimit | `SetRollLimit` limits; no retail file sets them, so `Init`'s −π/+π apply (MM1's `mmCar::Init` used ±0.3, a 17° hitch limit) | mm2hook layout; default inferred |
-| ForceLimit | break force. vpsemi has 40, which would break at once in newtons, so the MM2 unit is unknown: joints are unbreakable | inferred |
-| JointStatus | 2 in both files; joints start joined | inferred |
-| FreeRange, FreeLean, FreeRoll | vpsemi only. FreeLean/FreeRoll are used as free play subtracted from the lean/roll angle before the restoring spring (MM2's layout also has CosFreeLean); FreeRange is read and unused | inferred (low) |
-| vehTrailer Mass, InertiaBox | `SetMass` | MM1 used the TRAILER_H box |
-| vehTrailer Drivetrain | the four free drivetrains (vpsemi: AngInertia 5000); absent: MM1's 2 × tractor mass | MM2 adaptation |
-| vehTrailer WheelFront / WheelBack | TWHL0/1 (`mmWheel` flags 1) and TWHL2/3 (flags 3, handbrake), 4 wheels' share of the trailer mass each | Ported |
-| (CG) | trailer **model origin**. vehTrailer has no CG; MM1 passes the TRAILER_H box centre (`GetCentroid`). That centre is 2.26 m up on vpsemi's ladder trailer, which then rolls over in fast turns at MM2's tyre grip (`simcar vpsemi --steer 0.15 --trailer-cg mesh`: up.y 0.006), while MM2 puts its tractors' CGs near the ground (CenterOfGravity y −0.1/−0.2) | inferred |
-| (BoundElasticity/Friction) | the tractor's (vehTrailer has no fields; MM1 read them from the trailer file) | inferred |
+| ForceLimit | breaks above ForceLimit·10000 N; 0 never (vpsemi 40 = 400 kN; vpcentury 0) | MM2 |
+| JointStatus | replaces the joint's flags after Init: bit 1 broken, bit 2 torques and limits on (both files: 2). Not recomputed after loading; `Reset` unbreaks | MM2 |
+| RestoreForceLean, DampConstLean | lean restoring torque and constant damping (above) | MM2 |
+| DampLinearLean | read, no effect | MM2 |
+| RestoreForceRoll, DampConstRoll, DampLinearRoll | the roll torque, which never runs | MM2 |
+| LeanLimit, LimitElasticityLean | lean limit (default π) and its elasticity (default 1) | MM2 |
+| LimitElasticityRoll | roll limit elasticity; the limits (−0.3/+0.3 from Init) are not loadable and never engage | MM2 |
+| FreeRange | hitch gap allowed before the bodies are moved (default 0.15 m; vpsemi 0.14) | MM2 |
+| FreeLean | lean below which no lean torque acts (default 0.1 rad, cos kept as CosFreeLean) | MM2 |
+| FreeRoll | the roll torque's threshold (default 0.1) | MM2 |
+| Offset0, Offset1 (vpcentury) | not read by MM2 (an older layout) | MM2 |
+| vehTrailer Mass, InertiaBox | `InitBoxMass` (defaults 3000, 3 4 9) | MM2 |
+| CarHitchOffset, TrailerHitchOffset | replace the models' hitch pivots (above) | MM2 |
+| WheelFront, WheelBack, Drivetrain | TWHL0 (TWHL1 copies), TWHL2 (TWHL3 copies), the first drivetrain (the others copy) | MM2 |
+| (impact elasticity/friction) | vehTrailer sets none, so MM2 uses its bound's material (`default`: 0.1/0.5); OpenMM2's collision gives the trailer body the tractor's BoundElasticity/BoundFriction | inferred |
 
-`mmTrailer::Update` gives the trailer wheels the tractor's inputs: front
-wheels `steer`, back wheels `−steer`, brakes × BrakeCoef. So vpsemi's tiller
-axle (WheelBack SteeringLimit 0.18) steers against the tractor, and so does
-vpcentury's trailer axle (its WheelBack SteeringLimit is 0.39), which keeps
-its hitch angle small in turns. Whether MM2 still counter-steers vpcentury's
-trailer is unverified. The free drivetrains feel the tractor's brakes and
-handbrake (`mmDrivetrain::Init` with the tractor's mmCarSim).
+`Body::invMassMatrix` gives the inverse mass matrix through the joint as
+`phColliderJointed::GetInvMassMatrix` does; OpenMM2's contact solver, which
+applies impulses to one body at a time, still uses each body's own mass. The
+Ctrl+B debug key that breaks the joint (`dgTrailerJoint::Update`) is not
+ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are not simulated: MM2
+keeps only their offset from TWHL2/3 (vehCarSim
+TrailerBackBackLeft/RightWheelPosDiff in mm2hook's layout) to draw them.
 
-**Wheels.** vpcentury's TWHL0/1 pivots are degenerate (radius 0.03 m, never
-touch the ground; their medium/low LOD meshes are landing legs 5.7 m in front
-of the pivot). vpsemi's TWHL0/1 `.mtx` files are hand-made boxes (radius
-0.5 m) 3.9 m behind the hitch, and do carry load. TWHL4/TWHL5 (vpcentury's
-second trailer axle) are not simulated: MM2 stores only their offset from
-TWHL2/3 (vehCarSim TrailerBackBackLeft/RightWheelPosDiff in mm2hook's
-layout) to draw them, so they are visual copies of the back wheels.
+**Results** (`mm2tool simcar`, flat asphalt, 1/60 s, defaults; the gap is
+measured before the FreeRange correction):
 
-**Placement.** `Trailer::reset` (mmTrailer::Reset) places the trailer so its
-hitch point coincides with the tractor's (MM1's trailer model shares the
-tractor's origin; MM2's has its own) and refreshes the joint position (MM1
-leaves it stale until the next update). `Trailer::init` keeps the tractor
-where it was after `InitJoint3Dof`'s `SetPosition` (which moves the tractor so
-its hitch lands on its CG; MM1 relies on a later reset).
-
-**Results** (`mm2tool simcar`, flat asphalt, 1/60 s; before = the previous
-ball joint with approximate torques):
-
-| run | before | after |
+| run | vpcentury | vpsemi |
 |---|---|---|
-| vpsemi, full throttle 60 s | distance 783 m at 45 s, 822 m at 50 s, 776 m at 55 s (not monotonic), stuck in 2nd, top 70 mph | 0–60 mph 11.95 s, ¼ mile 18.85 s, top 80.5 mph, distance grows every second; max hitch gap 0.1 mm, hitch angle 0.3°, trailer up.y ≥ 0.999 |
-| vpcentury, full throttle 60 s | 58 m in 60 s at 8000 rpm (wheelspin), top 32.5 mph | 0–60 mph 20.48 s, ¼ mile 21.43 s, top 71.1 mph; max gap 0.2 mm, hitch angle 0.3° |
-| steady circle, throttle 0.5, steer 0.3, 30 s | vpcentury top 13.8 mph, 21.6 m from the start after 25 s; vpsemi slowing from 15.7 to 2.6 mph | vpcentury 25.4 mph on a 47 m radius, hitch angle steady at 3.3°; vpsemi (tiller) 21.4 mph on an 80 m radius, ≤ 2.3° |
-| full brake at 12 s | vpsemi 48.7 → 7.4 mph in 1 s, then its speed reads 40 mph at 15.5 s while it stays within 1 m (the bodies thrash); vpcentury was doing 3.8 mph | vpsemi 60.1 → 1.0 mph and vpcentury 47.5 → 6.5 mph in 1 s; hitch angle ≤ 0.3° (≤ 3.7° with steer 0.15), upright |
-| `--step 1/35`, steer 0.15 | — | max gap < 1 mm |
-
-(These were measured before the [wheel spin fix](#wheel-spin-and-the-stiff-_opp-tyres).
-Since then vpsemi does 0–60 mph in 9.83 s (¼ mile 17.33 s) and vpcentury in
-17.87 s (19.73 s), same top speeds; max hitch gap ≤ 0.3 mm and hitch angle
-≤ 0.9° at full throttle, 1.5° / 2.7° in the steady circle, and a full brake
-at 12 s takes vpsemi from 64.1 to 2.4 mph and vpcentury from 52.7 to 3.5 mph
-in 1 s.)
+| full throttle 60 s | 0–60 mph 10.98 s, ¼ mile 18.20 s, top 112.4 mph; gap ≤ 0.02 m, hitch ≤ 0.1° | 0–60 mph 11.60 s, ¼ mile 18.68 s, top 106.8 mph; gap ≤ 0.011 m, hitch ≤ 1.5° |
+| steady circle, throttle 0.5, steer 0.3 | 38 mph, hitch 3–4°, gap ≤ 0.56 m, lean ≤ 9.8° (plain rotation: gap ≤ 0.14 m) | 32 mph, hitch 5.5° steady, gap ≤ 0.21 m (plain rotation: 12.3°, gap ≤ 0.14 m) |
+| full brake at 12 s | 63.6 → 2.7 mph in 2 s, hitch ≤ 0.2°; with steer 0.15: hitch ≤ 3°, gap ≤ 0.40 m | 61.1 → 10.5 mph in 3 s; with steer 0.15: hitch ≤ 5.8° |
+| at rest | settles with all wheels loaded, gap 0.011 m (MM2's loads: see above) | gap 0.002 m |
 
 Reversing with a trailer is unstable, as in reality: holding the brake (auto
-reverse) at 20 mph jackknifes vpcentury past 90°, and the trailer then passes
-through the cab because the linked bodies do not collide.
-`tests/phys/test_trailer.cpp` covers rest (60 s), a 60 s straight run, coasting
-energy, the steady circle, hard braking and resets.
+reverse) jackknifes vpcentury past 110° at 30 mph, and the trailer then
+passes through the cab because the linked bodies do not collide; vpsemi's
+counter-steering tiller axle holds 5.5°. `tests/phys/test_trailer.cpp`
+covers the joint's mechanics on synthetic bodies and, with the retail data,
+both trucks' setup, rest, straight run, coasting energy, steady circle, hard
+braking, resets and MM2's static loads.
 
 ## Collision (OpenMM2)
 
@@ -411,7 +461,7 @@ trailers.
 | vpbus | RWD | 5000 | 450 | 83 | 13.48 | 19.52 | 103.5 | 60 |
 | vpcab | RWD | 1000 | 300 | 95 | 6.75 | 15.03 | 126.7 | 103 |
 | vpcaddie | RWD | 1300 | 550 | 110 | 4.40 | 12.62 | 133.0 | 136 |
-| vpcentury | RWD | 3500 | 750 | 75 | 14.83 | 18.97 | 84.0 | 91 |
+| vpcentury | RWD | 3500 | 750 | 75 | 10.98 | 18.20 | 112.4 | 91 |
 | vpcoop | FWD | 800 | 250 | 80 | 9.28 | 17.27 | 104.3 | 60 |
 | vpcoop2k | FWD | 800 | 300 | 108 | 7.93 | 16.05 | 131.9 | 115 |
 | vpcop | RWD | 1300 | 750 | 140 | 2.93 | 10.68 | 164.9 | 160 |
@@ -422,7 +472,7 @@ trailers.
 | vpmustang99 | RWD | 1300 | 500 | 115 | 5.45 | 13.62 | 135.3 | 160 |
 | vppanoz | FWD | 1300 | 650 | 151 | 4.37 | 12.40 | 177.2 | 216 |
 | vppanozgt | RWD | 1200 | 902 | 180 | 2.67 | 10.28 | 275.0 | 240 |
-| vpsemi | RWD | 3500 | 896 | 85 | 11.73 | 18.68 | 106.4 | 69 |
+| vpsemi | RWD | 3500 | 896 | 85 | 11.60 | 18.68 | 106.8 | 69 |
 | vpvwcup | FWD | 1000 | 550 | 122 | 3.78 | 11.97 | 155.7 | 194 |
 
 Top speeds are set by power against drag, or by MaxRPM in top gear: High is
@@ -433,10 +483,12 @@ as speeds at MaxRPM and capped every car at High.)
 
 - Collision response and bounds are OpenMM2's own (see above); car bodies are
   single boxes.
-- The trailer joint is still MM1's Joint3Dof (below), not MM2's
-  `dgTrailerJoint`; bodies it links integrate explicitly.
-- `phSleep`, the per-axis angular velocity limits of non-car bodies and
-  `vehSuspension` (the visual shocks) are not ported.
+- Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
+  (MM2's values make vpcentury's trailer ride on its bump stops, see
+  "Trailers"); contacts of jointed bodies use each body's own mass; the
+  trailer's impact parameters are inferred.
+- `phSleep`, the per-axis angular velocity limits of non-car bodies other
+  than trailers and `vehSuspension` (the visual shocks) are not ported.
 - Damage: MM2's impact list (relax times, texel damage positions) is not
   ported; the impact value mapping is inferred.
 - The engine pivot (`<car>_engine.mtx`) and axle pivots are not loaded yet;

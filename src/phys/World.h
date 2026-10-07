@@ -4,9 +4,10 @@
 #include "phys/Collide.h"
 #include "phys/Constants.h"
 #include "phys/InertialCS.h"
-#include "phys/Joint3Dof.h"
+#include "phys/Joint.h"
 #include "phys/Material.h"
 
+#include <cstdint>
 #include <vector>
 
 namespace mm2::phys {
@@ -48,10 +49,10 @@ struct Impact {
 
 // Per-sample hooks, called in the order of the Angel node tree for a car:
 //   beforeIntegrate  (mmCarSim::Update: inputs; vehEngine, vehTransmission)
-//   InertialCS::update (integrates last sample's forces; linked bodies are
-//                     integrated by their Joint3Dof::update right after)
+//   InertialCS::update (integrates last sample's forces)
 //   afterIntegrate   (LCS children: aero, drivetrains -> wheels, which
-//                     accumulate forces for the next sample; mmStuck)
+//                     accumulate forces for the next sample; mmStuck; a
+//                     trailer's joint, which adds its forces last)
 //   collisions, then onImpact / afterCollisions.
 class BodyController {
 public:
@@ -81,9 +82,18 @@ public:
     BodyController* controller = nullptr;
     bool collideStatic = true;
     bool collideBodies = true;
+    // phColliderJointed::Attach: the joint linking this body to another one
+    // (not owned). Bodies sharing an unbroken joint do not collide with each
+    // other (dgPhysManager::Update).
+    const Joint* joint = nullptr;
 
     Obb obb() const;
     Aabb aabb() const;
+    // phColliderJointed::GetInvMassMatrix: the inverse mass matrix at a world
+    // point, through the attached joint while it holds. (OpenMM2's contact
+    // solver applies impulses to one body at a time and uses each body's
+    // own mass; this is for callers that need the joint's view.)
+    void invMassMatrix(const Vec3& worldPos, Mat34& out) const;
 
 private:
     friend class World;
@@ -106,12 +116,6 @@ public:
     // changed from the asInertialCS default.
     void add(Body* body);
     void remove(Body* body);
-    // Joints are not owned. A linked body skips its own integration
-    // (InertialCS::update); the joint integrates both of its bodies right
-    // after the free bodies, in insertion order. Bodies sharing an unbroken
-    // joint do not collide with each other.
-    void add(Joint3Dof* joint);
-    void remove(Joint3Dof* joint);
 
     // One simulation sample.
     void step(float dt);
@@ -136,7 +140,14 @@ public:
     float pushFactor = 0.8f;
     float pushSlop = 0.005f;
 
+    // The game's random generator for the simulation (irand / frand). MM2
+    // shares one rand() across the whole game; OpenMM2 keeps one stream per
+    // world so a race, replay or test is reproducible on its own.
+    std::uint32_t* randomSeed() const { return &m_randomSeed; }
+    void seedRandom(std::uint32_t seed) { m_randomSeed = seed; }
+
 private:
+    mutable std::uint32_t m_randomSeed = 1;
     struct ContactPoint {
         Body* a;
         Body* b; // nullptr = static
@@ -159,7 +170,6 @@ private:
     MaterialTable m_materials;
     PolygonSoup m_static;
     std::vector<Body*> m_bodies;
-    std::vector<Joint3Dof*> m_joints;
     std::vector<ContactPoint> m_contacts;
     std::vector<std::uint32_t> m_query;
     float m_accumulator = 0;

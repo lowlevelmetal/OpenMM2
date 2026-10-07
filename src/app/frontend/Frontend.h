@@ -4,14 +4,18 @@
 // screen flow and where the layout comes from.
 
 #include "app/Context.h"
+#include "audio/SoundBank.h"
+#include "audio/game/SoundSlot.h"
 #include "city/CityData.h"
 #include "game/Profile.h"
 #include "game/RaceConfig.h"
+#include "ui/MenuLayout.h"
 #include "ui/Text.h"
 #include "ui/TextureCache.h"
 #include "ui/Widgets.h"
 
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -31,6 +35,9 @@ public:
     bool dialog = false;
     Vec2 origin{0, 0};
     std::string dialogPicture; // jpg/..._dlg.jpg
+    // MM2 menu id (menu_id::...): entering a page with a new id plays that
+    // menu's switch sound (MM2 `MenuManager::PlayMenuSwitchSound`).
+    int menuId = -1;
 
     virtual void update(Frontend&, double /*dt*/) {}
     virtual void drawBelow(Frontend&, ui::UiFrame&) {} // after background, before widgets
@@ -47,8 +54,10 @@ public:
     ui::TextureCache textures;
     ui::TextRenderer text;
     ui::NavReader navReader;
+    ui::MenuLayout layout; // tune/widget.csv + tune/menu.csv
     game::ProfileStore store;
     game::Progress progress;
+    game::HallOfFame hallOfFame; // <players dir>/records.ini
     std::optional<game::Profile> profile;
     std::vector<city::CityInfo> cities;
     std::vector<std::vector<city::RaceDefinition>> races; // per city, parallel to `cities`
@@ -63,10 +72,35 @@ public:
     std::size_t depth() const { return m_pages.size(); }
     Page* top() const { return m_pages.empty() ? nullptr : m_pages.back().get(); }
 
-    // Message box (msg_dlg) with an OK button.
+    // OpenMM2's own messages (MM2 shows only pictures): msg_dlg with the
+    // text and an OK button.
     void message(std::string text, std::function<void()> then = {});
-    // Yes/No question on a dialog picture.
-    void ask(std::string picture, Vec2 size, std::string text, std::function<void()> yes);
+    // OpenMM2's own questions: msg_dlg with the text, OK and Cancel.
+    void question(std::string text, std::function<void()> yes);
+
+    // One of MM2's picture dialogs (Dialog_Message): the picture centred on
+    // the screen (PUMenuBase), its buttons at their tune/widget.csv
+    // positions (dialog `menuId`, button index), focus on the first; Escape
+    // runs the last button.
+    struct DialogButton {
+        std::string sprite;         // "texture/dlg_ok.tga"
+        Vec2 position;              // relative to the dialog, when widget.csv has no row
+        std::function<void()> then; // after the dialog closes
+    };
+    void dialog(std::string picture, int menuId, std::vector<DialogButton> buttons);
+    // The quit question (quit_dlg, 27): OK quits.
+    void askQuit();
+    // A picture dialog with only OK at +296,+38 (400x76: lock_dlg, lstp_dlg,
+    // plim_dlg) or +180,+176 (300x225: dupp_dlg).
+    void notice(std::string picture, int menuId, std::function<void()> then = {});
+
+    // Frontend sounds by MM2 name (aud/aud22/<name>.22k.wav or the 11 kHz
+    // file, per the sound quality option), as 2D effects.
+    void playSound(std::string_view name, float volume);
+    bool soundPlaying(std::string_view name) const;
+    // While set, page changes play no menu switch sound (building the page
+    // stack after a race).
+    bool quietSwitches = false;
 
     // Profile helpers.
     void selectProfile(const std::string& name);
@@ -80,6 +114,14 @@ public:
 
     // Fills `config` from the profile's last choices.
     void configFromProfile();
+    // Applies the selected race's default environment (MM2
+    // `RaceMenuBase::SetStateRace`) for `cfg.difficulty`.
+    void applyRaceDefaults(game::RaceConfig& cfg) const;
+    // Name of the race `cfg` describes ("Cruise" etc. for the modes without races).
+    std::string raceName(const game::RaceConfig& cfg) const;
+    // Records a finished race in the driver's profile and the race records;
+    // returns the reward it announces.
+    std::optional<game::Reward> recordResult(const game::RaceResult& result);
     // Starts the session described by `config`.
     void startRace();
 
@@ -87,9 +129,14 @@ public:
     void draw();
 
 private:
-    void drawPage(Page& p, ui::UiFrame& f);
+    void drawPage(Page& p, ui::UiFrame& f, bool active);
+    void topChanged();
     std::vector<std::unique_ptr<Page>> m_pages;
     std::vector<std::unique_ptr<Page>> m_graveyard; // popped this frame; freed after drawing
+    int m_menuId = -1; // menu id of the topmost full page
+    std::unique_ptr<audio::SoundBank> m_soundBank;
+    std::map<std::string, audio::game::SoundSlot, std::less<>> m_sounds;
+    ui::SoundFn m_soundFn;
 };
 
 // Page factories.
@@ -97,6 +144,7 @@ std::unique_ptr<Page> makeTitlePage(Frontend& fe);
 std::unique_ptr<Page> makeDriverPage(Frontend& fe);
 std::unique_ptr<Page> makeNewDriverDialog(Frontend& fe);
 std::unique_ptr<Page> makeDriverStatsDialog(Frontend& fe);
+std::unique_ptr<Page> makeRaceRecordsDialog(Frontend& fe);
 std::unique_ptr<Page> makeRacesPage(Frontend& fe);
 std::unique_ptr<Page> makeVehiclePage(Frontend& fe);
 std::unique_ptr<Page> makeShowcasePage(Frontend& fe, std::string vehicle);
@@ -108,7 +156,7 @@ std::unique_ptr<Page> makeCustomizeControlsPage(Frontend& fe);
 std::unique_ptr<Page> makeAboutPage(Frontend& fe);
 std::unique_ptr<Page> makeCrashIntroPage(Frontend& fe);
 std::unique_ptr<Page> makeCrashCoursePage(Frontend& fe, std::string city);
-std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::vector<game::Reward> earned);
+std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::optional<game::Reward> reward);
 std::unique_ptr<Page> makeSessionsPage(Frontend& fe);
 // Multiplayer (PagesMulti.cpp).
 std::unique_ptr<Page> makeHostOptionsDialog(Frontend& fe);
@@ -120,13 +168,46 @@ std::unique_ptr<Page> makeEjectDialog(Frontend& fe);
 bool frontendHostSession(Frontend& fe);
 void frontendJoinSession(Frontend& fe, const std::string& address, const std::string& password);
 
-// Common layout positions recovered from the art (see docs/frontend.md).
+// MM2's menu ids: the first column of tune/menu.csv and the second of
+// tune/widget.csv (the UIMenu constructor arguments in MM2
+// `mmInterface::mmInterface`). Widget positions are looked up with these and
+// the widget's creation index in the original menu (ui::MenuLayout).
+namespace menu_id {
+inline constexpr int kNavBar = 0;
+inline constexpr int kMain = 1;
+inline constexpr int kOptions = 2;
+inline constexpr int kAudio = 3;
+inline constexpr int kGraphics = 4;
+inline constexpr int kControl = 5;
+inline constexpr int kRace = 7;
+inline constexpr int kVehicle = 8;
+inline constexpr int kShowcase = 9;
+inline constexpr int kNetSelect = 10;
+inline constexpr int kHostRace = 11;
+inline constexpr int kNetArena = 12;
+inline constexpr int kNewDriver = 17;
+inline constexpr int kDriverRecord = 19;
+inline constexpr int kHallOfFame = 20;
+inline constexpr int kRaceEnvironment = 22;
+inline constexpr int kLocked = 23;
+inline constexpr int kQuit = 27;
+inline constexpr int kDeleteDriver = 28;
+inline constexpr int kDuplicateDriver = 29;
+inline constexpr int kDefaults = 31;
+inline constexpr int kAbout = 34;
+inline constexpr int kCrashCourse = 39;
+inline constexpr int kCrashIntro = 40;
+inline constexpr int kControlCustom = 41;
+} // namespace menu_id
+
+// Common layout positions (tune/widget.csv; used when the table lacks a row).
 namespace layout {
-// Top-right navigation strip: OPTIONS, help, minimise, exit.
+// Top-right navigation strip: OPTIONS, help, minimise, exit (widget.csv
+// "Navigation Bar", menu 0, widgets 0-3; PREV is widget 4).
 inline constexpr Vec2 kNavOptions{439, 1};
 inline constexpr Vec2 kNavHelp{540, 1};
 inline constexpr Vec2 kNavMinimize{564, 1};
-inline constexpr Vec2 kNavExit{594, 1};
+inline constexpr Vec2 kNavExit{591, 1};
 // Bottom navigation: back (left arrow) and continue (right arrow).
 inline constexpr Vec2 kBack{290, 415};
 inline constexpr Vec2 kNext{439, 415};
@@ -140,9 +221,18 @@ inline constexpr float kBoxX = 400;
 inline constexpr float kBoxWide = 210, kBoxMid = 129, kBoxSmall = 48, kBoxH = 28;
 } // namespace layout
 
-// Adds the top navigation strip (options / help / minimise / exit).
-void addNavStrip(Frontend& fe, Page& page, bool optionsButton = true);
-// Adds a BACK button that pops the page.
+// What the strip's OPTIONS button does (MM2 `mmInterface::Switch`/`Update`).
+enum class NavOptions {
+    Open,   // opens the options menu
+    Lit,    // the options menu itself: shown lit, does nothing
+    Cancel, // an option sub-page: the page's CANCEL, back to the options menu
+};
+// Adds the top navigation strip (OPTIONS / HELP / MINIMISE / EXIT, MM2
+// `uiNavBar`), after which any PREV button of the page follows in the strip's
+// focus group. `cancel` is the sub-page's cancel action for NavOptions::Cancel.
+void addNavStrip(Frontend& fe, Page& page, NavOptions options = NavOptions::Open, std::function<void()> cancel = {});
+// Adds a BACK button that pops the page. With the mnav_prv sprite it is the
+// navigation bar's PREV (290,415) and belongs to the strip's focus group.
 ui::SpriteButton& addBack(Frontend& fe, Page& page, const char* sprite = "texture/mnav_prv.tga");
 
 // Display names.

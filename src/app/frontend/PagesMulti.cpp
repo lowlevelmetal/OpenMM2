@@ -150,6 +150,7 @@ private:
 class SessionsPage final : public Page {
 public:
     explicit SessionsPage(Frontend& fe) {
+        menuId = menu_id::kNetSelect;
         menu.background = "jpg/sess_bk.jpg";
         menu.defaultHelp = "jpg/mn_mp.jpg";
         m_netName = netName(fe);
@@ -516,6 +517,7 @@ private:
 class LobbyPage final : public Page {
 public:
     explicit LobbyPage(Frontend& fe) {
+        menuId = menu_id::kNetArena;
         NetGame& net = *fe.ctx.netGame;
         const bool host = net.isHost();
         menu.background = host ? "jpg/lobbh_bk.jpg" : "jpg/lobbj_bk.jpg";
@@ -739,7 +741,7 @@ private:
 
     static void confirmLeave(Frontend& fe) {
         const bool host = fe.ctx.netGame && fe.ctx.netGame->isHost();
-        fe.ask("jpg/msg_dlg.jpg", {400, 76}, host ? "End Session?" : "Quit to Lobby?", [&fe] { // strings 481, 479
+        fe.question(host ? "End Session?" : "Quit to Lobby?", [&fe] { // strings 481, 479
             if (fe.ctx.netGame) {
                 fe.ctx.netGame->leave();
                 fe.ctx.netGame->startLanScan();
@@ -759,6 +761,7 @@ private:
 class HostSettingsPage final : public Page {
 public:
     explicit HostSettingsPage(Frontend& fe) : m_cfg(fe.ctx.netGame->raceConfig()) {
+        menuId = menu_id::kHostRace;
         menu.background = "jpg/host_bk.jpg";
         m_goldMass = fe.ctx.netGame->goldMass();
         if (m_cfg.mode == GameMode::CrashCourse)

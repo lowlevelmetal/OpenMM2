@@ -244,6 +244,44 @@ TEST(AiDriving, ObstacleBlockingAndAvoidPoints) {
     EXPECT_NEAR(right.z, -17.53f, 0.01f);
 }
 
+// aiPath::IsPosOnRoad's limits: the right side's lateral layout, lane and
+// sidewalk boundaries in turn.
+TEST(AiCourse, OnRoadLimitsFromTheSideLayout) {
+    city::AiMap map = squareBlock();
+    city::AiPath& p = map.paths[0];
+    float road = 0.0f, sidewalk = 0.0f;
+    // Two lanes (as London's "-10 2 2 5 5 10", curbs at 6): road to 5 m.
+    p.right.numLanes = 2;
+    p.right.params = {-10.0f, 2.0f, 2.0f, 5.0f, 5.0f, 10.0f, -4e8f, -4e8f, -4e8f, -4e8f};
+    ai::pathOnRoadLimits(p, road, sidewalk);
+    EXPECT_FLOAT_EQ(road, 5.0f);
+    EXPECT_FLOAT_EQ(sidewalk, 10.0f);
+    // One lane ("-9 4.25 4.25 9").
+    p.right.numLanes = 1;
+    p.right.params = {-9.0f, 4.25f, 4.25f, 9.0f, -4e8f, -4e8f, -4e8f, -4e8f, -4e8f, -4e8f};
+    ai::pathOnRoadLimits(p, road, sidewalk);
+    EXPECT_FLOAT_EQ(road, 4.25f);
+    EXPECT_FLOAT_EQ(sidewalk, 9.0f);
+    // No lanes on the right (one-way SF alleys): sidewalk only, to params[1].
+    p.right.numLanes = 0;
+    p.right.params = {-2e37f, 3.5f, -4e8f, -4e8f, -4e8f, -4e8f, -4e8f, -4e8f, -4e8f, -4e8f};
+    ai::pathOnRoadLimits(p, road, sidewalk);
+    EXPECT_FLOAT_EQ(road, 0.0f);
+    EXPECT_FLOAT_EQ(sidewalk, 3.5f);
+    // No layout (this hand-built map): the curbs (5 m) and outer edges (8 m).
+    p.right.numLanes = 1;
+    p.right.params = {};
+    ai::pathOnRoadLimits(p, road, sidewalk);
+    EXPECT_NEAR(road, 5.0f, 1e-4f);
+    EXPECT_NEAR(sidewalk, 8.0f, 1e-4f);
+
+    // aiVehiclePhysics::Init's type 3 is the only one kept off the sidewalk.
+    EXPECT_FALSE(ai::goesOverSidewalks("vppanozgt"));
+    EXPECT_TRUE(ai::goesOverSidewalks("vpsemi"));
+    EXPECT_TRUE(ai::goesOverSidewalks("vppanoz"));
+    EXPECT_TRUE(ai::goesOverSidewalks(""));
+}
+
 // aiRaceData's [Opponent] record.
 TEST(AiOpponent, SettingsFromTheAimapLine) {
     const float line[] = {0.86f, 0.0f, 150.0f, 0.69f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.49f};

@@ -14,14 +14,28 @@ struct Settings {
     // [GameData]
     std::string gameSource; // disc image, disc path or install/import directory
 
-    // [Audio] linear volumes 0..1
+    // [Audio] linear volumes 0..1. The Options > Audio page sets effects,
+    // engine and voice together (SOUND FX VOLUME) and music and ambient
+    // together (MUSIC/CITY VOLUME), MM2's defaults being 1 for both
+    // (AudioOptions::ResetDefaultAction).
     float masterVolume = 1.0f;
     float effectsVolume = 1.0f;
     float engineVolume = 1.0f;
     float ambientVolume = 1.0f;
     float voiceVolume = 1.0f;
-    float musicVolume = 0.8f;
-    bool audioHighQuality = true; // 22 kHz sounds; false = 11 kHz, like the original option
+    float musicVolume = 1.0f;
+    // The audio toggles, with MM2's start-up defaults (mmStatePack::SetDefaults
+    // audio flags 0xc73): music off and city sounds on; MM2 never has both on.
+    bool soundEffects = true; // flag 0x1
+    bool commentary = true;   // flag 0x400
+    bool music = false;       // flag 0x4: interactive music
+    bool citySounds = true;   // flag 0x800: city ambience
+    bool stereo = true;       // STEREO FX: Mono / Stereo (flag 0x40); stored only
+    // SOUND QUALITY 0 Low, 1 Medium, 2 High. MM2 chooses 8/16/32 voices;
+    // OpenMM2 approximates it with the 11 kHz (Low) or 22 kHz sounds.
+    int soundQuality = 2;
+    bool audioHighQuality = true; // 22 kHz sounds; derived from soundQuality >= 1
+    float balance = 0.0f;         // BALANCE, -1 (left) .. 1 (right)
 
     // [Network]
     std::string playerName = "Player";
