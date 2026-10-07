@@ -389,6 +389,12 @@ private:
         game::session::SessionOptions opts;
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             opts.scoringBias = info->scoringBias;
+        // Crash course pursuit checks look through the level (the world is
+        // built after the session).
+        opts.lineOfSight = [this](const Vec3& a, const Vec3& b) {
+            phys::RayHit hit;
+            return !m_world || !m_world->probe(a, b, hit);
+        };
         m_session = game::session::Session::create(m_result.config, *m_city, ctx.game->vfs, ctx.game->strings, &error,
                                                   opts);
         if (!m_session)
@@ -440,6 +446,7 @@ private:
             opp.sim = loadAiCar(ctx, s.vehicle, "_opp", spawn);
             if (!opp.sim)
                 continue;
+            opp.spawn = spawn;
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
@@ -609,6 +616,7 @@ private:
         }
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
+        ps.inertiaBox = sim.params.inertiaBox;
         return ps;
     }
 
@@ -617,24 +625,61 @@ private:
             return;
         m_playerState = playerState();
         auto carState = [](const phys::CarSim& sim) {
-            return game::session::OpponentState{sim.modelMatrix(), sim.body.ics.frameVelocity, sim.damage.damage,
-                                                sim.damage.wrecked()};
+            game::session::OpponentState s;
+            s.transform = sim.modelMatrix();
+            s.velocity = sim.body.ics.frameVelocity;
+            s.damage01 = sim.damage.damage;
+            s.wrecked = sim.damage.wrecked();
+            s.currentDamage = sim.damage.currentDamage;
+            s.inertiaBox = sim.params.inertiaBox;
+            return s;
         };
         // In Session::opponents() order; a car that failed to load stays parked at its spawn.
         std::vector<game::session::OpponentState> opps;
-        for (const auto& s : m_session->opponents())
-            opps.push_back({s.spawn, {}, 0.0f, false});
-        for (const auto& o : m_opponents)
-            opps[o.sessionIndex] = carState(o.sim->sim());
+        for (const auto& s : m_session->opponents()) {
+            game::session::OpponentState parked;
+            parked.transform = s.spawn;
+            opps.push_back(parked);
+        }
+        for (const auto& o : m_opponents) {
+            auto& st = opps[o.sessionIndex] = carState(o.sim->sim());
+            st.finished = o.driver && o.driver->finished(); // aiRouteRacer::Finished
+        }
         std::vector<game::session::OpponentState> cops;
-        for (const auto& c : m_cops)
-            cops.push_back(carState(c.sim->sim()));
+        for (const auto& c : m_cops) {
+            auto& st = cops.emplace_back(carState(c.sim->sim()));
+            st.pursuing = c.driver->mode() == ai::PoliceCar::Mode::Chasing && c.driver->target() == 0;
+        }
         m_session->update(dt, m_playerState, opps, cops);
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
                 m_cams.reset(cameraTarget());
+            } else if (e.type == EventType::Restart) {
+                // The race starts over (mmGame::Reset): every car to its start.
+                m_player->reset(m_spawn);
+                for (auto& o : m_opponents) {
+                    o.sim->reset(o.spawn);
+                    if (o.driver)
+                        o.driver->reset();
+                }
+                for (auto& c : m_cops)
+                    c.driver->reset();
+                m_cams.reset(cameraTarget());
+            } else if (e.type == EventType::DamageReset) {
+                m_player->sim().damage.reset();
+            } else if (e.type == EventType::PlayerDamageLimits) {
+                auto& d = m_player->sim().damage.params;
+                d.maxDamage = e.value;
+                d.medDamage = e.value * 0.5f;
+                d.impactThreshold = 0.0f;
+            } else if (e.type == EventType::OpponentDamageLimits) {
+                for (auto& o : m_opponents)
+                    if (o.sessionIndex == static_cast<std::size_t>(e.index)) {
+                        o.sim->sim().damage.params.maxDamage = e.value;
+                        o.sim->sim().damage.params.medDamage = e.value * 0.5f;
+                    }
             } else if (e.type == EventType::OpponentFinished) {
                 for (auto& o : m_opponents)
                     if (o.sessionIndex == static_cast<std::size_t>(e.index) && o.driver)
@@ -1108,6 +1153,7 @@ private:
     std::unique_ptr<game::session::Hud> m_hud;
     struct Opponent {
         std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
+        Mat34 spawn;                  // grid place on the ground (session Restart)
         std::unique_ptr<game::SimVehicle> sim;
         std::unique_ptr<game::VehicleRenderer> renderer;
         std::unique_ptr<ai::Opponent> driver;

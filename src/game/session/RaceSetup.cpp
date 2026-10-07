@@ -5,6 +5,7 @@
 #include "game/session/Gate.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <format>
 
 namespace mm2::game::session {
@@ -22,19 +23,15 @@ std::optional<std::string> readText(const vfs::Vfs& vfs, const std::string& path
     return std::string(reinterpret_cast<const char*>(bytes->data()), bytes->size());
 }
 
-std::optional<std::vector<Checkpoint>> loadCheckpoints(const vfs::Vfs& vfs, const std::string& path) {
+std::optional<std::vector<Checkpoint>> loadCheckpoints(const vfs::Vfs& vfs, const std::string& path,
+                                                       bool loop) {
     auto text = readText(vfs, path);
     if (!text)
         return std::nullopt;
     auto points = city::parseWaypoints(*text);
     if (!points || points->empty())
         return std::nullopt;
-    std::vector<Checkpoint> out;
-    for (const auto& p : *points)
-        out.push_back(makeCheckpoint(p.position, p.heading, p.radius));
-    out.front().start = true;
-    out.back().finish = out.size() > 1;
-    return out;
+    return buildCheckpoints(*points, loop);
 }
 
 std::optional<city::RaceMode> raceMode(GameMode m) {
@@ -47,7 +44,49 @@ std::optional<city::RaceMode> raceMode(GameMode m) {
     }
 }
 
+// Heading that faces from `from` towards `to`, as mmWaypoints computes it
+// for waypoints stored with heading 0.
+float headingTowards(const Vec3& from, const Vec3& to) {
+    return std::atan2(from.x - to.x, from.z - to.z) * -57.295776f;
+}
+
+std::uint32_t nextRandom(std::uint32_t& rng) {
+    rng = rng * 1103515245u + 12345u;
+    return (rng >> 16) & 0x7fffu;
+}
+
 } // namespace
+
+std::vector<Checkpoint> buildCheckpoints(const std::vector<city::Waypoint>& points, bool loop) {
+    std::vector<Checkpoint> out;
+    out.reserve(points.size());
+    for (const auto& p : points) {
+        // mmPositions::Load reads the radius with atoi; 0 becomes 15.
+        int radius = static_cast<int>(p.radius);
+        if (radius == 0)
+            radius = 15;
+        Checkpoint cp = makeCheckpoint(p.position, p.heading, static_cast<float>(radius));
+        // Column 6 ("frame rate" in the headers) is the hit flag.
+        cp.hitByRadius = !p.extra.empty() && std::atoi(p.extra[0].c_str()) != 0;
+        out.push_back(cp);
+    }
+    // A previous waypoint (from the second on) with heading 0 turns towards
+    // this one; circuits also turn a zero-heading last waypoint towards the
+    // first (mmWaypoints::LoadCSV / ReInit).
+    auto setHeading = [](Checkpoint& cp, float heading) {
+        cp.headingDeg = heading;
+        calculateGatePoints(cp.position, heading, cp.radius, cp.gateA, cp.gateB);
+    };
+    const std::size_t n = out.size();
+    for (std::size_t i = 2; i < n; ++i)
+        if (out[i - 1].headingDeg == 0.0f)
+            setHeading(out[i - 1], headingTowards(out[i - 1].position, out[i].position));
+    if (loop && n > 1 && out[n - 1].headingDeg == 0.0f)
+        setHeading(out[n - 1], headingTowards(out[n - 1].position, out[0].position));
+    out.front().start = true;
+    out.back().finish = n > 1;
+    return out;
+}
 
 Vec3 headingDirection(float headingDeg) {
     const float h = headingDeg * kDegToRad;
@@ -56,18 +95,50 @@ Vec3 headingDirection(float headingDeg) {
 
 Mat34 spawnAt(const Checkpoint& cp) {
     // Mat34::rotationY(a) faces (-sin a, 0, -cos a); the waypoint heading h
-    // faces (sin h, 0, -cos h), so a = -h (verified against the direction
-    // from each race's first to its second waypoint).
+    // faces (sin h, 0, -cos h), so a = -h (the original's GetStartAngle *
+    // -0.017453292).
     Mat34 m = Mat34::rotationY(-cp.headingDeg * kDegToRad);
     m.m3 = cp.position;
     return m;
 }
 
+std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uint32_t& rng) {
+    if (!city.aiMap || city.aiMap->intersections.size() < 2)
+        return std::nullopt;
+    const auto& xs = city.aiMap->intersections;
+    auto acceptable = [&](const city::AiIntersection& x) {
+        if (x.room < city.psdl.rooms.size()) {
+            const std::uint8_t flags = city.psdl.rooms[x.room].flags;
+            if (flags & (city::RoomFlag::Subterranean | city::RoomFlag::Road | city::RoomFlag::Standard |
+                         city::RoomFlag::SpecialBound))
+                return false;
+        }
+        for (const auto pathId : x.paths) {
+            if (pathId >= city.aiMap->paths.size())
+                continue;
+            // aiPath flags 0x4 (freeway) and 0x2 (alley), mm2hook's naming.
+            if (city.aiMap->paths[pathId].flags & 0x6)
+                return false;
+        }
+        return true;
+    };
+    // The original retries random picks until one fits; bound the search
+    // and fall back to a scan so a city without a valid one cannot hang.
+    for (int attempt = 0; attempt < 1000; ++attempt) {
+        const auto& x = xs[1 + nextRandom(rng) % (xs.size() - 1)];
+        if (acceptable(x))
+            return x.center + Vec3{0.0f, 2.0f, 0.0f};
+    }
+    for (std::size_t i = 1; i < xs.size(); ++i)
+        if (acceptable(xs[i]))
+            return xs[i].center + Vec3{0.0f, 2.0f, 0.0f};
+    return std::nullopt;
+}
+
 std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
-                                       std::string* error) {
+                                       std::string* error, std::uint32_t seed) {
     RaceSetup s;
     s.config = config;
-    s.mustPlace = city.info.mustPlace > 0 ? city.info.mustPlace : 3;
     const bool pro = config.difficulty == Difficulty::Professional;
 
     const auto mode = raceMode(config.mode);
@@ -86,22 +157,24 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
 
     // Waypoints (crash courses keep theirs per event).
     if (s.race && config.mode != GameMode::CrashCourse) {
-        auto cps = loadCheckpoints(vfs, s.race->waypoints);
+        const bool circuit = config.mode == GameMode::Circuit;
+        auto cps = loadCheckpoints(vfs, s.race->waypoints, circuit);
         if (!cps) {
             setError(error, std::format("cannot read waypoints '{}'", s.race->waypoints));
             return std::nullopt;
         }
         s.checkpoints = std::move(*cps);
-        if (config.mode == GameMode::Circuit) {
-            // The start line is also the finish line of every lap.
+        if (circuit) {
+            // The start line is also the finish line of every lap
+            // (mmWaypoints::LoadCSV makes waypoint 0 the "pt_finish").
             s.checkpoints.back().finish = false;
             s.checkpoints.front().finish = true;
         }
     }
 
-    // Time limit: used by Blitz only. Circuit and checkpoint races carry a
-    // constant value (50 amateur / 40 pro) that MM1's rules for those modes
-    // never read (inferred: unused in single player).
+    // Time limit: single player Blitz only (mmSingleBlitz::InitHUD); the
+    // circuit and checkpoint tables carry 50 / 40, which their single player
+    // rules never start a clock for.
     if (config.mode == GameMode::Blitz)
         s.timeLimit = s.settings.timeLimit;
     s.laps = config.mode == GameMode::Circuit ? (config.laps > 0 ? config.laps : s.settings.numLaps) : 0;
@@ -118,7 +191,7 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
         s.aiMap = pro && city.cruisePro ? city.cruisePro : city.cruise;
     }
 
-    // Crash course events.
+    // Crash course events (mmSingleStunt::LoadEventFile).
     if (config.mode == GameMode::CrashCourse && s.race) {
         const std::string& table = pro && !s.race->crashEventsPro.empty() ? s.race->crashEventsPro : s.race->crashEvents;
         auto text = readText(vfs, table);
@@ -133,13 +206,18 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             le.rawType = e.event;
             le.type = static_cast<LessonType>(e.event);
             le.file = e.file;
+            le.hasCheckpoints = e.checkpoints != 0;
             le.timeLimit = e.timeLimit;
             le.ambientDensity = e.ambientDensity;
             le.extra = e.extra;
+            // cornerspeed is a float; chkflags and numopp are read with atoi.
             if (!e.extra.empty())
                 le.minimumSpeedMph = e.extra[0];
-            le.targetCar = e.extra.size() > 2 && e.extra[2] != 0.0f;
-            auto cps = loadCheckpoints(vfs, dir + str::lower(e.file) + ".csv");
+            if (le.type == LessonType::MinimumSpeed && le.minimumSpeedMph < 1.0f)
+                le.minimumSpeedMph = 50.0f; // mmSingleStunt::InitHUD
+            le.singleCheckpoint = e.extra.size() > 1 && (static_cast<int>(e.extra[1]) & 1) != 0;
+            le.opponents = e.extra.size() > 2 ? static_cast<int>(e.extra[2]) : 0;
+            auto cps = loadCheckpoints(vfs, dir + str::lower(e.file) + ".csv", false);
             if (!cps) {
                 setError(error, std::format("cannot read crash course points '{}{}.csv'", dir, e.file));
                 return std::nullopt;
@@ -151,7 +229,8 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     }
 
     // Opponents: the aimap lists the field; the configuration says how many
-    // race. Crash courses use all of theirs (the car to follow or to ram).
+    // race. Crash courses load all of theirs; each event's "numopp" says
+    // which take part.
     const bool racing = config.mode == GameMode::Circuit || config.mode == GameMode::Checkpoint;
     if (s.aiMap && s.race && (racing || config.mode == GameMode::CrashCourse)) {
         const std::string& any = !s.race->aiMap.empty() ? s.race->aiMap : s.race->waypoints;
@@ -167,17 +246,16 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             if (auto text = readText(vfs, op.pathFile))
                 if (auto path = city::parseOpponentPath(*text))
                     op.path = std::move(*path);
-            // Grid place: the first point of the driving line, facing the
-            // race's start heading (inferred; the .opp's first "brake" value
-            // looks like a heading but its convention is unconfirmed).
-            Checkpoint grid = s.checkpoints.empty() ? Checkpoint{} : s.checkpoints.front();
-            if (!op.path.empty())
-                grid.position = op.path.front().position;
-            if (op.path.size() > 1 && s.checkpoints.empty()) {
-                const Vec3 d = op.path[1].position - op.path[0].position;
-                grid.headingDeg = std::atan2(d.x, -d.z) * kRadToDeg;
+            // Grid place (aiRouteRacer::Init): the .opp's first row; its
+            // fourth column (the parser's "brake") is the car's reset angle
+            // in degrees, converted with the original's 0.017444445 and not
+            // negated as the player's start angle is.
+            if (!op.path.empty()) {
+                op.spawn = Mat34::rotationY(op.path.front().brake * 0.017444445f);
+                op.spawn.m3 = op.path.front().position;
+            } else {
+                op.spawn = s.checkpoints.empty() ? Mat34::identity() : spawnAt(s.checkpoints.front());
             }
-            op.spawn = spawnAt(grid);
             s.opponents.push_back(std::move(op));
         }
     }
@@ -192,15 +270,21 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
         }
     }
 
-    // Player start: the first waypoint. Cruise has no start in the data; use
-    // the city's first Blitz start (inferred).
+    // Player start: the first waypoint (mmWaypoints::GetStart /
+    // GetStartAngle). Cruise starts at a random AI intersection facing -Z
+    // (mmSingleRoam::InitOtherPlayers -> mmGame::RespawnXYZ); without an AI
+    // map, the city's first Blitz start.
+    std::uint32_t rng = seed;
     if (!s.checkpoints.empty()) {
         s.playerSpawn = spawnAt(s.checkpoints.front());
+    } else if (auto p = randomIntersectionStart(city, rng)) {
+        s.playerSpawn = Mat34::identity();
+        s.playerSpawn.m3 = *p;
     } else {
         for (const auto& r : city.races) {
             if (r.mode != city::RaceMode::Blitz)
                 continue;
-            if (auto cps = loadCheckpoints(vfs, r.waypoints)) {
+            if (auto cps = loadCheckpoints(vfs, r.waypoints, false)) {
                 s.playerSpawn = spawnAt(cps->front());
                 break;
             }
