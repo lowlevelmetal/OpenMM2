@@ -177,7 +177,8 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
         std::make_unique<Pedestrians>(*world->m_network, loadPedTypes(vfs), peds, settings.seed * 7919u + 1u);
     world->m_peds->setLights(&world->m_lights);
     Traffic* ambient = world->m_traffic.get();
-    world->m_peds->setAccidentQuery([ambient](int node, int path) { return ambient->accidentAt(node, path); });
+    world->m_peds->setAccidentQuery(
+        [ambient](int node, int path) { return ambient->accidentAt(node, path); });
 
     // Traffic light poles (aiTrafficLightSet::SetFourWay,
     // aiTrafficLightInstance::Init): the city's single-head model for

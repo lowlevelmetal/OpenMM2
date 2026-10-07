@@ -45,7 +45,8 @@ city::AiPath road(int id, Vec3 a, Vec3 b, std::uint32_t nodeA, std::uint32_t nod
             std::vector<Vec3> lane;
             for (int i = 0; i < sections; ++i) {
                 const int k = reversed ? sections - 1 - i : i;
-                lane.push_back(p.center[static_cast<std::size_t>(k)] + left * (sign * (2.0f + 4.0f * static_cast<float>(l))));
+                const float offset = 2.0f + 4.0f * static_cast<float>(l);
+                lane.push_back(p.center[static_cast<std::size_t>(k)] + left * (sign * offset));
             }
             s.polylines.push_back(lane);
         }
@@ -106,7 +107,8 @@ city::AiMap crossroads() {
     for (int k = 0; k < 4; ++k) {
         const Vec3 near = far[k].normalized() * 15.0f;
         map.paths.push_back(road(k, far[k], near, static_cast<std::uint32_t>(k + 1), 0, 2));
-        map.intersections.push_back({static_cast<std::uint16_t>(k + 1), 0, far[k], {static_cast<std::uint32_t>(k)}});
+        map.intersections.push_back(
+            {static_cast<std::uint16_t>(k + 1), 0, far[k], {static_cast<std::uint32_t>(k)}});
     }
     linkIntersections(map);
     return map;
@@ -171,7 +173,8 @@ TEST(AiRoadNetwork, DriveOnLeftReversesRoadsAsMM2) {
     EXPECT_NEAR(lane1.line.points.front().x, -2.0f, 1e-4f);
     EXPECT_GT(lane0.line.points.front().z, lane0.line.points.back().z); // still northbound
     // Sidewalks stay where they are.
-    EXPECT_NEAR(net.sidewalks()[static_cast<std::size_t>(info.sidewalks[1])].centre.points.front().x, 9.5f, 1e-4f);
+    const auto& walk = net.sidewalks()[static_cast<std::size_t>(info.sidewalks[1])];
+    EXPECT_NEAR(walk.centre.points.front().x, 9.5f, 1e-4f);
 }
 
 TEST(AiTraffic, DensityOfANewArea) {

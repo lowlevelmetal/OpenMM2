@@ -102,7 +102,8 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
             info.endFlags[end] = e.unknown2;
             // The file stores the path's index in each end's intersection list.
             if (info.intersection[end] >= 0) {
-                const auto& list = net.m_intersections[static_cast<std::size_t>(info.intersection[end])].paths;
+                const auto& node = net.m_intersections[static_cast<std::size_t>(info.intersection[end])];
+                const auto& list = node.paths;
                 int idx = e.roadIndex < list.size() && list[e.roadIndex] == static_cast<int>(p)
                               ? static_cast<int>(e.roadIndex)
                               : -1;
@@ -281,8 +282,9 @@ int RoadNetwork::lane(int path, int dir, int index) const {
     if (path < 0 || static_cast<std::size_t>(path) >= m_paths.size())
         return -1;
     const auto& lanes = m_paths[static_cast<std::size_t>(path)].lanesOf(dir);
-    return index >= 0 && static_cast<std::size_t>(index) < lanes.size() ? lanes[static_cast<std::size_t>(index)]
-                                                                         : -1;
+    if (index < 0 || static_cast<std::size_t>(index) >= lanes.size())
+        return -1;
+    return lanes[static_cast<std::size_t>(index)];
 }
 
 std::vector<int> RoadNetwork::exits(int intersection, int fromPath) const {

@@ -149,7 +149,8 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             continue;
         // aiVehicleInstance::SetColor: trunc(frand * (paint jobs - 1)), so the
         // last paint job is never chosen.
-        const int paint = cm->paintjobs > 1 ? static_cast<int>(car.paint * static_cast<float>(cm->paintjobs - 1)) : 0;
+        const int paint =
+            cm->paintjobs > 1 ? static_cast<int>(car.paint * static_cast<float>(cm->paintjobs - 1)) : 0;
         auto& r = cm->renderers[paint];
         if (!r)
             r = std::make_unique<VehicleRenderer>(m_device, m_textures, m_models, *cm->model, paint);

@@ -223,7 +223,8 @@ Vec3 Traffic::subSectionPoint(int path, int dir, int lane, int i, float d) const
     i = std::clamp(i, 1, n - 1);
     const Vec3& p1 = l->line.points[static_cast<std::size_t>(i)];
     const Vec3& p0 = l->line.points[static_cast<std::size_t>(i - 1)];
-    const float seg = l->line.distances[static_cast<std::size_t>(i)] - l->line.distances[static_cast<std::size_t>(i - 1)];
+    const auto& cum = l->line.distances;
+    const float seg = cum[static_cast<std::size_t>(i)] - cum[static_cast<std::size_t>(i - 1)];
     const float t = seg > 0.0f ? 1.0f - d / seg : 0.0f;
     return (p1 - p0) * t + p0;
 }
@@ -255,8 +256,10 @@ float Traffic::subSectionDist(int path, int dir, int lane, float dist) const {
 float Traffic::turnLength(const Car& c) const {
     if (c.nextPath < 0)
         return 0.0f;
-    const int n = static_cast<int>(laneOf(c.path, c.dir, c.lane) ? laneOf(c.path, c.dir, c.lane)->line.points.size() : 1);
-    const Vec3 p0 = entryPoint(c.path, c.dir, c.lane, c.frontBumper) + xAxisAt(c.path, c.dir, n - 1) * c.laneRandomness;
+    const Lane* lane = laneOf(c.path, c.dir, c.lane);
+    const int n = lane ? static_cast<int>(lane->line.points.size()) : 1;
+    const Vec3 p0 =
+        entryPoint(c.path, c.dir, c.lane, c.frontBumper) + xAxisAt(c.path, c.dir, n - 1) * c.laneRandomness;
     const Vec3 p1 = lanePoint(c, c.nextPath, c.nextDir, c.nextLane, 0);
     return manhattanXZ(p0, p1);
 }
@@ -727,10 +730,11 @@ void Traffic::resetRandomDrive(Car& c) {
         // In the turn.
         c.segDist = c.roadDist - laneEnd;
         c.segLen = std::max(turnLen, 1e-3f);
-        const Vec3 p0 =
-            entryPoint(c.path, c.dir, c.lane, c.frontBumper) + xAxisAt(c.path, c.dir, S - 1) * c.laneRandomness;
+        const Vec3 p0 = entryPoint(c.path, c.dir, c.lane, c.frontBumper) +
+                        xAxisAt(c.path, c.dir, S - 1) * c.laneRandomness;
         const Vec3 p1 = lanePoint(c, c.nextPath, c.nextDir, c.nextLane, 0);
-        setCurve(c, p0, p1, entryVector(c.path, c.dir, c.segLen), exitVector(c.nextPath, c.nextDir, c.segLen));
+        setCurve(c, p0, p1, entryVector(c.path, c.dir, c.segLen),
+                 exitVector(c.nextPath, c.nextDir, c.segLen));
         c.rail = Rail::Turn;
         c.section = S;
         const int node = arrivalIntersection(m_net, c.path, c.dir);
@@ -749,7 +753,8 @@ void Traffic::resetRandomDrive(Car& c) {
             m1 = subSectionDir(c.path, c.dir, i, segLen);
         } else {
             segLen -= c.frontBumper;
-            p1 = subSectionPoint(c.path, c.dir, c.lane, i, c.frontBumper) + xAxisAt(c.path, c.dir, i) * c.laneRandomness;
+            p1 = subSectionPoint(c.path, c.dir, c.lane, i, c.frontBumper) +
+                 xAxisAt(c.path, c.dir, i) * c.laneRandomness;
             m0 = subSectionDir(c.path, c.dir, i - 1, segLen);
             m1 = entryVector(c.path, c.dir, segLen);
         }
@@ -971,8 +976,9 @@ void Traffic::solveVelocity(int idx, float dt) {
             // The last car of the lane being turned into, or a car of this
             // road turning into the same lane ahead of this one.
             int best = -1;
-            if (const auto* q = queueOf(c.nextPath, c.nextDir, c.nextLane); q && !q->empty() && q->back() != idx) {
-                best = q->back();
+            const auto* tail = queueOf(c.nextPath, c.nextDir, c.nextLane);
+            if (tail && !tail->empty() && tail->back() != idx) {
+                best = tail->back();
                 leadDist = distanceToVehicle(c, m_cars[static_cast<std::size_t>(best)]);
             }
             const auto& lanes = m_net.paths()[static_cast<std::size_t>(c.path)].lanesOf(c.dir);
@@ -1081,7 +1087,8 @@ void Traffic::solveVelocity(int idx, float dt) {
         c.accel = 0.0f;
     }
     const int lead = ahead(idx, c.lane);
-    if (lead >= 0 && m_cars[static_cast<std::size_t>(lead)].speed < 0.01f && c.speed < 0.01f && leadDist < 20.0f)
+    if (lead >= 0 && m_cars[static_cast<std::size_t>(lead)].speed < 0.01f && c.speed < 0.01f &&
+        leadDist < 20.0f)
         c.curReactTicks = 0;
     c.segDist = dt * c.speed + c.segDist;
     c.roadDist = dt * c.speed + c.roadDist;
@@ -1105,7 +1112,8 @@ bool Traffic::solveRailType(int idx) {
             entryPoint(c.path, c.dir, c.lane, backFromEnd) + xAxisAt(c.path, c.dir, S - 1) * c.laneRandomness;
         const Vec3 p1 = lanePoint(c, c.nextPath, c.nextDir, c.nextLane, 0);
         c.segLen = std::max(manhattanXZ(p0, p1), 1e-3f);
-        setCurve(c, p0, p1, entryVector(c.path, c.dir, c.segLen), exitVector(c.nextPath, c.nextDir, c.segLen));
+        setCurve(c, p0, p1, entryVector(c.path, c.dir, c.segLen),
+                 exitVector(c.nextPath, c.nextDir, c.segLen));
         c.rail = Rail::Turn;
     };
     switch (c.rail) {
@@ -1130,8 +1138,9 @@ bool Traffic::solveRailType(int idx) {
                          entryVector(c.path, c.dir, c.segLen));
             } else {
                 c.segLen = std::max(segLen, 1e-3f);
-                setCurve(c, lanePoint(c, c.path, c.dir, c.lane, i - 1), lanePoint(c, c.path, c.dir, c.lane, i),
-                         subSectionDir(c.path, c.dir, i - 1, c.segLen), subSectionDir(c.path, c.dir, i, c.segLen));
+                setCurve(c, lanePoint(c, c.path, c.dir, c.lane, i - 1),
+                         lanePoint(c, c.path, c.dir, c.lane, i), subSectionDir(c.path, c.dir, i - 1, c.segLen),
+                         subSectionDir(c.path, c.dir, i, c.segLen));
             }
         } else {
             beginTurn(c.frontBumper);
@@ -1187,7 +1196,8 @@ bool Traffic::solveRailType(int idx) {
         Vec3 p1, m1;
         if (S == 2) {
             segLen -= c.frontBumper;
-            p1 = subSectionPoint(c.path, c.dir, c.lane, 1, c.frontBumper) + xAxisAt(c.path, c.dir, 1) * c.laneRandomness;
+            p1 = subSectionPoint(c.path, c.dir, c.lane, 1, c.frontBumper) +
+                 xAxisAt(c.path, c.dir, 1) * c.laneRandomness;
             m1 = entryVector(c.path, c.dir, segLen);
         } else {
             p1 = lanePoint(c, c.path, c.dir, c.lane, 1);
@@ -1209,8 +1219,8 @@ bool Traffic::solveRailType(int idx) {
         const Vec3 p0 = lanePoint(c, c.path, c.dir, c.lane, i - 1);
         if (i < S - 1) {
             c.segLen = std::max(segLen, 1e-3f);
-            setCurve(c, p0, lanePoint(c, c.path, c.dir, c.lane, i), subSectionDir(c.path, c.dir, i - 1, c.segLen),
-                     subSectionDir(c.path, c.dir, i, c.segLen));
+            setCurve(c, p0, lanePoint(c, c.path, c.dir, c.lane, i),
+                     subSectionDir(c.path, c.dir, i - 1, c.segLen), subSectionDir(c.path, c.dir, i, c.segLen));
         } else {
             segLen -= c.frontBumper;
             c.segLen = std::max(segLen, 1e-3f);
@@ -1337,10 +1347,12 @@ void Traffic::solvePose(Car& c, const PlayerCar& player) {
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
     const city::AiPath& src = m_net.source()->paths[static_cast<std::size_t>(c.path)];
     const bool flat = info.flags & 0x8;
-    const bool nextFlat = c.nextPath >= 0 && (m_net.paths()[static_cast<std::size_t>(c.nextPath)].flags & 0x8);
+    const bool nextFlat =
+        c.nextPath >= 0 && (m_net.paths()[static_cast<std::size_t>(c.nextPath)].flags & 0x8);
     // Flat roads (path flag 0x8): upright, at the road's first centre height.
     if ((c.nextPath < 0 && flat) || (c.goal == AmbientGoal::RandomDrive && flat && nextFlat)) {
-        c.transform = frameFromRows(R, Vec3::yAxis(), -F, {P.x, src.center.empty() ? P.y : src.center[0].y, P.z});
+        const float y = src.center.empty() ? P.y : src.center[0].y;
+        c.transform = frameFromRows(R, Vec3::yAxis(), -F, {P.x, y, P.z});
         c.fitted = false;
         return;
     }
@@ -1355,7 +1367,8 @@ void Traffic::solvePose(Car& c, const PlayerCar& player) {
         const Vec3 a = c.dir == 1 ? -src.xAxis[u] : src.xAxis[u];
         const Vec3 c2 = c.dir == 1 ? src.zAxis[u] : -src.zAxis[u];
         float h = P.y;
-        if (const Lane* drawn = laneOf(c.path, c.dir, c.drawLane); drawn && c.section < static_cast<int>(drawn->line.points.size())) {
+        const Lane* drawn = laneOf(c.path, c.dir, c.drawLane);
+        if (drawn && c.section < static_cast<int>(drawn->line.points.size())) {
             const Vec3& v0 = drawn->line.points[static_cast<std::size_t>(c.section - 1)];
             const Vec3& v1 = drawn->line.points[static_cast<std::size_t>(c.section)];
             h = (v1.y - v0.y) * t + v0.y;
@@ -1716,7 +1729,8 @@ void Traffic::setPhysicalTransform(int carId, const Mat34& transform) {
 }
 
 void Traffic::release(int carId) {
-    if (carId >= 0 && static_cast<std::size_t>(carId) < m_cars.size() && m_cars[static_cast<std::size_t>(carId)].active)
+    if (carId >= 0 && static_cast<std::size_t>(carId) < m_cars.size() &&
+        m_cars[static_cast<std::size_t>(carId)].active)
         returnToPool(carId);
 }
 

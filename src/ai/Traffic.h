@@ -108,7 +108,9 @@ public:
 
     void setImpactHandler(ImpactHandler h) { m_onImpact = std::move(h); }
     void setGroundProbe(GroundProbe probe) { m_probe = std::move(probe); }
-    void setOpponents(std::span<const Vec3> positions) { m_opponents.assign(positions.begin(), positions.end()); }
+    void setOpponents(std::span<const Vec3> positions) {
+        m_opponents.assign(positions.begin(), positions.end());
+    }
 
     // A vehicle hit rail car `carId` (aiVehicleAmbient::Impact(1)).
     void impact(int carId, const Vec3& impulse);

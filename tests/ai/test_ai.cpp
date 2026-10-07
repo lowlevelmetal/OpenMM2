@@ -267,10 +267,12 @@ TEST(AiWorld, DeterministicAndWellBehaved) {
             }
             wasTurning[car.id] = d.turning;
         }
-        for (std::size_t k = 0; k < redFor.size(); ++k)
-            redFor[k] = a->signals()[k].state != ai::LightState::Green && a->signals()[k].state != ai::LightState::Amber
+        for (std::size_t k = 0; k < redFor.size(); ++k) {
+            const auto state = a->signals()[k].state;
+            redFor[k] = state != ai::LightState::Green && state != ai::LightState::Amber
                             ? redFor[k] + ai::kAiStepSeconds
                             : 0.0f;
+        }
     }
     // Same inputs, same seed: bit-identical state.
     ASSERT_EQ(a->cars().size(), b->cars().size());

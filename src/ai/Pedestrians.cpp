@@ -413,7 +413,8 @@ int Pedestrians::pickNextRoad(Ped& p) {
 
 void Pedestrians::solveRoadSegment(Ped& p, float dist) {
     const int n = sections(p.path);
-    const bool off = p.dir == 1 ? (p.idx >= 1 && dist > cumAt(p.path, p.side, n - 1)) : (p.idx < n && dist < 0.0f);
+    const bool off =
+        p.dir == 1 ? (p.idx >= 1 && dist > cumAt(p.path, p.side, n - 1)) : (p.idx < n && dist < 0.0f);
     if (!off)
         return;
     p.prevSide = p.side;
@@ -464,7 +465,8 @@ void Pedestrians::reset(int idx, int path, int side) {
     p.heading = headingAt(p, dist, p.dir);
     const float seg = w.cum[static_cast<std::size_t>(p.idx)] - w.cum[static_cast<std::size_t>(p.idx - 1)];
     const float t = seg > 0.0f ? (dist - w.cum[static_cast<std::size_t>(p.idx - 1)]) / seg : 0.0f;
-    p.position = lerp(w.points[static_cast<std::size_t>(p.idx - 1)], w.points[static_cast<std::size_t>(std::min(p.idx, n - 1))], t);
+    p.position = lerp(w.points[static_cast<std::size_t>(p.idx - 1)],
+                      w.points[static_cast<std::size_t>(std::min(p.idx, n - 1))], t);
     calcCurve(p, p.idx - 1, p.idx, p.lateral);
     const Vec3 xz = solvePosition(p, (dist - w.cum[static_cast<std::size_t>(p.idx - 1)]) * p.invLen);
     p.position.x = xz.x;
@@ -704,7 +706,9 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
         else if (p.seq == s.stand || p.seq == s.walkStand)
             queueSeq(p, s.standAntic);
     };
-    auto faceCar = [&] { p.heading = std::atan2(c.transform.m3.x - p.position.x, c.transform.m3.z - p.position.z); };
+    auto faceCar = [&] {
+        p.heading = std::atan2(c.transform.m3.x - p.position.x, c.transform.m3.z - p.position.z);
+    };
     if (p.idx == 0 || p.idx == n) {
         if (entering)
             queueBrace();
@@ -729,8 +733,8 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
                 const auto& centre = m_net.source()->paths[static_cast<std::size_t>(p.path)].center;
                 const Vec3 travel = c.reversing ? c.transform.m2 : -c.transform.m2;
                 const int i = std::clamp(p.idx, 1, static_cast<int>(centre.size()) - 1);
-                const int newDir =
-                    (centre[static_cast<std::size_t>(i)] - centre[static_cast<std::size_t>(i - 1)]).dot(travel) > 0.0f ? 1 : -1;
+                const Vec3 along = centre[static_cast<std::size_t>(i)] - centre[static_cast<std::size_t>(i - 1)];
+                const int newDir = along.dot(travel) > 0.0f ? 1 : -1;
                 if (newDir != p.dir) {
                     p.dir = newDir;
                     const float dist = roadDistance(p);
@@ -789,7 +793,8 @@ void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
             else
                 right = !(p.sideDist0 > 0.0f);
             const bool walking = p.seq == s.walk;
-            startSeq(p, right ? (walking ? s.walkRDive : s.anticRDive) : (walking ? s.walkLDive : s.anticLDive));
+            startSeq(p, right ? (walking ? s.walkRDive : s.anticRDive)
+                              : (walking ? s.walkLDive : s.anticLDive));
             p.scream = true;
         } else {
             const Vec3 x = axisX(p.path, p.idx);
@@ -919,7 +924,8 @@ void Pedestrians::waitCross(Ped& p, const PlayerCar& c) {
         return;
     }
     // Across once the lights' pedestrian phase shows WALK.
-    if (m_lights && m_lights->walkPhaseAt(p.crossNode) && m_lights->firstLightAt(p.crossNode) == LightState::Walk)
+    if (m_lights && m_lights->walkPhaseAt(p.crossNode) &&
+        m_lights->firstLightAt(p.crossNode) == LightState::Walk)
         p.cross = 3;
 }
 
@@ -957,8 +963,9 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
             calcCurve(p, p.idx - 1, p.idx, p.lateral);
         }
     } else if ((p.seq == s.run && p.reaction == static_cast<int>(p.wall)) || p.seq == s.anticLDive ||
-               p.seq == s.anticRDive || p.seq == s.walkLDive || p.seq == s.walkRDive || p.seq == s.lDiveGround ||
-               p.seq == s.rDiveGround || p.seq == s.groundStandL || p.seq == s.groundStandR) {
+               p.seq == s.anticRDive || p.seq == s.walkLDive || p.seq == s.walkRDive ||
+               p.seq == s.lDiveGround || p.seq == s.rDiveGround || p.seq == s.groundStandL ||
+               p.seq == s.groundStandR) {
         // Busy: keep the reaction.
     } else {
         float along;
