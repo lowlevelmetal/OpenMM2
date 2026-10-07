@@ -217,7 +217,7 @@ private:
                      float y);
     void drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y);
     void drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
-    void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message);
+    void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, float drop = 0.0f);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;

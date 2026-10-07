@@ -855,7 +855,7 @@ void Hud::drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Sess
     }
 }
 
-void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& m) {
+void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& m, float drop) {
     if (m.timeLeft <= 0.0f || m.text.empty())
         return;
     // mmHUD: a full-width text node at 80 % of the screen height, 15 % tall
@@ -865,7 +865,7 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
     const render::UiLayout& l = ov.layout();
     const float w = l.right - l.left, h = l.bottom - l.top;
     const ui::FontSpec f = font(60, "Gill Sans MT, 20, 36, 0, 400");
-    const float top = l.top + (m.top ? 0.2f : 0.8f) * h;
+    const float top = l.top + ((m.top ? 0.2f : 0.8f) + drop) * h;
     const float boxBottom = top + 0.15f * h;
     const float lineHeight = static_cast<float>(f.size2); // DrawText steps by the cell height
     // RenderText: shadow offset = text height / 9, halved for word-wrapped
@@ -906,7 +906,9 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
     if (m_options.visible) {
         drawReadouts(ov, text, session);
         drawMessage(ov, text, session.message());
-        drawMessage(ov, text, session.message2());
+        // SetMessage2: the line under the message (mmHUD::Update places it
+        // 0.075 of the screen height lower: 0.875 under 0.8).
+        drawMessage(ov, text, session.message2(), 0.075f);
     }
     ov.end();
 }

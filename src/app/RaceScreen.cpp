@@ -975,8 +975,16 @@ private:
         pedals.steering = m_steer;
         // Countdown: the car is held until "Go!" (and during false-start
         // penalties), and until the shared start time in multiplayer.
-        if ((m_session && m_session->playerHeld()) ||
-            (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
+        // mmPlayer +0x2258: once the race is over the car brakes with the
+        // wheel turned full left (CarSim applies it for the player).
+        const bool over = m_session && (m_session->phase() == game::session::Phase::PostRace ||
+                                        m_session->phase() == game::session::Phase::Done);
+        m_player->sim().raceFinished = over;
+        if (over) {
+            pedals = {};
+            m_player->drive(pedals);
+        } else if ((m_session && m_session->playerHeld()) ||
+                   (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
             pedals.accelerator = 0.0f;
             pedals.brake = 1.0f;
             m_player->hold(pedals.steering);
@@ -984,7 +992,11 @@ private:
             m_player->drive(pedals);
         }
         m_lastPedals = pedals;
-        if (in.keyPressed(Key::R) || m_player->sim().modelMatrix().m3.y < m_city->psdl.bounds.min.y - 30.0f)
+        // R resets the car (OpenMM2 convenience). Falling out of the city is
+        // the session's rule (mmGame::DropThruCityHandler below y = -50); this
+        // catches only cities whose geometry lies far below that.
+        if (in.keyPressed(Key::R) ||
+            m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
             m_player->reset(m_spawn);
     }
 
