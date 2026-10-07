@@ -1,10 +1,11 @@
-// A player's car cameras (mmPlayer camera handling).
-// Ported from Open1560 (Midtown Madness 1 build 1560, code/midtown/game.asm),
-// GPL-3.0, Copyright (C) Brick.
+// A player's car cameras: the camera handling of Midtown Madness 2's
+// mmPlayer, mmViewMgr::SetViewSetting and mmGame::UpdateGameInput
+// (MM2Recomp, build 3393).
 #include "game/CamPlayer.h"
 
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "game/CamMath.h"
 
 #include <format>
 
@@ -17,13 +18,16 @@ const char* viewName(PlayerCameras::View view) {
     case PlayerCameras::View::Ind: return "ind";
     case PlayerCameras::View::Pov: return "pov";
     case PlayerCameras::View::Dash: return "dash";
+    case PlayerCameras::View::Pre: return "pre";
+    case PlayerCameras::View::Point: return "point";
     }
     return "?";
 }
 
 PlayerCameras::PlayerCameras() : m_dash({}, true) { m_view.setCurrent(&m_near); }
 
-void PlayerCameras::load(const vfs::Vfs& vfs, std::string_view carIn, std::vector<std::string>* missing) {
+void PlayerCameras::load(const vfs::Vfs& vfs, std::string_view carIn, std::vector<std::string>* missing,
+                         float screenAspect) {
     const std::string car = str::lower(carIn);
     auto track = [&](TrackCamera& cam, const std::string& name) {
         std::string error;
@@ -52,6 +56,11 @@ void PlayerCameras::load(const vfs::Vfs& vfs, std::string_view carIn, std::vecto
     track(m_ind, car + "_ind");
     pov(m_pov, car);
     pov(m_dash, car + "_dash");
+    if (screenAspect < 1.3f) {
+        PovCamParams p = m_dash.params();
+        p.offset.z = p.offset.z * 0.7352941f;
+        m_dash.setParams(p);
+    }
 }
 
 CarCamera& PlayerCameras::camera(View view) {
@@ -61,52 +70,247 @@ CarCamera& PlayerCameras::camera(View view) {
     case View::Ind: return m_ind;
     case View::Pov: return m_pov;
     case View::Dash: return m_dash;
+    case View::Pre: return m_pre;
+    case View::Point: return m_point;
     }
     return m_near;
 }
 
+CarCamera* PlayerCameras::carCam(int index) {
+    // mmPlayer::CarCams: near, pov, far ("XCamStart" = 3).
+    switch (index) {
+    case 0: return &m_near;
+    case 1: return &m_pov;
+    default: return &m_far;
+    }
+}
+
+CarCamera* PlayerCameras::currentCameraPtr() {
+    // mmPlayer::GetCurrentCameraPtr
+    return m_group == 2 ? static_cast<CarCamera*>(&m_dash) : carCam(m_camIndex);
+}
+
+bool PlayerCameras::isPov() const {
+    // mmPlayer::IsPOV: false while a blend runs (the view's camera is then
+    // the transition).
+    const CarCamera* cur = m_view.current();
+    return cur == &m_pov || cur == &m_dash;
+}
+
+void PlayerCameras::setWideFov(bool wide) {
+    // mmPlayer::SetWideFOV: the perspective of the selected camera, or
+    // 70 degrees on the letterboxed wide view.
+    CarCamera* cam = m_dashActive ? static_cast<CarCamera*>(&m_dash) : currentCameraPtr();
+    m_view.setPerspective(wide ? CameraPerspective{70.0f, cam->base().cameraNear} : cam->perspective());
+    m_view.setWideAngle(wide);
+    m_wide = wide;
+}
+
+void PlayerCameras::setCamera(int group, int index) {
+    // mmPlayer::SetCamera: ignored before and after the race.
+    if (m_preRace || m_postRace)
+        return;
+    const int currentIndex = m_group == 0 ? m_camIndex : 0;
+    if (group == m_group && index == currentIndex)
+        return;
+    if (group == 0) {
+        if (index >= 0 && index < 3) {
+            m_camIndex = index;
+            m_view.newCam(carCam(index), CameraView::Blend::EaseInOut, 0.8f);
+        }
+        m_savedIndex = m_camIndex;
+        m_group = 0;
+    } else if (group == 2) {
+        m_view.setCurrent(&m_dash);
+        m_group = 2;
+    }
+}
+
 void PlayerCameras::reset(const CameraTarget& target) {
-    m_view.setCurrent(&camera(m_viewId));
+    // mmPlayer::Reset
+    m_firstUpdate = true;
+    m_preRace = false;
+    m_postRace = false;
+    m_postPending = false;
+    m_waterPending = false;
+    m_waterDone = false;
+    m_restoreCityCam = false;
+    m_camIndex = m_savedIndex;
+    m_view.setCurrent(carCam(m_camIndex));
+    m_group = 0;
+    if (m_dashActive) {
+        // The dashboard comes back on the point-of-view index, but in the
+        // cycled-camera group: switching it off then does not move the view
+        // until the camera is changed (as in the original).
+        m_savedIndex = 1;
+        m_camIndex = 1;
+        m_view.setCurrent(&m_dash);
+    }
+    setWideFov(m_wide);
     m_view.reset(target);
 }
 
 void PlayerCameras::update(float dt, const CameraTarget& target, const CameraProbe& probe, const CameraInput& input) {
+    // mmGame::UpdateGameInput: only the point-of-view cameras look around.
+    if (isPov())
+        static_cast<PovCamera*>(m_view.current())->setPan(input.camPan * cam::kTwoPi);
+
+    // mmPlayer::Update
+    if (m_firstUpdate) {
+        m_view.reset(target);
+        m_firstUpdate = false;
+    }
+    if (m_postPending) {
+        // mmPlayer::SetPostRaceCam (from the race's update)
+        m_postPending = false;
+        m_far.update(dt, target, probe, input, m_view.perspective());
+        const Vec3 p = m_far.matrix().m3;
+        m_point.setPosition({p.x, p.y + 3.5f, p.z});
+        m_point.setVelocity({});
+        m_point.setMaxDist(25.0f);
+        m_point.setMinDist(5.0f);
+        m_point.setAppRate(5.0f);
+        m_view.newCam(&m_point, CameraView::Blend::EaseInOut, 0.8f);
+        m_postRace = true;
+    }
+    if (m_waterPending && !m_waterDone) {
+        m_waterPending = false;
+        m_waterDone = true;
+        const Vec3 p = m_view.matrix().m3;
+        m_point.setPosition({p.x, p.y + 9.0f, p.z});
+        m_point.setVelocity({});
+        m_view.newCam(&m_point, CameraView::Blend::EaseInOut, 0.8f);
+        m_postRace = true;
+    }
+    if (m_preRace) {
+        // From the pre-race view to the selected camera: the point-of-view
+        // camera and the dashboard are reached through the near camera.
+        CarCamera* want = m_dashActive ? static_cast<CarCamera*>(&m_dash) : carCam(m_savedIndex);
+        const CarCamera* cur = m_view.current();
+        if (cur == want) {
+            m_preRace = false;
+        } else if (want == &m_dash) {
+            if (cur == &m_near)
+                m_view.newCam(&m_pov, CameraView::Blend::EaseIn, 0.3f);
+            else if (cur == &m_pov)
+                m_view.newCam(&m_dash, CameraView::Blend::EaseOut, 0.3f);
+        } else if (want == &m_pov && cur == &m_near) {
+            m_view.newCam(&m_pov, CameraView::Blend::EaseInOut, 0.5f);
+        }
+    }
+    if ((m_vehicleFlags & 0x13) != 0) {
+        // Big vehicles use the _ind camera under cover. (The original also
+        // switches in rooms with flag 0x20 that have geometry overhead; that
+        // probe is not ported.)
+        if ((target.roomFlags & 0x0A) == 0) {
+            if (m_restoreCityCam) {
+                if (!isPov())
+                    m_view.newCam(carCam(m_camIndex), CameraView::Blend::EaseInOut, 1.0f);
+                m_restoreCityCam = false;
+            }
+        } else {
+            const CarCamera* cur = m_view.current();
+            if (cur == &m_far || cur == &m_near) {
+                m_view.newCam(&m_ind, CameraView::Blend::EaseInOut, 1.0f);
+                m_restoreCityCam = true;
+            }
+        }
+    }
+    const float margin = (target.roomFlags & 0x08) == 0 ? 0.33f : 1.11f;
+    m_near.setCollideMargin(margin);
+    m_far.setCollideMargin(margin);
+
     m_view.update(dt, target, probe, input);
 }
 
-void PlayerCameras::select(View view, CameraView::Blend blend, float seconds) {
-    // Keep "Change Camera" cycling on from the selected view (MM1 only ever
-    // selected these views through ToggleCam, so CamIndex always matched).
-    for (std::size_t i = 0; i < m_cycle.size(); ++i)
-        if (m_cycle[i] == view)
-            m_cycleIndex = static_cast<int>(i);
-    m_viewId = view;
-    m_view.newCam(&camera(view), blend, seconds);
+void PlayerCameras::toggleCamera() {
+    // mmViewMgr::SetViewSetting(0)
+    if (m_group != 0)
+        setCamera(0, m_camIndex);
+    else
+        setCamera(0, (m_camIndex + 1) % 3);
+    setWideFov(m_wide);
+    m_dashActive = false;
 }
 
-void PlayerCameras::toggleCamera() {
-    // mmPlayer::ToggleCam: CamIndex wraps at XCamStart (3); NewCam(cam, 3, 0.8).
-    if (m_dashOn)
-        m_dashOn = false;
-    m_cycleIndex = m_cycleIndex == static_cast<int>(m_cycle.size()) - 1 ? 0 : m_cycleIndex + 1;
-    select(m_cycle[static_cast<std::size_t>(m_cycleIndex)], CameraView::Blend::EaseInOut, 0.8f);
+void PlayerCameras::toggleDashboard() {
+    // mmViewMgr::SetViewSetting(6)
+    if (m_preRace || m_postRace)
+        return;
+    bool dash = !m_dashActive;
+    if (!dash)
+        setCamera(0, m_camIndex);
+    else if (!m_wide)
+        setCamera(2, 0);
+    else
+        dash = false;
+    setWideFov(m_wide);
+    m_dashActive = dash;
 }
 
 void PlayerCameras::setDashboard(bool on) {
-    if (on == m_dashOn)
+    if (on != m_dashActive)
+        toggleDashboard();
+}
+
+void PlayerCameras::toggleWideAngle() {
+    // mmViewMgr::SetViewSetting(5)
+    if (m_group == 2)
         return;
-    m_dashOn = on;
-    // Inferred: MM1 used NewCam mode 1 / 0.3 s into the cockpit and mode 2 /
-    // 0.3 s back out for its dashboard transitions (mmPlayer::Update).
-    if (on)
-        select(View::Dash, CameraView::Blend::EaseIn, 0.3f);
-    else
-        select(m_cycle[static_cast<std::size_t>(m_cycleIndex)], CameraView::Blend::EaseOut, 0.3f);
+    const bool wide = !m_wide;
+    setWideFov(wide);
+    if (wide)
+        m_dashActive = false;
+}
+
+void PlayerCameras::select(View view) {
+    switch (view) {
+    case View::Near: setCamera(0, 0); break;
+    case View::Pov: setCamera(0, 1); break;
+    case View::Far: setCamera(0, 2); break;
+    case View::Dash:
+        if (!m_dashActive)
+            toggleDashboard();
+        return;
+    default: return;
+    }
+    setWideFov(m_wide);
+    m_dashActive = false;
+}
+
+void PlayerCameras::startPreRace() {
+    // mmPlayer::SetPreRaceCam
+    if (!m_firstUpdate)
+        return;
+    m_view.setCurrent(&m_pre);
+    CarCamera* to = carCam(m_camIndex);
+    if (to == &m_pov)
+        to = &m_near;
+    m_view.newCam(to, CameraView::Blend::EaseInOut, 3.5f);
+    m_preRace = true;
+}
+
+void PlayerCameras::startPostRace() { m_postPending = true; }
+
+void PlayerCameras::startWaterCam() { m_waterPending = true; }
+
+PlayerCameras::View PlayerCameras::view() const {
+    if (m_group == 2)
+        return View::Dash;
+    switch (m_camIndex) {
+    case 0: return View::Near;
+    case 1: return View::Pov;
+    default: return View::Far;
+    }
 }
 
 CarDisplay PlayerCameras::display() const {
-    const CarCamera* cam = m_view.current();
-    return cam ? cam->display() : CarDisplay::Body;
+    const CarCamera* cur = m_view.current();
+    if (cur == &m_dash)
+        return m_dashActive ? CarDisplay::Dash : CarDisplay::Hidden;
+    if (cur == &m_pov)
+        return CarDisplay::Hidden;
+    return CarDisplay::Body;
 }
 
 } // namespace mm2::game

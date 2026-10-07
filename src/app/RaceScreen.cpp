@@ -292,8 +292,12 @@ private:
         m_hud->options().metric = ctx.settings.metricUnits;
         m_hud->options().uiScale = ctx.display.uiScale;
         m_hud->preload(&m_ui);
-        if (m_session)
+        if (m_session) {
             m_session->start();
+            // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
+            if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
+                m_cams.startPreRace();
+        }
         if (auto* music = ctx.music()) {
             music->startRace(-1, m_result.config.mode == game::GameMode::Cruise);
             music->setAmbience(m_result.config.city);
@@ -377,6 +381,8 @@ private:
         m_pose = m_player->pose();
         std::vector<std::string> missing;
         m_cams.load(ctx.game->vfs, m_result.config.vehicle, &missing);
+        if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
+            m_cams.setVehicleFlags(static_cast<int>(info->flags));
         for (const auto& m : missing)
             log::debug("race: camera file {} missing (engine defaults)", m);
         m_cams.reset(cameraTarget());
@@ -653,9 +659,16 @@ private:
             auto& st = cops.emplace_back(carState(c.sim->sim()));
             st.pursuing = c.driver->mode() == ai::PoliceCar::Mode::Chasing && c.driver->target() == 0;
         }
+        const auto phaseBefore = m_session->phase();
         m_session->update(dt, m_playerState, opps, cops);
+        // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
+        if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
+            m_result.config.mode != game::GameMode::Cruise)
+            m_cams.startPostRace();
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
+            if (e.type == EventType::HitWater)
+                m_cams.startWaterCam();
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
                 m_cams.reset(cameraTarget());
@@ -979,12 +992,15 @@ private:
         const auto& sim = m_player->sim();
         game::CameraTarget t;
         t.matrix = sim.body.ics.matrix;
-        t.velocity = sim.body.ics.frameVelocity;
         t.angularVelocity = sim.body.ics.angularVelocity;
+        const Vec3& v = sim.body.ics.frameVelocity;
+        t.speed = std::abs((t.matrix.m2.x * v.x + t.matrix.m2.y * v.y) + t.matrix.m2.z * v.z);
         t.steering = sim.steering;
-        t.wheelsOnGround = static_cast<int>(std::ranges::count_if(sim.wheels, [](const auto& w) { return w.onGround; }));
-        t.onGround = t.wheelsOnGround > 0;
-        t.reverse = m_player->reversing();
+        t.throttle = sim.engine.throttle;
+        t.handBrake = sim.handBrake;
+        t.reverseGear = m_player->reversing();
+        for (std::size_t i = 0; i < t.wheels.size(); ++i)
+            t.wheels[i] = {sim.wheels[i].onGround, sim.wheels[i].intersection.normal};
         return t;
     }
 
@@ -1012,12 +1028,13 @@ private:
         }
         game::CameraInput input;
         input.camPan = game::cameraPanFor(left, right, back, forward);
-        const game::CameraProbe probe = [this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
+        if (const auto extent = ctx.device().sceneExtent(); extent.height)
+            input.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        const game::CameraProbe probe = [this](const Vec3& from, const Vec3& to, game::CameraHit& out) {
             phys::RayHit hit;
             if (!m_world->probe(from, to, hit))
                 return false;
-            point = hit.position;
-            normal = hit.normal;
+            out = {hit.position, hit.normal, hit.t};
             return true;
         };
         m_cams.update(dt, cameraTarget(), probe, input);

@@ -1,6 +1,6 @@
-// Car camera base: BaseCamCS / AppCamCS / CarCamCS.
-// Ported from Open1560 (Midtown Madness 1 build 1560, code/midtown/game.asm),
-// GPL-3.0, Copyright (C) Brick. Function names refer to the original methods.
+// Car camera base: camBaseCS / camAppCS / camCarCS, ported from Midtown
+// Madness 2 (MM2Recomp, build 3393). Function names refer to the original
+// methods.
 #include "game/CamCar.h"
 
 #include "game/CamMath.h"
@@ -9,9 +9,17 @@
 
 namespace mm2::game {
 
+int CameraTarget::wheelsOnGround() const {
+    // vehCarSim::OnGround
+    int n = 0;
+    for (const auto& w : wheels)
+        n += w.onGround ? 1 : 0;
+    return n;
+}
+
 float cameraPanFor(bool left, bool right, bool back, bool forward) {
-    // mmInput::GetCamPan (digital part): bits 0x8000 back, 0x10000 forward,
-    // 0x2000 left, 0x4000 right.
+    // mmInput::GetCamPan (digital part): bits 0x10000 back, 0x20000 forward,
+    // 0x4000 left, 0x8000 right.
     if (back)
         return left ? 0.375f : (right ? 0.625f : 0.5f);
     if (forward)
@@ -24,23 +32,24 @@ float cameraPanFor(bool left, bool right, bool back, bool forward) {
 }
 
 void CarCamera::forceMatrixDelta(const Vec3& d) {
-    m_camera.m3 = {d.x + m_camera.m3.x, m_camera.m3.y + d.y, d.z + m_camera.m3.z};
-    m_goal.m3 = {d.x + m_goal.m3.x, m_goal.m3.y + d.y, m_goal.m3.z + d.z};
+    m_camera.m3 = {m_camera.m3.x + d.x, d.y + m_camera.m3.y, d.z + m_camera.m3.z};
+    m_goal.m3 = {m_goal.m3.x + d.x, d.y + m_goal.m3.y, d.z + m_goal.m3.z};
 }
 
 void CarCamera::apply(Camera& out) const {
     out.transform = m_camera;
-    out.horizontalFov = m_base->cameraFov * cam::kDegToRad;
+    out.horizontalFov = cam::horizontalFov4x3(m_base->cameraFov);
     out.nearPlane = m_base->cameraNear;
     out.farPlane = m_base->cameraFar;
 }
 
 bool CarCamera::dApproach(float& value, float goal, float rampDist, float maxSpeed, float& velocity,
                           float rateDt) const {
+    // camAppCS::DApproach
     const float d = std::abs(goal - value);
     float speed = d;
     // Within rampDist the speed falls off quadratically, so the camera eases in.
-    if (rampDist != 0.0f && !(d > rampDist))
+    if (rampDist != 0.0f && d <= rampDist)
         speed = d * d / rampDist;
     if (maxSpeed != 0.0f && d > maxSpeed)
         speed = maxSpeed;
@@ -55,25 +64,27 @@ bool CarCamera::dApproach(float& value, float goal, float rampDist, float maxSpe
             speed = filtered;
         }
     }
-    const float diff = goal - value;
-    const float step = speed * rateDt;
-    if (!(diff < 0.0f)) {
-        if (!(diff > step)) {
+    if (value < goal) {
+        value = speed * rateDt + value;
+        if (value > goal)
             value = goal;
-            return true;
-        }
-        value = step + value;
-        return false;
+    } else if (value > goal) {
+        value = value - speed * rateDt;
+        if (value < goal)
+            value = goal;
     }
-    if (!(-diff > step)) {
-        value = goal;
-        return true;
-    }
-    value = value - step;
-    return false;
+    return value == goal;
+}
+
+Vec3 CarCamera::trackToWorld(const Mat34& c) const {
+    const Vec3& t = m_app->trackTo;
+    return {((c.m2.x * t.z + c.m1.x * t.y) + t.x * c.m0.x) + c.m3.x,
+            ((c.m2.y * t.z + c.m0.y * t.x) + c.m1.y * t.y) + c.m3.y,
+            ((c.m2.z * t.z + c.m0.z * t.x) + c.m1.z * t.y) + c.m3.z};
 }
 
 void CarCamera::updateMaxDist() {
+    // camAppCS::UpdateMaxDist
     const AppCamParams& a = *m_app;
     if (a.minDist > a.maxDist)
         return;
@@ -84,12 +95,13 @@ void CarCamera::updateMaxDist() {
 
     auto dist2 = [&] {
         const float dx = c.x - f.x, dy = c.y - f.y, dz = c.z - f.z;
-        return (dy * dy + dz * dz) + dx * dx;
+        return (dz * dz + dy * dy) + dx * dx;
     };
     auto placeAt = [&](float distance) {
-        const Vec3 d{c.x - f.x, c.y - f.y, c.z - f.z};
-        const Vec3 v = cam::scaled(d, cam::invMag(d));
-        c = {distance * v.x + f.x, distance * v.y + f.y, distance * v.z + f.z};
+        Vec3 d{c.x - f.x, c.y - f.y, c.z - f.z};
+        const float m2 = (d.z * d.z + d.y * d.y) + d.x * d.x;
+        d = cam::scaled(d, m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2));
+        c = {d.x * distance + f.x, d.y * distance + f.y, d.z * distance + f.z};
     };
     if (a.maxDist * a.maxDist < dist2())
         placeAt(a.maxDist);
@@ -98,8 +110,9 @@ void CarCamera::updateMaxDist() {
 }
 
 void CarCamera::updateApproach(float dt, const Mat34& car) {
+    // camAppCS::UpdateApproach
     const AppCamParams& a = *m_app;
-    m_target = car.transform(a.trackTo);
+    m_target = trackToWorld(car);
 
     dApproach(m_camera.m3.x, m_goal.m3.x, a.appPosMin, 0.0f, m_posVelocity.x, a.appXZPos * dt);
     dApproach(m_camera.m3.y, m_goal.m3.y, a.appPosMin, 0.0f, m_posVelocity.y, a.appYPos * dt);
@@ -107,17 +120,13 @@ void CarCamera::updateApproach(float dt, const Mat34& car) {
     if (a.maxDist != 0.0f)
         updateMaxDist();
 
-    Mat34 current = m_camera;
-    current.m3 = {};
-    Mat34 goal = m_goal;
-    goal.m3 = {};
-    Vec3 cur = cam::getEulersZXY(current);
-    Vec3 want = cam::getEulersZXY(goal);
+    Vec3 cur = cam::getEulersZXY(m_camera);
+    Vec3 want = cam::getEulersZXY(m_goal);
 
     // Take the short way round when the angles straddle +-180 degrees.
     auto unwrap = [](float c, float& g) {
         if (c > cam::kHalfPi && g < -cam::kHalfPi)
-            g = g - (-cam::kTwoPi);
+            g = g + cam::kTwoPi;
         if (c < -cam::kHalfPi && g > cam::kHalfPi)
             g = g - cam::kTwoPi;
     };
@@ -127,16 +136,15 @@ void CarCamera::updateApproach(float dt, const Mat34& car) {
 
     if (a.lookAt != 0.0f) {
         // Blend the goal orientation towards looking straight at TrackTo.
-        const Vec3 lookPoint{m_target.x, m_target.y + a.lookAbove, m_target.z};
+        const Vec3 lookPoint{m_target.x, a.lookAbove + m_target.y, m_target.z};
         Mat34 look = m_camera;
         cam::lookAt(look, m_camera.m3, lookPoint);
-        look.m3 = {};
         Vec3 l = cam::getEulersZXY(look);
         unwrap(cur.x, l.x);
         unwrap(cur.y, l.y);
         unwrap(cur.z, l.z);
         const float la = a.lookAt, ila = 1.0f - a.lookAt;
-        want = {la * l.x + ila * want.x, la * l.y + ila * want.y, la * l.z + ila * want.z};
+        want = {ila * want.x + la * l.x, ila * want.y + la * l.y, ila * want.z + la * l.z};
     }
 
     const float xRot = a.appXRot != 0.0f ? a.appXRot : a.appRot;
@@ -151,6 +159,7 @@ void CarCamera::updateApproach(float dt, const Mat34& car) {
 }
 
 void CarCamera::approachIt(float dt, const Mat34& car) {
+    // camAppCS::ApproachIt
     if (m_app->approachOn != 0 && m_oneShot == 0)
         updateApproach(dt, car);
     else

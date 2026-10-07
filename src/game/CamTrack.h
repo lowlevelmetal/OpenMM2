@@ -1,9 +1,7 @@
 #pragma once
 
-// Chase camera: the Angel engine's TrackCamCS (Midtown Madness 1; Open1560,
-// GPL-3.0, Copyright (C) Brick), plus inferred handling for the MM2-only tune
-// fields (hills, reverse view, look around). See docs/camera.md for what is
-// ported and what is inferred.
+// Chase camera: Midtown Madness 2's camTrackCS (MM2Recomp, build 3393).
+// See docs/camera.md.
 
 #include "game/CamCar.h"
 
@@ -17,76 +15,64 @@ public:
     void setParams(const TrackCamParams& params);
 
     void reset(const CameraTarget& target) override;
-    void update(float dt, const CameraTarget& target, const CameraProbe& probe, const CameraInput& input) override;
-    CarDisplay display() const override { return CarDisplay::Body; }
+    void update(float dt, const CameraTarget& target, const CameraProbe& probe, const CameraInput& input,
+                const CameraPerspective& view) override;
 
-    // Behaviour switches for the parts that are not in MM1 (docs/camera.md).
-    struct Options {
-        // Speed-dependent AppXZPos from MinAppXZPos..MaxAppXZPos (Open1560's
-        // reconstruction of PreApproach; MM2 tunes these per camera).
-        bool preApproach = true;
-        // MM2 sets CollideType 1 on every camera; MM1 only knows 2. Treat 1
-        // like 2 (pull the camera in front of walls).
-        bool collideType1 = true;
-        bool hill = true;        // HillMin / HillMax / HillLerp
-        bool reverseView = true; // ReverseOn / RevDelay / RevOnApp / RevOffApp
-        bool lookAround = true;  // apply CameraInput::camPan to the chase view
-    };
-    Options options;
+    // Margin kept between the near plane and walls by CollideType 1 (field
+    // 0x180, not in the tune file). mmPlayer::Update sets 0.33 for the near
+    // and far cameras, or 1.11 while the car's room has flag 0x08.
+    void setCollideMargin(float margin) { m_collideMargin = margin; }
+    float collideMargin() const { return m_collideMargin; }
 
     // Debug/test access.
     bool isOnGround() const { return m_isOnGround; }
     bool reverseViewActive() const { return m_reverseView; }
-    float steerTarget() const { return m_steerTarget; }
+    float swingAngle() const { return m_shared.yRot; } // TrackCamData yaw about the car
     float hillAngle() const { return m_hill; }
+    const Vec3& groundNormal() const { return m_groundNormal; }
 
 private:
-    // TrackCamCS::TrackCamData, shared by a car's cameras in the original.
+    // camTrackCS::TrackCamData: approach amount, yaw and pitch about the car.
     struct SharedData {
-        int state = 0;
+        float state = 0.0f;
         float approachAmount = 0.0f; // pushes the camera out along its view line
-        float yRot = 0.0f;           // swing about the car (look around)
+        float yRot = 0.0f;           // swing about the car (reverse view)
         float xRot = 0.0f;
-        int field10 = 0, field14 = 0;
+        float unused4 = 0.0f, unused5 = 0.0f;
     };
 
     void updateCar(float dt, const CameraTarget& t);
-    void updateHillState(float dt, const CameraTarget& t);
-    void applyHill();
+    void updateHill(const CameraTarget& t);
     void updateTrack(float dt, const CameraTarget& t);
-    void updateLookAndReverse(float dt, const CameraTarget& t, const CameraInput& input);
     void preApproach(float dt, const CameraTarget& t);
     void minMax(const Mat34& previous, const CameraProbe& probe);
-    void collide(float dt, Vec3 previousPosition, const CameraProbe& probe);
+    void collide(float dt, Vec3 previousPosition, const CameraProbe& probe, const CameraInput& input,
+                 const CameraPerspective& view);
 
     TrackCamParams m_params;
 
-    // TrackCamCS state (field offsets refer to the MM1 layout).
-    bool m_matrixTouched = true;  // 0x118: copy goal to camera after the first update
-    SharedData m_shared;          // 0x170
-    float m_inAirTime = 0.0f;     // 0x174
-    float m_onGroundTime = 0.0f;  // 0x178
-    bool m_isOnGround = true;     // 0x17C
-    int m_spinning = 0;           // 0x180 SpinningReallyFast (1, or 2 = forced)
-    bool m_frozen = false;        // 0x184 tracking suspended
-    int m_splineState1 = 0;       // 0x188 } swing transitions; nothing in MM1
-    int m_splineState3 = 0;       // 0x190 } sets them, see docs/camera.md
-    float m_xRotBase = 0.0f;      // 0x1A0
-    float m_steerTimer = 0.0f;    // 0x228 (never advanced in MM1, so DriftDelay has no effect)
-    float m_carSteering = 0.0f;   // 0x230
-    float m_carVelocity = 0.0f;   // 0x234
-    float m_steerTarget = 0.0f;   // 0x238
-    bool m_wasColliding = false;  // 0x240
-    float m_collideBaseDist2 = 0.0f; // 0x248
-    float m_collideDist2 = 0.0f;     // 0x24C
-    Vec3 m_desiredPosition;       // 0x250
-    Vec3 m_previousDesired;       // 0x25C
-    Vec3 m_previousTarget;        // 0x268
-
-    // MM2 inferred state.
-    float m_hill = 0.0f;
-    float m_reverseTimer = 0.0f;
-    bool m_reverseView = false;
+    // camTrackCS state (field offsets refer to the MM2 layout).
+    bool m_matrixTouched = true;    // 0x110: copy goal to camera after the first update
+    float m_collideMargin = 0.33f;  // 0x180
+    SharedData m_shared;            // 0x184
+    float m_inAirTime = 0.0f;       // 0x188
+    float m_onGroundTime = 0.0f;    // 0x18C
+    bool m_isOnGround = true;       // 0x190
+    int m_spinning = 0;             // 0x194 SpinningReallyFast (1, or 2 = forced)
+    bool m_frozen = false;          // 0x198 tracking suspended
+    float m_hill = 0.0f;            // 0x1B4 pitch for the slope
+    Vec3 m_groundNormal;            // 0x228 filtered ground normal
+    float m_carSteering = 0.0f;     // 0x23C
+    float m_carSpeed = 0.0f;        // 0x240
+    bool m_reverseView = false;     // 0x248
+    float m_reverseTimer = 0.0f;    // 0x24C
+    float m_reverseSign = 1.0f;     // 0x250 which way round the swing goes
+    bool m_wasColliding = false;    // 0x258 (CollideType 2)
+    float m_collideBaseDist2 = 0.0f; // 0x260
+    float m_collideDist2 = 0.0f;     // 0x264
+    Vec3 m_desiredPosition;         // 0x268
+    Vec3 m_previousDesired;         // 0x274
+    Vec3 m_previousTarget;          // 0x280
 };
 
 } // namespace mm2::game
