@@ -21,7 +21,7 @@ struct WheelEnv {
     const GroundQuery* ground = nullptr;
     float dt = 0;
     float invDt = 0;
-    // WeatherFriction (mmGame::InitWeather: 0.8 in snow, 0.75 in snow at night).
+    // WeatherFriction (mmGame::InitWeather: 0.8 in rain, 0.75 in rain at night).
     float weatherFriction = 1.0f;
     // vehCarSim CarFrictionHandling; wheels without a car do not apply it.
     bool hasCar = true;

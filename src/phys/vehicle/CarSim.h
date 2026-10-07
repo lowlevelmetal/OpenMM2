@@ -55,8 +55,8 @@ struct Axle {
 };
 
 struct CarSimOptions {
-    // ?WeatherFriction@@3MA: 1, or 0.8 in snow (0.75 at night) in MM2
-    // (mmGame::InitWeather).
+    // ?WeatherFriction@@3MA: 1, or 0.8 in rain (0.75 in rain at night)
+    // (mmGame::InitWeather, weather type 3).
     float weatherFriction = 1.0f;
     // Damage can wreck the car (which then brakes and stops responding).
     bool damage = true;

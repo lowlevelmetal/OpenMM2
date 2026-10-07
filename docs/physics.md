@@ -128,7 +128,7 @@ body (implicit, above). Past SuspensionLimit the wheel bottoms out: an
 impulse a quarter of the one stopping the closing velocity, per sample, and a
 push out of the overlap.
 
-Surface: material friction × WeatherFriction (0.8 in snow, 0.75 in snow at
+Surface: material friction × WeatherFriction (0.8 in rain, 0.75 in rain at
 night, `mmGame::InitWeather`; applied everywhere, tunnels included) then
 CarFrictionHandling; walls (|n.y| < 0.001) have no friction. Materials with a
 `height` make bumps: a sine of wavelength `width` along the distance

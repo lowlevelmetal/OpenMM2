@@ -395,6 +395,7 @@ private:
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
+        m_player->sim().options.weatherFriction = weatherFriction();
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
         setupVehicleRenderer(ctx, *m_vehicle);
@@ -465,12 +466,21 @@ private:
             log::warn("race: AI car {}: {}", vehicle, error);
             return nullptr;
         }
+        car->sim().options.weatherFriction = weatherFriction();
         car->addTo(*m_world);
         phys::RayHit hit;
         if (m_world->probe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit))
             spawn.m3 = hit.position;
         car->reset(spawn);
         return car;
+    }
+
+    // mmGame::InitWeather: the tyres' WeatherFriction is 0.8 in rain, 0.75 in
+    // rain at night, 1 otherwise.
+    float weatherFriction() const {
+        if (m_result.config.weather != game::Weather::Rain)
+            return 1.0f;
+        return m_result.config.timeOfDay == game::TimeOfDay::Night ? 0.75f : 0.8f;
     }
 
     std::unique_ptr<audio::game::OpponentCarAudio> loadAiCarAudio(Context& ctx, const std::string& vehicle,
