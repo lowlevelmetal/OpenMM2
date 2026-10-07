@@ -17,6 +17,9 @@ struct MeshDrawOptions {
     std::optional<render::BlendMode> blend;
     bool depthWrite = true;
     bool depthBias = false; // pull towards the viewer (decals, shadows)
+    // Alpha test reference for translucent materials (which also blend).
+    // cityLevel::DrawRooms sets GREATER 100 for everything it draws.
+    float alphaRef = 101.0f / 255.0f;
     Vec4 tint{1, 1, 1, 1}; // multiplied into the material colour
     // Back-face culling with counter-clockwise front faces, as the original
     // drew (verified: car bodies are correct only this way, and models ship

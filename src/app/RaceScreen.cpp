@@ -174,6 +174,8 @@ public:
             }
         }
         m_textures->update(m_time);
+        if (m_cityRenderer)
+            m_cityRenderer->update(m_frameDt);
         if (ctx.input.keyPressed(platform::Key::F3))
             m_showDebug = !m_showDebug;
         if (m_showDebug)
@@ -190,7 +192,7 @@ public:
         const float aspect = extent.height ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
         const auto proj = render::computeProjection(m_camera.horizontalFov, aspect, ctx.display.fovMode,
                                                     ctx.display.maxAspect);
-        m_camera.farPlane = m_env.fogEnd + 100.0f;
+        m_camera.farPlane = m_env.farClip;
         render::FrameConstants frame = m_env.frame;
         frame.view = m_camera.view();
         frame.proj = Mat44::perspective(proj.fovY, proj.aspect, m_camera.nearPlane, m_camera.farPlane, true);
@@ -205,7 +207,7 @@ public:
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera,
-                            {m_detail.lodScale, m_env.fogEnd + 50.0f, night});
+                            {1.0f, m_env.fogEnd + 50.0f, night});
         const bool lights = carLights();
         if (m_vehicle && (m_flyCamera || m_cams.display() == game::CarDisplay::Body)) {
             m_pose.headlights = lights;
@@ -235,7 +237,12 @@ public:
         for (const auto& c : m_cops)
             if (c.fx)
                 c.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
-        if (m_weather)
+        // cityLevel::DrawRooms draws no rain while the camera is underground
+        // (PSDL room flag 0x02).
+        const int cameraRoom = m_cityRenderer->stats().cameraRoom;
+        const bool underground = cameraRoom > 0 && static_cast<std::size_t>(cameraRoom) < m_city->psdl.rooms.size() &&
+                                 (m_city->psdl.rooms[static_cast<std::size_t>(cameraRoom)].flags & city::RoomFlag::Subterranean);
+        if (m_weather && !underground)
             m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
@@ -283,13 +290,22 @@ private:
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
         m_cityRenderer = std::make_unique<game::CityRenderer>(ctx.device(), *m_textures, *m_models, *m_city,
                                                               [this](std::string_view n) { return m_bangerData->has(n); });
+        m_objectDetail = std::clamp(static_cast<int>(ctx.settings.ini.getInt("Graphics", "ObjectDetail", 3)), 0, 3);
+        m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
         // Development aid for screenshots: "<timeOfDay 0-3>,<weather 0-3>".
         if (const char* env = std::getenv("OPENMM2_DEBUG_ENV"); env && std::strlen(env) >= 3) {
             m_result.config.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(env[0] - '0', 0, 3));
             m_result.config.weather = static_cast<game::Weather>(std::clamp(env[2] - '0', 0, 4));
         }
-        m_env = game::makeEnvironment(*m_city, m_result.config.timeOfDay, m_result.config.weather);
-        m_textures->setNight(m_result.config.timeOfDay == game::TimeOfDay::Night);
+        {
+            // The Lighting slider (0-1) picks MM2's light quality 0-3; the
+            // Visibility slider maps to the Far Clip range 100-1000 m (inferred).
+            const double lighting = ctx.settings.ini.getDouble("Graphics", "Lighting", 1.0);
+            const double visibility = ctx.settings.ini.getDouble("Graphics", "Visibility", 1.0);
+            m_envOptions.lightQuality = static_cast<int>(std::lround(std::clamp(lighting, 0.0, 1.0) * 3.0));
+            m_envOptions.farClip = 100.0f + 900.0f * static_cast<float>(std::clamp(visibility, 0.0, 1.0));
+        }
+        applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
         m_yaw = 0.0f;
         m_pitch = -0.15f;
@@ -800,6 +816,18 @@ private:
                                                   : game::fx::Weather::Kind::None);
     }
 
+    // Lighting, fog, texture variants and street shading for the race's time
+    // and weather.
+    void applyEnvironment() {
+        m_env = game::makeEnvironment(*m_city, m_result.config.timeOfDay, m_result.config.weather, m_envOptions);
+        // mmGame's texture variants: night textures (and darkening) at
+        // night, wet (_fa) textures in rain.
+        m_textures->setVariants(m_result.config.timeOfDay == game::TimeOfDay::Night,
+                                m_result.config.weather == game::Weather::Rain);
+        if (m_cityRenderer)
+            m_cityRenderer->setEnvironment(m_env);
+    }
+
     // mmGame::InitWeather's light flag: evening, night or fog turn the car
     // lights on.
     bool carLights() const {
@@ -809,7 +837,7 @@ private:
 
     // Object Detail, reflections and the shadow's ground probe of a car renderer.
     void setupVehicleRenderer(Context& ctx, game::VehicleRenderer& r) {
-        r.setDetail(game::ObjectDetail::forLevel(static_cast<int>(ctx.settings.ini.getInt("Graphics", "ObjectDetail", 3))));
+        r.setDetail(m_detail.objects);
         r.setReflections(ctx.settings.ini.getBool("Graphics", "VehicleReflections", true));
         r.setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
             phys::RayHit hit;
@@ -1214,11 +1242,11 @@ private:
         if (changed) {
             m_result.config.timeOfDay = static_cast<game::TimeOfDay>(tod);
             m_result.config.weather = static_cast<game::Weather>(weather);
-            m_env = game::makeEnvironment(*m_city, m_result.config.timeOfDay, m_result.config.weather);
-            m_textures->setNight(m_result.config.timeOfDay == game::TimeOfDay::Night);
+            applyEnvironment();
         }
         ImGui::Checkbox("PVS", &m_detail.usePvs);
-        ImGui::SliderFloat("Detail", &m_detail.lodScale, 0.25f, 4.0f);
+        if (ImGui::SliderInt("Object detail", &m_objectDetail, 0, 3))
+            m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
         ImGui::TextDisabled("Arrows/WASD drive, Space handbrake, C camera, V dash, keypad look, R reset, F2 free cam, F3 panel");
         ImGui::End();
     }
@@ -1237,6 +1265,8 @@ private:
     std::unique_ptr<game::CityRenderer> m_cityRenderer;
     game::Environment m_env;
     game::DetailSettings m_detail;
+    game::EnvironmentOptions m_envOptions;
+    int m_objectDetail = 3; // the Object Detail option, 0-3
     game::Camera m_camera;
     std::unique_ptr<phys::World> m_world;
     std::unique_ptr<game::SimVehicle> m_player;

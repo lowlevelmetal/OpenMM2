@@ -126,7 +126,10 @@ with the frame last chosen.
 200 particles of `tune/rain.asbirthrule` (spewed by the rule, 200/s) from
 `texture/ptx_rain` (4×4 frames, a random one each), born around camera-space
 (0, 10, −10) — set in `cityLevel::DrawRooms` — stopping below Height 0
-(flag 8). MM2's weather is 0–3 (clear, cloudy, fog, rain); it has no snow.
+(flag 8). No rain is drawn while the camera is underground (PSDL room flag
+0x02); MM2 also hides it in rooms with a landmark when a 100 m probe upwards
+hits something (not ported). MM2's weather is 0–3 (clear, cloudy, fog,
+rain); it has no snow.
 OpenMM2's snow option draws MM1's leftover `tune/snow.asbirthrule` (frames
 5–7) from 6 m above and 6 m ahead of the camera (OpenMM2 addition).
 

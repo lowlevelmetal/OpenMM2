@@ -13,16 +13,38 @@ namespace mm2::game {
 
 TextureLibrary::TextureLibrary(render::Device& device, const vfs::Vfs& vfs) : m_device(device), m_vfs(vfs) {}
 
-TextureLibrary::~TextureLibrary() {
+TextureLibrary::~TextureLibrary() { clear(); }
+
+void TextureLibrary::clear() {
     for (auto& [name, t] : m_textures)
         if (t && t->handle)
             m_device.destroyTexture(t->handle);
     for (auto& [name, a] : m_animations)
         for (auto& f : a.frames)
             m_device.destroyTexture(f.handle);
+    m_textures.clear();
+    m_animations.clear();
 }
 
-std::optional<WorldTexture> TextureLibrary::load(const std::string& name) {
+void TextureLibrary::setVariants(bool night, bool rain) {
+    if (night == m_night && rain == m_rain)
+        return;
+    m_night = night;
+    m_rain = rain;
+    clear();
+}
+
+std::optional<WorldTexture> TextureLibrary::loadVariant(const std::string& name) {
+    if (m_rain && !str::iendsWith(name, "_fa"))
+        if (auto t = load(name + "_fa", m_night))
+            return t;
+    if (m_night && !str::iendsWith(name, "_ni"))
+        if (auto t = load(name + "_ni", false))
+            return t;
+    return load(name, m_night && !str::iendsWith(name, "_ni"));
+}
+
+std::optional<WorldTexture> TextureLibrary::load(const std::string& name, bool darken) {
     std::optional<asset::Image> image;
     std::uint32_t flags = 0;
     std::string path = "texture/" + name + ".tex";
@@ -41,6 +63,13 @@ std::optional<WorldTexture> TextureLibrary::load(const std::string& name) {
     }
     if (!image || image->empty())
         return std::nullopt;
+    if (darken)
+        for (auto& level : image->levels)
+            for (std::size_t i = 0; i + 3 < level.rgba.size(); i += 4) {
+                level.rgba[i] >>= 1;
+                level.rgba[i + 1] >>= 1;
+                level.rgba[i + 2] >>= 1;
+            }
 
     // Use the file's mip levels when the chain is complete, else build one.
     const auto& top = image->levels[0];
@@ -79,10 +108,6 @@ std::optional<WorldTexture> TextureLibrary::load(const std::string& name) {
 const WorldTexture* TextureLibrary::get(std::string_view nameIn) {
     if (nameIn.empty())
         return nullptr;
-    if (m_night && !str::iendsWith(nameIn, "_ni")) {
-        if (const WorldTexture* t = get(std::string(nameIn) + "_ni"))
-            return t;
-    }
     const std::string name = str::lower(nameIn);
     if (auto it = m_animations.find(name); it != m_animations.end())
         return &it->second.current;
@@ -107,7 +132,7 @@ const WorldTexture* TextureLibrary::get(std::string_view nameIn) {
                 anim.rate = static_cast<float>(str::parseDouble(parts.back()).value_or(30.0));
         }
         for (int i = 1; i < 1000; ++i) {
-            auto frame = load(std::format("{}-{:04}", name, i));
+            auto frame = loadVariant(std::format("{}-{:04}", name, i));
             if (!frame)
                 break;
             anim.frames.push_back(*frame);
@@ -119,7 +144,7 @@ const WorldTexture* TextureLibrary::get(std::string_view nameIn) {
         }
     }
 
-    auto t = load(name);
+    auto t = loadVariant(name);
     if (!t)
         log::debug("texture '{}' not found", name);
     auto& slot = m_textures[name] = t;

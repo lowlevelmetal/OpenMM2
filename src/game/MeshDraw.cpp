@@ -22,7 +22,10 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
         // (white for the PKG's colourless vertices) times the texture. This
         // is how MM2 draws pre-lit parts (gfxForceLVERTEX: shadows, light
         // glows), whose materials are black.
-        const Vec4 diffuse = mat && options.lighting ? mat->diffuse : Vec4{1, 1, 1, 1};
+        Vec4 diffuse = mat && options.lighting ? mat->diffuse : Vec4{1, 1, 1, 1};
+        // At night untextured materials are halved too (modShader::Load).
+        if (!tex && textures.night())
+            diffuse = {diffuse.x * 0.5f, diffuse.y * 0.5f, diffuse.z * 0.5f, diffuse.w};
         call.constants.color = {diffuse.x * options.tint.x, diffuse.y * options.tint.y, diffuse.z * options.tint.z,
                                 diffuse.w * options.tint.w};
         std::uint32_t flags = render::DrawFlag::VertexColor;
@@ -36,9 +39,10 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
         }
         const bool translucent = (tex && tex->translucent) || call.constants.color.w < 0.999f;
         if (translucent) {
-            // Cut out fully transparent texels so they never write depth.
+            // Translucent materials blend and alpha test together (the
+            // render state ties ALPHABLENDENABLE and ALPHATESTENABLE).
             flags |= render::DrawFlag::AlphaTest;
-            call.constants.alphaRef = 0.02f;
+            call.constants.alphaRef = options.alphaRef;
             call.state.blend = render::BlendMode::Alpha;
         }
         if (options.blend)
