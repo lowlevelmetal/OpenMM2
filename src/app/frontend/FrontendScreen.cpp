@@ -779,6 +779,10 @@ public:
             m_fe.push(frontend::makeDriverPage(m_fe));
             m_fe.push(frontend::makeSessionsPage(m_fe));
             m_fe.push(frontend::makeLobbyPage(m_fe));
+        } else if (result && result->config.multiplayer) {
+            // The session ended during a multiplayer race: the sessions list.
+            m_fe.push(frontend::makeDriverPage(m_fe));
+            m_fe.push(frontend::makeSessionsPage(m_fe));
         } else if (result && m_fe.profile) {
             // Back from a race (mmInterface::ShowMain): the race menu, or the
             // Crash Course over its intro, with the main menu underneath; the
