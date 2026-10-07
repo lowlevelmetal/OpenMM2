@@ -21,6 +21,8 @@ Frontend::Frontend(Context& c)
     : ctx(c), textures(c.device(), c.game->vfs), text(c.device()), layout(ui::MenuLayout::load(c.game->vfs)),
       store(game::ProfileStore::defaultDir()), progress(game::Progress::load(c.game->vfs)) {
     cities = city::listCities(c.game->vfs);
+    // mmCityList::LoadAll reads sf.cinfo first, then the other tune/*.cinfo.
+    std::ranges::stable_partition(cities, [](const city::CityInfo& i) { return str::iequals(i.mapName, "sf"); });
     for (const auto& info : cities)
         races.push_back(city::listRaces(c.game->vfs, info));
     hallOfFame.load(store.dir() / "records.ini");
@@ -174,14 +176,10 @@ void Frontend::configFromProfile() {
     config.difficulty = p.difficulty;
     config.city = cityIndex(p.city) >= 0 ? cities[static_cast<std::size_t>(cityIndex(p.city))].mapName : "london";
     config.mode = p.mode == game::GameMode::CopsAndRobbers ? game::GameMode::Cruise : p.mode;
-    config.raceIndex = p.raceIndex;
-    config.timeOfDay = p.timeOfDay;
-    config.weather = p.weather;
-    config.pedestrianDensity = p.pedestrianDensity;
-    config.trafficDensity = p.trafficDensity;
-    config.copDensity = p.copDensity;
-    config.opponents = p.opponents;
-    config.laps = p.laps;
+    config.raceIndex = config.mode == game::GameMode::Cruise ? -1 : std::max(0, p.raceIndex);
+    // mmInterface::PlayerSetState restores the event, city and car; the
+    // environment, laps and opponents come from the race's data again.
+    applyRaceDefaults(config);
 }
 
 void Frontend::applyRaceDefaults(game::RaceConfig& cfg) const {
@@ -296,15 +294,6 @@ void Frontend::startRace() {
         p.city = config.city;
         p.mode = config.mode;
         p.raceIndex = config.raceIndex;
-        p.timeOfDay = config.timeOfDay;
-        p.weather = config.weather;
-        p.pedestrianDensity = config.pedestrianDensity;
-        p.trafficDensity = config.trafficDensity;
-        p.copDensity = config.copDensity;
-        if (config.mode != game::GameMode::Cruise) {
-            p.opponents = config.opponents;
-            p.laps = config.laps;
-        }
         config.difficulty = p.difficulty;
         saveProfile();
     }

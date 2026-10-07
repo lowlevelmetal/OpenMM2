@@ -10,7 +10,7 @@
 //
 //   <userDataDir>/players/<file>.ini
 //   [Driver]   Name, NetName
-//   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race, ...
+//   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race
 //   [Races]    <city>.<mode>.<index> = <time>,<vehicle>,<score>,<passed>
 //
 // mode is one of blitz, circuit, race (checkpoint), crash. Files written by
@@ -45,8 +45,8 @@ struct Profile {
     std::string netName;
     int order = 0; // creation sequence: MM2 lists drivers in the order they were created
 
-    // Last choices in the menus. Vehicle/Color, Mode/Race and City are what
-    // MM2 stores as the last car, race and city (saved when a race starts).
+    // Last choices in the menus: MM2's last car, paint job, event and city,
+    // saved when a race starts (mmInterface::BeDone).
     std::string vehicle = "vpbug";
     int vehicleColor = 0;
     bool automatic = true;
@@ -54,13 +54,6 @@ struct Profile {
     std::string city = "london";
     GameMode mode = GameMode::Cruise;
     int raceIndex = 0;
-    TimeOfDay timeOfDay = TimeOfDay::Noon;
-    Weather weather = Weather::Clear;
-    float pedestrianDensity = 0.5f;
-    float trafficDensity = 0.5f;
-    float copDensity = 0.5f;
-    int opponents = 3;
-    int laps = 3;
 
     // Records keyed as in the file format above.
     std::map<std::string, RaceRecord> races;

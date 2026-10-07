@@ -86,13 +86,6 @@ bool Profile::load(const std::filesystem::path& path) {
     city = ini.getString("Prefs", "City", city);
     mode = clampEnum(ini.getInt("Prefs", "Mode", 0), GameMode::CopsAndRobbers);
     raceIndex = static_cast<int>(ini.getInt("Prefs", "Race", 0));
-    timeOfDay = clampEnum(ini.getInt("Prefs", "TimeOfDay", 1), TimeOfDay::Night);
-    weather = clampEnum(ini.getInt("Prefs", "Weather", 0), Weather::Snow);
-    pedestrianDensity = std::clamp(static_cast<float>(ini.getDouble("Prefs", "Pedestrians", 0.5)), 0.0f, 1.0f);
-    trafficDensity = std::clamp(static_cast<float>(ini.getDouble("Prefs", "Traffic", 0.5)), 0.0f, 1.0f);
-    copDensity = std::clamp(static_cast<float>(ini.getDouble("Prefs", "Cops", 0.5)), 0.0f, 1.0f);
-    opponents = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Opponents", 3), 0, 7));
-    laps = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Laps", 3), 1, 10));
 
     for (const auto& key : ini.keys("Races")) {
         const std::string value = ini.getString("Races", key); // split() returns views into it
@@ -147,13 +140,6 @@ bool Profile::save() const {
     ini.set("Prefs", "City", city);
     ini.setInt("Prefs", "Mode", static_cast<int>(mode));
     ini.setInt("Prefs", "Race", raceIndex);
-    ini.setInt("Prefs", "TimeOfDay", static_cast<int>(timeOfDay));
-    ini.setInt("Prefs", "Weather", static_cast<int>(weather));
-    ini.setDouble("Prefs", "Pedestrians", pedestrianDensity);
-    ini.setDouble("Prefs", "Traffic", trafficDensity);
-    ini.setDouble("Prefs", "Cops", copDensity);
-    ini.setInt("Prefs", "Opponents", opponents);
-    ini.setInt("Prefs", "Laps", laps);
     for (const auto& [key, r] : races)
         ini.set("Races", key, std::format("{:.2f},{},{},{}", r.time, r.vehicle, r.score, r.passed ? 1 : 0));
     return ini.save(file);
