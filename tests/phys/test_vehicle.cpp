@@ -176,14 +176,11 @@ struct TestCar {
 };
 
 // Full throttle from rest (after 1 s at rest); speed in mph after `seconds`.
-float launchSpeedMph(const CarSimParams& p, const VehicleGeometry& g, float seconds, float dt,
-                     bool mm1ExplicitSpin = false) {
+float launchSpeedMph(const CarSimParams& p, const VehicleGeometry& g, float seconds, float dt) {
     World world;
     world.setStatic(flatGround());
     CarSim car;
-    CarSimOptions o;
-    o.mm1ExplicitSpin = mm1ExplicitSpin;
-    car.init(p, g, o);
+    car.init(p, g);
     car.reset(Mat34::identity());
     world.add(&car.body);
     ArcadeControls controls;
@@ -198,28 +195,6 @@ float launchSpeedMph(const CarSimParams& p, const VehicleGeometry& g, float seco
         world.step(dt);
     }
     return car.speedMph();
-}
-
-// The bug tune with stiff, heavily damped tyres and an MM1-layout gearbox,
-// like the retail *_opp tunes (TireDispLimit 0.075, TireDampCoef 0.75,
-// front OptimumSlipPercent 0.01, explicit GearRatios).
-CarSimParams stiffTyreParams() {
-    CarSimParams p = bugParams();
-    p.engine.maxHorsePower = 200.0f;
-    p.trans = {};
-    p.trans.hasExplicitRatios = true;
-    p.trans.numGears = 7;
-    p.trans.gearRatios = {-20.0f, 0.0f, 21.0f, 15.0f, 10.0f, 7.0f, 5.0f};
-    p.trans.upshiftRPM = {6000, 6000, 6000, 6000, 6000, 6000, 6000};
-    p.trans.downshiftRPM = {2000, 2000, 2000, 2000, 2000, 2000, 2000};
-    for (WheelParams* w : {&p.wheelFront, &p.wheelBack}) {
-        w->tireDispLimitLong = w->tireDispLimitLat = 0.075f;
-        w->tireDampCoefLong = w->tireDampCoefLat = 0.75f;
-        w->tireDragCoefLong = w->tireDragCoefLat = 0.0f;
-    }
-    p.wheelFront.optimumSlipPercent = 0.01f;
-    p.wheelFront.slidingFric = 2.5f;
-    return p;
 }
 
 // A retail tune with its model's wheel pivots (geometry/<model>_whlN.mtx: 12
@@ -250,76 +225,100 @@ std::optional<std::pair<CarSimParams, VehicleGeometry>> retailCar(const std::str
 
 } // namespace
 
-TEST(Engine, TorqueCurvePeaksAtHalfOptRpm) {
+TEST(Engine, TorqueCurveMatchesVehEngine) {
     Engine e;
     EngineParams p;
     p.maxHorsePower = 260;
+    p.idleRPM = 800;
     p.optRPM = 5800;
     p.maxRPM = 8500;
     e.configure(p);
     const float optW = e.optRotationSpeed;
-    auto torqueAt = [&](float w) {
-        e.rotationSpeed = w;
-        return e.calcTorqueAtFullThrottle();
-    };
-    // T = Pmax/w_opt * (1 + x - x^2): 1.25 * OptTorque at x = 0.5, OptTorque at x = 1.
+    // T = Pmax/w_opt * (1 + x - x^2) below OptRPM: 1.25 * OptTorque at x = 0.5.
     const float optTorque = 260.0f * 746.0f / optW;
-    EXPECT_NEAR(torqueAt(0.5f * optW), 1.25f * optTorque, 1e-3f * optTorque);
-    EXPECT_NEAR(torqueAt(optW), optTorque, 1e-3f * optTorque);
-    EXPECT_GT(torqueAt(0.5f * optW), torqueAt(0.3f * optW));
-    EXPECT_EQ(torqueAt(e.maxRotationSpeed * 1.01f), 0.0f);
-    // Engine braking crosses zero at 160 rad/s.
-    e.rotationSpeed = 160.0f;
+    EXPECT_NEAR(e.calcTorqueAtFullThrottle(0.5f * optW), 1.25f * optTorque, 1e-3f * optTorque);
+    EXPECT_NEAR(e.calcTorqueAtFullThrottle(optW), optTorque, 1e-3f * optTorque);
+    // vehEngine always tapers above OptRPM, to zero at MaxRPM.
+    const float mid = 0.5f * (optW + e.maxRotationSpeed);
+    EXPECT_LT(e.calcTorqueAtFullThrottle(mid), e.calcTorqueAtFullThrottle(optW));
+    EXPECT_GT(e.calcTorqueAtFullThrottle(mid), 0.0f);
+    EXPECT_NEAR(e.calcTorqueAtFullThrottle(e.maxRotationSpeed), 0.0f, 1e-3f);
+    EXPECT_EQ(e.calcTorqueAtFullThrottle(e.maxRotationSpeed * 1.01f), 0.0f);
+    // Engine braking crosses zero at IdleRPM, -0.75 * OptTorque at OptRPM.
+    e.rotationSpeed = e.idleRotationSpeed;
     EXPECT_NEAR(e.calcTorqueAtZeroThrottle(), 0.0f, 1e-3f);
     e.rotationSpeed = optW;
-    EXPECT_NEAR(e.calcTorqueAtZeroThrottle(), -0.5f * optTorque, 1e-3f * optTorque);
+    EXPECT_NEAR(e.calcTorqueAtZeroThrottle(), -0.75f * optTorque, 1e-3f * optTorque);
 }
 
-TEST(Transmission, Mm2GearSpeedsHitLowAndHighAtMaxRpm) {
+TEST(Transmission, GearSpeedsAreAtOptRpm) {
     const CarSimParams p = bugParams();
+    Engine e;
+    e.configure(p.engine);
     Transmission t;
+    t.configure(p.trans);
     const float radius = 0.336f;
-    t.configure(p.trans, p.engine, radius);
+    t.computeConstants(e, radius);
     EXPECT_EQ(t.numGears, 6);
     EXPECT_EQ(t.manualNumGears, 7);
-    const float maxW = p.engine.maxRPM * 2.0f * kPi / 60.0f;
-    auto mphAtMax = [&](int gear) { return maxW / t.ratio(gear) * radius * kMetersPerSecondToMph; };
-    EXPECT_NEAR(mphAtMax(Transmission::kFirst), 20.0f, 0.01f);
-    EXPECT_NEAR(mphAtMax(t.numGears - 1), 90.0f, 0.01f);
+    const float optW = p.engine.optRPM * 2.0f * kPi / 60.0f;
+    // GearRatioFromMPH uses 1609.344 m per mile (not the HUD's MetricFactor).
+    auto mphAtOpt = [&](int gear) { return optW / t.ratio(gear) * radius * (3600.0f / 1609.344f); };
+    EXPECT_NEAR(mphAtOpt(Transmission::kFirst), p.trans.low, 0.01f);
+    EXPECT_NEAR(mphAtOpt(t.numGears - 1), p.trans.high, 0.01f);
     EXPECT_LT(t.ratio(Transmission::kReverse), 0.0f);
     EXPECT_EQ(t.ratio(Transmission::kNeutral), 0.0f);
     for (int g = Transmission::kFirst + 1; g < t.numGears; ++g)
         EXPECT_LT(t.ratio(g), t.ratio(g - 1));
+    // Upshift points: between OptRPM and MaxRPM; the top gear's is MaxRPM.
+    for (int g = Transmission::kFirst; g < t.numGears - 1; ++g) {
+        EXPECT_GT(t.upshiftRPM[static_cast<std::size_t>(g)], p.engine.optRPM);
+        EXPECT_LT(t.upshiftRPM[static_cast<std::size_t>(g)], p.engine.maxRPM * (1.0f + p.trans.upshiftBias));
+        // At the upshift point the next gear gives (within UpshiftBias) the same power.
+        const float x = t.upshiftRPM[static_cast<std::size_t>(g)] / (1.0f + p.trans.upshiftBias);
+        const float f = t.ratio(g + 1) / t.ratio(g);
+        const float w = x * 0.10471976f;
+        EXPECT_NEAR(e.calcHPAtFullThrottle(w * f), e.calcHPAtFullThrottle(w), 0.01f * e.calcHPAtFullThrottle(w));
+    }
+    EXPECT_FLOAT_EQ(t.upshiftRPM[static_cast<std::size_t>(t.numGears - 1)], p.engine.maxRPM);
 }
 
-TEST(Transmission, Mm1FormatAndShiftLogic) {
-    TransmissionParams p;
-    p.hasExplicitRatios = true;
-    p.numGears = 5;
-    p.gearRatios = {-20, 0, 28, 20, 16};
-    p.upshiftRPM = {6000, 6000, 6000, 6000, 6000};
-    p.downshiftRPM = {2000, 2000, 2000, 2000, 2000};
-    Transmission t;
-    t.configure(p, EngineParams{}, 0.33f);
-    EXPECT_FLOAT_EQ(t.currentRatio(), 28.0f);
-    EXPECT_EQ(t.getCurrentGear(), 1);
+TEST(Transmission, ShiftLogic) {
     Engine e;
     e.configure(EngineParams{});
-    // Too early (GearChanged set by reset, TimeInGear 0): no shift.
-    e.rpm = 7000.0f;
-    t.update(0.1f, e);
+    Transmission t;
+    t.configure(TransmissionParams{});
+    t.computeConstants(e, 0.33f);
+    EXPECT_EQ(t.getCurrentGear(), 1);
+    // Too early (shift pending from the reset): no shift.
+    e.rpm = 7900.0f;
+    e.throttle = 1.0f;
+    t.update(0.25f, e, 4);
     EXPECT_EQ(t.getCurrentGear(), 1);
     t.gearChanged = false; // the engine clears it after its gear-change lag
-    t.update(0.1f, e);
+    t.update(0.25f, e, 4);
+    t.update(0.25f, e, 4);
+    t.update(0.25f, e, 4);
+    EXPECT_EQ(t.getCurrentGear(), 1); // GearChangeTime (0.8 s) not exceeded before this update
+    t.update(0.25f, e, 4);
     EXPECT_EQ(t.getCurrentGear(), 2);
+    // No shifting while airborne, and the time in gear stands still.
     t.gearChanged = false;
-    e.rpm = 1500.0f;
-    t.update(0.1f, e);
-    t.update(0.1f, e);
+    e.rpm = 1000.0f;
+    const float before = t.timeInGear;
+    for (int i = 0; i < 20; ++i)
+        t.update(0.25f, e, 0);
+    EXPECT_EQ(t.getCurrentGear(), 2);
+    EXPECT_FLOAT_EQ(t.timeInGear, before);
+    for (int i = 0; i < 5; ++i)
+        t.update(0.25f, e, 4);
     EXPECT_EQ(t.getCurrentGear(), 1);
-    // Manual shifting only when not automatic.
+    // Manual shifting through the manual box; the automatic only leaves
+    // reverse/neutral upwards and drops to neutral downwards.
     EXPECT_EQ(t.upshift(), Transmission::kFirst);
+    EXPECT_EQ(t.downshift(), Transmission::kNeutral);
     t.automatic(false);
+    t.setDrive();
     EXPECT_EQ(t.upshift(), Transmission::kFirst + 1);
     t.setReverse();
     EXPECT_EQ(t.getCurrentGear(), -1);
@@ -333,14 +332,20 @@ TEST(Wheel, FrictionCurvePeaksAtOptimumSlip) {
     p.optimumSlipPercent = 0.16f;
     p.staticFric = 3.0f;
     p.slidingFric = 2.7f;
-    w.init(p, {{0, 0.3f, 0}, 0.3f, 0.2f, true}, {}, 1000.0f, kGravity, 4, 0);
-    EXPECT_NEAR(w.frictionForSlip(0.16f, true), 3.0f, 1e-5f);
-    EXPECT_NEAR(w.frictionForSlip(0.08f, true), 3.0f * (2 * 0.5f - 0.25f), 1e-5f);
-    EXPECT_NEAR(w.frictionForSlip(w.unkFriction2, true), 2.7f, 1e-3f);
-    EXPECT_FLOAT_EQ(w.frictionForSlip(0.9f, true), 2.7f);
-    EXPECT_FLOAT_EQ(w.frictionForSlip(0.0f, true), 0.0f);
-    // Static load per wheel = m g / 4.
-    EXPECT_NEAR(w.normalLoad, 1000.0f * kGravity / 4.0f, 1e-2f);
+    w.init(p, {{0, 0.3f, 1.2f}, 0.3f, 0.2f, true}, 1000.0f, true, 0.0f);
+    float slide = 0.0f;
+    EXPECT_NEAR(w.computeFriction(0.16f, slide), 3.0f, 1e-5f);
+    EXPECT_NEAR(slide, 0.5f, 1e-6f);
+    EXPECT_NEAR(w.computeFriction(0.08f, slide), 3.0f * (2 * 0.5f - 0.25f), 1e-5f);
+    EXPECT_FLOAT_EQ(w.computeFriction(0.9f, slide), 2.7f);
+    EXPECT_FLOAT_EQ(slide, 1.0f);
+    EXPECT_FLOAT_EQ(w.computeFriction(0.0f, slide), 0.0f);
+    // Static load = m * 19.6 / 4 with the centre of gravity at z = 0; the
+    // tyre stiffness is 2 * load / TireDispLimit, the brake torque
+    // StaticFric * radius * load * BrakeCoef.
+    EXPECT_NEAR(w.normalLoad, 1000.0f * 19.6f / 4.0f, 1e-2f);
+    EXPECT_NEAR(w.stiffLong, 2.0f * w.normalLoad / p.tireDispLimitLong, 1.0f);
+    EXPECT_NEAR(w.maxBrakeTorque, p.staticFric * 0.3f * w.normalLoad * p.brakeCoef, 1e-1f);
 }
 
 TEST(CarSim, StaysAtRest) {
@@ -383,8 +388,12 @@ TEST(CarSim, AcceleratesShiftsAndReachesTopGearSpeed) {
     }
     EXPECT_GT(t60, 3.0f);
     EXPECT_LT(t60, 12.0f);
-    EXPECT_EQ(maxGear, 4);         // AutoNumGears 6 = reverse, neutral, 4 forward
-    EXPECT_NEAR(top, 90.0f, 2.0f); // High: top gear at MaxRPM
+    EXPECT_EQ(maxGear, 4); // AutoNumGears 6 = reverse, neutral, 4 forward
+    // High is the top gear's speed at OptRPM; past it the car revs on towards
+    // MaxRPM until drag balances its power.
+    const CarSimParams p = bugParams();
+    EXPECT_GT(top, p.trans.high + 5.0f);
+    EXPECT_LT(top, p.trans.high * p.engine.maxRPM / p.engine.optRPM + 0.5f);
     // Drives straight.
     EXPECT_LT(std::abs(t.car->modelMatrix().m3.x), 1.0f);
 }
@@ -418,7 +427,7 @@ TEST(CarSim, AutoReverse) {
     // Now the brake pedal drives backwards.
     t.run(3.0f, brake);
     EXPECT_GT(t.car->modelMatrix().m3.z, 1.0f); // moved towards +Z (backwards)
-    // Accelerator brakes, then switches back to drive when slow.
+    // Letting go of the brake pedal (the swapped throttle) returns to drive.
     PedalInput accel;
     accel.accelerator = 1.0f;
     t.run(4.0f, accel);
@@ -528,57 +537,72 @@ TEST(CarSim, LoadsEveryRetailCar) {
         EXPECT_TRUE(std::isfinite(pos.x) && std::isfinite(pos.y) && std::isfinite(pos.z)) << e.path;
         EXPECT_LT(t.car->speedMph(), 250.0f) << e.path;
         // Moves off: the slowest (the buses) reach about 18 mph in 6 s. The
-        // stiff *_opp tyres once only crept (see Drivetrain tests below).
-        EXPECT_GT(t.car->speedMph(), 10.0f) << e.path;
+        // *_opp / *_cop leftovers (MM1-era layouts the game never loads)
+        // need not.
+        const bool used = e.path.find("_opp") == std::string::npos && e.path.find("_cop") == std::string::npos &&
+                          e.path.find("copy of") == std::string::npos;
+        if (used) {
+            EXPECT_GT(t.car->speedMph(), 10.0f) << e.path;
+        }
         ++loaded;
     }
     EXPECT_GE(loaded, 45);
 }
 
-// The drivetrain's implicit step must not add inertia: the tyre slopes only
-// stabilise it. With MM1's per-radian slope (or the previous sample's tyre
-// torque) stiff tyres turned into a flywheel worth tens of tonnes and the
-// *_opp cars took 25 s to reach 60 mph; see docs/physics.md.
-TEST(Drivetrain, StiffTyresLaunchBriskly) {
-    const CarSimParams stiff = stiffTyreParams();
-    const float v4 = launchSpeedMph(stiff, bugGeometry(), 4.0f, kFixedSampleStep);
-    EXPECT_GT(v4, 35.0f);
-    // Like the soft-tyred original within a few mph (same engine and mass).
-    CarSimParams soft = bugParams();
-    soft.engine.maxHorsePower = 200.0f;
-    soft.trans = stiff.trans;
-    EXPECT_NEAR(v4, launchSpeedMph(soft, bugGeometry(), 4.0f, kFixedSampleStep), 6.0f);
-}
-
-TEST(Drivetrain, LaunchDoesNotDependOnTheSampleStep) {
-    // The original oversampled at 1/35 s or less; OpenMM2 defaults to 1/60.
-    for (const CarSimParams& p : {bugParams(), stiffTyreParams()}) {
-        const float ref = launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 240.0f);
-        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, kFixedSampleStep), ref, 0.05f * ref);
-        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 120.0f), ref, 0.05f * ref);
+// vehDrivetrain: the brakes stop the wheels and hold them, never reverse them.
+TEST(Drivetrain, BrakesStopWithoutReversing) {
+    TestCar t;
+    t.run(1.0f, {});
+    PedalInput go;
+    go.accelerator = 1.0f;
+    t.run(3.0f, go);
+    // Lock the brakes with the automatic box in neutral (no auto reverse).
+    t.car->trans.setNeutral();
+    float minRot = 0.0f, maxRot = 0.0f;
+    for (int i = 0; i < 6 * 60; ++i) {
+        t.car->setInputs(0.0f, 1.0f, 0.0f, 0.0f);
+        t.world.step(kFixedSampleStep);
+        for (const Wheel& w : t.car->wheels) {
+            minRot = std::min(minRot, w.rotationSpeed);
+            maxRot = std::max(maxRot, w.rotationSpeed);
+        }
     }
+    EXPECT_LT(t.car->speed(), 0.5f);
+    EXPECT_LE(maxRot, 1e-3f); // forward rotation is negative
+    for (const Drivetrain& d : t.car->drivetrains)
+        EXPECT_EQ(d.rotationSpeed, 0.0f);
 }
 
-TEST(Drivetrain, MatchesMm1ExplicitSpinWhereThatIsStable) {
-    // MM1 build 1560 couples wheel and tyre explicitly; at small steps that
-    // is stable, and both solvers converge to the same launch.
-    for (const CarSimParams& p : {bugParams(), stiffTyreParams()}) {
-        const float mm1 = launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 240.0f, true);
-        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, 1.0f / 240.0f), mm1, 0.03f * mm1);
-        EXPECT_NEAR(launchSpeedMph(p, bugGeometry(), 4.0f, kFixedSampleStep), mm1, 0.08f * mm1);
+// vehDrivetrain's limited-slip differential stays within diffRatioMax and
+// relaxes to 1 when stopped.
+TEST(Drivetrain, DifferentialRatioIsLimited) {
+    TestCar t;
+    t.run(1.0f, {});
+    PedalInput in;
+    in.accelerator = 1.0f;
+    in.steering = 0.6f;
+    float lo = 1.0f, hi = 1.0f;
+    for (int i = 0; i < 8 * 60; ++i) {
+        t.controls.apply(*t.car, in);
+        t.world.step(kFixedSampleStep);
+        const Drivetrain& d = t.car->drivetrains[2];
+        lo = std::min(lo, d.diffRatio);
+        hi = std::max(hi, d.diffRatio);
     }
+    EXPECT_GE(lo, 1.0f / Drivetrain::kDiffRatioMax - 1e-4f);
+    EXPECT_LE(hi, Drivetrain::kDiffRatioMax + 1e-4f);
+    EXPECT_NE(lo, hi); // the turn loads the wheels unevenly
 }
 
-TEST(Drivetrain, RetailOpponentTunesLaunchLikeThePlayerCars) {
+// Every retail player tune launches (MM2 builds opponents from the same
+// tunes, see aiVehiclePhysics::Init).
+TEST(CarSim, RetailTunesLaunch) {
     MM2_REQUIRE_GAME_DATA();
-    // MM1-layout gearboxes with stiff, front OptimumSlipPercent 0.01 tyres.
     for (const char* name : {"vpcoop", "vpbug", "vpcaddie", "vppanoz", "vpmustang99", "vpcop"}) {
-        auto opp = retailCar(std::string(name) + "_opp");
-        auto player = retailCar(name);
-        ASSERT_TRUE(opp && player) << name;
-        const float vOpp = launchSpeedMph(opp->first, opp->second, 4.0f, kFixedSampleStep);
-        const float vPlayer = launchSpeedMph(player->first, player->second, 4.0f, kFixedSampleStep);
-        EXPECT_GT(vOpp, 30.0f) << name;
-        EXPECT_GT(vOpp, 0.5f * vPlayer) << name;
+        auto car = retailCar(name);
+        ASSERT_TRUE(car) << name;
+        const float v = launchSpeedMph(car->first, car->second, 4.0f, kFixedSampleStep);
+        EXPECT_GT(v, 25.0f) << name;
+        EXPECT_LT(v, 90.0f) << name;
     }
 }

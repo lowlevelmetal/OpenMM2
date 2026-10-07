@@ -149,7 +149,7 @@ VehiclePose SimVehicle::trailerPose() const {
         return pose;
     pose.body = m_trailer->modelMatrix();
     for (std::size_t i = 0; i < 4; ++i) {
-        pose.wheelWorld[i] = Mat34::mul(m_trailer->wheels[i].visualMatrix, m_trailer->body.ics.matrix);
+        pose.wheelWorld[i] = m_trailer->wheels[i].matrix;
         pose.wheelValid[i] = true;
     }
     pose.hasWheelWorld = true;

@@ -301,7 +301,7 @@ bool PoliceCar::handleStuck(float dt) {
         if (m_backup.update(m_car, m_aim, dt))
             return true;
     }
-    if (m_car.stuck.state == phys::Stuck::Stuck_) {
+    if (m_car.stuck.state == phys::Stuck::Pegged) {
         m_car.body.ics.linearMomentum = {};
         m_car.body.ics.angularMomentum = {};
         m_backup.start(m_car);

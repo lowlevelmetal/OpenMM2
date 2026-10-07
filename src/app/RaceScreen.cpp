@@ -345,6 +345,7 @@ private:
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
             return;
         }
+        m_player->sim().options.player = true; // mmPlayer::Update's input overrides
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
         if (const auto* trailer = m_player->trailerModel())
@@ -437,7 +438,9 @@ private:
             Opponent opp;
             opp.sessionIndex = i;
             Mat34 spawn = s.spawn;
-            opp.sim = loadAiCar(ctx, s.vehicle, "_opp", spawn);
+            // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
+            // (the retail *_opp.vehCarSim files are not used by MM2).
+            opp.sim = loadAiCar(ctx, s.vehicle, {}, spawn);
             if (!opp.sim)
                 continue;
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
@@ -476,7 +479,7 @@ private:
             Cop cop;
             Mat34 post = p.spawn;
             // vpcop has a pursuit tune (vpcop_cop.vehcarsim); other cars use their base tune.
-            cop.sim = loadAiCar(ctx, p.vehicle, "_cop", post);
+            cop.sim = loadAiCar(ctx, p.vehicle, {}, post);
             if (!cop.sim)
                 continue;
             cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()));

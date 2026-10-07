@@ -35,7 +35,6 @@ Opponent::Opponent(phys::CarSim& car, Course course, const OpponentSettings& set
 
 Opponent::~Opponent() {
     m_car.onImpactCallback = m_prevCallback;
-    m_car.options.realism = 1.0f;
 }
 
 std::unique_ptr<Opponent> Opponent::create(const RoadNetwork& net, phys::CarSim& car,
@@ -68,7 +67,6 @@ void Opponent::reset() {
     if (m_car.trans.getCurrentGear() == -1)
         m_car.trans.setDrive();
     m_car.setInputs(0.0f, 0.0f, 0.0f, 0.0f);
-    m_car.options.realism = 0.0f;
     const Vec3 pos = m_car.body.ics.matrix.m3;
     float dist = 0.0f;
     m_s = m_course.locate(pos, m_course.startDistance(), 40.0f, &m_lateral, &dist);
@@ -229,7 +227,7 @@ void Opponent::followWayPoints(float dt, std::span<const TrackedCar> cars) {
     auto& ics = car.body.ics;
 
     m_stuck.update(car, dt);
-    if (car.stuck.state == phys::Stuck::Stuck_) {
+    if (car.stuck.state == phys::Stuck::Pegged) {
         // The car's own vehStuck: back up (BackingUp = true, momenta zeroed).
         ics.linearMomentum = {};
         ics.angularMomentum = {};
@@ -337,16 +335,15 @@ void Opponent::followWayPoints(float dt, std::span<const TrackedCar> cars) {
     const float angle = headingError(ics.matrix, m_target);
     const float steering = clampf(angle, -1.0f, 1.0f);
 
-    // Realism 0 and yaw damping near the line, unless the player was hit.
+    // Yaw damping near the line, unless the player was hit. (MM1's Realism 0
+    // for AI cars has no counterpart in MM2's vehWheel.)
     if (m_collidedWithPlayer) {
         m_collidedWithPlayer = false;
         m_contactTime = kPlayerContactSeconds;
     }
     if (m_contactTime > 0.0f) {
         m_contactTime -= dt;
-        car.options.realism = 1.0f;
     } else {
-        car.options.realism = 0.0f;
         if (angle < 0.1f && angle > -0.1f)
             ics.angularMomentum = ics.angularMomentum * perFrame(0.1f, dt);
     }

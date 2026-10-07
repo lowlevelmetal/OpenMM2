@@ -8,17 +8,19 @@ namespace mm2::phys {
 
 class Joint3Dof;
 
-// Rigid body: a port of the Angel engine's asInertialCS (Midtown Madness 1,
-// Open1560 game.asm). MM2's phInertialCS keeps the same role.
+// Rigid body: MM2's phInertialCS (verified against the build 3393 code,
+// see docs/physics.md). The sleep test, constraints and the CMatrix helpers
+// used by Joint3Dof are kept from MM1's asInertialCS (Open1560 game.asm),
+// which phInertialCS replaced.
 //
 // The frame `matrix` is centred on the centre of gravity: rows m0..m2 are the
-// body axes (right, up, back), m3 the CG in world space (asLinearCS::Matrix;
-// the body is a global CS, so World == Matrix).
+// body axes (right, up, back), m3 the CG in world space.
 //
 // Forces, torques, impulses and pushes accumulate during a sample and are
-// integrated by update(): FinishForces (sleep test, gravity) then
-// FinishUpdate (momentum-based semi-implicit Euler). Member names follow the
-// original.
+// integrated by update(): finishForces (sleep test, gravity) then
+// finishUpdate (phInertialCS::Update). Bodies that registered contact
+// stiffness this sample (applyContactForce: the car wheels' suspension)
+// integrate implicitly against it, as phInertialCS::Update does.
 class InertialCS {
 public:
     enum State : int { Off = 0, Awake = 1, Asleep = 2 }; // ICS_STATE_*
@@ -30,19 +32,20 @@ public:
 
     InertialCS();
 
-    // asInertialCS::SetMass: inertia of a solid box with full extents
-    // (sizeX, sizeY, sizeZ): I = m/12 * (y^2+z^2, x^2+z^2, x^2+y^2).
+    // phInertialCS::InitBoxMass: inertia of a solid box with full extents
+    // (sizeX, sizeY, sizeZ): I = (y^2+z^2, x^2+z^2, x^2+y^2) * m * (1/12).
     void setMass(float sizeX, float sizeY, float sizeZ, float mass);
 
-    // asInertialCS::Zero: identity matrix, all motion and accumulators cleared.
+    // phInertialCS::Zero: identity matrix, all motion and accumulators cleared.
     void zero();
 
-    // asInertialCS::Update (one physics sample). `dt` is the sample length
-    // (asSimulation seconds_), `invDt` its reciprocal (inv_seconds_).
+    // One physics sample of length `dt` (datTimeManager::Seconds).
     void update(float dt, float invDt);
     void finishForces(float dt, float invDt);
+    // phInertialCS::Update(): contact accumulators folded in, Update(dt),
+    // then this sample's pushes become lastPush.
     void finishUpdate(float dt);
-    // asInertialCS::MoveICS: applies the pending push immediately.
+    // phInertialCS::MoveICS: applies the pending push immediately.
     void moveICS();
     // asInertialCS::DoConstrain (simplified: clears constrained components).
     void doConstrain();
@@ -53,12 +56,24 @@ public:
     void applyTorque(const Vec3& t);
     void applyImpulse(const Vec3& j, const Vec3& worldPos);
     void applyAngImpulse(const Vec3& j);
-    // asInertialCS::ApplyPush: positional correction. Pushes in a direction
+    // phInertialCS::CalcNetPush: positional correction. Pushes in a direction
     // already covered by the pending push only add the missing part.
     void applyPush(const Vec3& push);
+    // phInertialCS::CalcNetTurn: the same for rotation (axis * angle).
+    void applyTurn(const Vec3& turn);
+    // phInertialCS::ApplyContactForce: a force at a world point plus its
+    // stiffness K (dF = -K dx, 3x3 in m0..m2). Makes this sample's
+    // integration implicit in the summed stiffness.
+    void applyContactForce(const Vec3& f, const Vec3& worldPos, const Mat34& k);
 
-    // asInertialCS::GetVelocity: velocity of a world point (or of the CG).
+    // phInertialCS::GetLocalVelocity: velocity of a world point (or of the CG).
     Vec3 getVelocity(const Vec3* worldPos = nullptr) const;
+    // phInertialCS::GetLocalFilteredVelocity2: the point velocity with the
+    // part along last sample's push removed (or, moving into the push faster
+    // than it, the push rate added).
+    Vec3 filteredVelocity(const Vec3& worldPos, float invDt) const;
+    // phInertialCS::GetInertiaMatrix: world inertia tensor R^T diag(I) R.
+    Mat34 worldInertia() const;
 
     // asInertialCS::CalcCMatrix: the 3x3 "collision matrix" C at a world
     // point: an impulse j applied there changes that point's velocity by
@@ -77,8 +92,11 @@ public:
     // Places the body (keeps mass), clearing motion.
     void place(const Mat34& m);
     const Vec3& position() const { return matrix.m3; }
+    // Per-axis angular velocity limit (phInertialCS +0x30), applied when
+    // limitAngVelocity is set.
+    void setMaxAngVelocity(float w) { maxAngVelocity = {w, w, w}; }
 
-    // --- State (asInertialCS members) ---
+    // --- State (phInertialCS members) ---
     Mat34 matrix;
     Vec3 size;
     float mass = 1.0f;
@@ -89,14 +107,23 @@ public:
     Vec3 angularMomentum;
     Vec3 linearVelocity;
     Vec3 angularVelocity;
-    Vec3 frameVelocity; // velocity including this sample's pushes
+    Vec3 frameVelocity; // velocity including this sample's pushes (MM1 FrameVelocity)
     Vec3 linearForce;
     Vec3 angularTorque;
+    Vec3 contactForce;  // ApplyContactForce force, added to linearForce at update
+    Vec3 contactTorque; // its torque (vehEngine's reaction torque also lands here)
     Vec3 linearImpulse;
     Vec3 angularImpulse;
     Vec3 linearPush;
     Vec3 turnForce; // rotational push (axis * angle)
-    Vec3 framePush;
+    Vec3 framePush; // pushes applied since the last update
+    Vec3 lastPush;  // pushes applied during the previous sample
+    // Implicit contact stiffness (phInertialCS +0x120/+0x150/+0x180):
+    // sum K, sum X K and sum of X K mapped through r x . (X = [r]x).
+    bool implicitContact = false;
+    Mat34 contactK;
+    Mat34 contactXK;
+    Mat34 contactXKX;
     int numImpulses = 0;
     float elasticity = 0.0f;
     float friction = 0.0f;
@@ -109,13 +136,16 @@ public:
     float counter = 0.0f;
     float forceLimit2 = FLT_MAX;
     float impulseLimit2 = 0.0f;
-    float maxAngVelocity = 3.14159265f * 10.0f;
+    float maxSpeed = 500.0f; // phInertialCS +0x2c
+    Vec3 maxAngVelocity{3.14159265f * 10.0f, 3.14159265f * 10.0f, 3.14159265f * 10.0f};
     bool limitAngVelocity = false;
     Joint3Dof* joint = nullptr; // asInertialCS::Joint (set by Joint3Dof::initJoint3Dof)
 
 private:
     void clearAccumulators();
     void refreshVelocities();
+    void integrateExplicit(float dt);
+    void integrateImplicit(float dt);
 };
 
 } // namespace mm2::phys

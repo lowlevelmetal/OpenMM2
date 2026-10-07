@@ -1,3 +1,7 @@
+// vehGyro::Update from Midtown Madness 2, verified against the build 3393
+// code (MM2Recomp). The handbrake and brake terms are enabled by vehCar::Update
+// when those inputs exceed 0.01. See docs/physics.md.
+
 #include "phys/vehicle/Gyro.h"
 
 #include "phys/InertialCS.h"
@@ -6,24 +10,33 @@
 
 namespace mm2::phys {
 
-void Gyro::update(InertialCS& ics, float dt, float steering, float handBrake, float throttle, float latSlip,
-                  bool onGround) {
-    (void)dt;
-    if (!onGround || steering == 0.0f)
+void Gyro::update(InertialCS& ics, const Inputs& in) const {
+    if (!enabled)
         return;
     const Mat34& m = ics.matrix;
-    const float fwdSpeed = -ics.linearVelocity.dot(m.m2);
-    float accel = 0.0f; // yaw angular acceleration, rad/s^2, positive = turn right
-    if (handBrake > 0.0f && std::abs(fwdSpeed) > 2.0f) {
-        const float gain = fwdSpeed >= 0.0f ? params.spin180 : params.reverse180 / 3.14159265f;
-        accel = gain * 6.2831855f * steering * handBrake;
-    } else if (throttle > 0.0f && std::abs(latSlip) > 0.3f) {
-        accel = params.drift * 6.2831855f * steering * throttle;
+    // OnGround() / NumWheels in integer arithmetic: 1 only with every wheel down.
+    const int all = in.wheelsOnGround / in.numWheels;
+    const float w = in.drivetrainSpeed;
+    if (0.0f < params.drift) {
+        const float s = in.sssFactor * in.steering;
+        const float t =
+            -(ics.inertia.y * params.drift * std::abs(s) * in.sssFactor * in.steering * static_cast<float>(all) * -w);
+        ics.applyTorque({m.m1.x * t, m.m1.y * t, t * m.m1.z});
     }
-    if (accel == 0.0f)
-        return;
-    // Turning right is a negative rotation about the car's up axis.
-    ics.applyTorque(m.m1 * (-accel * ics.inertia.y));
+    if (std::abs(in.handbrake) > 0.01f && (0.0f < params.spin180 || 0.0f < params.reverse180)) {
+        const float k = w < 0.0f ? params.spin180 : params.reverse180;
+        const float t = -(static_cast<float>(all) * in.steering * -w * ics.inertia.y * k);
+        ics.applyTorque({m.m1.x * t, m.m1.y * t, t * m.m1.z});
+    }
+    if (std::abs(in.brake) > 0.01f && (0.0f < params.pitch || 0.0f < params.roll)) {
+        const float f = in.brake * in.brake * static_cast<float>(1 - all);
+        const float p = ics.inertia.x * params.pitch * f;
+        const float fz = m.m2.y;
+        ics.applyTorque({p * fz * m.m0.x, fz * m.m0.y * p, fz * m.m0.z * p});
+        const float fx = m.m0.y;
+        const float r = -(params.roll * ics.inertia.z * f);
+        ics.applyTorque({r * fx * m.m2.x, fx * m.m2.y * r, r * fx * m.m2.z});
+    }
 }
 
 } // namespace mm2::phys

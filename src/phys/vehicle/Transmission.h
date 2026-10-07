@@ -8,16 +8,18 @@ namespace mm2::phys {
 
 class Engine;
 
-// vehTransmission, ported from Midtown Madness 1's mmTransmission.
+// vehTransmission (Midtown Madness 2), verified against the build 3393 code.
 //
-// Gear slots: 0 = reverse, 1 = neutral, 2.. = forward (evidence: MM1 code and
-// MM1-format GearRatios "-20 0 28 ..."). NumGears counts all slots.
-// Ratios are engine speed / wheel speed (positive forward, negative reverse).
-//
-// MM1 stores ratios and shift RPMs per gear. MM2's format gives gear speeds
-// instead (Low/High/Reverse in mph at MaxRPM, GearBias) and shift biases;
-// configure() turns those into the MM1 tables (MM2 adaptation, inferred), and
-// MM1-format files (a few retail *_opp cars) are used as is.
+// Gear slots: 0 reverse, 1 neutral, 2.. forward. The automatic and manual
+// boxes have their own ratio tables (AutoNumGears / ManualNumGears slots).
+// Ratios come from gear speeds: GearRatioFromMPH(v) = OptRPM / (wheel RPM at
+// v mph) on the primary drivetrain's first wheel; Low is first gear, High top
+// gear, the gears between are spaced geometrically, pushed towards High by
+// GearBias. The automatic box shifts up where the next gear would give at
+// least as much power at full throttle (plus UpshiftBias), and down below a
+// point blended between DownshiftBiasMin (full throttle) and
+// DownshiftBiasMax (closed throttle), at most once per GearChangeTime and
+// only while a wheel touches the ground.
 class Transmission {
 public:
     static constexpr int kSlots = 8;
@@ -25,46 +27,40 @@ public:
     static constexpr int kNeutral = 1;
     static constexpr int kFirst = 2;
 
-    // `wheelRadius` is the driven wheel radius (for MM2 gear speeds).
-    void configure(const TransmissionParams& p, const EngineParams& engine, float wheelRadius);
+    void configure(const TransmissionParams& p);
+    // vehTransmission::ComputeConstants (needs the engine curve and the
+    // driven wheel's radius).
+    void computeConstants(const Engine& engine, float wheelRadius);
     void reset();
 
-    // IsAutomatic ? GearRatios[gear] : ManualGearRatios[gear].
-    float currentRatio() const;
-    float ratio(int gear) const;
+    float currentRatio() const { return ratio(currentGear); }
+    float ratio(int gear) const { return isAutomatic ? gearRatios[gear] : manualGearRatios[gear]; }
 
-    // mmTransmission::Upshift/Downshift (manual only; return the new gear).
     int upshift();
     int downshift();
     void setReverse() { setCurrentGear(kReverse); }
-    // mmTransmission::SetDrive: from reverse or neutral into first gear.
-    void setDrive();
+    void setDrive(); // vehTransmission::SetForward
     void setNeutral() { setCurrentGear(kNeutral); }
-    // -1 reverse, 0 neutral, 1.. forward (mmTransmission::GetCurrentGear).
+    // -1 reverse, 0 neutral, 1.. forward.
     int getCurrentGear() const { return currentGear - 1; }
-    void setCurrentGear(int gear);
+    int setCurrentGear(int gear);
     void automatic(bool on) { isAutomatic = on; }
 
-    // mmTransmission::Update (automatic shifting).
-    void update(float dt, const Engine& engine, bool drivingDisabled = false);
+    // vehTransmission::Update; `wheelsOnGround` is vehCarSim::OnGround().
+    void update(float dt, const Engine& engine, int wheelsOnGround);
 
-    // --- State (mmTransmission members) ---
+    TransmissionParams params;
     bool isAutomatic = true;
-    float clutch = 1.0f;
-    int numGears = 6;
-    std::array<float, kSlots> gearRatios{};
-    std::array<float, kSlots> upshiftRPM{};
-    std::array<float, kSlots> downshiftRPM{};
-    std::array<float, kSlots> manualGearRatios{};
-    int manualNumGears = 0;
-    float downshiftBias = 1.55f; // MM1 kickdown factor
-    bool gearChanged = false;
-    bool inPark = false;
+    bool gearChanged = false; // shift pending (vehEngine starts its lag on it)
     int currentGear = kFirst;
     float timeInGear = 0.0f;
-    float gearChangeDelay = 0.0f; // MM2 GearChangeTime
-    // MM2 kickdown threshold per gear (OpenMM2 addition, see configure()).
-    std::array<float, kSlots> kickdownRPM{};
+    int numGears = 6;       // AutoNumGears
+    int manualNumGears = 7; // ManualNumGears
+    std::array<float, kSlots> gearRatios{};       // automatic
+    std::array<float, kSlots> manualGearRatios{}; // manual
+    std::array<float, kSlots> upshiftRPM{};
+    std::array<float, kSlots> kickdownRPM{};  // downshift below this at full throttle
+    std::array<float, kSlots> downshiftRPM{}; // ... and below this with the throttle closed
 };
 
 } // namespace mm2::phys

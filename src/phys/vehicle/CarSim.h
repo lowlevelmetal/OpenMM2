@@ -16,11 +16,14 @@
 
 namespace mm2::phys {
 
-// Damage bookkeeping (vehCarDamage). Accumulation is ported from MM1's
-// mmCar::Impact: impacts closing faster than 4 m/s add their impulse to
-// CurrentDamage. MM2's ImpactThreshold is applied as a minimum impulse
-// (inferred). Damage is the 0..1 smoke/visual fraction between MedDamage
-// and MaxDamage (mmCarSim::UpdateDamage).
+// Damage bookkeeping (vehCarDamage). CurrentDamage falls by RegenerateRate
+// per second; impacts stronger than ImpactThreshold add to it while the car
+// moves at 10 mph or more, or when the other party is a vehicle
+// (vehCarDamage::ApplyImpact). The impact value is the impulse scaled by the
+// other body's share of the two masses (vehCarDamage::InsertImpact; mapping
+// OpenMM2's contact impulse onto MM2's impact data is inferred). Damage is
+// the 0..1 fraction between MedDamage and MaxDamage; the car is wrecked at
+// MaxDamage.
 struct CarDamage {
     CarDamageParams params;
     float currentDamage = 0.0f;
@@ -34,43 +37,46 @@ struct CarDamage {
         currentDamage = 0.0f;
         damage = 0.0f;
     }
-    void impact(float impulse, float closingSpeed);
+    // `value`: impulse * other mass share; `speedMph`: the car's speed.
+    void impact(float value, float speedMph, bool otherIsVehicle);
     void update(float dt);
-    bool wrecked() const { return currentDamage > maxScaled(); }
+    bool wrecked() const { return enabled && maxScaled() <= currentDamage; }
 };
 
-// Visual axle (MM1 mmAxle::Update): centred between its wheels and rolled to
-// follow them.
+// vehAxle: anti-roll coupling between an axle's wheels (TorqueCoef,
+// DampCoef) and the axle's visual roll.
 struct Axle {
     AxleParams params;
-    Mat34 matrix;
+    float stiffness = 0.0f; // TorqueCoef * Izz
+    float damping = 0.0f;   // 2 sqrt(stiffness * Izz) * DampCoef
+    float roll = 0.0f;      // visual roll of the wheels (rad)
+    Mat34 matrix;           // pivot (model space)
+    float rollFactor = 1.0f; // 1 / lateral offset of the left wheel (1 without a pivot)
 };
 
 struct CarSimOptions {
-    // OpenMM2 approximations of MM2-only mechanisms; off by default
-    // because their behaviour is not known (see docs/physics.md).
-    bool gyro = false;
-    bool axleCoupling = false;
-    // MM1 *mmCarSim::Realism (game option); 1 = full simulation.
-    float realism = 1.0f;
-    // ?WeatherFriction@@3MA: 1, or 0.8 in snow (0.75 at night) in MM2.
+    // ?WeatherFriction@@3MA: 1, or 0.8 in snow (0.75 at night) in MM2
+    // (mmGame::InitWeather).
     float weatherFriction = 1.0f;
-    // Room flags & 3 (tunnels, indoors): weather friction ignored.
-    bool indoors = false;
-    // Damage disables the car and changes impact response.
+    // Damage can wreck the car (which then brakes and stops responding).
     bool damage = true;
-    // Drivetrain::mm1ExplicitSpin: MM1 build 1560's explicit wheel spin, for
-    // comparison (unstable with stiff tyres at 60 Hz).
-    bool mm1ExplicitSpin = false;
+    // vehGyro and vehAxle coupling (the original always runs them; kept
+    // switchable for comparisons).
+    bool gyro = true;
+    bool axleCoupling = true;
+    // The player's car: mmPlayer::Update's input overrides apply (handbrake
+    // below 4 mph without throttle, wrecked and finished states).
+    bool player = false;
 };
 
-// vehCarSim: a player-style car, ported from MM1's mmCarSim (Open1560
-// game.asm) with MM2's tune format. Construct, init(), add body() to a World,
-// set inputs each frame.
+// vehCarSim (Midtown Madness 2): a car, verified against the build 3393
+// code. Construct, init(), add body() to a World, set inputs each frame.
 //
 // Coordinate conventions: car model space has its origin near the ground
-// under the body centre and faces -Z. The rigid body is centred on
-// CenterOfGravity (model space). Steering +1 turns right.
+// under the body centre and faces -Z. The model's origin is the rigid body's
+// position plus R * CenterOfGravity (vehCarSim::SetWorldMatrix), so the
+// centre of mass sits at -CenterOfGravity in model space. Steering +1 turns
+// right.
 class CarSim final : public BodyController {
 public:
     using Options = CarSimOptions;
@@ -79,28 +85,31 @@ public:
     CarSim(const CarSim&) = delete;
     CarSim& operator=(const CarSim&) = delete;
 
-    // Builds the car (mmCarSim::Init + ConfigureDrivetrain).
+    // vehCarSim::Init + ConfigureDrivetrain.
     void init(const CarSimParams& params, const VehicleGeometry& geometry, const Options& options = {});
     void setGyroParams(const GyroParams& p) { gyro.configure(p); }
     void setStuckParams(const StuckParams& p) { stuck.configure(p); }
     void setDamageParams(const CarDamageParams& p) { damage.params = p; }
 
-    // Places the car so that its model origin is at `model` (the front-right
-    // wheel resting on the origin's height, as mmCarSim::SetResetPos does),
-    // and resets all state (mmCarSim::Reset).
+    // Places the car's model origin at `model` and resets all state
+    // (vehCarSim::Reset).
     void reset(const Mat34& model);
 
-    // Inputs (mmCarSim Brakes/HandBrake/Steering, vehEngine ThrottleInput).
+    // Inputs (vehCarSim brake/handbrake/steering, vehEngine throttle).
     void setInputs(float throttle, float brakes, float steering, float handBrake);
 
-    // World matrix of the car's model origin (for rendering).
+    // World matrix of the car's model origin (vehCarSim world matrix).
     Mat34 modelMatrix() const;
-    // World matrix of a wheel (model-space centre convention as the car).
+    // World matrix of a wheel (steered, displaced, spun, rolled with its axle).
     Mat34 wheelMatrix(int i) const;
 
-    bool onGround() const;
-    float speed() const { return m_speed; } // m/s (|FrameVelocity|)
-    float speedMph() const { return m_speedMph; }
+    // vehCarSim::OnGround: number of wheels touching the ground.
+    int wheelsOnGround() const;
+    bool onGround() const { return wheelsOnGround() > 0; }
+    // vehCarSim::GetSSSFactor.
+    float sssFactor(float speed) const;
+    float speed() const { return m_speed; }       // m/s, |velocity . car Z axis|
+    float speedMph() const { return m_speedMph; } // m_speed * MetricFactor (mph)
 
     // Ground used by the wheels; defaults to the World the body is in.
     void setGround(const GroundQuery* ground) { m_ground = ground; }
@@ -115,12 +124,14 @@ public:
     Body body;
     CarSimParams params;
     Options options;
-    Vec3 centerOfGravity; // model space
+    Vec3 centerOfGravity; // vehCarSim CenterOfGravity
     Engine engine;
     Transmission trans;
-    std::array<Drivetrain, 3> drivetrains; // DriveTrain1/2 free, DriveTrain3 engine-driven
-    std::array<Wheel, 4> wheels;           // FL, FR, BL, BR
-    std::array<Axle, 2> axles;
+    // 0, 1: Freetrain (front or back wheels, one each); 2: Drivetrain
+    // (engine-driven). Updated in that order, as vehCarSim's children.
+    std::array<Drivetrain, 3> drivetrains;
+    std::array<Wheel, 4> wheels; // FL, FR, BL, BR
+    std::array<Axle, 2> axles;   // front, back
     Aero aero;
     Gyro gyro;
     Stuck stuck;
@@ -129,11 +140,14 @@ public:
     float brakes = 0.0f;
     float handBrake = 0.0f;
     float steering = 0.0f;
+    // mmPlayer +0x2258: the player has finished the race (brakes on, wheel
+    // turned full left from then on). Set by the game.
+    bool raceFinished = false;
 
 private:
-    WheelEnv makeEnv(float dt, const World& world) const;
+    WheelEnv makeEnv(float dt, const World& world);
     void updateAxles();
-    void applyAxleCoupling();
+    Drivetrain& primary() { return drivetrains[2]; }
 
     std::array<int, 3> m_drivetrainOrder{0, 1, 2};
     int m_numDrivetrains = 3;

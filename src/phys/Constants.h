@@ -12,22 +12,22 @@ namespace mm2::phys {
 // PHYS.SetGravity(-19.8f), mmCarSim::Init copies PHYS.Gravity into
 // ICS.Gravity, and mmWheel::Init derives the static wheel load from it.
 // The MM2 value is unverified.
-inline constexpr float kGravity = 19.8f;
+// dgPhysEntity::Update: physics entities (vehicles, trailers) fall at
+// 19.6 m/s^2 (MM1 used 19.8).
+inline constexpr float kGravity = 19.6f;
 
 // Physics sample step (s) for the deterministic fixed-step driver.
 //
-// The Angel engine oversamples instead of using a fixed step:
-// asOverSample/asSimulation run n = min(floor(frameDelta / SampleStep) + 1,
-// MaxSamples) samples of frameDelta / n, and MM1's physics manager calls
-// RealTime(35), i.e. SampleStep = 1/35 s, MaxSamples = 20. MM2's
-// dgPhysManager has the same SampleStep/MaxSamples fields (values unknown).
-// So the original's sub-step varied with the frame rate between SampleStep/2
-// and SampleStep. We default to 1/60 s, inside that range, so replays and
-// network play are deterministic. World::advanceOversampled() reproduces the
-// original scheme.
+// MM2's dgPhysManager::Update oversamples each frame: n = min(ceil((frame -
+// 0.001) / SampleStep), MaxSamples) samples of frame / n, with SampleStep =
+// 1/60 s and MaxSamples = 6 (datTimeManager::SetTempOverSampling). At 60 fps
+// and above that is one sample per frame. The fixed-step driver uses the
+// same 1/60 s, so the simulation behaves as the original did at 60 fps
+// whatever the display rate; World::advanceOversampled() reproduces the
+// original scheme exactly.
 inline constexpr float kFixedSampleStep = 1.0f / 60.0f;
-inline constexpr float kOversampleStep = 1.0f / 35.0f; // MM1 mmPhysicsMGR: OverSample.RealTime(35)
-inline constexpr int kOversampleMaxSamples = 20;       // MM1 asOverSample::MaxSamples default
+inline constexpr float kOversampleStep = 1.0f / 60.0f; // dgPhysManager +0x12ac
+inline constexpr int kOversampleMaxSamples = 6; // dgPhysManager +0x12a8
 
 // asInertialCS sleep defaults (MM1 header initialisers: Vel2 = 0.1,
 // AngVel2 = 0.1, Time = 1.0).
@@ -35,9 +35,11 @@ inline constexpr float kSleepVel2 = 0.1f;
 inline constexpr float kSleepAngVel2 = 0.1f;
 inline constexpr float kSleepTime = 1.0f;
 
-// mmCarSim::Init: ICS.LimitAngVelocity = 1, ICS.MaxAngVelocity = 4*pi.
+// vehCarSim::Init: the car body's angular velocity limit, 4 pi per axis.
 inline constexpr float kCarMaxAngVelocity = 12.566371f;
 
-inline constexpr float kMetersPerSecondToMph = 2.2369363f;
+// ?MetricFactor@@3MA: the game shows |velocity . car axis| * 2.2360249 (mph;
+// the factor is never changed).
+inline constexpr float kMetersPerSecondToMph = 2.2360249f;
 
 } // namespace mm2::phys

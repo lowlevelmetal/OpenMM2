@@ -31,11 +31,11 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     body = Body{};
     body.controller = this;
     InertialCS& ics = body.ics;
-    // mmTrailer::Init: SetMass from the trailer's box (MM2: vehTrailer
-    // InertiaBox and Mass), gravity from the physics manager, angular
-    // velocity limited (MaxAngVelocity keeps the asInertialCS default).
+    // vehTrailer::Init: InitBoxMass from InertiaBox and Mass; as a
+    // dgPhysEntity it falls at 19.6 m/s^2. (The angular velocity limit keeps
+    // OpenMM2's default; vehTrailer's is not ported.)
     ics.setMass(p.inertiaBox.x, p.inertiaBox.y, p.inertiaBox.z, p.mass);
-    ics.gravity = {0.0f, -kGravity, 0.0f};
+    ics.gravity = {0.0f, -19.6f, 0.0f};
     ics.limitAngVelocity = true;
     ics.state = InertialCS::Off;
     // MM1 reads BoundElasticity/BoundFriction from the trailer's own file;
@@ -55,27 +55,18 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     body.shape.offset = box.center() - centerOfGravity;
     body.shape.half = box.extent();
 
-    // Wheels: mmWheel::Init(..., Center, &ICS, 4, nullptr, flags) with flags
-    // 1 (front) and 3 (back, handbrake), each in its own free drivetrain
-    // (mmDrivetrain::Init with the tractor's mmCarSim).
-    DrivetrainParams free;
-    if (p.drivetrain) {
-        free = *p.drivetrain;
-    } else {
-        // MM1's free drivetrain: dyn_coeff = 2 * tractor mass (see
-        // Drivetrain::configure for the AngInertia mapping).
-        free.angInertia = tractor.body.ics.mass * 2.0f;
-    }
-    for (int i = 0; i < 4; ++i) {
-        const bool front = i < 2;
-        const auto ii = static_cast<std::size_t>(i);
-        const WheelGeometry& wg = g.wheels[ii];
-        wheels[ii].init(front ? p.wheelFront : p.wheelBack, wg, wg.center - centerOfGravity, p.mass, kGravity,
-                        4, front ? Wheel::kUseIcsWorld : Wheel::kUseIcsWorld | Wheel::kHandbrake);
-        drivetrains[ii] = Drivetrain{};
-        drivetrains[ii].configure(free);
-        drivetrains[ii].mm1ExplicitSpin = tractor.options.mm1ExplicitSpin;
-        drivetrains[ii].addWheel(&wheels[ii]);
+    // Wheels: vehWheel::Init without a vehCarSim (the body frame, a static
+    // load of Mass * g / 4, no CarFrictionHandling), each in its own free
+    // drivetrain (vehDrivetrain::Init with the tractor's vehCarSim; the
+    // others copy the first one's Drivetrain block).
+    const DrivetrainParams free = p.drivetrain.value_or(DrivetrainParams{});
+    for (std::size_t i = 0; i < 4; ++i) {
+        WheelGeometry wg = g.wheels[i];
+        wg.center = wg.center - centerOfGravity;
+        wheels[i].init(i < 2 ? p.wheelFront : p.wheelBack, wg, p.mass, false, 0.0f);
+        drivetrains[i] = Drivetrain{};
+        drivetrains[i].configure(free);
+        drivetrains[i].addWheel(&wheels[i]);
     }
 
     // mmCar::Init: Joint3Dof::Init, InitJoint3Dof(&car ICS, car offset,
@@ -89,7 +80,9 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     // behind it (reset() below) instead.
     const Mat34 tractorMatrix = tractor.body.ics.matrix;
     joint.init();
-    joint.initJoint3Dof(&tractor.body.ics, jointParams.offset0 - tractor.centerOfGravity, &ics,
+    // The tractor's centre of mass sits at -CenterOfGravity in its model
+    // space (vehCarSim::SetWorldMatrix).
+    joint.initJoint3Dof(&tractor.body.ics, jointParams.offset0 + tractor.centerOfGravity, &ics,
                         jointParams.offset1 - centerOfGravity);
     tractor.body.ics.matrix = tractorMatrix;
     Mat34 rest;
@@ -124,9 +117,12 @@ void Trailer::reset() {
     ics.zero();
     ics.matrix = m;
     ics.matrix.m3 = m.transform(centerOfGravity);
-    ics.frameVelocity = {};
-    for (Wheel& w : wheels)
+    for (Drivetrain& d : drivetrains)
+        d.reset();
+    for (Wheel& w : wheels) {
         w.reset();
+        w.matrix = Mat34::mul(Mat34::translation(w.center), ics.matrix);
+    }
     restoreImpactParams();
     // OpenMM2: refresh the joint position too (MM1 leaves it stale until the
     // next Joint3Dof::Update, which computes its first constraint at the old
@@ -138,13 +134,11 @@ void Trailer::reset() {
 void Trailer::restoreImpactParams() {
     body.ics.elasticity = boundElasticity;
     body.ics.friction = boundFriction;
-    wheels[0].brakingInput = 0.0f;
 }
 
 void Trailer::setHackedImpactParams() {
     body.ics.elasticity = 0.0f;
     body.ics.friction = 2.0f;
-    wheels[0].brakingInput = 0.5f;
 }
 
 void Trailer::addTo(World& world) {
@@ -164,15 +158,15 @@ Mat34 Trailer::modelMatrix() const {
 }
 
 void Trailer::beforeIntegrate(Body&, float, const World&) {
-    // mmTrailer::Update: the trailer wheels take the tractor's inputs (the
-    // back ones steer opposite, vpsemi's tiller axle). CopyVars FL->FR and
-    // BL->BR is implicit: init gives both wheels of an axle the same tune.
-    const float steer = m_tractor->steering;
+    // vehTrailer::Update: only the back wheels take the tractor's inputs,
+    // steering opposite (vpsemi's tiller axle) with the tractor's
+    // speed-sensitive steering, and the handbrake eased on the inside of the
+    // turn. The front wheels never steer or brake.
+    const float steer = m_tractor->sssFactor(m_tractor->speed()) * m_tractor->steering;
     const float brakes = m_tractor->brakes;
-    wheels[0].setInputs(steer, wheels[0].brakeRatio * brakes);
-    wheels[1].setInputs(steer, wheels[1].brakeRatio * brakes);
-    wheels[2].setInputs(-steer, wheels[2].brakeRatio * brakes);
-    wheels[3].setInputs(-steer, wheels[3].brakeRatio * brakes);
+    const float hand = m_tractor->handBrake;
+    wheels[2].setInputs(-steer, brakes, (0.0f < steer ? 1.0f - steer : 1.0f) * hand);
+    wheels[3].setInputs(-steer, brakes, (0.0f <= steer ? 1.0f : steer + 1.0f) * hand);
 }
 
 void Trailer::afterIntegrate(Body& b, float dt, const World& world) {
@@ -184,11 +178,9 @@ void Trailer::afterIntegrate(Body& b, float dt, const World& world) {
     env.dt = dt;
     env.invDt = 1.0f / dt;
     env.weatherFriction = m_tractor->options.weatherFriction;
-    env.indoors = m_tractor->options.indoors;
-    env.carFrictionHandling = m_tractor->params.carFrictionHandling;
-    env.realism = m_tractor->options.realism;
+    env.hasCar = false;
     for (Drivetrain& d : drivetrains)
-        d.update(b.ics, env, m_tractor->brakes, m_tractor->handBrake);
+        d.update(env, m_tractor->params.mass);
 }
 
 } // namespace mm2::phys

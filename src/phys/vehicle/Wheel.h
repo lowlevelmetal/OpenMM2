@@ -4,6 +4,8 @@
 #include "phys/vehicle/TuneParams.h"
 #include "phys/vehicle/VehicleGeometry.h"
 
+#include <cstdint>
+
 namespace mm2::phys {
 
 class InertialCS;
@@ -12,150 +14,158 @@ struct Material;
 
 // Per-sample inputs a wheel needs from its car.
 struct WheelEnv {
-    const InertialCS* ics = nullptr;
-    // Frame the wheel centre is expressed in (the car's CG frame).
+    InertialCS* ics = nullptr;
+    // The car's model matrix (vehCarSim world matrix), or the body matrix for
+    // wheels without a car (vehTrailer passes no vehCarSim).
     const Mat34* frame = nullptr;
     const GroundQuery* ground = nullptr;
     float dt = 0;
     float invDt = 0;
-    float weatherFriction = 1.0f;     // ?WeatherFriction@@3MA (MM2: 0.8 snow, 0.75 snow at night)
-    bool indoors = false;             // room flags & 3: weather does not apply
-    float carFrictionHandling = 1.0f; // vehCarSim CarFrictionHandling
-    float longSlideMultiplier = 1.0f; // MM1-only field; MM2 has none
-    float realism = 1.0f;             // *mmCarSim::Realism (MM1)
+    // WeatherFriction (mmGame::InitWeather: 0.8 in snow, 0.75 in snow at night).
+    float weatherFriction = 1.0f;
+    // vehCarSim CarFrictionHandling; wheels without a car do not apply it.
+    bool hasCar = true;
+    float carFrictionHandling = 1.0f;
 };
 
-// vehWheel, ported from Midtown Madness 1's mmWheel (Open1560 game.asm).
+// vehWheel (Midtown Madness 2), verified against the build 3393 code:
+// ComputeConstants, SetNormalLoad, ComputeFriction, SetInputs,
+// CalcSuspensionForce, ComputeDwtdw, GetBumpDisplacement, Update.
 //
-// Suspension: a probe from SuspensionLimit + Radius above the wheel centre to
-// (droop + Radius) below finds the ground. Suspension (compression from rest)
-// drives Spring/Damping on top of the static load NormalLoad.
+// Suspension: a probe from SuspensionLimit + 0.3 above the wheel centre to
+// SuspensionExtent + Radius below it finds the ground. Displacement drives a
+// progressive spring and damper on top of the static load; the contact
+// registers its stiffness with the body (phInertialCS::ApplyContactForce),
+// which integrates it implicitly. Past SuspensionLimit the wheel bottoms out:
+// an impulse stops the closing velocity and a push removes the overlap.
 //
 // Tyre: a displacement ("rubber") model per direction. Each sample the
-// contact patch displacement moves with the slip velocity towards a target
-// = friction(slip) * load * Friction / RubberSpring, never past it; the tyre
-// force is -RubberSpring * disp - RubberDamp * disp rate. friction(slip) is
-// StaticFric * (2s/s0 - s^2/s0^2) up to the point where it falls to
-// SlidingFric (mmWheel::ComputeConstants).
-//
-// MM2 replaced MM1's tuning fields; configure() maps them (inferred, see
-// docs/physics.md): Spring = SuspensionFactor * NormalLoad / SuspensionExtent,
-// Damping = SuspensionDampCoef * Spring, RubberSpring = StaticFric * NormalLoad
-// / TireDispLimit, RubberDamp = TireDampCoef * 2 sqrt(RubberSpring * m/n).
+// contact patch displacement moves with the slip velocity, limited to the
+// displacement at which the tyre force reaches friction(slip) * load, and
+// relaxes towards that limit while sliding. The force is -stiffness * disp -
+// damping * rate, clipped to the friction circle. friction(slip) is
+// StaticFric (2s/s0 - s^2/s0^2) up to the optimum slip s0, falling to
+// SlidingFric past it. Stiffness = 2 * static load / TireDispLimit, damping =
+// 2 sqrt(stiffness * load / g) * TireDampCoef.
 class Wheel {
 public:
     enum Flags : int {
-        kUseIcsWorld = 1,       // frame from the ICS instead of the car LCS
-        kHandbrake = 2,         // back wheel (handbrake acts here)
-        kUseLinearVelocity = 4, // driven wheel: ICS LinearVelocity instead of FrameVelocity
+        // vehWheel flag 4: the wheel does not spin; the contact slides with
+        // the body and the brakes hold it at full friction.
+        kFixed = 4,
     };
 
-    // mmWheel::Init + MM2 parameter mapping. `centerFromCg` is the wheel
-    // centre relative to the car's centre of gravity, in car space.
-    void init(const WheelParams& p, const WheelGeometry& g, const Vec3& centerFromCg, float carMass,
-              float gravity, int numWheels, int flags);
-    // mmWheel::ComputeConstants: friction curve coefficients.
+    // vehWheel::Init + ComputeConstants. `center` (the wheel pivot), radius
+    // and width come from the geometry, in the car's model space. With a car
+    // the static load is mass * g/4 scaled by |z - cg.z| / |z| (vehCarSim's
+    // CenterOfGravity z); without one it is mass * g / 4.
+    void init(const WheelParams& p, const WheelGeometry& g, float mass, bool hasCar, float cgZ, int flags = 0);
+    // vehWheel::CopyVars (the right wheel of each axle copies the left one).
+    void copyVars(const Wheel& other);
     void computeConstants();
+    // vehWheel::SetNormalLoad: derives the spring, damper and tyre constants.
+    void setNormalLoad(float load);
     void reset();
-    // mmWheel::SetInputs.
-    void setInputs(float steer, float brake) {
-        steeringInput = steer;
-        brakingInput = brake;
-    }
 
-    // Friction coefficient for a slip ratio (the curve used by update()).
-    float frictionForSlip(float slip, bool lateral) const;
+    // vehWheel::SetInputs: steering (-1..1, before SteeringLimit), foot brake
+    // and handbrake (0..1).
+    void setInputs(float steer, float brake, float handbrake);
 
-    // mmWheel::ComputeDwtdw, split in two so that the drivetrain can evaluate
-    // the tyre torque between the halves (MM1 calls it after summing the
-    // torques; nothing in the first half depends on them).
-    //
-    // probe(): the ground probe, suspension and load, and the contact
-    // velocity along the wheel's heading (contactForwardVel). Returns hit.
-    bool probe(const WheelEnv& env);
-    // computeLimits(): the wheel speed B at which the slip reaches the
-    // optimum (the drivetrain's breakpoint), the tyre torque slope
-    // d(TireResistance)/d(w) below it (A, also returned) and past it (C = 0).
-    // MM1 build 1560 discards the slope (Drivetrain::mm1ExplicitSpin); ours
-    // is the exact per-sample slope of the tyre model (see Wheel.cpp).
-    float computeLimits(float net, float& A, float& B, float& C, const WheelEnv& env) const;
+    // vehWheel::ComputeFriction: friction coefficient at a slip ratio and the
+    // sliding fraction (0 below the optimum slip, 1 fully sliding).
+    float computeFriction(float slip, float& slide) const;
 
-    // OpenMM2: the TireResistance update() would produce this sample if the
-    // wheel kept its current speed (same operations as update(); valid after
-    // probe()). The drivetrain's implicit step is linearised about it.
-    float predictTireResistance(const WheelEnv& env) const;
+    // vehWheel::ComputeDwtdw: the ground probe, suspension and contact
+    // velocities. `net` is the drivetrain's net torque (resistance positive);
+    // returns the wheel speed B at which the slip reaches the optimum, which
+    // the drivetrain uses as a breakpoint. (The original also reports two
+    // slopes, always 0.)
+    float computeDwtdw(float net, const WheelEnv& env);
 
-    // Surface friction: material x WeatherFriction (outdoors), adjusted by
-    // CarFrictionHandling below 1 (mmWheel::Update).
-    float surfaceFriction(const WheelEnv& env) const;
+    // vehWheel::Update: contact and tyre forces applied to the body, and the
+    // wheel's visual state. Uses rotationSpeed set by the drivetrain.
+    void update(const WheelEnv& env);
 
-    // mmWheel::Update: tyre forces (applied to `ics`) and visual state.
-    void update(InertialCS& ics, const WheelEnv& env);
+    // Visual displacements (vehWheel::GetVisualDispVert/Lat/Long).
+    float visualDispVert() const;
+    float visualDispLat() const;
+    float visualDispLong() const;
 
-    // --- Tune (MM1 member names; filled by init) ---
-    float spring = 40000.0f;
-    float damping = 4000.0f;
-    float steeringRatio = 0.5f;    // MM2 SteeringLimit
-    float brakeRatio = 0.85f;      // MM2 BrakeCoef
-    float handbrakeCoef = 1.0f;    // MM2 HandbrakeCoef
-    float suspensionLimit = 0.1f;  // compression travel
-    float suspensionExtent = 0.1f; // droop travel (MM2; MM1 used SuspensionLimit)
-    float renderableSuspensionLimit = 0.1f;
-    float rubberSpring = 40000.0f;
-    float rubberDamp = 2000.0f;
-    float optimumSlipPercent = 0.14f;
-    float staticFric = 0.8f;
-    float slidingFric = 0.4f;
-    float rubberSpringLat = 40000.0f;
-    float rubberDampLat = 2000.0f;
-    float tireDragCoefLong = 0.0f; // MM2 rolling resistance (inferred use)
-    float tireDragCoefLat = 0.0f;
-    float steeringOffset = 0.0f; // MM2; visual only (inferred)
-    float camberLimit = 0.0f;    // MM2; visual only
-    float wobbleLimit = 0.0f;    // MM2; visual only
+    WheelParams params;
 
-    // --- Geometry ---
-    Vec3 center; // relative to the CG
+    // --- Geometry (model space) ---
+    Vec3 center; // pivot
     float radius = 0.3f;
     float width = 0.1f;
     int flags = 0;
-    int numWheels = 4;
+    bool hasCar = true;
+    float cgZ = 0.0f; // vehCarSim CenterOfGravity z (static load split)
+    float mass = 1000.0f;
 
-    // --- Constants ---
-    float normalLoad = 0.0f;   // static load per wheel
-    float unkFriction1 = 0.0f; // StaticFric * FricMultiplier / s0^2
-    float unkFriction2 = 0.0f; // slip at which the curve reaches SlidingFric
-    float fricMultiplier = 1.0f;
-    float steerMultiplier = 1.0f;
+    // --- Constants (SetNormalLoad) ---
+    float normalLoad = 5000.0f;  // static load
+    float spring = 0.0f;         // N/m
+    float progressive = 0.0f;    // spring stiffening per metre of travel
+    float damping = 0.0f;        // N s/m
+    float stiffLong = 0.0f;      // tyre N/m
+    float dampLong = 0.0f;       // tyre N s/m
+    float stiffLat = 0.0f;
+    float dampLat = 0.0f;
+    float maxBrakeTorque = 0.0f; // StaticFric * Radius * load * BrakeCoef
+    float maxHandbrakeTorque = 0.0f;
+    float invOptSlip2 = 0.0f;
+
+    // --- Inputs ---
+    float steerAngle = 0.0f;  // rad
+    float brakeTorque = 0.0f; // N m
 
     // --- State ---
-    bool hit = false; // dword168: probe found ground this sample
+    Mat34 matrix; // the wheel in world space (steered, displaced, spun)
+    bool hit = false;
     RayHit intersection;
+    Mat34 contactFrame; // rows right, ground normal, back; m3 the contact point
+    Vec3 position;      // contact point
     const Material* material = nullptr;
-    Vec3 position;
     bool onGround = false;
-    float friction = 1.0f;
+    bool bottomedOut = false;
+    bool skidding = false; // slide > 0.5
+    float latVelocity = 0.0f;
+    float fwdVelocity = 0.0f; // contactForwardVel
+    float normalVelocity = 0.0f;
+    float slipVelocity = 0.0f;
+    float bump = 0.0f;
+    float drag = 0.0f;     // surface drag (material)
+    float friction = 1.0f; // surface friction after weather and CarFrictionHandling
+    float depth = 0.0f;    // current sink into soft surfaces
+    float bumpHeight = 0.0f;
+    float bumpWidth = 0.0f;
+    float bumpPhase = 0.0f;
+    float rotation = 0.0f;           // accumulated spin (visual)
+    float suspension = 0.0f;         // displacement, compression positive (m)
+    float suspensionForce = 0.0f;    // N
+    float currentLoad = 0.0f;        // normal force used for friction (N)
+    float suspensionVelocity = 0.0f; // m/s
+    float contactStiffness = 0.0f;   // d(force)/d(velocity) handed to the body
+    float slide = 0.0f;
+    float camber = 0.0f;
+    float wobble = 0.0f;
     float currentTireDispLat = 0.0f;
     float currentTireDispLong = 0.0f;
-    float tireGripLat = 0.0f;
-    float tireGripLong = 0.0f;
-    float tireResistance = 0.0f;
-    float rotationSpeed = 0.0f; // rad/s, negative when rolling forward
+    float tireGripLat = 0.0f;    // lateral force
+    float tireGripLong = 0.0f;   // longitudinal force
+    float tireResistance = 0.0f; // longitudinal force * radius
+    float rotationSpeed = 0.0f;  // rad/s, negative when rolling forward
     float latSlipPercent = 0.0f;
     float longSlipPercent = 0.0f;
-    float steeringInput = 0.0f;
-    float brakingInput = 0.0f;
-    float steering = 0.0f;
-    float suspension = 0.0f;         // compression from rest (m)
-    float suspensionVelocity = 0.0f; // dword1E4
-    float currentLoad = 0.0f;
-    float rollingRotation = 0.0f;   // MaybeGrip: forward speed / -radius
-    float contactForwardVel = 0.0f; // probe(): contact velocity along the heading
-    float rotation = 0.0f;          // accumulated spin (visual)
-    float wobble = 0.0f;
-    Vec3 planeVelocity; // field_178: contact velocity in the ground plane
-    Vec3 skidVelocity;  // field_16C: for skid marks
-    Mat34 visualMatrix; // asLinearCS::Matrix, relative to the car frame
+
+private:
+    void calcSuspensionForce(float disp, bool contact, float cosNormal, const WheelEnv& env);
+    float bumpDisplacement(float speed, float dt);
+    void noContact();
 };
+
+// The game's random generator (irand/frand: MSVC rand(), shared by the
+// whole game in the original; one stream for the vehicle physics here).
+float physFrand();
 
 } // namespace mm2::phys

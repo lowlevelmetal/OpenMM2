@@ -1,9 +1,9 @@
-// Port of mmDrivetrain from Open1560 (https://github.com/0x1F9F1/Open1560),
-// GPL-3.0: code/midtown/game.asm, Midtown Madness 1 beta build 1560.
+// vehDrivetrain from Midtown Madness 2 (Update, Attach/Detach, AddWheel,
+// FileIO), verified against the build 3393 code (MM2Recomp); the x87 order of
+// operations follows the original. See docs/physics.md.
 
 #include "phys/vehicle/Drivetrain.h"
 
-#include "phys/AgeMath.h"
 #include "phys/vehicle/Engine.h"
 #include "phys/vehicle/Transmission.h"
 
@@ -13,28 +13,30 @@ namespace mm2::phys {
 
 void Drivetrain::configure(const DrivetrainParams& p) {
     angInertia = p.angInertia;
-    dynCoeff = p.angInertia * p.brakeDynamicCoef;
-    statCoeff = p.angInertia * p.brakeStaticCoef;
+    brakeDynamicCoef = p.brakeDynamicCoef;
+    brakeStaticCoef = p.brakeStaticCoef;
+}
+
+void Drivetrain::reset() {
+    rotationSpeed = 0.0f;
+    diffRatio = 1.0f;
 }
 
 bool Drivetrain::addWheel(Wheel* w) {
     if (m_numWheels == 4)
-        return false; // "Too many wheels"
+        return false;
     m_wheels[static_cast<std::size_t>(m_numWheels++)] = w;
     return true;
 }
 
 void Drivetrain::attach(Engine* engine, Transmission* trans) {
-    m_lastEngine = engine;
-    m_lastTrans = trans;
-    attach();
+    m_engine = m_lastEngine = engine;
+    m_trans = m_lastTrans = trans;
 }
 
 void Drivetrain::attach() {
     m_engine = m_lastEngine;
     m_trans = m_lastTrans;
-    if (m_engine)
-        engineAngInertia = m_engine->angInertia;
 }
 
 void Drivetrain::detach() {
@@ -42,138 +44,175 @@ void Drivetrain::detach() {
     m_trans = nullptr;
 }
 
-void Drivetrain::update(InertialCS& ics, const WheelEnv& env, float brakes, float handBrake) {
-    if (m_numWheels == 0)
-        return;
-    const int n = m_numWheels;
-    Wheel* w0 = m_wheels[0];
+void Drivetrain::update(const WheelEnv& env, float carMass) {
     const float dt = env.dt;
+    const int n = m_numWheels;
 
-    // Brake input. MM1: back drivetrains (handbrake flag) feel only the
-    // handbrake, others only the foot brake (+0.002 constant drag). MM2 gives
-    // every wheel BrakeCoef and HandbrakeCoef; we let the foot brake act on
-    // all drivetrains and the handbrake on the back ones (inferred).
-    const float foot = age::subD(brakes * w0->brakeRatio, -0.002);
-    float brakeInput = foot;
-    if (w0->flags & Wheel::kHandbrake) {
-        const float hand = handBrake * w0->handbrakeCoef;
-        brakeInput = foot > hand ? foot : hand;
-    }
-    const float coeff = w0->rotationSpeed == 0.0f ? statCoeff : dynCoeff;
-    const float brakeTorque = coeff * brakeInput;
-    const float perWheel = brakeTorque / w0->radius;
-    float brakeSum = 0.0f;
+    // Brake torque: static while the wheels are stopped.
+    float brake = 50.0f;
+    const float coef = rotationSpeed == 0.0f ? brakeStaticCoef : brakeDynamicCoef;
     for (int i = 0; i < n; ++i)
-        brakeSum = brakeSum + perWheel;
+        brake = brake + m_wheels[static_cast<std::size_t>(i)]->brakeTorque * coef;
 
-    // mmWheel::ComputeDwtdw's first half (probe, suspension) comes first so
-    // that the tyre torques can be evaluated at the current body velocity.
-    // MM1 calls ComputeDwtdw after summing them; the probe does not use them.
-    for (int i = 0; i < n; ++i)
-        m_wheels[static_cast<std::size_t>(i)]->probe(env);
-
-    float drive = m_engine ? m_engine->torque : 0.0f;
-    if (m_trans)
-        drive = drive * m_trans->currentRatio();
-    for (int i = 0; i < n; ++i) {
-        const Wheel* w = m_wheels[static_cast<std::size_t>(i)];
-        drive = drive - (mm1ExplicitSpin ? w->tireResistance : w->predictTireResistance(env));
+    // Net torque resisting the rotation: the engine coupling (zero while the
+    // engine turns with the wheels), the engine torque and last sample's tyre
+    // torques.
+    float drive = 0.0f;
+    float net = 0.0f;
+    float ratio = 0.0f;
+    if (m_engine) {
+        ratio = m_trans->currentRatio();
+        drive = ratio * m_engine->torque;
+        net = (ratio * rotationSpeed + m_engine->rotationSpeed) * m_engine->angInertia * env.invDt * ratio;
     }
+    net = net + drive;
+    for (int i = 0; i < n; ++i)
+        net = net - m_wheels[static_cast<std::size_t>(i)]->tireResistance;
 
-    float net;
-    bool brakesDominate = false;
-    if (w0->rotationSpeed == 0.0f) {
-        // Static: the brakes hold the wheels until the drive exceeds them.
-        if (!(drive < 0.0f)) {
-            const float t = drive - brakeSum;
-            net = 0.0f <= t ? t : 0.0f;
+    // The brake opposes the rotation; at rest it holds against the net torque.
+    float eff;
+    bool brakeHolds = false;
+    if (rotationSpeed == 0.0f) {
+        if (net < 0.0f) {
+            const float x = brake + net;
+            eff = 0.0f < x ? 0.0f : x;
         } else {
-            const float t = drive + brakeSum;
-            net = !(0.0f < t) ? t : 0.0f;
+            const float x = net - brake;
+            eff = 0.0f <= x ? x : 0.0f;
         }
     } else {
-        const float b = (w0->rotationSpeed < 0.0f ? -1.0f : 1.0f) * brakeSum;
-        brakesDominate = !(std::abs(drive) > std::abs(b));
-        net = drive + b;
+        const float s = 0.0f < rotationSpeed ? 1.0f : (rotationSpeed < 0.0f ? -1.0f : 0.0f);
+        const float b = brake * s;
+        brakeHolds = !(std::abs(b) < std::abs(net));
+        eff = net + b;
     }
 
     float inertia;
-    if (m_engine) {
-        const float r = m_trans ? m_trans->currentRatio() : 0.0f;
-        inertia = angInertia * 0.01f + (0.2f * engineAngInertia) * (r * r);
-    } else {
-        inertia = angInertia * 0.005f;
-    }
+    if (m_engine && m_trans)
+        inertia = ratio * m_engine->angInertia * ratio + 0.02f;
+    else
+        inertia = carMass * 0.005f;
 
-    // MM1 calls ComputeDwtdw for wheel 0, and for wheel 1 only when the
-    // drivetrain has exactly two wheels; MM2 has four-wheel drivetrains, so
-    // every wheel is included (OpenMM2).
-    float A[4], B[4], C[4];
-    float D = 300.0f;
-    for (int i = 0; i < n; ++i) {
-        float slope = m_wheels[static_cast<std::size_t>(i)]->computeLimits(net, A[i], B[i], C[i], env);
-        if (mm1ExplicitSpin) // build 1560 stores 0 to A and C and returns 0
-            slope = A[i] = C[i] = 0.0f;
-        D = slope + D;
-    }
+    // Wheel breakpoints (vehWheel::ComputeDwtdw; the slopes are always 0).
+    std::array<float, 4> limit{};
+    for (int i = 0; i < n; ++i)
+        limit[static_cast<std::size_t>(i)] = m_wheels[static_cast<std::size_t>(i)]->computeDwtdw(eff, env);
 
-    float negNet = -net;
-    float rot0 = w0->rotationSpeed;
-    float newRot = rot0;
-    for (int iter = 1;; ++iter) {
-        newRot = (negNet / (dt * D + inertia)) * dt + rot0;
-        // The governing limit: the lowest one when pushing the wheels
-        // forward (net < 0), the highest otherwise.
-        int idx = 0;
-        float bsel = B[0];
-        for (int i = 1; i < n; ++i) {
-            const bool better = net < 0.0f ? B[i] <= bsel : B[i] >= bsel;
-            if (better && B[i] != bsel) {
-                bsel = B[i];
-                idx = i;
+    float torque = -eff;
+    // Limited-slip differential between the wheels of each pair.
+    if (1.0f < kDiffRatioMax) {
+        const float s = std::abs(rotationSpeed);
+        float lim;
+        if (s < kDiffRatioHighSpeedLevel)
+            lim = ((kDiffRatioHighSpeedLevel - s) * kDiffRatioMax + kDiffRatioMaxHighSpeed * s) *
+                  (1.0f / kDiffRatioHighSpeedLevel);
+        else
+            lim = kDiffRatioMaxHighSpeed;
+        if (n <= 1 || (rotationSpeed < 0.001f && !(rotationSpeed <= -0.001f))) {
+            diffRatio = 1.0f;
+        } else {
+            const float invLim = 1.0f / lim;
+            float imbalance = 0.0f;
+            const float slopes = 0.0f; // sum of the (zero) wheel slopes
+            for (int i = 0; i + 1 < n; i += 2)
+                imbalance = imbalance + (m_wheels[static_cast<std::size_t>(i)]->tireResistance -
+                                         m_wheels[static_cast<std::size_t>(i + 1)]->tireResistance);
+            float r = imbalance / ((slopes + angInertia) * rotationSpeed) + diffRatio;
+            if (lim < r)
+                r = lim;
+            else if (r < invLim)
+                r = invLim;
+            const float old = diffRatio;
+            diffRatio = (old * 9.0f + r) * 0.1f;
+            const float invRatio = 1.0f / diffRatio;
+            torque = torque - (old - diffRatio) * slopes * rotationSpeed;
+            for (int i = 0; i + 1 < n; i += 2) {
+                limit[static_cast<std::size_t>(i)] = invRatio * limit[static_cast<std::size_t>(i)];
+                limit[static_cast<std::size_t>(i + 1)] = diffRatio * limit[static_cast<std::size_t>(i + 1)];
             }
         }
-        const bool crossed = (net < 0.0f && newRot > bsel) || (net > 0.0f && newRot < bsel);
-        if (!crossed)
-            break;
-        negNet = negNet - (bsel - rot0) * D;
-        rot0 = bsel;
-        D = D + (C[idx] - A[idx]);
-        B[idx] = (net < 0.0f ? -1.0f : 1.0f) * -1e11f;
+    }
+
+    // Integrate, stopping at a crossed breakpoint. With the original's
+    // starting values (1e9 for the largest, -1e10 for the smallest limit)
+    // only the sentinels returned for wheels in the air or past the optimum
+    // slip qualify, so in practice the first step stands.
+    const float damp = angInertia;
+    float w = rotationSpeed;
+    float wNew = w;
+    std::size_t crossed = 0;
+    for (int iter = 0;;) {
+        wNew = (torque / (dt * damp + inertia)) * dt + w;
+        ++iter;
+        float m;
+        if (eff < 0.0f) {
+            m = 1e9f;
+            for (int i = 0; i < n; ++i)
+                if (m < limit[static_cast<std::size_t>(i)]) {
+                    m = limit[static_cast<std::size_t>(i)];
+                    crossed = static_cast<std::size_t>(i);
+                }
+            if (!(m < wNew))
+                break;
+        } else {
+            m = -1e10f;
+            for (int i = 0; i < n; ++i)
+                if (!(m <= limit[static_cast<std::size_t>(i)])) {
+                    m = limit[static_cast<std::size_t>(i)];
+                    crossed = static_cast<std::size_t>(i);
+                }
+            if (!(0.0f < eff && wNew < m))
+                break;
+        }
+        torque = torque - (m - w) * damp;
+        w = m;
+        const float s = 0.0f < eff ? 1.0f : (eff < 0.0f ? -1.0f : 0.0f);
+        limit[crossed] = s * -1e11f;
         if (iter > 20)
             break;
     }
+    // The brakes stop the wheels but never reverse them.
+    if (brakeHolds && ((wNew < 0.0f && 0.0f < rotationSpeed) || (rotationSpeed < 0.0f && 0.0f < wNew)))
+        wNew = 0.0f;
 
-    // Brakes stop the wheels; they never spin them backwards.
-    if (brakesDominate) {
-        if (newRot < 0.0f) {
-            if (w0->rotationSpeed > 0.0f)
-                newRot = 0.0f;
-        } else if (w0->rotationSpeed < 0.0f && newRot > 0.0f) {
-            newRot = 0.0f;
+    // In gear the wheels cannot outrun the engine's MaxRPM.
+    if (m_engine && m_trans) {
+        const float s = 0.0f < wNew ? 1.0f : (wNew < 0.0f ? -1.0f : 0.0f);
+        const float a = std::abs(wNew);
+        const float lim = m_engine->maxRotationSpeed / std::abs(ratio);
+        float v;
+        if (a < 0.0f)
+            v = 0.0f;
+        else if (lim < a)
+            v = lim;
+        else
+            v = a;
+        wNew = v * s;
+    }
+    rotationSpeed = wNew;
+    if (m_engine) {
+        // The engine follows the wheels, never backwards or past MaxRPM.
+        const float e = -(ratio * wNew);
+        if (e < 0.0f) {
+            rotationSpeed = 0.0f;
+        } else if (m_engine->maxRotationSpeed < e) {
+            rotationSpeed = -(m_engine->maxRotationSpeed / ratio);
+            m_engine->rotationSpeed = m_engine->maxRotationSpeed;
+        } else {
+            m_engine->rotationSpeed = e;
         }
     }
 
-    // Rev limiter: wheel speed capped at MaxRPM in the current gear.
-    if (m_engine && m_trans) {
-        const float s = newRot < 0.0f ? -1.0f : 1.0f;
-        const float maxRot = m_engine->maxRotationSpeed / std::abs(m_trans->currentRatio());
-        float v = std::abs(newRot);
-        if (v <= 0.0f)
-            v = 0.0f;
-        else if (!(v < maxRot))
-            v = maxRot;
-        newRot = v * s;
+    const float invRatio = 1.0f / diffRatio;
+    for (int i = 0; i < n - 1; i += 2) {
+        m_wheels[static_cast<std::size_t>(i)]->rotationSpeed = diffRatio * rotationSpeed;
+        m_wheels[static_cast<std::size_t>(i + 1)]->rotationSpeed = invRatio * rotationSpeed;
     }
-    for (int i = 0; i < n; ++i)
-        m_wheels[static_cast<std::size_t>(i)]->rotationSpeed = newRot;
-    if (m_engine) {
-        const float e = (m_trans->currentRatio() * w0->rotationSpeed) * -1.0f;
-        m_engine->rotationSpeed = e <= 0.0f ? 0.0f : e;
-    }
+    if (n & 1)
+        m_wheels[static_cast<std::size_t>(n - 1)]->rotationSpeed = rotationSpeed;
 
     for (int i = 0; i < n; ++i)
-        m_wheels[static_cast<std::size_t>(i)]->update(ics, env);
+        m_wheels[static_cast<std::size_t>(i)]->update(env);
 }
 
 } // namespace mm2::phys

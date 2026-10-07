@@ -3,6 +3,7 @@
 #include "core/Math.h"
 
 #include <array>
+#include <optional>
 #include <vector>
 
 namespace mm2::phys {
@@ -29,6 +30,11 @@ struct VehicleGeometry {
     // WHL4/WHL5: optional second rear axle (e.g. vpsemi). In the original
     // these follow WHL2/WHL3 visually and are not simulated separately.
     std::array<WheelGeometry, 2> extraWheels;
+    // Optional pivots (GetPivot(<car>, "engine" / "axle0" / "axle1")): the
+    // engine's rocking axis and the axles' visual roll. Absent pivots give
+    // the original's fallbacks (body axes; roll factor 1).
+    std::optional<Mat34> enginePivot;
+    std::array<std::optional<Mat34>, 2> axlePivots;
     // Collision box of the body.
     Aabb body;
     // Optional convex hull points of the body bound (unused for now; the

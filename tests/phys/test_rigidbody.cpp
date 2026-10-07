@@ -86,10 +86,34 @@ TEST(InertialCS, AngularVelocityLimit) {
     ics.setMass(1, 1, 1, 6.0f);
     ics.gravity = {};
     ics.limitAngVelocity = true;
-    ics.maxAngVelocity = 2.0f;
+    ics.setMaxAngVelocity(2.0f);
     ics.angularMomentum = {0, 100.0f, 0};
     ics.update(0.01f, 100.0f);
     EXPECT_NEAR(ics.angularVelocity.mag(), 2.0f, 1e-4f);
+    // phInertialCS limits each body axis on its own, keeping the momentum
+    // consistent with the limited velocity.
+    EXPECT_NEAR(ics.angularMomentum.y, 2.0f * ics.inertia.y, 1e-4f);
+}
+
+TEST(InertialCS, ContactStiffnessIsImplicit) {
+    // A 1000 kg body on a stiff, damped vertical spring (1e8 N/m, 4e5 N s/m),
+    // stepped at 1/60 s (omega * dt = 5.3): an explicit step diverges;
+    // phInertialCS's step, implicit in the contact matrix, settles. The
+    // matrix carries d(force)/d(velocity) = damping + dt * stiffness, as
+    // vehWheel passes it.
+    InertialCS ics;
+    ics.setMass(1, 1, 1, 1000.0f);
+    ics.gravity = {};
+    ics.matrix.m3 = {0, 0.1f, 0};
+    const float stiffness = 1.0e8f, damping = 4.0e5f, dt = 1.0f / 60.0f;
+    for (int i = 0; i < 120; ++i) {
+        const float y = ics.matrix.m3.y, v = ics.linearVelocity.y;
+        Mat34 k{{}, {0, damping + dt * stiffness, 0}, {}, {}};
+        ics.applyContactForce({0, -stiffness * y - damping * v, 0}, ics.matrix.m3, k);
+        ics.update(dt, 1.0f / dt);
+        ASSERT_LT(std::abs(ics.matrix.m3.y), 0.1f);
+    }
+    EXPECT_LT(std::abs(ics.matrix.m3.y), 1e-3f);
 }
 
 TEST(InertialCS, PushesDoNotStack) {
@@ -219,8 +243,10 @@ TEST(World, BounceUsesElasticity) {
 
 TEST(World, OversampleSplitsFrames) {
     World world;
+    // dgPhysManager::Update: ceil((frame - 0.001) / (1/60)), at most 6.
     EXPECT_EQ(world.advanceOversampled(1.0f / 60.0f), 1);
-    EXPECT_EQ(world.advanceOversampled(1.0f / 20.0f), 2); // 0.05 / (1/35) = 1.75 -> 2
-    EXPECT_EQ(world.advanceOversampled(2.0f), 20);        // MaxSamples
+    EXPECT_EQ(world.advanceOversampled(1.0f / 30.0f), 2);
+    EXPECT_EQ(world.advanceOversampled(1.0f / 20.0f), 3);
+    EXPECT_EQ(world.advanceOversampled(2.0f), 6); // MaxSamples
     EXPECT_EQ(world.advanceFixed(0.051f), 3);
 }

@@ -1,77 +1,107 @@
-// Port of mmStuck from Open1560 (https://github.com/0x1F9F1/Open1560),
-// GPL-3.0: code/midtown/game.asm, Midtown Madness 1 beta build 1560.
+// vehStuck from Midtown Madness 2 (Impact, Pegged, Update, Reset), verified
+// against the build 3393 code (MM2Recomp). See docs/physics.md.
 
 #include "phys/vehicle/Stuck.h"
 
 #include "phys/AgeMath.h"
 #include "phys/InertialCS.h"
-#include "phys/vehicle/Engine.h"
-#include "phys/vehicle/Transmission.h"
 
 #include <cmath>
 
 namespace mm2::phys {
 
 void Stuck::configure(const StuckParams& p) {
-    timeThresh = p.timeThresh;
-    posThresh = p.posThresh;
-    moveThresh = p.moveThresh;
-    rotAmount = p.turn;
-    // StuckCB.
-    posThreshSqr = posThresh * posThresh;
-    moveThreshSqr = moveThresh * moveThresh;
+    params = p;
+    posThreshSqr = p.posThresh * p.posThresh;
+    moveThreshSqr = p.moveThresh * p.moveThresh;
     reset();
 }
 
 void Stuck::reset() {
+    active = false;
     state = Idle;
     stuckTime = 0.0f;
-    impacted = false;
 }
 
-bool Stuck::pegged(const Engine& engine, const Transmission& trans, float steering) const {
-    return age::mulD(engine.maxThrottle, 0.75) < engine.throttle &&
-           static_cast<double>(std::abs(steering)) > 0.5 && trans.getCurrentGear() != -1;
-}
-
-void Stuck::update(InertialCS& ics, float dt, const Engine& engine, const Transmission& trans,
-                   float steering) {
-    if (ics.constraints & InertialCS::kConstrainRY)
+void Stuck::impact(const InertialCS& ics) {
+    if (state != Idle)
         return;
+    active = true;
+    impactPosition = ics.matrix.m3;
+    state = Watching;
+}
+
+bool Stuck::pegged(const Inputs& in) const {
+    return in.maxThrottle * 0.75f < in.throttle && 0.5f < std::abs(in.steering);
+}
+
+bool Stuck::update(InertialCS& ics, float dt, const Inputs& in) {
+    if (!active)
+        return false;
     const Vec3& pos = ics.matrix.m3;
-    auto dist2 = [&] {
-        const float dy = lastPosition.y - pos.y, dz = lastPosition.z - pos.z, dx = lastPosition.x - pos.x;
-        return (dy * dy + dz * dz) + dx * dx;
+    const auto moved2 = [&] {
+        const float dx = impactPosition.x - pos.x, dy = impactPosition.y - pos.y, dz = impactPosition.z - pos.z;
+        return dx * dx + dy * dy + dz * dz;
     };
-    if (dist2() > moveThreshSqr)
-        state = Idle;
-    if (impacted) {
-        if (state == Idle) {
-            stuckTime = 0.0f;
-            lastPosition = pos;
-            state = Watching;
-        }
-        impacted = false;
-    }
-    if (state == Watching) {
+    if (moveThreshSqr < moved2())
+        reset();
+
+    switch (state) {
+    case Watching: {
         stuckTime = dt + stuckTime;
-        const float dx = lastPosition.x - pos.x, dz = lastPosition.z - pos.z;
-        if (dx * dx + dz * dz < posThreshSqr && !(stuckTime < timeThresh) &&
-            pegged(engine, trans, steering)) {
-            state = Stuck_;
-            return;
+        const float dx = impactPosition.z - pos.z, dz = impactPosition.x - pos.x;
+        const float near2 = dx * dx + dz * dz;
+        if (near2 <= posThreshSqr && in.wheelsOnGround == 0 && params.timeThresh <= stuckTime &&
+            (0.0f < params.translation || 0.0f < params.rotation)) {
+            state = params.rotation <= 0.0f ? Flipping : Nudging;
+            return false;
         }
-        if (dist2() > moveThreshSqr)
-            state = Idle;
-    } else if (state == Stuck_) {
-        if (!(dist2() > moveThreshSqr) && pegged(engine, trans, steering)) {
-            const float sgn = steering < 0.0f ? -1.0f : 1.0f;
-            const float angle = -((((std::abs(steering) - -1.0f) * rotAmount) * dt) * sgn);
-            age::rotate(ics.matrix, {0.0f, 1.0f, 0.0f}, angle);
-        } else {
-            state = Idle;
+        if (near2 <= posThreshSqr && params.timeThresh <= stuckTime && pegged(in)) {
+            state = Pegged;
+            return false;
         }
+        if (moved2() <= moveThreshSqr && stuckTime <= params.timeThresh)
+            return false;
+        break;
     }
+    case Flipping: {
+        // Upright, keeping the heading, lifted by Translation.
+        Mat34 m = ics.matrix;
+        Vec3 x{m.m2.z - 0.0f, 0.0f, 0.0f - m.m2.x};
+        const float l2 = x.x * x.x + x.z * x.z + 0.0f;
+        const float inv = l2 == 0.0f ? 0.0f : 1.0f / std::sqrt(l2);
+        x = {x.x * inv, x.y * inv, x.z * inv};
+        const Vec3 y{0.0f, 1.0f, 0.0f};
+        m.m0 = x;
+        m.m1 = y;
+        m.m2 = {x.y * y.z - x.z * y.y, x.z * y.x - y.z * x.x, y.y * x.x - x.y * y.x};
+        m.m3.y = m.m3.y + params.translation;
+        ics.matrix = m;
+        reset();
+        return false;
+    }
+    case Nudging:
+        if (ics.matrix.m1.y <= 0.7f) {
+            ics.applyImpulse({0.0f, std::abs(in.steering) * ics.mass * params.translation, 0.0f}, pos);
+            const float r = in.steering * ics.mass * params.rotation;
+            ics.applyAngImpulse({r * ics.matrix.m2.x, r * ics.matrix.m2.y, r * ics.matrix.m2.z});
+            return true;
+        }
+        break;
+    case Pegged:
+        if (moved2() <= moveThreshSqr && pegged(in)) {
+            float a = std::abs(in.steering) * params.turn * in.steering;
+            if (in.gear == 0)
+                a = -a;
+            age::rotate(ics.matrix, {0.0f, 1.0f, 0.0f}, -(dt * a));
+            return false;
+        }
+        break;
+    default:
+        return false;
+    }
+    reset();
+    return false;
 }
 
 } // namespace mm2::phys

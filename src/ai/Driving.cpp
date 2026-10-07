@@ -112,8 +112,7 @@ bool BackupGoal::update(phys::CarSim& car, const Vec3& target, float dt) {
     car.setInputs(0.0f, 1.0f, car.steering, 0.0f);
     if (car.speed() < 2.0f) {
         m_active = false;
-        car.stuck.impacted = false;
-        car.stuck.state = phys::Stuck::Idle;
+        car.stuck.reset();
         car.trans.setDrive();
         return false;
     }

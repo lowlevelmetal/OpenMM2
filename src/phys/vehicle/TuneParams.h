@@ -13,9 +13,8 @@ namespace mm2::phys {
 // (tune/vehicle/<car>.vehCarSim, .vehGyro, .vehStuck, .vehCarDamage,
 // .vehTrailer, .dgTrailerJoint). Field names match the files exactly.
 //
-// Defaults apply to fields a file does not set. The original constructor
-// defaults are unknown; ours are the most common value among the retail files
-// (see docs/physics.md), which is what a missing field most likely meant.
+// Defaults apply to fields a file does not set; they are the original
+// constructors' values (verified against the build 3393 code).
 
 struct AeroParams {
     Vec3 angCDamp{0, 0, 0};    // AngCDamp
@@ -27,63 +26,54 @@ struct AeroParams {
 
 struct EngineParams {
     float angInertia = 1.0f;      // AngInertia (kg m^2)
-    float maxHorsePower = 300.0f; // MaxHorsePower (hp)
-    float idleRPM = 750.0f;       // IdleRPM
-    float optRPM = 5800.0f;       // OptRPM: RPM of peak power
-    float maxRPM = 8500.0f;       // MaxRPM: rev limit, reference RPM for gear speeds
+    float maxHorsePower = 200.0f; // MaxHorsePower (hp)
+    float idleRPM = 750.0f;       // IdleRPM: clutch opens below it, engine-braking zero
+    float optRPM = 5000.0f;       // OptRPM: RPM of peak power, reference RPM for gear speeds
+    float maxRPM = 8000.0f;       // MaxRPM: rev limit
     float gcl = 0.25f;            // GCL: gear change lag (s), no torque after a shift
 };
 
 struct TransmissionParams {
-    // MM2 format.
     int manualNumGears = 7; // ManualNumGears: reverse + neutral + forward gears
     int autoNumGears = 6;   // AutoNumGears
-    float reverse = 30.0f;  // Reverse: reverse gear speed at MaxRPM (mph)
-    float low = 20.0f;      // Low: first gear speed at MaxRPM (mph)
-    float high = 90.0f;     // High: top gear speed at MaxRPM (mph)
-    float gearBias = 0.5f;  // GearBias: spacing of intermediate gears
+    float reverse = 20.0f;  // Reverse: reverse gear speed at OptRPM (mph)
+    float low = 20.0f;      // Low: first gear speed at OptRPM (mph)
+    float high = 75.0f;     // High: top gear speed at OptRPM (mph)
+    float gearBias = 0.5f;  // GearBias: pushes the intermediate gears towards High
     float upshiftBias = 0.05f;
     float downshiftBiasMin = 0.05f;
     float downshiftBiasMax = 0.3f;
-    float gearChangeTime = 0.8f; // GearChangeTime: minimum time between automatic shifts (s)
-
-    // Midtown Madness 1 format, still present in a few retail *_opp files:
-    // explicit ratios per gear slot (0 reverse, 1 neutral, 2.. forward).
-    bool hasExplicitRatios = false;
-    int numGears = 0;                    // NumGears
-    std::vector<float> gearRatios;       // GearRatios
-    std::vector<float> manualGearRatios; // ManualGearRatios
-    std::vector<float> upshiftRPM;       // UpshiftRPM
-    std::vector<float> downshiftRPM;     // DownshiftRPM
-    float downshiftBias = 1.55f;         // DownshiftBias (MM1 kickdown factor)
+    float gearChangeTime = 0.8f; // GearChangeTime: minimum time in gear before an automatic shift (s)
+    // Midtown Madness 1 fields (GearRatios, UpshiftRPM, ...) left in a few
+    // retail *_opp files are not read by MM2's vehTransmission.
 };
 
 struct DrivetrainParams {
-    float angInertia = 2000.0f;    // AngInertia (see kDrivetrainInertiaScale)
+    float angInertia = 5000.0f;    // AngInertia: damping of the wheel speed step (see Drivetrain)
     float brakeDynamicCoef = 1.0f; // BrakeDynamicCoef
     float brakeStaticCoef = 1.2f;  // BrakeStaticCoef
 };
 
 struct WheelParams {
-    float suspensionExtent = 0.2f;
-    float suspensionLimit = 0.1f;
-    float suspensionFactor = 1.0f;
+    float suspensionExtent = 0.2f; // droop travel (m)
+    float suspensionLimit = 0.1f;  // compression travel (m)
+    float suspensionFactor = 1.0f; // spring progression (>= 0.75)
     float suspensionDampCoef = 0.1f;
-    float steeringLimit = 0.4f;
-    float steeringOffset = 0.0f;
-    float brakeCoef = 0.6f;
-    float handbrakeCoef = 2.0f;
-    float camberLimit = 0.0f;
+    float steeringLimit = 0.39f; // rad at full lock
+    float steeringOffset = 0.0f; // Ackermann-style inner/outer difference
+    float brakeCoef = 1.0f;
+    float handbrakeCoef = 1.0f;
+    float camberLimit = -1.0f;
     float wobbleLimit = 0.0f;
-    float tireDispLimitLong = 0.125f;
+    float tireDispLimitLong = 0.075f;
     float tireDampCoefLong = 0.25f;
     float tireDragCoefLong = 0.02f;
-    float tireDispLimitLat = 0.125f;
+    float tireDispLimitLat = 0.075f;
     float tireDampCoefLat = 0.25f;
     float tireDragCoefLat = 0.05f;
-    float optimumSlipPercent = 0.15f;
-    float staticFric = 3.0f;
-    float slidingFric = 2.8f;
+    float optimumSlipPercent = 0.14f;
+    float staticFric = 2.0f;
+    float slidingFric = 1.9f;
 };
 
 struct AxleParams {
@@ -92,11 +82,14 @@ struct AxleParams {
 };
 
 struct CarSimParams {
-    float mass = 1000.0f;
-    Vec3 inertiaBox{2, 2, 4};
+    float mass = 2000.0f;
+    Vec3 inertiaBox{2, 1, 3};
+    // vehCarSim adds R * CenterOfGravity to the body position to get the
+    // model's origin, so the centre of mass sits at -CenterOfGravity in
+    // model space.
     Vec3 centerOfGravity{0, 0, 0};
-    float boundFriction = 0.5f;
-    float boundElasticity = 0.5f;
+    float boundFriction = 0.3f;
+    float boundElasticity = 0.2f;
     int drivetrainType = 0; // 0 rear, 1 front, 2 all-wheel drive
     float sssValue = 1.0f;
     float sssThreshold = 0.0f;
@@ -113,29 +106,32 @@ struct CarSimParams {
 };
 
 struct GyroParams {
-    float drift = 0.2f;
-    float spin180 = 0.8f;
-    float reverse180 = 2.617f;
+    float drift = 0.0f;
+    float spin180 = 0.0f;
+    float reverse180 = 0.0f;
+    float pitch = 0.0f;
+    float roll = 0.0f;
 };
 
 struct StuckParams {
     float turn = 1.57f;
-    float rotation = 0.0f;
+    float rotation = 0.39f;
     float translation = 0.1f;
-    float timeThresh = 2.0f;
+    float timeThresh = 0.3f;
     float posThresh = 1.25f;
     float moveThresh = 1.75f;
 };
 
 struct CarDamageParams {
-    float maxDamage = 300000.0f;
-    float medDamage = 150000.0f;
-    float impactThreshold = 1500.0f;
+    float maxDamage = 1000000.0f;
+    float medDamage = 500000.0f;
+    float impactThreshold = 100.0f;
     float regenerateRate = 0.0f;
-    Vec3 smokeOffset;
+    Vec3 smokeOffset{0.0f, 0.8f, -1.8f};
     Vec3 smokeOffset2;
-    float textelDamageRadius = 2.7f;
+    float textelDamageRadius = 0.4f;
     bool doublePivot = false;
+    bool mirrorPivot = false;
 };
 
 struct TrailerParams {

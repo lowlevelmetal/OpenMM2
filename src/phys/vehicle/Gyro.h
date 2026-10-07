@@ -6,20 +6,29 @@ namespace mm2::phys {
 
 class InertialCS;
 
-// vehGyro (MM2: Drift, Spin180, Reverse180). MM1's VehGyro was a different
-// helper (steer torque ~ v^2 and a self-righting "weeble" torque) and MM2's
-// behaviour is undocumented, so this is an OpenMM2 approximation and is
-// DISABLED by default (CarSim::Options::gyro). Inferred behaviour: while the
-// handbrake is held on the ground, yaw towards the steering at Spin180 turns
-// per second squared (Reverse180 radians when rolling backwards); while
-// sliding with throttle, Drift does the same with a smaller gain.
+// vehGyro (Midtown Madness 2), verified against the build 3393 code. Yaw
+// assists while all four wheels are on the ground: Drift turns the car with
+// the (speed-sensitive) steering in proportion to the drivetrain's speed;
+// with the handbrake, Spin180 (rolling forward) or Reverse180 (backwards)
+// adds a yaw torque. With the brake held in the air, Pitch and Roll level the
+// car.
 class Gyro {
 public:
     void configure(const GyroParams& p) { params = p; }
-    void update(InertialCS& ics, float dt, float steering, float handBrake, float throttle, float latSlip,
-                bool onGround);
+
+    struct Inputs {
+        float steering = 0;       // raw steering
+        float sssFactor = 1;      // vehCarSim::GetSSSFactor at the current speed
+        float drivetrainSpeed = 0; // primary drivetrain rad/s (negative forward)
+        float brake = 0;
+        float handbrake = 0;
+        int wheelsOnGround = 0;
+        int numWheels = 4;
+    };
+    void update(InertialCS& ics, const Inputs& in) const;
 
     GyroParams params;
+    bool enabled = true;
 };
 
 } // namespace mm2::phys

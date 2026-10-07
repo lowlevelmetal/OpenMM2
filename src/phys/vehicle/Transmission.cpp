@@ -1,135 +1,128 @@
-// Port of mmTransmission from Open1560 (https://github.com/0x1F9F1/Open1560),
-// GPL-3.0: code/midtown/game.asm, Midtown Madness 1 beta build 1560.
-// configure() for MM2-format files is an OpenMM2 adaptation (inferred).
+// vehTransmission from Midtown Madness 2 (ComputeConstants, GearRatioFromMPH,
+// Upshift, Downshift, Update, SetCurrentGear, SetForward), verified against
+// the build 3393 code (MM2Recomp). See docs/physics.md.
 
 #include "phys/vehicle/Transmission.h"
 
-#include "phys/Constants.h"
 #include "phys/vehicle/Engine.h"
 
-#include <algorithm>
 #include <cmath>
 
 namespace mm2::phys {
+namespace {
 
-void Transmission::configure(const TransmissionParams& p, const EngineParams& engine, float wheelRadius) {
-    // mmTransmission::mmTransmission defaults.
-    clutch = 1.0f;
-    numGears = 6;
-    gearRatios.fill(0.0f);
-    upshiftRPM.fill(6000.0f);
-    downshiftRPM.fill(2000.0f);
-    kickdownRPM.fill(0.0f);
-    manualGearRatios.fill(0.0f);
-    manualNumGears = 0;
-    isAutomatic = true;
-    downshiftBias = 1.55f;
-    gearChangeDelay = 0.0f;
+constexpr float kRpmToRad = 0.10471976f;
 
-    auto copyInto = [](std::array<float, kSlots>& dst, const std::vector<float>& src) {
-        for (std::size_t i = 0; i < dst.size() && i < src.size(); ++i)
-            dst[i] = src[i];
-    };
+// vehTransmission::GearRatioFromMPH: engine OptRPM over the wheel RPM at
+// `mph` (1609.344 m/mi * 1/60 min/s; 2 pi per turn).
+float gearRatioFromMph(float mph, float optRPM, float radius) {
+    const float metresPerMinute = 1609.344f * 0.016666668f;
+    return optRPM / ((metresPerMinute * mph) / (radius * 6.2831855f));
+}
 
-    if (p.hasExplicitRatios) {
-        // MM1 format: tables as given.
-        numGears = std::clamp(p.numGears > 0 ? p.numGears : 6, 3, kSlots);
-        copyInto(gearRatios, p.gearRatios);
-        copyInto(upshiftRPM, p.upshiftRPM);
-        copyInto(downshiftRPM, p.downshiftRPM);
-        copyInto(manualGearRatios, p.manualGearRatios);
-        manualNumGears = p.manualGearRatios.empty() ? 0 : std::clamp(p.manualNumGears, 3, kSlots);
-        downshiftBias = p.downshiftBias;
-        for (int g = 0; g < kSlots; ++g)
-            kickdownRPM[static_cast<std::size_t>(g)] =
-                downshiftBias * downshiftRPM[static_cast<std::size_t>(g)];
-    } else {
-        // MM2 format (inferred): Low/High/Reverse are gear speeds in mph at
-        // MaxRPM ("GearRatioFromMPH"); intermediate gears interpolate between
-        // linear and geometric spacing by GearBias.
-        const float radius = wheelRadius > 0.01f ? wheelRadius : 0.33f;
-        const float maxW = engine.maxRPM * 6.2831855f / 60.0f;
-        auto ratioFromMph = [&](float mph) {
-            const float speed = std::max(mph, 1.0f) / kMetersPerSecondToMph;
-            return maxW / (speed / radius);
-        };
-        auto build = [&](std::array<float, kSlots>& table, int slots) {
-            slots = std::clamp(slots, 3, kSlots);
-            table.fill(0.0f);
-            table[kReverse] = -ratioFromMph(p.reverse);
-            table[kNeutral] = 0.0f;
-            const int forward = slots - 2;
-            for (int i = 0; i < forward; ++i) {
-                const float t = forward > 1 ? static_cast<float>(i) / static_cast<float>(forward - 1) : 1.0f;
-                const float linear = p.low + (p.high - p.low) * t;
-                const float geometric = p.low > 0.0f ? p.low * std::pow(p.high / p.low, t) : linear;
-                table[static_cast<std::size_t>(kFirst + i)] =
-                    ratioFromMph(lerp(linear, geometric, p.gearBias));
-            }
-            return slots;
-        };
-        numGears = build(gearRatios, p.autoNumGears);
-        manualNumGears = build(manualGearRatios, p.manualNumGears);
-        // Shift points (inferred): up at MaxRPM * (1 - UpshiftBias); down
-        // when the next lower gear would turn at MaxRPM * (1 - bias), with
-        // DownshiftBiasMax normally and DownshiftBiasMin for kickdown.
-        for (int g = kFirst; g < kSlots; ++g) {
-            const auto gi = static_cast<std::size_t>(g);
-            upshiftRPM[gi] = engine.maxRPM * (1.0f - p.upshiftBias);
-            const float r = gearRatios[gi], rl = g > kFirst ? gearRatios[gi - 1] : 0.0f;
-            if (r > 0.0f && rl > 0.0f) {
-                downshiftRPM[gi] = engine.maxRPM * (1.0f - p.downshiftBiasMax) * (r / rl);
-                kickdownRPM[gi] = engine.maxRPM * (1.0f - p.downshiftBiasMin) * (r / rl);
-            } else {
-                downshiftRPM[gi] = 0.0f;
-                kickdownRPM[gi] = 0.0f;
-            }
+// Ratios for one box: reverse, neutral, Low ... High (geometric, biased).
+void fillRatios(std::array<float, Transmission::kSlots>& r, int n, const TransmissionParams& p, float optRPM,
+                float radius) {
+    r[0] = -gearRatioFromMph(p.reverse, optRPM, radius);
+    r[1] = 0.0f;
+    r[2] = gearRatioFromMph(p.low, optRPM, radius);
+    r[static_cast<std::size_t>(n - 1)] = gearRatioFromMph(p.high, optRPM, radius);
+    const int forward = n - 2;
+    if (2 < forward) {
+        const int m = forward - 1;
+        const float fm = static_cast<float>(m);
+        const float q = static_cast<float>(
+            std::pow(static_cast<double>(r[static_cast<std::size_t>(n - 1)] / r[2]), static_cast<double>(1.0f / fm)));
+        for (int i = 1; i < m; ++i) {
+            const float fi = static_cast<float>(i);
+            const float e = fi - ((static_cast<float>(i - m) * fi) * p.gearBias) / fm;
+            r[static_cast<std::size_t>(2 + i)] =
+                static_cast<float>(std::pow(static_cast<double>(q), static_cast<double>(e))) * r[2];
         }
-        gearChangeDelay = p.gearChangeTime;
     }
+}
 
-    // mmTransmission::Init: manual table defaults to the automatic one.
-    if (manualNumGears == 0) {
-        manualGearRatios = gearRatios;
-        manualNumGears = numGears;
+} // namespace
+
+void Transmission::configure(const TransmissionParams& p) {
+    params = p;
+    numGears = std::min(p.autoNumGears, kSlots);
+    manualNumGears = std::min(p.manualNumGears, kSlots);
+    // Constructor defaults until ComputeConstants: 30/i, 6000 / 2000 / 2000 rpm.
+    for (int i = 2; i < kSlots; ++i) {
+        gearRatios[static_cast<std::size_t>(i)] = manualGearRatios[static_cast<std::size_t>(i)] =
+            30.0f / static_cast<float>(i);
+        upshiftRPM[static_cast<std::size_t>(i)] = 6000.0f;
+        kickdownRPM[static_cast<std::size_t>(i)] = 2000.0f;
+        downshiftRPM[static_cast<std::size_t>(i)] = 2000.0f;
     }
+    gearRatios[0] = manualGearRatios[0] = -10.0f;
     reset();
 }
 
-void Transmission::reset() {
-    setCurrentGear(kFirst);
-    clutch = 1.0f;
-    timeInGear = 0.0f;
-}
-
-float Transmission::ratio(int gear) const {
-    const auto g = static_cast<std::size_t>(std::clamp(gear, 0, kSlots - 1));
-    return isAutomatic ? gearRatios[g] : manualGearRatios[g];
-}
-
-float Transmission::currentRatio() const {
-    return ratio(currentGear);
-}
-
-void Transmission::setCurrentGear(int gear) {
-    if (isAutomatic && gear >= numGears) {
-        currentGear = numGears - 1;
-        return;
+void Transmission::computeConstants(const Engine& engine, float radius) {
+    const int n = numGears;
+    fillRatios(gearRatios, n, params, engine.optRPM, radius);
+    // Shift points: the RPM where the next gear gives as much power.
+    for (int g = 2; g < n - 1; ++g) {
+        const float f = gearRatios[static_cast<std::size_t>(g + 1)] / gearRatios[static_cast<std::size_t>(g)];
+        float lo = engine.optRPM;
+        float hi = engine.maxRPM;
+        if (f * engine.optRPM < hi)
+            hi = engine.optRPM / f;
+        while (1.0f < hi - lo) {
+            const float mid = (hi + lo) * 0.5f;
+            const float w = mid * kRpmToRad;
+            if (engine.calcHPAtFullThrottle(w) < engine.calcHPAtFullThrottle(w * f))
+                hi = mid;
+            else
+                lo = mid;
+        }
+        const float x = (hi + lo) * 0.5f;
+        upshiftRPM[static_cast<std::size_t>(g)] = (params.upshiftBias + 1.0f) * x;
+        kickdownRPM[static_cast<std::size_t>(g + 1)] = (1.0f - params.downshiftBiasMin) * x * f;
+        downshiftRPM[static_cast<std::size_t>(g + 1)] = (1.0f - params.downshiftBiasMax) * x * f;
     }
+    upshiftRPM[static_cast<std::size_t>(n - 1)] = engine.maxRPM;
+    kickdownRPM[2] = 0.0f;
+    downshiftRPM[2] = 0.0f;
+    fillRatios(manualGearRatios, manualNumGears, params, engine.optRPM, radius);
+}
+
+void Transmission::reset() {
+    // vehTransmission::Reset: SetCurrentGear(2), then the time in gear cleared.
+    setCurrentGear(kFirst);
     timeInGear = 0.0f;
-    gearChanged = true;
-    currentGear = gear;
+}
+
+int Transmission::setCurrentGear(int gear) {
+    if (gear != currentGear && (!isAutomatic || gear < numGears)) {
+        timeInGear = 0.0f;
+        gearChanged = true;
+        currentGear = gear;
+    }
+    return currentGear;
 }
 
 int Transmission::upshift() {
-    if (!isAutomatic && currentGear != manualNumGears - 1)
+    if (!isAutomatic) {
+        if (currentGear < manualNumGears - 1)
+            setCurrentGear(currentGear + 1);
+    } else if (currentGear < 2) {
         setCurrentGear(currentGear + 1);
+    }
     return currentGear;
 }
 
 int Transmission::downshift() {
-    if (!isAutomatic && currentGear > 0)
-        setCurrentGear(currentGear - 1);
+    if (!isAutomatic) {
+        if (0 < currentGear)
+            setCurrentGear(currentGear - 1);
+    } else if (1 < currentGear) {
+        setCurrentGear(kNeutral);
+    } else if (0 < currentGear) {
+        setCurrentGear(kReverse);
+    }
     return currentGear;
 }
 
@@ -138,21 +131,22 @@ void Transmission::setDrive() {
         setCurrentGear(kFirst);
 }
 
-void Transmission::update(float dt, const Engine& engine, bool drivingDisabled) {
-    if (drivingDisabled)
+void Transmission::update(float dt, const Engine& engine, int wheelsOnGround) {
+    if (wheelsOnGround == 0)
         return;
     const int g = currentGear;
-    if (isAutomatic && g > kNeutral && timeInGear > gearChangeDelay) {
-        const auto gi = static_cast<std::size_t>(g);
-        const float rpm = engine.rpm;
-        if (rpm > upshiftRPM[gi] && g != numGears - 1 && !gearChanged) {
-            setCurrentGear(g + 1);
-        } else if (rpm < downshiftRPM[gi] && g != kFirst && !gearChanged) {
-            setCurrentGear(g - 1);
-        } else if (static_cast<double>(engine.throttle) > 0.8 && kickdownRPM[gi] > rpm && g != kFirst &&
-                   !gearChanged) {
-            setCurrentGear(g - 1);
+    if (isAutomatic && 1 < g && params.gearChangeTime < timeInGear && !gearChanged) {
+        int next = g;
+        if (numGears - 1 <= g || engine.rpm <= upshiftRPM[static_cast<std::size_t>(g)]) {
+            const float t = engine.throttle;
+            if (3 <= g && engine.rpm < t * kickdownRPM[static_cast<std::size_t>(g)] +
+                                           (1.0f - t) * downshiftRPM[static_cast<std::size_t>(g)])
+                next = g - 1;
+        } else {
+            next = g + 1;
         }
+        if (next != g)
+            setCurrentGear(next);
     }
     timeInGear = dt + timeInGear;
 }

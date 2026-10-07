@@ -1,6 +1,8 @@
-// Port of mmWheel from Open1560 (https://github.com/0x1F9F1/Open1560),
-// GPL-3.0: code/midtown/game.asm, Midtown Madness 1 beta build 1560.
-// init() maps MM2 tune fields onto MM1's (OpenMM2 adaptation, inferred).
+// vehWheel from Midtown Madness 2, verified against the build 3393 code
+// (MM2Recomp): ComputeConstants, SetNormalLoad, ComputeFriction, SetInputs,
+// CalcSuspensionForce, ComputeDwtdw, GetBumpDisplacement, Update and the
+// GetVisualDisp* helpers. Operation order and float32 arithmetic follow the
+// original. See docs/physics.md.
 
 #include "phys/vehicle/Wheel.h"
 
@@ -9,425 +11,638 @@
 #include "phys/World.h"
 
 #include <cmath>
+#include <cstdint>
 
 namespace mm2::phys {
 namespace {
 
-const Vec3 kYAxis{0.0f, 1.0f, 0.0f};
-const Vec3 kXAxis{1.0f, 0.0f, 0.0f};
-const Vec3 kZAxis{0.0f, 0.0f, 1.0f};
-
-// Moves a tyre displacement by `d` towards `target` without passing it; a
-// displacement already beyond the target in the direction of motion stays.
-float advanceDisp(float disp, float d, float target) {
-    if (d >= 0.0f) {
-        if (target <= disp)
-            return disp;
-        const float cand = d + disp;
-        return target < cand ? target : cand;
-    }
-    const float cand = d + disp;
-    if (target <= cand)
-        return cand;
-    return target < disp ? target : disp;
-}
+// The gravity vehWheel uses for its static loads (_DAT_005c6c1c).
+constexpr float kWheelGravity = -19.6f;
+// Probe start above the top of the suspension travel.
+constexpr float kProbeAbove = 0.3f;
+// Tyre displacement relaxation per metre of wheel travel while sliding.
+constexpr float kRelaxRate = 0.1f;
 
 float signOf(float v) {
-    return v < 0.0f ? -1.0f : 1.0f;
+    return v > 0.0f ? 1.0f : (v < 0.0f ? -1.0f : 0.0f);
+}
+
+std::uint32_t g_randSeed = 1;
+
+// Matrix34::MakeRotateY (3x3 only).
+void makeRotateY(Mat34& m, float a) {
+    const float c = std::cos(a);
+    const float s = std::sin(a);
+    m.m0 = {c, 0.0f, -s};
+    m.m1 = {0.0f, 1.0f, 0.0f};
+    m.m2 = {s, 0.0f, c};
+}
+
+// Matrix34::Rotate about a world-space axis (this = this * R).
+void rotateAbout(Mat34& m, const Vec3& axis, float angle) {
+    const Mat34 r = age::arbitraryRotation(axis, angle);
+    m.m0 = r.transformDir(m.m0);
+    m.m1 = r.transformDir(m.m1);
+    m.m2 = r.transformDir(m.m2);
 }
 
 } // namespace
 
-void Wheel::init(const WheelParams& p, const WheelGeometry& g, const Vec3& centerFromCg, float carMass,
-                 float gravity, int wheelCount, int wheelFlags) {
+float physFrand() {
+    // irand: MSVC rand(); frand = irand * 2^-15.
+    g_randSeed = g_randSeed * 214013u + 2531011u;
+    const int r = static_cast<int>((g_randSeed >> 16) & 0x7FFFu);
+    return static_cast<float>(r) * 3.0517578e-05f;
+}
+
+void Wheel::init(const WheelParams& p, const WheelGeometry& g, float m, bool withCar, float cgz, int wheelFlags) {
     *this = Wheel{};
+    params = p;
     flags = wheelFlags;
-    numWheels = wheelCount;
-    center = centerFromCg;
+    center = g.center;
     radius = g.radius;
     width = g.width;
-
-    // mmWheel::Init: NormalLoad = -(Mass * PHYS.Gravity / NumWheels).
-    const float G = -gravity;
-    normalLoad = -((carMass * G) / static_cast<float>(numWheels));
-
-    // MM2 -> MM1 mapping (inferred; see docs/physics.md).
-    suspensionLimit = p.suspensionLimit;
-    suspensionExtent = p.suspensionExtent;
-    renderableSuspensionLimit = p.suspensionLimit;
-    spring =
-        p.suspensionExtent > 0.0f ? p.suspensionFactor * normalLoad / p.suspensionExtent : normalLoad / 0.1f;
-    damping = p.suspensionDampCoef * spring;
-    steeringRatio = p.steeringLimit;
-    brakeRatio = p.brakeCoef;
-    handbrakeCoef = p.handbrakeCoef;
-    optimumSlipPercent = p.optimumSlipPercent > 0.0f ? p.optimumSlipPercent : 0.14f;
-    staticFric = p.staticFric;
-    slidingFric = p.slidingFric;
-    const float massShare = carMass / static_cast<float>(numWheels);
-    rubberSpring = p.tireDispLimitLong > 0.0f ? (staticFric * normalLoad) / p.tireDispLimitLong : 40000.0f;
-    rubberSpringLat =
-        p.tireDispLimitLat > 0.0f ? (staticFric * normalLoad) / p.tireDispLimitLat : rubberSpring;
-    rubberDamp = p.tireDampCoefLong * 2.0f * std::sqrt(rubberSpring * massShare);
-    rubberDampLat = p.tireDampCoefLat * 2.0f * std::sqrt(rubberSpringLat * massShare);
-    tireDragCoefLong = p.tireDragCoefLong;
-    tireDragCoefLat = p.tireDragCoefLat;
-    steeringOffset = p.steeringOffset;
-    camberLimit = p.camberLimit;
-    wobbleLimit = p.wobbleLimit;
-
-    // mmWheel::Init: lateral values default to the longitudinal ones.
-    if (rubberSpringLat == 0.0f)
-        rubberSpringLat = rubberSpring;
-    if (rubberDampLat == 0.0f)
-        rubberDampLat = rubberDamp;
+    mass = m;
+    hasCar = withCar;
+    cgZ = cgz;
     computeConstants();
     reset();
 }
 
+void Wheel::copyVars(const Wheel& o) {
+    params = o.params;
+    computeConstants();
+}
+
 void Wheel::computeConstants() {
-    // Friction curve -a s^2 + b s with peak StaticFric at s0; U2 is the slip
-    // where it has fallen to SlidingFric (larger root).
-    const float s0 = optimumSlipPercent;
-    const float sf = staticFric * fricMultiplier;
-    const float a = sf / (s0 * s0);
-    const float b = (sf + sf) / s0;
-    const float sl = slidingFric * fricMultiplier;
-    const float disc = b * b - (sl * a) * 4.0f;
-    const float q = std::sqrt(disc);
-    const float m2a = a * -2.0f;
-    const float r1 = (q - b) / m2a;
-    const float r2 = (-b - q) / m2a;
-    unkFriction1 = a;
-    unkFriction2 = r1 > r2 ? r1 : r2;
+    invOptSlip2 = 1.0f / (params.optimumSlipPercent * params.optimumSlipPercent);
+    const float z = center.z;
+    if (hasCar) {
+        setNormalLoad(-(kWheelGravity * mass) * (std::abs(z - cgZ) / (std::abs(z) + std::abs(z))) * 0.5f);
+        return;
+    }
+    const float az = std::abs(z);
+    setNormalLoad((-(mass * kWheelGravity) * az * 0.5f) / (az + az));
+}
+
+void Wheel::setNormalLoad(float load) {
+    normalLoad = load;
+    if (params.suspensionFactor < 0.75f)
+        params.suspensionFactor = 0.75f;
+    const float k = 1.0f / ((params.suspensionLimit + params.suspensionExtent) * params.suspensionExtent);
+    spring = (params.suspensionFactor * params.suspensionExtent + params.suspensionLimit) * k * load;
+    progressive = ((params.suspensionFactor - 1.0f) * k * load) / spring;
+    const float d = std::sqrt(spring * load) * params.suspensionDampCoef;
+    damping = d + d;
+    const float massShare = load / kWheelGravity; // negative
+    stiffLong = (load + load) / params.tireDispLimitLong;
+    const float dl = std::sqrt(stiffLong * -massShare) * params.tireDampCoefLong;
+    dampLong = dl + dl;
+    stiffLat = (load + load) / params.tireDispLimitLat;
+    const float dt = std::sqrt(stiffLat * -massShare) * params.tireDampCoefLat;
+    dampLat = dt + dt;
+    const float brake = params.staticFric * radius * load;
+    maxBrakeTorque = brake * params.brakeCoef;
+    maxHandbrakeTorque = brake * params.handbrakeCoef;
 }
 
 void Wheel::reset() {
-    tireResistance = 0.0f;
-    wobble = 0.0f;
-    rollingRotation = 0.0f;
-    rotation = 0.0f;
-    steering = 0.0f;
-    rotationSpeed = 0.0f;
-    currentTireDispLong = 0.0f;
-    currentTireDispLat = 0.0f;
     suspension = 0.0f;
-    longSlipPercent = 0.0f;
+    suspensionVelocity = 0.0f;
+    contactStiffness = 0.0f;
+    rotationSpeed = 0.0f;
+    brakeTorque = 0.0f;
+    steerAngle = 0.0f;
+    bumpPhase = 0.0f;
+    rotation = 0.0f;
+    currentTireDispLat = 0.0f;
+    currentTireDispLong = 0.0f;
     latSlipPercent = 0.0f;
-    hit = false;
+    longSlipPercent = 0.0f;
+    tireResistance = 0.0f;
+    tireGripLat = 0.0f;
+    tireGripLong = 0.0f;
+    suspensionForce = 0.0f;
+    currentLoad = 0.0f;
+    contactFrame = Mat34::identity();
+    slide = 0.0f;
+    skidding = false;
     onGround = false;
-    visualMatrix = Mat34::identity();
-    visualMatrix.m3 = center;
+    hit = false;
+    latVelocity = fwdVelocity = normalVelocity = slipVelocity = 0.0f;
+    bump = 0.0f;
+    drag = 0.0f;
+    friction = 1.0f;
+    depth = 0.0f;
+    bumpHeight = 0.0f;
+    bumpWidth = 0.0f;
+    camber = 0.0f;
+    wobble = 0.0f;
+    matrix = Mat34::identity();
+    matrix.m3 = center;
 }
 
-float Wheel::frictionForSlip(float slip, bool lateral) const {
+void Wheel::setInputs(float steer, float brake, float handbrake) {
+    const float a = -(steer * params.steeringLimit);
+    steerAngle = (1.0f - a * params.steeringOffset * signOf(center.x)) * a;
+    brakeTorque = handbrake * maxHandbrakeTorque + brake * maxBrakeTorque;
+    if (flags & kFixed)
+        brakeTorque = params.staticFric * currentLoad * friction * radius;
+}
+
+float Wheel::computeFriction(float slip, float& slideOut) const {
     const float s = std::abs(slip);
-    if (s >= unkFriction2)
-        return lateral ? fricMultiplier * slidingFric : slidingFric;
-    return s * (((optimumSlipPercent + optimumSlipPercent) - s) * unkFriction1);
+    const float fs = params.staticFric * friction;
+    const float fl = params.slidingFric * friction;
+    const float opt = params.optimumSlipPercent;
+    const float f = ((opt + opt) - s) * invOptSlip2 * fs * s;
+    if (s <= opt) {
+        slideOut = (s * 0.5f) / opt;
+        return f;
+    }
+    if (fl < f) {
+        slideOut = ((fs - f) + (f - fl) * 0.5f) / (fs - fl);
+        return f;
+    }
+    slideOut = 1.0f;
+    return fl;
 }
 
-bool Wheel::probe(const WheelEnv& env) {
-    // mmWheel::ComputeDwtdw, first half.
-    const float steer = -((steerMultiplier * steeringInput) * steeringRatio);
-    const Mat34& M = *env.frame;
-    const Vec3 wc = M.transform(center);
-    const Vec3& up = M.m1;
+void Wheel::calcSuspensionForce(float disp, bool contact, float cosNormal, const WheelEnv& env) {
+    const float prev = suspension;
+    bottomedOut = false;
+    const float droop = -params.suspensionExtent;
+    bool atDroop;
+    if (contact) {
+        suspension = disp;
+        atDroop = !(droop <= disp);
+        if (atDroop)
+            suspension = droop;
+    } else {
+        suspension = droop;
+        atDroop = true;
+    }
+    float rate = (suspension - prev) * env.invDt;
+    if (rate < -10.0f)
+        rate = -10.0f;
+    else if (10.0f <= rate)
+        rate = 10.0f;
+    suspensionVelocity = rate;
+    const float prog = progressive * suspension + 1.0f;
+    const float f = (rate * damping + suspension * spring) * prog + normalLoad;
+    suspensionForce = f;
+    if (f < 0.0f) {
+        // The wheel lifts off: relax the travel without pulling the body down.
+        suspensionForce = 0.0f;
+        const float d =
+            (prev * damping - env.dt * spring * params.suspensionExtent) / (env.dt * spring + damping);
+        suspension = d;
+        contactStiffness = 0.0f;
+        suspensionVelocity = (d - prev) * env.invDt;
+        return;
+    }
+    bool bottom = false;
+    float impulseForce = 0.0f;
+    float bottomStiffness = 0.0f;
+    if (suspension <= params.suspensionLimit) {
+        if (droop <= suspension) {
+            if (!atDroop) {
+                contactStiffness = prog * damping + (env.dt * spring) / cosNormal;
+                return;
+            }
+            contactStiffness = 0.0f;
+            return;
+        }
+        suspension = droop;
+    } else {
+        // Bottomed out: stop the closing velocity at the contact
+        // (phImpact::CalcCollisionNoFriction) and push the overlap out.
+        const Vec3& n = contactFrame.m1;
+        float j = 0.0f;
+        if (normalVelocity < 0.0f) {
+            Mat34 c;
+            env.ics->calcCMatrix(c, intersection.position);
+            const Vec3 cn = c.transformDir(n);
+            j = -(normalVelocity / cn.dot(n));
+        }
+        impulseForce = env.invDt * j * 0.25f;
+        bottomStiffness = -(impulseForce / normalVelocity);
+        const float over = (suspension - params.suspensionLimit) * cosNormal;
+        env.ics->applyPush({over * n.x, over * n.y, over * n.z});
+        bottomedOut = true;
+        suspension = params.suspensionLimit;
+        bottom = true;
+    }
+    rate = (suspension - prev) * env.invDt;
+    if (rate < -10.0f)
+        rate = -10.0f;
+    else if (10.0f < rate)
+        rate = 10.0f;
+    suspensionVelocity = rate;
+    suspensionForce = (rate * damping + suspension * spring) * (progressive * suspension + 1.0f) + normalLoad;
+    contactStiffness = 0.0f;
+    if (bottom) {
+        contactStiffness = bottomStiffness;
+        suspensionForce = impulseForce + suspensionForce;
+    }
+}
 
-    const float above = suspensionLimit + radius;
-    const float below = suspensionExtent + radius;
-    const Vec3 top{above * up.x + wc.x, above * up.y + wc.y, above * up.z + wc.z};
-    const Vec3 bottom{wc.x - below * up.x, wc.y - below * up.y, wc.z - below * up.z};
+float Wheel::bumpDisplacement(float speed, float dt) {
+    if (!material || material->height == 0.0f)
+        return 0.0f;
+    bumpPhase = (physFrand() + 0.618f) * dt * speed + bumpPhase;
+    bumpPhase = std::fmod(bumpPhase, material->width);
+    const float b = std::sin((bumpPhase * 6.2831855f) / material->width) * material->height;
+    return speed < 1.0f ? b * speed : b;
+}
+
+void Wheel::noContact() {
+    hit = false;
+}
+
+float Wheel::computeDwtdw(float net, const WheelEnv& env) {
+    // The steered wheel pivots about its inner edge.
+    Mat34 m;
+    if (params.steeringLimit == 0.0f) {
+        m = Mat34::identity();
+        m.m3 = center;
+    } else {
+        const float off = signOf(center.x) * width * 0.5f;
+        m.m3 = center;
+        makeRotateY(m, steerAngle);
+        m.m3.x = m.m3.x - off;
+        m.m3 = {off * m.m0.x + m.m3.x, off * m.m0.y + m.m3.y, off * m.m0.z + m.m3.z};
+    }
+    matrix = Mat34::mul(m, *env.frame);
+
+    const Vec3& up = matrix.m1;
+    const float above = params.suspensionLimit + kProbeAbove;
+    const float below = params.suspensionExtent + radius;
+    const Vec3 top{above * up.x + matrix.m3.x, above * up.y + matrix.m3.y, above * up.z + matrix.m3.z};
+    const Vec3 bottom{matrix.m3.x - below * up.x, matrix.m3.y - below * up.y, matrix.m3.z - below * up.z};
+    const float segLen = params.suspensionExtent + radius + above;
 
     hit = false;
+    float upDotN = 0.0f;
+    bool wall = false;
     RayHit isect;
     if (env.ground && env.ground->probe(top, bottom, isect)) {
         material = &env.ground->material(isect.material);
-        // mmCullCity::IsPolyWater: no support on water. MM2 marks deep water
-        // with a large material depth (deepwater: 100).
+        // OpenMM2: deep water (materials.mtl depth >= 1, e.g. deepwater 100)
+        // carries no wheel (inferred; see docs/physics.md).
         hit = material->depth < 1.0f;
     }
-    const Vec3& n = isect.normal;
-    if (!hit || ((n.y * n.y + n.z * n.z) + n.x * n.x) == 0.0f) {
-        hit = false;
-        return false;
+    if (hit) {
+        const Vec3& n = isect.normal;
+        upDotN = up.x * n.x + up.y * n.y + up.z * n.z;
+        const Vec3& r0 = matrix.m0;
+        Vec3 back{n.z * r0.y - n.y * r0.z, r0.z * n.x - r0.x * n.z, r0.x * n.y - r0.y * n.x};
+        const float b2 = back.z * back.z + back.y * back.y + back.x * back.x;
+        if (upDotN < 0.02f || b2 < 0.02f) {
+            hit = false;
+        } else {
+            const float inv = 1.0f / std::sqrt(b2);
+            back = {inv * back.x, inv * back.y, inv * back.z};
+            contactFrame.m3 = isect.position;
+            contactFrame.m1 = n;
+            contactFrame.m2 = back;
+            contactFrame.m0 = {back.z * n.y - n.z * back.y, back.x * n.z - back.z * n.x,
+                               back.y * n.x - back.x * n.y};
+            wall = !(0.001f <= std::abs(n.y));
+            intersection = isect;
+        }
     }
-    intersection = isect;
-
-    Mat34 sm = M;
-    age::rotate(sm, kYAxis, steer);
-
-    const InertialCS& ics = *env.ics;
-    const Vec3& vel = (flags & kUseLinearVelocity) ? ics.linearVelocity : ics.frameVelocity;
-    const Vec3& w = ics.angularVelocity;
-    const Vec3 r{isect.position.x - M.m3.x, isect.position.y - M.m3.y, isect.position.z - M.m3.z};
-    const Vec3 cv{(r.z * w.y - r.y * w.z) + vel.x, (r.x * w.z - r.z * w.x) + vel.y,
-                  (r.y * w.x - r.x * w.y) + vel.z};
-    const float vn = (n.x * cv.x + n.z * cv.z) + n.y * cv.y;
-    const Vec3 pv{cv.x - vn * n.x, cv.y - n.y * vn, cv.z - n.z * vn};
-    contactForwardVel = ((-sm.m2.x) * pv.x + (-sm.m2.y) * pv.y) + (-sm.m2.z) * pv.z;
-
-    // Suspension (MM2: wheels sink by the surface depth; inferred).
-    const float segLen = above + below;
-    const float dist = isect.t * segLen + material->depth;
-    const float oldSusp = suspension;
-    suspension = (suspensionLimit - radius * -2.0f) - dist;
-    float sv = (suspension - oldSusp) * env.invDt;
-    if (sv <= -3.0f)
-        sv = -3.0f;
-    else if (!(sv < 3.0f))
-        sv = 3.0f;
-    float load = (spring * suspension + damping * sv) + normalLoad;
-    if (load < 0.0f)
-        load = 0.0f;
-    suspensionVelocity = sv;
-    currentLoad = ((n.z * up.z + n.y * up.y) + n.x * up.x) * load;
-    // (MM1 also updates BlendedLoad here, used only by the discarded slope.)
-    return true;
-}
-
-float Wheel::computeLimits(float net, float& A, float& B, float& C, const WheelEnv& env) const {
-    // mmWheel::ComputeDwtdw, second half.
     if (!hit) {
-        A = 0.0f;
-        C = 0.0f;
-        B = (net < 0.0f ? -1.0f : 1.0f) * -1e10f;
-        return 0.0f;
+        calcSuspensionForce(-params.suspensionExtent, false, 0.0f, env);
+        currentLoad = suspensionForce;
+        if (0.0f < net)
+            return -1e10f;
+        return 0.0f <= net ? -0.0f : 1e10f;
     }
-    const float fwdVel = contactForwardVel;
 
-    // Wheel-speed limit for the drivetrain solver.
-    const float s0 = optimumSlipPercent;
-    const float rollRot = -(fwdVel / radius);
-    const float lo = age::rsubD(1.0, s0) * rollRot;
-    const float hi = age::subD(s0, -1.0) * rollRot;
+    const Vec3 v = env.ics->filteredVelocity(intersection.position, env.invDt);
+    const Mat34& cf = contactFrame;
+    latVelocity = v.x * cf.m0.x + v.y * cf.m0.y + v.z * cf.m0.z;
+    fwdVelocity = -cf.m2.x * v.x + -cf.m2.y * v.y + -cf.m2.z * v.z;
+    normalVelocity = v.x * cf.m1.x + v.y * cf.m1.y + v.z * cf.m1.z;
+    slipVelocity = (flags & kFixed) ? fwdVelocity : rotationSpeed * radius + fwdVelocity;
+
+    // Surface: bumps, drag, friction, sinking into soft ground while skidding.
+    bump = bumpDisplacement(std::sqrt(latVelocity * latVelocity + fwdVelocity * fwdVelocity), env.dt);
+    drag = material->drag;
+    friction = material->friction;
+    const float sinkTo = skidding ? material->depth : 0.0f;
+    const float sinkRate = std::abs(rotationSpeed) * radius * kRelaxRate;
+    if (depth < sinkTo) {
+        depth = sinkRate * env.dt + depth;
+        if (sinkTo < depth)
+            depth = sinkTo;
+    } else if (sinkTo < depth) {
+        depth = depth - sinkRate * env.dt;
+        if (depth < sinkTo)
+            depth = sinkTo;
+    }
+    bumpHeight = material->height;
+    bumpWidth = material->width;
+    if (wall)
+        friction = 0.0f;
+    friction = env.weatherFriction * friction;
+    if (env.hasCar && friction < 1.0f) {
+        if (1.0f <= env.carFrictionHandling)
+            friction = (1.0f / env.carFrictionHandling) * friction;
+        else
+            friction = (1.0f - env.carFrictionHandling) * (1.0f - friction) + friction;
+    }
+
+    calcSuspensionForce((above + radius) - ((segLen * intersection.t - bump) + depth), true, upDotN, env);
+    currentLoad = suspensionForce;
+
+    // Breakpoint: the wheel speed where the long slip reaches the optimum.
+    // (The original also computes a tyre slope here and then discards it.)
+    const float opt = params.optimumSlipPercent;
+    const float w0 = -(fwdVelocity / radius);
+    const float lo = (1.0f - opt) * w0;
+    const float hi = (opt + 1.0f) * w0;
     float c = longSlipPercent;
-    if (c <= -s0)
-        c = -s0;
-    else if (!(c < s0))
-        c = s0;
-    const float target = age::rsubD(1.0, c) * rollRot;
-    float nearV, farV;
-    if (lo > hi) {
-        nearV = rollRot <= target ? target : rollRot;
-        farV = rollRot < target ? rollRot : target;
+    if (c < -opt)
+        c = -opt;
+    else if (opt < c)
+        c = opt;
+    const float t = (1.0f - c) * w0;
+    float inner, outer;
+    if (lo <= hi) {
+        inner = w0 < t ? w0 : t;
+        outer = w0 <= t ? t : w0;
     } else {
-        nearV = rollRot < target ? rollRot : target;
-        farV = rollRot <= target ? target : rollRot;
+        inner = t < w0 ? w0 : t;
+        outer = t <= w0 ? t : w0;
     }
     const float rot = rotationSpeed;
-    if (net < 0.0f) {
-        if (fwdVel > 0.0f) {
-            if (!(farV < rot))
-                B = farV;
-            else
-                B = rot > lo ? 1e11f : lo;
+    if (0.0f <= net) {
+        if (fwdVelocity <= 0.0f) {
+            if (outer <= rot)
+                return outer;
+            if (lo <= rot)
+                return lo;
         } else {
-            if (!(rot > nearV))
-                B = nearV;
-            else
-                B = rot > hi ? 1e11f : hi;
+            if (inner <= rot)
+                return inner;
+            if (hi <= rot)
+                return hi;
         }
+        return -1e11f;
+    }
+    if (fwdVelocity <= 0.0f) {
+        if (rot <= inner)
+            return inner;
+        if (rot <= hi)
+            return hi;
     } else {
-        if (fwdVel > 0.0f) {
-            if (!(rot < nearV))
-                B = nearV;
-            else
-                B = rot < hi ? -1e11f : hi;
-        } else {
-            if (!(farV > rot))
-                B = farV;
-            else
-                B = rot < lo ? -1e11f : lo;
-        }
+        if (rot <= outer)
+            return outer;
+        if (rot <= lo)
+            return lo;
     }
-    // Tyre torque slope d(TireResistance)/d(w). MM1 computes
-    //     min(R^2 (RubberSpring + RubberDamp / dt),
-    //         R^2 / |V| * StaticFric * FricMultiplier * 2 / s0 * BlendedLoad)
-    // and then discards it (stores 0 to A and C and returns 0). The first
-    // term is a torque per radian, not per rad/s: one sample moves the tyre
-    // displacement by R dw dt, so update()'s TireResistance = R (-RubberSpring
-    // disp - RubberDamp ddisp/dt) changes by R^2 (RubberSpring dt +
-    // RubberDamp) per rad/s while the displacement is below its friction
-    // limit. Used as written, the drivetrain's dt D added R^2 (RubberSpring dt
-    // + RubberDamp) of inertia per wheel, which does not vanish as dt -> 0
-    // (an earlier OpenMM2 did that, and the stiff *_opp tyres launched at a
-    // tenth of the expected rate).
-    // OpenMM2: the exact per-sample slope, R^2 (RubberSpring dt + RubberDamp).
-    // The friction-curve term is not used: with MM1's BlendedLoad for car
-    // wheels (0.5 CurrentLoad + 0.5 * 0.25, OtherNormalLoad never being set)
-    // it undercuts that slope above walking pace, the step turns partly
-    // explicit again and the stiff *_opp tyres chatter at 60 Hz (vppanoz_opp
-    // then passes its rev-limited top speed by 40 mph). See docs/physics.md.
-    const float slope = ((env.dt * rubberSpring) + rubberDamp) * radius * radius;
-    A = slope;
-    C = 0.0f;
-    return slope;
+    return 1e11f;
 }
 
-float Wheel::surfaceFriction(const WheelEnv& env) const {
-    float f = material ? material->friction : 1.0f;
-    if (!env.indoors)
-        f = env.weatherFriction * f;
-    if (f < 1.0f) {
-        if (env.carFrictionHandling < 1.0f)
-            f = f - (env.carFrictionHandling - 1.0f) * (1.0f - f);
-        else
-            f = (1.0f / env.carFrictionHandling) * f;
-    }
-    return f;
-}
-
-float Wheel::predictTireResistance(const WheelEnv& env) const {
-    // The longitudinal half of update() at the current wheel speed, without
-    // storing anything.
-    if (!hit)
-        return 0.0f;
-    const float fwdVel = contactForwardVel;
-    const float slipVel = rotationSpeed * radius + fwdVel;
-    float longSlip;
-    if (slipVel == 0.0f)
-        longSlip = 0.0f;
-    else if (!(std::abs(fwdVel) < std::abs(slipVel)))
-        longSlip = slipVel / std::abs(fwdVel);
-    else
-        longSlip = signOf(slipVel);
-    const float load = currentLoad > normalLoad ? currentLoad : normalLoad;
-    const float muLong = frictionForSlip(longSlip, false) * env.longSlideMultiplier;
-    const float longTarget =
-        ((((muLong * load) * env.longSlideMultiplier) * surfaceFriction(env)) / rubberSpring) *
-        signOf(slipVel);
-    const float disp = advanceDisp(currentTireDispLong, env.dt * slipVel, longTarget);
-    const float grip = -(disp * rubberSpring) - (env.invDt * (disp - currentTireDispLong)) * rubberDamp;
-    return grip * radius;
-}
-
-void Wheel::update(InertialCS& ics, const WheelEnv& env) {
-    steering = -((steeringInput * steeringRatio) * steerMultiplier);
-    const Mat34& M = *env.frame;
+void Wheel::update(const WheelEnv& env) {
+    InertialCS& ics = *env.ics;
     const float dt = env.dt;
-
-    float fwdVel = 0.0f;
-    if (hit) {
-        const RayHit& isect = intersection;
-        position = isect.position;
-        onGround = true;
-        const Vec3 suspF{ics.matrix.m1.x * currentLoad, ics.matrix.m1.y * currentLoad,
-                         ics.matrix.m1.z * currentLoad};
-
-        Mat34 sm = M;
-        age::rotate(sm, kYAxis, steering);
-
-        const Vec3& vel = (flags & kUseLinearVelocity) ? ics.linearVelocity : ics.frameVelocity;
-        const Vec3& w = ics.angularVelocity;
-        const Vec3 r{isect.position.x - M.m3.x, isect.position.y - M.m3.y, isect.position.z - M.m3.z};
-        const Vec3 cv{(r.z * w.y - r.y * w.z) + vel.x, (r.x * w.z - w.x * r.z) + vel.y,
-                      (w.x * r.y - r.x * w.y) + vel.z};
-        rollingRotation = ((cv.x * sm.m2.x + cv.y * sm.m2.y) + cv.z * sm.m2.z) / -radius;
-
-        const Vec3& n = isect.normal;
-        const float vn = (n.y * cv.y + n.z * cv.z) + n.x * cv.x;
-        const Vec3 pv{cv.x - n.x * vn, cv.y - n.y * vn, cv.z - n.z * vn};
-        planeVelocity = pv;
-
-        friction = surfaceFriction(env);
-
-        const float latVel = (pv.x * sm.m0.x + pv.z * sm.m0.z) + pv.y * sm.m0.y;
-        const Vec3 fwd{-sm.m2.x, -sm.m2.y, -sm.m2.z};
-        fwdVel = (pv.z * fwd.z + pv.y * fwd.y) + pv.x * fwd.x;
-        const float slipVel = rotationSpeed * radius + fwdVel;
-
-        if (latVel == 0.0f)
-            latSlipPercent = 0.0f;
-        else if (std::abs(latVel) <= std::abs(fwdVel))
-            latSlipPercent = latVel / std::abs(fwdVel);
-        else
-            latSlipPercent = signOf(latVel);
-
-        if (slipVel == 0.0f)
-            longSlipPercent = 0.0f;
-        else if (!(std::abs(fwdVel) < std::abs(slipVel)))
-            longSlipPercent = slipVel / std::abs(fwdVel);
-        else
-            longSlipPercent = signOf(slipVel);
-
-        const float load = currentLoad > normalLoad ? currentLoad : normalLoad;
-
-        const float muLat = frictionForSlip(latSlipPercent, true);
-        const float latTarget = (((muLat * load) * friction) / rubberSpringLat) * signOf(latVel);
-        const float muLong = frictionForSlip(longSlipPercent, false) * env.longSlideMultiplier;
-        const float longTarget =
-            ((((muLong * load) * env.longSlideMultiplier) * friction) / rubberSpring) * signOf(slipVel);
-
-        const float dLat = dt * latVel;
-        const float dLong = dt * slipVel;
-        const float oldLong = currentTireDispLong;
-        const float oldLat = currentTireDispLat;
-
-        currentTireDispLat = advanceDisp(currentTireDispLat, dLat, latTarget);
-        float v = 0.0f;
-        if (signOf(dLat) == signOf(latTarget)) {
-            const float at = std::abs(latTarget), ad = std::abs(dLat);
-            v = (at < ad ? at : ad) * signOf(latTarget);
-        }
-        const float realism = env.realism;
-        const float latRate = (currentTireDispLat - oldLat) * realism + (1.0f - realism) * v;
-
-        currentTireDispLong = advanceDisp(currentTireDispLong, dLong, longTarget);
-
-        tireGripLat = -(currentTireDispLat * rubberSpringLat) - (env.invDt * latRate) * rubberDampLat;
-        tireGripLong = -(currentTireDispLong * rubberSpring) -
-                       (env.invDt * (currentTireDispLong - oldLong)) * rubberDamp;
-        tireResistance = tireGripLong * radius;
-
-        Vec3 force{(tireGripLat * sm.m0.x - tireGripLong * sm.m2.x) + suspF.x,
-                   (tireGripLat * sm.m0.y - tireGripLong * sm.m2.y) + suspF.y,
-                   (tireGripLat * sm.m0.z - tireGripLong * sm.m2.z) + suspF.z};
-
-        // MM2 rolling and scrub drag (TireDragCoefLong/Lat, material drag):
-        // inferred, applied straight to the body so the wheel spin solver is
-        // unaffected. Faded in below 0.5 m/s to avoid chatter at rest.
-        if (tireDragCoefLong != 0.0f || tireDragCoefLat != 0.0f || (material && material->drag != 0.0f)) {
-            const float matDrag = material ? material->drag : 0.0f;
-            const float longDrag = (tireDragCoefLong + matDrag) * load *
-                                   clampf(std::abs(fwdVel) * 2.0f, 0.0f, 1.0f) * signOf(fwdVel);
-            const float latDrag =
-                tireDragCoefLat * load * clampf(std::abs(latVel) * 2.0f, 0.0f, 1.0f) * signOf(latVel);
-            force -= fwd * longDrag;
-            force -= sm.m0 * latDrag;
-        }
-
-        if (static_cast<double>(brakingInput) > 0.5) {
-            skidVelocity = cv;
-        } else {
-            const float lv = (cv.x * sm.m0.x + cv.y * sm.m0.y) + cv.z * sm.m0.z;
-            skidVelocity = sm.m0 * lv;
-        }
-        ics.applyForce(force, isect.position);
-    } else {
+    if (!hit) {
         onGround = false;
+        slide = 0.0f;
+        skidding = false;
         currentTireDispLat = 0.0f;
         currentTireDispLong = 0.0f;
-        suspension = -suspensionExtent;
         tireResistance = 0.0f;
         tireGripLat = 0.0f;
         tireGripLong = 0.0f;
+    } else {
+        onGround = true;
+        position = intersection.position;
+        const Mat34& cf = contactFrame;
+        const Vec3& n = cf.m1;
+        if (0.0f < contactStiffness) {
+            // The suspension's stiffness for the body's implicit step.
+            const float c = contactStiffness;
+            const Vec3 cn{c * n.x, c * n.y, c * n.z};
+            Mat34 k;
+            k.m0 = {cn.x * n.x, cn.x * n.y, cn.x * n.z};
+            k.m1 = {cn.x * n.y, cn.y * n.y, cn.y * n.z};
+            k.m2 = {cn.x * n.z, cn.y * n.z, cn.z * n.z};
+            k.m3 = {};
+            Vec3 f;
+            if (params.suspensionLimit <= suspension) {
+                f = {};
+            } else {
+                const float s = spring * suspensionVelocity * dt;
+                f = {s * n.x, s * n.y, s * n.z};
+            }
+            ics.applyContactForce(f, intersection.position, k);
+        }
+
+        const float wr = rotationSpeed * radius;
+        if (latVelocity == 0.0f)
+            latSlipPercent = 0.0f;
+        else if (std::abs(fwdVelocity) < std::abs(latVelocity))
+            latSlipPercent = signOf(latVelocity);
+        else
+            latSlipPercent = latVelocity / std::abs(fwdVelocity);
+        slipVelocity = (flags & kFixed) ? fwdVelocity : wr + fwdVelocity;
+        if (slipVelocity == 0.0f)
+            longSlipPercent = 0.0f;
+        else if (std::abs(fwdVelocity) < std::abs(slipVelocity))
+            longSlipPercent = signOf(slipVelocity);
+        else
+            longSlipPercent = slipVelocity / std::abs(fwdVelocity);
+
+        // Displacement at which the force reaches one unit of friction.
+        const float unitLong = (signOf(slipVelocity) * currentLoad) / stiffLong;
+        const float unitLat = (signOf(latVelocity) * currentLoad) / stiffLat;
+        const float stepLat = dt * latVelocity;
+        const float stepLong = dt * slipVelocity;
+        const float peak = params.staticFric * friction;
+        const float opt = params.optimumSlipPercent;
+
+        // Longitudinal friction and displacement limit.
+        float slideLong = 0.0f;
+        float muLong = peak;
+        float limitLong = peak * unitLong;
+        bool computeLong = std::abs(longSlipPercent) <= opt;
+        if (!computeLong) {
+            if (stepLong <= 0.0f)
+                computeLong = currentTireDispLong <= limitLong || stepLong < limitLong - currentTireDispLong;
+            else
+                computeLong = limitLong <= currentTireDispLong || limitLong - currentTireDispLong < stepLong;
+        }
+        if (computeLong) {
+            muLong = computeFriction(longSlipPercent, slideLong);
+            limitLong = muLong * unitLong;
+        }
+        // Lateral.
+        float slideLat = 0.0f;
+        float muLat = peak;
+        float limitLat = peak * unitLat;
+        bool computeLat = std::abs(latSlipPercent) <= opt;
+        if (!computeLat) {
+            if (stepLat <= 0.0f)
+                computeLat = currentTireDispLat <= limitLat || stepLat < limitLat - currentTireDispLat;
+            else
+                computeLat = limitLat <= currentTireDispLat || limitLat - currentTireDispLat < stepLat;
+        }
+        if (computeLat) {
+            muLat = computeFriction(latSlipPercent, slideLat);
+            limitLat = muLat * unitLat;
+        }
+
+        // Combined slip: the direction slipping more sets the friction.
+        float maxSlip = std::abs(longSlipPercent);
+        bool longDominates = true;
+        if (maxSlip < latSlipPercent) {
+            maxSlip = latSlipPercent;
+            longDominates = false;
+        } else if (maxSlip < -latSlipPercent) {
+            maxSlip = -latSlipPercent;
+            longDominates = false;
+        }
+        float mu = peak;
+        if (opt <= maxSlip) {
+            if (longDominates) {
+                mu = muLong;
+                if (muLong < muLat)
+                    limitLat = muLong * unitLat;
+            } else {
+                mu = muLat;
+                if (muLat < muLong)
+                    limitLong = muLat * unitLong;
+            }
+        }
+
+        // Advance the displacements; past the limit they relax towards it.
+        const float relax = std::abs(wr) * dt * kRelaxRate;
+        float rateLong = stepLong;
+        bool gripLong;
+        {
+            float d = stepLong + currentTireDispLong;
+            if (stepLong < 0.0f) {
+                if (limitLong > d) {
+                    d = relax + currentTireDispLong;
+                    if (limitLong < d)
+                        d = limitLong;
+                    gripLong = false;
+                    rateLong = 0.0f;
+                } else {
+                    gripLong = true;
+                }
+            } else if (limitLong < d) {
+                d = currentTireDispLong - relax;
+                if (d < limitLong)
+                    d = limitLong;
+                gripLong = false;
+                rateLong = 0.0f;
+            } else {
+                gripLong = true;
+            }
+            currentTireDispLong = d;
+        }
+        float rateLat = stepLat;
+        bool gripLat;
+        {
+            float d = stepLat + currentTireDispLat;
+            if (stepLat < 0.0f) {
+                if (limitLat > d) {
+                    d = relax + currentTireDispLat;
+                    if (limitLat < d)
+                        d = limitLat;
+                    gripLat = false;
+                    rateLat = 0.0f;
+                } else {
+                    gripLat = true;
+                }
+            } else if (limitLat < d) {
+                d = currentTireDispLat - relax;
+                if (d < limitLat)
+                    d = limitLat;
+                gripLat = false;
+                rateLat = 0.0f;
+            } else {
+                gripLat = true;
+            }
+            currentTireDispLat = d;
+        }
+        tireGripLat = -(currentTireDispLat * stiffLat) - rateLat * env.invDt * dampLat;
+        tireGripLong = -(stiffLong * currentTireDispLong) - rateLong * env.invDt * dampLong;
+
+        // Friction circle.
+        const float f2 = tireGripLong * tireGripLong + tireGripLat * tireGripLat;
+        const float limit2 = mu * currentLoad * mu * currentLoad;
+        if (limit2 < f2) {
+            if ((!gripLong && opt < std::abs(longSlipPercent)) || (!gripLat && opt < std::abs(latSlipPercent))) {
+                // Sliding: the force opposes the slip velocity.
+                const float k =
+                    -std::sqrt(limit2 / (latVelocity * latVelocity + slipVelocity * slipVelocity));
+                tireGripLat = k * latVelocity;
+                tireGripLong = k * slipVelocity;
+            } else {
+                tireGripLat = std::sqrt(limit2 / f2) * tireGripLat;
+                tireGripLong = std::sqrt(limit2 / f2) * tireGripLong;
+            }
+        }
+        if (gripLong)
+            slide = gripLat ? 0.0f : slideLat;
+        else if (gripLat)
+            slide = slideLong;
+        else
+            slide = slideLat <= slideLong ? slideLong : slideLat;
+        skidding = 0.5f < slide;
+        tireResistance = tireGripLong * radius;
+
+        // Tyre forces, surface drag (quadratic in the contact velocity, scaled
+        // by TireDragCoef and the material's drag; sinking adds to it) and the
+        // suspension force.
+        const float dragLat =
+            -(std::abs(latVelocity) * params.tireDragCoefLat * currentLoad * latVelocity * drag);
+        const float dragLong = -((depth + 1.0f) * -(std::abs(fwdVelocity) * params.tireDragCoefLong *
+                                                    currentLoad * drag * fwdVelocity));
+        const float back = -tireGripLong;
+        const Vec3 force{dragLong * cf.m2.x + dragLat * cf.m0.x + back * cf.m2.x + tireGripLat * cf.m0.x +
+                             suspensionForce * cf.m1.x,
+                         dragLong * cf.m2.y + dragLat * cf.m0.y + back * cf.m2.y + tireGripLat * cf.m0.y +
+                             suspensionForce * cf.m1.y,
+                         dragLong * cf.m2.z + dragLat * cf.m0.z + back * cf.m2.z + tireGripLat * cf.m0.z +
+                             suspensionForce * cf.m1.z};
+        ics.applyForce(force, intersection.position);
     }
 
-    // Visual matrix (relative to the car's CG frame).
+    // Visual state: camber, spin, the wheel lowered by its displacement less
+    // the tyre squash.
+    if (0.0f < params.camberLimit)
+        camber = signOf(center.x) * suspension * params.camberLimit;
     rotation = dt * rotationSpeed + rotation;
-    visualMatrix = Mat34::identity();
-    age::rotate(visualMatrix, kZAxis, wobble);
-    age::rotate(visualMatrix, kXAxis, rotation);
-    if (!(flags & kHandbrake))
-        age::rotate(visualMatrix, kYAxis, steering);
-    float s = suspension;
-    if (s <= -suspensionExtent)
-        s = -suspensionExtent;
-    else if (!(s < renderableSuspensionLimit))
-        s = renderableSuspensionLimit;
-    visualMatrix.m3 = {center.x - age::mulD(currentTireDispLat, 0.01), center.y + s,
-                       center.z - age::mulD(currentTireDispLong, -0.01)};
+    const float d = suspension - visualDispVert();
+    matrix.m3 = {d * matrix.m1.x + matrix.m3.x, d * matrix.m1.y + matrix.m3.y, d * matrix.m1.z + matrix.m3.z};
+    rotateAbout(matrix, matrix.m0, rotation);
+    if (wobble != 0.0f)
+        rotateAbout(matrix, matrix.m2, wobble);
+}
+
+float Wheel::visualDispVert() const {
+    const float d = (radius * 0.05f * suspensionForce) / normalLoad;
+    if (d < 0.0f)
+        return 0.0f;
+    const float m = radius * 0.3f;
+    return d <= m ? d : m;
+}
+
+float Wheel::visualDispLat() const {
+    const float l = params.tireDispLimitLat;
+    return currentTireDispLat < -l ? -l : (l < currentTireDispLat ? l : currentTireDispLat);
+}
+
+float Wheel::visualDispLong() const {
+    const float l = params.tireDispLimitLong;
+    return currentTireDispLong < -l ? -l : (l < currentTireDispLong ? l : currentTireDispLong);
 }
 
 } // namespace mm2::phys

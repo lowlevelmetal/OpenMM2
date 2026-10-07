@@ -13,19 +13,19 @@ struct PedalInput {
 };
 
 // Maps pedals onto a CarSim, including the automatic gearbox's reverse
-// handling. Ported from MM1's mmGame::UpdateSteeringBrakes and
-// mmInput::SwapThrottle (Open1560): with an automatic gearbox, holding the
-// brake (> AutoRevLevel) with no throttle (< 0.1) below AutoRevSpeed toggles
-// between drive and reverse and swaps the pedals, so the brake pedal drives
-// backwards and the accelerator brakes.
+// handling (MM2's mmGame::UpdateSteeringBrakes and mmInput's pedal swap):
+// with an automatic gearbox, in a forward gear below AutoRevSpeed, holding
+// the brake (> AutoRevLevel) with no throttle (< 0.1) selects reverse and
+// swaps the pedals, so the brake pedal drives backwards; in reverse, a
+// throttle (brake pedal) below AutoRevLevel returns to drive.
 class ArcadeControls {
 public:
     void apply(CarSim& car, const PedalInput& in);
     void reset() { swapThrottle = false; }
 
     bool autoReverse = true;   // mmInput +0x194
-    float autoRevLevel = 0.8f; // mmGame::AutoRevLevel
-    float autoRevSpeed = 5.0f; // mmGame::AutoRevSpeed (m/s)
+    float autoRevLevel = 0.8f; // mmGame +0x68
+    float autoRevSpeed = 5.0f; // mmGame +0x6c (m/s, vehCarSim's forward speed)
     bool swapThrottle = false; // mmInput::SwapThrottle
 };
 

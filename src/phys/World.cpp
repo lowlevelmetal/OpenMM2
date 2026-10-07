@@ -1,6 +1,7 @@
 #include "phys/World.h"
 
 #include <algorithm>
+#include <cmath>
 
 // Collision detection and response in this file are OpenMM2 code, not a port:
 // the Angel engine's own collision (mmBoundTemplate / asBound::Impact in MM1,
@@ -103,9 +104,10 @@ int World::advanceFixed(float frameDelta, float sampleStep, int maxSamples) {
 }
 
 int World::advanceOversampled(float frameDelta, float sampleStep, int maxSamples) {
-    int n = 1;
-    if (frameDelta >= sampleStep)
-        n = std::min(static_cast<int>(frameDelta / sampleStep) + 1, maxSamples);
+    // dgPhysManager::Update. (At least one sample: OpenMM2 guard for frames
+    // under a millisecond.)
+    int n = static_cast<int>(std::ceil(static_cast<double>((frameDelta - 0.001f) / sampleStep)));
+    n = std::max(1, std::min(n, maxSamples));
     const float dt = frameDelta / static_cast<float>(n);
     for (int i = 0; i < n; ++i)
         step(dt);

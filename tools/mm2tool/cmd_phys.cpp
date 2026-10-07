@@ -197,14 +197,12 @@ struct RunOptions {
     // "mesh" (TRAILER mesh box centre, MM1's choice) or "x,y,z".
     std::string trailerCg = "origin";
     bool noTrailer = false;
-    bool mm1Spin = false; // CarSimOptions::mm1ExplicitSpin
 };
 
 RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptions& opt) {
     World world = makeTestWorld(fs);
     CarSim sim;
     CarSimOptions simOptions;
-    simOptions.mm1ExplicitSpin = opt.mm1Spin;
     sim.init(car.params, car.geometry, simOptions);
     sim.setStuckParams(car.stuck);
     sim.setGyroParams(car.gyro);
@@ -302,12 +300,12 @@ RunResult runCar(const vfs::FileSystem& fs, const LoadedCar& car, const RunOptio
                             "       trailer wheel centre ({:.2f} {:.2f} {:.2f}) r {:.3f} hit {} susp {:6.3f} "
                             "load {:7.0f} rot {:8.2f} roll {:8.2f} dLat {:7.4f} gLat {:7.0f}",
                             w.center.x, w.center.y, w.center.z, w.radius, w.hit, w.suspension, w.currentLoad,
-                            w.rotationSpeed, w.rollingRotation, w.currentTireDispLat, w.tireGripLat);
+                            w.rotationSpeed, -(w.fwdVelocity / w.radius), w.currentTireDispLat, w.tireGripLat);
                 for (const auto& w : sim.wheels)
                     std::println(
-                        "       hit {} susp {:6.3f} load {:7.0f} rot {:8.2f} roll {:8.2f} dLong {:7.4f} "
-                        "gLong {:7.0f} dLat {:7.4f} gLat {:7.0f} sl {:5.2f}",
-                        w.hit, w.suspension, w.currentLoad, w.rotationSpeed, w.rollingRotation,
+                        "       centre ({:5.2f} {:5.2f} {:5.2f}) hit {} susp {:6.3f} load {:7.0f} rot {:8.2f} "
+                        "roll {:8.2f} dLong {:7.4f} gLong {:7.0f} dLat {:7.4f} gLat {:7.0f} sl {:5.2f}",
+                        w.center.x, w.center.y, w.center.z, w.hit, w.suspension, w.currentLoad, w.rotationSpeed, -(w.fwdVelocity / w.radius),
                         w.currentTireDispLong, w.tireGripLong, w.currentTireDispLat, w.tireGripLat,
                         w.longSlipPercent);
             }
@@ -359,8 +357,6 @@ int cmdSimcar(std::span<char* const> args) {
             opt.trailerCg = args[++i];
         else if (a == "--no-trailer")
             opt.noTrailer = true;
-        else if (a == "--mm1-spin")
-            opt.mm1Spin = true;
         else
             ok = false;
         if (!ok) {
@@ -428,7 +424,7 @@ int cmdSimcars(std::span<char* const> args) {
 const Registrar r1({"simcar",
                     "<container> <car> [--seconds N] [--throttle T] [--steer S] [--brake-at T] [--step S] "
                     "[--print-every S] [--settle S] [--csv FILE] "
-                    "[--trailer-cg origin|mesh|x,y,z] [--no-trailer] [--mm1-spin] [--debug]",
+                    "[--trailer-cg origin|mesh|x,y,z] [--no-trailer] [--debug]",
                     "drive a car on a flat plane and print speed/RPM/gear", &cmdSimcar});
 const Registrar r2({"simcars", "<container> [seconds]",
                     "acceleration test for every player car (markdown table)", &cmdSimcars});

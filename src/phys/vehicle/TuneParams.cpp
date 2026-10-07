@@ -46,20 +46,6 @@ void loadTrans(const DatNode& b, TransmissionParams& t) {
     b.read("DownshiftBiasMin", t.downshiftBiasMin);
     b.read("DownshiftBiasMax", t.downshiftBiasMax);
     b.read("GearChangeTime", t.gearChangeTime);
-    // MM1 layout.
-    if (b.child("GearRatios")) {
-        t.hasExplicitRatios = true;
-        b.read("NumGears", t.numGears);
-        t.gearRatios = b.getFloats("GearRatios");
-        t.manualGearRatios = b.getFloats("ManualGearRatios");
-        t.upshiftRPM = b.getFloats("UpshiftRPM");
-        t.downshiftRPM = b.getFloats("DownshiftRPM");
-        b.read("DownshiftBias", t.downshiftBias);
-        if (!b.child("ManualNumGears"))
-            t.manualNumGears = t.numGears;
-        if (!b.child("AutoNumGears") && t.numGears > 0)
-            t.autoNumGears = t.numGears;
-    }
 }
 
 void loadDrivetrain(const DatNode& b, DrivetrainParams& d) {
@@ -113,8 +99,13 @@ bool loadCarSimParams(const DatNode& b, CarSimParams& p, std::vector<std::string
         loadAero(*c, p.aero);
     if (const auto* c = b.child("Engine"))
         loadEngine(*c, p.engine);
-    if (const auto* c = b.child("Trans"))
+    if (const auto* c = b.child("Trans")) {
         loadTrans(*c, p.trans);
+        noteIgnored(*c,
+                    {"ManualNumGears", "AutoNumGears", "Reverse", "Low", "High", "GearBias", "UpshiftBias",
+                     "DownshiftBiasMin", "DownshiftBiasMax", "GearChangeTime"},
+                    "Trans.", ignored);
+    }
     if (const auto* c = b.child("Drivetrain"))
         loadDrivetrain(*c, p.drivetrain);
     if (const auto* c = b.child("Freetrain"))
@@ -128,18 +119,6 @@ bool loadCarSimParams(const DatNode& b, CarSimParams& p, std::vector<std::string
     if (const auto* c = b.child("AxleBack"))
         loadAxle(*c, p.axleBack);
     p.drivetrainType = std::clamp(p.drivetrainType, 0, 2);
-    // Files in the MM1 layout (a few retail *_opp cars) lack MM2's inertia
-    // fields. Default them to the MM1 equivalents, which scale with mass:
-    // mmDrivetrain dyn_coeff = 2 * mass, mmEngine uses mass * 0.001.
-    const DatNode* engine = b.child("Engine");
-    if (!engine || !engine->child("AngInertia"))
-        p.engine.angInertia = p.mass * 0.001f;
-    const DatNode* drive = b.child("Drivetrain");
-    if (!drive || !drive->child("AngInertia"))
-        p.drivetrain.angInertia = p.mass * 2.0f;
-    const DatNode* free = b.child("Freetrain");
-    if (!free || !free->child("AngInertia"))
-        p.freetrain.angInertia = p.mass * 2.0f;
     noteIgnored(b,
                 {"Mass", "InertiaBox", "CenterOfGravity", "BoundFriction", "BoundElasticity",
                  "DrivetrainType", "SSSValue", "SSSThreshold", "CarFrictionHandling", "Aero", "Engine",
@@ -154,6 +133,8 @@ bool loadGyroParams(const DatNode& b, GyroParams& g) {
     b.read("Drift", g.drift);
     b.read("Spin180", g.spin180);
     b.read("Reverse180", g.reverse180);
+    b.read("Pitch", g.pitch);
+    b.read("Roll", g.roll);
     return true;
 }
 
@@ -182,6 +163,8 @@ bool loadCarDamageParams(const DatNode& b, CarDamageParams& d) {
     int dp = 0;
     if (b.read("DoublePivot", dp))
         d.doublePivot = dp != 0;
+    if (b.read("MirrorPivot", dp))
+        d.mirrorPivot = dp != 0;
     return true;
 }
 

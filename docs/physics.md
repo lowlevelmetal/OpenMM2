@@ -1,259 +1,268 @@
 # Physics and vehicle simulation
 
 `src/phys` (library `mm2_phys`, namespace `mm2::phys`) simulates rigid bodies
-and Midtown Madness 2 vehicles. Most of it is a port of the Midtown Madness 1
-vehicle code (same Angel engine) from Open1560's `code/midtown/game.asm`, a
-symbol-named MASM disassembly of MM1 beta build 1560, GPL-3.0
-(<https://github.com/0x1F9F1/Open1560>). MM2-specific behaviour is adapted
-where MM2's tune data shows a difference. Nothing comes from the MM2
-executable.
+and Midtown Madness 2 vehicles. The vehicle model is a port of MM2's own
+classes, verified against the code of `midtown2.exe` build 3393 (the
+MM2Recomp reference, see CLAUDE.md): `phInertialCS`, `vehCarSim`, `vehWheel`,
+`vehDrivetrain`, `vehEngine`, `vehTransmission`, `vehAero`, `vehAxle`,
+`vehGyro`, `vehStuck` and parts of `vehCar`, `vehCarDamage`, `vehTrailer` and
+`dgPhysManager`. The code follows the original's operation order and 32-bit
+float arithmetic (the game runs the x87 in single precision); `mm2_phys` is
+built with `-ffp-contract=off`.
 
 ## Evidence levels
 
 | Level | Meaning |
 |---|---|
-| **Ported** | Translated from MM1 (Open1560 `game.asm`) operation by operation in 32-bit float. |
-| **Ported (MM1 C++)** | Taken from code Open1560 already rewrote in C++. |
-| **MM2 adaptation (inferred)** | MM2 renamed or replaced the MM1 mechanism; the mapping is our inference from field names, MM2 class layouts (mm2hook headers, used as documentation only) and the tune values. |
-| **OpenMM2** | Our own code where nothing is known (collision). |
+| **MM2** | Ported from the build 3393 code (function named in the code comments). |
+| **Ported (MM1)** | Translated from MM1 (Open1560 `game.asm`), not yet replaced by MM2's version. |
+| **OpenMM2** | Our own code where the original is not ported (collision). |
+| **inferred** | A reasoned mapping that the code does not settle. |
 
 ## How a sample runs
 
-`World::step(dt)` follows the Angel node order of a car (`mmCarSim` children:
-Engine, Transmission, ICS, Stuck; the ICS's LCS child holds the axles, gyro,
-aero, force and drivetrains, whose children are the wheels):
+`World::step(dt)` follows MM2's per-sample order for a car (`dgPhysManager::Update`
+calls `vehCar::Update` for each mover, then collides them):
 
-1. `BodyController::beforeIntegrate`: `mmCarSim::Update` (automatic "park"
-   brake, wheel inputs, damage, impact parameters), then `mmEngine::Update`
-   and `mmTransmission::Update`.
-2. `InertialCS::update`: `asInertialCS::Update` = `FinishForces` (impulse
-   averaging, FrameVelocity, sleep test, gravity) + `FinishUpdate`
-   (momentum-based semi-implicit Euler, angular-velocity limit, rotation by
-   `invsqrtf_fast` angle). This integrates the forces accumulated during the
-   previous sample.
-   Bodies linked by a joint skip this (`ICS_CONSTRAIN_LINK`); right after
-   the free bodies, each `Joint3Dof::update` integrates its two bodies
-   together (see [Trailers](#trailers-joint3dof-and-mmtrailer)).
-3. `afterIntegrate`: axles (visual), gyro, aero, then each drivetrain probes
-   its wheels (suspension, load), solves its wheel speed and updates its
-   wheels, which accumulate suspension and tyre forces for the next sample;
-   then `mmStuck::Update`.
+1. `CarSim::beforeIntegrate`: `vehCarSim::Update` up to the integration: the
+   forward speed |v . Z|, speed-sensitive steering, and the wheel inputs.
+2. `InertialCS::update`: gravity (`dgPhysEntity::Update`: mass * -19.6), then
+   `phInertialCS::Update`, integrating last sample's forces.
+3. `CarSim::afterIntegrate`: the world matrix, then `vehCarSim`'s children in
+   order — `vehEngine`, `vehTransmission`, `vehAero`, the two free drivetrains
+   and the engine-driven one (each probes its wheels, solves its speed and
+   updates the wheels, which apply their forces for the next sample),
+   `vehAxle` — followed by `vehCar::Update`'s `vehGyro`, `vehStuck` and
+   `vehCarDamage`.
 4. Collisions (OpenMM2), impact reports.
 
-The original oversampled: n = min(floor(frame / SampleStep) + 1, MaxSamples)
-samples of frame / n, with MM1's physics manager at SampleStep = 1/35 s,
-MaxSamples = 20 (MM2's values are unknown). `World::advanceOversampled`
-reproduces that; `World::advanceFixed` (default 1/60 s, inside the original's
-range of 1/70..1/35 s) is deterministic for replays and network play.
+MM2 oversamples each frame: n = min(ceil((frame - 0.001) / (1/60)),
+6) samples of frame / n (`dgPhysManager` SampleStep 1/60 s, MaxSamples 6).
+At 60 fps that is one 1/60 s sample per frame. `World::advanceFixed` (default
+1/60 s) therefore behaves exactly as the original did at 60 fps, whatever the
+display rate, and is deterministic for replays and network play;
+`World::advanceOversampled` reproduces the original's frame-rate dependent
+scheme. (Several terms below scale with the sample length, e.g. the
+drivetrain's AngInertia * dt, so the original drove slightly differently at
+other frame rates.)
 
-The ported code keeps the original operation order and float32 arithmetic
-(the original ran the x87 in single precision); operations with double
-constants go through `age::mulD` etc., and `mm2_phys` is built with
-`-ffp-contract=off`. Generic helpers (matrix products, the arbitrary-axis
-rotation path) use a straightforward order, so results can differ from the
-original in the last bit.
+## Rigid body (phInertialCS) — MM2
 
-## Parameters
+* Momentum p += impulse + dt * F; v = p / m. Angular momentum likewise; the
+  angular velocity is found about each body axis and, with
+  `limitAngVelocity`, each component is limited on its own (cars: 4 pi rad/s,
+  `vehCarSim::Init`), the momentum then recomputed from the limited velocity.
+* Speed limit 500 m/s. Position += push + dt * v; the accumulated turn
+  (rotational push + dt * w) rotates the matrix about its axis.
+* **Implicit contacts.** `applyContactForce(F, point, K)` adds a force and its
+  stiffness d(force)/d(velocity) (K = c n n^T for a wheel, c = damping +
+  dt * spring). A body with such contacts integrates linearly implicitly: the
+  linear step through M = (I + dt/m sum K)^-1 and the angular one by solving
+  B dw = rhs with B = world inertia + dt sum (X K X^T) - dt^2/m (X K) M
+  (X K)^T (`Matrix34::SolveSVD`; OpenMM2 uses Gaussian elimination, which
+  gives the same result for the non-singular matrices that occur).
+* `filteredVelocity` (GetLocalFilteredVelocity2): a point's velocity with the
+  part along the last sample's push removed, used by the wheels.
+* Pushes (`applyPush`, CalcNetPush) and turns (`applyTurn`) only add the part
+  of a new correction not already covered by the pending one.
+* Kept from MM1's asInertialCS: the sleep test (MM2 moved sleeping to
+  `phSleep`, not ported), constraints, and the CMatrix helpers the trailer
+  joint uses. OpenMM2 re-orthonormalises the matrix when it drifts.
 
-### vehCarSim
+## Car (vehCarSim) — MM2
 
-| Field | Use | Evidence |
-|---|---|---|
-| Mass, InertiaBox | `asInertialCS::SetMass`: I = m/12 (y²+z², x²+z², x²+y²) | Ported |
-| CenterOfGravity | Rigid body is centred here; wheel centres are relative to it (`vehWheel::Init` takes the CG) | MM2 adaptation (mm2hook layout) |
-| BoundFriction, BoundElasticity | `RestoreImpactParams` → ICS friction/elasticity; upside down or wrecked: elasticity 0, friction 2, brakes 1 (`SetHackedImpactParams`) | Ported |
-| DrivetrainType | 0 RWD, 1 FWD, 2 4WD; `ConfigureDrivetrain` wheel/drivetrain wiring and update order | Ported |
-| SSSValue, SSSThreshold | Speed-sensitive steering: above SSSThreshold mph steering × max(SSSValue, threshold/speed); off when threshold ≤ 0 | MM2 adaptation (inferred, low) |
-| CarFrictionHandling | Scales surface friction below 1: F − (CFH−1)(1−F) if CFH < 1, else F/CFH | Ported (MM1 has the same field) |
+| Field | Use |
+|---|---|
+| Mass, InertiaBox | box inertia (y^2+z^2, x^2+z^2, x^2+y^2) * m / 12 |
+| CenterOfGravity | the model's origin is the body position + R * CenterOfGravity (`SetWorldMatrix`), i.e. the centre of mass sits at -CenterOfGravity in model space; also splits the static wheel loads (below) |
+| BoundFriction, BoundElasticity | the body's impact friction and elasticity (`RestoreImpactParams`). `SetHackedImpactParams` (friction 2, no bounce) exists but nothing in MM2 calls it |
+| DrivetrainType | 0 rear (free front wheels, one drivetrain each), 1 front, 2 all (`ConfigureDrivetrain`) |
+| SSSValue, SSSThreshold | speed-sensitive steering: factor 1 at rest, linearly to SSSValue at SSSThreshold m/s, SSSValue above; off with threshold 0 (`GetSSSFactor`) |
+| CarFrictionHandling | surface friction f < 1 becomes f / CFH (CFH >= 1) or f + (1 - CFH)(1 - f) |
 
-### Aero (vehAero)
+Inputs (`vehCarSim::Update`): the front wheels steer with the speed-sensitive
+steering; the back wheels steer opposite (their SteeringLimit is usually 0).
+The handbrake acts on the back wheels only, eased off the wheel on the inside
+of the turn ((1 - steering) on the left one when steering right, and the
+mirror). Brake and throttle both above 0.95 below 1 m/s release the back
+brakes (a burnout). Displayed speed = |velocity . car Z| * MetricFactor
+2.2360249 (mph; MM2 never switches units).
 
-| Field | Use | Evidence |
-|---|---|---|
-| AngCDamp, AngVelDamp, AngVel2Damp | Body-axis angular damping as acceleration × inertia: −(C·sign ω + V ω + V2·trunc(\|ω\|ω)); the quadratic term is truncated to an integer as in the original | Ported (`asAero::Update`) |
-| Drag | −Drag·\|v\|·v newtons | MM2 adaptation (inferred; MM1 had per-axis CDamp/VelDamp/Vel2Damp scaled by mass) |
-| Down | −Down·v² along the car's up axis, newtons | MM2 adaptation (inferred) |
+Defaults for fields a file lacks are the constructors' values (Mass 2000,
+InertiaBox 2 1 3, BoundFriction 0.3, BoundElasticity 0.2, ...;
+`TuneParams.h`).
 
-### Engine (vehEngine)
+## Wheel (vehWheel) — MM2
 
-| Field | Use | Evidence |
-|---|---|---|
-| MaxHorsePower, OptRPM | T(w) = (φ·w_opt − w)(w_opt/φ + w)·Pmax/w_opt³, φ = (√5+1)/2, Pmax = hp × 746 W | Ported (`ComputeConstants`, `CalcTorqueAtFullThrottle`); MM2's vehEngine keeps the √5±1 constants |
-| MaxRPM | Rev limit: torque 0 above it; drivetrain caps wheel speed at MaxRPM in gear | Ported |
-| (taper above OptRPM) | MM1 multiplies by (Max + w − 2·Opt)(Max − w)/(Max − Opt)² | Ported, **off by default**: MM2's vehEngine has no TorqueDropoff member and vpdb7 (UpshiftBias 0.002) never upshifts with it (`Engine::mm1TorqueTaper`) |
-| (engine braking) | T0 = Pmax/w_opt · 0.5 · (160 − w)/(w_opt − 160); throttle blends T0 and T | Ported |
-| GCL | Gear-change lag: torque 0 and displayed RPM blended for GCL seconds after a shift | Ported |
-| AngInertia | Engine inertia while the clutch is open (neutral); MM1 used mass × 0.001 | MM2 adaptation (inferred) |
-| IdleRPM | Not used by the physics (MM1 has no idle; zero-throttle torque crosses zero at 160 rad/s) | — |
+Geometry from the wheel's pivot `.mtx` (`vehWheel::Init`): centre = the
+pivot in model space, radius = half the box height, width = the box width.
+The steered wheel turns about its inner edge.
 
-### Transmission (vehTransmission)
+Constants (`ComputeConstants`, `SetNormalLoad`), with static load
+L = mass * 19.6 / 4 * |z - cg.z| / |z| (z the wheel's model z, cg the
+CenterOfGravity field; without a car, mass * 19.6 / 4):
 
-| Field | Use | Evidence |
-|---|---|---|
-| (gear slots) | 0 reverse, 1 neutral, 2.. forward; NumGears counts all slots | Ported |
-| (shift logic) | Automatic: up if RPM > UpshiftRPM[g] (not in top gear, no shift pending), down if RPM < DownshiftRPM[g] (not from first), kickdown if throttle > 0.8 and RPM < kickdown[g]; only after GearChangeDelay in gear | Ported (`mmTransmission::Update`) |
-| (auto reverse) | Automatic: brake > 0.8 with throttle < 0.1 below 5 m/s toggles drive/reverse and swaps the pedals | Ported (`mmGame::UpdateSteeringBrakes`, `mmInput::SwapThrottle`) |
-| (park) | Automatic, no throttle, < 0.5 m/s: brakes held at 0.5 | Ported |
-| Low, High, Reverse | Gear speeds in mph at MaxRPM → ratio = w_max·R/v (driven wheel radius) | MM2 adaptation (medium: MM2 has GearRatioFromMPH; MM1-format ratios 28/6.5 give ≈ 20/90 mph like Low 20/High 90). Cars reach High as their top speed in tests |
-| GearBias | Intermediate gear speeds: lerp(linear, geometric, GearBias) between Low and High | MM2 adaptation (low) |
-| AutoNumGears, ManualNumGears | Slot counts of the automatic and manual tables | MM2 adaptation (high) |
-| UpshiftBias | UpshiftRPM = MaxRPM (1 − bias) | MM2 adaptation (inferred) |
-| DownshiftBiasMax/Min | Down when the next lower gear would be below MaxRPM (1 − Max); kickdown with Min | MM2 adaptation (inferred) |
-| GearChangeTime | MM1's GearChangeDelay: minimum time in gear before an automatic shift | MM2 adaptation (medium) |
-| GearRatios, UpshiftRPM, DownshiftRPM, ManualGearRatios, DownshiftBias, NumGears | MM1 layout (vpcoop_opp etc.): used as given | Ported |
+| Constant | Formula |
+|---|---|
+| spring | (SuspensionFactor * Extent + Limit) / ((Limit + Extent) * Extent) * L; SuspensionFactor >= 0.75 |
+| progression | (SuspensionFactor - 1) / ((Limit + Extent) * Extent) * L / spring (force * (1 + progression * travel)) |
+| damping | 2 sqrt(spring * L) * SuspensionDampCoef |
+| tyre stiffness | 2 L / TireDispLimitLong (Lat) |
+| tyre damping | 2 sqrt(stiffness * L / 19.6) * TireDampCoefLong (Lat) |
+| brake torque | StaticFric * Radius * L * BrakeCoef (handbrake: HandbrakeCoef) |
 
-### Drivetrain / Freetrain (vehDrivetrain)
+Suspension (`ComputeDwtdw`, `CalcSuspensionForce`): a probe from
+SuspensionLimit + 0.3 above the centre to SuspensionExtent + Radius below it.
+The travel (compression positive) is limited to -Extent; the force is
+(rate * damping + travel * spring) * (1 + progression * travel) + L, rate
+limited to ±10 m/s; a lifting wheel relaxes without pulling. The contact
+hands its stiffness damping * progression + dt * spring / cos(slope) to the
+body (implicit, above). Past SuspensionLimit the wheel bottoms out: an
+impulse a quarter of the one stopping the closing velocity, per sample, and a
+push out of the overlap.
 
-The engine-driven drivetrain integrates the shared wheel speed with one
-linearly implicit step, w' = w + dt·(−net)/(I + dt·D), where net = torque ×
-ratio − Σ tyre torque (TireResistance) and brakes. D = 300 + Σ tyre slopes;
-the step stops at each wheel's optimum-slip speed B and continues with that
-wheel's slope removed. Brakes hold a stopped wheel and never reverse a
-spinning one. **Ported** (`mmDrivetrain::Update`), with these MM2 mappings
-and one OpenMM2 change to the tyre coupling (next section):
+Surface: material friction × WeatherFriction (0.8 in snow, 0.75 in snow at
+night, `mmGame::InitWeather`; applied everywhere, tunnels included) then
+CarFrictionHandling; walls (|n.y| < 0.001) have no friction. Materials with a
+`height` make bumps: a sine of wavelength `width` along the distance
+travelled (randomised with the game's `frand`), scaled down below 1 m/s.
+While skidding a wheel sinks into the material's `depth` at |w| R * 0.1 per
+second, and the sinking adds to the drag. OpenMM2: deep water (`depth` >= 1)
+carries no wheel (inferred).
 
-| Field | Use | Evidence |
-|---|---|---|
-| BrakeDynamicCoef, BrakeStaticCoef | brake torque coefficient = AngInertia × coef (MM1: 2·mass and 2.4·mass, i.e. ratio 1.2 = BrakeStaticCoef/BrakeDynamicCoef) | MM2 adaptation (medium) |
-| AngInertia | inertia = AngInertia × 0.01 + 0.2 × Engine.AngInertia × ratio² attached, AngInertia × 0.005 free (MM1: mass × (0.02 + 0.0002 ratio²) / mass × 0.01; identical for MM2's typical 2000 = 2 × 1000 kg) | MM2 adaptation (inferred); MM1-layout files default to 2·mass |
-| (tyre slope, tyre torque) | slope R²(RubberSpring·dt + RubberDamp) per wheel below B, 0 past it; net uses the tyre torque at the current wheel speed and body velocity (`Wheel::predictTireResistance`). MM1 1560 uses D = 300 and the previous sample's TireResistance | **Deviation** from MM1 1560 (see below); `CarSimOptions::mm1ExplicitSpin` / `simcar --mm1-spin` restore MM1 |
-| (wheels in the solve) | every wheel of the drivetrain. MM1 calls `ComputeDwtdw` for wheel 0, and for wheel 1 only when there are exactly two, so a four-wheel drivetrain would probe one wheel; MM1's tunes have none, MM2's 4WD cars need them all | MM2 adaptation |
-| (brake split) | MM1: front drivetrains feel only the foot brake, back ones only the handbrake. We apply the foot brake to all and max(foot, handbrake × HandbrakeCoef) to the back | MM2 adaptation (inferred; MM2 gives every wheel BrakeCoef and HandbrakeCoef) |
+Tyre (`Update`): per direction a contact-patch displacement moves with the
+slip velocity (longitudinal: w R + forward velocity), limited to the
+displacement where the force reaches friction(slip) * load; past it the
+displacement relaxes towards the limit by |w| R dt * 0.1 per sample and
+contributes no damping. friction(s) = StaticFric (2 s/s0 - s^2/s0^2) up to
+the optimum slip s0 (OptimumSlipPercent), then the parabola until it falls
+to SlidingFric (`ComputeFriction`). The direction slipping more sets the
+friction of both. Force = -stiffness * disp - damping * rate, clipped to the
+friction circle mu * load (sliding: against the slip velocity). Drag:
+-TireDragCoef * load * material drag * |v| v per direction (quadratic; zero
+on surfaces without drag), the longitudinal part × (1 + sinking).
 
-#### Wheel spin and the stiff `*_opp` tyres
+Visual: the wheel drops by its travel less the tyre squash
+(Radius * 0.05 * force / L, at most Radius * 0.3) and spins; with
+CamberLimit > 0 it cambers with its travel, otherwise it rolls with its axle.
 
-Most retail opponent tunes (`tune/vehicle/*_opp.vehCarSim`) have stiff,
-heavily damped tyres (TireDispLimit 0.075, TireDampCoef 0.75; the player
-tunes have 0.125 and 0.25), several with front OptimumSlipPercent 0.01 and
-an MM1-layout gearbox. They once took 25 s to reach 60 mph (vpcoop_opp:
-7.5 mph at 4 s, still in first gear) while their top speed was right. The
-tyre model was not at fault; the drivetrain coupling was.
+## Drivetrain (vehDrivetrain) — MM2
 
-What MM1 does (`code/midtown/game.asm`, Open1560):
+| Term | Formula |
+|---|---|
+| brake | 50 + sum(wheel brake torque) * (BrakeStaticCoef if the speed is 0, else BrakeDynamicCoef) |
+| net (resists the rotation) | (ratio * w + w_engine) * Engine.AngInertia / dt * ratio + ratio * engine torque - sum(tyre torque), the tyre torques being last sample's |
+| with the brake | at rest: max(net - brake, 0) or min(net + brake, 0); turning: net + brake * sign(w), and a wheel the brake can hold does not change direction |
+| step | w' = w - dt * net / (dt * AngInertia + I), I = ratio^2 * Engine.AngInertia + 0.02 attached, Mass * 0.005 free |
+| limit | the wheels cannot outrun the engine at MaxRPM in gear; the engine speed follows: -ratio * w, never negative |
 
-- `mmWheel::ComputeDwtdw` computes a slope at `loc_47E095`:
-  `([ARTSPTR+140h] (1/dt) · RubberDamp + RubberSpring) · Radius²`, the
-  minimum of that and `Radius²/|V| · StaticFric · FricMultiplier · 2 /
-  OptimumSlipPercent · BlendedLoad`, and the breakpoint B. Every return
-  path then stores 0 to `*A` and `*C` and returns `flt_61C6D8` = 0.0 (e.g.
-  `loc_47E37A`: `mov [eax], edi; mov [ecx], edi; fld flt_61C6D8`). The slope
-  is dead code.
-- `mmDrivetrain::Update` sums the wheels' `TireResistance` (`+208h`, written by
-  the previous sample's `mmWheel::Update` as TireGripLong · Radius;
-  `loc_47FFFC`), adds 300 to the returned slopes (`fsub flt_61C800`, −300.0)
-  and steps `rot0 + dt · (−net) / (dt · D + I)` (`loc_480188`).
+AngInertia is a damping term: it is multiplied by the sample length. On a
+free drivetrain it makes the wheels lag while the car accelerates (vpbug's
+free rear wheels pull about 1 kN back at 3 m/s^2), and less so at higher
+frame rates in the original.
 
-So MM1 couples wheel and tyre explicitly, with D = 300. An earlier OpenMM2
-used the computed slope as A, because the explicit coupling diverges with
-MM2's stiffer tyres at 60 Hz. That slope has the wrong units: one sample
-moves the tyre displacement by R·Δw·dt, so the tyre torque changes by
-R²(RubberSpring·dt + RubberDamp) per rad/s, and MM1's first term is that
-divided by dt (a torque per radian). With the previous sample's tyre torque
-in net, a steady acceleration α then needs drive − Σ TireResistance =
-α (I + dt·D): dt·D acts as extra wheel inertia, R²(RubberSpring·dt +
-RubberDamp) per wheel (until MM1's friction-curve term, ∝ 1/|V|, takes over
-at speed), which does not vanish as dt → 0. At 1/60 s that was about
-1600 kg·m² on vpcoop_opp's driven pair against I ≈ 108 (1200 of it from
-RubberDamp), and about 800 on each free rear wheel against its own 10, so
-the car launched at about a tenth of the expected rate. The player tunes
-carried 540–1470 kg·m² per driven pair against I = 100–250 (0-60 times
-15–35 % slow, worse at larger steps).
+The wheels report a breakpoint (the speed where the slip reaches the
+optimum) for a piecewise solve. MM2 searches the largest breakpoint starting
+from 1e9 and the smallest from -1e10, so only the 1e10/1e11 sentinels of
+wheels in the air or beyond the optimum qualify, and those are never crossed:
+in practice the coupling is explicit, as in MM1. Ported as is.
 
-OpenMM2 now (**deviation**, OpenMM2):
+Limited-slip differential: paired wheels spin at w * r and w / r, r moving
+each sample a tenth of the way to the ratio balancing their tyre torques,
+limited to 1.25 at rest falling to 1.03 at 50 rad/s (`diffRatioMax`,
+`diffRatioMaxHighSpeed`, `diffRatioHighSpeedLevel`); 1 when nearly stopped.
 
-1. The slope is the exact per-sample one, R²(RubberSpring·dt + RubberDamp),
-   applied below B and removed past it (C = 0) as MM1's piecewise solve
-   intends. MM1's friction-curve term is not used: with MM1's BlendedLoad for
-   car wheels (0.5·CurrentLoad + 0.5·OtherNormalLoad, which the constructor
-   sets to 0.25 and nothing changes) it undercuts the tyre's per-sample slope
-   above walking pace and the step turns partly explicit again (vppanoz_opp
-   then passes its rev-limited top speed by 40 mph).
-2. net uses the tyre torque `mmWheel::Update` would produce this sample at the
-   unchanged wheel speed (`Wheel::predictTireResistance`, the same
-   operations), so the implicit term only damps the step: in a steady
-   acceleration the wheel is resisted by I + dt·300, exactly as in MM1. To
-   allow this the wheel probe (`ComputeDwtdw`'s first half, which does not use
-   net) runs before the torques are summed (`Wheel::probe`,
-   `Wheel::computeLimits`).
+## Engine (vehEngine) — MM2
 
-The result converges to MM1's explicit solve where that is stable: at
-1/240 s, `--mm1-spin` and the new solve agree within about 3 % on 0-60 mph
-(4–5 % for the four-wheel-drive vpford_opp and vp4x4_opp; tests
-`Drivetrain.*`), and the new solve at 1/60 s is close to both (0-60 mph, s,
-`simcar`; vpcop's launch depends on the step in MM1 too, through the
-crossing of B):
+* Full throttle, w <= OptRPM: T = (phi w_opt - w)(w_opt/phi + w) * k,
+  phi = 1.618034, k = MaxHorsePower * 746 / w_opt^3 (T(w_opt) = Pmax / w_opt).
+  Between OptRPM and MaxRPM it is multiplied by (w_max - w)(w + w_max -
+  2 w_opt) / (w_max - w_opt)^2, zero above MaxRPM.
+* Closed throttle: T0 = (w_idle - w) * Pmax/w_opt * 0.75 / (w_opt - w_idle);
+  the throttle blends T0 and T.
+* Clutch: the engine-driven drivetrain detaches in neutral or below IdleRPM
+  and attaches above twice IdleRPM; detached, the engine revs against its
+  AngInertia.
+* GCL: after a shift the torque is 0 for GCL seconds and the displayed RPM
+  blends from the old value.
+* Revving in neutral rocks the car: a reaction torque about the engine's axis
+  (the `engine` pivot if the car has one; otherwise X for front-wheel drive,
+  Z otherwise).
 
-| car | before (1/60) | new 1/60 | new 1/165 | MM1 explicit 1/60 | MM1 explicit 1/240 |
-|---|---|---|---|---|---|
-| vpbug | 6.83 | 4.67 | 4.66 | 4.80 | 4.62 |
-| vpcoop | 8.35 | 6.12 | 5.62 | 6.07 | 5.63 |
-| vpmustang99 | 4.97 | 3.00 | 3.01 | 3.15 | 2.99 |
-| vpcop | 3.15 | 2.08 | 2.89 | 2.40 | 3.29 |
-| vp4x4 | 5.43 | 3.63 | 3.56 | diverges | 3.56 |
-| vpcoop_opp | 25.65 | 5.70 | 5.56 | 6.58 | 5.87 |
-| vpbug_opp | 23.75 | 5.47 | 5.06 | 5.88 | 4.98 |
-| vpcaddie_opp | 6.90 | 4.92 | 4.41 | diverges | 4.39 |
-| vppanoz_opp | 17.35 | 5.02 | 4.53 | 3.98 (top 66 mph) | 4.34 |
-| vpmustang99_opp | 8.68 | 4.88 | 4.57 | diverges | 4.52 |
-| vpcop_opp | 8.63 | 4.92 | 4.58 | diverges | 4.54 |
-| vpdb7_opp | n/a | 3.37 | 3.12 | diverges | 3.24 |
-| vpford_opp | 15.23 | 9.10 | 6.24 | diverges | 5.53 |
-| vpsemi_opp | 9.97 | 9.08 | 8.84 | 9.00 | 8.97 |
+## Transmission (vehTransmission) — MM2
 
-The player cars' top speeds are unchanged (gear-limited). vpford_opp (and vp4x4_opp) stay
-slow at 1/60 s for another reason: their stiff lateral tyres (RubberSpring
-≈ 350 kN/m) chatter in yaw against the explicitly integrated body; at 1/35 s
-every stiff `*_opp` tune does (see Known gaps).
+MM2 reads only ManualNumGears, AutoNumGears, Reverse, Low, High, GearBias,
+UpshiftBias, DownshiftBiasMin, DownshiftBiasMax and GearChangeTime. The MM1
+fields still in a few retail files (GearRatios, UpshiftRPM, ...) are ignored.
 
-Evidence that tyres this stiff are genuine: `vpcab_opp.vehCarSim` is a dump
-from an engine between MM1 and MM2 (MM1's `dyn_coeff 2600` and `stat_coeff
-3120` = 2 and 2.4 × its Mass 1300, next to AngInertia 2000) and gives
-`RubberSuspensionSpring 120000`, `RubberDamp 9000` and OptimumSlipPercent
-0.01. Under our mapping, TireDampCoef 0.75 at that stiffness is
-9000 / (2√(120000 · 1300/4)) ≈ 0.72, close to the files' 0.75 (inferred).
-TireDispLimit 0.075 maps to 120 kN/m only if the static load uses g = 9.8
-rather than MM1's 19.8; with 19.8 the `*_opp` tyres come out twice as stiff
-(inferred, open; see Known gaps).
+* Ratios: GearRatioFromMPH(v) = OptRPM / wheel RPM at v mph (1609.344 m per
+  mile; the primary drivetrain's first wheel). **Low and High are the
+  speeds at OptRPM**, so a car can rev on to MaxRPM in top gear. Gears in
+  between: Low * q^(i + i (m - i) GearBias / m), q = (High/Low)^(1/m), m =
+  forward gears - 1.
+* Shift points: the RPM x where the next gear gives the same full-throttle
+  power (bisection). Up above (1 + UpshiftBias) x (top gear: MaxRPM); down
+  below throttle * (1 - DownshiftBiasMin) x f + (1 - throttle) *
+  (1 - DownshiftBiasMax) x f in the next gear (f its ratio step), from third
+  gear up.
+* The automatic shifts only with a wheel on the ground, after GearChangeTime
+  in gear and once the engine's gear-change lag is over.
+* Manual: Upshift/Downshift step through the manual box; the automatic only
+  goes reverse -> neutral -> drive with them.
+* Auto reverse is game logic (`mmGame::UpdateSteeringBrakes`): brake > 0.8,
+  throttle < 0.1, below 5 m/s swaps the pedals and selects reverse; in
+  reverse, throttle (the brake pedal) < 0.8 returns to drive.
 
-### Wheel (vehWheel)
+## Aero (vehAero) — MM2
 
-**Ported** (`mmWheel::Update`, `ComputeDwtdw` (as `probe` + `computeLimits`),
-`ComputeConstants`, `Init`):
-probe from the top of travel to full droop; suspension load = Spring·s +
-Damping·ṡ (ṡ clamped ±3 m/s) + static load, projected on the ground normal;
-tyre displacement per direction moves with the slip velocity towards
-friction(slip)·max(load, static load)·Friction/RubberSpring and never past
-it; force = −RubberSpring·disp − RubberDamp·rate (lateral rate blended by
-*Realism*, 1); friction(slip) = StaticFric(2s/s0 − s²/s0²) until it falls to
-SlidingFric; steering rotates about world Y; rear wheels steer opposite;
-surface friction × WeatherFriction outdoors; LongSlideMultiplier 1.
+Angular damping about each body axis: -(AngCDamp sign w + AngVelDamp w +
+AngVel2Damp |w| w) * inertia, never more than stops the rotation in one
+sample, faded out below 1 rad/s (the original tests the world-space component
+here). Drag: -Drag * forward speed * v. Downforce: -Down * forward speed^2
+along the car's up axis.
 
-| MM2 field | MM1 equivalent | Evidence |
-|---|---|---|
-| SuspensionExtent, SuspensionFactor | Spring = SuspensionFactor · static load / SuspensionExtent (load reaches zero at full droop); droop range = Extent | MM2 adaptation (inferred) |
-| SuspensionLimit | compression travel (probe top) | MM2 adaptation (high; same name) |
-| SuspensionDampCoef | Damping = coef · Spring (MM1 default Damping/Spring = 4000/40000 = 0.1 = MM2's modal value) | MM2 adaptation (medium) |
-| TireDispLimitLong/Lat | RubberSpring = StaticFric · static load / limit (displacement at full friction) | MM2 adaptation (inferred) |
-| TireDampCoefLong/Lat | RubberDamp = coef · 2√(RubberSpring · m/4) (MM1's bus tune has ζ ≈ 0.22) | MM2 adaptation (inferred) |
-| TireDragCoefLong/Lat | rolling/scrub drag = coef · load against the motion, applied to the body (faded in below 0.5 m/s) | MM2 adaptation (inferred) |
-| OptimumSlipPercent, StaticFric, SlidingFric | same | Ported |
-| SteeringLimit | SteeringRatio | MM2 adaptation (high) |
-| BrakeCoef / HandbrakeCoef | BrakeRatio / handbrake | see drivetrain |
-| SteeringOffset, CamberLimit, WobbleLimit | visual only | inferred |
-| (static load) | Mass · g / 4 | Ported |
-| (material) | friction, depth (sink; depth ≥ 1 = water, no support), drag; MM1 used the polygon's phys material | Ported + MM2 materials.mtl |
+## Axle (vehAxle) — MM2
 
-### Other
+TorqueCoef and DampCoef make an anti-roll coupling: a torque about the body's
+length of -(Δtravel * TorqueCoef * Izz + Δrate * 2 sqrt(TorqueCoef) Izz *
+DampCoef) between the axle's wheels. The axle also rolls its wheels visually
+(by half the travel difference over the left wheel's offset from the `axleN`
+pivot; factor 1 without a pivot).
 
-| Item | Use | Evidence |
-|---|---|---|
-| vehAxle TorqueCoef/DampCoef | anti-roll coupling between left and right travel; **off by default** | inferred (low) |
-| vehGyro Drift/Spin180/Reverse180 | yaw assist with handbrake / when sliding; **off by default** (MM1's VehGyro was a different helper) | inferred (low) |
-| vehStuck | after an impact, if within PosThresh for TimeThresh while pegged (throttle > 0.75, \|steer\| > 0.5, not reverse) yaw in place by (\|steer\|+1)·Turn·dt until MoveThresh away. Rotation/Translation unused | Ported (`mmStuck`); Turn = MM1 RotAmount (inferred) |
-| vehCarDamage | impacts closing > 4 m/s add their impulse (if ≥ ImpactThreshold); Damage = (cur − Med)/(Max − Med) | Ported (`mmCar::Impact`, `UpdateDamage`); threshold inferred |
-| vehTrailer / dgTrailerJoint | see [Trailers](#trailers-joint3dof-and-mmtrailer) | Ported (`mmTrailer`, `Joint3Dof`) + MM2 mapping |
-| Gravity | 19.8 m/s² | Ported (MM1 sets PHYS gravity to −19.8); MM2 unverified |
-| Materials | `city/materials.mtl` (elasticity, friction, drag, width, height, depth, sound, ptx) | data format |
+## Gyro (vehGyro) — MM2
+
+With all four wheels down (`OnGround() / 4` in integer arithmetic): Drift
+adds a yaw torque Iyy * Drift * |s| s * (-w) with s the speed-sensitive
+steering and w the drivetrain speed; with the handbrake held, Spin180 (rolling
+forward) or Reverse180 (rolling back) add Iyy * k * steering * (-w). With
+the brake held and not all wheels down, Pitch and Roll turn the car level.
+
+## Stuck (vehStuck) — MM2
+
+After an impact the car is watched (TimeThresh 0.3 s, PosThresh 1.25 m
+horizontally, MoveThresh 1.75 m to give up). In the air it is nudged
+(Rotation > 0: an upward impulse and a roll while it leans past ~45°, throttle
+off, brakes on) or set upright and lifted by Translation; on the ground with
+the throttle pegged and the steering turned it yaws in place at
+|steer| steer * Turn rad/s (backwards in reverse).
+
+## Damage (vehCarDamage) — MM2 with an inferred mapping
+
+CurrentDamage falls by RegenerateRate per second; impacts above
+ImpactThreshold add their value while the car moves at 10 mph or more, or when
+the other party is a vehicle; damage is the fraction between MedDamage and
+MaxDamage and the car is wrecked at MaxDamage. MM2's impact value is the
+impulse vector of its collision callback times the other body's share of the
+two masses (`vehCarDamage::InsertImpact`); OpenMM2 feeds its own contact
+impulse (inferred). A wrecked car stops responding with the brakes on
+(`vehCar::PreUpdate`'s disabled state; which state MM2 uses for a wreck is
+inferred).
+
+## Opponents and police
+
+MM2 builds AI cars with `vehCar::Init(<car>)` (`aiVehiclePhysics::Init`):
+the same tune as the player's. The retail `*_opp.vehCarSim` and
+`vpcop_cop.vehCarSim` files (MM1-era layouts) are never loaded by the game.
 
 ## Trailers (Joint3Dof and mmTrailer)
 
@@ -383,8 +392,7 @@ check for fast bodies) and against each other (SAT). Sequential impulses with
 restitution = elasticity products (none below 1 m/s) and Coulomb friction act
 on momentum immediately; penetration is removed with `applyPush` + `moveICS`
 as in the original. Wheels only probe the ground (segments). This is not a
-port: MM1's mmBoundTemplate / asBound::Impact (full-CMatrix impulse) and MM2's
-phBound family remain to be done.
+port: MM2's phBound family, phContact and phImpact remain to be done.
 
 ## simcar results
 
@@ -396,74 +404,41 @@ trailers.
 
 | car | drive | mass | hp | High (mph) | 0-60 (s) | 1/4 mile (s) | top (mph) | .info Top Speed |
 |---|---|---|---|---|---|---|---|---|
-| vp4x4 | 4WD | 2500 | 550 | 85 | 3.63 | 13.00 | 85.2 | 57 |
-| vpauditt | RWD | 1300 | 551 | 120 | 2.67 | 10.68 | 120.3 | 182 |
-| vpbug | FWD | 1000 | 260 | 90 | 4.67 | 13.40 | 90.1 | 91 |
-| vpbullet | RWD | 1300 | 550 | 110 | 2.75 | 11.08 | 110.3 | 137 |
-| vpbus | RWD | 5000 | 450 | 83 | n/a | 20.32 | 53.9 | 60 |
-| vpcab | RWD | 1000 | 300 | 95 | 4.02 | 12.68 | 95.2 | 103 |
-| vpcaddie | RWD | 1300 | 550 | 110 | 2.70 | 11.17 | 110.3 | 136 |
-| vpcentury | RWD | 3500 | 750 | 75 | 17.87 | 19.73 | 71.1 | 91 |
-| vpcoop | FWD | 800 | 250 | 80 | 6.12 | 14.88 | 80.2 | 60 |
-| vpcoop2k | FWD | 800 | 300 | 108 | 4.53 | 13.37 | 107.6 | 115 |
-| vpcop | RWD | 1300 | 750 | 140 | 2.08 | 9.33 | 140.5 | 160 |
-| vpdb7 | FWD | 1573 | 550 | 150 | 2.72 | 11.12 | 150.2 | 206 |
-| vpddbus | RWD | 4915 | 456 | 65 | 12.80 | 18.83 | 62.0 | 25 |
-| vpdune | FWD | 1000 | 400 | 106 | 2.93 | 11.40 | 106.1 | 170 |
-| vpford | RWD | 2500 | 550 | 85 | 4.05 | 13.47 | 85.2 | 58 |
-| vpmustang99 | RWD | 1300 | 500 | 115 | 3.00 | 11.23 | 115.3 | 160 |
-| vppanoz | FWD | 1300 | 650 | 151 | 2.32 | 10.13 | 151.1 | 216 |
-| vppanozgt | RWD | 1200 | 902 | 180 | 2.33 | 9.62 | 176.1 | 240 |
-| vpsemi | RWD | 3500 | 896 | 85 | 9.83 | 17.33 | 80.5 | 69 |
-| vpvwcup | FWD | 1000 | 550 | 122 | 2.27 | 10.47 | 122.1 | 194 |
+| vp4x4 | 4WD | 2500 | 550 | 85 | 4.00 | 12.48 | 104.5 | 57 |
+| vpauditt | RWD | 1300 | 551 | 120 | 4.17 | 12.28 | 146.5 | 182 |
+| vpbug | FWD | 1000 | 260 | 90 | 7.10 | 15.55 | 115.9 | 91 |
+| vpbullet | RWD | 1300 | 550 | 110 | 4.23 | 12.40 | 133.1 | 137 |
+| vpbus | RWD | 5000 | 450 | 83 | 13.48 | 19.52 | 103.5 | 60 |
+| vpcab | RWD | 1000 | 300 | 95 | 6.75 | 15.03 | 126.7 | 103 |
+| vpcaddie | RWD | 1300 | 550 | 110 | 4.40 | 12.62 | 133.0 | 136 |
+| vpcentury | RWD | 3500 | 750 | 75 | 14.83 | 18.97 | 84.0 | 91 |
+| vpcoop | FWD | 800 | 250 | 80 | 9.28 | 17.27 | 104.3 | 60 |
+| vpcoop2k | FWD | 800 | 300 | 108 | 7.93 | 16.05 | 131.9 | 115 |
+| vpcop | RWD | 1300 | 750 | 140 | 2.93 | 10.68 | 164.9 | 160 |
+| vpdb7 | FWD | 1573 | 550 | 150 | 4.60 | 12.70 | 177.3 | 206 |
+| vpddbus | RWD | 4915 | 456 | 65 | 9.87 | 17.38 | 99.4 | 25 |
+| vpdune | FWD | 1000 | 400 | 106 | 4.45 | 12.73 | 136.7 | 170 |
+| vpford | RWD | 2500 | 550 | 85 | 6.42 | 14.88 | 104.1 | 58 |
+| vpmustang99 | RWD | 1300 | 500 | 115 | 5.45 | 13.62 | 135.3 | 160 |
+| vppanoz | FWD | 1300 | 650 | 151 | 4.37 | 12.40 | 177.2 | 216 |
+| vppanozgt | RWD | 1200 | 902 | 180 | 2.67 | 10.28 | 275.0 | 240 |
+| vpsemi | RWD | 3500 | 896 | 85 | 11.73 | 18.68 | 106.4 | 69 |
+| vpvwcup | FWD | 1000 | 550 | 122 | 3.78 | 11.97 | 155.7 | 194 |
 
-(Before the wheel spin fix above the 0-60 times were 15–35 % longer, e.g.
-vpbug 6.83 s, vpcoop 8.35 s, vpsemi 11.95 s; top speeds were the same.)
-
-Almost every car tops out at its High gear speed (MaxRPM in top gear), which
-supports the gear-speed interpretation. The bus (drag) does not, and the two
-trucks reach 71–81 mph with their trailers (High 75 and 85).
+Top speeds are set by power against drag, or by MaxRPM in top gear: High is
+the top gear's speed at OptRPM. (Before the MM2 port, OpenMM2 took Low/High
+as speeds at MaxRPM and capped every car at High.)
 
 ## Known gaps
 
-- Collision response and bounds are not ported (see above); car bodies are
+- Collision response and bounds are OpenMM2's own (see above); car bodies are
   single boxes.
-- Trailers: tractor/trailer collision is not implemented (the two-body
-  `Joint3Dof::GetCMatrix` it needs is ported); the trailer CG, ForceLimit units, Free* fields and
-  the roll limits are inferred (see Trailers). The tractors' WHL4/WHL5
-  (vpsemi, vpcentury) are not simulated; like the trailers' TWHL4/5, MM2
-  keeps only their offset from WHL2/3 (vehCarSim BackBackLeft/RightWheelPosDiff
-  in mm2hook's layout), which suggests they are drawn, not simulated.
-- The wheel spin solve deviates from MM1 1560 (see
-  [Wheel spin](#wheel-spin-and-the-stiff-_opp-tyres)); MM2's own vehDrivetrain
-  is unknown (mm2hook lists no ComputeDwtdw for vehWheel, and its layout
-  has DispLongRate/DispLimitLongLoaded-style members instead of RubberSpring,
-  so MM2's tyre may differ in form, not only in tuning).
-- The stiffest `*_opp` tyres (vpford_opp, vp4x4_opp: lateral RubberSpring
-  ≈ 350 kN/m) chatter in yaw at 1/60 s and every stiff `*_opp` tune does at
-  1/35 s (MM1's largest sample step): the lateral tyre force is coupled
-  explicitly to the body. Whether MM2 sampled faster, or whether
-  TireDispLimit should map with g = 9.8 (halving these stiffnesses, see the
-  vpcab_opp note), is open.
-- Gyro and axle coupling are approximations and disabled.
-- MM1-specific mechanisms not carried over because MM2's vehCarSim has no
-  fields for them: SpinState drift/spin friction multipliers, weight
-  redistribution (RedistHeight/RedistLongRatio, unused by MM1's forces
-  anyway), damage-scaled torque.
+- The trailer joint is still MM1's Joint3Dof (below), not MM2's
+  `dgTrailerJoint`; bodies it links integrate explicitly.
+- `phSleep`, the per-axis angular velocity limits of non-car bodies and
+  `vehSuspension` (the visual shocks) are not ported.
+- Damage: MM2's impact list (relax times, texel damage positions) is not
+  ported; the impact value mapping is inferred.
+- The engine pivot (`<car>_engine.mtx`) and axle pivots are not loaded yet;
+  the original's fallbacks apply.
 
-## Measurements that would most improve accuracy
-
-Black-box recordings from the original game (speedometer/tachometer video or
-memory-free observation) of:
-
-1. Full-throttle runs from rest for a few cars: speed and gear against time
-   (validates the torque curve, the taper decision, gear spacing/GearBias and
-   shift points).
-2. Coasting and braking from a known speed (engine braking, rolling drag,
-   brake coefficients and the brake split).
-3. Steady-state circles at fixed steering and speed, and the speed at which
-   the car starts to slide (tyre stiffness/friction mapping, SSS).
-4. Handbrake turns and J-turns (Spin180/Reverse180, handbrake coefficients).
-5. Time to fall a known height and suspension bounce after a drop (gravity,
-   suspension mapping).
-6. Collision outcomes (speed after hitting a wall head-on, damage per hit).
