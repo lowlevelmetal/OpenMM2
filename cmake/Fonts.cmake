@@ -60,11 +60,19 @@ endif()
 
 # Fonts live in <bin>/fonts next to the executables, in the build tree and
 # when installed (see cmake/Packaging.cmake).
+# Multi-config generators (Visual Studio, Ninja Multi-Config) put executables
+# in <bin>/<config>/, so the fonts are copied there too.
 set(OPENMM2_FONT_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/fonts")
-file(MAKE_DIRECTORY "${OPENMM2_FONT_DIR}")
-foreach(entry IN LISTS OPENMM2_FONT_FILES)
-    string(REPLACE "=" ";" pair "${entry}")
-    list(GET pair 0 src)
-    list(GET pair 1 dst)
-    configure_file("${src}" "${OPENMM2_FONT_DIR}/${dst}" COPYONLY)
+set(_font_dirs "${OPENMM2_FONT_DIR}")
+foreach(config IN LISTS CMAKE_CONFIGURATION_TYPES)
+    list(APPEND _font_dirs "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/${config}/fonts")
+endforeach()
+foreach(dir IN LISTS _font_dirs)
+    file(MAKE_DIRECTORY "${dir}")
+    foreach(entry IN LISTS OPENMM2_FONT_FILES)
+        string(REPLACE "=" ";" pair "${entry}")
+        list(GET pair 0 src)
+        list(GET pair 1 dst)
+        configure_file("${src}" "${dir}/${dst}" COPYONLY)
+    endforeach()
 endforeach()

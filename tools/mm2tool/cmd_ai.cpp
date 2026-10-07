@@ -177,7 +177,8 @@ int cmdAiSim(std::span<char* const> args) {
         else if (a == "--drive")
             drive = true;
         else if (a == "--at") {
-            const auto parts = str::split(next(), ',');
+            const std::string arg = next(); // split() returns views into it
+            const auto parts = str::split(arg, ',');
             if (parts.size() == 2)
                 at = Vec3{static_cast<float>(str::parseDouble(parts[0]).value_or(0)), 0,
                           static_cast<float>(str::parseDouble(parts[1]).value_or(0))};

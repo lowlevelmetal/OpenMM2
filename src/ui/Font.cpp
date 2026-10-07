@@ -119,11 +119,12 @@ FontFile::~FontFile() = default;
 bool FontFile::hasGlyph(char32_t c) const { return stbtt_FindGlyphIndex(infoOf(*this), static_cast<int>(c)) != 0; }
 
 std::filesystem::path bundledFontPath(std::string_view fileName) {
-    // Next to the executable (Windows, build tree) or in the shared data
-    // directory of a Unix install.
+    // Next to the executable (Windows, build tree), in the shared data
+    // directory of a Unix install, or one level up (multi-config build trees).
     const auto exe = paths::executableDir();
     std::error_code ec;
-    for (const auto& dir : {exe / "fonts", exe.parent_path() / "share" / "openmm2" / "fonts"}) {
+    for (const auto& dir : {exe / "fonts", exe.parent_path() / "share" / "openmm2" / "fonts",
+                            exe.parent_path() / "fonts" /* multi-config build trees: bin/<config>/ */}) {
         const auto p = dir / str::toPath(fileName);
         if (std::filesystem::is_regular_file(p, ec))
             return p;

@@ -77,7 +77,8 @@ bool Profile::load(const std::filesystem::path& path) {
     laps = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Laps", 3), 1, 10));
 
     for (const auto& key : ini.keys("Races")) {
-        const auto parts = str::split(ini.getString("Races", key), ',');
+        const std::string value = ini.getString("Races", key); // split() returns views into it
+        const auto parts = str::split(value, ',');
         RaceRecord r;
         if (!parts.empty())
             r.bestPosition = static_cast<int>(str::parseInt(parts[0]).value_or(0));
