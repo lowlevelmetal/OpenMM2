@@ -55,7 +55,7 @@ OpponentSettings OpponentSettings::fromData(std::span<const float> params, int l
 Opponent::Opponent(phys::CarSim& car, Course course, const OpponentSettings& settings, int selfId)
     : m_car(car), m_course(std::move(course)), m_settings(settings), m_selfId(selfId), m_driver(car, selfId) {
     m_prevCallback = car.onImpactCallback;
-    car.onImpactCallback = [this](const phys::Impact& impact) { onImpact(impact); };
+    car.onImpactCallback = [this](const phys::CarImpact& impact) { onImpact(impact); };
     configureAiVehStuck(car, 0.5f);
     m_driver.params = m_settings.route;
 
@@ -126,11 +126,10 @@ void Opponent::finish() {
     m_finished = true;
 }
 
-void Opponent::onImpact(const phys::Impact& impact) {
+void Opponent::onImpact(const phys::CarImpact& impact) {
     if (m_prevCallback)
         m_prevCallback(impact);
-    // dgPhysManager::CollideInstances flags a car touching the player.
-    if (impact.other && impact.other == m_playerBody)
+    if (impact.otherBody && impact.otherBody == m_playerBody)
         m_touchingPlayer = true;
 }
 
@@ -186,7 +185,9 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
         if (c.isPlayer)
             m_playerBody = c.body;
     trackProgress(dt);
-    const bool touching = m_touchingPlayer;
+    // dgPhysManager::CollideInstances marks what the player's car hits
+    // (lvlInstance flag 0x8000, cleared each frame).
+    const bool touching = m_touchingPlayer || m_car.body.hitByPlayer;
     m_touchingPlayer = false;
 
     if (m_held && !m_finished) {

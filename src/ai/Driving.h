@@ -43,7 +43,7 @@ namespace mm2::phys {
 class Body;
 class CarSim;
 class GroundQuery;
-struct Impact;
+struct CarImpact;
 } // namespace mm2::phys
 
 namespace mm2::ai {

@@ -110,7 +110,7 @@ public:
     // activity). `los` is unused by MM2's rules (kept for callers).
     void update(float dt, std::span<const TrackedCar> cars, PoliceForce& force, const phys::GroundQuery* los,
                 bool active);
-    void onImpact(const phys::Impact& impact);
+    void onImpact(const phys::CarImpact& impact);
     // aiPoliceOfficer::Reset: back to the post (teleported), braked.
     void reset();
 
@@ -150,7 +150,7 @@ private:
     PoliceSettings m_settings;
     PhysicsDriver m_driver;
     Random m_random;
-    std::function<void(const phys::Impact&)> m_prevCallback;
+    std::function<void(const phys::CarImpact&)> m_prevCallback;
 
     Mode m_mode = Mode::Parked;
     Reason m_reason = Reason::None;

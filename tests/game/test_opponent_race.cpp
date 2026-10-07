@@ -17,7 +17,7 @@
 #include "asset/Image.h"
 #include "city/CityData.h"
 #include "core/File.h"
-#include "game/CityCollision.h"
+#include "game/CityLevel.h"
 #include "game/PlayerVehicle.h"
 #include "game/TrafficBodies.h"
 #include "game/bangers/BangerData.h"
@@ -45,12 +45,13 @@ int debugLevel() {
     return d ? std::atoi(d) : 0;
 }
 
-// The city as RaceScreen sets it up: static collision without the props
-// (bangers every car can knock over), ambient traffic that turns solid when
-// touched.
+// The city as RaceScreen sets it up: the level the collision manager sees
+// (rooms, collision polygons, collidable objects), the props every car can
+// knock over, ambient traffic that turns solid when touched.
 struct CityWorld {
     std::optional<city::CityData> city;
     std::unique_ptr<game::bangers::BangerDataLibrary> bangerData;
+    std::unique_ptr<game::CityLevel> level;
     std::unique_ptr<phys::World> world;
     std::unique_ptr<game::bangers::BangerSet> bangers;
     std::unique_ptr<ai::World> ai;
@@ -62,12 +63,14 @@ struct CityWorld {
         if (!w->city)
             return nullptr;
         w->bangerData = std::make_unique<game::bangers::BangerDataLibrary>(vfs);
-        auto collision =
-            game::buildCityCollision(*w->city, vfs, [&](std::string_view n) { return w->bangerData->has(n); });
-        w->world = std::make_unique<phys::World>(std::move(collision.materials));
-        w->world->setStatic(std::move(collision.soup));
+        w->level = std::make_unique<game::CityLevel>(
+            *w->city, vfs, [&](std::string_view n) { return w->bangerData->has(n); });
+        w->world = std::make_unique<phys::World>(w->level->takeMaterials());
+        w->world->setStatic(w->level->takeProbeSoup());
+        w->world->setLevel(w->level.get());
         w->bangers = std::make_unique<game::bangers::BangerSet>(*w->bangerData);
         w->bangers->add(game::bangers::placeCityProps(*w->city, vfs, *w->bangerData));
+        w->level->addSource(w->bangers.get());
         w->bangers->setWorld(w->world.get());
         ai::Settings settings;
         settings.trafficDensity = trafficDensity;
@@ -75,19 +78,21 @@ struct CityWorld {
         w->ai = ai::World::create(*w->city, vfs, settings);
         if (!w->ai)
             return nullptr;
-        if (trafficDensity > 0.0f)
+        if (trafficDensity > 0.0f) {
             w->traffic = std::make_unique<game::TrafficBodies>(*w->ai, *w->world);
+            w->level->addSource(w->traffic.get());
+        }
         return w;
     }
 
     // One frame after the AI has set the cars' inputs.
-    void step(std::span<phys::Body* const> vehicles, const Vec3& focus) {
-        bangers->update(kDt, vehicles);
+    void step(std::span<phys::Body* const> /*vehicles*/, const Vec3& focus) {
         if (traffic)
-            traffic->beforeStep(vehicles);
+            traffic->beforeStep();
         world->advanceFixed(kDt);
+        bangers->update(kDt);
         if (traffic) {
-            traffic->afterStep(focus);
+            traffic->afterStep();
             ai->update(kDt, focus, {});
         }
     }
@@ -117,8 +122,8 @@ ai::TrackedCar track(const game::SimVehicle& v, int id) {
     t.position = m.m3;
     t.forward = -m.m2;
     t.velocity = sim.body.ics.linearVelocity;
-    t.halfWidth = sim.body.shape.half.x;
-    t.halfLength = sim.body.shape.half.z;
+    t.halfWidth = sim.halfExtents().x;
+    t.halfLength = sim.halfExtents().z;
     t.body = &sim.body;
     return t;
 }

@@ -29,7 +29,7 @@
 #include "game/net/NetGame.h"
 #include "game/CamPlayer.h"
 #include "game/CityRenderer.h"
-#include "game/CityCollision.h"
+#include "game/CityLevel.h"
 #include "game/PlayerVehicle.h"
 #include "game/VehicleRenderer.h"
 #include "phys/World.h"
@@ -78,6 +78,10 @@ public:
     }
 
     ~RaceScreen() override {
+        if (m_cityLevel && m_trafficBodies)
+            m_cityLevel->removeSource(m_trafficBodies.get());
+        if (m_cityLevel && m_bangers)
+            m_cityLevel->removeSource(m_bangers.get());
         m_carAudio.stop();
         for (auto& o : m_opponents)
             if (o.audio)
@@ -118,17 +122,10 @@ public:
             m_flyCamera = !m_flyCamera;
         updatePlayer(ctx, static_cast<float>(dt));
         updateAiDrivers(static_cast<float>(dt));
-        if (m_player) {
-            std::vector<phys::Body*> vehicles{&m_player->sim().body};
-            for (auto& o : m_opponents)
-                vehicles.push_back(&o.sim->sim().body);
-            for (auto& c : m_cops)
-                vehicles.push_back(&c.sim->sim().body);
-            if (m_bangers)
-                m_bangers->update(static_cast<float>(dt), vehicles);
-            if (m_trafficBodies)
-                m_trafficBodies->beforeStep(vehicles);
-        }
+        // aiVehicleManager::Update and the rail cars' rooms, before the
+        // collision manager runs.
+        if (m_trafficBodies)
+            m_trafficBodies->beforeStep();
         // vehCar::Update: cars in a water room float once below its level.
         if (m_player)
             m_player->sim().setWaterLevel(waterLevelAt(m_player->sim().modelMatrix().m3));
@@ -140,16 +137,20 @@ public:
                 c.sim->sim().setWaterLevel(waterLevelAt(c.sim->sim().modelMatrix().m3));
         if (m_world)
             m_world->advanceFixed(static_cast<float>(dt));
-        if (m_trafficBodies && m_player)
-            m_trafficBodies->afterStep(m_player->sim().modelMatrix().m3);
+        // The props and traffic cars the collisions set moving follow their
+        // bodies; the ones that came to rest stop being simulated.
+        if (m_bangers)
+            m_bangers->update(static_cast<float>(dt));
+        if (m_trafficBodies)
+            m_trafficBodies->afterStep();
         if (m_ai && m_player) {
             const auto& sim = m_player->sim();
             ai::PlayerCar pc;
             pc.transform = sim.body.ics.matrix;
             pc.velocity = sim.body.ics.frameVelocity;
-            pc.width = sim.body.shape.half.x * 2.0f;
-            pc.length = sim.body.shape.half.z * 2.0f;
-            pc.radius = sim.body.shape.half.mag();
+            pc.width = sim.halfExtents().x * 2.0f;
+            pc.length = sim.halfExtents().z * 2.0f;
+            pc.radius = sim.halfExtents().mag();
             pc.steering = sim.steering;
             pc.reversing = sim.trans.getCurrentGear() < 0;
             pc.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
@@ -391,11 +392,14 @@ private:
     }
 
     void loadVehicle(Context& ctx) {
-        // Physics world: the city's static collision and its materials.
-        auto collision = game::buildCityCollision(*m_city, ctx.game->vfs,
-                                                  [this](std::string_view n) { return m_bangerData->has(n); });
-        m_world = std::make_unique<phys::World>(std::move(collision.materials));
-        m_world->setStatic(std::move(collision.soup));
+        // Physics world: the city as the collision manager sees it (rooms,
+        // collision polygons, collidable objects; materials), and the probe
+        // geometry the wheels use.
+        m_cityLevel = std::make_unique<game::CityLevel>(*m_city, ctx.game->vfs,
+                                                        [this](std::string_view n) { return m_bangerData->has(n); });
+        m_world = std::make_unique<phys::World>(m_cityLevel->takeMaterials());
+        m_world->setStatic(m_cityLevel->takeProbeSoup());
+        m_world->setLevel(m_cityLevel.get());
 
         std::string error;
         m_player = game::SimVehicle::load(ctx.game->vfs, m_result.config.vehicle, &error);
@@ -404,6 +408,10 @@ private:
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
+        // The player's car collides with its polygonal bound (vehCar::Init
+        // with vehBound) and marks what it hits (dgPhysManager's PlayerInst).
+        m_player->sim().setPolygonalBound(true);
+        m_player->sim().body.player = true;
         m_player->sim().options.weatherFriction = weatherFriction();
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
@@ -541,7 +549,10 @@ private:
             setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
             opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
-            opp.sim->sim().onImpactCallback = [fx = opp.fx.get(), sim = &opp.sim->sim()](const phys::Impact& impact) {
+            opp.sim->sim().onImpactCallback = [fx = opp.fx.get(), sim = &opp.sim->sim(),
+                                                sounds = opp.impacts](const phys::CarImpact& impact) {
+                if (impact.sound)
+                    sounds->push_back({impact.soundStrength, impact.audioId, impact.position});
                 fx->impact(impact, *sim);
             };
             if (m_ai) {
@@ -597,7 +608,10 @@ private:
             setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
             cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model(), *cop.renderer);
-            cop.sim->sim().onImpactCallback = [fx = cop.fx.get(), sim = &cop.sim->sim()](const phys::Impact& impact) {
+            cop.sim->sim().onImpactCallback = [fx = cop.fx.get(), sim = &cop.sim->sim(),
+                                                sounds = cop.impacts](const phys::CarImpact& impact) {
+                if (impact.sound)
+                    sounds->push_back({impact.soundStrength, impact.audioId, impact.position});
                 fx->impact(impact, *sim);
             };
             m_cops.push_back(std::move(cop));
@@ -612,8 +626,8 @@ private:
         t.position = m.m3;
         t.forward = -m.m2;
         t.velocity = sim.body.ics.linearVelocity;
-        t.halfWidth = sim.body.shape.half.x;
-        t.halfLength = sim.body.shape.half.z;
+        t.halfWidth = sim.halfExtents().x;
+        t.halfLength = sim.halfExtents().z;
         t.body = &sim.body;
         return t;
     }
@@ -687,20 +701,24 @@ private:
     // Engine, tyre and siren sounds of the opponents and police, positioned.
     void updateAiAudio(float dt) {
         const Mat34& listener = m_camera.transform;
-        auto feed = [&](audio::game::OpponentCarAudio& audio, const phys::CarSim& sim, bool siren) {
+        auto feed = [&](audio::game::OpponentCarAudio& audio, const phys::CarSim& sim, bool siren,
+                        std::vector<audio::game::ImpactInput>& impacts) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = sim.engine.throttle;
             in.brake = sim.brakes;
             in.transform = sim.modelMatrix();
             in.siren = siren;
+            // vehCarDamage::ApplyImpact's AudImpact::Play for this car.
+            in.impacts = std::move(impacts);
+            impacts.clear();
             audio.update(in, dt, listener);
         };
         for (auto& o : m_opponents)
             if (o.audio)
-                feed(*o.audio, o.sim->sim(), false);
+                feed(*o.audio, o.sim->sim(), false, *o.impacts);
         for (auto& c : m_cops)
             if (c.audio)
-                feed(*c.audio, c.sim->sim(), c.driver->siren());
+                feed(*c.audio, c.sim->sim(), c.driver->siren(), *c.impacts);
     }
 
     game::session::PlayerState playerState() const {
@@ -861,6 +879,10 @@ private:
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
+            m_trafficBodies->setWeatherFriction(weatherFriction());
+            // The rail cars are instances of the level's rooms.
+            if (m_cityLevel)
+                m_cityLevel->addSource(m_trafficBodies.get());
             m_ai->setProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
                 phys::RayHit hit;
                 if (!m_world->probe(from, to, hit))
@@ -880,13 +902,14 @@ private:
         if (m_world) {
             m_bangers = std::make_unique<game::bangers::BangerSet>(*m_bangerData);
             m_bangers->add(game::bangers::placeCityProps(*m_city, ctx.game->vfs, *m_bangerData));
+            // The props are instances of the level's rooms.
+            if (m_cityLevel)
+                m_cityLevel->addSource(m_bangers.get());
             m_bangers->setWorld(m_world.get());
         }
         if (m_player && m_vehicle) {
             m_vehicleFx = loadVehicleFx(ctx, m_result.config.vehicle, m_player->model(), *m_vehicle);
-            m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
-                m_vehicleFx->impact(impact, m_player->sim());
-            };
+            m_player->sim().onImpactCallback = [this](const phys::CarImpact& impact) { playerImpact(impact); };
         }
         const auto w = m_result.config.weather;
         m_weather = std::make_unique<game::fx::Weather>(
@@ -966,7 +989,8 @@ private:
             if (!data)
                 return false;
             r.detach(b.part);
-            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed);
+            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed,
+                                 sim.body.room);
             return true;
         };
         for (const auto& impact : impacts)
@@ -1030,13 +1054,19 @@ private:
         m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city, &m_audioSlots);
         m_rain.load(*m_bank, *ctx.mixer, m_result.config.timeOfDay == game::TimeOfDay::Night);
         // Impacts reported by the simulation feed the impact sounds.
-        m_player->sim().onImpactCallback = [this](const phys::Impact& impact) {
-            if (m_vehicleFx)
-                m_vehicleFx->impact(impact, m_player->sim());
-            m_impacts.push_back({audio::game::impactStrength(impact.normal * impact.impulse), 0, impact.point});
-            if (impact.speed > 1.0f)
-                ++(impact.other ? m_vehicleImpacts : m_objectImpacts);
-        };
+        m_player->sim().onImpactCallback = [this](const phys::CarImpact& impact) { playerImpact(impact); };
+    }
+
+    // vehCarDamage::ApplyImpact for the player's car: AudImpact (the impact
+    // sounds), the damage effects, and the game's impact callback
+    // (mmPlayer::ImpactCallback), which counts the hits.
+    void playerImpact(const phys::CarImpact& impact) {
+        if (impact.sound)
+            m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
+        if (m_vehicleFx)
+            m_vehicleFx->impact(impact, m_player->sim());
+        if (impact.damaging)
+            ++(impact.otherIsBody ? m_vehicleImpacts : m_objectImpacts);
     }
 
     audio::game::SurfaceWeather surfaceWeather() const {
@@ -1397,6 +1427,7 @@ private:
     game::EnvironmentOptions m_envOptions;
     int m_objectDetail = 3; // the Object Detail option, 0-3
     game::Camera m_camera;
+    std::unique_ptr<game::CityLevel> m_cityLevel;
     std::unique_ptr<phys::World> m_world;
     std::unique_ptr<game::SimVehicle> m_player;
     std::unique_ptr<game::VehicleRenderer> m_vehicle;
@@ -1425,6 +1456,9 @@ private:
         std::unique_ptr<ai::Opponent> driver;
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
         std::unique_ptr<game::fx::VehicleEffects> fx;
+        // Impact sounds since the last audio update (CarSim's impact events).
+        std::shared_ptr<std::vector<audio::game::ImpactInput>> impacts =
+            std::make_shared<std::vector<audio::game::ImpactInput>>();
     };
     std::vector<Opponent> m_opponents;
     struct Cop {
@@ -1433,6 +1467,8 @@ private:
         ai::PoliceCar* driver = nullptr; // owned by m_police
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
         std::unique_ptr<game::fx::VehicleEffects> fx;
+        std::shared_ptr<std::vector<audio::game::ImpactInput>> impacts =
+            std::make_shared<std::vector<audio::game::ImpactInput>>();
         float sirenAngle = 0.0f; // vehSiren::Update: 2.5 pi rad/s while on
     };
     std::unique_ptr<ai::PoliceSquad> m_police;
