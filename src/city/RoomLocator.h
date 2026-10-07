@@ -5,7 +5,7 @@
 
 #include <vector>
 
-namespace mm2::game {
+namespace mm2::city {
 
 // Finds the PSDL room containing a world position, using each room's
 // perimeter polygon in the XZ plane (a uniform grid narrows the candidates).
@@ -13,7 +13,7 @@ namespace mm2::game {
 // highest but still below the position wins.
 class RoomLocator {
 public:
-    explicit RoomLocator(const city::Psdl& psdl, float cellSize = 32.0f);
+    explicit RoomLocator(const Psdl& psdl, float cellSize = 32.0f);
 
     // Room id, or 0 when the position is outside every room.
     int find(const Vec3& position) const;
@@ -31,4 +31,4 @@ private:
     std::vector<std::vector<int>> m_grid;
 };
 
-} // namespace mm2::game
+} // namespace mm2::city
