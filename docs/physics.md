@@ -558,6 +558,27 @@ stopping impulse: MM2 bodies land with little bounce, and a body resting on
 its bound keeps a small downward velocity that the sample's push cancels
 (`phSleep` judges rest by the velocity with the pushes).
 
+### Traffic cars (`aiVehicleInstance`, `aiVehicleActive`) — MM2
+
+`game/TrafficBodies`. A car on its rail is an instance of its room: a box of
+the `.aivehicledata` Size at its CG (`aiVehicleManager::AddVehicleDataEntry`,
+`dgBoundBox` with the default material: `aiVehicleData::SetFricElas` is never
+called), placed by the AI's matrix; its position for the room and sphere
+tests is m3 + m1 (`aiVehicleInstance::GetPosition`; the radius, the model's
+in MM2, is the box's sphere about that point, inferred). Hit, it attaches one
+of 32 bodies (`aiVehicleManager::Attach`; when all are taken the first slot is
+let go): the InertialCS at the model origin with `InitBoxMass(Mass, Size)`,
+moving at the rail speed along -Z, its collider's last matrix moved back by
+one sample of that motion, four `vehWheelCheap` (a spring and damper per
+wheel with locked-wheel rubber grip, 0.4 × load × WeatherFriction), and a
+`phSleep` with thresholds 0.01 / 0.01. The collision manager then resolves the
+impact between both bodies. Once asleep, or below y −100, the body is handed
+back to the AI (`aiVehicleActive::Detach`: upright when a probe along its up
+axis finds ground facing within 0.9 of it). Its impacts play AudImpact with
+the car's own collider id (0) and |x| + |y| + |z| of the impulse, and above
+an impulse of 100 reach its breakable parts (`vehBreakableMgr`, threshold
+2500 for traffic).
+
 ### Damage and sounds (`vehCarDamage::Impact`, `InsertImpact`, `ApplyImpact`)
 
 `vehStuck::Impact` first. The impact is worth |impulse| × the other body's
