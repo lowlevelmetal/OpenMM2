@@ -108,6 +108,10 @@ street geometry, alpha blended, no depth writes, pulled forward, unlit.
   DrawGlow): `s_yel_glow` cards facing the camera, half size 1.5 m × (0.99 …
   1.00, a random flicker each frame), white, added, unfogged, no depth
   writes; only props still standing.
+* Car parts (vehBreakableMgr::Eject) join as hit instances: the car's mesh
+  part at its pivot with the car's paint job and the banger data
+  `<car>_<part>`, leaving in a random upward direction at 4 ± 1 m/s (wrecked
+  cars: 1.3 × the car's speed ± 1) and spinning at 1–3 rad/s.
 * Reset (lvlLevel::ResetInstances): every prop back in place, hit instances
   and actives released.
 

@@ -262,3 +262,21 @@ TEST(BangersRetail, AllBangerDataParsesAndCitiesPlaceProps) {
             ASSERT_TRUE(lib.find(p.model)) << c << " " << p.model;
     }
 }
+
+TEST(Bangers, EjectedCarPartsFlyOff) {
+    TempBangers t;
+    BangerDataLibrary lib(t.vfs);
+    BangerSet set(lib);
+    const BangerData* d = lib.find("light");
+    ASSERT_TRUE(d);
+    set.ejectPart(*d, "vp4x4", "BREAK01", 2, Mat34::translation({1, 1, 1}), 4.0f);
+    ASSERT_EQ(set.instances().size(), 1u);
+    const auto& inst = set.instances()[0];
+    EXPECT_EQ(inst.state, BangerSet::State::Active);
+    EXPECT_EQ(inst.mesh, "BREAK01");
+    EXPECT_EQ(inst.paint, 2);
+    EXPECT_EQ(set.activeCount(), 1);
+    set.reset(); // ejected parts go with a reset
+    EXPECT_TRUE(set.instances().empty());
+    EXPECT_EQ(set.activeCount(), 0);
+}

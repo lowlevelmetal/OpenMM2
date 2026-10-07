@@ -59,6 +59,13 @@ public:
     void impact(const phys::Impact& impact, const phys::CarSim& car);
     // The model-space point texel damage should be painted at, once.
     std::optional<Vec3> takeDamagePoint();
+    // The impacts that counted since the last call (model-space point and
+    // impact value), for vehBreakableMgr::Impact.
+    struct CountedImpact {
+        Vec3 point;
+        float value = 0.0f;
+    };
+    std::vector<CountedImpact> takeImpacts();
     // Tracks and particles; call inside the scene pass.
     void draw(render::Device& device, TextureLibrary& textures, ParticleRenderer& cards, SkidRenderer& skids,
               const Mat34& cameraBasis);
@@ -88,6 +95,7 @@ private:
     LineSparks m_sparks;
     Shards m_shards;
     std::optional<Vec3> m_damagePoint;
+    std::vector<CountedImpact> m_impacts;
 };
 
 } // namespace mm2::game::fx

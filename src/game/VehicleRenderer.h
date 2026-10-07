@@ -10,6 +10,7 @@
 #include <array>
 #include <functional>
 #include <optional>
+#include <set>
 
 namespace mm2::game {
 
@@ -70,6 +71,24 @@ public:
     bool hasTexelDamage() const { return m_texelDamage && m_texelDamage->active(); }
     // The paint job's material textures in order (fxShardManager's shards).
     std::vector<std::string> materialTextures() const;
+    int paintjob() const { return m_paintjob; }
+
+    // vehBreakableMgr: parts that fly off and stop being drawn. The pivot
+    // is the part's placement in model space.
+    struct Breakable {
+        std::string part; // mesh part name, e.g. "BREAK0", "WHL2"
+        Vec3 pivot;
+    };
+    // Manager A (vehBreakableMgr::Impact): the attached breakable part
+    // (BREAK0-3, BREAK01/12/23/03, the paint job's VARIANT) whose pivot is
+    // nearest `modelPoint`.
+    std::optional<Breakable> nearestBreakable(const Vec3& modelPoint) const;
+    // Manager B (vehCarModel::EjectOneshot), once until reattachAll():
+    // the wheels, hubs and fenders a wrecked car loses at `mph`.
+    std::vector<Breakable> wreckParts(float mph, fx::Rand& rng);
+    void detach(const std::string& part) { m_detached.insert(part); }
+    // vehCarModel::ClearDamage: everything back on.
+    void reattachAll();
 
     // Draws everything for the camera placed at `camera`.
     void draw(const VehiclePose& pose, const Mat34& camera);
@@ -108,6 +127,8 @@ private:
     std::optional<Vec3> m_fenderOffset; // fndr0 pivot relative to wheel 0
     fx::ParticleRenderer m_cards;
     std::unique_ptr<TexelDamage> m_texelDamage;
+    std::set<std::string> m_detached;
+    bool m_wreckEjected = false;
 };
 
 } // namespace mm2::game

@@ -67,10 +67,8 @@ object once from every room it touches).
 | Police lights | an ltLight per SRN0-3 part (pivot, part colour) whose world-space direction turns 2.5 pi rad/s about Y, a quarter turn apart, drawn as above; the lens flares (`lt_flare`, within ~13 m) are not ported | MM2 (`vehSiren`) |
 | Car LOD | as objects (above), culled beyond NoDraw | MM2 (`lvlInstance::IsVisible`); the radius is the high LOD body's bounding box half-diagonal (inferred) |
 
-Not ported yet: suspension and engine parts (SHOCK, ARM, SHAFT, AXLE,
-ENGINE need the suspension matrices) and parts breaking off
-(`vehBreakableMgr`; with damage above 10000 the breakable nearest an impact
-flies off as a banger, and a wrecked car loses wheels and fenders by
-speed). Traffic cars (`aiVehicleInstance`) use the same light
+Parts that break off (effects.md) are no longer drawn on the car until it is
+reset. Not ported yet: suspension and engine parts (SHOCK, ARM, SHAFT, AXLE,
+ENGINE need the suspension matrices). Traffic cars (`aiVehicleInstance`) use the same light
 rules here; MM2 draws their turn signals (SLIGHT0/1) and a shared headlight
 glow, not ported.

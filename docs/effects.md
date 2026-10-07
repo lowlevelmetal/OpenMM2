@@ -167,6 +167,18 @@ unless the other party is a vehicle. Then:
   the paint job's material of its index, both sides drawn.
 * **Texel damage** at the first such impact point of the frame (see
   rendering.md).
+* **Parts breaking off** (`vehBreakableMgr::Impact`): with an impact of
+  10000 or more the attached breakable part (BREAK0–3, BREAK01/12/23/03, the
+  paint job's VARIANT) whose pivot is nearest the impact flies off as a
+  banger (bangers.md).
+* **Wrecked cars** (`vehCarModel::EjectOneshot`, once when the damage
+  reaches MaxDamage): above 100 mph every wheel, hub and fender (and the
+  engine), above 75 mph two random wheel/hub pairs and a fender, above
+  50 mph one pair, thrown at 1.3 times the car's speed.
 
-Not done: parts breaking off (`vehBreakableMgr`), the wheels and fenders
-ejected when a car is wrecked (`vehCarModel::EjectOneshot`).
+Ejected parts take their physics from `tune/banger/<car>_<part>.dgBangerData`
+(`vehBreakableMgr::Create`). Retail data has these for every car's wheels and
+for some cars' BREAK parts, sirens and fenders, but none for hubs. MM2 still
+registers a part without a file (`dgBangerDataManager::AddBangerDataEntry`
+returns no entry); OpenMM2 leaves such parts on the car (inferred: what MM2
+does when ejecting them is not known).

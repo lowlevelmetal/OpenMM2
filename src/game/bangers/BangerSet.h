@@ -78,6 +78,8 @@ public:
         const BangerData* data = nullptr;
         std::string model;
         int part = -1;   // -1 whole model, k = mesh "BREAK{k+1:02}"
+        std::string mesh; // a car part's mesh (ejected parts), else empty
+        int paint = 0;
         Mat34 ground;    // placement of the model's ground origin
         Mat34 matrix;    // current frame at the CG (meshes are centred on it)
         State state = State::Unhit;
@@ -93,6 +95,13 @@ public:
     // Debug/testing: `vehicle` touches instance `i` at `point` with contact
     // normal `n` (from the prop towards the vehicle).
     void impact(std::size_t i, phys::Body& vehicle, const Vec3& point, const Vec3& n);
+
+    // vehBreakableMgr::Eject: a car part flies off as a knocked-over banger.
+    // `mesh` is the part of `model` (the car's PKG) to draw with paint job
+    // `paint`; `frame` its world placement (the part's pivot). It leaves in
+    // a random upward direction at `speed` +- 1 m/s, spinning at 1-3 rad/s.
+    void ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
+                   const Mat34& frame, float speed);
 
 private:
     struct Active;
@@ -118,6 +127,7 @@ private:
     std::size_t m_skipped = 0;
     fx::FixedTicker m_ticker;
     fx::Rand m_glowRand{1};
+    fx::Rand m_ejectRand{0xE7EC7u};
 };
 
 } // namespace mm2::game::bangers

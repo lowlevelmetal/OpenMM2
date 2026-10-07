@@ -893,6 +893,34 @@ private:
         return std::make_unique<game::fx::VehicleEffects>(m_effects, setup);
     }
 
+    // Car parts that fly off as bangers (tune/banger/<car>_<part>):
+    // vehBreakableMgr::Impact ejects the breakable nearest an impact of
+    // 10000 or more; a wrecked car loses wheels, hubs and fenders by speed
+    // (vehCarModel::EjectOneshot), thrown at 1.3 times its speed. Parts
+    // without banger data stay on.
+    void breakParts(game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim,
+                    const std::string& vehicle) {
+        const auto impacts = fx.takeImpacts();
+        if (!m_bangers || !m_bangerData)
+            return;
+        const Mat34 body = sim.modelMatrix();
+        auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
+            const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
+            if (!data)
+                return false;
+            r.detach(b.part);
+            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed);
+            return true;
+        };
+        for (const auto& impact : impacts)
+            if (impact.value >= 10000.0f)
+                if (auto b = r.nearestBreakable(impact.point))
+                    eject(*b, 4.0f);
+        if (sim.damage.enabled && sim.damage.params.maxDamage <= sim.damage.currentDamage)
+            for (const auto& b : r.wreckParts(sim.speedMph(), m_ejectRand))
+                eject(b, sim.speed() * 1.3f);
+    }
+
     // vehCar::UpdateTrack lays no tracks in rooms flagged by gizBridge (the
     // opening bridges, not ported): everywhere else they are allowed.
     game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim&) const { return {}; }
@@ -900,24 +928,26 @@ private:
     void updateEffects(float dt) {
         // vehCarDamage::Update paints the first impact since the last frame
         // into the body (fxTexelDamage::ApplyDamage, TextelDamageRadius).
-        auto paint = [](game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim) {
+        auto paint = [this](game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim,
+                            const std::string& vehicle) {
             if (auto p = fx.takeDamagePoint())
                 r.applyDamage(*p, sim.damage.params.textelDamageRadius);
+            breakParts(fx, r, sim, vehicle);
         };
         if (m_player && m_vehicleFx) {
             m_vehicleFx->update(dt, m_player->sim(), vehicleFxContext(m_player->sim()));
             if (m_vehicle)
-                paint(*m_vehicleFx, *m_vehicle, m_player->sim());
+                paint(*m_vehicleFx, *m_vehicle, m_player->sim(), m_player->model().baseName);
         }
         for (auto& o : m_opponents)
             if (o.fx) {
                 o.fx->update(dt, o.sim->sim(), vehicleFxContext(o.sim->sim()));
-                paint(*o.fx, *o.renderer, o.sim->sim());
+                paint(*o.fx, *o.renderer, o.sim->sim(), o.sim->model().baseName);
             }
         for (auto& c : m_cops) {
             if (c.fx) {
                 c.fx->update(dt, c.sim->sim(), vehicleFxContext(c.sim->sim()));
-                paint(*c.fx, *c.renderer, c.sim->sim());
+                paint(*c.fx, *c.renderer, c.sim->sim(), c.sim->model().baseName);
             }
             if (c.driver->siren())
                 c.sirenAngle = std::fmod(c.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
@@ -1360,6 +1390,7 @@ private:
     std::unique_ptr<game::bangers::BangerSet> m_bangers;
     game::bangers::RoadDecals m_roadDecals;
     std::optional<game::fx::SparkLut> m_sparkColors;
+    game::fx::Rand m_ejectRand{0xB4EAu};
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;
     std::unique_ptr<game::fx::Weather> m_weather;

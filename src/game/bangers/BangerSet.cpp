@@ -347,6 +347,40 @@ void BangerSet::impact(std::size_t i, phys::Body& vehicle, const Vec3& point, co
         m_active[static_cast<std::size_t>(slot)]->body.ics.applyImpulseNow(into * j2, point);
 }
 
+void BangerSet::ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
+                          const Mat34& frame, float speed) {
+    Instance inst;
+    inst.data = &data;
+    inst.model = model;
+    inst.mesh = mesh;
+    inst.paint = paint;
+    inst.ground = frame;
+    inst.matrix = frame;
+    inst.everHit = true;
+    m_instances.push_back(std::move(inst));
+    m_cellOfInstance.push_back(0);
+    const std::size_t i = m_instances.size() - 1;
+    insertCell(i);
+    takeRingSlot(i);
+    const int slot = attach(i, false);
+    auto& ics = m_active[static_cast<std::size_t>(slot)]->body.ics;
+    // A random direction with an upward component, at speed +- 1.
+    auto direction = [this] {
+        const float y = m_ejectRand.frand();
+        const float x = m_ejectRand.frand() * 2.0f - 1.0f;
+        const float z = m_ejectRand.frand() * 2.0f - 1.0f;
+        const Vec3 d{x, y, z};
+        return d.mag2() == 0.0f ? d : d * (1.0f / d.mag());
+    };
+    Vec3 v = direction();
+    v *= ((speed + 1.0f) - (speed - 1.0f)) * m_ejectRand.frand() + (speed - 1.0f);
+    ics.linearVelocity = v;
+    ics.linearMomentum = v * ics.mass;
+    Vec3 w = direction();
+    w *= ((2.0f + 1.0f) - (2.0f - 1.0f)) * m_ejectRand.frand() + (2.0f - 1.0f);
+    ics.applyAngImpulse(ics.worldInertia().transformDir(w));
+}
+
 void BangerSet::update(float dt, std::span<phys::Body* const> vehicles) {
     // Touches: vehicle boxes against nearby standing or resting props.
     phys::Contact contacts[phys::kMaxContacts];
@@ -431,7 +465,9 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
         if (params.glows && inst.state == State::Unhit)
             for (const Vec3& g : inst.data->glowOffsets)
                 glows.push_back(inst.matrix.transform(g));
-        const std::string part = inst.part < 0 ? std::string() : std::format("BREAK{:02}", inst.part + 1);
+        const std::string part = !inst.mesh.empty() ? inst.mesh
+                                 : inst.part < 0 ? std::string()
+                                                 : std::format("BREAK{:02}", inst.part + 1);
         const bool tree = inst.data->billFlags & BangerData::kTree;
         // Trees always draw their high LOD, after the other props.
         const GpuMesh* mesh = model->find(part, tree ? asset::Lod::High : *lod);
@@ -447,7 +483,7 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
             options.lighting = false;
             options.alphaRef = kUnlitAlphaRef;
         }
-        drawGpuMesh(device, textures, *mesh, model->materials(0), Mat44::fromMat34(inst.matrix), options);
+        drawGpuMesh(device, textures, *mesh, model->materials(inst.paint), Mat44::fromMat34(inst.matrix), options);
     }
     // dgTreeRenderer::RenderTrees: unlit, alpha reference 120.
     for (const auto& [inst, mesh] : trees) {

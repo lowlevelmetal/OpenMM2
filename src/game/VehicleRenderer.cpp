@@ -119,6 +119,67 @@ void VehicleRenderer::applyDamage(const Vec3& modelPoint, float radius) {
 void VehicleRenderer::resetDamage() {
     if (m_texelDamage)
         m_texelDamage->reset();
+    reattachAll();
+}
+
+std::optional<VehicleRenderer::Breakable> VehicleRenderer::nearestBreakable(const Vec3& modelPoint) const {
+    std::optional<Breakable> best;
+    float bestD2 = 100000.0f;
+    auto consider = [&](const std::string& name) {
+        const auto* pivot = m_model.pivot(name);
+        const std::string part = str::upper(name);
+        if (!pivot || !m_gpu || !m_gpu->find(part, asset::Lod::High) || m_detached.contains(part))
+            return;
+        const float d2 = pivot->origin.dist2(modelPoint);
+        if (d2 < bestD2) {
+            bestD2 = d2;
+            best = Breakable{part, pivot->origin};
+        }
+    };
+    for (const char* name : {"break0", "break1", "break2", "break3", "break01", "break12", "break23", "break03"})
+        consider(name);
+    consider(std::format("variant{}", m_paintjob));
+    return best;
+}
+
+std::vector<VehicleRenderer::Breakable> VehicleRenderer::wreckParts(float mph, fx::Rand& rng) {
+    std::vector<Breakable> out;
+    if (m_wreckEjected)
+        return out;
+    m_wreckEjected = true;
+    std::set<std::string> taken; // a pair may come up twice
+    auto take = [&](const std::string& part) {
+        const auto* pivot = m_model.pivot(str::lower(part));
+        if (!pivot || m_detached.contains(part) || !taken.insert(part).second)
+            return;
+        out.push_back({part, pivot->origin});
+    };
+    auto pair = [&] {
+        const int k = rng.irand() & 3;
+        take(std::format("WHL{}", k));
+        take(std::format("HUB{}", k));
+    };
+    if (mph > 100.0f) {
+        for (int k = 0; k < 4; ++k) {
+            take(std::format("WHL{}", k));
+            take(std::format("HUB{}", k));
+        }
+        take("FNDR0");
+        take("FNDR1");
+        take("ENGINE");
+    } else if (mph > 75.0f) {
+        pair();
+        pair();
+        take(std::format("FNDR{}", rng.irand() & 1));
+    } else if (mph > 50.0f) {
+        pair();
+    }
+    return out;
+}
+
+void VehicleRenderer::reattachAll() {
+    m_detached.clear();
+    m_wreckEjected = false;
 }
 
 std::vector<std::string> VehicleRenderer::materialTextures() const {
@@ -136,6 +197,8 @@ std::optional<asset::Lod> VehicleRenderer::lodFor(const VehiclePose& pose, const
 
 void VehicleRenderer::drawPart(std::string_view part, asset::Lod lod, const Mat34& transform,
                                const MeshDrawOptions& options, bool live) {
+    if (!m_detached.empty() && m_detached.contains(std::string(part)))
+        return;
     const GpuMesh* mesh = m_gpu ? m_gpu->find(part, lod) : nullptr;
     if (!mesh || !str::iequals(mesh->part, part))
         return;

@@ -54,6 +54,7 @@ void VehicleEffects::reset() {
     m_sparks.reset();
     m_shards.reset();
     m_damagePoint.reset();
+    m_impacts.clear();
 }
 
 void VehicleEffects::impact(const phys::Impact& impact, const phys::CarSim& car) {
@@ -71,8 +72,17 @@ void VehicleEffects::impact(const phys::Impact& impact, const phys::CarSim& car)
     if (15.0f < mph)
         m_sparks.radialBlast(static_cast<int>(16.0f * value * FixedTicker::kStep), impact.point, impact.normal);
     m_shards.emit(impact.point, value, car.speed(), car.body.ics.matrix);
+    const Vec3 local = car.modelMatrix().untransform(impact.point);
     if (!m_damagePoint)
-        m_damagePoint = car.modelMatrix().untransform(impact.point);
+        m_damagePoint = local;
+    if (m_impacts.size() < 64)
+        m_impacts.push_back({local, value});
+}
+
+std::vector<VehicleEffects::CountedImpact> VehicleEffects::takeImpacts() {
+    std::vector<CountedImpact> out;
+    out.swap(m_impacts);
+    return out;
 }
 
 std::optional<Vec3> VehicleEffects::takeDamagePoint() {
