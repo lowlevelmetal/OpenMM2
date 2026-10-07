@@ -18,6 +18,8 @@ const char* viewName(PlayerCameras::View view) {
     case PlayerCameras::View::Ind: return "ind";
     case PlayerCameras::View::Pov: return "pov";
     case PlayerCameras::View::Dash: return "dash";
+    case PlayerCameras::View::Pre: return "pre";
+    case PlayerCameras::View::Point: return "point";
     }
     return "?";
 }
@@ -68,6 +70,8 @@ CarCamera& PlayerCameras::camera(View view) {
     case View::Ind: return m_ind;
     case View::Pov: return m_pov;
     case View::Dash: return m_dash;
+    case View::Pre: return m_pre;
+    case View::Point: return m_point;
     }
     return m_near;
 }
@@ -103,7 +107,9 @@ void PlayerCameras::setWideFov(bool wide) {
 }
 
 void PlayerCameras::setCamera(int group, int index) {
-    // mmPlayer::SetCamera
+    // mmPlayer::SetCamera: ignored before and after the race.
+    if (m_preRace || m_postRace)
+        return;
     const int currentIndex = m_group == 0 ? m_camIndex : 0;
     if (group == m_group && index == currentIndex)
         return;
@@ -123,6 +129,11 @@ void PlayerCameras::setCamera(int group, int index) {
 void PlayerCameras::reset(const CameraTarget& target) {
     // mmPlayer::Reset
     m_firstUpdate = true;
+    m_preRace = false;
+    m_postRace = false;
+    m_postPending = false;
+    m_waterPending = false;
+    m_waterDone = false;
     m_restoreCityCam = false;
     m_camIndex = m_savedIndex;
     m_view.setCurrent(carCam(m_camIndex));
@@ -148,6 +159,44 @@ void PlayerCameras::update(float dt, const CameraTarget& target, const CameraPro
     if (m_firstUpdate) {
         m_view.reset(target);
         m_firstUpdate = false;
+    }
+    if (m_postPending) {
+        // mmPlayer::SetPostRaceCam (from the race's update)
+        m_postPending = false;
+        m_far.update(dt, target, probe, input, m_view.perspective());
+        const Vec3 p = m_far.matrix().m3;
+        m_point.setPosition({p.x, p.y + 3.5f, p.z});
+        m_point.setVelocity({});
+        m_point.setMaxDist(25.0f);
+        m_point.setMinDist(5.0f);
+        m_point.setAppRate(5.0f);
+        m_view.newCam(&m_point, CameraView::Blend::EaseInOut, 0.8f);
+        m_postRace = true;
+    }
+    if (m_waterPending && !m_waterDone) {
+        m_waterPending = false;
+        m_waterDone = true;
+        const Vec3 p = m_view.matrix().m3;
+        m_point.setPosition({p.x, p.y + 9.0f, p.z});
+        m_point.setVelocity({});
+        m_view.newCam(&m_point, CameraView::Blend::EaseInOut, 0.8f);
+        m_postRace = true;
+    }
+    if (m_preRace) {
+        // From the pre-race view to the selected camera: the point-of-view
+        // camera and the dashboard are reached through the near camera.
+        CarCamera* want = m_dashActive ? static_cast<CarCamera*>(&m_dash) : carCam(m_savedIndex);
+        const CarCamera* cur = m_view.current();
+        if (cur == want) {
+            m_preRace = false;
+        } else if (want == &m_dash) {
+            if (cur == &m_near)
+                m_view.newCam(&m_pov, CameraView::Blend::EaseIn, 0.3f);
+            else if (cur == &m_pov)
+                m_view.newCam(&m_dash, CameraView::Blend::EaseOut, 0.3f);
+        } else if (want == &m_pov && cur == &m_near) {
+            m_view.newCam(&m_pov, CameraView::Blend::EaseInOut, 0.5f);
+        }
     }
     if ((m_vehicleFlags & 0x13) != 0) {
         // Big vehicles use the _ind camera under cover. (The original also
@@ -186,6 +235,8 @@ void PlayerCameras::toggleCamera() {
 
 void PlayerCameras::toggleDashboard() {
     // mmViewMgr::SetViewSetting(6)
+    if (m_preRace || m_postRace)
+        return;
     bool dash = !m_dashActive;
     if (!dash)
         setCamera(0, m_camIndex);
@@ -226,6 +277,22 @@ void PlayerCameras::select(View view) {
     setWideFov(m_wide);
     m_dashActive = false;
 }
+
+void PlayerCameras::startPreRace() {
+    // mmPlayer::SetPreRaceCam
+    if (!m_firstUpdate)
+        return;
+    m_view.setCurrent(&m_pre);
+    CarCamera* to = carCam(m_camIndex);
+    if (to == &m_pov)
+        to = &m_near;
+    m_view.newCam(to, CameraView::Blend::EaseInOut, 3.5f);
+    m_preRace = true;
+}
+
+void PlayerCameras::startPostRace() { m_postPending = true; }
+
+void PlayerCameras::startWaterCam() { m_waterPending = true; }
 
 PlayerCameras::View PlayerCameras::view() const {
     if (m_group == 2)

@@ -292,8 +292,12 @@ private:
         m_hud->options().metric = ctx.settings.metricUnits;
         m_hud->options().uiScale = ctx.display.uiScale;
         m_hud->preload(&m_ui);
-        if (m_session)
+        if (m_session) {
             m_session->start();
+            // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
+            if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
+                m_cams.startPreRace();
+        }
         if (auto* music = ctx.music()) {
             music->startRace(-1, m_result.config.mode == game::GameMode::Cruise);
             music->setAmbience(m_result.config.city);
@@ -631,9 +635,16 @@ private:
         std::vector<game::session::OpponentState> cops;
         for (const auto& c : m_cops)
             cops.push_back(carState(c.sim->sim()));
+        const auto phaseBefore = m_session->phase();
         m_session->update(dt, m_playerState, opps, cops);
+        // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
+        if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
+            m_result.config.mode != game::GameMode::Cruise)
+            m_cams.startPostRace();
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
+            if (e.type == EventType::HitWater)
+                m_cams.startWaterCam();
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
                 m_cams.reset(cameraTarget());

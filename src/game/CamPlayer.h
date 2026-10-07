@@ -9,6 +9,8 @@
 //   ind    camTrackCS  tune/camera/<car>_ind.camtrackcs (big vehicles under cover)
 //   pov    camPovCS    tune/camera/<car>.campovcs (hood view)
 //   dash   camPovCS    tune/camera/<car>_dash.campovcs (dashboard)
+//   pre    camPreCS    before the race (constructor defaults)
+//   point  camPointCS  after the race, and when the car is in the water
 //
 // "Change Camera" cycles near -> pov -> far with a 0.8 s ease-in-out blend
 // (mmViewMgr::SetViewSetting, mmPlayer::SetCamera). See docs/camera.md.
@@ -17,12 +19,14 @@
 //   PlayerCameras cams;
 //   cams.load(vfs, "vpbug");
 //   cams.reset(target);                      // after placing the car
+//   cams.startPreRace();                     // race modes, before the first update
 //   each update:
 //     cams.update(dt, target, probe, input);  // input.camPan from cameraPanFor()
 //     cams.apply(camera);                     // game::Camera for rendering
-//   cams.toggleCamera(); cams.toggleDashboard(); ...
+//   cams.toggleCamera(); cams.toggleDashboard(); cams.startPostRace(); ...
 
 #include "game/CamPov.h"
+#include "game/CamRace.h"
 #include "game/CamTrack.h"
 #include "game/CamView.h"
 
@@ -38,7 +42,7 @@ namespace mm2::game {
 
 class PlayerCameras {
 public:
-    enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash };
+    enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash, Pre, Point };
 
     PlayerCameras();
 
@@ -61,10 +65,12 @@ public:
     TrackCamera& indCam() { return m_ind; }
     PovCamera& povCam() { return m_pov; }
     PovCamera& dashCam() { return m_dash; }
+    PreCamera& preCam() { return m_pre; }
+    PointCamera& pointCam() { return m_point; }
     CarCamera& camera(View view);
 
     // mmPlayer::Reset (camera part): back to the selected camera, or the
-    // dashboard when it is on.
+    // dashboard when it is on; ends the pre/post-race views.
     void reset(const CameraTarget& target);
     // mmGame::UpdateGameInput (look around), mmPlayer::Update (camera part)
     // and camViewCS::Update.
@@ -86,6 +92,18 @@ public:
     // would (mmPlayer::SetCamera(0, index)), or the dashboard.
     void select(View view);
 
+    // mmPlayer::SetPreRaceCam: start on the pre-race view and blend to the
+    // selected camera over 3.5 s. Only right after reset(), as the original.
+    void startPreRace();
+    // mmPlayer::SetPostRaceCam: watch the car from above where the far
+    // camera is. Applied at the next update.
+    void startPostRace();
+    // mmPlayer::Update when the car has gone into the water: watch it from
+    // 9 m above the view. Applied at the next update; once per reset.
+    void startWaterCam();
+    bool preRace() const { return m_preRace; }
+    bool postRace() const { return m_postRace; }
+
     // The camera selected with toggleCamera / toggleDashboard.
     View view() const;
     // How to draw the car: hidden for the point-of-view cameras
@@ -102,6 +120,8 @@ private:
 
     TrackCamera m_near, m_far, m_ind;
     PovCamera m_pov, m_dash;
+    PreCamera m_pre;
+    PointCamera m_point;
     CameraView m_view;
 
     int m_camIndex = 0;   // mmPlayer+0xE48 into near, pov, far
@@ -110,6 +130,11 @@ private:
     bool m_dashActive = false; // HUD dashboard on
     bool m_wide = false;
     bool m_firstUpdate = true; // +0xE58
+    bool m_preRace = false;    // +0xE5A
+    bool m_postRace = false;   // +0xE59
+    bool m_postPending = false;
+    bool m_waterPending = false;
+    bool m_waterDone = false;  // +0x2344
     bool m_restoreCityCam = false;
     int m_vehicleFlags = 0;
 };

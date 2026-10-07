@@ -815,6 +815,116 @@ TEST(PlayerCameras, DashboardAfterReset) {
     EXPECT_EQ(cams.view(), PlayerCameras::View::Far);
 }
 
+TEST(PlayerCameras, PreRaceBlendsToTheSelectedCamera) {
+    PlayerCameras cams;
+    cams.nearCam().setParams(bugNear());
+    World world;
+    const auto probe = world.probe();
+    Car car;
+    cams.select(PlayerCameras::View::Pov);
+    cams.reset(car.target());
+    cams.startPreRace();
+    EXPECT_TRUE(cams.preRace());
+    cams.update(kDt, car.target(), probe, {});
+    // 3.5 s from the high polar view, through the near camera.
+    EXPECT_EQ(cams.viewManager().transitionFrom(), &cams.preCam());
+    EXPECT_EQ(cams.viewManager().transitionTo(), &cams.nearCam());
+    const Mat34& pre = cams.preCam().matrix();
+    EXPECT_NEAR(pre.m3.y - car.pos.y, 2.0f + 22.0f * std::sin(1.1f), 1e-3f);
+    EXPECT_NEAR((pre.m3 - car.pos).dot(-car.forward()), 22.0f * std::cos(1.1f), 1e-3f);
+    // Camera changes are ignored meanwhile.
+    cams.toggleCamera();
+    EXPECT_EQ(cams.view(), PlayerCameras::View::Pov);
+    for (int i = 0; i < 105; ++i)
+        cams.update(kDt, car.target(), probe, {});
+    EXPECT_EQ(cams.viewManager().current(), &cams.nearCam());
+    // Then 0.5 s on to the point-of-view camera.
+    cams.update(kDt, car.target(), probe, {});
+    EXPECT_EQ(cams.viewManager().transitionTo(), &cams.povCam());
+    for (int i = 0; i < 20; ++i)
+        cams.update(kDt, car.target(), probe, {});
+    EXPECT_EQ(cams.viewManager().current(), &cams.povCam());
+    EXPECT_FALSE(cams.preRace());
+
+    // Only right after a reset.
+    cams.startPreRace();
+    EXPECT_FALSE(cams.preRace());
+}
+
+TEST(PlayerCameras, PreRaceToTheDashboard) {
+    PlayerCameras cams;
+    World world;
+    const auto probe = world.probe();
+    Car car;
+    cams.reset(car.target());
+    cams.toggleDashboard();
+    cams.reset(car.target());
+    cams.startPreRace();
+    std::vector<const CarCamera*> seen;
+    for (int i = 0; i < 200; ++i) {
+        cams.update(kDt, car.target(), probe, {});
+        const CarCamera* to = cams.viewManager().transitionTo();
+        if (to && (seen.empty() || seen.back() != to))
+            seen.push_back(to);
+    }
+    const std::vector<const CarCamera*> want{&cams.nearCam(), &cams.povCam(), &cams.dashCam()};
+    EXPECT_EQ(seen, want);
+    EXPECT_EQ(cams.viewManager().current(), &cams.dashCam());
+    EXPECT_FALSE(cams.preRace());
+}
+
+TEST(PlayerCameras, PostRaceWatchesFromAboveTheFarCamera) {
+    PlayerCameras cams;
+    World world;
+    const auto probe = world.probe();
+    Car car;
+    car.speed = 15.0f;
+    cams.reset(car.target());
+    for (int i = 0; i < 60; ++i) {
+        car.step(kDt);
+        cams.update(kDt, car.target(), probe, {});
+    }
+    cams.startPostRace();
+    car.step(kDt);
+    cams.update(kDt, car.target(), probe, {});
+    EXPECT_TRUE(cams.postRace());
+    EXPECT_EQ(cams.viewManager().transitionTo(), &cams.pointCam());
+    for (int i = 0; i < 30; ++i) {
+        car.step(kDt);
+        cams.update(kDt, car.target(), probe, {});
+    }
+    EXPECT_EQ(cams.viewManager().current(), &cams.pointCam());
+    EXPECT_GT(viewDot(cams.viewManager().matrix(), car.pos), 0.999f);
+    // Zooms in as the car gets away: 25 degrees from MaxDist (25 m) on.
+    for (int i = 0; i < 90; ++i) {
+        car.step(kDt);
+        cams.update(kDt, car.target(), probe, {});
+    }
+    EXPECT_FLOAT_EQ(cams.viewManager().perspective().fov, 25.0f);
+    // Camera changes are ignored after the race.
+    cams.toggleCamera();
+    EXPECT_EQ(cams.viewManager().current(), &cams.pointCam());
+}
+
+TEST(PlayerCameras, WaterCameraOncePerReset) {
+    PlayerCameras cams;
+    World world;
+    const auto probe = world.probe();
+    Car car;
+    cams.reset(car.target());
+    cams.update(kDt, car.target(), probe, {});
+    const Vec3 before = cams.viewManager().matrix().m3;
+    cams.startWaterCam();
+    cams.update(kDt, car.target(), probe, {});
+    EXPECT_EQ(cams.viewManager().transitionTo(), &cams.pointCam());
+    for (int i = 0; i < 30; ++i)
+        cams.update(kDt, car.target(), probe, {});
+    EXPECT_NEAR(cams.pointCam().matrix().m3.y, before.y + 9.0f, 1e-3f);
+    cams.reset(car.target());
+    EXPECT_EQ(cams.viewManager().current(), &cams.nearCam());
+    EXPECT_FALSE(cams.postRace());
+}
+
 TEST(PlayerCameras, BigVehiclesUseTheIndCameraUnderCover) {
     PlayerCameras cams;
     cams.setVehicleFlags(16); // vpbus
