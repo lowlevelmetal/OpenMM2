@@ -34,6 +34,9 @@ public:
 
     // Applies pedal input through the original's automatic-reverse logic.
     void drive(const phys::PedalInput& input) { m_controls.apply(m_sim, input); }
+    // Held on the start line: full brakes in drive, without the automatic
+    // reverse (which would back the car away while the brake is held).
+    void hold(float steering);
     bool reversing() const;
 
     // Pose for rendering (body and wheel matrices from the simulation).

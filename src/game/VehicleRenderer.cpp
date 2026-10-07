@@ -80,6 +80,8 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Vec3& eye) {
         drawPart("BLIGHT", lod, pose.body, glow);
     if (pose.reverseLights)
         drawPart("RLIGHT", lod, pose.body, glow);
+    if (pose.sirenPhase >= 0)
+        drawPart(pose.sirenPhase == 0 ? "SIREN0" : "SIREN1", lod, pose.body, glow);
 }
 
 } // namespace mm2::game

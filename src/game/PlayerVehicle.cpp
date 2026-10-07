@@ -157,6 +157,14 @@ VehiclePose SimVehicle::trailerPose() const {
     return pose;
 }
 
+void SimVehicle::hold(float steering) {
+    if (m_controls.swapThrottle || reversing()) {
+        m_controls.reset();
+        m_sim.trans.setDrive();
+    }
+    m_sim.setInputs(0.0f, 1.0f, steering, 1.0f);
+}
+
 bool SimVehicle::reversing() const { return m_sim.trans.getCurrentGear() < 0; }
 
 VehiclePose SimVehicle::pose() const {

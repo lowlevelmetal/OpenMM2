@@ -9,6 +9,8 @@
 #include "audio/game/CarAudio.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
+#include "ai/Opponent.h"
+#include "ai/Police.h"
 #include "ai/World.h"
 #include "game/AiRenderer.h"
 #include "game/session/Hud.h"
@@ -74,6 +76,12 @@ public:
 
     ~RaceScreen() override {
         m_carAudio.stop();
+        for (auto& o : m_opponents)
+            if (o.audio)
+                o.audio->stop();
+        for (auto& c : m_cops)
+            if (c.audio)
+                c.audio->stop();
         m_rain.stop();
         if (m_ctxMixer)
             m_ctxMixer->stopAll();
@@ -106,10 +114,13 @@ public:
         if (ctx.input.keyPressed(platform::Key::F2))
             m_flyCamera = !m_flyCamera;
         updatePlayer(ctx, static_cast<float>(dt));
-        for (auto& o : m_opponents)
-            o.sim->drive({0.0f, 1.0f, 0.0f, 1.0f}); // parked until the opponent AI drives them
+        updateAiDrivers(static_cast<float>(dt));
         if (m_player) {
-            phys::Body* vehicles[] = {&m_player->sim().body};
+            std::vector<phys::Body*> vehicles{&m_player->sim().body};
+            for (auto& o : m_opponents)
+                vehicles.push_back(&o.sim->sim().body);
+            for (auto& c : m_cops)
+                vehicles.push_back(&c.sim->sim().body);
             if (m_bangers)
                 m_bangers->update(static_cast<float>(dt), vehicles);
             if (m_trafficBodies)
@@ -204,6 +215,12 @@ public:
         }
         for (const auto& o : m_opponents)
             o.renderer->draw(o.sim->pose(), m_camera.position());
+        for (const auto& c : m_cops) {
+            game::VehiclePose pose = c.sim->pose();
+            if (c.driver->siren())
+                pose.sirenPhase = static_cast<int>(m_time * 4.0) % 2; // flash rate inferred
+            c.renderer->draw(pose, m_camera.position());
+        }
         if (m_vehicleFx)
             m_vehicleFx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
         if (m_weather)
@@ -214,6 +231,8 @@ public:
             std::vector<game::session::MapBlip> blips;
             for (const auto& o : m_opponents)
                 blips.push_back({o.sim->sim().modelMatrix(), game::session::MapBlip::Kind::Opponent});
+            for (const auto& c : m_cops)
+                blips.push_back({c.sim->sim().modelMatrix(), game::session::MapBlip::Kind::Police});
             m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
         dev.endScene();
@@ -267,6 +286,7 @@ private:
         loadAi(ctx);
         loadEffects(ctx);
         spawnOpponents(ctx);
+        spawnPolice(ctx);
         m_hud = std::make_unique<game::session::Hud>(ctx.device(), *m_textures, *m_models, ctx.game->vfs,
                                                      ctx.game->strings, m_result.config.city, m_result.config.vehicle);
         m_hud->options().metric = ctx.settings.metricUnits;
@@ -375,28 +395,197 @@ private:
             log::warn("race: no race rules: {}", error);
     }
 
+    // Loads an AI-driven car onto the ground at `spawn`.
+    std::unique_ptr<game::SimVehicle> loadAiCar(Context& ctx, const std::string& vehicle, std::string_view tune,
+                                                Mat34& spawn) {
+        std::string error;
+        auto car = game::SimVehicle::load(ctx.game->vfs, vehicle, &error, tune);
+        if (!car) {
+            log::warn("race: AI car {}: {}", vehicle, error);
+            return nullptr;
+        }
+        car->addTo(*m_world);
+        phys::RayHit hit;
+        if (m_world->probe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit))
+            spawn.m3 = hit.position;
+        car->reset(spawn);
+        return car;
+    }
+
+    std::unique_ptr<audio::game::OpponentCarAudio> loadAiCarAudio(Context& ctx, const std::string& vehicle,
+                                                                   bool police) {
+        if (!m_bank || !ctx.mixer)
+            return nullptr;
+        audio::game::CarAudioOptions opts;
+        opts.city = m_result.config.city;
+        auto audio = std::make_unique<audio::game::OpponentCarAudio>();
+        std::string error;
+        if (!audio->load(ctx.game->vfs, *m_bank, *ctx.mixer, vehicle, police, opts, &error)) {
+            log::debug("race: AI car audio {}: {}", vehicle, error);
+            return nullptr;
+        }
+        return audio;
+    }
+
+    // Racers from the session (aiVehicleOpponent), driven by ai::Opponent.
     void spawnOpponents(Context& ctx) {
         if (!m_session || !m_world)
             return;
-        for (const auto& o : m_session->opponents()) {
+        const auto& setups = m_session->opponents();
+        for (std::size_t i = 0; i < setups.size(); ++i) {
+            const auto& s = setups[i];
             Opponent opp;
-            std::string error;
-            opp.sim = game::SimVehicle::load(ctx.game->vfs, o.vehicle, &error, "_opp");
-            if (!opp.sim) {
-                log::warn("race: opponent {}: {}", o.vehicle, error);
+            opp.sessionIndex = i;
+            Mat34 spawn = s.spawn;
+            opp.sim = loadAiCar(ctx, s.vehicle, "_opp", spawn);
+            if (!opp.sim)
                 continue;
-            }
-            opp.sim->addTo(*m_world);
-            Mat34 spawn = o.spawn;
-            phys::RayHit hit;
-            if (m_world->probe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit))
-                spawn.m3 = hit.position;
-            opp.sim->reset(spawn);
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
+            opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
+            if (m_ai) {
+                std::string error;
+                opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
+                                                  1 + static_cast<int>(i), &error, m_world.get());
+                if (opp.driver)
+                    opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
+                else
+                    log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
+            }
             m_opponents.push_back(std::move(opp));
         }
         log::info("race: {} opponents", m_opponents.size());
+    }
+
+    // The race's police posts (.aimap [Police]); cruise places a share of
+    // them by the menu's cop density. Cops stay for the whole race.
+    void spawnPolice(Context& ctx) {
+        if (!m_session || !m_world || !m_ai)
+            return;
+        const auto& posts = m_session->police();
+        std::vector<std::size_t> picked;
+        if (m_result.config.mode == game::GameMode::Cruise) {
+            picked = ai::PoliceSquad::pickByDensity(posts.size(), m_result.config.copDensity);
+        } else {
+            for (std::size_t i = 0; i < posts.size(); ++i)
+                picked.push_back(i);
+        }
+        m_police = std::make_unique<ai::PoliceSquad>(m_ai->network());
+        for (const std::size_t i : picked) {
+            const auto& p = posts[i];
+            Cop cop;
+            Mat34 post = p.spawn;
+            // vpcop has a pursuit tune (vpcop_cop.vehcarsim); other cars use their base tune.
+            cop.sim = loadAiCar(ctx, p.vehicle, "_cop", post);
+            if (!cop.sim)
+                continue;
+            cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()));
+            // vpcop paint job 0 is the California livery (vpcop_ca_*), 1 the
+            // London one (vpcop_ln_*); picked by city (inferred).
+            const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
+            cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
+                                                                    cop.sim->model(), livery);
+            cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
+            m_cops.push_back(std::move(cop));
+        }
+        log::info("race: {} police cars", m_cops.size());
+    }
+
+    static ai::TrackedCar trackedCar(const phys::CarSim& sim, int id) {
+        const Mat34 m = sim.modelMatrix();
+        ai::TrackedCar t;
+        t.id = id;
+        t.position = m.m3;
+        t.forward = -m.m2;
+        t.velocity = sim.body.ics.linearVelocity;
+        t.halfWidth = sim.body.shape.half.x;
+        t.halfLength = sim.body.shape.half.z;
+        t.body = &sim.body;
+        return t;
+    }
+
+    // Opponent and police AI: reads every car, writes the AI cars' inputs.
+    void updateAiDrivers(float dt) {
+        if (!m_player || (m_opponents.empty() && m_cops.empty()))
+            return;
+        std::vector<ai::TrackedCar> cars;
+        ai::TrackedCar player = trackedCar(m_player->sim(), 0);
+        player.isPlayer = true;
+        player.suspect = true;
+        const int impacts = m_vehicleImpacts + m_objectImpacts;
+        player.collided = impacts != m_lastImpacts;
+        m_lastImpacts = impacts;
+        cars.push_back(player);
+        for (const auto& o : m_opponents) {
+            ai::TrackedCar t = trackedCar(o.sim->sim(), 1 + static_cast<int>(o.sessionIndex));
+            t.suspect = true;
+            cars.push_back(t);
+        }
+        for (const auto& c : m_cops) {
+            ai::TrackedCar t = trackedCar(c.sim->sim(), c.driver->selfId());
+            t.isPolice = true;
+            cars.push_back(t);
+        }
+        if (m_ai) {
+            for (const ai::AmbientCar& c : m_ai->cars()) {
+                ai::TrackedCar t;
+                t.id = 10000 + c.id;
+                t.position = c.transform.m3;
+                t.forward = -c.transform.m2;
+                t.velocity = c.velocity;
+                if (c.data) {
+                    t.halfWidth = 0.5f * c.data->width();
+                    t.halfLength = 0.5f * c.data->length();
+                }
+                cars.push_back(t);
+            }
+        }
+        for (auto& o : m_opponents) {
+            if (!o.driver) {
+                o.sim->sim().setInputs(0.0f, 1.0f, 0.0f, 1.0f);
+                continue;
+            }
+            o.driver->setHeld(m_session &&
+                              (!m_session->racersReleased() || !m_session->opponentActive(o.sessionIndex)));
+            o.driver->update(dt, cars);
+        }
+        if (m_police)
+            m_police->update(dt, cars, m_world.get(), !m_session || m_session->policeActive());
+        // Development aid: OPENMM2_DEBUG_AI logs the AI cars once a second.
+        if (std::getenv("OPENMM2_DEBUG_AI") && std::floor(m_time) != std::floor(m_time - dt)) {
+            const Vec3 p = m_player->sim().modelMatrix().m3;
+            log::info("ai: t {:.0f} player ({:.0f},{:.0f}) {:.0f} mph", m_time, p.x, p.z, m_player->sim().speedMph());
+            for (const auto& o : m_opponents) {
+                const Vec3 q = o.sim->sim().modelMatrix().m3;
+                log::info("ai:   opp {} ({:.0f},{:.0f}) {:.0f} mph mode {} progress {:.0f} m", o.sessionIndex, q.x, q.z,
+                          o.sim->sim().speedMph(), o.driver ? static_cast<int>(o.driver->mode()) : -1,
+                          o.driver ? o.driver->progress() : 0.0f);
+            }
+            for (const auto& c : m_cops) {
+                const Vec3 q = c.sim->sim().modelMatrix().m3;
+                log::info("ai:   cop {} ({:.0f},{:.0f}) {:.0f} mph mode {} siren {}", c.driver->selfId(), q.x, q.z,
+                          c.sim->sim().speedMph(), static_cast<int>(c.driver->mode()), c.driver->siren());
+            }
+        }
+    }
+
+    // Engine, tyre and siren sounds of the opponents and police, in 3D.
+    void updateAiAudio(float dt) {
+        const Vec3 listener = m_camera.position();
+        auto feed = [&](audio::game::OpponentCarAudio& audio, const phys::CarSim& sim, bool siren) {
+            audio::game::CarAudioInputs in = carAudioInputs(sim);
+            in.throttle = sim.engine.throttle;
+            in.brake = sim.brakes;
+            in.transform = sim.modelMatrix();
+            in.siren = siren;
+            audio.update(in, dt, listener);
+        };
+        for (auto& o : m_opponents)
+            if (o.audio)
+                feed(*o.audio, o.sim->sim(), false);
+        for (auto& c : m_cops)
+            if (c.audio)
+                feed(*c.audio, c.sim->sim(), c.driver->siren());
     }
 
     game::session::PlayerState playerState() const {
@@ -427,17 +616,29 @@ private:
         if (!m_session || !m_player)
             return;
         m_playerState = playerState();
+        auto carState = [](const phys::CarSim& sim) {
+            return game::session::OpponentState{sim.modelMatrix(), sim.body.ics.frameVelocity, sim.damage.damage,
+                                                sim.damage.wrecked()};
+        };
+        // In Session::opponents() order; a car that failed to load stays parked at its spawn.
         std::vector<game::session::OpponentState> opps;
-        for (const auto& o : m_opponents) {
-            const auto& sim = o.sim->sim();
-            opps.push_back({sim.modelMatrix(), sim.body.ics.frameVelocity, sim.damage.damage, sim.damage.wrecked()});
-        }
-        m_session->update(dt, m_playerState, opps);
+        for (const auto& s : m_session->opponents())
+            opps.push_back({s.spawn, {}, 0.0f, false});
+        for (const auto& o : m_opponents)
+            opps[o.sessionIndex] = carState(o.sim->sim());
+        std::vector<game::session::OpponentState> cops;
+        for (const auto& c : m_cops)
+            cops.push_back(carState(c.sim->sim()));
+        m_session->update(dt, m_playerState, opps, cops);
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
                 m_cams.reset(cameraTarget());
+            } else if (e.type == EventType::OpponentFinished) {
+                for (auto& o : m_opponents)
+                    if (o.sessionIndex == static_cast<std::size_t>(e.index) && o.driver)
+                        o.driver->finish();
             }
         }
         if (auto* music = ctx.music()) {
@@ -568,37 +769,44 @@ private:
         };
     }
 
+    // Audio inputs shared by every simulated car (engine, gears, tyres).
+    static audio::game::CarAudioInputs carAudioInputs(const phys::CarSim& sim) {
+        audio::game::CarAudioInputs in;
+        in.rpm = sim.engine.rpm;
+        in.idleRpm = sim.params.engine.idleRPM;
+        in.speed = sim.speed();
+        in.gear = sim.trans.getCurrentGear();
+        for (std::size_t i = 0; i < 4; ++i) {
+            const auto& w = sim.wheels[i];
+            auto& wi = in.wheels[i];
+            wi.onGround = w.onGround;
+            wi.slip = std::max(std::abs(w.latSlipPercent), std::abs(w.longSlipPercent));
+            wi.surface = w.material ? audio::game::surfaceSoundIndex(w.material->name, w.material->sound) : 0;
+            wi.suspensionSpeed = w.suspensionVelocity;
+        }
+        in.wrecked = sim.damage.wrecked();
+        in.velocity = sim.body.ics.frameVelocity;
+        in.inTunnel = false; // TODO: room flags (subterranean)
+        return in;
+    }
+
     void updateAudio(Context& ctx, float dt) {
         if (!m_player)
             return;
         const auto& sim = m_player->sim();
         if (m_carAudioOk) {
-            audio::game::CarAudioInputs in;
-            in.rpm = sim.engine.rpm;
-            in.idleRpm = sim.params.engine.idleRPM;
+            audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = m_lastPedals.accelerator;
             in.brake = m_lastPedals.brake;
-            in.speed = sim.speed();
-            in.gear = sim.trans.getCurrentGear();
-            for (std::size_t i = 0; i < 4; ++i) {
-                const auto& w = sim.wheels[i];
-                auto& wi = in.wheels[i];
-                wi.onGround = w.onGround;
-                wi.slip = std::max(std::abs(w.latSlipPercent), std::abs(w.longSlipPercent));
-                wi.surface = w.material ? audio::game::surfaceSoundIndex(w.material->name, w.material->sound) : 0;
-                wi.suspensionSpeed = w.suspensionVelocity;
-            }
             in.impacts = std::move(m_impacts);
             m_impacts.clear();
             in.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
-            in.wrecked = sim.damage.wrecked();
             in.transform = m_pose.body;
-            in.velocity = sim.body.ics.frameVelocity;
-            in.inTunnel = false; // TODO: room flags (subterranean)
             m_carAudio.update(in, dt);
         }
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
+        updateAiAudio(dt);
         m_ambience.update(m_camera.position(), dt);
         m_rain.update(m_result.config.weather == game::Weather::Rain, false, false, false, dt);
     }
@@ -710,8 +918,10 @@ private:
             (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
             pedals.accelerator = 0.0f;
             pedals.brake = 1.0f;
+            m_player->hold(pedals.steering);
+        } else {
+            m_player->drive(pedals);
         }
-        m_player->drive(pedals);
         m_lastPedals = pedals;
         if (in.keyPressed(Key::R) || m_player->sim().modelMatrix().m3.y < m_city->psdl.bounds.min.y - 30.0f)
             m_player->reset(m_spawn);
@@ -897,10 +1107,22 @@ private:
     std::unique_ptr<game::session::Session> m_session;
     std::unique_ptr<game::session::Hud> m_hud;
     struct Opponent {
+        std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
         std::unique_ptr<game::SimVehicle> sim;
         std::unique_ptr<game::VehicleRenderer> renderer;
+        std::unique_ptr<ai::Opponent> driver;
+        std::unique_ptr<audio::game::OpponentCarAudio> audio;
     };
     std::vector<Opponent> m_opponents;
+    struct Cop {
+        std::unique_ptr<game::SimVehicle> sim;
+        std::unique_ptr<game::VehicleRenderer> renderer;
+        ai::PoliceCar* driver = nullptr; // owned by m_police
+        std::unique_ptr<audio::game::OpponentCarAudio> audio;
+    };
+    std::unique_ptr<ai::PoliceSquad> m_police;
+    std::vector<Cop> m_cops;
+    int m_lastImpacts = 0;
     game::session::PlayerState m_playerState;
     int m_vehicleImpacts = 0, m_objectImpacts = 0;
     bool m_resultsShown = false;

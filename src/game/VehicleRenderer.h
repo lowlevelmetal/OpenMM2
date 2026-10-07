@@ -24,6 +24,8 @@ struct VehiclePose {
     bool headlights = false;
     bool brakeLights = false;
     bool reverseLights = false;
+    // Police light bar: which of SIREN0 / SIREN1 is lit, -1 = siren off.
+    int sirenPhase = -1;
 };
 
 // Draws a vehicle's parts (body, wheels, shadow, light glows) with a paint job.
