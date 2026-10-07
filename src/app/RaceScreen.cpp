@@ -129,6 +129,15 @@ public:
             if (m_trafficBodies)
                 m_trafficBodies->beforeStep(vehicles);
         }
+        // vehCar::Update: cars in a water room float once below its level.
+        if (m_player)
+            m_player->sim().setWaterLevel(waterLevelAt(m_player->sim().modelMatrix().m3));
+        for (auto& o : m_opponents)
+            if (o.sim)
+                o.sim->sim().setWaterLevel(waterLevelAt(o.sim->sim().modelMatrix().m3));
+        for (auto& c : m_cops)
+            if (c.sim)
+                c.sim->sim().setWaterLevel(waterLevelAt(c.sim->sim().modelMatrix().m3));
         if (m_world)
             m_world->advanceFixed(static_cast<float>(dt));
         if (m_trafficBodies && m_player)
@@ -473,6 +482,17 @@ private:
             spawn.m3 = hit.position;
         car->reset(spawn);
         return car;
+    }
+
+    // The water level under `p` if it lies in a water room (lvlLevel's room
+    // flag 4 and GetWaterLevel; city/<map>.water).
+    std::optional<float> waterLevelAt(const Vec3& p) const {
+        if (!m_city->water || !m_cityRenderer)
+            return std::nullopt;
+        const auto& rooms = m_city->water->rooms;
+        if (std::find(rooms.begin(), rooms.end(), m_cityRenderer->roomAt(p)) == rooms.end())
+            return std::nullopt;
+        return m_city->water->height;
     }
 
     // mmGame::InitWeather: the tyres' WeatherFriction is 0.8 in rain, 0.75 in

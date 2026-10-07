@@ -253,6 +253,18 @@ off, brakes on) or set upright and lifted by Translation; on the ground with
 the throttle pegged and the steering turned it yaws in place at
 |steer| steer * Turn rad/s (backwards in reverse).
 
+## Water (vehSplash) — MM2
+
+A car whose model origin drops below the level of a water room (room flag 4,
+`city/<map>.water`) floats (`vehCar::Update` activates `vehSplash`): a
+4 × 4 × 4 grid of points spanning the InertiaBox around the model origin,
+each point below the surface adding Mass × buoyancy upwards and
+-0.08 × Mass × its velocity. The buoyancy starts at 0.7 per point (against
+19.6 for the whole car) and falls by 0.03 per second to 0.4, so a car bobs
+high, then settles lower. The point velocity includes the unit vector of the
+car's world position, a quirk of the original kept as is. The race rules
+respawn or end the race after 5 s in the water.
+
 ## Damage (vehCarDamage) — MM2 with an inferred mapping
 
 CurrentDamage falls by RegenerateRate per second; impacts above

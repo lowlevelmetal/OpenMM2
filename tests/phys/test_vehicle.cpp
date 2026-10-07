@@ -606,3 +606,32 @@ TEST(CarSim, RetailTunesLaunch) {
         EXPECT_LT(v, 90.0f) << name;
     }
 }
+
+// vehSplash: a car below a water room's level floats, first high, then
+// lower as the buoyancy decays from 0.7 to 0.4 per point.
+TEST(Splash, CarFloatsAndSettlesLower) {
+    World world; // no ground: only the water holds the car
+    CarSim car;
+    car.init(bugParams(), bugGeometry());
+    Mat34 start = Mat34::identity();
+    start.m3 = {0.0f, -1.0f, 0.0f};
+    car.reset(start);
+    world.add(&car.body);
+    const float level = 0.0f;
+    auto run = [&](float seconds) {
+        for (int i = 0; i < static_cast<int>(seconds * 60.0f + 0.5f); ++i) {
+            car.setWaterLevel(level);
+            car.setInputs(0.0f, 0.0f, 0.0f, 0.0f);
+            world.step(kFixedSampleStep);
+        }
+    };
+    run(5.0f);
+    ASSERT_TRUE(car.splash.active());
+    const float early = car.modelMatrix().m3.y;
+    EXPECT_GT(early, -3.0f); // afloat, not sunk
+    EXPECT_LT(car.body.ics.linearVelocity.mag(), 3.0f);
+    run(15.0f);
+    EXPECT_NEAR(car.splash.buoyancy, 0.4f, 1e-4f);
+    EXPECT_LT(car.modelMatrix().m3.y, early); // lower once the buoyancy has decayed
+    EXPECT_GT(car.modelMatrix().m3.y, -3.0f);
+}

@@ -130,6 +130,10 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
         }
     }
     aero.configure(p.aero);
+    // vehCar::Init: the splash points span the InertiaBox around the model
+    // origin (in the body's frame, the origin is at +CenterOfGravity).
+    const Vec3 half = p.inertiaBox * 0.5f;
+    splash.init(centerOfGravity - half, half + centerOfGravity);
     reset(Mat34::identity());
 }
 
@@ -149,6 +153,7 @@ void CarSim::reset(const Mat34& model) {
         w.matrix = Mat34::mul(Mat34::translation(w.center), world);
     }
     stuck.reset();
+    splash.reset();
     damage.reset();
     raceFinished = false;
     steering = 0.0f;
@@ -282,6 +287,9 @@ void CarSim::afterIntegrate(Body& b, float dt, const World& world) {
         engine.throttle = 0.0f;
         brakes = 1.0f;
     }
+    if (m_waterLevel && modelMatrix().m3.y < *m_waterLevel)
+        splash.activate(*m_waterLevel);
+    splash.update(ics, dt);
     damage.update(dt);
 }
 

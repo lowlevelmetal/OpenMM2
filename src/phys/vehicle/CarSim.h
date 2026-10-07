@@ -5,6 +5,7 @@
 #include "phys/vehicle/Drivetrain.h"
 #include "phys/vehicle/Engine.h"
 #include "phys/vehicle/Gyro.h"
+#include "phys/vehicle/Splash.h"
 #include "phys/vehicle/Stuck.h"
 #include "phys/vehicle/Transmission.h"
 #include "phys/vehicle/TuneParams.h"
@@ -13,6 +14,7 @@
 
 #include <array>
 #include <functional>
+#include <optional>
 
 namespace mm2::phys {
 
@@ -111,6 +113,10 @@ public:
     float speed() const { return m_speed; }       // m/s, |velocity . car Z axis|
     float speedMph() const { return m_speedMph; } // m_speed * MetricFactor (mph)
 
+    // The water level of the room the car is in, if it is a water room
+    // (vehCar::Update activates vehSplash once the car's origin is below it).
+    void setWaterLevel(std::optional<float> level) { m_waterLevel = level; }
+
     // Ground used by the wheels; defaults to the World the body is in.
     void setGround(const GroundQuery* ground) { m_ground = ground; }
     // Called with every impact report (audio, game logic).
@@ -135,6 +141,7 @@ public:
     Aero aero;
     Gyro gyro;
     Stuck stuck;
+    Splash splash;
     CarDamage damage;
 
     float brakes = 0.0f;
@@ -152,6 +159,7 @@ private:
     std::array<int, 3> m_drivetrainOrder{0, 1, 2};
     int m_numDrivetrains = 3;
     const GroundQuery* m_ground = nullptr;
+    std::optional<float> m_waterLevel;
     float m_speed = 0.0f;
     float m_speedMph = 0.0f;
 };
