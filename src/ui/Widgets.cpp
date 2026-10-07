@@ -41,6 +41,7 @@ namespace style {
 FontSpec valueFont() { return {"Arial Bold", 16, 16, 0, 400}; }
 FontSpec smallFont() { return {"Arial Bold", 14, 14, 0, 400}; }
 FontSpec titleFont() { return {"Gill Sans MT", 16, 22, 0, 700}; }
+FontSpec popupFont() { return {"Arial Bold", 16, 20, 0, 400}; }
 } // namespace style
 
 // --- Input -----------------------------------------------------------------------
@@ -101,7 +102,8 @@ NavInput NavReader::read(const platform::Input& in, const render::UiLayout& layo
     n.backspace = repeat(m_backspace, in.keyDown(Key::Backspace), dt);
 
     n.mouse = layout.toVirtual(in.mousePosition());
-    n.mouseMoved = n.mouse.x != m_lastMouse.x || n.mouse.y != m_lastMouse.y;
+    // The first reading only records where the pointer is.
+    n.mouseMoved = m_lastMouse.x > -1e8f && (n.mouse.x != m_lastMouse.x || n.mouse.y != m_lastMouse.y);
     m_lastMouse = n.mouse;
     n.mousePressed = in.mousePressed(platform::MouseButton::Left);
     n.mouseDown = in.mouseDown(platform::MouseButton::Left);
@@ -115,14 +117,14 @@ NavInput NavReader::read(const platform::Input& in, const render::UiLayout& layo
 // --- Sprites -----------------------------------------------------------------------
 
 Vec2 spriteFrameSize(UiFrame& f, const SpriteSheet& sheet) {
-    const UiTexture& t = f.textures.get(sheet.path);
+    const UiTexture& t = sheet.colorKey ? f.textures.getColorKeyed(sheet.path) : f.textures.get(sheet.path);
     if (!t || sheet.frames <= 0)
         return {};
     return {static_cast<float>(t.width), static_cast<float>(t.height) / static_cast<float>(sheet.frames)};
 }
 
 void drawSpriteFrame(UiFrame& f, const SpriteSheet& sheet, int frame, float x, float y, std::uint32_t color) {
-    const UiTexture& t = f.textures.get(sheet.path);
+    const UiTexture& t = sheet.colorKey ? f.textures.getColorKeyed(sheet.path) : f.textures.get(sheet.path);
     if (!t || sheet.frames <= 0)
         return;
     frame = std::clamp(frame, 0, sheet.frames - 1);
@@ -362,6 +364,33 @@ bool stepOption(ValueBox& box, int dir, bool wrap) {
         return true;
     }
     return false;
+}
+
+// --- TextButton ----------------------------------------------------------------------------
+
+TextButton::TextButton(Box b, std::string text, std::function<void()> click)
+    : label(std::move(text)), onClick(std::move(click)) {
+    box = b;
+}
+
+void TextButton::draw(UiFrame& f, bool focused) {
+    const FontSpec font = style::popupFont();
+    const std::uint32_t color = !enabled ? style::kPopupDisabled : (focused ? style::kPopupFocus : style::kPopupText);
+    f.text.draw(f.overlay, font, label, box.x, box.y, color);
+}
+
+bool TextButton::activate(UiFrame& f) {
+    if (!enabled)
+        return false;
+    f.play("Selectionmade", 0.75f); // MenuManager::PlaySound(1), heard in the popups
+    if (onClick)
+        onClick();
+    return true;
+}
+
+void TextButton::mouse(UiFrame& f, bool hovered) {
+    if (hovered && f.nav.mouseReleased)
+        activate(f);
 }
 
 // --- TextBox -------------------------------------------------------------------------------
@@ -844,6 +873,8 @@ void Menu::update(UiFrame& f) {
         step(-1);
     if (nav.down || nav.tabNext)
         step(1);
+    if (popupSounds && focused() != cur)
+        f.play("Moveselector", 0.75f); // MenuManager::PlaySound(0)
     cur = focused();
     if (!cur)
         return;

@@ -1306,6 +1306,15 @@ RaceResult Session::result() const {
         const int difficulty = static_cast<int>(m_setup.settings.difficulty);
         r.score = static_cast<int>(m_options.scoringBias) * points * difficulty;
     }
+    // The results list (PUResults::AddName): everyone who finished, by place.
+    if (raced) {
+        if (r.finished && r.position > 0)
+            r.standings.push_back({-1, r.position, m_resultTime});
+        for (std::size_t i = 0; i < m_opponents.size(); ++i)
+            if (m_opponents[i].finished)
+                r.standings.push_back({static_cast<int>(i), m_opponents[i].place, m_opponents[i].finishTime});
+        std::ranges::sort(r.standings, {}, &RaceStanding::place);
+    }
     return r;
 }
 

@@ -1,5 +1,4 @@
-// Race setup (races_bk), vehicle selection (veh_bk), vehicle showcase and the
-// results screens (rshi_bk / crshi_bk).
+// Race setup (races_bk), vehicle selection (veh_bk) and vehicle showcase.
 #include "app/frontend/Frontend.h"
 #include "core/StringUtil.h"
 
@@ -352,99 +351,12 @@ public:
     }
 };
 
-// --- Results ---------------------------------------------------------------------------------------
-
-class ResultsPage final : public Page {
-public:
-    ResultsPage(Frontend& fe, const game::RaceResult& r, std::optional<game::Reward> reward)
-        : m_result(r), m_reward(std::move(reward)) {
-        const bool crash = r.config.mode == GameMode::CrashCourse;
-        menu.background = crash ? "jpg/crshi_bk.jpg" : "jpg/rshi_bk.jpg";
-        // Buttons have transparent surroundings; their positions are inferred.
-        constexpr float x = 380;
-        float y = 60;
-        auto add = [&](const char* sprite, std::function<void()> fn) -> ui::SpriteButton& {
-            auto& b = menu.add<ui::SpriteButton>(SpriteSheet{sprite, 4}, x, y, std::move(fn));
-            y += 72;
-            return b;
-        };
-        auto& next = add("texture/result_nextrace.tga", [this, &fe] { nextRace(fe); });
-        next.enabled = hasNextRace(fe);
-        add("texture/result_restart.tga", [this, &fe] {
-            fe.config = m_result.config;
-            fe.startRace();
-        });
-        auto& menuBtn = add("texture/result_racemenu.tga", [&fe] { fe.pop(); });
-        auto& replay = add("texture/result_replay.tga", [] {});
-        replay.enabled = false; // replays are not implemented yet
-        add("texture/result_exitw.tga", [&fe] { fe.askQuit(); });
-        menu.focus(next.enabled ? &next : &menuBtn);
-        menu.onBack = [&fe] { fe.pop(); };
-        // No navigation strip: the results backgrounds have the logo there.
-    }
-
-    void drawAbove(Frontend& fe, ui::UiFrame& f) override {
-        const auto& s = fe.ctx.game->strings;
-        const auto& cfg = m_result.config;
-        const auto races = fe.racesFor(cfg.mode, cfg.city);
-        std::string name = modeDisplayName(fe, cfg.mode);
-        if (cfg.raceIndex >= 0 && cfg.raceIndex < static_cast<int>(races.size()))
-            name = races[static_cast<std::size_t>(cfg.raceIndex)]->name;
-        if (cfg.mode == GameMode::CrashCourse && cfg.raceIndex >= 0)
-            name = s.get(static_cast<std::uint32_t>(game::Strings::kFirstCrashCourseLesson +
-                                                    (cfg.city == "sf" ? 13 : 0) + cfg.raceIndex),
-                         name);
-        float y = 60;
-        const auto title = ui::style::titleFont();
-        f.text.draw(f.overlay, title, name, 40, y, ui::style::kHelpText);
-        y += 34;
-        const auto font = ui::style::valueFont();
-        std::string line;
-        if (!m_result.finished)
-            line = s.get(499, "DNF");
-        else if (cfg.mode == GameMode::CrashCourse || cfg.mode == GameMode::Blitz)
-            line = m_result.won ? s.get(229, "You won!") : s.get(239, "You lost!");
-        else if (m_result.position >= 1 && m_result.position <= 8)
-            line = s.get(static_cast<std::uint32_t>(game::Strings::kYouFinished1st + m_result.position - 1));
-        f.text.draw(f.overlay, font, line, 40, y, ui::style::kValueText);
-        y += 22;
-        if (m_result.timeSeconds > 0) {
-            f.text.draw(f.overlay, font, std::format("{} {}", s.get(354, "TIME"), formatTime(m_result.timeSeconds)), 40, y,
-                        ui::style::kValueText);
-            y += 22;
-        }
-        if (m_reward)
-            f.text.drawWrapped(f.overlay, ui::style::smallFont(), m_reward->message, 40, y + 8, 240, ui::style::kHelpText);
-    }
-
-private:
-    bool hasNextRace(Frontend& fe) const {
-        const auto& cfg = m_result.config;
-        if (cfg.mode == GameMode::Cruise || cfg.raceIndex < 0 || !fe.profile)
-            return false;
-        return cfg.raceIndex + 1 < static_cast<int>(fe.racesFor(cfg.mode, cfg.city).size()) &&
-               fe.progress.raceOpen(&*fe.profile, cfg.city, game::modeKey(cfg.mode), cfg.raceIndex + 1);
-    }
-    void nextRace(Frontend& fe) {
-        fe.config = m_result.config;
-        ++fe.config.raceIndex;
-        fe.applyRaceDefaults(fe.config);
-        fe.startRace();
-    }
-
-    game::RaceResult m_result;
-    std::optional<game::Reward> m_reward;
-};
-
 } // namespace
 
 std::unique_ptr<Page> makeRacesPage(Frontend& fe) { return std::make_unique<RacesPage>(fe); }
 std::unique_ptr<Page> makeVehiclePage(Frontend& fe) { return std::make_unique<VehiclePage>(fe); }
 std::unique_ptr<Page> makeShowcasePage(Frontend& fe, std::string vehicle) {
     return std::make_unique<ShowcasePage>(fe, std::move(vehicle));
-}
-std::unique_ptr<Page> makeResultsPage(Frontend& fe, const game::RaceResult& result, std::optional<game::Reward> reward) {
-    return std::make_unique<ResultsPage>(fe, result, std::move(reward));
 }
 
 } // namespace mm2::app::frontend

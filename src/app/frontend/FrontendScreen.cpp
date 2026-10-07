@@ -9,6 +9,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <format>
 
@@ -531,10 +532,16 @@ std::string modeDisplayName(Frontend& fe, game::GameMode m) {
 }
 
 std::string formatTime(float seconds) {
-    if (seconds <= 0)
-        return "--:--.--";
-    const int total = static_cast<int>(seconds * 100.0f + 0.5f);
-    return std::format("{}:{:02}.{:02}", total / 6000, (total / 100) % 60, total % 100);
+    // GetLocTime: "M:SS:HH" (hundredths rounded by adding 0.005, then
+    // truncated); "  ---  " when there is no time.
+    if (!(seconds > 0.0f))
+        return "  ---  ";
+    double whole = 0.0;
+    const double fraction = std::modf(static_cast<double>(seconds) + 0.005, &whole);
+    const int hundredths = static_cast<int>(fraction * 100.0);
+    const int minutes = static_cast<int>(whole) / 60;
+    const int secs = static_cast<int>(whole - static_cast<double>(minutes * 60));
+    return std::format("{}:{:02}:{:02}", minutes, secs, hundredths);
 }
 
 // --- Automation ------------------------------------------------------------------------------
@@ -643,10 +650,12 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
     } else if (cmd == "result") {
         game::RaceResult r;
         r.config = fe.config;
-        r.finished = true;
+        r.ended = r.finished = true;
         r.position = static_cast<int>(str::parseInt(arg).value_or(1));
         r.won = r.position <= 3;
         r.timeSeconds = 125.43f;
+        for (int place = 1; place <= std::max(r.position, 4); ++place)
+            r.standings.push_back({place == r.position ? -1 : place - 1, place, 120.0f + 3.1f * static_cast<float>(place)});
         fe.push(makeResultsPage(fe, r, {}));
     } else if (cmd == "nav") {
         using platform::Key;
@@ -667,6 +676,8 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             fe.push(makeNewDriverDialog(fe));
         else if (arg == "stats")
             fe.push(makeDriverStatsDialog(fe));
+        else if (arg == "records")
+            fe.push(makeRaceRecordsDialog(fe));
         else if (arg == "races")
             fe.push(makeRacesPage(fe));
         else if (arg == "vehicle")
@@ -740,13 +751,25 @@ public:
             music->setAmbience("");
             music->playMenu();
         }
+        // mmInterface::InitPlayerInfo: the first start creates "DriverX"
+        // (strings 65, 66); afterwards the last-used driver is loaded, or the
+        // newest one if that name is gone.
+        if (m_fe.store.list().empty()) {
+            const auto& s = ctx.game->strings;
+            if (auto p = m_fe.store.create(s.get(65, "DriverX"))) {
+                p->netName = s.get(66, "DriverX");
+                if (!ctx.game->catalog.vehicles().empty())
+                    p->vehicle = ctx.game->catalog.vehicles().front().baseName;
+                p->save();
+            }
+        }
         const std::string last = m_fe.store.lastUsed();
         if (!last.empty())
             m_fe.selectProfile(last);
         if (!m_fe.profile) {
             auto all = m_fe.store.list();
             if (!all.empty())
-                m_fe.selectProfile(all.front().name);
+                m_fe.selectProfile(all.back().name);
         }
         if (result && result->config.multiplayer && ctx.netGame && ctx.netGame->inSession()) {
             // Back from a multiplayer race: the lobby, over the sessions list.
@@ -755,14 +778,24 @@ public:
             m_fe.push(frontend::makeSessionsPage(m_fe));
             m_fe.push(frontend::makeLobbyPage(m_fe));
         } else if (result && m_fe.profile) {
-            // Back from a race: driver page underneath, then the results.
+            // Back from a race (mmInterface::ShowMain): the race menu, or the
+            // Crash Course over its intro, with the main menu underneath; the
+            // results first when the race reached its end (MM2 shows them in
+            // the game; quitting goes straight back).
             m_fe.config = result->config;
             m_fe.push(frontend::makeDriverPage(m_fe));
-            m_fe.push(frontend::makeRacesPage(m_fe));
+            if (result->config.mode == game::GameMode::CrashCourse) {
+                m_fe.push(frontend::makeCrashIntroPage(m_fe));
+                m_fe.push(frontend::makeCrashCoursePage(m_fe, result->config.city));
+            } else {
+                m_fe.push(frontend::makeRacesPage(m_fe));
+            }
             auto reward = m_fe.recordResult(*result);
-            m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(reward)));
-            if (auto* music = ctx.music())
-                music->setState(audio::MusicState::Results);
+            if (result->ended) {
+                m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(reward)));
+                if (auto* music = ctx.music())
+                    music->setState(audio::MusicState::Results);
+            }
         } else if (m_script.active()) {
             // Automation starts from the driver page.
             m_fe.push(frontend::makeDriverPage(m_fe));

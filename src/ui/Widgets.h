@@ -89,6 +89,7 @@ struct UiFrame {
 struct SpriteSheet {
     std::string path; // "texture/main_sp.tga"
     int frames = 4;
+    bool colorKey = false; // black is transparent (opaque RGB sprites such as lock.tga)
 };
 
 // Draws one state of a sprite sheet with its top-left at (x, y).
@@ -110,6 +111,11 @@ inline constexpr std::uint32_t kHelpText = 0xFF00FFFFu;          // yellow
 FontSpec valueFont(); // string 560 "Arial Bold, 16, 16": every frontend text widget
 FontSpec smallFont(); // string 559 "Arial Bold, 14, 14"
 FontSpec titleFont(); // string 251 "Gill Sans MT, 16, 22": race titles
+// In-game popups (MenuManager's second font set, GetFont 20 = string 569).
+FontSpec popupFont(); // "Arial Bold, 16, 20"
+inline constexpr std::uint32_t kPopupText = 0xFFFFFFFFu;      // white (popup colours 0, 1)
+inline constexpr std::uint32_t kPopupFocus = 0xFF21FFEEu;     // (0.933, 1, 0.129)
+inline constexpr std::uint32_t kPopupDisabled = 0xFF595959u;  // (0.35, 0.35, 0.35), colour 5
 } // namespace style
 
 class Widget {
@@ -226,6 +232,19 @@ private:
 // roller_up/roller_down buttons of MM2's menus); `wrap` per page. Returns
 // true when the value changed.
 bool stepOption(ValueBox& box, int dir, bool wrap);
+
+// Text button of the in-game popups (UIButton in MM2's PUMenuBase menus,
+// e.g. the results): white text, yellow-green when focused, grey when
+// disabled (MenuManager::GetFGColor, popup branch); acts on Enter or a click.
+class TextButton : public Widget {
+public:
+    TextButton(Box box, std::string label, std::function<void()> onClick);
+    void draw(UiFrame& f, bool focused) override;
+    bool activate(UiFrame& f) override;
+    void mouse(UiFrame& f, bool hovered) override;
+    std::string label;
+    std::function<void()> onClick;
+};
 
 // Read-only text in a box (driver name, totals).
 class TextBox : public Widget {
@@ -382,6 +401,9 @@ public:
     Vec2 helpPos{40, 396};            // the "desc icons" label (219x69 pictures, drawn 1:1)
     std::string defaultHelp;          // picture when the focused widget has none (pages that keep one there)
     std::function<void()> onBack;     // Escape
+    // In-game popups (MenuManager::EnablePU) play "Moveselector" when the
+    // focus moves; the frontend menus are silent.
+    bool popupSounds = false;
 
     Widget* focused() const;
     void focus(const Widget* w);

@@ -54,6 +54,13 @@ struct RaceConfig {
     int pointLimit = 0;
 };
 
+// One line of the results table: a racer who reached the finish.
+struct RaceStanding {
+    int opponent = -1; // index of the AI opponent, -1 = the player
+    int place = 0;     // 1-based
+    float timeSeconds = 0.0f;
+};
+
 // Outcome of a session, shown by the results screens and recorded in the
 // driver's profile.
 struct RaceResult {
@@ -67,6 +74,7 @@ struct RaceResult {
     std::vector<float> lapSeconds; // circuit races, every lap
     int score = 0;
     int damage = 0;
+    std::vector<RaceStanding> standings; // finishers by place (player and opponents)
 };
 
 } // namespace mm2::game

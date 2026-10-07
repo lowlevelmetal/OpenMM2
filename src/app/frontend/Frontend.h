@@ -141,6 +141,7 @@ std::unique_ptr<Page> makeTitlePage(Frontend& fe);
 std::unique_ptr<Page> makeDriverPage(Frontend& fe);
 std::unique_ptr<Page> makeNewDriverDialog(Frontend& fe);
 std::unique_ptr<Page> makeDriverStatsDialog(Frontend& fe);
+std::unique_ptr<Page> makeRaceRecordsDialog(Frontend& fe);
 std::unique_ptr<Page> makeRacesPage(Frontend& fe);
 std::unique_ptr<Page> makeVehiclePage(Frontend& fe);
 std::unique_ptr<Page> makeShowcasePage(Frontend& fe, std::string vehicle);
