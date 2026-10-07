@@ -26,7 +26,7 @@ inferred from the text itself. Notable groups (ids from the US disc):
 | 390–396, 574–577, 644–662 | graphics options |
 | 418–434, 506–524 | multiplayer host options (laps, gold mass, time/point limits, modes) |
 | 532–557 | Crash Course lesson names (London then San Francisco) |
-| 558–573 | frontend menu fonts (`MenuManager`) |
+| 558–573 | frontend and popup fonts (`MenuManager`, see below) |
 
 Ids verified from the executable (MM2Recomp) for the in-race HUD:
 
@@ -39,3 +39,21 @@ Ids verified from the executable (MM2Recomp) for the in-race HUD:
 | 256, 258 | number and label fonts of the circuit readouts (`mmCircuitHUD`); 257 unused |
 | 259–261 | "Place:  ", "Check:  ", "Lap:  " (`mmCircuitHUD`) |
 | 269, 270 | "Hit Objects:  ", "Hit Vehicles:  " (`mmCollideHUD`; the second is never shown) |
+
+Ids verified from the executable (MM2Recomp) for the frontend:
+
+| Ids | Use |
+|-----|-----|
+| 558–565 | frontend fonts by `MenuManager::GetFont` size 12, 14, 16 (default), 20, 24, 32, 48, 64; every menu text uses 16 (560) |
+| 566–573 | the same sizes for the in-game popups (`MenuManager::Init` with a camera); the results use 20 (569) |
+| 4, 5–7, 12 | "Opp.%d" and the results titles Circuit / Checkpoint / Blitz Race, Crash Course (`PUResults`) |
+| 64, 65, 66, 77 | "---", the first driver "DriverX" and its net name, a new driver's net name "noname" (`mmInterface::InitPlayerInfo`, `PlayerCreate`) |
+| 78–82 | "Crash Course", "Cops & Robbers", "Cruise", "Professional", "Amateur" (main menu driver panel) |
+| 344–347, 349, 351, 353–355 | Driver Record and Race Records column headings |
+| 389–393 | " - Recommended" and the texture quality choices (`GraphicsOptions`) |
+| 492–499, 651, 653–656 | results buttons, "DNF", "Pass" and the lesson variants (`PUResults`) |
+| 574–577, 660, 661 | object detail / sound quality and cloud shadow choices |
+| 580–584 | controller types (`MenuManager::GetControllerName`) |
+| 625–628, 629–632 | weather and time of day choices of the race menu |
+| 633, 634 | "Manual", "Automatic" (garage) |
+| 635–640 | main menu driver panel labels (639 "NETNAME:" is never shown) |

@@ -608,8 +608,10 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
                          : arg == "crash"   ? GameMode::CrashCourse
                                             : GameMode::Cruise;
         fe.config.raceIndex = fe.config.mode == GameMode::Cruise ? -1 : 0;
+        fe.applyRaceDefaults(fe.config);
     } else if (cmd == "city") {
         fe.config.city = arg;
+        fe.applyRaceDefaults(fe.config);
     } else if (cmd == "vehicle") {
         fe.config.vehicle = arg;
     } else if (cmd == "go") {
