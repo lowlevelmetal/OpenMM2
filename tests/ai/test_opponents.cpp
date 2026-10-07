@@ -1,7 +1,9 @@
 // Racer and police AI logic on a synthetic road network (no game data):
-// driving lines from .opp rows, MM1's turn braking, routing, aiPoliceForce.
+// driving lines from .opp rows, MM2 aiVehiclePhysics turn braking and road
+// targets, obstacle geometry, aiRaceData settings, aiPoliceForce.
 #include "ai/Course.h"
 #include "ai/Driving.h"
+#include "ai/Opponent.h"
 #include "ai/Police.h"
 
 #include <gtest/gtest.h>
@@ -138,55 +140,150 @@ TEST(AiCourse, RoutesAroundGapsAndAvoidedRoads) {
     EXPECT_FALSE(ai::locateOnRoads(net, {50, 0, -100}).onRoad);
 }
 
-TEST(AiDriving, TurnBrakeFollowsCalcSpeed) {
+TEST(AiDriving, TurnBrakeFollowsCalcRoadSpeed) {
     const auto map = squareBlock();
     const auto net = ai::RoadNetwork::build(map, {});
     const auto course = ai::Course::fromOpponentPath(net, circuitRows(), true);
     ASSERT_TRUE(course);
     ASSERT_EQ(course->turns().size(), 4u);
     const ai::CourseTurn turn = course->turns()[1];
-    // r = W / (1 - sin((pi - d) / 2)), vmax = sqrt(23.76 r).
-    const float r = 5.0f / (1.0f - std::sin(kHalfPi * 0.5f));
+    // r = W / (1 - sin((3.14 - d) / 2)), vmax = sqrt(23.76 r) * factor.
+    const float h = (3.14f - kHalfPi) * 0.5f;
+    const float r = 5.0f / (1.0f - std::sin(h));
     const float vmax = std::sqrt(23.76f * r);
     float limit = 0.0f;
-    const float far = ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 23.76f, 23.76f, &limit);
+    const float far = ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 1.0f, 200.0f, &limit);
     EXPECT_NEAR(limit, vmax, 0.05f);
-    const float entry = 100.0f - r * std::cos(kHalfPi * 0.5f);
+    const float entry = 100.0f - r * std::cos(h);
     EXPECT_NEAR(far, (30.0f - vmax) / (23.76f * entry / 30.0f), 0.01f);
-    EXPECT_LT(far, 0.7f); // MM1 keeps the throttle on
-    EXPECT_GT(ai::turnBrake(*course, turn.s - 20.0f, 0.0f, 30.0f, 23.76f, 23.76f), 0.7f);
+    EXPECT_LT(far, 0.7f); // far off: throttle on
+    EXPECT_GT(ai::turnBrake(*course, turn.s - 20.0f, 0.0f, 30.0f, 1.0f, 200.0f), 0.7f);
     // Slow enough: no braking. On the inside of a right turn the arc is tighter.
-    EXPECT_EQ(ai::turnBrake(*course, turn.s - 20.0f, 0.0f, vmax - 1.0f, 23.76f, 23.76f), 0.0f);
+    EXPECT_EQ(ai::turnBrake(*course, turn.s - 20.0f, 0.0f, vmax - 1.0f, 1.0f, 200.0f), 0.0f);
     float inside = 0.0f;
-    ai::turnBrake(*course, turn.s - 100.0f, 3.0f, 30.0f, 23.76f, 23.76f, &inside);
+    ai::turnBrake(*course, turn.s - 100.0f, 3.0f, 30.0f, 1.0f, 200.0f, &inside);
     EXPECT_LT(inside, vmax);
+    // The race's corner speed factor scales the corner speed; a turn beyond
+    // the look-ahead (plus its set-back) is not braked for yet.
+    float faster = 0.0f;
+    ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 2.0f, 200.0f, &faster);
+    EXPECT_NEAR(faster, 2.0f * vmax, 0.1f);
+    EXPECT_EQ(ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 1.0f, 50.0f), 0.0f);
 }
 
-TEST(AiDriving, ObstacleScanFindsTheNearestGap) {
-    ai::TrackedCar slow;
-    slow.id = 7;
-    slow.position = {0, 0, -20};
-    slow.forward = {0, 0, -1};
-    slow.velocity = {0, 0, -5};
-    ai::ScanInput in;
-    in.position = {0, 0, 0};
-    in.lineDir = {0, 0, -1};
-    in.speed = 20.0f;
-    in.selfId = 1;
-    const auto scan = ai::scanObstacles(in, std::span<const ai::TrackedCar>(&slow, 1));
-    ASSERT_EQ(scan.blocked.size(), 1u);
-    float side = 0.0f;
-    ASSERT_TRUE(scan.freeSide(0.5f, -6.0f, 6.0f, side));
-    EXPECT_NEAR(side, 1.0f + 1.0f + 0.75f, 1e-4f); // its half width + ours + 0.75 m, on the near side
-    EXPECT_FALSE(scan.freeSide(0.0f, -1.0f, 1.0f, side)); // no room on a narrow road
-    ASSERT_TRUE(scan.blocking(0.0f));
-    EXPECT_NEAR(scan.blocking(0.0f)->speed, 5.0f, 1e-4f);
-    // A car pulling away is not an obstacle.
-    slow.velocity = {0, 0, -30};
-    EXPECT_TRUE(ai::scanObstacles(in, std::span<const ai::TrackedCar>(&slow, 1)).blocked.empty());
+// aiVehiclePhysics::CalcRoadTarget: the target is the farthest point of the
+// road visible between the curbs (moved in by the car's side + 1 m).
+TEST(AiDriving, RoadTargetIsTheInsideOfTheNextBend) {
+    const auto map = squareBlock();
+    const auto net = ai::RoadNetwork::build(map, {});
+    const auto course = ai::Course::fromOpponentPath(net, circuitRows(), true);
+    ASSERT_TRUE(course);
+    ai::RouteParams params;
+    params.lookAhead = 150.0f;
+    ai::DriveContext ctx;
+    ctx.course = &*course;
+    ai::RouteNode from;
+    from.pos = {0, 1, -120};
+    ctx.s = course->locate(from.pos, &ctx.lateral);
+    const Vec3 north{0, 0, -1};
+    // 65 m before the right turn at c1: the curb point 2 m in from the inside
+    // corner of the road (its last section, x = 5 - 2).
+    ai::RouteNode t = ai::courseTarget(from, nullptr, north, 1.0f, params, ctx);
+    EXPECT_NEAR(t.pos.x, 3.0f, 1e-3f);
+    EXPECT_NEAR(t.pos.z, -185.0f, 1e-3f);
+    EXPECT_NEAR(t.pos.y, 1.0f, 1e-3f); // MM2 keeps route points 1 m up
+    EXPECT_NEAR(t.dist, std::sqrt(9.0f + 65.0f * 65.0f), 1e-2f);
+    EXPECT_NEAR(t.s, 65.0f, 0.5f);
+    // From there, the inside corner of the next road's first section, 45
+    // degrees to the right, then down that road.
+    const ai::RouteNode t2 = ai::courseTarget(t, &from, north, 1.0f, params, ctx);
+    EXPECT_NEAR(t2.pos.x, 15.0f, 1e-3f);
+    EXPECT_NEAR(t2.pos.z, -197.0f, 1e-3f);
+    EXPECT_NEAR(t2.angle, kHalfPi * 0.5f, 1e-3f); // turning summed from the car's heading
+    const ai::RouteNode t3 = ai::courseTarget(t2, &t, north, 1.0f, params, ctx);
+    EXPECT_GT(t3.pos.x, 90.0f);
+    EXPECT_NEAR(t3.pos.z, -197.0f, 1e-3f);
+    EXPECT_NEAR(t3.angle, kHalfPi, 1e-3f);
+
+    // On a straight the walk stops at the look-ahead, keeping the car's place
+    // across the road.
+    params.lookAhead = 30.0f;
+    from.pos = {2, 1, -40};
+    ctx.s = course->locate(from.pos, &ctx.lateral);
+    t = ai::courseTarget(from, nullptr, north, 1.0f, params, ctx);
+    EXPECT_NEAR(t.pos.x, 2.0f, 1e-3f);
+    EXPECT_NEAR(t.pos.z, -100.0f, 1e-3f);
+    EXPECT_NEAR(t.angle, 0.0f, 1e-3f);
 }
 
-TEST(AiPolice, ForceLimitsAndCloseInState) {
+// aiVehicle::IsBlockingTarget / PreAvoid.
+TEST(AiDriving, ObstacleBlockingAndAvoidPoints) {
+    ai::TrackedCar car;
+    car.id = 7;
+    car.position = {0, 0, -20};
+    car.forward = {0, 0, -1};
+    car.halfWidth = 1.0f;
+    car.halfLength = 2.3f;
+    const Vec3 from{0, 0, 0}, to{0, 0, -50};
+    // The first corner in the path (front left) is 22.3 m along the way.
+    EXPECT_NEAR(ai::blockingDistance(car, from, to, 9.2f, 2.0f), 22.3f, 1e-3f);
+    // 4 m to the side: clear of a 2 m wide car (+1 m either side).
+    car.position.x = 4.0f;
+    EXPECT_EQ(ai::blockingDistance(car, from, to, 9.2f, 2.0f), -1.0f);
+    // Beyond the way plus the extra length: clear.
+    car.position = {0, 0, -70};
+    EXPECT_EQ(ai::blockingDistance(car, from, to, 9.2f, 2.0f), -1.0f);
+
+    car.position = {0, 0, -20};
+    Vec3 left, right;
+    ai::avoidPoints(car, from, {0, 0, -1}, 3.0f, left, right);
+    // The rear corners pushed 3 m out across the line of sight to them.
+    EXPECT_NEAR(left.x, -3.99f, 0.01f);
+    EXPECT_NEAR(left.z, -17.53f, 0.01f);
+    EXPECT_NEAR(right.x, 3.99f, 0.01f);
+    EXPECT_NEAR(right.z, -17.53f, 0.01f);
+}
+
+// aiRaceData's [Opponent] record.
+TEST(AiOpponent, SettingsFromTheAimapLine) {
+    const float line[] = {0.86f, 0.0f, 150.0f, 0.69f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 1.49f};
+    const auto s = ai::OpponentSettings::fromData(line, 3);
+    EXPECT_FLOAT_EQ(s.route.maxThrottle, 0.86f);
+    EXPECT_FLOAT_EQ(s.route.lookAhead, 150.0f);
+    EXPECT_FLOAT_EQ(s.route.brakeThreshold, 0.69f);
+    EXPECT_TRUE(s.route.avoidTraffic);
+    EXPECT_FALSE(s.route.avoidProps);
+    EXPECT_FALSE(s.route.avoidPlayers);
+    EXPECT_TRUE(s.route.avoidOpponents);
+    EXPECT_FALSE(s.route.preferSidewalk);
+    EXPECT_FLOAT_EQ(s.route.cornerSpeedFactor, 1.49f);
+    EXPECT_EQ(s.laps, 3);
+    EXPECT_TRUE(s.repairWhenWrecked); // circuits only
+    // Missing numbers: aiRaceData's defaults.
+    const auto d = ai::OpponentSettings::fromData({}, 0);
+    EXPECT_FLOAT_EQ(d.route.maxThrottle, 1.0f);
+    EXPECT_FLOAT_EQ(d.route.lookAhead, 50.0f);
+    EXPECT_FLOAT_EQ(d.route.brakeThreshold, 0.7f);
+    EXPECT_TRUE(d.route.avoidTraffic && d.route.avoidProps && d.route.avoidPlayers && d.route.avoidOpponents);
+    EXPECT_FLOAT_EQ(d.route.cornerSpeedFactor, 1.0f);
+    EXPECT_FALSE(d.repairWhenWrecked);
+}
+
+TEST(AiPolice, SettingsFromTheAimapLine) {
+    const float line[] = {0.0f, 15.0f, 0.5f, 70.0f};
+    auto s = ai::PoliceSettings::fromData(line, 150.0f);
+    EXPECT_EQ(s.behaviours, 15u);
+    EXPECT_FLOAT_EQ(s.opponentChance, 0.5f);
+    EXPECT_FLOAT_EQ(s.opponentRange, 70.0f);
+    EXPECT_FLOAT_EQ(s.chaseDistance, 150.0f);
+    s = ai::PoliceSettings::fromData({});
+    EXPECT_FLOAT_EQ(s.chaseDistance, 250.0f); // aiRaceData default
+    EXPECT_FLOAT_EQ(s.detectRange, 75.0f);
+    EXPECT_FLOAT_EQ(s.opponentChance, 0.5f);
+    EXPECT_FLOAT_EQ(s.opponentRange, 50.0f);
+}
+
+TEST(AiPolice, ForceLimitsAndApprehendState) {
     ai::PoliceForce force; // three cops per suspect, three suspects
     EXPECT_TRUE(force.registerPerp(1, 100));
     EXPECT_TRUE(force.registerPerp(2, 100));
@@ -204,10 +301,11 @@ TEST(AiPolice, ForceLimitsAndCloseInState) {
     cars[1].position = {10, 0, 0};
     cars[2].id = 2;
     cars[2].position = {30, 0, 0};
-    EXPECT_EQ(force.state(1, 100, cars, 10.0f), 3); // nearest and within 25 m: close in
-    EXPECT_EQ(force.state(2, 100, cars, 30.0f), 4); // follow
-    EXPECT_EQ(force.state(1, 100, cars, 26.0f), 4);
-    EXPECT_EQ(force.state(1, 999, cars, 10.0f), 9);
+    // aiPoliceForce::State: the nearest pursuer within 25 m apprehends.
+    EXPECT_EQ(force.state(1, 100, cars, 10.0f), ai::PoliceForce::kApprehend);
+    EXPECT_EQ(force.state(2, 100, cars, 30.0f), ai::PoliceForce::kFollow);
+    EXPECT_EQ(force.state(1, 100, cars, 26.0f), ai::PoliceForce::kFollow);
+    EXPECT_EQ(force.state(1, 999, cars, 10.0f), ai::PoliceForce::kNotPursued);
 
     EXPECT_TRUE(force.unregisterCop(1, 100));
     EXPECT_FALSE(force.find(1, 100));
@@ -217,8 +315,11 @@ TEST(AiPolice, ForceLimitsAndCloseInState) {
     EXPECT_TRUE(force.registerPerp(7, 103));
 }
 
-TEST(AiPolice, DensityPicksEvenlySpacedPosts) {
-    EXPECT_TRUE(ai::PoliceSquad::pickByDensity(20, 0.0f).empty());
-    EXPECT_EQ(ai::PoliceSquad::pickByDensity(20, 1.0f).size(), 20u);
-    EXPECT_EQ(ai::PoliceSquad::pickByDensity(20, 0.5f), (std::vector<std::size_t>{0, 2, 4, 6, 8, 10, 12, 14, 16, 18}));
+TEST(AiPolice, DensityPlacesTheFirstPosts) {
+    // aiMap::Init: trunc(count * clamp(density, 0, 1)).
+    EXPECT_EQ(ai::PoliceSquad::countForDensity(20, 0.0f), 0u);
+    EXPECT_EQ(ai::PoliceSquad::countForDensity(20, 1.0f), 20u);
+    EXPECT_EQ(ai::PoliceSquad::countForDensity(20, 0.5f), 10u);
+    EXPECT_EQ(ai::PoliceSquad::countForDensity(7, 0.5f), 3u);
+    EXPECT_EQ(ai::PoliceSquad::countForDensity(7, 3.0f), 7u); // a race's cop count
 }

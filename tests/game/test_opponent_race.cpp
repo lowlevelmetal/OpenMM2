@@ -93,8 +93,10 @@ struct CityWorld {
     }
 };
 
+// MM2 builds every AI car with its base tune (aiVehiclePhysics::Init ->
+// vehCar::Init(<car>)); the retail *_opp / *_cop tunes are MM1 leftovers.
 std::unique_ptr<game::SimVehicle> spawnCar(const vfs::Vfs& vfs, phys::World& world, const std::string& name,
-                                           Mat34 spawn, std::string_view tune = "_opp") {
+                                           Mat34 spawn, std::string_view tune = {}) {
     std::string error;
     auto car = game::SimVehicle::load(vfs, name, &error, tune);
     if (!car)
@@ -229,14 +231,16 @@ struct AiRacer {
     int seenResets = 0, seenBackups = 0;
 };
 
-// Distance beyond the course's curbs (0 when between them).
+// Distance beyond the course's sidewalks (0 on the road or a sidewalk: MM2's
+// racers take the sidewalk to get round an obstacle, CalcObstacleAvoidPoints
+// accepting points there).
 float beyondCurb(const ai::Opponent& o, const Vec3& pos) {
     const ai::Course& c = o.course();
     float lateral = 0.0f;
     const float s = c.locate(pos, o.courseDistance(), 40.0f, &lateral);
-    float left, right;
-    c.edges(s, left, right);
-    return std::max(0.0f, lateral > 0.0f ? lateral - right : -lateral - left);
+    float left, right, leftEdge, rightEdge;
+    c.edges(s, left, right, &leftEdge, &rightEdge);
+    return std::max(0.0f, lateral > 0.0f ? lateral - rightEdge : -lateral - leftEdge);
 }
 
 struct RaceRun {
@@ -364,7 +368,7 @@ void report(const char* title, const RaceRun& run) {
         std::printf("  car %d %-9s laps", r.id, r.vehicle->model().baseName.c_str());
         for (float t : r.lapTimes)
             std::printf(" %.1f", t);
-        std::printf("  finish %.1f s  line %.0f m  beyond curb worst %.1f m (%.1f s)  backups %d resets %d\n",
+        std::printf("  finish %.1f s  line %.0f m  beyond sidewalk worst %.1f m (%.1f s)  backups %d resets %d\n",
                     r.finishTime, r.driver->course().raceDistance(1), r.worstOffRoad, r.offRoadSeconds,
                     r.driver->backups(), r.driver->resets());
     }
@@ -448,17 +452,19 @@ TEST(OpponentRace, LondonCircuitLaps) {
     }
 }
 
+// race1's opponents steer round ambient traffic ([Opponent] avoid flags
+// 1 1 0 0; race0's, with 0 0 0 0, plough through it as in MM2).
 TEST(OpponentRace, LondonRaceThroughTraffic) {
     MM2_REQUIRE_GAME_DATA();
     const vfs::Vfs& vfs = *test::gameData();
     auto cw = CityWorld::load(vfs, "london", 1.0f);
     ASSERT_TRUE(cw);
-    const auto setup = loadSetup(*cw->city, vfs, game::GameMode::Checkpoint, 0, 4, 0);
+    const auto setup = loadSetup(*cw->city, vfs, game::GameMode::Checkpoint, 1, 6, 0);
     ASSERT_TRUE(setup);
-    const RaceRun run = runRace(*cw, vfs, *setup, 240.0f);
-    report("london race0 (amateur) with full traffic", run);
-    plotRun(*cw, run, "london_race0_traffic.png");
-    ASSERT_EQ(run.racers.size(), 4u);
+    const RaceRun run = runRace(*cw, vfs, *setup, 300.0f);
+    report("london race1 (amateur) with full traffic", run);
+    plotRun(*cw, run, "london_race1_traffic.png");
+    ASSERT_EQ(run.racers.size(), 6u);
     for (const auto& r : run.racers) {
         EXPECT_TRUE(r.driver->finished()) << "car " << r.id;
         const float line = r.driver->course().raceDistance(0);
@@ -509,9 +515,7 @@ TEST(OpponentRace, RecoversWhenFacingAWall) {
     r.vehicle = spawnCar(vfs, *cw->world, o.vehicle, facing);
     ASSERT_TRUE(r.vehicle);
     r.id = 1;
-    ai::OpponentSettings settings;
-    settings.maxThrottle = o.params.empty() ? 1.0f : o.params[0];
-    settings.laps = 1;
+    ai::OpponentSettings settings = ai::OpponentSettings::fromData(o.params, 1);
     settings.world = cw->world.get();
     r.driver = std::make_unique<ai::Opponent>(r.vehicle->sim(), std::move(*course), settings, r.id);
 
@@ -542,19 +546,35 @@ TEST(OpponentRace, RecoversWhenFacingAWall) {
 
 namespace {
 
-// A suspect (a player-tuned car driven by an Opponent along a road route)
-// drives past a parked cop at up to `speed` m/s, then keeps to `slowSpeed`
-// after `slowAfter` seconds.
+// A suspect (a player-tuned car driven by an Opponent along a road route,
+// flagged as the player) starts 70 m behind a parked cop and drives past it
+// at up to `speed` m/s, keeping to `slowSpeed` after `slowAfter` seconds.
+struct ChaseOptions {
+    float speed = 20.0f;
+    float slowAfter = 1e9f;
+    float slowSpeed = 0.0f;
+    float seconds = 30.0f;
+    bool parked = false; // the suspect stays where it starts
+    float chaseDistance = 250.0f;
+    // 3 s into the chase the suspect is moved this far on along its route
+    // (0 = never).
+    float jumpAhead = 0.0f;
+};
+
 struct ChaseResult {
     bool chased = false;
     ai::PoliceCar::Reason reason = ai::PoliceCar::Reason::None;
     float chaseStarted = -1.0f;
-    float caughtAt = -1.0f; // within 8 m of the suspect after it slowed down
-    bool closedIn = false;
+    float caughtAt = -1.0f; // within 15 m of the suspect after it slowed down
+    bool closedIn = false;  // apprehended (aiPoliceForce::State 1)
+    bool blocked = false;   // got in front and held the suspect's heading (Mirror)
     bool siren = false;
+    bool sirenAtEnd = false;
+    ai::PoliceCar::Mode modeAtEnd = ai::PoliceCar::Mode::Parked;
+    float copSpeedAtEnd = 0.0f;
 };
 
-ChaseResult runChase(const char* plotName, float speed, float slowAfter, float slowSpeed, float seconds) {
+ChaseResult runChase(const char* plotName, const ChaseOptions& opt) {
     ChaseResult result;
     const vfs::Vfs& vfs = *test::gameData();
     auto cw = CityWorld::load(vfs, "london", 0.0f);
@@ -566,8 +586,8 @@ ChaseResult runChase(const char* plotName, float speed, float slowAfter, float s
     const ai::RoadNetwork& net = cw->ai->network();
 
     // The first [Police] car of roam.aimap on a road that runs straight
-    // through its post: the suspect starts 70 m behind the cop and drives
-    // past it.
+    // through its post: the suspect starts 70 m behind the cop (out of its
+    // view) and drives past it.
     const game::session::PoliceSetup* post = nullptr;
     Vec3 suspectStart, ahead;
     int near = -1, farEnd = -1;
@@ -617,22 +637,22 @@ ChaseResult runChase(const char* plotName, float speed, float slowAfter, float s
     if (!course)
         return result;
     ai::OpponentSettings ss;
-    ss.speedLimit = speed;
+    ss.speedLimit = opt.speed;
     ss.world = cw->world.get();
     ss.resetAfterSeconds = 0.0f;
     ai::Opponent driver(suspect->sim(), std::move(*course), ss, 2);
 
     ai::PoliceSquad police(net);
-    ai::PoliceSettings ps;
+    ai::PoliceSettings ps = ai::PoliceSettings::fromData(post->params, opt.chaseDistance);
     police.add(cop->sim(), post->spawn, 1, ps);
     ai::PoliceCar& officer = *police.cars().front();
 
     std::vector<Vec3> copTrail, suspectTrail;
     float t = 0.0f;
     bool slowed = false;
-    for (int frame = 0; t < seconds; ++frame) {
-        if (!slowed && t >= slowAfter) {
-            driver.setSpeedLimit(slowSpeed);
+    for (int frame = 0; t < opt.seconds; ++frame) {
+        if (!slowed && t >= opt.slowAfter) {
+            driver.setSpeedLimit(opt.slowSpeed);
             slowed = true;
         }
         ai::TrackedCar sc = track(*suspect, 2);
@@ -641,6 +661,13 @@ ChaseResult runChase(const char* plotName, float speed, float slowAfter, float s
         ai::TrackedCar cc = track(*cop, 1);
         cc.isPolice = true;
         const std::vector<ai::TrackedCar> cars{cc, sc};
+        if (opt.jumpAhead > 0.0f && result.chased && t > result.chaseStarted + 3.0f && t < result.chaseStarted + 3.0f + kDt) {
+            const ai::Course& c = driver.course();
+            ai::placeOnCourse(suspect->sim(), c, driver.courseDistance() + opt.jumpAhead, 0.0f, {}, 2, {},
+                              cw->world.get());
+            driver.reset();
+        }
+        driver.setHeld(opt.parked);
         driver.update(kDt, cars);
         police.update(kDt, cars, cw->world.get(), true);
         phys::Body* bodies[] = {&cop->sim().body, &suspect->sim().body};
@@ -657,13 +684,18 @@ ChaseResult runChase(const char* plotName, float speed, float slowAfter, float s
         }
         result.siren = result.siren || officer.siren();
         result.closedIn = result.closedIn || officer.closingIn();
+        result.blocked = result.blocked || officer.blocking();
         const float gap = cop->sim().modelMatrix().m3.dist(suspect->sim().modelMatrix().m3);
-        if (slowed && result.caughtAt < 0.0f && gap < 8.0f)
+        if (slowed && result.caughtAt < 0.0f && gap < 15.0f)
             result.caughtAt = t;
         if (debugLevel() == 2 && frame % 15 == 0)
-            std::printf("t %5.1f cop mode %d v %4.1f suspect v %4.1f gap %5.1f\n", t,
-                        static_cast<int>(officer.mode()), cop->sim().speed(), suspect->sim().speed(), gap);
+            std::printf("t %5.1f cop mode %d %s v %4.1f suspect v %4.1f gap %5.1f\n", t,
+                        static_cast<int>(officer.mode()), officer.closingIn() ? "apprehend" : "follow",
+                        cop->sim().speed(), suspect->sim().speed(), gap);
     }
+    result.sirenAtEnd = officer.siren();
+    result.modeAtEnd = officer.mode();
+    result.copSpeedAtEnd = cop->sim().speed();
     Aabb box;
     for (const Vec3& p : copTrail)
         box.expand(p);
@@ -682,25 +714,66 @@ ChaseResult runChase(const char* plotName, float speed, float slowAfter, float s
 
 } // namespace
 
-TEST(PoliceChase, CatchesASlowedSpeeder) {
+// aiPoliceOfficer::DetectPerpetrator: any player within 75 m in front of a
+// cop is pursued (no speeding test in MM2); FollowPerpetrator closes to about
+// 12.5 m behind it.
+TEST(PoliceChase, ChasesACarPassingInFront) {
     MM2_REQUIRE_GAME_DATA();
-    // Up to 26 m/s (58 mph) away from a parked cop, then 8 m/s.
-    const ChaseResult r = runChase("police_chase.png", 26.0f, 10.0f, 8.0f, 60.0f);
-    std::printf("chase started %.1f s (reason %d), caught %.1f s, closed in %d\n", r.chaseStarted,
-                static_cast<int>(r.reason), r.caughtAt, r.closedIn ? 1 : 0);
+    ChaseOptions opt;
+    opt.speed = 13.0f; // 29 mph: lawful, chased all the same
+    opt.slowAfter = 15.0f;
+    opt.slowSpeed = 6.0f;
+    opt.seconds = 45.0f;
+    const ChaseResult r = runChase("police_chase.png", opt);
+    std::printf("chase started %.1f s (reason %d), within 15 m %.1f s, apprehended %d, blocked %d\n",
+                r.chaseStarted, static_cast<int>(r.reason), r.caughtAt, r.closedIn ? 1 : 0, r.blocked ? 1 : 0);
     EXPECT_TRUE(r.chased);
-    EXPECT_EQ(r.reason, ai::PoliceCar::Reason::Speeding);
+    EXPECT_EQ(r.reason, ai::PoliceCar::Reason::PlayerInView);
     EXPECT_TRUE(r.siren);
-    EXPECT_TRUE(r.closedIn);
     EXPECT_GT(r.caughtAt, 0.0f) << "the cop never caught up";
+    EXPECT_EQ(r.modeAtEnd, ai::PoliceCar::Mode::Chasing);
 }
 
-TEST(PoliceChase, IgnoresALawfulDriver) {
+// The nearest pursuer within 25 m of a suspect doing 10 m/s or more
+// apprehends it: gets 12 m ahead and blocks it (aiPoliceOfficer::Block,
+// aiVehiclePhysics::Mirror).
+TEST(PoliceChase, ApprehendsAMovingSuspect) {
     MM2_REQUIRE_GAME_DATA();
-    // 13 m/s (29 mph): under the 40 mph limit.
-    const ChaseResult r = runChase("police_lawful.png", 13.0f, 100.0f, 13.0f, 15.0f);
+    ChaseOptions opt;
+    opt.speed = 15.0f;
+    opt.seconds = 40.0f;
+    const ChaseResult r = runChase("police_apprehend.png", opt);
+    std::printf("chase started %.1f s, apprehended %d, blocked %d\n", r.chaseStarted, r.closedIn ? 1 : 0,
+                r.blocked ? 1 : 0);
+    EXPECT_TRUE(r.chased);
+    EXPECT_TRUE(r.closedIn);
+}
+
+TEST(PoliceChase, IgnoresACarBehindIt) {
+    MM2_REQUIRE_GAME_DATA();
+    // The suspect stays 70 m behind the cop: outside its field of view.
+    ChaseOptions opt;
+    opt.parked = true;
+    opt.seconds = 10.0f;
+    const ChaseResult r = runChase("police_behind.png", opt);
     EXPECT_FALSE(r.chased);
     EXPECT_FALSE(r.siren);
+}
+
+// Beyond [CopChaseDistance] the suspect escapes (PerpEscapes): siren off,
+// the cop stops where it is and watches again.
+TEST(PoliceChase, SuspectEscapesBeyondTheChaseDistance) {
+    MM2_REQUIRE_GAME_DATA();
+    ChaseOptions opt;
+    opt.speed = 26.0f;
+    opt.seconds = 25.0f;
+    opt.jumpAhead = 280.0f;
+    opt.chaseDistance = 150.0f; // london crash5's [CopChaseDistance]
+    const ChaseResult r = runChase("police_escape.png", opt);
+    EXPECT_TRUE(r.chased);
+    EXPECT_FALSE(r.sirenAtEnd);
+    EXPECT_EQ(r.modeAtEnd, ai::PoliceCar::Mode::Parked);
+    EXPECT_LT(r.copSpeedAtEnd, 1.0f);
 }
 
 // Every circuit and checkpoint race of both cities, one lap, all opponents.
@@ -749,7 +822,7 @@ TEST(OpponentRace, EveryRaceSweep) {
                     finished += done;
                     total += static_cast<int>(run.racers.size());
                     std::printf("%s: %d/%zu finished (%d wrecked), slowest %.0f s, line %.0f m, resets %d, "
-                                "backups %d, beyond curb %.1f s, least progress %.0f%%\n",
+                                "backups %d, beyond sidewalk %.1f s, least progress %.0f%%\n",
                                 key.c_str(), done, run.racers.size(), wrecked, slowest, longest, resets, backups, off,
                                 least * 100.0f);
                     std::string file = key;

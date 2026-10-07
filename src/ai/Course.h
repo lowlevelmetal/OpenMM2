@@ -1,26 +1,29 @@
 #pragma once
 
-// Driving lines through the road network for AI racers and police: MM1's
-// aiGoalFollowWayPts waypoint route (a list of aiMap intersections driven
-// along the roads that join them, aiRailSet) rebuilt as one polyline with the
-// road edges along it.
+// Driving lines through the road network for AI racers and police: the
+// waypoint route MM2's aiVehiclePhysics::RegisterRoute is given (a list of
+// aiMap intersections driven along the roads that join them,
+// aiMap::DetRdSegBetweenInts) rebuilt as one polyline, with the curbs,
+// sidewalk edges, section frames and aiPath flags of its roads along it.
 //
-// MM2's race/<city>/*.opp files keep MM1's idea: row 0 is the car's grid
-// place, every other row lies on an intersection of the AI map (measured: the
-// rows after the first are within 0-12 m of an intersection centre on every
-// London and San Francisco file), and consecutive intersections are joined by
-// one road in 94 % (London) / 89 % (SF) of the pairs. Circuits repeat the
-// grid place as the last row. The car starts on the road from row 1's
-// intersection to row 2's (MM1 aiGoalFollowWayPts::Reset picks the first
-// waypoint equal to the intersection the car is heading for).
+// race/<city>/*.opp (aiRouteRacer::Init): row 0 is the car's grid place,
+// the last row its destination, every row between a waypoint (the
+// intersection whose room holds it; measured within 0-12 m of an
+// intersection centre on every London and San Francisco file). Consecutive
+// waypoints are joined by one road in 94 % (London) / 89 % (SF) of the
+// pairs. The car starts on the road from row 1's intersection to row 2's
+// (RegisterRoute starts at waypoint 1).
 //
-// Open1560 - An Open Source Re-Implementation of Midtown Madness 1 Beta
-// Copyright (C) 2020 Brick. GPL-3.0-or-later; OpenMM2 port under the same licence.
+// Parts of this file were first ported from Open1560 (MM1's
+// aiGoalFollowWayPts). Open1560 - An Open Source Re-Implementation of
+// Midtown Madness 1 Beta, Copyright (C) 2020 Brick. GPL-3.0-or-later;
+// OpenMM2 port under the same licence.
 
 #include "ai/RoadNetwork.h"
 #include "city/Race.h"
 #include "core/Math.h"
 
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -38,20 +41,26 @@ struct CourseLeg {
     float end = 0.0f;
 };
 
-// A bend of the driving line (the turns aiGoalFollowWayPts::CalcSpeed brakes
-// for). Consecutive bends of the same direction closer than 25 m are merged.
+// A bend of the driving line (the turns aiVehiclePhysics::CalcRoadSpeed
+// brakes for). Consecutive bends of the same direction closer than 25 m are
+// merged.
 struct CourseTurn {
     float s = 0.0f;          // arc length of the turn's middle
     float deflection = 0.0f; // radians, positive = right
     float halfWidth = 6.0f;  // centre line to curb at the turn
+    bool intoAlley = false;  // the road after it is an alley (aiPath flag 0x2)
 };
 
 // Points along the line: road edges and the road they belong to.
 struct CoursePoint {
-    float left = 6.0f;  // distance from the line to the left curb (m)
-    float right = 6.0f; // to the right curb
-    int path = -1;      // -1 = across an intersection
-    int lanes = 1;      // most lanes on one side of that road
+    float left = 6.0f;       // distance from the line to the left curb (m)
+    float right = 6.0f;      // to the right curb
+    float leftEdge = 9.0f;   // to the left side's outer edge (beyond the sidewalk)
+    float rightEdge = 9.0f;  // to the right side's outer edge
+    int path = -1;           // -1 = across an intersection
+    int lanes = 1;           // most lanes on one side of that road
+    std::uint16_t flags = 0; // aiPath flags of that road: 0x1 divided (the centre is a curb), 0x2 alley
+    Vec3 across;             // unit right of travel in the road section's frame (zero off the roads)
 };
 
 class Course {
@@ -67,6 +76,11 @@ public:
     static std::optional<Course> fromOpponentPath(const RoadNetwork& net, std::span<const city::OpponentPoint> rows,
                                                   bool circuit, std::string* error = nullptr);
 
+    // Along one road from `start` to `finish` when both lie on it (no
+    // intersection on the way: aiMap::CalcRoute finds no waypoints); else
+    // std::nullopt.
+    static std::optional<Course> alongRoad(const RoadNetwork& net, const Vec3& start, const Vec3& finish);
+
     bool loop() const { return m_loop; }
     float length() const { return m_line.length; } // one lap for loops
     float startDistance() const { return m_startS; }
@@ -75,6 +89,9 @@ public:
     float finishDistance() const { return m_finishS; }
     // Distance from the start to the finish driving `laps` laps (loops).
     float raceDistance(int laps) const;
+    // Where the driving line ends: the finish row of a .opp file (MM2's
+    // destination), else the line's point at finishDistance().
+    Vec3 finishPoint() const { return m_hasFinishPoint ? m_finishPoint : pointAt(m_finishS); }
     float wrap(float s) const;
 
     Vec3 pointAt(float s, Vec3* direction = nullptr) const;
@@ -83,11 +100,27 @@ public:
     // the driving direction) and XZ distance.
     float locate(const Vec3& p, float hint, float window, float* lateral = nullptr, float* distance = nullptr) const;
     float locate(const Vec3& p, float* lateral = nullptr, float* distance = nullptr) const;
-    // Road edges at `s` (distances from the line to the left and right curb).
-    void edges(float s, float& left, float& right) const;
+    // Road edges at `s` (distances from the line to the left and right curb,
+    // and optionally to the outer edges beyond the sidewalks).
+    void edges(float s, float& left, float& right, float* leftEdge = nullptr, float* rightEdge = nullptr) const;
     // Narrowest edges over [s, s + distance] (merge in before the road narrows).
     void edgesAhead(float s, float distance, float& left, float& right) const;
     int lanesAt(float s) const;
+
+    // The vertices of the line (road sections; intersections are crossed by
+    // a chord). Loops: the repeated closing point is not a vertex.
+    std::size_t vertexCount() const;
+    const Vec3& vertex(std::size_t i) const { return m_line.points[i]; }
+    float vertexDistance(std::size_t i) const { return m_line.distances[i]; }
+    const CoursePoint& vertexInfo(std::size_t i) const { return m_points[i]; }
+    // Unit right of the line at a vertex (across the bisector of its two
+    // segments).
+    Vec3 vertexRight(std::size_t i) const;
+    // The first vertex ahead of arc length `s` (loops wrap; open lines stop
+    // at the last), and the one after `i` (`i` itself at the end of an open
+    // line).
+    std::size_t vertexAfter(float s) const;
+    std::size_t nextVertex(std::size_t i) const;
 
     const Polyline& line() const { return m_line; }
     const std::vector<CoursePoint>& points() const { return m_points; }
@@ -107,6 +140,8 @@ private:
     bool m_loop = false;
     float m_startS = 0.0f;
     float m_finishS = 0.0f;
+    Vec3 m_finishPoint;
+    bool m_hasFinishPoint = false;
 };
 
 // Shortest route between two intersections along the roads (either
@@ -131,5 +166,7 @@ RoadSpot locateOnRoads(const RoadNetwork& net, const Vec3& p);
 // Road edges of a path at section `k`: distances from the centre line to the
 // left and right curbs (left = the .bai left side, +x of the section frame).
 void pathCurbs(const city::AiPath& path, std::size_t k, float& left, float& right);
+// And to the outer edges beyond the sidewalks (at least the curbs).
+void pathOuterEdges(const city::AiPath& path, std::size_t k, float& left, float& right);
 
 } // namespace mm2::ai

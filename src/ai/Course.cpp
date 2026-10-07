@@ -1,5 +1,6 @@
-// Driving lines for AI racers and police. Route semantics from MM1's
-// aiGoalFollowWayPts (Open1560 game.asm, GPL-3.0); see Course.h and docs/ai.md.
+// Driving lines for AI racers and police: MM2's waypoint routes
+// (aiVehiclePhysics::RegisterRoute); see Course.h and docs/ai.md. First ported
+// from MM1's aiGoalFollowWayPts (Open1560 game.asm, GPL-3.0).
 #include "ai/Course.h"
 
 #include <algorithm>
@@ -27,16 +28,19 @@ Vec3 rightOf(const Vec3& dir) {
 
 // Distance from the centre line to one side's curb at section `k`: the
 // side's curb polyline (after its lanes, trams, trains and sidewalk centre,
-// as RoadNetwork reads sidewalks), else its outermost lane + 2.5 m.
-float curbOffset(const city::AiRoadSide& side, const Vec3& centre, const Vec3& xAxis, float fallback) {
+// as RoadNetwork reads sidewalks), else its outermost lane + 2.5 m. With
+// `outer`, the polyline after the curb (the outer edge of the sidewalk).
+float curbOffset(const city::AiRoadSide& side, const Vec3& centre, const Vec3& xAxis, float fallback,
+                 bool outer = false) {
     const std::size_t base = static_cast<std::size_t>(side.numLanes + side.numTrams + side.numTrains);
     const std::vector<Vec3>* poly = nullptr;
     float extra = 0.0f;
-    if (side.numSidewalks > 0 && base + 1 < side.polylines.size()) {
-        poly = &side.polylines[base + 1];
+    const std::size_t which = base + (outer ? 2 : 1);
+    if (side.numSidewalks > 0 && which < side.polylines.size()) {
+        poly = &side.polylines[which];
     } else if (side.numLanes > 0 && static_cast<std::size_t>(side.numLanes) <= side.polylines.size()) {
         poly = &side.polylines[static_cast<std::size_t>(side.numLanes) - 1];
-        extra = 2.5f;
+        extra = outer ? 5.0f : 2.5f;
     }
     if (!poly || poly->empty())
         return fallback;
@@ -98,6 +102,19 @@ void pathCurbs(const city::AiPath& path, std::size_t k, float& left, float& righ
     const Vec3 x = flatUnit(path.xAxis[k]);
     left = curbOffset(path.left, path.center[k], x, fallback);
     right = curbOffset(path.right, path.center[k], x, fallback);
+}
+
+void pathOuterEdges(const city::AiPath& path, std::size_t k, float& left, float& right) {
+    float curbL, curbR;
+    pathCurbs(path, k, curbL, curbR);
+    if (k >= path.center.size() || k >= path.xAxis.size()) {
+        left = curbL;
+        right = curbR;
+        return;
+    }
+    const Vec3 x = flatUnit(path.xAxis[k]);
+    left = std::max(curbL, curbOffset(path.left, path.center[k], x, curbL, true));
+    right = std::max(curbR, curbOffset(path.right, path.center[k], x, curbR, true));
 }
 
 int nearestIntersection(const RoadNetwork& net, const Vec3& p, float* distance) {
@@ -243,10 +260,11 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
         return fail("road network has no AI map");
     const int count = static_cast<int>(net.intersections().size());
 
-    // Intersections joined by one road each (MM1 waypoints are adjacent).
-    // Gaps are filled with the shortest route that keeps off the roads the
-    // course drives elsewhere, so that it does not double back along the
-    // next leg (inferred; MM1's LocateWayPtFromRoad is not decoded).
+    // Intersections joined by one road each (waypoints are adjacent; MM2's
+    // aiMap::DetRdSegBetweenInts finds no road between others). Gaps are
+    // filled with the shortest route that keeps off the roads the course
+    // drives elsewhere, so that it does not double back along the next leg
+    // (inferred).
     std::vector<int> wanted;
     for (int id : intersections)
         if (id >= 0 && id < count && (wanted.empty() || wanted.back() != id))
@@ -375,13 +393,21 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
     };
     auto addSection = [&](int pathIndex, std::size_t sec, bool forward) {
         const city::AiPath& src = map->paths[static_cast<std::size_t>(pathIndex)];
-        float l, r;
+        float l, r, el, er;
         pathCurbs(src, sec, l, r);
+        pathOuterEdges(src, sec, el, er);
         CoursePoint cp;
         cp.left = forward ? l : r;
         cp.right = forward ? r : l;
+        cp.leftEdge = forward ? el : er;
+        cp.rightEdge = forward ? er : el;
         cp.path = pathIndex;
         cp.lanes = lanesOf(src);
+        cp.flags = src.flags;
+        // The section's x axis points to the left of travel in increasing
+        // section order.
+        if (sec < src.xAxis.size())
+            cp.across = flatUnit(src.xAxis[sec]) * (forward ? -1.0f : 1.0f);
         add(src.center[sec], cp);
     };
     // Sections of a road strictly beyond / before arc length `s`.
@@ -435,6 +461,9 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
     if (c.m_points.size() > 1 && c.m_points.front().path < 0) {
         c.m_points.front().left = c.m_points[1].left;
         c.m_points.front().right = c.m_points[1].right;
+        c.m_points.front().leftEdge = c.m_points[1].leftEdge;
+        c.m_points.front().rightEdge = c.m_points[1].rightEdge;
+        c.m_points.front().flags = c.m_points[1].flags;
     }
     if (pts.size() == 1) {
         pts.push_back(pts.front() + Vec3{0, 0, -1});
@@ -461,6 +490,10 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
         c.m_startS = c.m_loop ? c.locate(start) : 0.0f;
     }
     c.m_finishS = c.m_loop ? c.m_startS : (finish ? c.locate(*finish, c.length(), 60.0f) : c.length());
+    if (finish && !c.m_loop) {
+        c.m_finishPoint = *finish;
+        c.m_hasFinishPoint = true;
+    }
     c.findTurns();
     return c;
 }
@@ -494,10 +527,82 @@ std::optional<Course> Course::fromOpponentPath(const RoadNetwork& net, std::span
         // Where the race ends on the loop: the finish row's arc length.
         float lateral = 0.0f, dist = 0.0f;
         const float s = course->locate(*finish, course->m_startS, 60.0f, &lateral, &dist);
-        if (dist < 25.0f)
+        if (dist < 25.0f) {
             course->m_finishS = s;
+            // aiRouteRacer::Init: the last row is the destination.
+            course->m_finishPoint = *finish;
+            course->m_hasFinishPoint = true;
+        }
     }
     return course;
+}
+
+std::optional<Course> Course::alongRoad(const RoadNetwork& net, const Vec3& start, const Vec3& finish) {
+    const city::AiMap* map = net.source();
+    if (!map)
+        return std::nullopt;
+    const RoadSpot a = locateOnRoads(net, start);
+    const RoadSpot b = locateOnRoads(net, finish);
+    if (a.path < 0 || a.path != b.path || a.intersection >= 0 || b.intersection >= 0 || a.distance > 30.0f ||
+        b.distance > 30.0f)
+        return std::nullopt;
+    const city::AiPath& src = map->paths[static_cast<std::size_t>(a.path)];
+    const bool forward = b.s >= a.s; // along increasing section order
+    std::vector<float> cum(src.center.size(), 0.0f);
+    for (std::size_t k = 1; k < cum.size(); ++k)
+        cum[k] = cum[k - 1] + xzDist(src.center[k], src.center[k - 1]);
+    Course c;
+    auto point = [&](std::size_t sec) {
+        float l, r, el, er;
+        pathCurbs(src, sec, l, r);
+        pathOuterEdges(src, sec, el, er);
+        CoursePoint cp;
+        cp.left = forward ? l : r;
+        cp.right = forward ? r : l;
+        cp.leftEdge = forward ? el : er;
+        cp.rightEdge = forward ? er : el;
+        cp.path = a.path;
+        cp.lanes = lanesOf(src);
+        cp.flags = src.flags;
+        if (sec < src.xAxis.size())
+            cp.across = flatUnit(src.xAxis[sec]) * (forward ? -1.0f : 1.0f);
+        return cp;
+    };
+    auto add = [&](const Vec3& p, const CoursePoint& cp) {
+        if (!c.m_line.points.empty() && xzDist(c.m_line.points.back(), p) < 1.0f)
+            return;
+        c.m_line.points.push_back(p);
+        c.m_points.push_back(cp);
+    };
+    const std::size_t n = src.center.size();
+    auto nearest = [&](float s) {
+        std::size_t best = 0;
+        for (std::size_t k = 1; k < n; ++k)
+            if (std::abs(cum[k] - s) < std::abs(cum[best] - s))
+                best = k;
+        return best;
+    };
+    add(start, point(nearest(a.s)));
+    for (std::size_t j = 0; j < n; ++j) {
+        const std::size_t sec = forward ? j : n - 1 - j;
+        const bool between = forward ? (cum[sec] > a.s + 1.0f && cum[sec] < b.s - 1.0f)
+                                     : (cum[sec] < a.s - 1.0f && cum[sec] > b.s + 1.0f);
+        if (between)
+            add(src.center[sec], point(sec));
+    }
+    add(finish, point(nearest(b.s)));
+    if (c.m_line.points.size() < 2) {
+        c.m_line.points.push_back(start + Vec3{0, 0, -1});
+        c.m_points.push_back(c.m_points.front());
+    }
+    c.m_line.finalize();
+    c.m_intersections = {};
+    c.m_startS = 0.0f;
+    c.m_finishS = c.m_line.length;
+    c.m_finishPoint = finish;
+    c.m_hasFinishPoint = true;
+    c.findTurns();
+    return c;
 }
 
 float Course::raceDistance(int laps) const {
@@ -533,17 +638,75 @@ Vec3 Course::pointAt(float s, Vec3* direction) const {
     return m_line.pointAt(wrap(s), direction);
 }
 
-void Course::edges(float s, float& left, float& right) const {
+void Course::edges(float s, float& left, float& right, float* leftEdge, float* rightEdge) const {
     s = wrap(s);
     const std::size_t i = segmentAt(s);
     if (m_points.size() < 2) {
         left = right = m_points.empty() ? 6.0f : m_points[0].left;
+        if (leftEdge)
+            *leftEdge = m_points.empty() ? 9.0f : m_points[0].leftEdge;
+        if (rightEdge)
+            *rightEdge = m_points.empty() ? 9.0f : m_points[0].rightEdge;
         return;
     }
     const float seg = m_line.distances[i + 1] - m_line.distances[i];
     const float t = seg > 1e-6f ? clampf((s - m_line.distances[i]) / seg, 0.0f, 1.0f) : 0.0f;
     left = lerp(m_points[i].left, m_points[i + 1].left, t);
     right = lerp(m_points[i].right, m_points[i + 1].right, t);
+    if (leftEdge)
+        *leftEdge = lerp(m_points[i].leftEdge, m_points[i + 1].leftEdge, t);
+    if (rightEdge)
+        *rightEdge = lerp(m_points[i].rightEdge, m_points[i + 1].rightEdge, t);
+}
+
+std::size_t Course::vertexCount() const {
+    const std::size_t n = m_line.points.size();
+    return m_loop && n > 1 ? n - 1 : n;
+}
+
+Vec3 Course::vertexRight(std::size_t i) const {
+    const auto& pts = m_line.points;
+    const std::size_t n = vertexCount();
+    if (pts.size() < 2)
+        return {1.0f, 0.0f, 0.0f};
+    // Road sections: the section's own frame (aiPath's x axis).
+    if (i < m_points.size() && m_points[i].path >= 0 && m_points[i].across.mag2() > 0.5f)
+        return m_points[i].across;
+    // The directions of the segments into and out of the vertex.
+    Vec3 in, out;
+    if (i + 1 < pts.size())
+        out = flatUnit(pts[i + 1] - pts[i]);
+    if (i > 0)
+        in = flatUnit(pts[i] - pts[i - 1]);
+    else if (m_loop)
+        in = flatUnit(pts[i] - pts[n - 1]);
+    if (i + 1 >= pts.size())
+        out = in;
+    if (i == 0 && !m_loop)
+        in = out;
+    Vec3 d = flatUnit(in + out);
+    if (d.mag2() < 0.5f)
+        d = out;
+    return rightOf(d);
+}
+
+std::size_t Course::vertexAfter(float s) const {
+    const auto& d = m_line.distances;
+    const std::size_t n = vertexCount();
+    if (n == 0)
+        return 0;
+    s = wrap(s);
+    const auto it = std::upper_bound(d.begin(), d.begin() + static_cast<std::ptrdiff_t>(n), s);
+    if (it == d.begin() + static_cast<std::ptrdiff_t>(n))
+        return m_loop ? 0 : n - 1;
+    return static_cast<std::size_t>(std::distance(d.begin(), it));
+}
+
+std::size_t Course::nextVertex(std::size_t i) const {
+    const std::size_t n = vertexCount();
+    if (i + 1 < n)
+        return i + 1;
+    return m_loop ? 0 : i;
 }
 
 void Course::edgesAhead(float s, float distance, float& left, float& right) const {
@@ -618,6 +781,7 @@ void Course::findTurns() {
     // Vertex deflections (+ right). Loops: the last point repeats the first.
     struct Bend {
         float s, angle;
+        std::size_t vertex;
     };
     std::vector<Bend> bends;
     for (std::size_t i = m_loop ? 0 : 1; i + 1 < n; ++i) {
@@ -626,7 +790,7 @@ void Course::findTurns() {
         const Vec3 b = flatUnit(pts[i + 1] - pts[i]);
         const float angle = std::atan2(a.x * b.z - a.z * b.x, a.x * b.x + a.z * b.z);
         if (std::abs(angle) > 0.03f)
-            bends.push_back({m_line.distances[i], angle});
+            bends.push_back({m_line.distances[i], angle, i});
     }
     std::vector<Bend> cluster;
     auto flush = [&] {
@@ -650,6 +814,13 @@ void Course::findTurns() {
                 float l, r;
                 edges(at, l, r);
                 t.halfWidth = std::min(t.halfWidth, 0.5f * (l + r));
+            }
+            // The road the turn leads into (the first road vertex after it).
+            for (std::size_t k = cluster.back().vertex + 1; k < m_points.size(); ++k) {
+                if (m_points[k].path >= 0) {
+                    t.intoAlley = (m_points[k].flags & 0x2) != 0;
+                    break;
+                }
             }
             m_turns.push_back(t);
         }
