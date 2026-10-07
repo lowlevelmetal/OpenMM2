@@ -80,6 +80,8 @@ void Frontend::topChanged() {
     if (id == m_menuId)
         return;
     m_menuId = id;
+    if (quietSwitches)
+        return;
     struct SwitchSound {
         int menu;
         const char* sound;
@@ -789,14 +791,19 @@ public:
             // results first when the race reached its end (MM2 shows them in
             // the game; quitting goes straight back).
             m_fe.config = result->config;
+            auto reward = m_fe.recordResult(*result);
+            // Only the page the player lands on plays its switch sound.
+            m_fe.quietSwitches = true;
             m_fe.push(frontend::makeDriverPage(m_fe));
             if (result->config.mode == game::GameMode::CrashCourse) {
                 m_fe.push(frontend::makeCrashIntroPage(m_fe));
+                m_fe.quietSwitches = result->ended;
                 m_fe.push(frontend::makeCrashCoursePage(m_fe, result->config.city));
             } else {
+                m_fe.quietSwitches = result->ended;
                 m_fe.push(frontend::makeRacesPage(m_fe));
             }
-            auto reward = m_fe.recordResult(*result);
+            m_fe.quietSwitches = false;
             if (result->ended) {
                 m_fe.push(frontend::makeResultsPage(m_fe, *result, std::move(reward)));
                 if (auto* music = ctx.music())

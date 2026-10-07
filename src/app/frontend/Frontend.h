@@ -98,6 +98,9 @@ public:
     // file, per the sound quality option), as 2D effects.
     void playSound(std::string_view name, float volume);
     bool soundPlaying(std::string_view name) const;
+    // While set, page changes play no menu switch sound (building the page
+    // stack after a race).
+    bool quietSwitches = false;
 
     // Profile helpers.
     void selectProfile(const std::string& name);
