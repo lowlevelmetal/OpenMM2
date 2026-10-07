@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=OpenMM2
+GenericName=Racing Game
+Comment=Open source reimplementation of Midtown Madness 2 (requires the original game files)
+Exec=openmm2
+TryExec=openmm2
+Icon=io.github.lowlevelmetal.OpenMM2
+Terminal=false
+Categories=Game;ArcadeGame;
+Keywords=midtown;madness;racing;driving;car;city;
+StartupNotify=true
+SingleMainWindow=true
+PrefersNonDefaultGPU=true

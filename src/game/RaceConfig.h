@@ -1,0 +1,68 @@
+#pragma once
+
+#include <cstdint>
+#include <string>
+
+namespace mm2::game {
+
+// Game modes offered by the original (string table 518-524, 585-589).
+enum class GameMode : std::uint8_t {
+    Cruise,         // free roam
+    Blitz,          // checkpoints in order against the clock
+    Checkpoint,     // checkpoints in any order against opponents ("Checkpoint Race")
+    Circuit,        // laps against opponents
+    CrashCourse,    // driving school lessons
+    CopsAndRobbers, // multiplayer gold game
+};
+
+// Cops & Robbers variants (string table 399-402).
+enum class CopsAndRobbersMode : std::uint8_t { FreeForAll, CopsVsRobbers, RobberTeams };
+
+// Same numbering as the city lighting tables (city/Environment.h).
+enum class TimeOfDay : std::uint8_t { Morning, Noon, Evening, Night };
+enum class Weather : std::uint8_t { Clear, Cloudy, Fog, Rain, Snow };
+enum class Difficulty : std::uint8_t { Amateur, Professional };
+
+// Everything needed to start a session in the world, produced by the
+// frontend (single player menus or the multiplayer lobby) and consumed by the
+// race screen.
+struct RaceConfig {
+    GameMode mode = GameMode::Cruise;
+    std::string city = "london"; // map name (tune/<city>.cinfo)
+    int raceIndex = -1;          // index within the mode's race list; -1 for cruise
+
+    std::string vehicle = "vpbug"; // VehicleInfo::baseName
+    int vehicleColor = 0;          // index into VehicleInfo::colors (paint job)
+    bool automatic = true;         // transmission
+
+    TimeOfDay timeOfDay = TimeOfDay::Noon;
+    Weather weather = Weather::Clear;
+    Difficulty difficulty = Difficulty::Amateur;
+
+    int laps = 0;      // circuit races
+    int opponents = 0; // AI opponents
+    // Densities as chosen in the menus, 0 (none) .. 1 (maximum).
+    float pedestrianDensity = 0.5f;
+    float trafficDensity = 0.5f;
+    float copDensity = 0.5f;
+
+    // Multiplayer (filled from the lobby; unused in single player).
+    bool multiplayer = false;
+    CopsAndRobbersMode copsAndRobbers = CopsAndRobbersMode::FreeForAll;
+    float timeLimitMinutes = 0.0f;
+    int pointLimit = 0;
+};
+
+// Outcome of a session, shown by the results screens and recorded in the
+// driver's profile.
+struct RaceResult {
+    RaceConfig config;
+    bool finished = false; // completed (not quit/aborted)
+    bool won = false;      // position within MustPlace / lesson passed
+    int position = 0;      // 1-based, 0 = not ranked
+    float timeSeconds = 0.0f;
+    int score = 0;
+    int damage = 0;
+};
+
+} // namespace mm2::game

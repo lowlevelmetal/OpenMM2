@@ -1,0 +1,123 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "OPENMM2_BUILD_TESTS": "ON",
+        "OPENMM2_BUILD_TOOLS": "ON"
+      }
+    },
+    {
+      "name": "linux",
+      "hidden": true,
+      "inherits": "base",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "linux-gcc-debug",
+      "displayName": "Linux, GCC, Debug",
+      "inherits": "linux",
+      "cacheVariables": { "CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-gcc-release",
+      "displayName": "Linux, GCC, Release with debug info",
+      "inherits": "linux",
+      "cacheVariables": { "CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++", "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "linux-clang-debug",
+      "displayName": "Linux, Clang, Debug",
+      "inherits": "linux",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++", "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "linux-clang-release",
+      "displayName": "Linux, Clang, Release with debug info",
+      "inherits": "linux",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++", "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows, MSVC (Ninja Multi-Config; run from a Developer prompt or Visual Studio)",
+      "inherits": "base",
+      "generator": "Ninja Multi-Config",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "architecture": { "value": "x64", "strategy": "external" },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl",
+        "CMAKE_CXX_COMPILER": "cl",
+        "CMAKE_CONFIGURATION_TYPES": "Debug;RelWithDebInfo;Release",
+        "OPENMM2_USE_SYSTEM_DEPS": "OFF"
+      },
+      "vendor": {
+        "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] }
+      }
+    },
+    {
+      "name": "windows-vs2022",
+      "displayName": "Windows, Visual Studio 2022 solution",
+      "inherits": "base",
+      "generator": "Visual Studio 17 2022",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" },
+      "cacheVariables": { "OPENMM2_USE_SYSTEM_DEPS": "OFF" }
+    },
+    {
+      "name": "mingw-cross",
+      "hidden": true,
+      "inherits": "linux",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/mingw-w64-x86_64.cmake",
+      "cacheVariables": { "OPENMM2_USE_SYSTEM_DEPS": "OFF" }
+    },
+    {
+      "name": "mingw-cross-debug",
+      "displayName": "Windows x64 cross build (MinGW-w64), Debug",
+      "inherits": "mingw-cross",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "mingw-cross-release",
+      "displayName": "Windows x64 cross build (MinGW-w64), Release",
+      "inherits": "mingw-cross",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    }
+  ],
+  "buildPresets": [
+    { "name": "linux-gcc-debug", "configurePreset": "linux-gcc-debug" },
+    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release" },
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug" },
+    { "name": "linux-clang-release", "configurePreset": "linux-clang-release" },
+    { "name": "windows-msvc-debug", "configurePreset": "windows-msvc", "configuration": "Debug" },
+    { "name": "windows-msvc-release", "configurePreset": "windows-msvc", "configuration": "RelWithDebInfo" },
+    { "name": "windows-vs2022-debug", "configurePreset": "windows-vs2022", "configuration": "Debug" },
+    { "name": "windows-vs2022-release", "configurePreset": "windows-vs2022", "configuration": "RelWithDebInfo" },
+    { "name": "mingw-cross-debug", "configurePreset": "mingw-cross-debug" },
+    { "name": "mingw-cross-release", "configurePreset": "mingw-cross-release" }
+  ],
+  "testPresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error", "timeout": 600 }
+    },
+    { "name": "linux-gcc-debug", "inherits": "base", "configurePreset": "linux-gcc-debug" },
+    { "name": "linux-gcc-release", "inherits": "base", "configurePreset": "linux-gcc-release" },
+    { "name": "linux-clang-debug", "inherits": "base", "configurePreset": "linux-clang-debug" },
+    { "name": "linux-clang-release", "inherits": "base", "configurePreset": "linux-clang-release" },
+    { "name": "windows-msvc-debug", "inherits": "base", "configurePreset": "windows-msvc", "configuration": "Debug" },
+    { "name": "windows-msvc-release", "inherits": "base", "configurePreset": "windows-msvc", "configuration": "RelWithDebInfo" },
+    { "name": "mingw-cross-release", "inherits": "base", "configurePreset": "mingw-cross-release" }
+  ],
+  "packagePresets": [
+    { "name": "linux-release", "configurePreset": "linux-gcc-release", "generators": [ "TGZ" ] },
+    { "name": "windows-portable", "configurePreset": "windows-msvc", "generators": [ "ZIP" ], "configurations": [ "RelWithDebInfo" ] },
+    { "name": "mingw-portable", "configurePreset": "mingw-cross-release", "generators": [ "ZIP" ] }
+  ]
+}

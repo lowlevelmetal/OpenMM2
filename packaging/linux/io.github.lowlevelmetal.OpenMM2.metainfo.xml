@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.lowlevelmetal.OpenMM2</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>OpenMM2</name>
+  <summary>Open source reimplementation of Midtown Madness 2</summary>
+  <description>
+    <p>
+      OpenMM2 is an open source engine that runs Midtown Madness 2 on modern
+      Linux and Windows systems. It aims to reproduce the original game's
+      behaviour faithfully while adding support for any screen resolution,
+      Vulkan and OpenGL rendering, and online multiplayer with automatic port
+      forwarding (UPnP).
+    </p>
+    <p>
+      OpenMM2 contains no game content. You need your own copy of the original
+      Midtown Madness 2: point OpenMM2 at the disc, a disc image (ISO/BIN/CUE)
+      or an existing installation the first time it starts.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.lowlevelmetal.OpenMM2.desktop</launchable>
+  <provides>
+    <binary>openmm2</binary>
+  </provides>
+  <url type="homepage">https://github.com/lowlevelmetal/OpenMM2</url>
+  <url type="bugtracker">https://github.com/lowlevelmetal/OpenMM2/issues</url>
+  <developer id="io.github.lowlevelmetal">
+    <name>OpenMM2 contributors</name>
+  </developer>
+  <categories>
+    <category>Game</category>
+    <category>ArcadeGame</category>
+  </categories>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">mild</content_attribute>
+    <content_attribute id="social-chat">intense</content_attribute>
+  </content_rating>
+  <supports>
+    <control>keyboard</control>
+    <control>gamepad</control>
+  </supports>
+  <requires>
+    <display_length compare="ge">768</display_length>
+  </requires>
+  <releases>
+    <release version="0.1.0" date="2026-10-06" type="development">
+      <description>
+        <p>Initial development version.</p>
+      </description>
+    </release>
+  </releases>
+</component>

@@ -1,0 +1,77 @@
+// World geometry and models: fixed-function style vertex lighting and fog.
+
+FRAME_BLOCK {
+    mat4 view;
+    mat4 proj;
+    mat4 viewProj;
+    vec4 cameraPos;
+    vec4 fogColor;
+    vec4 fogParams; // start, end, density, mode (0 none, 1 linear, 2 exp, 3 exp2)
+    vec4 ambient;
+    vec4 lightDir[3];
+    vec4 lightColor[3];
+} frame;
+
+DRAW_BLOCK {
+    mat4 world;
+    vec4 color;
+    float alphaRef;
+    uint flags;
+} draw;
+
+const uint kLighting = 16u;
+const uint kVertexColor = 32u;
+const uint kEnvMap1 = 64u;
+const uint kFog = 8u;
+
+ATTR(0) vec3 aPosition;
+ATTR(1) vec3 aNormal;
+ATTR(2) vec4 aColor;
+ATTR(3) vec2 aUv0;
+ATTR(4) vec2 aUv1;
+
+OUT(0) vec4 vColor;
+OUT(1) vec2 vUv0;
+OUT(2) vec2 vUv1;
+OUT(3) float vFog;
+
+void main() {
+    vec4 worldPos = draw.world * vec4(aPosition, 1.0);
+    vec4 viewPos = frame.view * worldPos;
+    gl_Position = clipFixup(frame.proj * viewPos);
+
+    vec4 color = draw.color;
+    if ((draw.flags & kVertexColor) != 0u)
+        color *= aColor;
+    vec3 worldNormal = normalize(mat3(draw.world) * aNormal);
+    if ((draw.flags & kLighting) != 0u) {
+        vec3 light = frame.ambient.rgb;
+        for (int i = 0; i < 3; ++i)
+            light += frame.lightColor[i].rgb * max(dot(worldNormal, -frame.lightDir[i].xyz), 0.0);
+        // Direct3D 7 clamps the lit colour to 0..1 per vertex.
+        color.rgb = clamp(color.rgb * light, 0.0, 1.0);
+    }
+    vColor = color;
+    vUv0 = aUv0;
+    if ((draw.flags & kEnvMap1) != 0u) {
+        // Sphere map from the view-space normal (D3DTSS_TCI_CAMERASPACENORMAL style).
+        vec3 n = normalize(mat3(frame.view) * worldNormal);
+        vUv1 = vec2(n.x, -n.y) * 0.5 + 0.5;
+    } else {
+        vUv1 = aUv1;
+    }
+
+    float fog = 1.0;
+    int mode = int(frame.fogParams.w + 0.5);
+    if ((draw.flags & kFog) != 0u && mode != 0) {
+        float d = -viewPos.z;
+        if (mode == 1)
+            fog = (frame.fogParams.y - d) / max(frame.fogParams.y - frame.fogParams.x, 1e-4);
+        else if (mode == 2)
+            fog = exp(-frame.fogParams.z * d);
+        else
+            fog = exp(-(frame.fogParams.z * d) * (frame.fogParams.z * d));
+        fog = clamp(fog, 0.0, 1.0);
+    }
+    vFog = fog;
+}

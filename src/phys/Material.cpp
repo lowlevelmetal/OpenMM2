@@ -1,0 +1,157 @@
+#include "phys/Material.h"
+
+#include "core/StringUtil.h"
+
+#include <format>
+
+namespace mm2::phys {
+namespace {
+
+bool isSpace(char c) {
+    return c == ' ' || c == '\t' || c == '\r' || c == '\n';
+}
+
+class Reader {
+public:
+    explicit Reader(std::string_view t) : m_text(t) {}
+
+    // Next whitespace-delimited token; '{', '}' and ':' are separate tokens.
+    std::string_view next() {
+        while (m_pos < m_text.size() && isSpace(m_text[m_pos])) {
+            if (m_text[m_pos] == '\n')
+                ++m_line;
+            ++m_pos;
+        }
+        if (m_pos >= m_text.size())
+            return {};
+        const std::size_t start = m_pos;
+        const char c = m_text[m_pos];
+        if (c == '{' || c == '}' || c == ':') {
+            ++m_pos;
+            return m_text.substr(start, 1);
+        }
+        while (m_pos < m_text.size() && !isSpace(m_text[m_pos]) && m_text[m_pos] != '{' &&
+               m_text[m_pos] != '}' && m_text[m_pos] != ':')
+            ++m_pos;
+        return m_text.substr(start, m_pos - start);
+    }
+
+    // Rest of the current line (for multi-value keys).
+    std::string_view restOfLine() {
+        const std::size_t start = m_pos;
+        while (m_pos < m_text.size() && m_text[m_pos] != '\n' && m_text[m_pos] != '}')
+            ++m_pos;
+        return m_text.substr(start, m_pos - start);
+    }
+
+    int line() const { return m_line; }
+
+private:
+    std::string_view m_text;
+    std::size_t m_pos = 0;
+    int m_line = 1;
+};
+
+float toFloat(std::string_view s, float fallback) {
+    auto v = str::parseDouble(s);
+    return v ? static_cast<float>(*v) : fallback;
+}
+
+} // namespace
+
+std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::string* error) {
+    std::vector<Material> out;
+    Reader r(text);
+    auto fail = [&](std::string msg) -> std::optional<std::vector<Material>> {
+        if (error)
+            *error = std::format("line {}: {}", r.line(), msg);
+        return std::nullopt;
+    };
+    while (true) {
+        std::string_view tok = r.next();
+        if (tok.empty())
+            break;
+        if (tok != "mtl")
+            continue; // other sections of a .bnd file
+        Material m;
+        m.name = std::string(r.next());
+        if (r.next() != "{")
+            return fail("expected '{' after material name");
+        while (true) {
+            std::string_view key = r.next();
+            if (key.empty())
+                return fail("unterminated mtl block");
+            if (key == "}")
+                break;
+            if (r.next() != ":")
+                return fail(std::format("expected ':' after '{}'", key));
+            const auto values = str::split(str::trim(r.restOfLine()), ' ');
+            std::vector<std::string_view> vals;
+            for (auto v : values)
+                if (!str::trim(v).empty())
+                    vals.push_back(str::trim(v));
+            auto val = [&](std::size_t i) { return i < vals.size() ? vals[i] : std::string_view{}; };
+            if (key == "elasticity")
+                m.elasticity = toFloat(val(0), m.elasticity);
+            else if (key == "friction")
+                m.friction = toFloat(val(0), m.friction);
+            else if (key == "effect")
+                m.effect = std::string(val(0));
+            else if (key == "sound")
+                m.sound = static_cast<int>(toFloat(val(0), static_cast<float>(m.sound)));
+            else if (key == "drag")
+                m.drag = toFloat(val(0), m.drag);
+            else if (key == "width")
+                m.width = toFloat(val(0), m.width);
+            else if (key == "height")
+                m.height = toFloat(val(0), m.height);
+            else if (key == "depth")
+                m.depth = toFloat(val(0), m.depth);
+            else if (key == "ptxindex") {
+                m.ptxIndex[0] = static_cast<int>(toFloat(val(0), -1));
+                m.ptxIndex[1] = static_cast<int>(toFloat(val(1), -1));
+            } else if (key == "ptxthreshold") {
+                m.ptxThreshold[0] = toFloat(val(0), m.ptxThreshold[0]);
+                m.ptxThreshold[1] = toFloat(val(1), m.ptxThreshold[1]);
+            }
+        }
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+MaterialTable::MaterialTable() {
+    m_materials.push_back(Material{});
+}
+
+void MaterialTable::add(const Material& m) {
+    if (const int i = find(m.name); i >= 0)
+        m_materials[static_cast<std::size_t>(i)] = m;
+    else
+        m_materials.push_back(m);
+}
+
+void MaterialTable::add(const std::vector<Material>& ms) {
+    for (const auto& m : ms)
+        add(m);
+}
+
+int MaterialTable::find(std::string_view name) const {
+    for (std::size_t i = 0; i < m_materials.size(); ++i)
+        if (str::iequals(m_materials[i].name, name))
+            return static_cast<int>(i);
+    return -1;
+}
+
+int MaterialTable::resolve(std::string_view name) const {
+    const int i = find(name);
+    return i >= 0 ? i : 0;
+}
+
+const Material& MaterialTable::operator[](int index) const {
+    if (index < 0 || static_cast<std::size_t>(index) >= m_materials.size())
+        return m_materials[0];
+    return m_materials[static_cast<std::size_t>(index)];
+}
+
+} // namespace mm2::phys

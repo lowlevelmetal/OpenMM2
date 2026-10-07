@@ -1,0 +1,77 @@
+# Collision bounds (`bound/*.bnd`, `*.bbnd`, `*.ter`)
+
+Parser: `src/asset/Bound.{h,cpp}`. Retail coverage: 525/525 `.bnd`, 324/324
+`.bbnd`, 184/184 `.ter`. Every `.bbnd` holds exactly the same vertices and
+polygons as the `.bnd` of the same name (checked for all 324). Note that
+`aud/dmusic/*.bnd` are unrelated DirectMusic band files.
+
+## BND (text)
+
+```
+version: 1.01
+verts: N
+materials: M
+edges: 0
+polys: P
+
+v <x> <y> <z>                 × N
+mtl <name> {
+    elasticity: <f>
+    friction: <f>
+    effect: <name>            "none" in all files
+    sound: <name or 0>
+}                             × M
+quad <a> <b> <c> <d> <mtl>
+tri  <a> <b> <c> <mtl>        × P
+```
+
+Material names in retail data: default, grass, cobblestone, water, deepwater,
+sand, mud. All files declare 0 edges.
+
+## BBND (binary, little-endian)
+
+```
+u8  version = 1
+u32 vertexCount, materialCount, polygonCount
+float3 vertex[vertexCount]
+material[materialCount]: char name[32], f32 elasticity, f32 friction, char effect[32], char sound[32]
+polygon[polygonCount]:   u16 index[4], u16 material
+```
+
+A polygon is a quad exactly when `index[3] != 0`; triangles store 0 there
+(this is also how the game's `phPolygon` tells them apart, per mm2hook).
+
+## TER (terrain acceleration grid, little-endian)
+
+Pairs with the `.bbnd` of the same name; the polygon count always matches.
+
+```
+f32  version = 1.1
+u32  polygonCount
+u32  edgeCount
+u8   useHotEdges
+f32[3] size of the box
+u32  widthSections (x), heightSections (y), depthSections (z)
+u32  sectionCount = w*h*d
+u32  referenceCount
+f32[3] sectionSizeFactors   sections per unit length; NaN on a zero-size axis
+f32[3] min, f32[3] max
+u16  sectionOffset[sectionCount]
+u16  sectionCount[sectionCount]
+u16  sectionPolygon[referenceCount]
+u16[2] edge[edgeCount]           vertex index pairs
+u32[4] polygonEdges[polygonCount] edge indices of each polygon
+f32[3] edgeNormal[edgeCount]
+f32    edgeValue[edgeCount]
+```
+
+* Section index = (z·h + y)·w + x with cell = floor((p − min) · factor). This
+  is verified by polygon centroids (7618 of 7619 land in a section that lists
+  them). The y term is not verified because nearly every grid has h = 1.
+* Edge normal and value match MM1's `mmBoundTemplate::ComputeEdgeNormals`
+  (Open1560 `game.asm`): the normal is the normalised sum of the two adjacent
+  face normals, and the value is the cosine between it and a face normal, or
+  exactly 2.0 as a sentinel. 3740 of 19727 retail edges are 2.0; all others
+  lie in [−1, 1].
+* MM1 used a different binary format (magic `"2DNB"`) and a 2D grid, so only
+  the concepts carry over.

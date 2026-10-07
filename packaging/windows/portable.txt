@@ -1,0 +1,3 @@
+This file makes OpenMM2 a portable installation: settings, driver profiles,
+replays and logs are kept in the "user" folder next to openmm2.exe instead of
+%APPDATA% and %LOCALAPPDATA%. Delete this file to use the per-user folders.

@@ -1,0 +1,54 @@
+/*
+    OpenMM2 - camera-facing particle cards (agiMeshSet::DrawCard).
+    Card geometry (DefaultQuad, 32-step rotation table, frame grid) ported
+    from Open1560 (agiworld/meshrend.cpp, game.asm agiMeshCardInfo::Init),
+    Copyright (C) 2020 Brick, GPL-3.0-or-later.
+*/
+#pragma once
+
+#include "game/TextureLibrary.h"
+#include "game/fx/Particles.h"
+#include "render/Device.h"
+
+#include <array>
+#include <vector>
+
+namespace mm2::game::fx {
+
+struct CardStyle {
+    render::BlendMode blend = render::BlendMode::Alpha;
+    bool fog = true;
+    Vec4 tint{1, 1, 1, 1};
+};
+
+// Draws particles as textured quads facing the camera. Call inside a scene
+// pass after Device::setFrameConstants(); geometry goes through per-frame
+// transient buffers.
+class ParticleRenderer {
+public:
+    // Rotation steps of a card (agiMeshCardInfo PointCount; MM1 uses 32).
+    static constexpr int kRotations = 32;
+
+    ParticleRenderer();
+
+    // `cameraBasis`: the view's world placement (m0 right, m1 up). The
+    // texture is a sheet of system.framesWide() x framesHigh() frames, frame
+    // 0 at the start of the texture's first stored row.
+    void draw(render::Device& device, const Mat34& cameraBasis, const ParticleSystem& system,
+              const WorldTexture* texture, const CardStyle& style = {});
+
+    // Lower-level: append cards for arbitrary particles and flush once.
+    void begin();
+    void add(const SparkPos& p, int framesWide, int framesHigh, const Mat34& cameraBasis);
+    void flush(render::Device& device, const WorldTexture* texture, const CardStyle& style);
+
+    int cardsDrawn() const { return m_cardsDrawn; }
+
+private:
+    std::array<std::array<Vec2, 4>, kRotations> m_rot{};
+    std::vector<render::Vertex3D> m_vertices;
+    std::vector<std::uint16_t> m_indices;
+    int m_cardsDrawn = 0;
+};
+
+} // namespace mm2::game::fx

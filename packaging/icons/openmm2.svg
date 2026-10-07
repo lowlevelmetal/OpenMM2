@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- OpenMM2 application icon. Original artwork for the OpenMM2 project,
+     licensed GPL-3.0-or-later like the rest of the repository.
+     A dusk skyline over a road running to the horizon. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#151d4a"/>
+      <stop offset="0.45" stop-color="#5a2d82"/>
+      <stop offset="0.62" stop-color="#d9534a"/>
+      <stop offset="0.66" stop-color="#ff9a3c"/>
+    </linearGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffe27a"/>
+      <stop offset="1" stop-color="#ff7a2f"/>
+    </linearGradient>
+    <linearGradient id="ground" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1c1f33"/>
+      <stop offset="1" stop-color="#0d0f1c"/>
+    </linearGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3a3f5c"/>
+      <stop offset="1" stop-color="#2a2e45"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect x="8" y="8" width="240" height="240" rx="52"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#tile)">
+    <rect x="0" y="0" width="256" height="256" fill="url(#sky)"/>
+    <circle cx="128" cy="146" r="50" fill="url(#sun)"/>
+
+    <!-- skyline -->
+    <path fill="#12142b" d="M 8 170 V 140 H 30 V 122 H 48 V 148 H 58 V 106 H 70 V 96 H 82 V 106 H 92 V 154 H 104 V 130 H 120 V 160 H 134 V 118 L 146 108 L 158 118 V 150 H 168 V 92 H 186 V 150 H 196 V 134 H 212 V 114 H 228 V 142 H 248 V 170 Z"/>
+    <g fill="#ffcf5a" opacity="0.9">
+      <rect x="62" y="114" width="5" height="6"/><rect x="74" y="114" width="5" height="6"/>
+      <rect x="62" y="128" width="5" height="6"/><rect x="84" y="128" width="5" height="6"/>
+      <rect x="172" y="102" width="5" height="6"/><rect x="179" y="116" width="5" height="6"/>
+      <rect x="172" y="130" width="5" height="6"/><rect x="216" y="122" width="5" height="6"/>
+      <rect x="36" y="132" width="5" height="6"/><rect x="140" y="126" width="5" height="6"/>
+    </g>
+
+    <!-- ground and road -->
+    <rect x="0" y="168" width="256" height="88" fill="url(#ground)"/>
+    <path fill="url(#road)" d="M117 168 H139 L236 256 H20 Z"/>
+    <path fill="none" stroke="#ff9a3c" stroke-width="5" stroke-linejoin="round" d="M115 169 L18 256 M141 169 L238 256"/>
+    <g fill="#ffe27a">
+      <path d="M126.6 174 H129.4 L130.2 184 H125.8 Z"/>
+      <path d="M125.2 194 H130.8 L132.6 212 H123.4 Z"/>
+      <path d="M122.6 226 H133.4 L136.6 256 H119.4 Z"/>
+    </g>
+  </g>
+
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+</svg>

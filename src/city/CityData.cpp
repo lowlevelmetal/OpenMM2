@@ -1,0 +1,232 @@
+#include "city/CityData.h"
+
+#include "city/Reader.h"
+#include "core/StringUtil.h"
+
+#include <algorithm>
+#include <format>
+
+namespace mm2::city {
+namespace {
+
+std::optional<std::vector<std::byte>> read(const vfs::Vfs& v, const std::string& path) {
+    return v.readAll(path);
+}
+
+std::string text(const std::vector<std::byte>& bytes) {
+    return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+}
+
+} // namespace
+
+std::vector<CityInfo> listCities(const vfs::Vfs& v) {
+    std::vector<CityInfo> out;
+    for (const auto& e : v.listFiles()) {
+        if (!e.path.starts_with("tune/") || !e.path.ends_with(".cinfo") ||
+            e.path.find('/', 5) != std::string::npos)
+            continue;
+        if (auto bytes = read(v, e.path)) {
+            auto info = parseCityInfo(text(*bytes));
+            if (!info.mapName.empty())
+                out.push_back(std::move(info));
+        }
+    }
+    std::ranges::sort(out, {}, &CityInfo::mapName);
+    return out;
+}
+
+std::vector<RaceDefinition> listRaces(const vfs::Vfs& v, const CityInfo& info) {
+    std::vector<RaceDefinition> out;
+    const std::string dir = "race/" + str::lower(info.raceDir) + "/";
+    auto existing = [&](const std::string& path) { return v.exists(path) ? path : std::string(); };
+
+    struct ModeSpec {
+        RaceMode mode;
+        int count;
+        const std::vector<std::string>* names;
+        const char* table;
+    };
+    // Crash courses have no count or names in the .cinfo; they are numbered
+    // from 0 while crash<N>data.csv exists.
+    int crashCount = 0;
+    while (v.exists(std::format("{}crash{}data.csv", dir, crashCount)))
+        ++crashCount;
+    const ModeSpec modes[] = {
+        {RaceMode::Blitz, info.blitzCount, &info.blitzNames, "mmblitzdata.csv"},
+        {RaceMode::Circuit, info.circuitCount, &info.circuitNames, "mmcircuitdata.csv"},
+        {RaceMode::Checkpoint, info.checkpointCount, &info.checkpointNames, "mmracedata.csv"},
+        {RaceMode::CrashCourse, crashCount, nullptr, "mmcrashdata.csv"},
+    };
+    for (const auto& m : modes) {
+        std::vector<RaceTableEntry> table;
+        if (auto bytes = read(v, dir + m.table))
+            if (auto t = parseRaceTable(text(*bytes)))
+                table = std::move(*t);
+        const char* prefix = raceModePrefix(m.mode);
+        for (int i = 0; i < m.count; ++i) {
+            RaceDefinition r;
+            r.mode = m.mode;
+            r.index = i;
+            if (m.names && i < static_cast<int>(m.names->size()))
+                r.name = (*m.names)[static_cast<std::size_t>(i)];
+            else if (i < static_cast<int>(table.size()))
+                r.name = table[static_cast<std::size_t>(i)].description;
+            if (i < static_cast<int>(table.size()))
+                r.settings = table[static_cast<std::size_t>(i)];
+            const std::string stem = std::format("{}{}{}", dir, prefix, i);
+            r.waypoints = existing(stem + "waypoints.csv");
+            r.aiMap = existing(stem + ".aimap");
+            r.aiMapPro = existing(stem + ".aimap_p");
+            r.pathSet = existing(stem + ".pathset");
+            if (m.mode == RaceMode::CrashCourse) {
+                r.crashEvents = existing(stem + "data.csv");
+                r.crashEventsPro = existing(stem + "data_p.csv");
+            }
+            out.push_back(std::move(r));
+        }
+    }
+    return out;
+}
+
+std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::string* error) {
+    CityData c;
+    bool found = false;
+    for (auto& info : listCities(v)) {
+        if (str::iequals(info.mapName, city) || str::iequals(info.localizedName, city)) {
+            c.info = std::move(info);
+            found = true;
+            break;
+        }
+    }
+    if (!found) {
+        // No .cinfo: fall back to treating the name as a map name.
+        c.info.mapName = std::string(city);
+        c.info.raceDir = std::string(city);
+        c.warnings.push_back(std::format("no tune/*.cinfo for '{}'", city));
+    }
+    const std::string map = str::lower(c.info.mapName);
+    const std::string cityDir = "city/" + map;
+    const std::string raceDir = "race/" + str::lower(c.info.raceDir) + "/";
+
+    auto warn = [&](std::string s) { c.warnings.push_back(std::move(s)); };
+    auto bytesOf = [&](const std::string& path, bool required) -> std::optional<std::vector<std::byte>> {
+        auto b = read(v, path);
+        if (!b && !required)
+            warn(std::format("{}: missing", path));
+        return b;
+    };
+
+    {
+        const std::string path = cityDir + ".psdl";
+        auto b = read(v, path);
+        if (!b) {
+            if (error)
+                *error = std::format("{} not found", path);
+            return std::nullopt;
+        }
+        std::string err;
+        auto p = parsePsdl(*b, &err);
+        if (!p) {
+            if (error)
+                *error = std::format("{}: {}", path, err);
+            return std::nullopt;
+        }
+        c.psdl = std::move(*p);
+    }
+
+    std::string err;
+    auto loadInst = [&](const std::string& path, std::vector<Instance>& out) {
+        if (auto b = bytesOf(path, false)) {
+            if (auto i = parseInst(*b, &err))
+                out = std::move(*i);
+            else
+                warn(std::format("{}: {}", path, err));
+        }
+    };
+    loadInst(cityDir + ".inst", c.instances);
+    loadInst(cityDir + "_ai.inst", c.aiInstances);
+
+    if (auto b = bytesOf(cityDir + ".cpvs", false)) {
+        c.pvs = parseCpvs(*b, &err);
+        if (!c.pvs)
+            warn(std::format("{}.cpvs: {}", cityDir, err));
+        else if (c.pvs->roomCount() != c.psdl.roomCount())
+            warn(std::format("{}.cpvs covers {} rooms, PSDL has {}", cityDir, c.pvs->roomCount(),
+                             c.psdl.roomCount()));
+    }
+    if (auto b = bytesOf(cityDir + ".bai", false)) {
+        c.aiMap = parseBai(*b, &err);
+        if (!c.aiMap)
+            warn(std::format("{}.bai: {}", cityDir, err));
+    }
+
+    for (int i = 0; i < kTimesOfDay * kWeathers; ++i) {
+        const std::string path = std::format("{}.lt{:02}", cityDir, i);
+        if (auto b = bytesOf(path, false)) {
+            c.lighting[static_cast<std::size_t>(i)] = parseLighting(text(*b), &err);
+            if (!c.lighting[static_cast<std::size_t>(i)])
+                warn(std::format("{}: {}", path, err));
+        }
+    }
+    if (auto b = bytesOf(cityDir + "_fog.csv", false)) {
+        if (auto f = parseFogTable(text(*b), &err))
+            c.fog = std::move(*f);
+        else
+            warn(std::format("{}_fog.csv: {}", cityDir, err));
+    }
+    if (auto b = bytesOf(cityDir + ".sky", false))
+        c.sky = parseSky(text(*b));
+    if (auto b = bytesOf(cityDir + ".water", false))
+        c.water = parseWater(text(*b));
+    if (auto b = bytesOf(cityDir + ".ext", false))
+        c.extent = parseExtent(text(*b));
+    if (auto b = bytesOf(cityDir + ".reset", false))
+        c.resetPoints = parseResetPoints(text(*b));
+    if (auto b = bytesOf(cityDir + ".lmap", false)) {
+        c.roomColors = parseLightMap(*b, &err);
+        if (!c.roomColors)
+            warn(std::format("{}.lmap: {}", cityDir, err));
+    }
+    if (auto b = bytesOf("city/materials.mtl", false)) {
+        if (auto m = parseMaterialLibrary(text(*b), &err))
+            c.materials = std::move(*m);
+        else
+            warn(std::format("city/materials.mtl: {}", err));
+    }
+    if (auto b = bytesOf("city/materials.csv", false))
+        c.textureMaterials = parseTextureMaterials(text(*b));
+
+    auto loadAiConfig = [&](const std::string& path, std::optional<AiMapConfig>& out) {
+        if (auto b = bytesOf(path, false)) {
+            out = parseAiMapConfig(text(*b), &err);
+            if (!out)
+                warn(std::format("{}: {}", path, err));
+        }
+    };
+    loadAiConfig(raceDir + "roam.aimap", c.cruise);
+    loadAiConfig(raceDir + "roam.aimap_p", c.cruisePro);
+
+    // City-wide gizmo path sets: race/<dir>/<map>_<thing>.pathset.
+    for (const auto& e : v.listFiles()) {
+        if (!e.path.starts_with(raceDir) || !e.path.ends_with(".pathset"))
+            continue;
+        const std::string name = e.path.substr(raceDir.size(), e.path.size() - raceDir.size() - 8);
+        if (!name.starts_with(map + "_") || name.find('_', map.size() + 1) != std::string::npos)
+            continue;
+        if (auto b = read(v, e.path)) {
+            if (auto ps = parsePathSet(*b, &err)) {
+                c.cityPathSets.push_back(std::move(*ps));
+                c.cityPathSetNames.push_back(name);
+            } else {
+                warn(std::format("{}: {}", e.path, err));
+            }
+        }
+    }
+
+    c.races = listRaces(v, c.info);
+    if (auto b = read(v, std::format("{}{}_rewards.csv", raceDir, map)))
+        c.rewards = parseRewards(text(*b));
+    return c;
+}
+
+} // namespace mm2::city

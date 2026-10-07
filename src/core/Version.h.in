@@ -1,0 +1,11 @@
+#pragma once
+
+namespace mm2 {
+
+inline constexpr const char* kProjectName = "OpenMM2";
+inline constexpr const char* kProjectVersion = "@PROJECT_VERSION@";
+inline constexpr int kProjectVersionMajor = @PROJECT_VERSION_MAJOR@;
+inline constexpr int kProjectVersionMinor = @PROJECT_VERSION_MINOR@;
+inline constexpr int kProjectVersionPatch = @PROJECT_VERSION_PATCH@;
+
+} // namespace mm2
