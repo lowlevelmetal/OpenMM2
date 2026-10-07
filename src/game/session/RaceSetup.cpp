@@ -167,17 +167,17 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             if (auto text = readText(vfs, op.pathFile))
                 if (auto path = city::parseOpponentPath(*text))
                     op.path = std::move(*path);
-            // Grid place: the first point of the driving line, facing the
-            // race's start heading (inferred; the .opp's first "brake" value
-            // looks like a heading but its convention is unconfirmed).
-            Checkpoint grid = s.checkpoints.empty() ? Checkpoint{} : s.checkpoints.front();
-            if (!op.path.empty())
-                grid.position = op.path.front().position;
-            if (op.path.size() > 1 && s.checkpoints.empty()) {
-                const Vec3 d = op.path[1].position - op.path[0].position;
-                grid.headingDeg = std::atan2(d.x, -d.z) * kRadToDeg;
+            // Grid place: the .opp's first row, whose fourth number is the
+            // car's heading in degrees (MM2 aiRouteRacer::Init: the
+            // vehCarSim reset heading is that times 0.017444445, i.e.
+            // 3.14 / 180, in Mat34::rotationY's sense; checked against the
+            // races' start headings).
+            if (!op.path.empty()) {
+                op.spawn = Mat34::rotationY(op.path.front().brake * 0.017444445f);
+                op.spawn.m3 = op.path.front().position;
+            } else {
+                op.spawn = spawnAt(s.checkpoints.empty() ? Checkpoint{} : s.checkpoints.front());
             }
-            op.spawn = spawnAt(grid);
             s.opponents.push_back(std::move(op));
         }
     }
