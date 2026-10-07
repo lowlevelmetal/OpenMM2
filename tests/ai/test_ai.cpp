@@ -303,11 +303,12 @@ TEST(AiWorld, PedestriansWalkSidewalksAndDive) {
     for (int i = 0; i < 30 * 20; ++i)
         world->step(home, {});
     ASSERT_FALSE(world->peds().empty());
+    // Walking along a sidewalk (not across a road), within the lateral
+    // spread of MM2's curves (1.5 m) plus the steering lag.
     for (const auto& p : world->peds()) {
-        if (p.state != "WALK")
+        if (p.state != "WALK" || p.crossing || p.sidewalk < 0)
             continue;
-        const float half = net.sidewalks()[static_cast<std::size_t>(p.sidewalk)].halfWidth;
-        EXPECT_LE(world->pedestrians().distanceFromSidewalk(p.id), half + 0.05f) << p.typeName;
+        EXPECT_LE(world->pedestrians().distanceFromSidewalk(p.id), 3.0f) << p.typeName;
     }
     // Drive straight at a walking pedestrian along its walking line.
     const ai::Pedestrian* target = nullptr;

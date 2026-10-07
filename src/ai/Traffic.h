@@ -120,6 +120,9 @@ public:
     void setPhysicalTransform(int carId, const Mat34& transform);
     // Returns a car to the pool (recycled by the game).
     void release(int carId);
+    // A car out of normal driving (InAccident: any goal but driving its
+    // rail) in `intersection` or on road `path` (-1: ignored).
+    bool accidentAt(int intersection, int path) const;
 
     // Diagnostics for tests and tools.
     struct DebugCar {

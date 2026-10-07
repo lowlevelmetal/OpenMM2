@@ -763,6 +763,10 @@ private:
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // aiMap::Init: no pedestrians in circuit races; the winter models in snow.
+        if (m_result.config.mode == game::GameMode::Circuit)
+            settings.pedestrianDensity = 0.0f;
+        settings.winterPeds = m_result.config.weather == game::Weather::Snow;
         std::string error;
         const city::AiMapConfig* raceMap =
             m_session && m_session->setup().aiMap ? &*m_session->setup().aiMap : nullptr;
@@ -774,7 +778,7 @@ private:
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
-            m_ai->traffic().setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
+            m_ai->setProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
                 phys::RayHit hit;
                 if (!m_world->probe(from, to, hit))
                     return false;

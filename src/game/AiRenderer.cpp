@@ -53,6 +53,17 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
     if (!anim)
         anim = type.animation(ped.state);
     asset::posePed(type.skeleton, anim, ped.frame, m_bones);
+    // pedAnimation::Load takes the root's straight-line x/z drift over the
+    // clip out of every frame: the pedestrian moves by its sequence's speed,
+    // so the pose stays in place.
+    if (anim && anim->frameCount > 1) {
+        const Vec3 drift = anim->rootTranslation(anim->frameCount - 1) - anim->rootTranslation(0);
+        const float k = std::clamp(ped.frame, 0.0f, static_cast<float>(anim->frameCount - 1)) /
+                        static_cast<float>(anim->frameCount - 1);
+        const Vec3 shift{drift.x * k, 0.0f, drift.z * k};
+        for (auto& b : m_bones)
+            b.m3 -= shift;
+    }
     const auto& mesh = type.mesh;
     m_skinned.resize(mesh.vertices.size());
     for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {

@@ -6,6 +6,7 @@
 #include "data/TextTables.h"
 
 #include <algorithm>
+#include <cstring>
 #include <format>
 
 namespace mm2::ai {
@@ -66,6 +67,17 @@ std::vector<PedTypeInfo> loadPedTypes(const vfs::Vfs& vfs) {
         PedTypeInfo info;
         info.name = name;
         info.table = std::move(*table);
+        // Frame counts of the .anim files (u32 at offset 4) for clamping.
+        for (const auto& st : info.table.states) {
+            const std::string file = str::lower(st.animFile);
+            if (info.animFrames.contains(file))
+                continue;
+            if (auto anim = vfs.readAll("anim/" + file + ".anim"); anim && anim->size() >= 8) {
+                std::uint32_t frames = 0;
+                std::memcpy(&frames, anim->data() + 4, 4);
+                info.animFrames[file] = static_cast<int>(frames);
+            }
+        }
         if (auto shaders = vfs.readAll("anim/" + name + ".shaders"))
             if (auto set = asset::parsePedShaders(*shaders))
                 info.variants = std::max<int>(1, static_cast<int>(set->variantCount));
@@ -144,11 +156,28 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     world->m_traffic = std::make_unique<Traffic>(*world->m_network, world->m_lights, std::move(data), traffic,
                                                  settings.seed);
 
+    // aiMap::Init: trunc([Ped Pool] x density) pedestrians of the race's
+    // (else the city's) good- or bad-weather types.
     PedSettings peds;
-    peds.density = 0.5f * settings.pedestrianDensity;
-    peds.maxPeds = settings.maxPeds;
+    peds.density = settings.pedestrianDensity;
+    peds.pool = settings.maxPeds >= 0 ? settings.maxPeds : kDefaultPedPool;
+    if (settings.maxPeds < 0 && cityConfig) {
+        for (const auto& sec : cityConfig->sections)
+            if (str::iequals(sec.name, "Ped Pool") && !sec.lines.empty())
+                peds.pool = static_cast<int>(str::parseDouble(sec.lines.front()).value_or(kDefaultPedPool));
+    }
+    std::vector<std::pair<std::string, std::string>> names;
+    if (config && !config->pedNames.empty())
+        names = config->pedNames;
+    else if (cityConfig)
+        names = cityConfig->pedNames;
+    for (const auto& n : names)
+        peds.names.push_back(settings.winterPeds ? n.second : n.first);
     world->m_peds =
         std::make_unique<Pedestrians>(*world->m_network, loadPedTypes(vfs), peds, settings.seed * 7919u + 1u);
+    world->m_peds->setLights(&world->m_lights);
+    Traffic* ambient = world->m_traffic.get();
+    world->m_peds->setAccidentQuery([ambient](int node, int path) { return ambient->accidentAt(node, path); });
 
     // Traffic light poles (aiTrafficLightSet::SetFourWay,
     // aiTrafficLightInstance::Init): the city's single-head model for
@@ -183,7 +212,7 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
 
 void World::step(const PlayerCar& player) {
     m_traffic->step(kAiStepSeconds, player, roomAt(player.transform.m3));
-    m_peds->step(kAiStepSeconds, player);
+    m_peds->step(kAiStepSeconds, player, roomAt(player.transform.m3));
     m_lights.update(kAiStepSeconds);
     updateSignals();
 }

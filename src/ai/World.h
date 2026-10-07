@@ -32,7 +32,8 @@ struct Settings {
     float trafficDensity = 1.0f;    // menu "Traffic Density" (MMSTATE trafficDensity, 0 none .. 1 full)
     float pedestrianDensity = 1.0f; // menu "Pedestrian Density"
     int maxCars = kAmbientPoolSize;
-    int maxPeds = 48;
+    int maxPeds = -1;        // pedestrian pool; -1: the city's [Ped Pool] (default 100)
+    bool winterPeds = false; // snow: the bad-weather pedestrian models (MM2: weather > 2)
     std::uint64_t seed = 1;
 };
 
@@ -66,6 +67,12 @@ public:
     // Race opponents' positions: ambient cars are never placed within 50 m
     // of one (aiMap::AdjustAmbients).
     void setOpponents(std::span<const Vec3> positions) { m_traffic->setOpponents(positions); }
+    // Collision probe (segment from -> to) for fitting cars and pedestrians
+    // to the ground and for pedestrians looking for a wall to run to.
+    void setProbe(const Traffic::GroundProbe& probe) {
+        m_traffic->setGroundProbe(probe);
+        m_peds->setProbe(probe);
+    }
 
     const RoadNetwork& network() const { return *m_network; }
     TrafficLights& lights() { return m_lights; }

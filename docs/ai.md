@@ -218,35 +218,71 @@ its side leaving the intersection is open to traffic.
   horn and voice audio (`AmbientCar::horn` marks the attempt), breakable
   parts and impact sounds of physical traffic, regaining onto another road.
 
-## Pedestrians (`Pedestrians`)
+## Pedestrians (`Pedestrians`, `aiPedestrian`)
 
-MM2's pedestrians are skeletal and driven by `anim/pedmodel_*.csv`, unlike
-MM1's, so little of MM1's code carries over directly.
+MM2's pedestrians (build 3393, **MM2** unless marked):
 
-**Ported constants**:
+* **Pool and types** (`aiMap::Init`): trunc(`[Ped Pool]` (city map, default
+  100) x density) pedestrians; none in circuit races. Types from the race's
+  `[GoodWeatherPedName / BadWeatherPedName]`, else the city's (man and
+  woman), the winter models in snow; clothing variant trunc(frand x
+  (variants - 1)).
+* **Placement** (`aiMap::AdjustPedestrians`): per PSDL room, like the
+  traffic but with the second per-room road list; the pool is dealt round
+  the newly listed roads, one per open sidewalk side (side flag bit 1 clear)
+  per lap; roads that drop out of the list return their pedestrians. A
+  pedestrian starts at a random point of its sidewalk, walking either way,
+  with a lateral offset ((outer - inner) / 2 - 0.5) x sin(frand x 2pi)
+  (the side's lateral parameters), clamped to 1.5 m.
+* **Animation** (`pedAnimation`, `pedAnimationInstance`): 30 frames per
+  second, whole frames, from frame 0 of the `.anim`; a sequence's speeds are
+  its CSV forward and side distances over frames x 0.03333 s (WALK: man
+  2.11 m/s, woman 1.63 m/s); the root's straight-line drift over the clip is
+  taken out of the pose; at the end of a sequence the queued one starts
+  (default: the CSV's next).
+* **Walking** (`Wander`, `RoadDistance`, `CalcCurve`, `SolveTargetPoint`):
+  one Hermite curve per sidewalk section at the pedestrian's lateral offset
+  (re-taken from where it is at each vertex), a straight line round each
+  corner; it steers towards the curve point 6 m ahead by at most 0.15 rad
+  per update and moves freely by its sequence's speeds. The ground height
+  comes from a probe 2 m up and down (kept if within 0.5 m); flat roads use
+  the curb's height beyond 50 m of the player.
+* **At the end of a sidewalk** (`PickNextRdSeg`, `SetNextRoad`): round the
+  corner onto the next road in the intersection's list (to its right or
+  left by side and direction); at intersections whose lights have a walk
+  phase, 1 in 3 crosses the next road and 1 in 3 crosses its own (never
+  with a car out of normal driving in the intersection). A closed or
+  unpopulated way on: it turns round.
+* **Crossing** (`PreCrossStreet`, `WaitCrossStreet`, `CrossStreet`): to the
+  curb point 2.5 m into the intersection, wait facing the far curb (STAND
+  or STAND2) until the lights show WALK, cross, run when the don't-walk
+  signal comes on; back to the sidewalk (turned round) when the player's car
+  stands in its way or a car is in an accident there.
+* **The player** (`Update`, `DetectPlayerForwardCollision`,
+  `DetectPlayerAnticipate`, `TimeToCollision`): within 35 m and at 1 m/s or
+  more, a pedestrian ahead of the car (behind it in reverse) between a
+  quarter of its length and 20 m, within its half width + 2 m, dives when
+  the time to reach it, (distance - 2) / speed, is under 0.75 s and braces
+  under 2.3 s; up to 35 m and the half width + 4 m it braces under 2.3 s.
+  * Brace (`Anticipate`): on a sidewalk, a wall within 10 m on the building
+    side (probe) makes it run there (backing up against it when closer
+    than 1.25 m); else half run along the road the car's way, half brace
+    (WALK_ANTIC) facing the car; on a corner or crossing it faces the car.
+  * Dive (`Avoid`): facing against the car's way, to its right when the
+    player steers right (> 0.85), left when left, else away from the car's
+    centre line; WALK_ or ANTIC_ dive by its state; sideways speed x3 / x5
+    when behind; a voice (`scream`).
+  * A slow car within 6 m ahead on the walkway: step round it at its radius
+    + 1 m, or turn back when it fills the walkway (`AvoidObstacle`; for small
+    angles it turns the wrong way, as coded).
+* Pedestrians are not collidable: cars drive through them (no ragdoll in
+  MM2). They ignore each other and other cars.
 
-* lateral spread on the walkway sin(frand·2π)·1.8 (`aiPedestrian::Reset`),
-  clamped to the sidewalk width;
-* awareness of the player within 35 m (`DetectPlayerAnticipate`, `flt_63936C`);
-* collision zone 6 m (`DetectPlayerCollision`, `flt_639360`);
-* activity radius 75 m (`aiPedestrian::Update`, 5625 squared);
-* turn threshold 0.15 rad (`Wander`).
-
-**Inferred**:
-
-* **Spawning:** 0.5 × density per 10 m of active sidewalk, not within 35 m.
-* **Walking:** along the sidewalk line at the WALK state's root-motion speed
-  (forward distance / duration, at 20 animation frames per second, which
-  gives a normal pace). At corners peds continue on a nearby sidewalk or turn
-  round, and occasionally stop for 2–6 s.
-* **Reactions:** the player car's straight-line path is projected.
-  * Closest approach under 2.5 m within 1.25 s: dive away from the car's
-    line, WALK_LDIVE/WALK_RDIVE or ANTIC_LDIVE/ANTIC_RDIVE, then the table's
-    chain through ground and get-up states back to STAND.
-  * Within 6 m and 3 s: brace (WALK_ANTIC/STAND_ANTIC → ANTIC, facing the
-    car), and walk on once it has passed.
-* **Root motion:** non-walking states move by the table's forward and side
-  distances (side positive = left).
+**Deviations** (marked in the code): a single player; the ground and wall
+probes need the game's collision (`World::setProbe`), otherwise heights come
+from the sidewalk lines and there are no walls; the props (`DetectBangerCollision`)
+are not avoided; the stick-figure LOD beyond 35 m is not drawn; the
+avoidance voice is only flagged.
 
 ## API
 
@@ -295,6 +331,9 @@ simulation.
   bit-identical for 120 s; no car enters a light that has been red for over
   2 s; lane deviation within 1.5 m (lane randomness plus the Hermite
   sections).
+- **Pedestrians** (SF): walking pedestrians stay within 3 m of their
+  sidewalk line unless crossing, and one dives when a car drives straight
+  at it.
 - `test_game` `TrafficBodies`: a car hit by the player becomes physical, is
   pushed, comes to rest and drives back onto its lane.
 

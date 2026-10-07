@@ -1,36 +1,44 @@
 #pragma once
 
-// Pedestrians walking the sidewalks and getting out of the player's way.
+// Pedestrians, after MM2's aiPedestrian and aiMap::AdjustPedestrians
+// (build 3393, MM2Recomp; documentation only).
 //
-// Structure after MM1's aiPedestrian (Open1560: Update, Wander, Anticipate,
-// Avoid, DetectPlayerAnticipate, DetectPlayerCollision; constants decoded
-// from game.asm) with MM2's skeletal animation state table
-// (anim/pedmodel_*.csv, asset::PedAnimTable). MM2 changed the pedestrian
-// system substantially, so most behaviour here is inferred; docs/ai.md lists
-// which parts carry MM1 values.
+// A fixed pool ([Ped Pool] x density) is spread over the sidewalks of the
+// roads listed for the player's PSDL room. Each pedestrian walks its road's
+// sidewalk along a Hermite curve per section, steering towards a point 6 m
+// ahead by at most 0.15 rad per update and moving by its animation's speed;
+// at the end of the sidewalk it turns the corner onto the next road or, at
+// lit intersections with a pedestrian phase, crosses a road. It braces,
+// runs or dives out of the player's way. The animation states and speeds
+// come from anim/pedmodel_*.csv, played at 30 frames per second.
 
 #include "ai/PlayerCar.h"
 #include "ai/Random.h"
 #include "ai/RoadNetwork.h"
+#include "ai/TrafficLights.h"
 #include "asset/Ped.h"
 
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace mm2::ai {
 
-inline constexpr float kPedAnimFps = 20.0f;      // inferred: gives the WALK root motion a normal walking pace
-inline constexpr float kPedActiveRadius = 75.0f; // flt_61B5F8 = 5625 (squared), aiPedestrian::Update
-inline constexpr float kPedAwareRadius = 35.0f;  // flt_63936C, DetectPlayerAnticipate
-inline constexpr float kPedCollisionRadius = 6.0f; // flt_639360, DetectPlayerCollision
-inline constexpr float kPedLateralSpread = 1.8f;   // flt_639364, aiPedestrian::Reset
+inline constexpr float kPedAnimFps = 30.0f;        // pedAnimationInstance::PreUpdate
+inline constexpr float kPedAwareRadius = 35.0f;    // aiPedestrian::Update: 1225 (squared)
+inline constexpr float kPedLookAhead = 6.0f;       // Wander: SolveTargetPoint(dist + dir * 6)
+inline constexpr float kPedTurnRate = 0.15f;       // radians per update
+inline constexpr float kPedMaxLateral = 1.5f;      // CalcCurve clamp
+inline constexpr int kDefaultPedPool = 100;        // aiCityData [Ped Pool] default
 
-// A pedestrian type with its animation table (anim/<type>.csv) and clothing
-// variant count (anim/<type>.shaders).
+// A pedestrian type with its animation table (anim/<type>.csv), clothing
+// variant count (anim/<type>.shaders) and the frame counts of its .anim files.
 struct PedTypeInfo {
     std::string name; // "pedmodel_man"
     asset::PedAnimTable table;
     int variants = 1;
+    std::map<std::string, int> animFrames; // anim file -> frames
 };
 
 struct Pedestrian {
@@ -38,68 +46,161 @@ struct Pedestrian {
     int type = 0;         // index into the types passed to Pedestrians
     std::string typeName; // "pedmodel_man"
     int variant = 0;      // clothing variant (anim/<type>.shaders)
-    int sidewalk = -1;    // RoadNetwork::sidewalks() index it belongs to
+    int sidewalk = -1;    // RoadNetwork::sidewalks() index of its current sidewalk, if any
     Mat34 transform;      // feet on the ground, facing -Z
     std::string state;    // animation state, e.g. "WALK", "WALK_LDIVE"
     std::string animFile; // anim/<animFile>.anim
-    float frame = 0.0f;   // 0-based frame within the .anim (for asset::posePed)
+    float frame = 0.0f;   // whole frame within the .anim, from 0 (MM2 draws whole frames)
+    bool scream = false;  // started an avoidance reaction this step (AudCreatureContainer)
+    bool crossing = false; // on its way across a road
 };
 
 struct PedSettings {
-    float density = 0.5f; // pedestrians per 10 m of sidewalk times this (inferred)
-    int maxPeds = 48;
+    float density = 1.0f; // menu pedestrian density
+    int pool = kDefaultPedPool; // [Ped Pool] of the city's AI map
+    // Types to use, by name (anim/<name>.csv), drawn uniformly per pedestrian.
+    std::vector<std::string> names;
 };
 
 class Pedestrians {
 public:
+    using Probe = std::function<bool(const Vec3& from, const Vec3& to, Vec3& hit)>;
+    // Whether a vehicle out of normal driving is at `intersection` or on `path`.
+    using AccidentQuery = std::function<bool(int intersection, int path)>;
+
     Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types, const PedSettings& settings,
                 std::uint64_t seed);
 
-    void step(float dt, const Vec3& playerPos, const Vec3& playerVel);
-    void step(float dt, const PlayerCar& p) { step(dt, p.transform.m3, p.velocity); }
+    void setLights(const TrafficLights* lights) { m_lights = lights; }
+    void setProbe(Probe probe) { m_probe = std::move(probe); }
+    void setAccidentQuery(AccidentQuery query) { m_accident = std::move(query); }
+    void populateAll(); // every road's sidewalks (tests)
+
+    // One update; `room` is the player's PSDL room (0: outside, no change).
+    void step(float dt, const PlayerCar& player, int room);
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
     std::size_t activeCount() const;
     const std::vector<PedTypeInfo>& types() const { return m_types; }
 
-    // Diagnostics for tests.
+    // Diagnostics for tests: distance from the centre line of its sidewalk.
     float distanceFromSidewalk(int pedId) const;
 
 private:
+    using State = const asset::PedAnimState*;
+    struct Seqs {
+        State stand = nullptr, stand2 = nullptr, standWalk = nullptr, walk = nullptr, walkStand = nullptr;
+        State standAntic = nullptr, antic = nullptr, anticWalk = nullptr, walkAntic = nullptr;
+        State anticLDive = nullptr, lDiveGround = nullptr, groundStandL = nullptr, groundStandR = nullptr;
+        State anticRDive = nullptr, rDiveGround = nullptr, walkRDive = nullptr, walkLDive = nullptr;
+        State run = nullptr, backup = nullptr, backupWalk = nullptr, runWalk = nullptr;
+    };
     struct Ped {
         bool active = false;
-        int type = 0;
-        int variant = 0;
-        int sidewalk = -1;
-        float s = 0.0f;       // along the sidewalk centre
-        int dir = 1;          // +1 towards the sidewalk's end, -1 towards its start
-        float lateral = 0.0f; // offset from the centre line, left of the walking direction
-        Vec3 position;
-        float heading = 0.0f; // yaw, 0 = facing -Z
-        const asset::PedAnimState* state = nullptr;
-        float stateTime = 0.0f;
-        float standTimer = 0.0f;
-        bool onSidewalk = true;
+        int type = 0, variant = 0;
+        int path = -1, prevPath = -1;
+        int dir = 1, prevDir = 1;
+        int side = 1, prevSide = 1;
+        int crossChoice = 0;
+        int crossNode = -1; // the intersection being crossed
+        int idx = 1;        // end vertex of the current sidewalk segment; 0 or n on a corner
+        int reaction = 0, lastReaction = -1;
+        int cross = 0, lastCross = -1;
+        bool reversingAtDive = false;
+        bool wall = false;
+        Vec3 wallHit;
+        float heading = 0.0f; // forward = (sin h, 0, cos h)
+        float lateral = 0.0f;
+        float invLen = 1.0f;
+        float sideDist0 = 0.0f;
+        float curve[2][4] = {};
+        Vec3 position, target;
+        // Animation (pedAnimationInstance).
+        State seq = nullptr, queued = nullptr;
+        int frame = 0;
+        bool scream = false;
     };
 
-    void spawn(int sidewalk, const Vec3& playerPos, std::vector<int>& freeSlots);
-    void setState(Ped& p, std::string_view name);
-    void wander(Ped& p, float dt);
-    void react(Ped& p, const Vec3& playerPos, const Vec3& playerVel);
-    void applyRootMotion(Ped& p, float dt);
-    void advanceAnimation(Ped& p, float dt);
-    bool isLooping(const asset::PedAnimState* s) const;
-    float stateDuration(const asset::PedAnimState* s) const;
-    bool busy(const Ped& p) const; // diving / on the ground / getting up
+    // Sidewalk geometry of (path, side): side -1 is the file's first side.
+    struct Walk {
+        std::vector<Vec3> points; // sidewalk line, in section order
+        std::vector<float> cum;   // cumulative lengths, from 0
+        std::vector<Vec3> curb;
+        float inner = 0.0f, outer = 0.0f; // lateral extent (side params)
+        bool open = false;               // pedestrians allowed (side flag bit 1 clear)
+        int sidewalk = -1;               // RoadNetwork sidewalk id
+    };
+    const Walk& walk(int path, int side) const;
+    int sections(int path) const;
+    Vec3 sv(int path, int side, int i) const;
+    float cumAt(int path, int side, int i) const;
+    Vec3 axisX(int path, int i) const;
+    Vec3 axisZ(int path, int i) const;
+    Vec3 axisW(int path, int i) const;
+    int sidewalkIndex(int path, int side, float dist) const;
+    float headingAt(const Ped& p, float dist, int dir) const;
+
+    void startSeq(Ped& p, State s);
+    void queueSeq(Ped& p, State s) { if (s) p.queued = s; }
+    int frameCount(const Ped& p, State s) const;
+    float fwdSpeed(const Ped& p, State s) const;
+    float latSpeed(const Ped& p, State s) const;
+    const Seqs& seqs(const Ped& p) const { return m_seqs[static_cast<std::size_t>(p.type)]; }
+
+    void adjust(int oldRoom, int newRoom);
+    void clearPath(int path);
+    void reset(int idx, int path, int side);
+    void update(int idx, float dt, const PlayerCar& player);
+
+    // aiPedestrian helpers.
+    void calcCurve(Ped& p, int a, int b, float lateral);
+    Vec3 solvePosition(const Ped& p, float t) const;
+    void solveTargetPoint(Ped& p, float d);
+    float roadDistance(Ped& p);
+    void solveRoadSegment(Ped& p, float dist);
+    int pickNextRoad(Ped& p);
+    int setNextRoad(Ped& p, int node) const;
+    void steer(Ped& p, const Vec3& target, bool avoidQuirk = false);
+    bool wallProbe(Ped& p);
+    void backupAt(Ped& p);
+
+    // Reactions.
+    bool forwardCollision(const Ped& p, const PlayerCar& c, float& along) const;
+    bool anticipateCollision(const Ped& p, const PlayerCar& c, float& along) const;
+    bool playerCollision(const Ped& p, const PlayerCar& c, float& ahead) const;
+    void wander(Ped& p, const PlayerCar& c);
+    void anticipate(Ped& p, const PlayerCar& c);
+    void avoid(Ped& p, const PlayerCar& c, float& latScale);
+    void avoidObstacle(Ped& p, const Vec3& obstacle, float radius);
+
+    // Crossing the street.
+    Vec3 curbPoint(int path, int side, bool atEnd) const;
+    void crossTargets(const Ped& p, Vec3& nearSide, Vec3& farSide) const;
+    bool accident(const Ped& p) const;
+    void abortCrossing(Ped& p);
+    void preCross(Ped& p, const PlayerCar& c);
+    void waitCross(Ped& p, const PlayerCar& c);
+    void crossStreet(Ped& p, const PlayerCar& c);
+
     void publish();
 
     const RoadNetwork& m_net;
     std::vector<PedTypeInfo> m_types;
+    std::vector<Seqs> m_seqs;
     PedSettings m_settings;
     Random m_rng;
     std::vector<Ped> m_peds;
+    std::vector<int> m_pool;
+    std::vector<std::vector<int>> m_onPath; // pedestrians per road
+    std::vector<std::uint8_t> m_pathActive;
+    std::vector<std::array<Walk, 2>> m_walks;
     std::vector<Pedestrian> m_public;
-    std::vector<std::uint8_t> m_sidewalkActive;
+    const TrafficLights* m_lights = nullptr;
+    Probe m_probe;
+    AccidentQuery m_accident;
+    int m_room = 0;
+    bool m_started = false;
+    bool m_populateAll = false;
 };
 
 } // namespace mm2::ai

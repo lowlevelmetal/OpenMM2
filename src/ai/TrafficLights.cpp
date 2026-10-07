@@ -7,9 +7,11 @@ namespace mm2::ai {
 void TrafficLights::build(const RoadNetwork& network) {
     m_sets.clear();
     m_states.assign(network.lights().size(), LightState::Red);
+    m_setOfNode.assign(network.intersections().size(), -1);
     for (const auto& node : network.intersections()) {
         if (node.lights.empty())
             continue;
+        m_setOfNode[static_cast<std::size_t>(node.id)] = static_cast<int>(m_sets.size());
         Set set;
         set.intersection = node.id;
         set.slots = node.lights;
@@ -104,6 +106,28 @@ void TrafficLights::update(float dt) {
         if (!set.walkPhase)
             turnGreen(set);
     }
+}
+
+const TrafficLights::Set* TrafficLights::setOf(int intersection) const {
+    if (intersection < 0 || static_cast<std::size_t>(intersection) >= m_setOfNode.size())
+        return nullptr;
+    const int i = m_setOfNode[static_cast<std::size_t>(intersection)];
+    return i >= 0 ? &m_sets[static_cast<std::size_t>(i)] : nullptr;
+}
+
+LightCycle TrafficLights::cycleAt(int intersection) const {
+    const Set* s = setOf(intersection);
+    return s ? s->cycle : LightCycle::Rotate;
+}
+
+bool TrafficLights::walkPhaseAt(int intersection) const {
+    const Set* s = setOf(intersection);
+    return s && s->walkPhase;
+}
+
+LightState TrafficLights::firstLightAt(int intersection) const {
+    const Set* s = setOf(intersection);
+    return s && !s->slots.empty() ? m_states[static_cast<std::size_t>(s->slots.front())] : LightState::Red;
 }
 
 LightState TrafficLights::state(int slot) const {

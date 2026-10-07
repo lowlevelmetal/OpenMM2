@@ -1720,6 +1720,16 @@ void Traffic::release(int carId) {
         returnToPool(carId);
 }
 
+bool Traffic::accidentAt(int intersection, int path) const {
+    for (const Car& o : m_cars) {
+        if (!o.active || o.goal == AmbientGoal::RandomDrive)
+            continue;
+        if (o.rail == Rail::Turn ? arrivalIntersection(m_net, o.path, o.dir) == intersection : o.path == path)
+            return true;
+    }
+    return false;
+}
+
 // --- Update ------------------------------------------------------------------
 
 void Traffic::step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom) {

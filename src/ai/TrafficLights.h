@@ -55,6 +55,14 @@ public:
     // Lights that turned green in the last update.
     const std::vector<GreenEvent>& newGreens() const { return m_newGreen; }
 
+    // The set of an intersection, for pedestrians (aiPedestrian crossing):
+    // whether it has one, its kind, whether it is in the walk phase, and the
+    // state of its first light.
+    bool hasLights(int intersection) const { return setOf(intersection) != nullptr; }
+    LightCycle cycleAt(int intersection) const;
+    bool walkPhaseAt(int intersection) const;
+    LightState firstLightAt(int intersection) const;
+
 private:
     struct Set {
         int intersection = 0;
@@ -69,8 +77,10 @@ private:
     void setState(const Set& set, int light, LightState state);
     int pairedLight(const Set& set) const; // the opposite light of a four-way set
     void turnGreen(Set& set);
+    const Set* setOf(int intersection) const;
 
     std::vector<Set> m_sets;
+    std::vector<int> m_setOfNode; // intersection -> index into m_sets, -1 = none
     std::vector<LightState> m_states;
     std::vector<GreenEvent> m_newGreen;
     bool m_forced = false;
