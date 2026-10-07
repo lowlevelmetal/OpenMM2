@@ -38,11 +38,12 @@ calls `vehCar::Update` for each mover, then collides them):
    runs the same three steps and ends with the hitch joint (see Trailers).
 4. Collisions (OpenMM2), impact reports.
 
-MM2 oversamples each frame: n = min(ceil((frame - 0.001) / (1/60)),
-6) samples of frame / n (`dgPhysManager` SampleStep 1/60 s, MaxSamples 6).
-At 60 fps that is one 1/60 s sample per frame. `World::advanceFixed` (default
-1/60 s) therefore behaves exactly as the original did at 60 fps, whatever the
-display rate, and is deterministic for replays and network play;
+MM2 oversamples each frame: n = min(ceil((frame - 0.001) / SampleStep),
+MaxSamples) samples of frame / n. `mmGame::Init` sets SampleStep 1/35 s and
+MaxSamples 3 (overriding `dgPhysManager`'s own 1/60 s and 6), so a frame is
+split only below 35 fps; at 60 fps it is one 1/60 s sample.
+`World::advanceFixed` (default 1/60 s) therefore behaves exactly as the
+original did at 60 fps, whatever the display rate, and is deterministic for replays and network play;
 `World::advanceOversampled` reproduces the original's frame-rate dependent
 scheme. (Several terms below scale with the sample length, e.g. the
 drivetrain's AngInertia * dt, so the original drove slightly differently at

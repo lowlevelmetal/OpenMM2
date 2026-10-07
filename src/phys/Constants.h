@@ -19,15 +19,16 @@ inline constexpr float kGravity = 19.6f;
 // Physics sample step (s) for the deterministic fixed-step driver.
 //
 // MM2's dgPhysManager::Update oversamples each frame: n = min(ceil((frame -
-// 0.001) / SampleStep), MaxSamples) samples of frame / n, with SampleStep =
-// 1/60 s and MaxSamples = 6 (datTimeManager::SetTempOverSampling). At 60 fps
-// and above that is one sample per frame. The fixed-step driver uses the
-// same 1/60 s, so the simulation behaves as the original did at 60 fps
-// whatever the display rate; World::advanceOversampled() reproduces the
-// original scheme exactly.
+// 0.001) / SampleStep), MaxSamples) samples of frame / n
+// (datTimeManager::SetTempOverSampling). The game sets SampleStep = 1/35 s
+// and MaxSamples = 3 (mmGame::Init; the manager's own defaults are 1/60 s and
+// 6). Below 35 fps a frame is split; at 60 fps it is one 1/60 s sample. The
+// fixed-step driver uses 1/60 s, so the simulation behaves as the original
+// did at 60 fps whatever the display rate; World::advanceOversampled()
+// reproduces the original scheme exactly.
 inline constexpr float kFixedSampleStep = 1.0f / 60.0f;
-inline constexpr float kOversampleStep = 1.0f / 60.0f; // dgPhysManager +0x12ac
-inline constexpr int kOversampleMaxSamples = 6; // dgPhysManager +0x12a8
+inline constexpr float kOversampleStep = 1.0f / 35.0f; // mmGame::Init: dgPhysManager +0x12ac
+inline constexpr int kOversampleMaxSamples = 3;        // mmGame::Init: dgPhysManager +0x12a8
 
 // asInertialCS sleep defaults (MM1 header initialisers: Vel2 = 0.1,
 // AngVel2 = 0.1, Time = 1.0).
