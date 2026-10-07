@@ -86,13 +86,16 @@ public:
         m_delete = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/dvrdel.tga", 4}, 40, 216, [this, &fe] {
             if (!fe.profile)
                 return;
-            fe.ask("jpg/delp_dlg.jpg", {300, 225}, "", [this, &fe] {
-                fe.store.remove(*fe.profile);
-                fe.profile.reset();
-                refresh(fe);
-                if (!m_names.empty())
-                    fe.selectProfile(m_names.front());
-            });
+            fe.dialog("jpg/delp_dlg.jpg", menu_id::kDeleteDriver,
+                      {{"texture/dlg_yes.tga", {180, 176},
+                        [this, &fe] {
+                            fe.store.remove(*fe.profile);
+                            fe.profile.reset();
+                            refresh(fe);
+                            if (!m_names.empty())
+                                fe.selectProfile(m_names.front());
+                        }},
+                       {"texture/dlg_no.tga", {18, 176}, {}}});
         });
         m_delete->help = "jpg/mn_del.jpg";
         m_stats = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/dvrsts.tga", 4}, 40, 283,
@@ -113,7 +116,7 @@ public:
         m_quick->help = "jpg/mn_qck.jpg";
         addNavStrip(fe, *this);
         menu.focus(m_races);
-        menu.onBack = [&fe] { fe.ask("jpg/quit_dlg.jpg", {400, 76}, "", [&fe] { fe.ctx.quit = true; }); };
+        menu.onBack = [&fe] { fe.askQuit(); };
     }
 
     void onEnter(Frontend& fe) override { refresh(fe); }

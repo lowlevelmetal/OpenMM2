@@ -26,15 +26,22 @@ Frontend::Frontend(Context& c)
     hallOfFame.load(store.dir() / "records.ini");
 }
 
-void Frontend::push(std::unique_ptr<Page> page) { m_pages.push_back(std::move(page)); }
+void Frontend::push(std::unique_ptr<Page> page) {
+    m_pages.push_back(std::move(page));
+    topChanged();
+}
 
 void Frontend::pop() {
     if (m_pages.empty())
         return;
     m_graveyard.push_back(std::move(m_pages.back()));
     m_pages.pop_back();
-    if (!m_pages.empty())
+    if (!m_pages.empty()) {
+        // MM2 resets the focus every time a menu is entered (UIMenu::Enable).
+        m_pages.back()->menu.resetFocus();
         m_pages.back()->onEnter(*this);
+    }
+    topChanged();
 }
 
 void Frontend::replace(std::unique_ptr<Page> page) {
@@ -50,8 +57,64 @@ void Frontend::popTo(std::size_t d) {
         m_graveyard.push_back(std::move(m_pages.back()));
         m_pages.pop_back();
     }
-    if (!m_pages.empty())
+    if (!m_pages.empty()) {
+        m_pages.back()->menu.resetFocus();
         m_pages.back()->onEnter(*this);
+    }
+    topChanged();
+}
+
+void Frontend::topChanged() {
+    // MenuManager::Switch -> PlayMenuSwitchSound: entering a menu with a new
+    // id plays its sound unless that sound is already playing; dialogs do
+    // not switch menus.
+    int id = -1;
+    for (auto it = m_pages.rbegin(); it != m_pages.rend(); ++it)
+        if (!(*it)->dialog) {
+            id = (*it)->menuId;
+            break;
+        }
+    if (id == m_menuId)
+        return;
+    m_menuId = id;
+    struct SwitchSound {
+        int menu;
+        const char* sound;
+        float volume;
+    };
+    static constexpr SwitchSound kSounds[] = {
+        {menu_id::kMain, "Selectionmade", 0.87f},  {menu_id::kOptions, "UIoptions", 0.9f},
+        {menu_id::kAudio, "UIoptions", 0.9f},      {menu_id::kGraphics, "UIoptions", 0.9f},
+        {menu_id::kControl, "UIoptions", 0.9f},    {menu_id::kRace, "UIraces", 0.9f},
+        {menu_id::kCrashIntro, "UIraces", 0.9f},   {menu_id::kVehicle, "UIvehicles", 0.9f},
+        {menu_id::kHostRace, "UIvehicles", 0.9f},  {menu_id::kNetSelect, "UImulti", 0.87f},
+        {menu_id::kNetArena, "UImulti", 0.87f},
+    };
+    for (const auto& e : kSounds)
+        if (e.menu == id && !soundPlaying(e.sound))
+            playSound(e.sound, e.volume);
+}
+
+void Frontend::playSound(std::string_view name, float volume) {
+    if (!ctx.mixer || name.empty())
+        return;
+    if (!m_soundBank)
+        m_soundBank = std::make_unique<audio::SoundBank>(ctx.game->vfs);
+    m_soundBank->setQuality(ctx.settings.audioHighQuality ? audio::SoundBank::Quality::High
+                                                          : audio::SoundBank::Quality::Low);
+    auto it = m_sounds.find(name);
+    if (it == m_sounds.end()) {
+        audio::game::SoundSlot slot;
+        slot.load(*ctx.mixer, *m_soundBank, name, audio::Bus::Effects);
+        it = m_sounds.emplace(std::string(name), std::move(slot)).first;
+    }
+    if (it->second.valid())
+        it->second.playOnce(volume);
+}
+
+bool Frontend::soundPlaying(std::string_view name) const {
+    const auto it = m_sounds.find(name);
+    return it != m_sounds.end() && it->second.playing();
 }
 
 int Frontend::cityIndex(std::string_view name) const {
@@ -255,15 +318,17 @@ void Frontend::update(double dt) {
     Page* page = top();
     if (!page)
         return;
+    if (!m_soundFn)
+        m_soundFn = [this](std::string_view name, float volume) { playSound(name, volume); };
     const render::UiLayout screen = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
     const ui::NavInput nav = navReader.read(ctx.input, screen, dt);
-    ui::UiFrame f{*ctx.overlay, textures, text, nav, time};
+    ui::UiFrame f{*ctx.overlay, textures, text, nav, time, &m_soundFn};
     page->update(*this, dt);
     if (top() == page)
         page->menu.update(f);
 }
 
-void Frontend::drawPage(Page& p, ui::UiFrame& f) {
+void Frontend::drawPage(Page& p, ui::UiFrame& f, bool active) {
     if (!p.menu.background.empty())
         ui::drawImage(f.overlay, textures.get(p.menu.background), 0, 0, 640, 480);
     if (!p.dialogPicture.empty()) {
@@ -271,7 +336,9 @@ void Frontend::drawPage(Page& p, ui::UiFrame& f) {
         ui::drawImage(f.overlay, t, p.origin.x, p.origin.y);
     }
     p.drawBelow(*this, f);
-    p.menu.drawContent(f);
+    // A page under a dialog shows no focus and no help picture
+    // (MenuManager::OpenDialog clears them).
+    p.menu.drawContent(f, active);
     p.drawAbove(*this, f);
 }
 
@@ -285,87 +352,127 @@ void Frontend::draw() {
     while (first > 0 && m_pages[first]->dialog)
         --first;
     for (std::size_t i = first; i < m_pages.size(); ++i)
-        drawPage(*m_pages[i], f);
+        drawPage(*m_pages[i], f, i + 1 == m_pages.size());
     ov.end();
 }
 
 // --- Common widgets ------------------------------------------------------------------------
 
-void addNavStrip(Frontend& fe, Page& page, bool optionsButton) {
+void addNavStrip(Frontend& fe, Page& page, NavOptions options, std::function<void()> cancel) {
     using namespace layout;
-    // On option pages themselves the OPTIONS button is shown disabled.
-    auto& opt = page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_opt.tga", 5}, kNavOptions.x, kNavOptions.y,
-                                                 [&fe] { fe.push(makeOptionsPage(fe)); });
-    opt.enabled = optionsButton;
-    page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_hlp.tga", 3}, kNavHelp.x, kNavHelp.y, [&fe] {
-        fe.message("Help: use the arrow keys or the mouse to choose, Enter to select and Escape to go back.");
+    const auto before = page.menu.widgetsInGroup(1); // a PREV added earlier
+    auto pos = [&fe](int index, Vec2 code) { return fe.layout.position(menu_id::kNavBar, index, code); };
+    auto add = [&](ui::SpriteSheet sheet, int index, Vec2 code, std::function<void()> fn) -> ui::SpriteButton& {
+        const Vec2 p = pos(index, code);
+        auto& b = page.menu.add<ui::SpriteButton>(std::move(sheet), p.x, p.y, std::move(fn));
+        b.group = 1;
+        b.sound = "Selectionmade"; // UIBMButton sound slot 0
+        return b;
+    };
+    // OPTIONS is a 5-frame toggle that is never disabled: lit on the options
+    // menu, CANCEL on an option sub-page, otherwise it opens the options.
+    std::function<void()> onOptions;
+    switch (options) {
+    case NavOptions::Open: onOptions = [&fe] { fe.push(makeOptionsPage(fe)); }; break;
+    case NavOptions::Lit: onOptions = [] {}; break;
+    case NavOptions::Cancel: onOptions = std::move(cancel); break;
+    }
+    auto& opt = add({"texture/mnav_opt.tga", 5}, 0, kNavOptions, std::move(onOptions));
+    if (options == NavOptions::Lit)
+        opt.lit = [] { return true; };
+    // HELP: MM2 minimises and runs WinHelp on MM2HELP.HLP (MenuManager::Help);
+    // OpenMM2 shows a short message instead.
+    add({"texture/mnav_hlp.tga", 3}, 1, kNavHelp, [&fe] {
+        fe.message("Use the arrow keys or the mouse to choose, Enter to select and Escape to go back.");
     });
-    page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_sto.tga", 3}, kNavMinimize.x, kNavMinimize.y,
-                                    [&fe] { SDL_MinimizeWindow(fe.ctx.window().sdl()); });
-    page.menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/mnav_ext.tga", 3}, kNavExit.x, kNavExit.y, [&fe] {
-        fe.ask("jpg/quit_dlg.jpg", {400, 76}, "", [&fe] { fe.ctx.quit = true; });
-    });
+    add({"texture/mnav_sto.tga", 3}, 2, kNavMinimize, [&fe] { SDL_MinimizeWindow(fe.ctx.window().sdl()); });
+    add({"texture/mnav_ext.tga", 3}, 3, kNavExit, [&fe] { fe.askQuit(); });
+    // PREV, if the page has one, comes last in the strip's focus order.
+    for (const auto* w : before)
+        page.menu.moveToEnd(w);
 }
 
 ui::SpriteButton& addBack(Frontend& fe, Page& page, const char* sprite) {
-    auto& b = page.menu.add<ui::SpriteButton>(ui::SpriteSheet{sprite, 4}, layout::kBack.x, layout::kBack.y,
-                                              [&fe] { fe.pop(); });
+    const bool prev = std::string_view(sprite) == "texture/mnav_prv.tga";
+    const Vec2 p = prev ? fe.layout.position(menu_id::kNavBar, 4, layout::kBack) : layout::kBack;
+    auto& b = page.menu.add<ui::SpriteButton>(ui::SpriteSheet{sprite, 4}, p.x, p.y, [&fe] { fe.pop(); });
+    if (prev)
+        b.group = 1;
     page.menu.onBack = [&fe] { fe.pop(); };
     return b;
 }
 
-// --- Message and question dialogs ----------------------------------------------------------
+// --- Dialogs ----------------------------------------------------------------------------------
 
 namespace {
 
+Vec2 pictureSize(Frontend& fe, const std::string& picture) {
+    const ui::UiTexture& t = fe.textures.get(picture);
+    return t ? Vec2{static_cast<float>(t.width), static_cast<float>(t.height)} : Vec2{400, 76};
+}
+
+// MM2 Dialog_Message: a picture with one or two buttons.
+class PictureDialog final : public Page {
+public:
+    PictureDialog(Frontend& fe, std::string picture, int id, std::vector<Frontend::DialogButton> buttons) {
+        dialog = true;
+        menuId = id;
+        origin = ui::dialogOrigin(pictureSize(fe, picture));
+        dialogPicture = std::move(picture);
+        ui::SpriteButton* first = nullptr;
+        for (std::size_t i = 0; i < buttons.size(); ++i) {
+            auto& b = buttons[i];
+            const Vec2 p = fe.layout.position(id, static_cast<int>(i), b.position, origin);
+            auto& w = menu.add<ui::SpriteButton>(ui::SpriteSheet{b.sprite, 4}, p.x, p.y, [&fe, then = b.then] {
+                fe.pop();
+                if (then)
+                    then();
+            });
+            w.sound = "Selectionmade";
+            if (!first)
+                first = &w;
+        }
+        if (first)
+            menu.setInitialFocus(first);
+        auto cancel = buttons.empty() ? std::function<void()>{} : buttons.back().then;
+        menu.onBack = [&fe, cancel] {
+            fe.pop();
+            if (cancel)
+                cancel();
+        };
+    }
+};
+
+// OpenMM2's text messages: msg_dlg (unused by MM2 build 3393) with OK at the
+// position of MM2's 400x76 message boxes.
 class MessageDialog final : public Page {
 public:
-    MessageDialog(Frontend& fe, std::string text, std::function<void()> then) : m_text(std::move(text)) {
+    MessageDialog(Frontend& fe, std::string text, std::function<void()> then, bool question)
+        : m_text(std::move(text)) {
         dialog = true;
         dialogPicture = "jpg/msg_dlg.jpg";
-        origin = {120, 202};
-        auto done = [&fe, then = std::move(then)] {
+        origin = ui::dialogOrigin({400, 76});
+        auto ok = [&fe, then = std::move(then)] {
             fe.pop();
             if (then)
                 then();
         };
-        menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_ok.tga", 4}, origin.x + 290, origin.y + 40, done);
-        menu.onBack = done;
+        auto& okButton =
+            menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_ok.tga", 4}, origin.x + 296, origin.y + 38, ok);
+        okButton.sound = "Selectionmade";
+        menu.setInitialFocus(&okButton);
+        if (question) {
+            menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_can.tga", 4}, origin.x + 196, origin.y + 38,
+                                       [&fe] { fe.pop(); })
+                .sound = "Selectionmade";
+            menu.onBack = [&fe] { fe.pop(); };
+        } else {
+            menu.onBack = ok;
+        }
     }
     void drawAbove(Frontend&, ui::UiFrame& f) override {
-        f.text.drawWrapped(f.overlay, ui::style::valueFont(), m_text, origin.x + 80, origin.y + 10, 200,
+        f.text.drawWrapped(f.overlay, ui::style::smallFont(), m_text, origin.x + 20, origin.y + 10, 260,
                            ui::style::kValueText);
-    }
-
-private:
-    std::string m_text;
-};
-
-class QuestionDialog final : public Page {
-public:
-    QuestionDialog(Frontend& fe, std::string picture, Vec2 size, std::string text, std::function<void()> yes)
-        : m_text(std::move(text)) {
-        dialog = true;
-        dialogPicture = std::move(picture);
-        origin = {(640 - size.x) * 0.5f, (480 - size.y) * 0.5f};
-        // Small dialogs (400x76) put the buttons on the right; taller ones at the bottom.
-        const bool wide = size.y < 100;
-        const Vec2 yesPos = wide ? Vec2{origin.x + 180, origin.y + 23} : Vec2{origin.x + 40, origin.y + size.y - 50};
-        const Vec2 noPos = wide ? Vec2{origin.x + 290, origin.y + 23} : Vec2{origin.x + size.x - 140, origin.y + size.y - 50};
-        menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_yes.tga", 4}, yesPos.x, yesPos.y,
-                                   [&fe, yes = std::move(yes)] {
-                                       fe.pop();
-                                       yes();
-                                   });
-        auto& no = menu.add<ui::SpriteButton>(ui::SpriteSheet{"texture/dlg_no.tga", 4}, noPos.x, noPos.y,
-                                              [&fe] { fe.pop(); });
-        menu.focus(&no);
-        menu.onBack = [&fe] { fe.pop(); };
-    }
-    void drawAbove(Frontend&, ui::UiFrame& f) override {
-        if (!m_text.empty())
-            f.text.drawWrapped(f.overlay, ui::style::valueFont(), m_text, origin.x + 30, origin.y + 60, 240,
-                               ui::style::kValueText, ui::Align::Center);
     }
 
 private:
@@ -375,11 +482,27 @@ private:
 } // namespace
 
 void Frontend::message(std::string t, std::function<void()> then) {
-    push(std::make_unique<MessageDialog>(*this, std::move(t), std::move(then)));
+    push(std::make_unique<MessageDialog>(*this, std::move(t), std::move(then), false));
 }
 
-void Frontend::ask(std::string picture, Vec2 size, std::string t, std::function<void()> yes) {
-    push(std::make_unique<QuestionDialog>(*this, std::move(picture), size, std::move(t), std::move(yes)));
+void Frontend::question(std::string t, std::function<void()> yes) {
+    push(std::make_unique<MessageDialog>(*this, std::move(t), std::move(yes), true));
+}
+
+void Frontend::dialog(std::string picture, int id, std::vector<DialogButton> buttons) {
+    push(std::make_unique<PictureDialog>(*this, std::move(picture), id, std::move(buttons)));
+}
+
+void Frontend::askQuit() {
+    // quit_dlg: OK (first, focused) at +296,+38 quits; Cancel at +196,+38.
+    dialog("jpg/quit_dlg.jpg", menu_id::kQuit,
+           {{"texture/dlg_ok.tga", {296, 38}, [this] { ctx.quit = true; }}, {"texture/dlg_can.tga", {196, 38}, {}}});
+}
+
+void Frontend::notice(std::string picture, int id, std::function<void()> then) {
+    const Vec2 size = pictureSize(*this, picture);
+    const Vec2 ok = size.y > 100 ? Vec2{180, 176} : Vec2{296, 38};
+    dialog(std::move(picture), id, {{"texture/dlg_ok.tga", ok, std::move(then)}});
 }
 
 // --- Names ------------------------------------------------------------------------------------
@@ -590,11 +713,12 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
         else if (arg == "eject" && fe.ctx.netGame && fe.ctx.netGame->inSession())
             fe.push(makeEjectDialog(fe));
         else if (arg == "quit")
-            fe.ask("jpg/quit_dlg.jpg", {400, 76}, "", [] {});
+            fe.askQuit();
         else if (arg == "message")
             fe.message("You cannot pick a locked vehicle");
         else if (arg == "delete")
-            fe.ask("jpg/delp_dlg.jpg", {300, 225}, "", [] {});
+            fe.dialog("jpg/delp_dlg.jpg", menu_id::kDeleteDriver,
+                      {{"texture/dlg_yes.tga", {180, 176}, {}}, {"texture/dlg_no.tga", {18, 176}, {}}});
         else
             log::warn("script: unknown page '{}'", arg);
     } else {

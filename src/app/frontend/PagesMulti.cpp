@@ -739,7 +739,7 @@ private:
 
     static void confirmLeave(Frontend& fe) {
         const bool host = fe.ctx.netGame && fe.ctx.netGame->isHost();
-        fe.ask("jpg/msg_dlg.jpg", {400, 76}, host ? "End Session?" : "Quit to Lobby?", [&fe] { // strings 481, 479
+        fe.question(host ? "End Session?" : "Quit to Lobby?", [&fe] { // strings 481, 479
             if (fe.ctx.netGame) {
                 fe.ctx.netGame->leave();
                 fe.ctx.netGame->startLanScan();

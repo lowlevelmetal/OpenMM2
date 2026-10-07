@@ -55,7 +55,7 @@ public:
             .help = "jpg/opt_tbck.jpg";
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_done.tga", 4}, kNext.x, kNext.y, [this, &fe] { done(fe); });
         menu.onBack = [this, &fe] { cancel(fe); };
-        addNavStrip(fe, *this, false);
+        addNavStrip(fe, *this, NavOptions::Lit);
     }
 
 protected:
@@ -96,7 +96,7 @@ public:
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/opt_abt.tga", 4}, 25, 328, [&fe] { fe.push(makeAboutPage(fe)); })
             .help = "jpg/opt_tabt.jpg";
         addBack(fe, *this).help = "jpg/opt_tbck.jpg";
-        addNavStrip(fe, *this, false);
+        addNavStrip(fe, *this, NavOptions::Lit);
         menu.focus(&gfx);
     }
 };
@@ -379,7 +379,7 @@ public:
                              });
         menu.add<ui::Slider>(Box{471, 276, 139, 33}, [&ctx] { return iniFloat(ctx, "Audio", "Balance", 0.5f); },
                              [&ctx](float v) { ctx.settings.ini.setDouble("Audio", "Balance", v); })
-            .balance = true;
+            ;
         addToggle(ctx, "texture/aud_fx.tga", 64, "SoundEffects");
         addToggle(ctx, "texture/aud_com.tga", 91, "Commentary");
         addToggle(ctx, "texture/aud_musc.tga", 125, "Music");

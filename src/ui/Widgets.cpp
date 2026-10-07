@@ -14,13 +14,32 @@ std::uint32_t rgba(std::uint8_t r, std::uint8_t g, std::uint8_t b, std::uint8_t 
     return render::packColor(r, g, b, a);
 }
 
+void outline(render::Overlay2D& o, Box b, std::uint32_t color) {
+    o.rect(b.x, b.y, b.w, 1, color);
+    o.rect(b.x, b.y + b.h - 1, b.w, 1, color);
+    o.rect(b.x, b.y, 1, b.h, color);
+    o.rect(b.x + b.w - 1, b.y, 1, b.h, color);
+}
+
+// Draws rows [row, row + rows) of an image (rows counted from the picture's
+// top) stretched to the given rectangle, the left `fraction` of its width.
+void drawRows(UiFrame& f, const UiTexture& t, int row, int rows, float x, float y, float w, float h,
+              float uRight = 1.0f) {
+    if (!t || w <= 0.0f || h <= 0.0f)
+        return;
+    const float th = static_cast<float>(t.height);
+    const float vTop = 1.0f - static_cast<float>(row) / th;
+    const float vBottom = 1.0f - static_cast<float>(row + rows) / th;
+    f.overlay.image(t.handle, x, y, w, h, {0.0f, vTop}, {uRight, vBottom});
+}
+
 } // namespace
 
 // --- Style -----------------------------------------------------------------------
 
 namespace style {
-FontSpec valueFont() { return {"Arial Bold", 12, 16, 0, 400}; }
-FontSpec smallFont() { return {"Arial Bold", 12, 14, 0, 400}; }
+FontSpec valueFont() { return {"Arial Bold", 16, 16, 0, 400}; }
+FontSpec smallFont() { return {"Arial Bold", 14, 14, 0, 400}; }
 FontSpec titleFont() { return {"Gill Sans MT", 16, 22, 0, 700}; }
 } // namespace style
 
@@ -54,14 +73,14 @@ NavInput NavReader::read(const platform::Input& in, const render::UiLayout& layo
     bool down = in.keyDown(Key::Down) || in.keyDown(Key::Kp2);
     bool left = in.keyDown(Key::Left) || in.keyDown(Key::Kp4);
     bool right = in.keyDown(Key::Right) || in.keyDown(Key::Kp6);
-    n.accept = in.keyPressed(Key::Return) || in.keyPressed(Key::KpEnter) || in.keyPressed(Key::Space);
-    n.back = in.keyPressed(Key::Escape);
     n.enter = in.keyPressed(Key::Return) || in.keyPressed(Key::KpEnter);
-    const bool shift = in.keyDown(Key::LShift) || in.keyDown(Key::RShift);
-    if (in.keyPressed(Key::Tab)) {
-        n.tabNext = !shift;
-        n.tabPrev = shift;
-    }
+    n.accept = n.enter;
+    n.space = in.keyPressed(Key::Space);
+    n.back = in.keyPressed(Key::Escape);
+    n.tabNext = in.keyPressed(Key::Tab);
+    n.home = in.keyPressed(Key::Home);
+    n.end = in.keyPressed(Key::End);
+    // Gamepads are an OpenMM2 addition (MM2's menus read only keyboard and mouse).
     for (const auto& pad : in.gamepads()) {
         auto btn = [&](GamepadButton b) { return pad.buttons.test(static_cast<int>(b)); };
         auto hit = [&](GamepadButton b) { return pad.pressed.test(static_cast<int>(b)); };
@@ -74,7 +93,6 @@ NavInput NavReader::read(const platform::Input& in, const render::UiLayout& layo
         n.accept |= hit(GamepadButton::South) || hit(GamepadButton::Start);
         n.back |= hit(GamepadButton::East) || hit(GamepadButton::Back);
         n.tabNext |= hit(GamepadButton::RightShoulder);
-        n.tabPrev |= hit(GamepadButton::LeftShoulder);
     }
     n.up = repeat(m_up, up, dt);
     n.down = repeat(m_down, down, dt);
@@ -87,7 +105,8 @@ NavInput NavReader::read(const platform::Input& in, const render::UiLayout& layo
     m_lastMouse = n.mouse;
     n.mousePressed = in.mousePressed(platform::MouseButton::Left);
     n.mouseDown = in.mouseDown(platform::MouseButton::Left);
-    n.back |= in.mousePressed(platform::MouseButton::Right);
+    n.mouseReleased = m_wasDown && !n.mouseDown;
+    m_wasDown = n.mouseDown;
     n.wheel = in.mouseWheel().y;
     n.text = in.text();
     return n;
@@ -122,14 +141,17 @@ SpriteButton::SpriteButton(SpriteSheet sheet_, float x, float y, std::function<v
 }
 
 void SpriteButton::draw(UiFrame& f, bool focused) {
+    // UIBMButton::GetHitArea: one frame's rectangle.
     const Vec2 size = spriteFrameSize(f, sheet);
     box.w = size.x;
     box.h = size.y;
     int frame = 0;
-    const bool pressed = f.time < m_pressedUntil || (focused && f.nav.mouseDown && box.contains(f.nav.mouse));
+    const bool held = m_pressed && f.nav.mouseDown && box.contains(f.nav.mouse);
     if (!enabled)
-        frame = sheet.frames >= 4 ? sheet.frames - 1 : 0;
-    else if (pressed && sheet.frames >= 3)
+        frame = sheet.frames >= 4 ? (sheet.frames == 7 ? 4 : sheet.frames - 1) : 0;
+    else if (lit && lit())
+        frame = focused ? 3 : 2;
+    else if (held && sheet.frames >= 3)
         frame = 2;
     else if (focused)
         frame = 1;
@@ -140,10 +162,23 @@ void SpriteButton::draw(UiFrame& f, bool focused) {
 bool SpriteButton::activate(UiFrame& f) {
     if (!enabled)
         return false;
-    m_pressedUntil = f.time + 0.12;
+    f.play(sound, soundVolume);
     if (onClick)
         onClick();
     return true;
+}
+
+void SpriteButton::mouse(UiFrame& f, bool hovered) {
+    if (hovered && f.nav.mousePressed)
+        m_pressed = true;
+    if (f.nav.mouseReleased) {
+        const bool fire = m_pressed && hovered;
+        m_pressed = false;
+        if (fire)
+            activate(f);
+    } else if (!f.nav.mouseDown) {
+        m_pressed = false;
+    }
 }
 
 // --- LampItem --------------------------------------------------------------------------
@@ -162,99 +197,123 @@ void LampItem::draw(UiFrame& f, bool focused) {
     drawSpriteFrame(f, sheet, frame, box.x, box.y);
 }
 
-bool LampItem::activate(UiFrame&) {
-    if (!enabled)
+bool LampItem::activate(UiFrame& f) {
+    if (!enabled || readOnly)
         return false;
+    f.play(sound, soundVolume);
     if (onClick)
         onClick();
     return true;
 }
 
+void LampItem::mouse(UiFrame& f, bool hovered) {
+    // UIBMButton::DoToggle: toggles flip on the press.
+    if (hovered && f.nav.mousePressed)
+        activate(f);
+}
+
 // --- ValueBox ---------------------------------------------------------------------------
+
+namespace {
+constexpr float kDropHeight = 23.0f; // drop_arrow frame height + 2 (UITextDropdown::Init)
+} // namespace
 
 ValueBox::ValueBox(Box b, std::function<std::vector<std::string>()> opts, std::function<int()> g,
                    std::function<void(int)> s)
     : options(std::move(opts)), get(std::move(g)), set(std::move(s)) {
     box = b;
+    box.h = kDropHeight;
 }
 
 void ValueBox::draw(UiFrame& f, bool focused) {
     const auto opts = options();
-    const int cur = get ? get() : -1;
+    const int cur = m_open ? m_hover : (get ? get() : -1);
     const std::string text = cur >= 0 && cur < static_cast<int>(opts.size()) ? opts[static_cast<std::size_t>(cur)] : "";
-    const std::uint32_t color =
-        !enabled ? style::kValueTextDisabled : (focused ? style::kValueTextFocus : style::kValueText);
+    const std::uint32_t color = focused || m_open ? style::kValueTextFocus : style::kValueText;
     const FontSpec font = style::valueFont();
     const float lh = f.text.lineHeight(f.overlay, font);
-    const bool arrows = enabled && box.w >= 60 && opts.size() > 1;
-    const float textRight = box.x + box.w - (arrows ? 24.0f : 6.0f);
-    f.overlay.setClip(nullptr);
-    const Vec4 clip{box.x + 2, box.y, textRight - box.x - 2, box.h};
+    const Vec4 clip{box.x, box.y, box.w, box.h};
     f.overlay.setClip(&clip);
-    f.text.draw(f.overlay, font, text, box.x + 8, box.y + (box.h - lh) * 0.5f, color);
+    f.text.draw(f.overlay, font, text, box.x + 5, box.y + (box.h - lh) * 0.5f, color);
     f.overlay.setClip(nullptr);
-    if (arrows)
-        drawSpriteFrame(f, {"texture/drop_arrow.tga", 3}, m_open ? 2 : (focused ? 1 : 0), box.x + box.w - 22,
-                        box.y + (box.h - 21.0f) * 0.5f);
+    if (showArrow && enabled && !readOnly)
+        drawSpriteFrame(f, {"texture/drop_arrow.tga", 3}, m_open ? 2 : (focused ? 1 : 0), box.x + box.w - 21,
+                        box.y + 1);
 }
 
-Box ValueBox::listBox(const std::vector<std::string>& opts) const {
-    const float row = 18.0f;
-    const int rows = std::min<int>(static_cast<int>(opts.size()), 10);
-    Box b{box.x, box.y + box.h, box.w, row * static_cast<float>(rows) + 4};
-    if (b.y + b.h > 478)
-        b.y = box.y - b.h;
-    return b;
+std::vector<ValueBox::Cell> ValueBox::listCells(std::size_t count) const {
+    // mmDropDown: rows of the box's size below it; when they would leave the
+    // screen they continue in further columns, and the list moves left to
+    // stay on screen.
+    std::vector<Cell> cells;
+    const float top = box.y + box.h;
+    const int perColumn = std::max(1, static_cast<int>((480.0f - top) / kDropHeight));
+    const int columns = static_cast<int>((count + static_cast<std::size_t>(perColumn) - 1) / static_cast<std::size_t>(perColumn));
+    float x0 = box.x;
+    if (x0 + static_cast<float>(columns) * box.w > 640.0f)
+        x0 = std::max(0.0f, 640.0f - static_cast<float>(columns) * box.w);
+    for (std::size_t i = 0; i < count; ++i) {
+        const int col = static_cast<int>(i) / perColumn, row = static_cast<int>(i) % perColumn;
+        cells.push_back({{x0 + static_cast<float>(col) * box.w, top + static_cast<float>(row) * kDropHeight, box.w,
+                          kDropHeight},
+                         static_cast<int>(i)});
+    }
+    return cells;
 }
 
-bool ValueBox::activate(UiFrame& f) {
-    if (!enabled || options().size() < 2)
+bool ValueBox::activate(UiFrame&) {
+    if (!enabled || readOnly || options().empty())
         return false;
     m_open = true;
     m_hover = std::max(0, get());
-    m_scroll = std::max(0, m_hover - 4);
-    (void)f;
     return true;
 }
 
-bool ValueBox::adjust(UiFrame&, int dir) {
-    if (!enabled)
-        return false;
-    const int n = static_cast<int>(options().size());
-    if (n == 0)
-        return true;
-    int v = get() + dir;
-    if (wrap)
-        v = (v % n + n) % n;
-    v = std::clamp(v, 0, n - 1);
-    if (v != get())
-        set(v);
+bool ValueBox::adjust(UiFrame&, int) {
+    // UITextDropdown: Left/Right do nothing on a closed box.
     return true;
+}
+
+void ValueBox::mouse(UiFrame& f, bool hovered) {
+    if (hovered && f.nav.mousePressed && !m_open)
+        activate(f);
 }
 
 void ValueBox::modalInput(UiFrame& f) {
     const auto opts = options();
     const int n = static_cast<int>(opts.size());
-    const Box lb = listBox(opts);
-    const int rows = std::min(n, 10);
-    const NavInput& nav = f.nav;
-    if (nav.up)
-        m_hover = std::max(0, m_hover - 1);
-    if (nav.down)
-        m_hover = std::min(n - 1, m_hover + 1);
-    if (nav.wheel != 0.0f)
-        m_scroll -= static_cast<int>(nav.wheel);
-    if (lb.contains(nav.mouse) && nav.mouseMoved)
-        m_hover = std::clamp(m_scroll + static_cast<int>((nav.mouse.y - lb.y - 2) / 18.0f), 0, n - 1);
-    if (m_hover < m_scroll)
-        m_scroll = m_hover;
-    if (m_hover >= m_scroll + rows)
-        m_scroll = m_hover - rows + 1;
-    m_scroll = std::clamp(m_scroll, 0, std::max(0, n - rows));
-    if (nav.accept || (nav.mousePressed && lb.contains(nav.mouse))) {
-        set(m_hover);
+    if (n == 0) {
         m_open = false;
-    } else if (nav.back || (nav.mousePressed && !lb.contains(nav.mouse))) {
+        return;
+    }
+    auto move = [&](int from, int dir) {
+        for (int i = from; i >= 0 && i < n; i += dir)
+            if (isOptionEnabled(i))
+                return i;
+        return m_hover;
+    };
+    const NavInput& nav = f.nav;
+    if (nav.up || nav.left)
+        m_hover = move(m_hover - 1, -1);
+    if (nav.down || nav.right)
+        m_hover = move(m_hover + 1, 1);
+    if (nav.home)
+        m_hover = move(0, 1);
+    if (nav.end)
+        m_hover = move(n - 1, -1);
+    const auto cells = listCells(opts.size());
+    const Cell* under = nullptr;
+    for (const auto& c : cells)
+        if (c.box.contains(nav.mouse))
+            under = &c;
+    if (under && nav.mouseMoved && isOptionEnabled(under->index))
+        m_hover = under->index;
+    if (nav.accept || (nav.mouseReleased && under && isOptionEnabled(under->index))) {
+        const int pick = nav.accept ? m_hover : under->index;
+        if (isOptionEnabled(pick))
+            set(pick);
+        m_open = false;
+    } else if (nav.back || (nav.mousePressed && !under && !box.contains(nav.mouse))) {
         m_open = false;
     }
 }
@@ -263,21 +322,46 @@ void ValueBox::drawPopup(UiFrame& f) {
     if (!m_open)
         return;
     const auto opts = options();
-    const Box lb = listBox(opts);
-    const int rows = std::min<int>(static_cast<int>(opts.size()), 10);
-    f.overlay.rect(lb.x - 1, lb.y - 1, lb.w + 2, lb.h + 2, rgba(110, 110, 240));
-    f.overlay.rect(lb.x, lb.y, lb.w, lb.h, rgba(8, 2, 46, 245));
     const FontSpec font = style::valueFont();
-    for (int i = 0; i < rows; ++i) {
-        const int idx = m_scroll + i;
-        if (idx >= static_cast<int>(opts.size()))
-            break;
-        const float y = lb.y + 2 + static_cast<float>(i) * 18.0f;
-        if (idx == m_hover)
-            f.overlay.rect(lb.x + 1, y, lb.w - 2, 18, rgba(60, 60, 200));
-        f.text.draw(f.overlay, font, opts[static_cast<std::size_t>(idx)], lb.x + 8, y + 1,
-                    idx == get() ? style::kValueTextFocus : style::kValueText);
+    for (const auto& c : listCells(opts.size())) {
+        f.overlay.rect(c.box.x, c.box.y, c.box.w, c.box.h, rgba(0, 0, 0));
+        const Vec4 clip{c.box.x, c.box.y, c.box.w, c.box.h};
+        f.overlay.setClip(&clip);
+        f.text.draw(f.overlay, font, opts[static_cast<std::size_t>(c.index)], c.box.x, c.box.y,
+                    isOptionEnabled(c.index) ? style::kValueText : style::kOptionDisabled);
+        f.overlay.setClip(nullptr);
+        if (c.index == m_hover)
+            outline(f.overlay, c.box, rgba(255, 255, 255));
     }
+}
+
+bool stepOption(ValueBox& box, int dir, bool wrap) {
+    if (!box.enabled || box.readOnly)
+        return false;
+    const int n = static_cast<int>(box.options().size());
+    if (n == 0)
+        return false;
+    const int cur = box.get();
+    int i = cur;
+    for (int tries = 0; tries < n; ++tries) {
+        i += dir;
+        if (i < 0 || i >= n) {
+            if (!wrap)
+                return false;
+            i = (i + n) % n;
+        }
+        if (!box.isOptionEnabled(i)) {
+            // MM2's arrows do not step past a locked entry unless they wrap.
+            if (!wrap)
+                return false;
+            continue;
+        }
+        if (i == cur)
+            return false;
+        box.set(i);
+        return true;
+    }
+    return false;
 }
 
 // --- TextBox -------------------------------------------------------------------------------
@@ -287,68 +371,157 @@ TextBox::TextBox(Box b, std::function<std::string()> t, Align a) : text(std::mov
 void TextBox::draw(UiFrame& f, bool) {
     const std::string s = text ? text() : std::string();
     const float lh = f.text.lineHeight(f.overlay, font);
-    const float x = align == Align::Left ? box.x + 8 : (align == Align::Center ? box.x + box.w * 0.5f : box.x + box.w - 8);
+    const float x = align == Align::Left ? box.x + 5 : (align == Align::Center ? box.x + box.w * 0.5f : box.x + box.w - 5);
     f.text.draw(f.overlay, font, s, x, box.y + (box.h - lh) * 0.5f, color, align);
 }
 
-// --- Slider ---------------------------------------------------------------------------------
-
-Slider::Slider(Box row, std::function<float()> g, std::function<void(float)> s, float st)
-    : get(std::move(g)), set(std::move(s)), step(st) {
-    box = row;
-}
+// --- Roller -----------------------------------------------------------------------------------
 
 namespace {
-// Geometry inside a grid row: 25 px arrow buttons at both ends and the value
-// bar between them (inferred from the sprite sizes and the 139 px grid boxes).
-constexpr float kArrowW = 25.0f, kArrowH = 29.0f, kBarH = 19.0f;
+constexpr float kRollerArrowW = 29.0f, kRollerArrowH = 17.0f;
 } // namespace
 
-void Slider::draw(UiFrame& f, bool focused) {
-    const float y = box.y + (box.h - kArrowH) * 0.5f;
-    const float barX = box.x + kArrowW, barW = box.w - 2 * kArrowW;
-    const float v = std::clamp(get(), 0.0f, 1.0f);
-    const char* left = balance ? "texture/slider_lbal.tga" : "texture/slider_larr.tga";
-    const char* right = balance ? "texture/slider_rbal.tga" : "texture/slider_rarr.tga";
-    const bool pressed = f.time < m_arrowPressedUntil;
-    const int base = !enabled ? 4 : (focused ? 1 : 0);
-    drawSpriteFrame(f, {left, 5}, pressed && m_arrowPressed < 0 ? 2 : base, box.x, y);
-    drawSpriteFrame(f, {right, 5}, pressed && m_arrowPressed > 0 ? 2 : base, box.x + box.w - kArrowW, y);
-    const UiTexture& bar = f.textures.get(focused ? "texture/slider_actl.tga" : "texture/slider_inactl.tga");
-    if (bar) {
-        // Crop the 500 px bar from its left end to the value.
-        const float w = barW * v;
-        const float u1 = w / static_cast<float>(bar.width);
-        f.overlay.image(bar.handle, barX, box.y + (box.h - kBarH) * 0.5f, w, kBarH, {0, 1}, {u1, 0});
+Roller::Roller(Box b, std::function<std::vector<std::string>()> opts, std::function<int()> g,
+               std::function<void(int)> s)
+    : options(std::move(opts)), get(std::move(g)), set(std::move(s)) {
+    box = b;
+    box.h = 2 * kRollerArrowH;
+}
+
+void Roller::draw(UiFrame& f, bool focused) {
+    const auto opts = options();
+    const int cur = get ? get() : -1;
+    const std::string text = cur >= 0 && cur < static_cast<int>(opts.size()) ? opts[static_cast<std::size_t>(cur)] : "";
+    const FontSpec font = style::valueFont();
+    const float lh = f.text.lineHeight(f.overlay, font);
+    f.text.draw(f.overlay, font, text, box.x + (box.w - kRollerArrowW) * 0.5f, box.y + (box.h - lh) * 0.5f,
+                focused ? style::kValueTextFocus : style::kValueText, Align::Center);
+    if (readOnly || !enabled)
+        return;
+    const float ax = box.x + box.w - kRollerArrowW;
+    drawSpriteFrame(f, {"texture/roller_up.tga", 3}, m_clicked > 0 ? 2 : (focused ? 1 : 0), ax, box.y);
+    drawSpriteFrame(f, {"texture/roller_down.tga", 3}, m_clicked < 0 ? 2 : (focused ? 1 : 0), ax, box.y + 18);
+}
+
+bool Roller::adjust(UiFrame& f, int dir) {
+    if (!enabled || readOnly)
+        return true;
+    const int n = static_cast<int>(options().size());
+    const int last = maxIndex >= 0 ? std::min(maxIndex, n - 1) : n - 1;
+    const int next = std::clamp(get() + dir, 0, std::max(0, last));
+    f.play("Switch", 0.85f);
+    if (next != get())
+        set(next);
+    return true;
+}
+
+void Roller::mouse(UiFrame& f, bool hovered) {
+    if (!hovered || !f.nav.mousePressed || readOnly)
+        return;
+    const float ax = box.x + box.w - kRollerArrowW;
+    const Box upBox{ax, box.y, kRollerArrowW, kRollerArrowH};
+    const Box downBox{ax, box.y + 18, kRollerArrowW, kRollerArrowH};
+    if (upBox.contains(f.nav.mouse)) {
+        adjust(f, 1);
+        m_clicked = 1;
+    } else if (downBox.contains(f.nav.mouse)) {
+        adjust(f, -1);
+        m_clicked = -1;
     }
 }
 
+void Roller::focusChanged(bool) { m_clicked = 0; }
+
+// --- Slider ---------------------------------------------------------------------------------
+
+namespace {
+constexpr float kArrowW = 25.0f; // slider_larr / slider_rarr: 25x29, 5 frames
+constexpr float kBarTop = 11.0f; // the value bar starts 11 px below the row's top
+} // namespace
+
+Slider::Slider(Box row, std::function<float()> g, std::function<void(float)> s, float lo, float hi)
+    : get(std::move(g)), set(std::move(s)), min(lo), max(hi) {
+    box = row;
+}
+
+int Slider::segments() const {
+    // mmSlider: the track is cut into 2 px segments.
+    const float w = std::round(box.w);
+    return std::clamp(static_cast<int>(std::round((w - 2.0f * kArrowW) / 2.0f)) - 1, 2, 300);
+}
+
+float Slider::step() const {
+    // mmSlider::SetStep: twenty positions on a track of more than 20 segments.
+    const int positions = segments() > 20 ? 20 : 5;
+    return (max - min) / static_cast<float>(positions - 1);
+}
+
+void Slider::draw(UiFrame& f, bool focused) {
+    const float trackX = box.x + kArrowW;
+    const float trackW = 2.0f * static_cast<float>(segments());
+    const float frac = max > min ? std::clamp((get() - min) / (max - min), 0.0f, 1.0f) : 0.0f;
+    const float filled =
+        std::min(trackW, 2.0f * std::floor(frac * static_cast<float>(segments() + 1)));
+    const float barY = box.y + kBarTop;
+    if (readOnly) {
+        // Read-only sliders (the garage's statistics): slider_roactl, 11 px,
+        // the rest a 1 px slider_roinactl line (its height is inferred).
+        const UiTexture& on = f.textures.get("texture/slider_roactl.tga");
+        const UiTexture& off = f.textures.get("texture/slider_roinactl.tga");
+        if (on)
+            drawRows(f, on, 0, static_cast<int>(on.height), trackX, barY, filled, static_cast<float>(on.height),
+                     filled / static_cast<float>(on.width));
+        if (off)
+            drawRows(f, off, 0, 1, trackX + filled, barY, trackW - filled, 1.0f,
+                     (trackW - filled) / static_cast<float>(off.width));
+        return;
+    }
+    // The bitmaps are read in 6-row bands: 0 unfocused, 1 focused, 2 disabled;
+    // black is transparent. The empty part is the band's first row of
+    // slider_inactl (the band reading is inferred from mmSlider).
+    const int band = !enabled ? 2 : (focused ? 1 : 0);
+    const UiTexture& on = f.textures.getColorKeyed("texture/slider_actl.tga");
+    const UiTexture& off = f.textures.getColorKeyed("texture/slider_inactl.tga");
+    if (on)
+        drawRows(f, on, band * 6, 6, trackX, barY, filled, 6.0f, filled / static_cast<float>(on.width));
+    if (off)
+        drawRows(f, off, band * 6, 1, trackX + filled, barY, trackW - filled, 1.0f,
+                 (trackW - filled) / static_cast<float>(off.width));
+    const int base = !enabled ? 4 : (focused ? 1 : 0);
+    drawSpriteFrame(f, {"texture/slider_larr.tga", 5}, enabled && m_clicked < 0 ? 2 : base, box.x, box.y);
+    drawSpriteFrame(f, {"texture/slider_rarr.tga", 5}, enabled && m_clicked > 0 ? 2 : base, trackX + trackW, box.y);
+}
+
 bool Slider::adjust(UiFrame& f, int dir) {
-    if (!enabled)
-        return false;
-    set(std::clamp(get() + step * static_cast<float>(dir), 0.0f, 1.0f));
-    m_arrowPressed = dir;
-    m_arrowPressedUntil = f.time + 0.1;
+    if (!enabled || readOnly)
+        return true;
+    set(std::clamp(get() + step() * static_cast<float>(dir), min, max));
+    f.play("Switch", 0.85f);
+    m_clicked = 0;
     return true;
 }
 
 void Slider::mouse(UiFrame& f, bool hovered) {
-    if (!enabled)
+    if (!enabled || readOnly || !hovered || !f.nav.mousePressed)
         return;
-    const float barX = box.x + kArrowW, barW = box.w - 2 * kArrowW;
-    if (hovered && f.nav.mousePressed) {
-        if (f.nav.mouse.x < barX)
-            adjust(f, -1);
-        else if (f.nav.mouse.x >= barX + barW)
-            adjust(f, 1);
-        else
-            m_dragging = true;
+    const float trackX = box.x + kArrowW;
+    const float trackW = 2.0f * static_cast<float>(segments());
+    const float mx = f.nav.mouse.x;
+    if (mx < trackX) {
+        adjust(f, -1);
+        m_clicked = -1;
+    } else if (mx >= trackX + trackW) {
+        adjust(f, 1);
+        m_clicked = 1;
+    } else {
+        // A click on the track sets the value where it lands (no dragging).
+        set(std::clamp(min + (max - min) * (mx - trackX) / trackW, min, max));
+        f.play("Switch", 0.85f);
+        m_clicked = 0;
     }
-    if (!f.nav.mouseDown)
-        m_dragging = false;
-    if (m_dragging)
-        set(std::clamp((f.nav.mouse.x - barX) / barW, 0.0f, 1.0f));
 }
+
+void Slider::focusChanged(bool) { m_clicked = 0; }
 
 // --- ListBox --------------------------------------------------------------------------------
 
@@ -388,9 +561,9 @@ void ListBox::draw(UiFrame& f, bool focused) {
             break;
         const float y = box.y + 2 + static_cast<float>(i) * rowHeight;
         if (idx == sel)
-            f.overlay.rect(box.x + 2, y, box.w - 4, rowHeight, focused ? rgba(70, 70, 230, 220) : rgba(50, 50, 150, 200));
+            outline(f.overlay, {box.x + 2, y, box.w - 4, rowHeight}, rgba(255, 255, 255));
         f.overlay.setClip(&clip);
-        f.text.draw(f.overlay, font, list[static_cast<std::size_t>(idx)], box.x + 8, y + 1,
+        f.text.draw(f.overlay, font, list[static_cast<std::size_t>(idx)], box.x + 5, y + 1,
                     idx == sel && focused ? style::kValueTextFocus : style::kValueText);
         f.overlay.setClip(nullptr);
     }
@@ -433,38 +606,63 @@ TextEntry::TextEntry(Box b, std::string* v, std::size_t maxLen) : value(v), maxL
 void TextEntry::draw(UiFrame& f, bool focused) {
     const FontSpec font = style::valueFont();
     const float lh = f.text.lineHeight(f.overlay, font);
-    const float y = box.y + (box.h - lh) * 0.5f;
-    const float w = f.text.draw(f.overlay, font, *value, box.x + 8, y,
-                                m_editing || focused ? style::kValueTextFocus : style::kValueText);
-    if (m_editing && std::fmod(f.time, 1.0) < 0.6)
-        f.overlay.rect(box.x + 9 + w, y + 1, 2, lh - 2, style::kValueTextFocus);
+    const bool active = focused && m_editing;
+    if (active)
+        f.overlay.rect(box.x, box.y, box.w, box.h, rgba(0, 0, 0));
+    outline(f.overlay, box, rgba(255, 255, 255));
+    const Vec4 clip{box.x, box.y, box.w, box.h};
+    f.overlay.setClip(&clip);
+    f.text.draw(f.overlay, font, " " + *value, box.x, box.y + (box.h - lh) * 0.5f,
+                active ? style::kValueTextFocus : style::kValueText);
+    f.overlay.setClip(nullptr);
 }
 
 bool TextEntry::activate(UiFrame&) {
-    m_editing = !m_editing;
-    if (!m_editing && onCommit)
-        onCommit();
+    if (!m_editing) {
+        m_editing = true;
+        m_fresh = false;
+    }
     return true;
+}
+
+void TextEntry::beginEdit() {
+    m_editing = true;
+    m_fresh = true;
+}
+
+void TextEntry::focusChanged(bool focused) {
+    // UITextField: focus is editing; the first key replaces the text.
+    m_editing = focused;
+    m_fresh = focused;
 }
 
 void TextEntry::modalInput(UiFrame& f) {
     for (char c : f.nav.text) {
         // Printable ASCII and UTF-8 continuation bytes; the fonts cover Latin-1.
-        if (static_cast<unsigned char>(c) >= 0x20 && c != 0x7F && value->size() < maxLength)
+        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F)
+            continue;
+        if (m_fresh) {
+            value->clear();
+            m_fresh = false;
+        }
+        if (value->size() < maxLength)
             value->push_back(c);
     }
     if (f.nav.backspace && !value->empty()) {
+        m_fresh = false;
         // Remove one UTF-8 code point.
         std::size_t n = value->size() - 1;
         while (n > 0 && (static_cast<unsigned char>((*value)[n]) & 0xC0) == 0x80)
             --n;
         value->resize(n);
     }
-    // Enter commits; Escape also ends editing (keeping the text).
-    if (f.nav.enter || f.nav.back || (f.nav.mousePressed && !box.contains(f.nav.mouse))) {
+    // Enter commits; Tab and Escape end editing and are handled by the menu.
+    if (f.nav.enter) {
         m_editing = false;
         if (onCommit)
             onCommit();
+    } else if (f.nav.tabNext || f.nav.back) {
+        m_editing = false;
     }
 }
 
@@ -486,10 +684,66 @@ Widget* Menu::focused() const {
                                                                           : nullptr;
 }
 
+void Menu::setFocus(int index) {
+    if (index == m_focus)
+        return;
+    if (Widget* old = focused())
+        old->focusChanged(false);
+    m_focus = index;
+    if (Widget* w = focused())
+        w->focusChanged(true);
+}
+
 void Menu::focus(const Widget* w) {
+    for (std::size_t i = 0; i < m_widgets.size(); ++i) {
+        if (m_widgets[i].get() == w) {
+            // The first explicit focus is the page's initial one.
+            if (m_initial < 0)
+                m_initial = static_cast<int>(i);
+            setFocus(static_cast<int>(i));
+        }
+    }
+}
+
+void Menu::setInitialFocus(const Widget* w) {
     for (std::size_t i = 0; i < m_widgets.size(); ++i)
         if (m_widgets[i].get() == w)
+            m_initial = static_cast<int>(i);
+    focus(w);
+}
+
+void Menu::resetFocus() {
+    m_highlight = true;
+    if (m_initial >= 0 && m_widgets[static_cast<std::size_t>(m_initial)]->focusable())
+        setFocus(m_initial);
+    else
+        setFocus(firstFocusable(0) >= 0 ? firstFocusable(0) : firstFocusable(1));
+}
+
+void Menu::moveToEnd(const Widget* w) {
+    const Widget* focusedWidget = focused();
+    const Widget* initial = m_initial >= 0 ? m_widgets[static_cast<std::size_t>(m_initial)].get() : nullptr;
+    const auto it = std::ranges::find_if(m_widgets, [w](const auto& p) { return p.get() == w; });
+    if (it == m_widgets.end())
+        return;
+    auto moved = std::move(*it);
+    m_widgets.erase(it);
+    m_widgets.push_back(std::move(moved));
+    m_focus = m_initial = -1;
+    for (std::size_t i = 0; i < m_widgets.size(); ++i) {
+        if (m_widgets[i].get() == focusedWidget)
             m_focus = static_cast<int>(i);
+        if (m_widgets[i].get() == initial)
+            m_initial = static_cast<int>(i);
+    }
+}
+
+std::vector<const Widget*> Menu::widgetsInGroup(int g) const {
+    std::vector<const Widget*> out;
+    for (const auto& w : m_widgets)
+        if (w->group == g)
+            out.push_back(w.get());
+    return out;
 }
 
 bool Menu::modalActive() const {
@@ -497,102 +751,110 @@ bool Menu::modalActive() const {
     return w && w->modal();
 }
 
-void Menu::moveFocus(Vec2 dir) {
+int Menu::firstFocusable(int group) const {
+    for (std::size_t i = 0; i < m_widgets.size(); ++i)
+        if (m_widgets[i]->group == group && m_widgets[i]->focusable())
+            return static_cast<int>(i);
+    return -1;
+}
+
+void Menu::step(int dir) {
+    // UIMenu::Increment / Decrement within the focused group, then
+    // MenuManager::ToggleFocus: the other group's first widget.
     const Widget* cur = focused();
     if (!cur) {
-        // Initial focus: the top-left content widget (below the navigation
-        // strip at the top of the screen).
-        int best = -1;
-        float bestKey = 1e30f;
-        for (std::size_t i = 0; i < m_widgets.size(); ++i) {
-            const Widget& w = *m_widgets[i];
-            if (!w.focusable())
-                continue;
-            const float key = (w.box.y < 45.0f ? 1e6f : 0.0f) + w.box.y * 4.0f + w.box.x;
-            if (key < bestKey) {
-                bestKey = key;
-                best = static_cast<int>(i);
-            }
-        }
-        m_focus = best;
+        resetFocus();
         return;
     }
-    const Vec2 c = cur->box.center();
-    int best = -1;
-    float bestScore = 1e30f;
-    for (std::size_t i = 0; i < m_widgets.size(); ++i) {
-        const Widget& w = *m_widgets[i];
-        if (&w == cur || !w.focusable())
-            continue;
-        const Vec2 d = w.box.center() - c;
-        const float along = d.x * dir.x + d.y * dir.y;
-        if (along <= 1.0f)
-            continue;
-        const float across = std::abs(d.x * dir.y - d.y * dir.x);
-        const float score = along + across * 2.5f;
-        if (score < bestScore) {
-            bestScore = score;
-            best = static_cast<int>(i);
+    const int group = cur->group;
+    const int n = static_cast<int>(m_widgets.size());
+    for (int i = m_focus + dir; i >= 0 && i < n; i += dir) {
+        const Widget& w = *m_widgets[static_cast<std::size_t>(i)];
+        if (w.group == group && w.focusable()) {
+            setFocus(i);
+            return;
         }
     }
-    if (best >= 0)
-        m_focus = best;
+    const int other = firstFocusable(group == 0 ? 1 : 0);
+    if (other >= 0) {
+        setFocus(other);
+        return;
+    }
+    // A single group (dialogs) wraps.
+    for (int k = 0; k < n; ++k) {
+        const int i = dir > 0 ? k : n - 1 - k;
+        const Widget& w = *m_widgets[static_cast<std::size_t>(i)];
+        if (w.group == group && w.focusable()) {
+            setFocus(i);
+            return;
+        }
+    }
 }
 
 void Menu::update(UiFrame& f) {
     const NavInput& nav = f.nav;
-    if (m_focus < 0 || !focused() || !focused()->focusable())
-        moveFocus({0, 1});
+    if (!focused() || !focused()->focusable())
+        resetFocus();
     Widget* cur = focused();
     if (cur && cur->modal()) {
         cur->modalInput(f);
-        return;
+        // A text entry hands Tab and Escape on to the menu.
+        if (cur->modal() || !(nav.tabNext || nav.back))
+            return;
     }
 
-    // Mouse: hover focuses, click activates.
+    // Mouse: the widget under the pointer takes the focus; over empty space
+    // the highlight disappears (MenuManager::ClearAllWidgets).
     Widget* hovered = nullptr;
     for (auto& w : m_widgets)
         if (w->focusable() && w->box.contains(nav.mouse))
             hovered = w.get();
-    if (hovered && (nav.mouseMoved || nav.mousePressed)) {
-        focus(hovered);
-        cur = hovered;
+    if (nav.mouseMoved || nav.mousePressed) {
+        if (hovered) {
+            if (hovered != cur)
+                for (std::size_t i = 0; i < m_widgets.size(); ++i)
+                    if (m_widgets[i].get() == hovered)
+                        setFocus(static_cast<int>(i));
+            cur = hovered;
+            m_highlight = true;
+        } else if (nav.mouseMoved) {
+            m_highlight = false;
+        }
     }
     if (cur)
         cur->mouse(f, cur == hovered);
-    if (cur && hovered == cur && nav.mousePressed && !dynamic_cast<ListBox*>(cur) && !dynamic_cast<Slider*>(cur)) {
-        cur->activate(f);
+    if (cur && cur->modal())
         return;
-    }
 
     if (nav.back) {
+        // Escape on the navigation strip first returns to the page.
+        if (cur && cur->group != 0 && firstFocusable(0) >= 0) {
+            setFocus(firstFocusable(0));
+            return;
+        }
         if (onBack)
             onBack();
         return;
     }
     if (!cur)
         return;
-    auto* list = dynamic_cast<ListBox*>(cur);
-    if (nav.up && !(list && list->moveSelection(-1)))
-        moveFocus({0, -1});
-    if (nav.down && !(list && list->moveSelection(1)))
-        moveFocus({0, 1});
-    if (nav.left && !cur->adjust(f, -1))
-        moveFocus({-1, 0});
-    if (nav.right && !cur->adjust(f, 1))
-        moveFocus({1, 0});
-    if (nav.tabNext || nav.tabPrev) {
-        const int n = static_cast<int>(m_widgets.size());
-        for (int step = 1; step <= n; ++step) {
-            const int i = ((m_focus + (nav.tabNext ? step : -step)) % n + n) % n;
-            if (m_widgets[static_cast<std::size_t>(i)]->focusable()) {
-                m_focus = i;
-                break;
-            }
-        }
-    }
-    if (nav.accept && focused())
-        focused()->activate(f);
+    if (nav.up || nav.down || nav.left || nav.right || nav.tabNext || nav.accept || nav.space)
+        m_highlight = true;
+    if (nav.up)
+        step(-1);
+    if (nav.down || nav.tabNext)
+        step(1);
+    cur = focused();
+    if (!cur)
+        return;
+    if (nav.left)
+        cur->adjust(f, -1);
+    if (nav.right)
+        cur->adjust(f, 1);
+    if (nav.accept)
+        cur->activate(f);
+    else if (nav.space)
+        cur->activateSpace(f);
 }
 
 void Menu::draw(UiFrame& f) {
@@ -601,14 +863,20 @@ void Menu::draw(UiFrame& f) {
     drawContent(f);
 }
 
-void Menu::drawContent(UiFrame& f) {
-    const Widget* cur = focused();
+void Menu::drawContent(UiFrame& f, bool active) {
+    const Widget* cur = active && m_highlight ? focused() : nullptr;
     for (auto& w : m_widgets)
         if (w->visible)
             w->draw(f, w.get() == cur);
-    const std::string& helpPic = cur && !cur->help.empty() ? cur->help : defaultHelp;
-    if (!helpPic.empty())
-        drawImage(f.overlay, f.textures.get(helpPic), helpBox.x, helpBox.y, helpBox.w, helpBox.h);
+    // The description picture follows the focus (MM2 FocusDescription
+    // callbacks): nothing when the focused widget has none.
+    if (active) {
+        std::string helpPic = cur ? cur->helpPicture() : std::string();
+        if (helpPic.empty())
+            helpPic = defaultHelp;
+        if (!helpPic.empty())
+            drawImage(f.overlay, f.textures.get(helpPic), helpPos.x, helpPos.y);
+    }
     for (auto& w : m_widgets)
         if (w->visible)
             w->drawPopup(f);

@@ -230,7 +230,6 @@ public:
                 fe.config.vehicle = fe.ctx.game->catalog.vehicles()[static_cast<std::size_t>(i)].baseName;
                 fe.config.vehicleColor = 0;
             });
-        m_vehicleBox->wrap = true;
         m_colorBox = &menu.add<ui::ValueBox>(
             Box{kBoxX, 311, kBoxWide, kBoxH},
             [&fe] {
@@ -238,7 +237,6 @@ public:
                 return v ? v->colors : std::vector<std::string>{};
             },
             [&fe] { return fe.config.vehicleColor; }, [&fe](int i) { fe.config.vehicleColor = i; });
-        m_colorBox->wrap = true;
         menu.add<ui::ValueBox>(
             Box{kBoxX, 346, kBoxMid, 27},
             [&fe] {
@@ -379,7 +377,7 @@ public:
         auto& menuBtn = add("texture/result_racemenu.tga", [&fe] { fe.pop(); });
         auto& replay = add("texture/result_replay.tga", [] {});
         replay.enabled = false; // replays are not implemented yet
-        add("texture/result_exitw.tga", [&fe] { fe.ask("jpg/quit_dlg.jpg", {400, 76}, "", [&fe] { fe.ctx.quit = true; }); });
+        add("texture/result_exitw.tga", [&fe] { fe.askQuit(); });
         menu.focus(next.enabled ? &next : &menuBtn);
         menu.onBack = [&fe] { fe.pop(); };
         // No navigation strip: the results backgrounds have the logo there.
