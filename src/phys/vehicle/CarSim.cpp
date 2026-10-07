@@ -20,20 +20,39 @@ constexpr float kMaxAngVelocity = 12.566371f;
 
 } // namespace
 
-void CarDamage::impact(float value, float speedMph, bool otherIsVehicle) {
-    if (!enabled)
-        return;
-    if (params.impactThreshold < value && (10.0f <= speedMph || otherIsVehicle))
-        currentDamage = std::max(0.0f, currentDamage + value);
+void CarDamage::reset() {
+    // vehCarDamage::ClearDamage: no damage and an empty impact list.
+    currentDamage = 0.0f;
+    damage = 0.0f;
+    for (ImpactInfo& e : impacts)
+        e.other = nullptr;
+}
+
+void CarDamage::addDamage(float value) {
+    // vehCarDamage::AddDamage.
+    const float d = value + currentDamage;
+    currentDamage = d;
+    if (d < 0.0f)
+        currentDamage = 0.0f;
 }
 
 void CarDamage::update(float dt) {
+    // vehCarDamage::Update: regeneration, the damage fraction, and the
+    // impact list's relax timers.
     currentDamage = currentDamage - dt * params.regenerateRate;
     if (currentDamage < 0.0f)
         currentDamage = 0.0f;
     const float med = medScaled(), max = maxScaled();
     float f = (currentDamage - med) / (max - med);
     damage = f < 0.0f ? 0.0f : (1.0f < f ? 1.0f : f);
+    for (ImpactInfo& e : impacts) {
+        if (!e.other)
+            continue;
+        const float t = e.timer - dt;
+        e.timer = t;
+        if (t < 0.0f)
+            e.other = nullptr;
+    }
 }
 
 void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options& o) {
@@ -42,8 +61,9 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     centerOfGravity = p.centerOfGravity;
     damage.enabled = o.damage;
 
-    body = Body{};
+    body.ics = InertialCS{};
     body.controller = this;
+    body.joint = nullptr;
     InertialCS& ics = body.ics;
     ics.setMass(p.inertiaBox.x, p.inertiaBox.y, p.inertiaBox.z, p.mass);
     ics.gravity = {0.0f, -kVehicleGravity, 0.0f};
@@ -53,19 +73,20 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     ics.elasticity = p.boundElasticity;
     ics.friction = p.boundFriction;
 
-    // Collision box from the body bound, relative to the centre of mass
-    // (which sits at -CenterOfGravity in model space).
-    Aabb box = g.body;
-    if (!box.valid()) {
+    // The collision bound (vehCarModel::InitBound) in model space, whose
+    // origin sits at CenterOfGravity in the body's frame.
+    m_boundData = g.bound;
+    m_boundBox = g.body;
+    if (!m_boundBox.valid()) {
         for (const auto& w : g.wheels) {
-            box.expand(w.center + Vec3{w.radius, w.radius, w.radius});
-            box.expand(w.center - Vec3{w.radius, 0.0f, w.radius});
+            m_boundBox.expand(w.center + Vec3{w.radius, w.radius, w.radius});
+            m_boundBox.expand(w.center - Vec3{w.radius, 0.0f, w.radius});
         }
-        box.max.y += 0.8f;
+        m_boundBox.max.y += 0.8f;
     }
-    body.shape.kind = Shape::Kind::Box;
-    body.shape.offset = box.center() + centerOfGravity;
-    body.shape.half = box.extent();
+    body.boundOrigin = centerOfGravity;
+    body.collider.handler = this;
+    buildBound();
 
     // Wheels (vehWheel::Init; the right wheels copy the left ones' tune).
     for (std::size_t i = 0; i < 4; ++i)
@@ -164,6 +185,54 @@ void CarSim::reset(const Mat34& model) {
     // vehCarSim::RestoreImpactParams.
     ics.elasticity = params.boundElasticity;
     ics.friction = params.boundFriction;
+    // vehCar::Reset resets the collider: the next sweep starts here.
+    body.syncBoundMatrix();
+    body.collider.reset();
+}
+
+Vec3 CarSim::halfExtents() const {
+    if (!m_bound)
+        return m_boundBox.extent();
+    const Vec3& lo = m_bound->boxMin;
+    const Vec3& hi = m_bound->boxMax;
+    return (hi - lo) * 0.5f;
+}
+
+void CarSim::setPolygonalBound(bool polygonal) {
+    options.polygonalBound = polygonal;
+    buildBound();
+}
+
+void CarSim::buildBound() {
+    // vehCarModel::InitBound: bound/<car>_bound.bnd (phBoundGeometry::Load
+    // into a vehBound, whose single own material every polygon uses); AI
+    // cars replace it with a dgBoundBox of its box (SetOffset to the box's
+    // centre, SetSize to its extent). vehCar::Init then gives the bound
+    // BoundFriction and BoundElasticity.
+    std::unique_ptr<BoundGeometry> geometry;
+    if (m_boundData)
+        geometry = makeGeometryBound(*m_boundData);
+    Vec3 lo = m_boundBox.min, hi = m_boundBox.max;
+    if (geometry) {
+        geometry->makeOwnMaterial();
+        lo = geometry->boxMin;
+        hi = geometry->boxMax;
+    }
+    if (geometry && options.polygonalBound) {
+        m_bound = std::move(geometry);
+    } else {
+        const Vec3 size{hi.x - lo.x, hi.y - lo.y, hi.z - lo.z};
+        const Vec3 centre{size.x * 0.5f + lo.x, size.y * 0.5f + lo.y, size.z * 0.5f + lo.z};
+        auto box = std::make_unique<BoundBox>();
+        box->makeOwnMaterial();
+        box->setOffset(centre);
+        box->setSize(size);
+        m_bound = std::move(box);
+    }
+    m_bound->setFriction(params.boundFriction);
+    m_bound->setElasticity(params.boundElasticity);
+    body.collisionBound = m_bound.get();
+    body.resetCollider();
 }
 
 void CarSim::setInputs(float throttle, float brakeInput, float steer, float handBrakeInput) {
@@ -325,15 +394,94 @@ void CarSim::updateAxles() {
     }
 }
 
-void CarSim::onImpact(Body& b, const Impact& impact) {
-    // vehCarDamage::Impact: the stuck watcher, then the damage.
-    stuck.impact(b.ics);
+void CarSim::onImpact(Collider& self, const Impact& impact, const Vec3& impulse) {
+    // vehCarDamage::Impact: the stuck watcher, then the impact list.
+    stuck.impact(body.ics);
+    const Collider* other = impact.colliderA == &self ? impact.colliderB : impact.colliderA;
+    if (damage.enabled)
+        insertImpact(impact, impulse, other);
+}
+
+void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Collider* other) {
+    // vehCarDamage::InsertImpact. The impact is worth the impulse times
+    // GetDamageModifier (1) times the other body's share of the masses.
     float share = 1.0f;
-    if (impact.other)
-        share = impact.other->ics.mass / (b.ics.mass + impact.other->ics.mass);
-    damage.impact(std::abs(impact.impulse) * share, m_speedMph, impact.other != nullptr);
-    if (onImpactCallback)
-        onImpactCallback(impact);
+    if (other && other->ics) {
+        share = other->ics->mass;
+        share = share / (body.ics.mass + share);
+    }
+    const float j2 = impulse.z * impulse.z + impulse.y * impulse.y + impulse.x * impulse.x;
+    const float value = std::sqrt(j2) * 1.0f * share;
+    for (CarDamage::ImpactInfo& e : damage.impacts) {
+        if (e.other != other)
+            continue;
+        if (e.value * 1.25f < value) {
+            // Hit again harder: applied again (with the first contact's
+            // point and impulse), the relax time restarts.
+            e.total = value + e.total;
+            e.value = value;
+            e.timer = CarDamage::kRelaxTime;
+            applyImpact(e);
+            return;
+        }
+        if (value <= damage.params.impactThreshold)
+            return;
+        if (m_speedMph < 10.0f && !(other && other->ics))
+            return;
+        e.total = value + e.total;
+        damage.addDamage(value);
+        return;
+    }
+    for (CarDamage::ImpactInfo& e : damage.impacts) {
+        if (e.other)
+            continue;
+        e.other = other;
+        // The point in the car's model space (the world matrix's inverse).
+        const Mat34 inverse = modelMatrix().fastInverse();
+        e.localPosition = inverse.transform(impact.position);
+        e.position = impact.position;
+        e.normal = impact.normal;
+        e.impulse = impulse;
+        e.value = value;
+        e.total = value;
+        e.timer = CarDamage::kRelaxTime;
+        applyImpact(e);
+        return;
+    }
+}
+
+void CarSim::applyImpact(CarDamage::ImpactInfo& e) {
+    // vehCarDamage::ApplyImpact: a sound for anything above 0.001; above
+    // ImpactThreshold, at 10 mph or more or against a body, the damage, its
+    // effects and the game's callback.
+    CarImpact out;
+    out.other = e.other;
+    out.otherBody = nullptr;
+    out.localPosition = e.localPosition;
+    out.position = e.position;
+    out.normal = e.normal;
+    out.impulse = e.impulse;
+    out.value = e.value;
+    out.total = e.total;
+    out.otherIsBody = e.other && e.other->ics;
+    if (0.001f < e.value) {
+        out.sound = true;
+        // The other collider's id (AudImpact plays the WALL entry for ids
+        // beyond its table; MM2 passes 1000 when the collider has no
+        // instance data, 0 above 1000).
+        int id = e.other ? e.other->id : 1000;
+        if (1000 < id)
+            id = 0;
+        out.audioId = id;
+        out.soundStrength = std::abs(e.impulse.z) + std::abs(e.impulse.y) + std::abs(e.impulse.x);
+    }
+    if (damage.params.impactThreshold < e.value && (10.0f <= m_speedMph || out.otherIsBody)) {
+        out.damaging = true;
+        damage.addDamage(e.value);
+    }
+    out.otherBody = out.other ? out.other->body : nullptr;
+    if ((out.sound || out.damaging) && onImpactCallback)
+        onImpactCallback(out);
 }
 
 } // namespace mm2::phys

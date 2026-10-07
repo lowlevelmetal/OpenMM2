@@ -68,5 +68,10 @@ Mat34 dot(const Mat34& a, const Mat34& b);
 Mat34 crossProdMatrix(const Vec3& v);
 // Elementwise 3x3 sum a + b (m3 taken from b).
 Mat34 add3x3(const Mat34& a, const Mat34& b);
+// Matrix34::SolveSVD: x with x * B = rhs for the symmetric 3x3 part of B.
+// OpenMM2 uses Gaussian elimination with partial pivoting; a direction with
+// no stiffness at all (pivot ~0) gets 0, which is what the original's
+// singular value cut-off produces (the cut-off value itself is not ported).
+Vec3 solveSVD(const Mat34& b, const Vec3& rhs);
 
 } // namespace mm2::phys::age

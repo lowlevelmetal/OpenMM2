@@ -29,6 +29,10 @@ struct BoundPolygon {
     // polygon is a quad exactly when indices[3] != 0.
     std::array<std::uint16_t, 4> indices{};
     std::uint16_t material = 0;
+    // A text "quad" (parseBnd). phBoundGeometry::Load keeps such a polygon
+    // a quad even when its last index is 0 (it starts the quad at the
+    // second index instead); binary files cannot tell.
+    bool quadToken = false;
 
     bool isQuad() const { return indices[3] != 0; }
     int vertexCount() const { return isQuad() ? 4 : 3; }

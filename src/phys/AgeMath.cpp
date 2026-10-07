@@ -1,5 +1,6 @@
 #include "phys/AgeMath.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -199,6 +200,42 @@ Mat34 add3x3(const Mat34& a, const Mat34& b) {
     r.m2 = {a.m2.x + b.m2.x, a.m2.y + b.m2.y, a.m2.z + b.m2.z};
     r.m3 = b.m3;
     return r;
+}
+
+Vec3 solveSVD(const Mat34& b, const Vec3& rhs) {
+    float a[3][4] = {{b.m0.x, b.m1.x, b.m2.x, rhs.x}, {b.m0.y, b.m1.y, b.m2.y, rhs.y}, {b.m0.z, b.m1.z, b.m2.z, rhs.z}};
+    float scale = 0.0f;
+    for (auto& row : a)
+        for (int c = 0; c < 3; ++c)
+            scale = std::max(scale, std::abs(row[c]));
+    const float eps = scale * 1e-6f;
+    int pivotCol[3] = {-1, -1, -1};
+    bool used[3] = {};
+    for (int col = 0; col < 3; ++col) {
+        int best = -1;
+        float bestAbs = eps;
+        for (int r = 0; r < 3; ++r)
+            if (!used[r] && std::abs(a[r][col]) > bestAbs) {
+                best = r;
+                bestAbs = std::abs(a[r][col]);
+            }
+        if (best < 0)
+            continue;
+        used[best] = true;
+        pivotCol[col] = best;
+        for (int r = 0; r < 3; ++r) {
+            if (r == best)
+                continue;
+            const float f = a[r][col] / a[best][col];
+            for (int c = col; c < 4; ++c)
+                a[r][c] -= f * a[best][c];
+        }
+    }
+    float x[3] = {};
+    for (int col = 0; col < 3; ++col)
+        if (pivotCol[col] >= 0)
+            x[col] = a[pivotCol[col]][3] / a[pivotCol[col]][col];
+    return {x[0], x[1], x[2]};
 }
 
 } // namespace mm2::phys::age

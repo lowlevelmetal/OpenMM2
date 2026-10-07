@@ -1,4 +1,5 @@
 #include "TestData.h"
+#include "phys/TestLevel.h"
 #include "core/File.h"
 #include "data/DatFile.h"
 #include "phys/World.h"
@@ -145,7 +146,7 @@ VehicleGeometry bugGeometry() {
 }
 
 PolygonSoup flatGround(float half = 20000.0f) {
-    BoundGeometry g;
+    SoupGeometry g;
     g.vertices = {{-half, 0, -half}, {-half, 0, half}, {half, 0, half}, {half, 0, -half}};
     g.polys.push_back({{0, 1, 2, 3}, 4, 0});
     g.materialNames = {"_default"};
@@ -484,26 +485,18 @@ TEST(CarSim, StableWithLargeOversampleSteps) {
 
 TEST(CarSim, WallImpactStopsCarAndDamagesIt) {
     TestCar t;
-    // A wall across the road at z = -60, facing +Z.
-    BoundGeometry wall;
-    wall.vertices = {{-50, 0, -60}, {50, 0, -60}, {50, 10, -60}, {-50, 10, -60}};
-    wall.polys.push_back({{0, 1, 2, 3}, 4, 0});
-    wall.materialNames = {"_default"};
-    PolygonSoup soup;
-    BoundGeometry ground;
-    const float h = 1000.0f;
-    ground.vertices = {{-h, 0, -h}, {-h, 0, h}, {h, 0, h}, {h, 0, -h}};
-    ground.polys.push_back({{0, 1, 2, 3}, 4, 0});
-    ground.materialNames = {"_default"};
-    soup.add(ground, Mat34::identity(), MaterialTable{});
-    soup.add(wall, Mat34::identity(), MaterialTable{});
-    soup.finalize(64.0f);
-    t.world.setStatic(std::move(soup));
+    // The level: the ground and a wall across the road at z = -60, facing
+    // +Z (lvlSDL polygons, collided through dgPhysManager::CollideTerrain).
+    fixtures::TestLevel level;
+    level.floor(1000.0f);
+    level.add({{-50, 0, -60}, {50, 0, -60}, {50, 10, -60}, {-50, 10, -60}});
+    t.world.setLevel(&level);
+    t.car->setPolygonalBound(true);
     CarDamageParams dp;
     dp.impactThreshold = 1500.0f;
     t.car->setDamageParams(dp);
     int impacts = 0;
-    t.car->onImpactCallback = [&](const Impact&) { ++impacts; };
+    t.car->onImpactCallback = [&](const CarImpact& im) { impacts += im.damaging ? 1 : 0; };
     PedalInput in;
     in.accelerator = 1.0f;
     t.run(1.0f, {});

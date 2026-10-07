@@ -8,6 +8,7 @@
 #include "phys/vehicle/Wheel.h"
 
 #include <array>
+#include <memory>
 #include <optional>
 
 namespace mm2::phys {
@@ -30,6 +31,8 @@ class CarSim;
 struct TrailerGeometry {
     std::array<WheelGeometry, 4> wheels; // TWHL0 FL, TWHL1 FR, TWHL2 BL, TWHL3 BR
     Aabb body;
+    // bound/<car>_trailer_bound.bnd (the trailer's collision bound).
+    std::optional<GeometryData> bound;
     std::optional<Vec3> carHitch;
     std::optional<Vec3> trailerHitch;
 };
@@ -107,6 +110,7 @@ private:
     void setStaticLoads(bool mm2);
 
     CarSim* m_tractor = nullptr;
+    std::unique_ptr<Bound> m_bound;
 };
 
 } // namespace mm2::phys
