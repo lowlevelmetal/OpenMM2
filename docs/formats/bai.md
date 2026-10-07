@@ -27,10 +27,12 @@ roomList in[roomCount]                 u16 n, u16 pathIds[n]
 ```
 u16  id                    = index
 u16  sections              number of centre-line points (>= 2)
-u16  flags                 mm2hook PathFlags: 0x1 ?, 0x2 alley, 0x4 freeway; 0x8 on 469/540 London but 67/379 SF paths
+u16  flags                 0x1 divided road, 0x2 alley, 0x4 freeway, 0x8 flat (MM2: an
+                           ambient car on it stays upright at the road's first centre height)
 u16  roomCount, rooms[roomCount]
 f32  halfWidth
-f32  speedLimit            15 on every retail path
+f32  speedLimit            15 on every retail path; MM2 overwrites it at load (city limit,
+                           freeway +12.5, race exceptions)
 side left
 side right
 u32  unknown               always 0
@@ -61,20 +63,35 @@ float3 polylines[3 + numLanes + numTrams + numTrains][sections]
 ```
 
 The counts that drive the record size (lanes, trams, trains) are verified by
-exact parsing. SF needs `numTrams` for the cable-car streets. The names
-`numTrains`, `numSidewalks` and `roadType` follow mm2hook's field order. Which
-polyline is which (lane centres, boundaries) is not yet known.
+exact parsing. SF needs `numTrams` for the cable-car streets.
+
+MM2's `aiPath::ReadBinary` / `SaveBinary` (build 3393) read a side as five
+shorts (lanes, trams, trains, sidewalks, flags) followed by a cumulative
+length array of (lanes + sidewalks) rows x sections (each row starting at 0;
+`unknown5`/`unknown6` above are the first row's leading 0.0), one float per
+row (lateral offsets), the 10 lateral parameters, the lane and sidewalk rows
+of vertices, one tram and one train row when present, and two rows per
+section for the curb and the outer edge. So the polylines are, in order:
+lane centre lines, the **sidewalk** line, the tram and train lines, the
+**curb**, the **outer edge** (verified on SF path 106: lane 7.5, sidewalk
+12.5, tram 2.5, curb 10, edge 15).
+
+`roadType` is the side's flags word: bit 0 = no ambient traffic in this
+direction (set on the empty side of one-way roads, on alleys and on some
+other roads; `aiMap::AdjustAmbients`, `ChooseNext*Link`), bit 1 = no
+pedestrians (`aiPedestrian::PickNextRdSeg`, `aiMap::AdjustPedestrians`).
 
 ### Path end (38 bytes)
 
 ```
 u32 intersection
-u16 unknown1               0xCDCD in all files (uninitialised)
-u16 vehicleRule            1 or 3 (inferred: stop sign vs. traffic light)
-u16 unknown2
-u16 roadIndex              index into the intersection's path list (inferred)
-u16 unknown3
-float3 trafficLightPos, trafficLightAxis
+u16 unknown1               light index; uninitialised (0xCDCD) on disk, set at load (aiTrafficLightSet::SetFourWay)
+u16 vehicleRule            0 stop sign, 1 traffic light, 3 no control (MM2 OkayToEnterIntersection)
+u16 unknown2               end flags: 0 on disk; 3 at four-way lights (traffic goes straight on)
+u32 roadIndex              this path's index in the intersection's path list (MM2 path +0/+4);
+                           the parser reads it as u16 roadIndex + u16 unknown3
+float3 trafficLightPos, trafficLightAxis   pole position; the unit XZ direction to the axis point
+                           is the model's X axis (away from the road on retail data)
 ```
 
 ## Intersection
@@ -93,5 +110,7 @@ ends (verified).
 ## Room lists
 
 Two per-room lists of path ids. The first is a superset of the second
-(e.g. London room 396: 9 vs 6 paths). Likely the ambient traffic spawn and
-cull sets. Unverified.
+(e.g. London room 396: 9 vs 6 paths). The first is the set of roads MM2
+populates with ambient traffic while a player is in the room, the second
+the set for pedestrians (aiMap +0x174 / +0x178, `aiMap::AdjustAmbients`,
+`AdjustPedestrians`).

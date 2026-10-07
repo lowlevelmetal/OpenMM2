@@ -3,6 +3,7 @@
 #include "core/Math.h"
 #include "vfs/Vfs.h"
 
+#include <array>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -27,6 +28,11 @@ struct VehicleData {
     float rubberSpring = 0.0f;
     float rubberDamp = 0.0f;
     Vec3 cg;
+    // aiVehicleManager::AddVehicleDataEntry: wheel pivots from
+    // geometry/<model>_whlN.mtx and the wheel radius from WHL0's box.
+    std::array<Vec3, 6> wheels{};
+    int wheelCount = 0; // pivots found, in order WHL0..
+    float wheelRadius = 0.0f;
 
     float length() const { return size.z; }
     float width() const { return size.x; }

@@ -1,20 +1,29 @@
 # AI: road network, traffic lights, ambient traffic, pedestrians
 
-Module `mm2_ai` (`src/ai`). Phase 1 covers the living city: the road network
-built from the AI map, traffic lights, ambient (rail) traffic and
-pedestrians. Opponents and police (phase 2) will drive physics cars through
-`ai/VehicleControl.h` once `src/phys` is in place.
+Module `mm2_ai` (`src/ai`): the living city (road network built from the AI
+map, traffic lights, ambient traffic, pedestrians) and the opponents and
+police that drive physics cars.
 
-Sources: MM1's AI from Open1560 (`code/midtown/mmai/*.h` for class layouts,
-`code/midtown/game.asm` for the routines it has not rewritten; GPL-3.0), the
-retail MM2 data, and mm2hook's MM2 `aiPath` layout (documentation only).
-The opponents and police (last section) follow MM2's own code (build 3393
-through MM2Recomp, documentation only, function names from its linker map).
+Sources: MM2's own code (build 3393 through MM2Recomp, documentation only;
+function names from its linker map), the retail MM2 data, MM1's AI from
+Open1560 (GPL-3.0) where MM2 is not yet checked, and mm2hook's `aiPath`
+layout (documentation only).
 
 Evidence levels: **MM2** = verified against MM2's code (the function is
 named); **ported** = translated from MM1's code with its constants;
 **data** = verified on the retail files; **inferred** = reasoned, to be
 checked against the original game.
+
+## AI maps
+
+| File | MM2 class | What OpenMM2 reads from it |
+|---|---|---|
+| `city/<map>.aimap` | `aiCityData` | `[Speed Limit]` (default 15), `[Ambients Drive On The Left]`, `[Ambient Types/Density]`, `[Traffic Lights]` (single and dual light models; default `sp_traflitsingle_f` / `sp_traflitdual_f`), `[Ped Pool]` (default 100), `[GoodWeatherPedName / BadWeatherPedName]` |
+| `race/<dir>/<race>.aimap(_p)`, `roam.aimap(_p)` for cruise | `aiRaceData` | `[AmbientLaneChanges]` (default on), `[Ambient Types/Density]` (used when present, else the city's), `[Exceptions]`, police, opponents |
+
+MM2 reads no `[Density]` section: the traffic density is the menu's (or the
+race table's), `aiMap::Init`. London's city file names
+`sp_traflitsingle_ped_l` for both light models.
 
 ## Road network (`RoadNetwork`)
 
@@ -22,169 +31,278 @@ Built from `city/<map>.bai` (`city::AiMap`).
 
 | Finding | Evidence |
 |---|---|
-| Per side, the polylines are: one lane centre line per lane (travel order), trams, trains, then **sidewalk centre** (pedestrian line), **curb** (road edge) and **outer edge** (building side). E.g. London path 88: lanes at 2 and 6 m, sidewalk 9.5, curb 8, edge 11 (`halfWidth` 11). | data |
-| Right-side lanes are stored with increasing section index, left-side lanes reversed, in **both** cities: the files describe traffic keeping to the right. | data (every path) |
-| London's cruise map has `[Ambients Drive On The Left] 1`. Lanes are then mirrored across the centre line at each section (lateral offset changes sign), keeping their direction. One-way roads lay their lanes out symmetrically about the centre (e.g. ±2, or 6/0/−6), so they keep working. | data (layout); mirroring inferred |
-| The flag only appears in `roam.aimap`/`roam.aimap_p`; it is applied city-wide. | inferred |
-| A path end's `vehicleRule` takes the values 0, 1, 3: MM1's `aiPath::IntersectionType` 0 stop sign, 1 traffic light, 3 no control (London 45 / 519 / 516 ends; SF 36 / 533 / 189). | data + ported names |
-| Right lanes arrive at `ends[0]` (at `center.back()`), left lanes at `ends[1]`. | data |
-| Pedestrians stand at the outer edge's height; the sidewalk polyline itself sits halfway up the curb (y 0.07 vs 0.15). | data; use inferred |
-| `[Exceptions]` road ids are path ids; their density replaces the map density, their speed limit (if > 0) the default. | inferred |
+| A path has two sides. Direction +1 rides the second side of the file with increasing section index and arrives at `ends[0]` (at `center.back()`); direction -1 rides the first side, whose lane points are stored in their own travel order, and arrives at `ends[1]` | MM2 (`aiPath` helpers), data |
+| Per side the polylines are: lane centre lines, the **sidewalk** line, tram and train lines, the **curb**, the **outer edge** (SF path 106: lane 7.5, sidewalk 12.5, tram 2.5, curb 10, edge 15) | MM2 (`aiPath::SidewalkVertice`), data |
+| Lane 0 is the leftmost lane in the direction of travel | MM2 (route choice, lane changes) |
+| Drive on the left (`aiCityData`): every two-way road is reversed (`aiPath::ReverseDirection`): each direction rides the other side's lane lines, reversed in point order and in lane order, so lane 0 stays the leftmost; lane counts stay with their sides (equal on every London two-way road); one-way roads and sidewalks are unchanged | MM2 |
+| Side flags (the side's 5th field): bit 0 = no ambient traffic (empty sides of one-way roads, alleys and some other roads); bit 1 = no pedestrians | MM2 (`aiMap::AdjustAmbients`, `ChooseNext*Link`, `aiPedestrian::PickNextRdSeg`), data |
+| Path end `vehicleRule`: 0 stop sign, 1 traffic light, 3 no control (2 "yield" is unsupported) | MM2 (`OkayToEnterIntersection`) |
+| Speed limits (`aiMap::Init`): a road listed in the race's `[Exceptions]` gets that entry's limit, zero included; freeways (path flag 0x4) the city limit + 12.5 m/s; other roads the city limit. The `.bai` value is overwritten | MM2 |
+| The path list of an intersection is used in file order (MM2 baked it sorted by angle); a path's index in each end's list is stored in the file | MM2 (`aiIntersection::CreateRoadMap` at bake time, `ReadBinary`) |
 
-## Traffic lights (`TrafficLights`) — ported
+## Traffic lights (`TrafficLights`, `aiTrafficLightSet`)
 
-`aiTrafficLightSet::Reset/Update`: each intersection with lights has one light
-per approaching path end with rule 1, in the intersection's path order. Light
-0 starts green, the rest red. One light is green at a time for the 10 s cycle
-(`41200000h`), turning amber for the last 4 s (`flt_61B474`), then red while
-the next light turns green; when a light turns green, the stopped queue
-behind it restarts its reaction counters (`aiPath::ResetVehicleReactTicks`).
-Vehicles only enter on green.
+| Behaviour | Evidence |
+|---|---|
+| One set per intersection with any lit approach; one light per path end there with rule 1, in path order | MM2 (ctor, `SetFourWay`) |
+| Light 0 green, the others red at the start (`Reset`) | MM2 |
+| A light is green for 3 s, amber for 3 s (cycle 6 s), then red while the next turns green; the timer restarts at 0 (the overshoot is dropped) | MM2 (`Update`; 40C00000h, 3.0) |
+| When every source road of the intersection has a light (`NumSources`), each round ends with an all-red pedestrian phase of one cycle: state 4 (red + WALK) then, for the last 3 s, state 5 (red + don't walk); then light 0 again | MM2 |
+| Four-way sets (4 paths, 4 sources, 4 "sinks") pair opposite lights (i and i + 2) and make traffic go straight on (`ChooseStraightLinkAt4Way`). `NumSinks` counts departing sides whose no-traffic flag is *set*, so no retail intersection qualifies | MM2, data |
+| A light turning green restarts the reaction counters of the stopped queue of the intersection's path *at the light's index* (`aiPath::ResetVehicleReactTicks`), which is the light's own road only while every earlier road has a light | MM2 |
+| The sets update after the traffic, as children of `aiMap` | MM2 |
+| Vehicles enter on green only | MM2 (`OkayToEnterIntersection`) |
 
-Poles (`World::signals()`): one per light, at `trafficLightPos`. The vector
-`trafficLightAxis − trafficLightPos` points from the pole towards the road
-centre (data: on London path 10 it points at the centre line). The models
-(`sp_traflitsingle_l/_f`, `sp_traflitdual_f`) extend their arm along −X and
-carry RED/YELLOW/GREEN `GLOWDAY`/`GLOWNIGHT` parts facing +Z, so the pole's
-−X is that vector. Model choice: `_l` London, `_f` San Francisco; the dual
-(arm) model for approaches with two or more lanes where it exists (inferred).
-Stop signs are static instances in `city/<map>_ai.inst` (`sp_stop_f`), drawn
-with the city.
+Poles (`aiTrafficLightInstance::Init`, `World::signals()`): at
+`trafficLightPos`, model X along the unit XZ direction to
+`trafficLightAxis` (which points away from the road on retail data), Z =
+(-x.z, 0, x.x), so the glows on +Z face the arriving traffic and the SF
+models' arms (-X) reach over the road. The dual model for approaches with
+two or more lanes. `DrawGlow` draws the light's glow together with the
+pedestrian signal (WALK in state 4, NOWALK otherwise) and only when the
+model has both; NIGHT glows from the evening on (time of day > 1). Stop
+signs are static instances in `city/<map>_ai.inst`, drawn with the city.
 
-## Ambient traffic (`Traffic`)
+## Ambient traffic (`Traffic`, `AmbientRoute`)
 
-Cars ride their lane polylines and Hermite curves through intersections; they
-never touch the physics until hit.
+### Population (`aiMap::AdjustAmbients`, **MM2**)
 
-**Ported from MM1** (constants decoded from game.asm):
+* A pool of 300 cars (`MMSTATE`), each with its type (cumulative
+  probabilities of `[Ambient Types/Density]`), paint job
+  (trunc(frand x (paint jobs - 1)), the last never used), lane randomness
+  sin(frand x 6.2831) x 0.5, reaction ticks 8 - trunc(frand x -17), speed
+  excess cycling 0, 8, 6, 4, 2 m/s, and acceleration 5 + 3f and separation
+  0.5 + 2.5f from one draw f, all fixed for the session. Density 0: no pool.
+* Roads are populated per PSDL room: when the player enters a room, the
+  roads in its `.bai` list (the first per-room list) that were not in the
+  previous room's are populated, and the roads that dropped out return
+  their cars to the pool (`aiPath::ClearAmbients`). The first room is
+  populated at the start (`aiMap::Reset`).
+* Cars per new area: with d = clamp(menu density, 0, 1) x 0.2 and L the new
+  roads' usable lane length (centre length - 5 m per lane, open sides
+  only, exception roads aside), 1 + trunc(L d / 8) gaps; cars are placed one
+  gap apart, carried across lanes and roads, each within its lane and short
+  of the line by its front bumper.
+* Roads with an `[Exceptions]` entry instead get trunc(length x density / 8)
+  cars per lane (not scaled by the menu) at (i + 1/2) spacings, jittered by
+  (spacing - 10) x sin(frand x 6.28) / 2.
+* No car is placed within 50 m of a race opponent (3D; the player is not
+  checked), or on a lane whose next road cannot be chosen.
+* A car finishing a turn towards a road that is not populated turns round
+  onto the other side of its own road, or, on a one-way road (the first
+  side's flag), goes back to the pool.
 
-* Speed control, `aiGoalRandomDrive::SolveVelocity`:
-  * within `IntersectionReactDist` (25 m) of the end of the lane, a car
-    commits to the junction (`EnterInt`) when `OkayToEnterIntersection`, the
-    next road has room and nothing crosses; a car that commits from a stop
-    reacts after `TotReactTicks − 3` ticks;
-  * otherwise it brakes to stop 0.25 m before the line: a = −v²/(2(d − 0.25));
-  * a car stopped short of the line (> 1 m, ≤ 2 m/s, reacted) creeps on at
-    2 m/s with a 5 m reaction distance;
-  * away from junctions it accelerates at `VehicleAccelFactor` towards
-    speed limit + `ExheedLimit`;
-  * integration: v += a·dt, clamped to the target (decelerating within
-    target + 0.05, or accelerating past it); lane distance += v·dt.
-* Car following, `aiGoalRandomDrive::AvoidCollision`, lead within 20 m: with
-  gap G = own front bumper + lead's back bumper:
-  * inside G, stop dead;
-  * within G + `SeparationDist`, match a faster lead, or else slow to
-    0.75 × speed and take the lead's (positive) acceleration;
-  * beyond that, a = (u² − v²) / (2(d − G − sep [− 2 when both cars are on
-    the same rail type])), to arrive at the lead's speed at the gap.
-* Intersections, `OkayToEnterIntersection`:
-  * light: green only;
-  * stop sign: stop (< 0.5 m/s within 1.5 m), take a ticket (the frame
-    counter, `aiMap+72h`); the lowest ticket among the lanes' leading cars
-    goes, together with cars from the same road;
-  * uncontrolled: always.
-* Per-car randomisation, in construction order:
-  * lateral `LaneRandomness` = sin(frand·2π)·0.5;
-  * `TotReactTicks` = 8 − trunc(frand·−17) ∈ [8, 24];
-  * `ExheedLimit` from a global counter cycling 0, 8, 6, 4, 2 m/s;
-  * `VehicleAccelFactor` = 5 + 3·frand;
-  * `SeparationDist` = 0.5 + 2.5·frand;
-  * `IntersectionReactDist` = 25.
-* Turn curves, `aiRailSet::ComputeXZCurve`/`SolveXZCurve`: a cubic in X and
-  Z with the Hermite basis decoded from the matrix initialised in the
-  `aiRailSet` constructor (arguments p0, p1, m0, m1).
-* Spawning, `aiMap::AdjustAmbients`/`NumCars`:
-  * cars per lane = trunc(length · density / 8) when a road comes into range;
-  * spacing length/(n + 1), each car jittered by sin(frand·2π)·spacing/2;
-  * never within 50 m of the player (`flt_61B238` = 2500);
-  * density = road exception or map `[Density]`, times the menu setting;
-  * vehicle types by cumulative probability (`[Ambient Types/Density]`).
-* Tyre rotation += dt·speed, wrapping at 2π; reaction ticks count updates.
-* Player zone: within 25 m (`flt_61BAA4` = 625), a player in the car's path
-  is treated as a stopped vehicle ahead, and the car honks when stopped.
-  MM1 hands over to `aiGoalAvoidPlayer`.
+### Route choice (`aiMap::ChooseNextLaneLink`, **MM2**; `ai/AmbientRoute`)
 
-**Inferred / deviations** (marked in the code):
+The choosers walk the arrival intersection's path list from the car's own
+road: +1 for the roads to its right, -1 to its left. A road qualifies when
+its side leaving the intersection is open to traffic.
 
-* Next road: uniform among the roads leaving the intersection, restricted by
-  lane discipline after `ChooseNextLeftStraightLink`/`RightStraightLink`/
-  `StraightLink`:
-  * the lane nearest the centre turns across traffic or goes straight;
-  * the outer lane turns away or goes straight;
-  * middle lanes go straight;
-  * lane position is kept.
-* Indicators from the turn angle (> 0.35 rad).
-* Turn tangent length = chord between the lane ends.
-* Bumper distances = half the AI data's Size.z (the original used the model's
-  box).
-* Crossing traffic: entry is refused while a car from another road is in the
-  first 70 % of its turn, or committed and within 12 m of the junction.
-* Room on the next road ("don't block the box"): the whole car plus
-  separation + 3 m (+4 m if the last car there is slow).
-* Followers also follow a lead that has already committed but is still ahead
-  on the lane; MM1 only brakes for the stop line there, which made cars drive
-  into slow leads.
-* Spawning skips spots within a car length + 1.5 m of another car and the
-  last 6 m before the line; MM1's jitter can stack cars.
-* The area keeps its density: once a second, a lane with fewer cars than its
-  share gets one more, moving, out of sight.
-* Gridlock relief: cars stuck for 30 s at least 50 m from the player are
-  recycled.
-* Fixed 30 Hz step: MM1 used the frame delta.
-* Steering angle from the change of heading.
-* Physical hand-over hook (`Traffic::impact`, `setImpactHandler`), standing in
-  for MM1 `aiVehicleSpline::Impact` → `aiVehicleActive`.
+* Four-way light (end flags 3): straight on (index + 2), same lane.
+* Freeways (flag 0x4): the next freeway round to the right (same lane);
+  otherwise by lane as below.
+* One lane: any qualifying road (a freeway at once); next lane 0 unless the
+  turn is a right turn (`SolveTurnType`), then the last lane.
+* Lane 0 (`ChooseNextLeftStraightLink`): the first road to the left, or the
+  one after it when its start is not more than 2 m to the right of the
+  car's lane line; 50/50; next lane 0.
+* The last lane (`ChooseNextRightStraightLink`): the first road to the right
+  or the next one if not more than 2 m to the left; 50/50; next lane the
+  last.
+* Middle lanes (`ChooseNextStraightLink`): with fewer than three ways out,
+  the road with more than two lanes leaving (the most straight one when
+  several), else the first to the right; otherwise the second open road to
+  the right; same lane.
+* `SolveTurnType`: the angle of the next road's first segment against the
+  arrival heading; over 0.5 rad right, under -0.5 left, else straight. It
+  sets the indicators.
 
-Not done yet: lane changes (`aiGoalRandomDrive::ChangeLanes`), trams and cable
-cars on the tram polylines, subways/trains, bridges, the original's audio
-hooks (horns are flagged, not played).
+### Driving (`aiGoalRandomDrive`, **MM2**)
 
-## Pedestrians (`Pedestrians`)
+* Rails: each lane section is a cubic Hermite curve in XZ between the lane
+  vertices (moved sideways by the lane randomness), with the section
+  directions (wAxis) times the section length as tangents; the road's end
+  directions on the first and last sections. The last section stops the
+  car's centre with its front bumper at the line. A turn is one Hermite
+  curve from there to the next lane's first vertex, both tangents the
+  road-end directions scaled by the Manhattan XZ distance, which is also the
+  turn's length; the curve parameter is distance / length.
+* Pose: on flat roads (path flag 0x8) upright at the road's first centre
+  height; with no player within 100 m on a lane section, the road
+  section's own frame and the lane's height; otherwise three corners
+  probed onto the ground (front left, front right, back left), when the game
+  supplies a ground probe (`Traffic::setGroundProbe`). Rail cars have no
+  steering angle; the tyres turn by speed x dt, wrapping at 6.28.
+* Speed limit: the road's limit + the car's excess (+5 m/s per lane from the
+  right on freeways).
+* Away from the junction (or in a turn): follow the car ahead within 20 m
+  (`AvoidCollision`, once the reaction time has passed), else speed up to
+  the limit at the car's acceleration. In a turn the car ahead is the last
+  car of the lane being turned into, or a car of the same road turning into
+  the same lane.
+* Within 25 m of the line (`IntersectionReactDist`) the car may commit
+  (`EnterInt`) when `OkayToEnterIntersection` allows, no accident is ahead,
+  the next lane has room and no committed car from another road crosses its
+  line; otherwise it picks another road.
+  * Lights: green only. Stop signs: stopped (< 0.5 m/s) within 1.5 m, then
+    first come, first served, together with one waiting car from the same
+    road (`aiIntersection::StopSignOkayToGo`). Uncontrolled: always, and
+    the stopped cars behind restart their reaction time.
+  * Room (`aiPath::RoadCapacity`): the car's length + separation, plus that
+    of every car ahead of it bound for the same road, plus the last car's
+    back bumper, must fit before that last car's centre.
+  * Crossing (`AnyVehiclesComingThisWay`, not on freeways): a committed car
+    leading another road's lane whose way (its lane end to its next lane's
+    start) passes on both sides of this car's line. As coded, the other
+    roads' lanes are read for this car's own directions.
+  * Accidents (`UpcomingAccident`): a car out of normal driving (hit,
+    regaining its lane, avoiding the player, parked) in the intersection
+    or on the next road. MM2 finds them by position in its obstacle map;
+    OpenMM2 by the car's road (**inferred** equivalent).
+* Not committed: follow the car ahead on the same road (skipping one that is
+  regaining its lane), else brake to stop 0.25 m before the line
+  (a = -v^2 / 2(d - 0.25)); a car that stopped short (reaction over, at most
+  2 m/s, more than 1 m out) creeps on at 2 m/s.
+* Committed: follow a car ahead within 20 m when their targets differ,
+  else speed up.
+* Following (`AvoidCollision`), with u = lead speed - 2.5 (0..999) and gap =
+  own front + lead's back bumper: inside the gap stop dead (ease off at
+  -v^2/6 behind a lane-changing car); within gap + separation, 0.75 x speed
+  and the lead's acceleration (or stop when it is not accelerating); beyond,
+  brake to u at gap + separation (2 m sooner when both are turning or both
+  changing lanes), or accelerate when slower than u. Target min(u, limit).
+* Integration: v += a dt, clamped to the target; a car stopped behind a
+  stopped car within 20 m restarts its reaction time.
+* Lane changes (`SolveLane`, `ChangeLanes`; `[AmbientLaneChanges]`): once
+  per road, after the first quarter of a road longer than 60 m, to the
+  neighbouring lane with fewer cars beyond that quarter; a curve from the
+  car to the new lane a quarter of the lane plus 30 m on; indicators on.
+* Physics hit (`aiVehicleAmbient::Impact`, `aiVehicleManager`,
+  `aiVehicleActive`; `game/TrafficBodies`): a moving body touching a rail
+  car makes it a rigid body (at most 32; the oldest is let go when full):
+  centre of mass at the model origin, the box at CG with Size extents,
+  gravity 19.6, friction 1.0 and elasticity 0.5 (the box keeps its default
+  material), four `vehWheelCheap` wheels (spring/damper from the
+  `.aivehicledata`, locked-wheel rubber grip up to 0.4 N per axis); hazard
+  lights on. It stays in its lane list where it was hit, so traffic queues
+  behind it. After 15 still physics steps (0.1 m/s, 0.1 rad/s), or below
+  y -100, it is handed back: upright on the ground (probe +0.5 to -3 m
+  along its up axis, normal . up >= 0.9) and never wrecked, it drives a
+  Hermite curve back onto its lane (`aiGoalRegainRail`, 30 m, speeding up to
+  the limit); otherwise it stays a wreck for good. A third regain started
+  within 1 m of the last one parks it for good. Cars are recycled only with
+  their road. The hit impulse is OpenMM2's (closing speed, reduced mass,
+  restitution the product of both elasticities, **inferred**).
+* The player (`aiGoalAvoidPlayer`): a moving car whose next 30 m of rail (in
+  10 m pieces, within its width) holds the player within 25 m, with no car
+  ahead nearer, leaves its rail: one chance to honk; it brakes to stop
+  short of the player when below its cruise speed, otherwise keeps its
+  speed; it steers by heading changes of up to 0.03 rad per update, aiming
+  to pass the player (as coded, the yaw turns away from the aim point), and
+  never reverses. Once the player is neither in its next 25 m nor in front
+  within 25 m, it regains its lane.
 
-MM2's pedestrians are skeletal and driven by `anim/pedmodel_*.csv`, unlike
-MM1's, so little of MM1's code carries over directly.
+**Deviations and approximations** (marked in the code):
 
-**Ported constants**:
+* Fixed 30 Hz steps (MM2: per frame); avoid-player steering is per update.
+* No terrain probe in tools/tests (no physics world): the heights come from
+  the rails.
+* Regaining the lane keeps the car's road and lane (MM2 maps it onto the
+  road or intersection under it first); a car further than the road's
+  half width + 5 m from its lane parks.
+* Cars in avoid/regain register on their road for accidents (MM2: by
+  position).
+* Stop-sign queues drop a recycled car at its own arrival intersection (MM2
+  clears end A's for both directions).
+* Not done: cable cars and subways (`aiCableCar`, `aiSubway`), the ambient
+  horn and voice audio (`AmbientCar::horn` marks the attempt), breakable
+  parts and impact sounds of physical traffic, regaining onto another road.
 
-* lateral spread on the walkway sin(frand·2π)·1.8 (`aiPedestrian::Reset`),
-  clamped to the sidewalk width;
-* awareness of the player within 35 m (`DetectPlayerAnticipate`, `flt_63936C`);
-* collision zone 6 m (`DetectPlayerCollision`, `flt_639360`);
-* activity radius 75 m (`aiPedestrian::Update`, 5625 squared);
-* turn threshold 0.15 rad (`Wander`).
+## Pedestrians (`Pedestrians`, `aiPedestrian`)
 
-**Inferred**:
+MM2's pedestrians (build 3393, **MM2** unless marked):
 
-* **Spawning:** 0.5 × density per 10 m of active sidewalk, not within 35 m.
-* **Walking:** along the sidewalk line at the WALK state's root-motion speed
-  (forward distance / duration, at 20 animation frames per second, which
-  gives a normal pace). At corners peds continue on a nearby sidewalk or turn
-  round, and occasionally stop for 2–6 s.
-* **Reactions:** the player car's straight-line path is projected.
-  * Closest approach under 2.5 m within 1.25 s: dive away from the car's
-    line, WALK_LDIVE/WALK_RDIVE or ANTIC_LDIVE/ANTIC_RDIVE, then the table's
-    chain through ground and get-up states back to STAND.
-  * Within 6 m and 3 s: brace (WALK_ANTIC/STAND_ANTIC → ANTIC, facing the
-    car), and walk on once it has passed.
-* **Root motion:** non-walking states move by the table's forward and side
-  distances (side positive = left).
+* **Pool and types** (`aiMap::Init`): trunc(`[Ped Pool]` (city map, default
+  100) x density) pedestrians; none in circuit races. Types from the race's
+  `[GoodWeatherPedName / BadWeatherPedName]`, else the city's (man and
+  woman), the winter models in snow; clothing variant trunc(frand x
+  (variants - 1)).
+* **Placement** (`aiMap::AdjustPedestrians`): per PSDL room, like the
+  traffic but with the second per-room road list; the pool is dealt round
+  the newly listed roads, one per open sidewalk side (side flag bit 1 clear)
+  per lap; roads that drop out of the list return their pedestrians. A
+  pedestrian starts at a random point of its sidewalk, walking either way,
+  with a lateral offset ((outer - inner) / 2 - 0.5) x sin(frand x 2pi)
+  (the side's lateral parameters), clamped to 1.5 m.
+* **Animation** (`pedAnimation`, `pedAnimationInstance`): 30 frames per
+  second, whole frames, from frame 0 of the `.anim`; a sequence's speeds are
+  its CSV forward and side distances over frames x 0.03333 s (WALK: man
+  2.11 m/s, woman 1.63 m/s); the root's straight-line drift over the clip is
+  taken out of the pose; at the end of a sequence the queued one starts
+  (default: the CSV's next).
+* **Walking** (`Wander`, `RoadDistance`, `CalcCurve`, `SolveTargetPoint`):
+  one Hermite curve per sidewalk section at the pedestrian's lateral offset
+  (re-taken from where it is at each vertex), a straight line round each
+  corner; it steers towards the curve point 6 m ahead by at most 0.15 rad
+  per update and moves freely by its sequence's speeds. The ground height
+  comes from a probe 2 m up and down (kept if within 0.5 m); flat roads use
+  the curb's height beyond 50 m of the player.
+* **At the end of a sidewalk** (`PickNextRdSeg`, `SetNextRoad`): round the
+  corner onto the next road in the intersection's list (to its right or
+  left by side and direction); at intersections whose lights have a walk
+  phase, 1 in 3 crosses the next road and 1 in 3 crosses its own (never
+  with a car out of normal driving in the intersection). A closed or
+  unpopulated way on: it turns round.
+* **Crossing** (`PreCrossStreet`, `WaitCrossStreet`, `CrossStreet`): to the
+  curb point 2.5 m into the intersection, wait facing the far curb (STAND
+  or STAND2) until the lights show WALK, cross, run when the don't-walk
+  signal comes on; back to the sidewalk (turned round) when the player's car
+  stands in its way or a car is in an accident there.
+* **The player** (`Update`, `DetectPlayerForwardCollision`,
+  `DetectPlayerAnticipate`, `TimeToCollision`): within 35 m and at 1 m/s or
+  more, a pedestrian ahead of the car (behind it in reverse) between a
+  quarter of its length and 20 m, within its half width + 2 m, dives when
+  the time to reach it, (distance - 2) / speed, is under 0.75 s and braces
+  under 2.3 s; up to 35 m and the half width + 4 m it braces under 2.3 s.
+  * Brace (`Anticipate`): on a sidewalk, a wall within 10 m on the building
+    side (probe) makes it run there (backing up against it when closer
+    than 1.25 m); else half run along the road the car's way, half brace
+    (WALK_ANTIC) facing the car; on a corner or crossing it faces the car.
+  * Dive (`Avoid`): facing against the car's way, to its right when the
+    player steers right (> 0.85), left when left, else away from the car's
+    centre line; WALK_ or ANTIC_ dive by its state; sideways speed x3 / x5
+    when behind; a voice (`scream`).
+  * A slow car within 6 m ahead on the walkway: step round it at its radius
+    + 1 m, or turn back when it fills the walkway (`AvoidObstacle`; for small
+    angles it turns the wrong way, as coded).
+* Pedestrians are not collidable: cars drive through them (no ragdoll in
+  MM2). They ignore each other and other cars.
+
+**Deviations** (marked in the code): a single player; the ground and wall
+probes need the game's collision (`World::setProbe`), otherwise heights come
+from the sidewalk lines and there are no walls; the props (`DetectBangerCollision`)
+are not avoided; the stick-figure LOD beyond 35 m is not drawn; the
+avoidance voice is only flagged.
 
 ## API
 
 ```cpp
 #include "ai/World.h"
-ai::Settings s;                 // trafficDensity, pedestrianDensity, maxCars, maxPeds, seed
+ai::Settings s;                 // trafficDensity, pedestrianDensity, maxCars (pool, 300), maxPeds, seed
 auto world = ai::World::create(city, vfs, s, /*race aimap or nullptr = cruise*/ nullptr, &error);
-world->update(frameDt, playerPos, playerVel);   // fixed 30 Hz steps inside
-for (const ai::AmbientCar& c : world->cars())   // model, variant (paint job = variant % count),
-    ...;                                         // transform (ground contact, faces -Z), speed,
-                                                 // tireRotation, steer, braking, signal, horn
+ai::PlayerCar player;           // matrix, velocity, radius, box size, steering, reverse gear, horn
+world->setOpponents(positions); // no ambient car is placed within 50 m of these
+world->update(frameDt, player); // fixed 30 Hz steps inside; populates by the player's PSDL room
+for (const ai::AmbientCar& c : world->cars())   // model, paint (trunc(paint x (paint jobs - 1))),
+    ...;                                         // transform (model origin, faces -Z), speed,
+                                                 // tireRotation, braking, signal (incl. hazards),
+                                                 // horn (attempt), goal, physical, wreck
 for (const ai::Pedestrian& p : world->peds())   // typeName, variant (anim/<type>.shaders),
     ...;                                         // transform, state, animFile, frame -> asset::posePed
-for (const ai::Signal& sig : world->signals())  // model, transform, state (draw the matching GLOW part)
+for (const ai::Signal& sig : world->signals())  // model, transform, state (light + walk glows)
     ...;
-world->traffic().setImpactHandler(...);         // rail car becomes physical when hit
-world->traffic().impact(carId, impulse);
+world->traffic().setImpactHandler(...);         // rail car becomes physical when hit (game/TrafficBodies)
+world->traffic().setGroundProbe(...);           // terrain fit of cars near the player
 ```
 
 ### Phase 2: driving physics cars
@@ -198,27 +316,36 @@ simulation.
 
 ## Verification
 
-`test_ai` (7 tests; retail tests need `OPENMM2_GAME_DATA`):
-- **Synthetic:** polylines, lane directions and drive-on-left mirroring, the
-  light cycle (10 s, amber from 6 s, rotation), and cars queueing at a red
-  light without crossing.
-- **Retail cities:** London and SF both build, with drive-on-left only in
-  London, 4 pedestrian types and every signal model present.
-- **Determinism:** two London worlds with the same seed stay bit-identical
-  for 120 s.
-- **Traffic behaviour:** lane deviation ≤ 0.5 m (the lane randomness) and no
-  car enters a light that has been red for over 2 s.
-- **Pedestrians:** walking peds stay within their sidewalk, and one dives when
-  a car drives straight at it.
+`test_ai` (retail tests need `OPENMM2_GAME_DATA`):
+- **Synthetic networks** (`test_traffic.cpp`): MM2's lane rules at a
+  crossroads (lane 0 left or straight, last lane right or straight, the next
+  path in the list is to the right), closed sides never chosen, drive-on-left
+  reversal (lane 0 the outer lane on the left), the density of a newly
+  populated area (density x 0.2 / 8 per metre), cars queueing at a red light
+  and going on green, and no car closer than 4 m behind another round a block.
+- **Lights** (`test_ai.cpp`): the 6 s cycle with amber from 3 s and the
+  rotation; the all-red WALK / don't-walk phase when every approach has a
+  light.
+- **Retail cities:** London and SF build, drive on the left only in London,
+  every signal model present; two London worlds with the same seed stay
+  bit-identical for 120 s; no car enters a light that has been red for over
+  2 s; lane deviation within 1.5 m (lane randomness plus the Hermite
+  sections).
+- **Pedestrians** (SF): walking pedestrians stay within 3 m of their
+  sidewalk line unless crossing, and one dives when a car drives straight
+  at it.
+- `test_game` `TrafficBodies`: a car hit by the player becomes physical, is
+  pushed, comes to rest and drives back onto its lane.
 
-`mm2tool aisim <source> <city> [--seconds N] [--drive] [--png out.png]` runs
-the AI headless and plots lanes, sidewalks, signals and trails. Typical
-10-minute runs: 0 red-light entries, under 10 brief car overlaps (crossing
-turns), maximum lane deviation 0.50 m, and stable throughput (about 100
-junction entries per minute around a stationary player, about 240 when
-driving). `OPENMM2_AISIM_VERBOSE=1` and `OPENMM2_AISIM_TRACE=<car>` print
-diagnostics. `mm2tool aidump <source> <city> [path]` dumps paths, polylines
-and ends.
+`mm2tool aisim <source> <city> [--seconds N] [--drive] [--at x,z] [--png out.png]`
+runs the AI headless and plots lanes, sidewalks, signals and trails.
+London, 10 minutes, player beside the road at (60, -560): 26 cars, 0
+red-light entries, about 95 junction entries per minute throughout.
+A player standing in the middle of a junction makes the cars there avoid
+him and the roads behind them count as "in accident", as in MM2, so traffic
+around him jams. `OPENMM2_AISIM_VERBOSE=1` and `OPENMM2_AISIM_TRACE=<car>`
+print diagnostics. `mm2tool aidump <source> <city> [path]` dumps paths,
+polylines and ends.
 
 ## Opponents and police (phase 2)
 

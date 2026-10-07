@@ -5,7 +5,7 @@
 #include "game/Camera.h"
 #include "game/ModelLibrary.h"
 #include "game/RaceConfig.h"
-#include "game/RoomLocator.h"
+#include "city/RoomLocator.h"
 #include "game/TextureLibrary.h"
 #include "render/Device.h"
 
@@ -93,7 +93,7 @@ private:
     TextureLibrary& m_textures;
     ModelLibrary& m_models;
     const city::CityData& m_city;
-    RoomLocator m_locator;
+    city::RoomLocator m_locator;
     render::BufferHandle m_vertices, m_indices;
     std::vector<Room> m_rooms;
     std::vector<InstanceDraw> m_instances;

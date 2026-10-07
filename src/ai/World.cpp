@@ -6,6 +6,7 @@
 #include "data/TextTables.h"
 
 #include <algorithm>
+#include <cstring>
 #include <format>
 
 namespace mm2::ai {
@@ -20,6 +21,10 @@ std::string citySuffix(const city::CityData& city) {
 std::string_view asText(const std::vector<std::byte>& b) {
     return {reinterpret_cast<const char*>(b.data()), b.size()};
 }
+
+// aiCityData defaults when city/<map>.aimap has no [Traffic Lights].
+constexpr const char* kDefaultSingleLight = "sp_traflitsingle_f";
+constexpr const char* kDefaultDualLight = "sp_traflitdual_f";
 
 } // namespace
 
@@ -62,12 +67,35 @@ std::vector<PedTypeInfo> loadPedTypes(const vfs::Vfs& vfs) {
         PedTypeInfo info;
         info.name = name;
         info.table = std::move(*table);
+        // Frame counts of the .anim files (u32 at offset 4) for clamping.
+        for (const auto& st : info.table.states) {
+            const std::string file = str::lower(st.animFile);
+            if (info.animFrames.contains(file))
+                continue;
+            if (auto anim = vfs.readAll("anim/" + file + ".anim"); anim && anim->size() >= 8) {
+                std::uint32_t frames = 0;
+                std::memcpy(&frames, anim->data() + 4, 4);
+                info.animFrames[file] = static_cast<int>(frames);
+            }
+        }
         if (auto shaders = vfs.readAll("anim/" + name + ".shaders"))
             if (auto set = asset::parsePedShaders(*shaders))
                 info.variants = std::max<int>(1, static_cast<int>(set->variantCount));
         types.push_back(std::move(info));
     }
     return types;
+}
+
+std::optional<city::AiMapConfig> loadCityAiConfig(const vfs::Vfs& vfs, const city::CityData& city) {
+    const std::string path = "city/" + str::lower(city.info.mapName) + ".aimap";
+    auto bytes = vfs.readAll(path);
+    if (!bytes)
+        return std::nullopt;
+    std::string error;
+    auto config = city::parseAiMapConfig(asText(*bytes), &error);
+    if (!config)
+        log::warn("ai: {}: {}", path, error);
+    return config;
 }
 
 std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs& vfs,
@@ -80,30 +108,41 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     }
     if (!config)
         config = city.cruise ? &*city.cruise : nullptr;
+    // aiMap::Init reads the city's own AI map (aiCityData: speed limit,
+    // driving side, vehicle types, light models) and the race's (aiRaceData:
+    // exceptions, lane changes, vehicle types).
+    const std::optional<city::AiMapConfig> cityConfig = loadCityAiConfig(vfs, city);
 
     std::unique_ptr<World> world(new World());
     NetworkOptions net;
-    // Drive on the left when the city's cruise map says so; race maps of the
-    // same city don't repeat the section (inferred to be city-wide).
-    auto dol = [](const std::optional<city::AiMapConfig>& c) {
-        return c && c->driveOnLeft && *c->driveOnLeft != 0;
-    };
-    net.driveOnLeft = (config && config->driveOnLeft && *config->driveOnLeft != 0) || dol(city.cruise) ||
-                      dol(city.cruisePro);
-    if (config) {
-        if (config->speedLimit)
-            net.defaultSpeedLimit = *config->speedLimit;
-        net.exceptions = config->exceptions;
+    if (cityConfig && cityConfig->driveOnLeft) {
+        net.driveOnLeft = *cityConfig->driveOnLeft != 0;
+    } else {
+        // No city file: fall back to the cruise maps, which repeat the flag.
+        auto dol = [](const std::optional<city::AiMapConfig>& c) {
+            return c && c->driveOnLeft && *c->driveOnLeft != 0;
+        };
+        net.driveOnLeft = dol(city.cruise) || dol(city.cruisePro);
     }
+    if (cityConfig && cityConfig->speedLimit)
+        net.defaultSpeedLimit = *cityConfig->speedLimit;
+    if (config)
+        net.exceptions = config->exceptions;
     world->m_network = std::make_unique<RoadNetwork>(RoadNetwork::build(*city.aiMap, net));
+    world->m_rooms = std::make_unique<city::RoomLocator>(city.psdl);
     world->m_lights.build(*world->m_network);
 
     TrafficSettings traffic;
-    traffic.mapDensity = config && config->density ? *config->density : 0.1f;
-    traffic.densityScale = settings.trafficDensity;
-    traffic.maxCars = settings.maxCars;
-    traffic.types =
-        config && !config->ambientTypes.empty() ? config->ambientTypes : defaultAmbientTypes(vfs, city);
+    traffic.density = settings.trafficDensity;
+    traffic.poolSize = settings.maxCars;
+    traffic.laneChanges = !config || !config->ambientLaneChanges || *config->ambientLaneChanges != 0;
+    // The race's [Ambient Types/Density] when it has one, else the city's.
+    if (config && !config->ambientTypes.empty())
+        traffic.types = config->ambientTypes;
+    else if (cityConfig && !cityConfig->ambientTypes.empty())
+        traffic.types = cityConfig->ambientTypes;
+    else
+        traffic.types = defaultAmbientTypes(vfs, city);
     std::vector<VehicleData> data;
     for (const auto& t : traffic.types) {
         if (std::ranges::any_of(data, [&](const VehicleData& d) { return str::iequals(d.model, t.model); }))
@@ -117,34 +156,49 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     world->m_traffic = std::make_unique<Traffic>(*world->m_network, world->m_lights, std::move(data), traffic,
                                                  settings.seed);
 
+    // aiMap::Init: trunc([Ped Pool] x density) pedestrians of the race's
+    // (else the city's) good- or bad-weather types.
     PedSettings peds;
-    peds.density = 0.5f * settings.pedestrianDensity;
-    peds.maxPeds = settings.maxPeds;
+    peds.density = settings.pedestrianDensity;
+    peds.pool = settings.maxPeds >= 0 ? settings.maxPeds : kDefaultPedPool;
+    if (settings.maxPeds < 0 && cityConfig) {
+        for (const auto& sec : cityConfig->sections)
+            if (str::iequals(sec.name, "Ped Pool") && !sec.lines.empty())
+                peds.pool = static_cast<int>(str::parseDouble(sec.lines.front()).value_or(kDefaultPedPool));
+    }
+    std::vector<std::pair<std::string, std::string>> names;
+    if (config && !config->pedNames.empty())
+        names = config->pedNames;
+    else if (cityConfig)
+        names = cityConfig->pedNames;
+    for (const auto& n : names)
+        peds.names.push_back(settings.winterPeds ? n.second : n.first);
     world->m_peds =
         std::make_unique<Pedestrians>(*world->m_network, loadPedTypes(vfs), peds, settings.seed * 7919u + 1u);
+    world->m_peds->setLights(&world->m_lights);
+    Traffic* ambient = world->m_traffic.get();
+    world->m_peds->setAccidentQuery(
+        [ambient](int node, int path) { return ambient->accidentAt(node, path); });
 
-    // Traffic light poles: one per controlled approach.
-    const std::string suffix = citySuffix(city);
+    // Traffic light poles (aiTrafficLightSet::SetFourWay,
+    // aiTrafficLightInstance::Init): the city's single-head model for
+    // approaches with one lane, its second model for two or more.
+    std::string single = kDefaultSingleLight, dual = kDefaultDualLight;
+    if (cityConfig && cityConfig->trafficLights.size() >= 2) {
+        single = str::lower(cityConfig->trafficLights[0]);
+        dual = str::lower(cityConfig->trafficLights[1]);
+    }
     for (const auto& site : world->m_network->lights()) {
         Signal s;
-        int lanes = 0;
-        if (site.lane >= 0) {
-            const Lane& lane = world->m_network->lanes()[static_cast<std::size_t>(site.lane)];
-            for (int l : world->m_network->paths()[static_cast<std::size_t>(lane.path)].lanes)
-                if (world->m_network->lanes()[static_cast<std::size_t>(l)].side == lane.side)
-                    ++lanes;
-        }
-        // Wide approaches get the arm (dual) model where the city has one (inferred).
-        const std::string dual = "sp_traflitdual" + suffix;
-        s.model = lanes >= 2 && vfs.exists("geometry/" + dual + ".pkg") ? dual : "sp_traflitsingle" + suffix;
-        // trafficLightAxis - trafficLightPos points from the pole towards the
-        // road; the models extend their arm along -X and light up +Z.
-        Vec3 inward{site.facing.x, 0.0f, site.facing.z};
-        inward = inward.mag2() > 1e-8f ? inward.normalized() : Vec3{1, 0, 0};
+        s.model = site.arrivingLanes >= 2 ? dual : single;
+        // X along the unit direction from the pole to trafficLightAxis
+        // (away from the road on retail data), Z = (-x.z, 0, x.x): the glows
+        // on +Z face the approaching traffic.
+        const Vec3 x = site.axis;
         Mat34 m;
-        m.m0 = -inward;
+        m.m0 = x;
         m.m1 = Vec3::yAxis();
-        m.m2 = m.m0.cross(m.m1);
+        m.m2 = {-x.z, 0.0f, x.x};
         m.m3 = site.position;
         s.transform = m;
         world->m_signals.push_back(std::move(s));
@@ -157,18 +211,18 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     return world;
 }
 
-void World::step(const Vec3& playerPos, const Vec3& playerVel) {
+void World::step(const PlayerCar& player) {
+    m_traffic->step(kAiStepSeconds, player, roomAt(player.transform.m3));
+    m_peds->step(kAiStepSeconds, player, roomAt(player.transform.m3));
     m_lights.update(kAiStepSeconds);
-    m_traffic->step(kAiStepSeconds, playerPos, playerVel);
-    m_peds->step(kAiStepSeconds, playerPos, playerVel);
     updateSignals();
 }
 
-void World::update(float dt, const Vec3& playerPos, const Vec3& playerVel) {
+void World::update(float dt, const PlayerCar& player) {
     m_accumulator += dt;
     int steps = 0;
     while (m_accumulator >= kAiStepSeconds && steps < 8) {
-        step(playerPos, playerVel);
+        step(player);
         m_accumulator -= kAiStepSeconds;
         ++steps;
     }

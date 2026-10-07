@@ -1,64 +1,86 @@
 #pragma once
 
-// Ambient traffic: vehicles that ride on lane "rails" with simplified
-// dynamics. Behaviour ported from MM1 (Open1560 game.asm):
-//   aiGoalRandomDrive::Update / SolveVelocity / AvoidCollision /
-//     OkayToEnterIntersection   speed control, car following, junctions
-//   aiGoalRandomDrive ctor       per-car acceleration, speed excess, spacing
-//   aiVehicleSpline ctor/Update  reaction delay, tyre rotation
-//   aiRailSet::ComputeXZCurve /  Hermite turn curves through intersections
-//     SolveXZCurve
-//   aiMap::AdjustAmbients / NumCars  spawning density and placement
-// adapted to MM2's two-sided paths (see docs/ai.md for what is inferred).
+// Ambient traffic, after MM2's aiVehicleAmbient / aiVehicleSpline /
+// aiRailSet and its goals (build 3393, MM2Recomp; documentation only):
+//
+//   aiMap::AdjustAmbients, NumCars       population of the roads near the player
+//   aiGoalRandomDrive::Reset / Update /  speed control, junctions, lane changes,
+//     SolveVelocity / AvoidCollision /     moving along the lane and turn curves
+//     OkayToEnterIntersection / AnyVehiclesComingThisWay / SolveRailType /
+//     SolveLane / ChangeLanes / SpeedLimit / UpcomingAccident
+//   aiMap::ChooseNextLaneLink            next road (ai/AmbientRoute)
+//   aiPath::Push/Pop/Add/RemoveAmbVehicle, RoadCapacity, ResetVehicleReactTicks
+//   aiIntersection stop sign control     four-way stops
+//   aiVehicleSpline::DistanceToVehicle / DistanceToIntersection /
+//     DetectPlayerCollision / DetectPlayerZoneCollision /
+//     IsThePlayerInFrontOfMe / IsAmbientBlockingPlayer
+//   aiGoalAvoidPlayer, aiGoalRegainRail, aiGoalCollision, aiVehicleAmbient::Impact
+//
+// Cars ride cubic Hermite curves in XZ: one per lane section, one through
+// each intersection. docs/ai.md lists what is verified and what is inferred.
 
+#include "ai/AmbientRoute.h"
+#include "ai/PlayerCar.h"
 #include "ai/Random.h"
 #include "ai/RoadNetwork.h"
 #include "ai/TrafficLights.h"
 #include "ai/VehicleData.h"
 
+#include <cmath>
 #include <functional>
+#include <span>
 #include <string>
 #include <vector>
 
 namespace mm2::ai {
 
-// Constants from MM1 (values decoded from game.asm).
-inline constexpr float kAmbientCarSpacing = 8.0f; // aiMap::AdjustAmbients -> NumCars divisor (41000000h)
-inline constexpr float kAmbientMinSpawnDistance = 50.0f; // flt_61B238 = 2500 (squared)
-inline constexpr float kIntersectionReactDist = 25.0f;   // aiGoalRandomDrive ctor / Reset (41C80000h)
-inline constexpr float kRestartReactDist = 5.0f;         // SolveVelocity restart (40A00000h)
-inline constexpr float kFollowReactDist = 20.0f;         // flt_61BAB0
-inline constexpr float kPlayerZoneDistance = 25.0f;      // flt_61BAA4 = 625 (squared)
-inline constexpr float kTireRotationWrap = 6.2831855f;   // flt_61B9C4
-inline constexpr float kGridlockSeconds = 30.0f;         // inferred: unseen cars stuck this long are recycled
+inline constexpr int kAmbientPoolSize = 300;          // MMSTATE ambient vehicle count (mmStatePack ctor)
+inline constexpr float kAmbientDensityScale = 0.2f;   // aiMap::Init: clamp(density, 0, 1) * 0.2
+inline constexpr float kAmbientCarSpacing = 8.0f;     // aiMap::AdjustAmbients / NumCars divisor
+inline constexpr float kAmbientOpponentClearance = 50.0f; // AdjustAmbients: 2500 (squared)
+inline constexpr float kIntersectionReactDist = 25.0f;    // aiRailSet::Reset, aiGoalRandomDrive ctor
+inline constexpr float kRestartReactDist = 5.0f;          // SolveVelocity restart
+inline constexpr float kFollowReactDist = 20.0f;          // SolveVelocity
+inline constexpr float kPlayerZoneDistance = 25.0f;       // aiGoalRandomDrive::Update: 625 (squared)
+inline constexpr float kTireRotationWrap = 6.28f;         // aiVehicleSpline::Update
+inline constexpr float kRegainDistance = 30.0f;           // aiGoalRegainRail
+inline constexpr int kMaxPhysicalCars = 32;               // aiVehicleManager slots
 
-// Turn the car is about to make, for indicator lights.
-enum class TurnSignal : std::uint8_t { None, Left, Right };
+// Indicator lights (aiVehicleInstance +0x1a): 1 left, 2 right, 3 hazards.
+enum class TurnSignal : std::uint8_t { None = 0, Left = 1, Right = 2, Hazard = 3 };
+
+// Goal states (aiVehicleSpline +0xec).
+enum class AmbientGoal : std::uint8_t {
+    RandomDrive = 0, // on its rail
+    Collision = 2,   // hit: physical, or a wreck
+    RegainRail = 3,  // driving a curve back onto its lane
+    AvoidPlayer = 4, // off the rail, swerving round the player
+    Parked = 6,      // gave up: stays where it is
+};
 
 // One ambient vehicle as the renderer, audio and physics see it.
 struct AmbientCar {
     int id = 0;
     const VehicleData* data = nullptr;
-    std::string model;         // geometry/<model>.pkg
-    std::uint16_t variant = 0; // random; paint job = variant % paint job count
-    Mat34 transform;           // ground contact point, facing -Z
+    std::string model; // geometry/<model>.pkg
+    float paint = 0.0f; // aiVehicleInstance::SetColor: paint job = trunc(paint * (paint jobs - 1))
+    Mat34 transform;    // model origin on the ground, facing -Z
     Vec3 velocity;
     float speed = 0.0f;
-    float tireRotation = 0.0f; // radians, wraps at 2 pi (spin = distance travelled)
-    float steer = 0.0f;        // front wheel angle, radians, positive = left
+    float tireRotation = 0.0f; // radians, wraps at 6.28 (aiVehicleSpline::Update)
+    float steer = 0.0f;        // rail cars have no steering angle in MM2
     bool braking = false;
     TurnSignal signal = TurnSignal::None;
-    bool horn = false;     // blocked by the player
+    bool horn = false; // tried to honk this step (aiGoalAvoidPlayer::Reset)
+    AmbientGoal goal = AmbientGoal::RandomDrive;
     bool physical = false; // handed over to the physics simulation
+    bool wreck = false;    // can never regain its rail (aiVehicleInstance flag 0x02)
 };
 
 struct TrafficSettings {
-    // Ambient density: the AI map's [Density] (roads listed in [Exceptions]
-    // use their own value instead) times the menu's traffic density.
-    float mapDensity = 0.1f;
-    float densityScale = 1.0f;
-    int maxCars = 64;            // pool size
-    float activeRadius = 250.0f; // paths with a centre point this close to the player are populated
+    float density = 1.0f; // menu traffic density (MMSTATE trafficDensity), 0..1
+    int poolSize = kAmbientPoolSize;
+    bool laneChanges = true; // [AmbientLaneChanges] of the race's AI map
     // Vehicle types and cumulative spawn probabilities ([Ambient Types/Density]).
     std::vector<city::AiAmbientType> types;
 };
@@ -66,32 +88,51 @@ struct TrafficSettings {
 class Traffic {
 public:
     // Called when a rail car is hit and must become physical
-    // (MM1 aiVehicleSpline::Impact -> aiVehicleActive). The handler takes over
-    // the car; it stays in cars() with physical = true until release().
+    // (aiVehicleInstance::AttachEntity -> aiVehicleManager::Attach). The
+    // handler takes over the car until detach().
     using ImpactHandler = std::function<void(AmbientCar&, const Vec3& impulse)>;
+    // Vertical ground probe from `from` down to `to`; returns the hit point.
+    using GroundProbe = std::function<bool(const Vec3& from, const Vec3& to, Vec3& hit)>;
 
     Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
             const TrafficSettings& settings, std::uint64_t seed);
 
-    // Fixed-step update. `player*` describe the player's car (drives spawning,
-    // culling and the avoid-the-player behaviour).
-    void step(float dt, const Vec3& playerPos, const Vec3& playerVel, float playerRadius = 2.5f);
+    // One update (aiMap::Update's ambient part). `playerRoom` is the PSDL room
+    // the player is in (0: outside every room, nothing changes).
+    void step(float dt, const PlayerCar& player, int playerRoom);
+    // Convenience for tools: a player of default size at `pos` moving at `vel`.
+    void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 
     const std::vector<AmbientCar>& cars() const { return m_public; }
     std::size_t activeCount() const;
 
     void setImpactHandler(ImpactHandler h) { m_onImpact = std::move(h); }
-    // Reports a collision of a rail car (index into cars()).
+    void setGroundProbe(GroundProbe probe) { m_probe = std::move(probe); }
+    void setOpponents(std::span<const Vec3> positions) {
+        m_opponents.assign(positions.begin(), positions.end());
+    }
+
+    // A vehicle hit rail car `carId` (aiVehicleAmbient::Impact(1)).
     void impact(int carId, const Vec3& impulse);
-    // Removes a physical car (despawned by the game) or returns it to the pool.
+    // The physical car came to rest at `transform` (aiVehicleActive::Detach):
+    // `upright` when it stands on the ground. It regains its rail, or stays a
+    // wreck.
+    void detach(int carId, const Mat34& transform, bool upright);
+    // Pose of a physical car, kept in the AI matrix (aiGoalCollision::Update).
+    void setPhysicalTransform(int carId, const Mat34& transform);
+    // Returns a car to the pool (recycled by the game).
     void release(int carId);
+    // A car out of normal driving (InAccident: any goal but driving its
+    // rail) in `intersection` or on road `path` (-1: ignored).
+    bool accidentAt(int intersection, int path) const;
 
     // Diagnostics for tests and tools.
     struct DebugCar {
-        int lane = -1;
-        int nextLane = -1;
-        float s = 0.0f;
+        int lane = -1;     // network lane id of the logical lane
+        int nextLane = -1; // network lane id of the next lane
+        float s = 0.0f;    // distance along the lane (RoadDist)
         bool turning = false;
+        bool changingLane = false;
         bool entered = false;
         float accel = 0.0f;
         float targetVelocity = 0.0f;
@@ -99,87 +140,158 @@ public:
         int totReactTicks = 0;
         int lead = -1;
         float leadDistance = 0.0f;
+        AmbientGoal goal = AmbientGoal::RandomDrive;
     };
     DebugCar debug(int carId) const;
-    void populateAll(); // fills every path regardless of distance (tests, tools)
+    // Fills every road open to traffic regardless of the player's room.
+    void populateAll();
+    int poolFree() const;
 
 private:
+    enum class Rail : std::uint8_t { Lane = 0, Turn = 1, LaneChange = 2, Regain = 3 };
+
     struct Car {
-        bool active = false;
+        // Pool slot, fixed for the session (aiVehicleAmbient ctor / Init).
         int type = 0;
-        std::uint16_t variant = 0;
-        int lane = -1;
-        float s = 0.0f;       // RoadDist along the lane (centre of the car)
-        int nextLane = -1;    // NextLink/NextLane
-        bool turning = false; // on the Hermite curve towards nextLane
-        float turnS = 0.0f;   // distance along the turn
-        float turnLength = 0.0f;
-        Vec4 curveX, curveZ; // cubic coefficients (aiRailSet field_60 / field_70)
-        float turnY0 = 0.0f, turnY1 = 0.0f;
-        bool enterInt = false; // EnterInt: committed to the intersection
-        bool stopped = false;  // waited at a stop sign (aiGoalRandomDrive flag 0x12)
-        int waitTicket = 0;    // WaitCount: arrival order at a four-way stop
-        float speed = 0.0f;    // CurSpeed
-        float accel = 0.0f;    // CurAccelFactor
-        float targetVelocity = 0.0f;
-        float exceedLimit = 0.0f;  // ExheedLimit
-        float vehicleAccel = 5.0f; // VehicleAccelFactor
-        float separation = 1.0f;   // SeparationDist
-        float intersectionReactDist = kIntersectionReactDist;
-        float laneRandomness = 0.0f; // lateral offset (aiRailSet ctor)
-        float frontBumper = 2.0f, backBumper = 2.0f;
+        float paint = 0.0f;
+        float laneRandomness = 0.0f; // aiRailSet +0x24
         int totReactTicks = 8;
+        float exceedLimit = 0.0f; // +0x48
+        float accelFactor = 5.0f; // +0x54
+        float separation = 1.0f;  // +0x58
+        float frontBumper = 2.0f, backBumper = 2.0f, leftSide = 1.0f, rightSide = 1.0f;
+        bool active = false;
+        bool wreck = false;
+        int regainAttempts = 1; // +0xea
+        Vec3 regainStart;
+
+        // Rail (aiRailSet).
+        int path = -1, dir = 1;
+        int lane = 0;     // logical lane (+0x30)
+        int drawLane = 0; // lane whose list and vertices it uses (+0x2c)
+        int nextPath = -1, nextDir = 1, nextLane = 0;
+        Rail rail = Rail::Lane;
+        int section = 1;            // +0x2a: end vertex of the current segment
+        float roadDist = 0.0f;      // +0x14
+        float laneChangeDist = 0.0f; // +0x18
+        float segDist = 0.0f;       // +0x1c
+        float segLen = 1.0f;        // +0x20
+        float curve[2][4] = {};     // x and z cubic coefficients (+0x60, +0x70)
+        float turnY0 = 0.0f, turnY1 = 0.0f; // heights at the ends of a turn / regain curve
+        bool enterInt = false;
+        float speed = 0.0f, accel = 0.0f, target = 0.0f;
+        float reactDist = kIntersectionReactDist;
         int curReactTicks = 0;
         float tireRotation = 0.0f;
-        float steerAngle = 0.0f;
-        float stillTime = 0.0f; // seconds without moving
-        bool deadEnd = false;   // no road leaves the arrival intersection
+
+        // Goals.
+        AmbientGoal goal = AmbientGoal::RandomDrive;
+        int goalTicks = 0;        // the running goal's counter; Reset runs at 0
+        bool laneChangeOk = false; // aiGoalRandomDrive +0x10
+        bool atStopSign = false;   // aiGoalRandomDrive +0x12
+        // aiGoalAvoidPlayer.
+        float heading = 0.0f, passOffset = 0.0f;
+        bool centred = false;
+        // aiGoalRegainRail.
+        float regainBase = 0.0f, regainLength = kRegainDistance;
+
         TurnSignal signal = TurnSignal::None;
         bool horn = false;
         bool physical = false;
+        bool fitted = false; // +0xe8
         Mat34 transform;
-        Vec3 prevPosition;
     };
 
-    void spawnOnLane(int lane, const Vec3& playerPos, std::vector<int>& freeSlots);
-    void despawn(Car& car);
+    // Lane geometry (aiPath helpers) for (path, dir, lane).
+    const Lane* laneOf(int path, int dir, int lane) const;
+    float laneLength(int path, int dir, int lane) const;
+    Vec3 xAxisAt(int path, int dir, int i) const;
+    Vec3 lanePoint(const Car& c, int path, int dir, int lane, int i) const;
+    Vec3 subSectionDir(int path, int dir, int i, float scale) const;
+    Vec3 entryVector(int path, int dir, float scale) const;
+    Vec3 exitVector(int path, int dir, float scale) const;
+    Vec3 entryPoint(int path, int dir, int lane, float d) const;
+    Vec3 subSectionPoint(int path, int dir, int lane, int i, float d) const;
+    int index(int path, int dir, int lane, float dist) const;
+    float subSectionDist(int path, int dir, int lane, float dist) const;
+    float turnLength(const Car& c) const;
+    void setCurve(Car& c, const Vec3& p0, const Vec3& p1, const Vec3& m0, const Vec3& m1);
+    Vec3 curvePoint(const Car& c, float t, Vec3* direction = nullptr) const;
+    Vec3 railPosition(const Car& c, float dist) const; // aiRailSet::CalcRailPosition
+
+    // Lane queues (aiPath per-lane vehicle lists, front-most first).
+    std::vector<int>& queue(int path, int dir, int lane);
+    const std::vector<int>* queueOf(int path, int dir, int lane) const;
+    void pushVehicle(int car, int path, int dir, int lane);
+    void popVehicle(int car, int path, int dir, int lane);
+    void addVehicle(int car, int path, int dir, int lane, float dist);
+    void removeVehicle(int car, int path, int dir, int lane);
+    int ahead(int car, int lane) const;
+    void resetReactTicks(int car);
+
+    // Population.
+    void adjustAmbients(int oldRoom, int newRoom);
+    void activate(int path);
+    void clearPath(int path);
+    bool placeCar(int slot, int path, int dir, int lane, float dist);
+    void returnToPool(int car);
     int pickType();
-    bool chooseNextLane(Car& car);
-    void startTurn(Car& car);
-    float distanceToIntersection(const Car& car) const;
-    // Nearest car ahead of `car` on its rail (same lane, or the next lane when
-    // close to the end), with the gap between their centres.
-    int leadCar(const Car& car, float& distance) const;
-    bool okayToEnter(Car& car);
-    bool roadCapacity(const Car& car) const;
-    bool anyVehiclesComingThisWay(const Car& car) const;
-    void avoidCollision(Car& car, float leadSpeed, float leadAccel, float leadBack, bool leadTurning,
-                        float d);
-    void solveVelocity(Car& car, float dt);
-    void advance(Car& car, float dt);
-    void solvePosition(Car& car);
-    void avoidPlayer(Car& car, const Vec3& playerPos, const Vec3& playerVel, float playerRadius);
-    void rebuildLaneLists();
-    void updateActivePaths(const Vec3& playerPos);
-    void topUp(const Vec3& playerPos);
+
+    // aiGoalRandomDrive.
+    bool chooseNext(Car& c);
+    void resetRandomDrive(Car& c);
+    void updateRandomDrive(int idx, float dt, const PlayerCar& player);
+    float speedLimit(const Car& c) const;
+    float distanceToIntersection(const Car& c) const;
+    float distanceToVehicle(const Car& a, const Car& b) const;
+    bool okayToEnter(int idx, float dist);
+    bool upcomingAccident(const Car& c) const;
+    bool roadCapacity(int idx) const;
+    bool anyVehiclesComingThisWay(const Car& c) const;
+    void avoidCollision(Car& c, const Car& lead, float d);
+    void solveVelocity(int idx, float dt);
+    bool solveRailType(int idx);
+    void solveLane(Car& c);
+    void changeLanes(int idx);
+    void solvePose(Car& c, const PlayerCar& player);
+
+    // Stop signs (aiIntersection).
+    bool stopSignOkayToGo(int node, int car);
+    void removeFromStopSign(int node, int car);
+
+    // Player reactions.
+    bool detectPlayerCollision(const Car& c, const PlayerCar& p) const;
+    bool detectPlayerZoneCollision(const Car& c, const PlayerCar& p) const;
+    bool playerInFront(const Car& c, const PlayerCar& p) const;
+    bool ambientBlockingPlayer(int idx, const PlayerCar& p) const;
+    void updateAvoidPlayer(int idx, float dt, const PlayerCar& p);
+    void resetRegainRail(int idx);
+    void updateRegainRail(int idx, float dt, const PlayerCar& p);
+    void fitOffRail(Car& c);
+
     void publish();
 
     const RoadNetwork& m_net;
     TrafficLights& m_lights;
     std::vector<VehicleData> m_types;
     TrafficSettings m_settings;
+    float m_density = 0.0f; // aiMap +0x3c
     Random m_rng;
     std::vector<Car> m_cars;
+    std::vector<int> m_pool; // free cars, last = next to use (aiMap +0x44)
     std::vector<AmbientCar> m_public;
-    std::vector<std::vector<int>> m_laneCars; // per lane, car indices sorted by s descending (leader first)
-    std::vector<std::vector<int>> m_turning;  // per intersection, cars on turn curves through it
-    std::vector<std::uint8_t> m_pathActive;
-    int m_ticketCounter = 0;      // AIMAP+0x72: four-way stop arrival tickets
-    float m_exceedCounter = 0.0f; // flt_6A7BD0: cycles 0, 8, 6, 4, 2 m/s across cars
+    std::vector<std::vector<int>> m_queues;      // per network lane
+    std::vector<std::uint8_t> m_pathActive;      // aiPath AddAmbPlayer mask
+    std::vector<int> m_activePaths;              // aiMap +0x17c, most recent first
+    std::vector<std::vector<int>> m_stopWaiting; // per intersection (aiIntersection +0x8)
+    std::vector<std::vector<int>> m_stopAllowed; // per intersection (aiIntersection +0xc)
+    std::vector<Vec3> m_opponents;
     ImpactHandler m_onImpact;
+    GroundProbe m_probe;
+    int m_room = 0;
+    bool m_started = false;
     bool m_populateAll = false;
-    float m_topUpTimer = 0.0f;
-    std::vector<int> m_activeLanes;
+    PlayerCar m_player;
 };
 
 } // namespace mm2::ai
