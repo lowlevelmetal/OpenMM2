@@ -761,58 +761,96 @@ TEST(Session, EveryRetailEventLoads) {
 
 #include "game/session/CopsAndRobbers.h"
 
-TEST(CopsAndRobbers, PickupStealDeliverAndLimits) {
+TEST(CopsAndRobbers, SetsPickupDropAndDelivery) {
     CrLocations loc;
-    loc.bank = {0, 0, 0};
-    loc.hideout = {500, 0, 0};
-    loc.gold = {{100, 0, 0}, {200, 0, 0}};
+    for (int i = 0; i < 10; ++i)
+        loc.points.push_back({100.0f * static_cast<float>(i), 0, 0});
     CrSettings set;
     set.mode = CopsAndRobbersMode::CopsVsRobbers;
-    set.pointLimit = 2;
+    set.pointLimit = 200;
+    set.goldMass = 2;
     CopsAndRobbers cr(set, loc);
+    EXPECT_FLOAT_EQ(cr.carrierExtraMassKg(), 200.0f);
+    EXPECT_FLOAT_EQ(cr.carrierThrottleCap(), 0.81f);
+    // Bank, gold and hideout on different places of the pool, never its last row.
+    const CrSet first = cr.set();
+    EXPECT_NE(first.bank, first.gold);
+    EXPECT_NE(first.hideout, first.gold);
+    EXPECT_NE(first.hideout, first.bank);
+    for (const Vec3& p : {first.bank, first.gold, first.hideout})
+        EXPECT_NE(p, loc.points.back());
     cr.addCar(1, CrTeam::Robber);
     cr.addCar(2, CrTeam::Cop);
-    const Vec3 gold = cr.goldPosition();
 
-    std::vector<CopsAndRobbers::Car> cars{{1, CrTeam::Robber, gold, false}, {2, CrTeam::Cop, {50, 0, 0}, false}};
+    std::vector<CopsAndRobbers::Car> cars{{1, CrTeam::Robber, first.gold + Vec3{4.9f, 0, 0}, false, false},
+                                          {2, CrTeam::Cop, {5000, 0, 0}, false, false}};
     cr.update(0.1f, cars, {});
     EXPECT_EQ(cr.goldCarrier(), 1);
-    // The cop rams the robber and takes the gold, then returns it to the bank.
-    cr.update(0.1f, cars, {{2, 1, 5000.0f}});
-    EXPECT_EQ(cr.goldCarrier(), 2);
-    cars[1].position = loc.bank;
-    cr.update(0.1f, cars, {});
-    EXPECT_EQ(cr.score(CrTeam::Cop), 1);
-    EXPECT_EQ(cr.goldCarrier(), -1);
-    // Robber delivers to the hideout.
-    cars[0].position = cr.goldPosition();
-    cr.update(0.1f, cars, {});
+    EXPECT_EQ(cr.playerScore(1), 25); // picking it up scores
+    // A hard hit knocks it loose where the carrier is; the cop must pick it up.
+    cars[1].position = cars[0].position + Vec3{3, 0, 0};
+    cr.update(0.1f, cars, {{2, 1, 249.0f}});
     EXPECT_EQ(cr.goldCarrier(), 1);
-    cars[0].position = loc.hideout;
-    cr.update(0.1f, cars, {});
-    EXPECT_EQ(cr.score(CrTeam::Robber), 1);
-    EXPECT_FALSE(cr.over());
-    // Wrecked carriers drop the gold.
-    cars[0].position = cr.goldPosition();
-    cr.update(0.1f, cars, {});
-    cars[0].wrecked = true;
+    cr.update(0.1f, cars, {{2, 1, 250.0f}});
+    EXPECT_EQ(cr.goldCarrier(), -1);
+    EXPECT_EQ(cr.goldPosition(), cars[0].position);
+    // The robber who lost it cannot take it back for 2 s; the cop is 3 m away.
+    cars[1].position = {5000, 0, 0};
     cr.update(0.1f, cars, {});
     EXPECT_EQ(cr.goldCarrier(), -1);
-    bool dropped = false;
-    for (auto& e : cr.takeEvents())
-        dropped |= e.type == CopsAndRobbers::EventType::GoldDropped;
-    EXPECT_TRUE(dropped);
+    cr.update(2.0f, cars, {});
+    EXPECT_EQ(cr.goldCarrier(), 1);
+    // Robbers deliver to the hideout.
+    cars[0].position = cr.set().hideout + Vec3{11.9f, 0, 0};
+    cr.update(0.1f, cars, {});
+    EXPECT_EQ(cr.playerScore(1), 25 + 25 + 100);
+    EXPECT_EQ(cr.score(CrTeam::Robber), 150);
+    EXPECT_EQ(cr.goldCarrier(), -1);
+    // A wrecked carrier drops it; a carrier in the water sends it home.
+    cars[0].position = cr.set().gold;
+    cr.update(0.1f, cars, {});
+    ASSERT_EQ(cr.goldCarrier(), 1);
+    cars[0].position += Vec3{50, 0, 0};
+    cars[0].inWater = true;
+    cr.update(0.1f, cars, {});
+    EXPECT_EQ(cr.goldCarrier(), -1);
+    EXPECT_EQ(cr.goldPosition(), cr.set().gold);
+    // Team modes end at the team's point limit.
+    cars[0].inWater = false;
+    cars[0].position = cr.set().gold;
+    cr.update(3.0f, cars, {});
+    cars[0].position = cr.set().hideout;
+    cr.update(0.1f, cars, {});
+    EXPECT_TRUE(cr.over());
+}
 
+TEST(CopsAndRobbers, TimeWarningsAndFreeForAllLimit) {
+    CrLocations loc;
+    for (int i = 0; i < 5; ++i)
+        loc.points.push_back({100.0f * static_cast<float>(i), 0, 0});
     CrSettings timed;
-    timed.timeLimitSeconds = 300.0f;
+    timed.timeLimitSeconds = 600.0f;
     CopsAndRobbers t(timed, loc);
-    for (int i = 0; i < 300 * 10 + 5; ++i)
+    for (int i = 0; i < 6000 + 5; ++i)
         t.update(0.1f, {}, {});
     EXPECT_TRUE(t.over());
-    int warnings = 0;
+    std::vector<int> warnings;
     for (auto& e : t.takeEvents())
-        warnings += e.type == CopsAndRobbers::EventType::TimeWarning;
-    EXPECT_EQ(warnings, 1); // "1 minute remaining"
+        if (e.type == CopsAndRobbers::EventType::TimeWarning)
+            warnings.push_back(e.value);
+    // A 10 minute game warns at 5 and 1 minutes (10 is where it starts).
+    EXPECT_EQ(warnings, (std::vector<int>{5, 1}));
+
+    CrSettings ffa;
+    ffa.pointLimit = 100;
+    CopsAndRobbers f(ffa, loc);
+    f.addCar(1, CrTeam::Robber);
+    f.addCar(2, CrTeam::Robber);
+    std::vector<CopsAndRobbers::Car> cars{{1, CrTeam::Robber, f.set().gold, false, false}};
+    f.update(0.1f, cars, {});
+    cars[0].position = f.set().hideout;
+    f.update(0.1f, cars, {});
+    EXPECT_TRUE(f.over()); // 125 points for one player
 }
 
 TEST(CopsAndRobbers, RetailLocations) {
@@ -820,7 +858,7 @@ TEST(CopsAndRobbers, RetailLocations) {
     for (const char* c : {"london", "sf"}) {
         auto loc = loadCrLocations(*test::gameData(), c);
         ASSERT_TRUE(loc) << c;
-        EXPECT_GE(loc->gold.size(), 40u);
+        EXPECT_GE(loc->points.size(), 40u);
     }
 }
 
