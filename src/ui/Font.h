@@ -13,9 +13,10 @@ namespace mm2::ui {
 
 // Font description as stored in the game's string table:
 //   "Gill Sans MT, 12, 24, 0, 400"  ->  face, size, size2, escapement, weight
-// The meaning of the two sizes is not known for certain (see
-// docs/formats/strings.md); `size2` is used as the GDI cell height in pixels at
-// the 640x480 reference resolution.
+// Both sizes are GDI cell heights in pixels: `size` on screens narrower than
+// 640 pixels, `size2` from 640 up (MM2 mmText::CreateLocFont; see
+// docs/formats/strings.md), so `size2` applies at the 640x480 reference. The
+// fourth number (kept in `escapement`) is the GDI character set.
 struct FontSpec {
     std::string face = "Arial";
     int size = 12;

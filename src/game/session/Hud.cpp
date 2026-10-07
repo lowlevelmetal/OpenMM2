@@ -1,20 +1,17 @@
 #include "game/session/Hud.h"
 
-#include "core/Log.h"
+#include "asset/Mtx.h"
 #include "core/StringUtil.h"
 #include "data/DatFile.h"
+#include "game/Catalog.h"
 #include "render/Projection.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 
 namespace mm2::game::session {
 namespace {
-
-// The full-size HUD art (speed.tga 194x110, digits, gauges) is twice the
-// size of the *_half variants; drawn into the 640x480 UI space at half
-// size, as if authored for 1280x960 (inferred).
-constexpr float kArt = 0.5f;
 
 std::optional<data::DatFile> readDat(const vfs::Vfs& vfs, const std::string& path) {
     auto bytes = vfs.readAll(path);
@@ -23,10 +20,11 @@ std::optional<data::DatFile> readDat(const vfs::Vfs& vfs, const std::string& pat
     return data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
 }
 
-// Draws a mesh without depth writes (HUD geometry: arrow, map, icons), or,
-// with `prop`, as a lit, fogged, back-face-culled world object.
+// Draws a mesh without depth writes (HUD geometry: arrow, map, icons,
+// dashboard), or, with `prop`, as an unlit, fogged, back-face-culled world
+// object (the checkpoint stands, drawn pre-lit by mmCheckpointInstance).
 void drawFlat(render::Device& dev, TextureLibrary& textures, const GpuMesh& mesh,
-              const std::vector<asset::PkgMaterial>& mats, const Mat34& world, float alpha, bool depthTest,
+              const std::vector<asset::PkgMaterial>& mats, const Mat34& world, bool depthTest,
               bool prop = false) {
     for (const auto& d : mesh.draws) {
         const asset::PkgMaterial* mat = d.shader < mats.size() ? &mats[d.shader] : nullptr;
@@ -39,8 +37,7 @@ void drawFlat(render::Device& dev, TextureLibrary& textures, const GpuMesh& mesh
         call.first = d.firstIndex;
         call.baseVertex = d.baseVertex;
         call.constants.world = Mat44::fromMat34(world);
-        Vec4 c = mat ? mat->diffuse : Vec4{1, 1, 1, 1};
-        c.w *= alpha;
+        const Vec4 c = mat ? mat->diffuse : Vec4{1, 1, 1, 1};
         call.constants.color = c;
         call.constants.flags = render::DrawFlag::VertexColor;
         if (tex) {
@@ -58,7 +55,7 @@ void drawFlat(render::Device& dev, TextureLibrary& textures, const GpuMesh& mesh
         if (prop) {
             // pt_check's banner is two coplanar quads wound opposite ways:
             // without culling they z-fight and the text reads mirrored.
-            call.constants.flags |= render::DrawFlag::Lighting | render::DrawFlag::Fog;
+            call.constants.flags |= render::DrawFlag::Fog;
             call.state.cull = render::CullMode::Back;
             call.state.depthWrite = true;
         }
@@ -66,52 +63,295 @@ void drawFlat(render::Device& dev, TextureLibrary& textures, const GpuMesh& mesh
     }
 }
 
-void shadowText(render::Overlay2D& ov, ui::TextRenderer& text, const ui::FontSpec& f, std::string_view s, float x,
-                float y, std::uint32_t color, ui::Align align = ui::Align::Left) {
-    text.draw(ov, f, s, x + 1.0f, y + 1.0f, render::packColor(0, 0, 0, 200), align);
-    text.draw(ov, f, s, x, y, color, align);
+// 0xAARRGGBB as the shader's colour.
+Vec4 argbColor(std::uint32_t argb) {
+    auto ch = [&](int shift) { return static_cast<float>((argb >> shift) & 0xFFu) / 255.0f; };
+    return {ch(16), ch(8), ch(0), ch(24)};
 }
 
-// Splits "line one \n line two" (the string table uses a literal backslash-n).
-std::vector<std::string> splitMessage(const std::string& s) {
-    std::vector<std::string> out;
-    std::string cur;
+// mmTextNode::RenderText with DT_WORDBREAK: greedy word wrap within `width`,
+// also breaking at "\n" (the string table spells some as a literal
+// backslash-n).
+std::vector<std::string> wrapText(render::Overlay2D& ov, ui::TextRenderer& text, const ui::FontSpec& f,
+                                  std::string_view s, float width) {
+    std::vector<std::string> paragraphs(1);
     for (std::size_t i = 0; i < s.size(); ++i) {
         if (s[i] == '\n' || (s[i] == '\\' && i + 1 < s.size() && s[i + 1] == 'n')) {
-            out.emplace_back(str::trim(cur));
-            cur.clear();
+            paragraphs.emplace_back();
             if (s[i] == '\\')
                 ++i;
         } else {
-            cur.push_back(s[i]);
+            paragraphs.back().push_back(s[i]);
         }
     }
-    out.emplace_back(str::trim(cur));
-    return out;
+    std::vector<std::string> lines;
+    for (const auto& p : paragraphs) {
+        std::string line;
+        for (const std::string_view word : str::split(str::trim(p), ' ')) {
+            if (word.empty())
+                continue;
+            const std::string candidate = line.empty() ? std::string(word) : line + " " + std::string(word);
+            if (!line.empty() && text.measure(ov, f, candidate) > width) {
+                lines.push_back(line);
+                line = word;
+            } else {
+                line = candidate;
+            }
+        }
+        lines.push_back(line);
+    }
+    return lines;
 }
+
+// mmHudMap::DrawWaypoints: hudmap_square paint jobs.
+enum MapDot : int { kDotGreen = 2, kDotGrey = 3, kDotYellow = 4, kDotFinish = 5 };
+
+// mmTextNode colours (COLORREF from the Vector4 passed to SetFGColor).
+constexpr std::uint32_t kLabelColor = render::packColor(127, 255, 127); // (0.5, 1, 0.5)
+constexpr std::uint32_t kNumberColor = render::packColor(255, 255, 255);
+constexpr std::uint32_t kMessageColor = render::packColor(255, 255, 0); // (1, 1, 0)
+constexpr std::uint32_t kShadowColor = render::packColor(15, 15, 15);   // 0x0f0f0f
 
 } // namespace
 
+// --- Pure logic ------------------------------------------------------------------------
+
+namespace hud {
+
+std::string clockText(float seconds) {
+    // mmHUD::Update: negative -> 0, then +0.005 and split into the whole and
+    // fractional seconds; the digits are minutes % 100, seconds % 60 and
+    // hundredths, drawn as MM:SS:HH.
+    const double t = static_cast<double>(std::max(seconds, 0.0f)) + 0.005;
+    double whole = 0.0;
+    const double frac = std::modf(t, &whole);
+    const int hundredths = static_cast<int>(frac * 100.0);
+    const int total = static_cast<int>(whole);
+    const int minutes = (total / 60) % 100;
+    return std::format("{:02}:{:02}:{:02}", minutes, total % 60, hundredths % 100);
+}
+
+std::string lapTimeText(float seconds) {
+    if (!(seconds > 0.0f))
+        return "  ---  ";
+    const double t = static_cast<double>(seconds) + 0.005;
+    double whole = 0.0;
+    const double frac = std::modf(t, &whole);
+    const int hundredths = static_cast<int>(frac * 100.0);
+    const int total = static_cast<int>(whole);
+    return std::format("{}:{:02}:{:02}", total / 60, total - total / 60 * 60, hundredths);
+}
+
+std::array<char, 3> speedDigits(float speed) {
+    const int v = static_cast<int>(speed); // __ftol: truncation
+    const int hundreds = v / 100, tens = v % 100 / 10, units = v % 10;
+    std::array<char, 3> out{' ', ' ', static_cast<char>('0' + std::abs(units))};
+    if (hundreds > 0 && hundreds < 10)
+        out[0] = static_cast<char>('0' + hundreds);
+    if (tens != 0 || hundreds != 0)
+        out[1] = static_cast<char>('0' + std::abs(tens));
+    return out;
+}
+
+std::string gearArt(int gear, bool automatic) {
+    // vehTransmission counts 0 reverse, 1 neutral, 2 first...; neutral uses
+    // the "p" bitmap and every forward gear of an automatic "d".
+    if (gear < 0)
+        return "r";
+    if (gear == 0)
+        return "p";
+    if (automatic)
+        return "d";
+    return std::to_string(std::min(gear, 8));
+}
+
+int linearGaugeLength(float value, float maxValue, int length) {
+    if (!(maxValue > 0.0f))
+        return 0;
+    // Clamped here: the original would copy past the bitmap's edge.
+    return std::clamp(static_cast<int>(value / maxValue * static_cast<float>(length)), 0, length);
+}
+
+int slidingGaugeOffset(float value, float maxValue, int bitmapLength, int window) {
+    if (!(maxValue > 0.0f))
+        return 0;
+    const int range = bitmapLength - window;
+    return std::clamp(static_cast<int>(value / maxValue * static_cast<float>(range)), 0, std::max(range, 0));
+}
+
+float gaugeAngle(float value, float floorValue, float maxValue, float rotMin, float rotMax) {
+    const float v = floorValue <= value ? value : floorValue;
+    const float a = maxValue != 0.0f ? (rotMax - rotMin) * (v / maxValue) + rotMin : rotMin;
+    return clampf(a, std::min(rotMin, rotMax), std::max(rotMin, rotMax));
+}
+
+ArrowPose arrowPose(const Mat34& camera, const Vec3& target) {
+    // The target at the camera's height, in camera space, normalised (not
+    // flattened: a pitched camera tilts the arrow).
+    Vec3 dir = camera.untransform({target.x, camera.m3.y, target.z});
+    const float len2 = dir.mag2();
+    dir = len2 != 0.0f ? dir * (1.0f / std::sqrt(len2)) : Vec3{};
+    ArrowPose pose;
+    Mat34& m = pose.local;
+    m.m2 = -dir;
+    m.m0 = {m.m2.z, 0.0f, -m.m2.x}; // Y x m2, left unnormalised as in the original
+    m.m1 = m.m2.cross(m.m0);
+    m.m3 = {};
+    // Matrix34::Rotate(XAXIS, -20 degrees) post-multiplies the 3x3 part.
+    m = m * Mat34::rotationX(-20.0f * kDegToRad);
+    m.m3 = {0.0f, 2.5f, -6.1f};
+    if (m.m2.z < 0.0f)
+        pose.behind = true;
+    else if (m.m2.z > 0.0f)
+        pose.behind = false;
+    return pose;
+}
+
+Mat34 standMatrix(const Checkpoint& cp) {
+    // mmWaypointObject: the stand is rotated by -heading about Y and raised
+    // by half its 7.5 m height; mmCheckpointInstance::Draw scales the model
+    // (2 x 1 x 0.17 units) by (radius, 7.5, radius) first.
+    constexpr float kHeight = 7.5f;
+    Mat34 m = Mat34::rotationY(-cp.headingDeg * kDegToRad);
+    m.m0 *= cp.radius;
+    m.m1 *= kHeight;
+    m.m2 *= cp.radius;
+    m.m3 = cp.position + Vec3{0.0f, kHeight * 0.5f, 0.0f};
+    return m;
+}
+
+Mat34 mapCamera(const Mat34& car, float height, bool rotating) {
+    // The car's backward axis flattened and normalised (x, z); the camera is
+    // RotX(-90 degrees) followed by the rotation that turns -Z onto the car's
+    // heading. Without rotation (x, z) = (0, 1): -Z is up, +X right.
+    float x = 0.0f, z = 1.0f;
+    if (rotating) {
+        const float len2 = car.m2.x * car.m2.x + car.m2.z * car.m2.z;
+        if (len2 > 0.0f) { // the original degenerates for a vertical car
+            const float inv = 1.0f / std::sqrt(len2);
+            x = car.m2.x * inv;
+            z = car.m2.z * inv;
+        }
+    }
+    Mat34 cam;
+    cam.m0 = {z, 0.0f, -x};
+    cam.m1 = {-x, 0.0f, -z};
+    cam.m2 = {0.0f, 1.0f, 0.0f};
+    cam.m3 = {car.m3.x, height, car.m3.z};
+    return cam;
+}
+
+Mat34 mapIconMatrix(const Mat34& car, float iconScale) {
+    // Up forced to +Y, then Matrix34::Normalize (m0 = m1 x m2, m1 = m2 x m0,
+    // all normalised), raised 15 m and scaled.
+    Mat34 m = car;
+    m.m1 = Vec3::yAxis();
+    m.m0 = m.m1.cross(m.m2).normalized();
+    m.m1 = m.m2.cross(m.m0).normalized();
+    m.m2 = m.m2.normalized();
+    m.m3.y += 15.0f;
+    m.m0 *= iconScale;
+    m.m1 *= iconScale;
+    m.m2 *= iconScale;
+    return m;
+}
+
+Vec4 mapRect(const render::UiLayout& l, const HudMapParams& map, const HudOptions& options,
+             bool rightHandDrive) {
+    // mmHudMap::SetMapMode, in fractions of the whole output.
+    const float w = l.right - l.left, h = l.bottom - l.top;
+    switch (options.mapMode) {
+    case MapMode::Off: return {};
+    case MapMode::Split: return {l.left, l.top + h * 0.5f, w, h * 0.5f};
+    case MapMode::FullScreen: return {l.left, l.top, w, h};
+    case MapMode::Small: break;
+    }
+    // Small: Pos/Size less 10 pixels; right-hand-drive cars move it to the
+    // left edge in the dashboard view.
+    const float x = rightHandDrive && options.dashboard ? l.left : l.left + map.pos.x * w;
+    const float inset = 10.0f * options.pixelSize;
+    return {x, l.top + map.pos.y * h, map.size.x * w - inset, map.size.y * h - inset};
+}
+
+float approach(float current, float target, float rate, float dt) {
+    if (target > current)
+        return std::min(current + rate * dt, target);
+    if (target < current)
+        return std::max(current - rate * dt, target);
+    return current;
+}
+
+bool arrowShown(GameMode mode, const LessonEvent* lesson) {
+    // mmHUD::Init: no arrow in cruise and circuit races; mmSingleStunt::InitHUD
+    // turns it off for the follow, destroy and map lessons.
+    switch (mode) {
+    case GameMode::Cruise:
+    case GameMode::Circuit: return false;
+    case GameMode::CrashCourse:
+        return !lesson || (lesson->type != LessonType::Follow && lesson->type != LessonType::Destroy &&
+                           lesson->type != LessonType::Map);
+    default: return true;
+    }
+}
+
+bool clockShown(GameMode mode, const LessonEvent* lesson) {
+    switch (mode) {
+    case GameMode::Cruise:
+    case GameMode::CopsAndRobbers: return false;
+    case GameMode::CrashCourse:
+        if (!lesson)
+            return true;
+        if (lesson->type == LessonType::Follow)
+            return false;
+        if (lesson->type == LessonType::MinimumSpeed)
+            return lesson->timeLimit != 0.0f;
+        return true;
+    default: return true;
+    }
+}
+
+bool checkReadoutShown(GameMode mode, const LessonEvent* lesson) {
+    if (mode == GameMode::Cruise || mode == GameMode::CopsAndRobbers)
+        return false;
+    // mmSingleStunt::InitHUD hides the mmWPHUD for follow and destroy lessons.
+    return !(mode == GameMode::CrashCourse && lesson &&
+             (lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy));
+}
+
+std::uint32_t mapIconColor(MapIcon icon) {
+    // mmHudMap's IconType colour table (0xAARRGGBB).
+    static constexpr std::array<std::uint32_t, 10> kTable{0xFF000000u, 0xFFFF0000u, 0xFF0000EFu, 0xFF00EF00u,
+                                                          0xFFEF0000u, 0xFFFFFF00u, 0xFFFF5A00u, 0xFFB400FFu,
+                                                          0xFF00FFFFu, 0xFFFF0390u};
+    return kTable[static_cast<std::size_t>(icon) % kTable.size()];
+}
+
+} // namespace hud
+
+// --- Data -----------------------------------------------------------------------------
+
 HudMapParams loadHudMapParams(const vfs::Vfs& vfs, const std::string& city) {
     HudMapParams p;
-    auto f = readDat(vfs, "tune/" + city + ".mmhudmap");
-    if (!f || !f->top())
-        return p;
-    const data::DatNode& n = *f->top();
-    n.read("Size", p.size);
-    n.read("Pos", p.pos);
-    if (auto z = n.getInt("ZoomIn"))
-        p.zoomIn = *z != 0;
-    n.read("Approach Rate", p.approachRate);
-    n.read("ZoomInDist", p.zoomInDist);
-    n.read("ZoomOutDist", p.zoomOutDist);
-    n.read("IconScaleMin", p.iconScaleMin);
-    n.read("IconScaleMax", p.iconScaleMax);
-    n.read("ZoomInDistFS", p.zoomInDistFS);
-    n.read("ZoomOutDistFS", p.zoomOutDistFS);
-    n.read("IconScaleMinFS", p.iconScaleMinFS);
-    n.read("IconScaleMaxFS", p.iconScaleMaxFS);
-    n.read("Ocean Color", p.oceanColor);
+    if (auto f = readDat(vfs, "tune/" + city + ".mmhudmap"); f && f->top()) {
+        const data::DatNode& n = *f->top();
+        n.read("Size", p.size);
+        n.read("Pos", p.pos);
+        if (auto z = n.getInt("ZoomIn"))
+            p.zoomIn = *z != 0;
+        n.read("Approach Rate", p.approachRate);
+        n.read("ZoomInDist", p.zoomInDist);
+        n.read("ZoomOutDist", p.zoomOutDist);
+        n.read("IconScaleMin", p.iconScaleMin);
+        n.read("IconScaleMax", p.iconScaleMax);
+        n.read("ZoomInDistFS", p.zoomInDistFS);
+        n.read("ZoomOutDistFS", p.zoomOutDistFS);
+        n.read("IconScaleMinFS", p.iconScaleMinFS);
+        n.read("IconScaleMaxFS", p.iconScaleMaxFS);
+        n.read("Ocean Color", p.oceanColor);
+    }
+    // mmHudMap::Init overwrites the loaded Ocean Color: London's map sits on
+    // beige, every other city on blue.
+    p.oceanColor = str::lower(city) == "london" ? Vec3{0.92f, 0.84f, 0.778f} : Vec3{0.084f, 0.68f, 0.92f};
     return p;
 }
 
@@ -139,8 +379,22 @@ std::optional<DashParams> loadDashParams(const vfs::Vfs& vfs, const std::string&
     n.read("SpeedRotMax", d.speedRotMax);
     n.read("DamageRotMin", d.damageRotMin);
     n.read("DamageRotMax", d.damageRotMax);
+    // mmDashView::LoadPivotInfo: GetPivot reads geometry/<car>_dash_<part>.mtx;
+    // the needles and the wheel turn about the centre of their box.
+    auto centre = [&](const char* part) {
+        if (auto bytes = vfs.readAll(std::format("geometry/{}_dash_{}.mtx", car, part)))
+            if (auto mtx = asset::parseMtx(*bytes))
+                return mtx->center;
+        return Vec3{};
+    };
+    d.dmgPivot = centre("damage_needle");
+    d.speedPivot = centre("speed_needle");
+    d.tachPivot = centre("tach_needle");
+    d.wheelPivot = centre("wheel");
     return d;
 }
+
+// --- Hud ------------------------------------------------------------------------------
 
 Hud::Hud(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs,
          const Strings& strings, const std::string& city, const std::string& vehicle)
@@ -149,32 +403,31 @@ Hud::Hud(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
     m_map = loadHudMapParams(vfs, m_city);
     m_options.zoomedIn = m_map.zoomIn;
     m_dash = loadDashParams(vfs, m_vehicle);
+    if (auto bytes = vfs.readAll("tune/" + m_vehicle + ".info")) {
+        const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+        if (auto info = parseVehicleInfo(text))
+            m_rightHandDrive = (info->flags & VehicleInfo::kFlagBritish) != 0;
+    }
 }
 
 void Hud::preload(ui::TextureCache* art) {
-    for (const char* name : {"pt_check", "pt_finish", "hudarrow01", "hudarrow_blitz01", "hudarrow_cc01", "hudmap_square",
-                             "hudmap_tri"}) {
-        if (const GpuModel* m = m_models.get(name))
-            for (const auto& pj : m->paintjobs)
-                for (const auto& mat : pj)
-                    m_textures.get(mat.texture);
-    }
-    for (const std::string& name : {"hudmap_" + m_city, m_vehicle + "_dash"}) {
+    const std::string models[] = {"pt_check", "pt_finish", "hudarrow01", "hudmap_square", "hudmap_" + m_city,
+                                  m_vehicle + "_dash"};
+    for (const std::string& name : models) {
         if (const GpuModel* m = m_models.get(name))
             for (const auto& pj : m->paintjobs)
                 for (const auto& mat : pj)
                     m_textures.get(mat.texture);
     }
     if (art) {
-        for (const char* t : {"speed.tga", "tacometer ticks_half.tga", "mph.tga", "damage.tga", "damage_lable.tga",
-                              "digi_colon.tga"})
+        for (const char* t : {"speed_ticks.tga", "damage.tga", "damage_lable.tga"})
             art->get(std::string("texture/") + t);
+        art->getColorKeyed("texture/digi_colon.tga");
         for (char c = '0'; c <= '9'; ++c) {
-            art->get(std::format("texture/digitac_{}_half.tga", c));
-            art->get(std::format("texture/digi_{}.tga", c));
-            art->get(std::format("texture/digi_{}_half.tga", c));
+            art->get(std::format("texture/digitac_{}.tga", c));
+            art->getColorKeyed(std::format("texture/digi_{}.tga", c));
         }
-        for (const char* g : {"r", "n", "d", "p", "1", "2", "3", "4", "5", "6", "7", "8"})
+        for (const char* g : {"r", "p", "d", "1", "2", "3", "4", "5", "6", "7", "8"})
             art->get(std::format("texture/digitac_gear_{}.tga", g));
     }
 }
@@ -183,140 +436,200 @@ ui::FontSpec Hud::font(std::uint32_t id, const char* fallback) const {
     auto spec = ui::FontSpec::parse(m_strings.get(id, fallback));
     if (!spec)
         spec = ui::FontSpec::parse(fallback);
-    // HUD fonts: the first number reads as the cell height at 640x480; the
-    // second (twice as large for most entries) would fill the screen
-    // (inferred).
+    // mmText::CreateLocFont: the second size is the GDI cell height at
+    // widths of 640 pixels and more (the first one below).
     ui::FontSpec f = spec.value_or(ui::FontSpec{});
-    f.size2 = f.size;
+    f.size2 = std::max(1, static_cast<int>(std::lround(static_cast<float>(f.size2) * m_options.pixelSize)));
     return f;
 }
 
-// --- 3D: checkpoint stands, arrow, dashboard ---------------------------------
-
-void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerState& player, float steering) {
-    const auto& cps = session.checkpoints();
-    const bool crash = session.mode() == GameMode::CrashCourse;
-    for (std::size_t i = 0; i < cps.size(); ++i) {
-        if (!session.checkpointVisible(i))
-            continue;
-        const Checkpoint& cp = cps[i];
-        // MM2 replaced MM1's ring/arrow/flag waypoint object with pt_check /
-        // pt_finish: an arch of two posts and a CHECKPOINT / FINISH banner
-        // (2 x 1 units). It is scaled by the waypoint radius to span the
-        // gate, stands on the road and shows its banner to the approaching
-        // driver (scale and placement inferred; MM1's mmWaypointInstance
-        // likewise carries the radius).
-        const GpuModel* model = m_models.get(cp.finish ? "pt_finish" : "pt_check");
-        const GpuMesh* mesh = model ? model->find("", asset::Lod::Low) : nullptr;
-        if (!mesh)
-            continue;
-        const int paintjob = crash ? 1 : 0; // CheckpointStand / CCStand
-        const float r = cp.radius;
-        Mat34 m = Mat34::rotationY(-cp.headingDeg * kDegToRad);
-        m.m0 *= r;
-        m.m1 *= r;
-        m.m2 *= r;
-        m.m3 = cp.position + Vec3{0.0f, 0.5f * r, 0.0f};
-        drawFlat(m_device, m_textures, *mesh, model->materials(paintjob), m, 1.0f, true, true);
+void Hud::drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb) {
+    const Vec3 pts[3] = {a, b, c};
+    render::Vertex3D v[3]{};
+    for (int i = 0; i < 3; ++i) {
+        v[i].position[0] = pts[i].x;
+        v[i].position[1] = pts[i].y;
+        v[i].position[2] = pts[i].z;
+        v[i].normal[1] = 1.0f;
+        v[i].color = 0xFFFFFFFFu;
     }
+    render::DrawCall call;
+    call.vertices =
+        m_device.uploadTransient(render::BufferKind::Vertex, std::span<const render::Vertex3D>(v));
+    call.count = 3;
+    call.constants.world = Mat44::identity();
+    call.constants.color = argbColor(argb);
+    call.constants.flags = render::DrawFlag::VertexColor;
+    call.state.blend = render::BlendMode::Alpha;
+    call.state.cull = render::CullMode::None;
+    call.state.depthTest = false; // rglEnableDisable(0, false)
+    call.state.depthWrite = false;
+    m_device.draw(call);
+}
 
-    // Arrow (mmArrow::Update): 2 m above and 6.1 m ahead of the camera,
-    // turned toward the target in the horizontal plane, tilted 20 degrees,
-    // half transparent, drawn over everything; yellow when the target is
-    // behind.
-    if (auto target = session.arrowTarget(); target && !m_options.dashboard) {
-        const char* name = session.mode() == GameMode::Blitz         ? "hudarrow_blitz01"
-                           : session.mode() == GameMode::CrashCourse ? "hudarrow_cc01"
-                                                                     : "hudarrow01";
-        const GpuModel* model = m_models.get(name);
-        const GpuMesh* mesh = model ? model->find("", asset::Lod::High) : nullptr;
-        if (mesh) {
-            const Mat34& cam = camera.transform;
-            const Vec3 flat{target->x, cam.m3.y, target->z};
-            Vec3 dir = cam.untransform(flat);
-            dir.y = 0.0f;
-            dir = dir.mag2() > 1e-6f ? dir.normalized() : Vec3{0, 0, -1};
-            Mat34 local;
-            local.m2 = -dir;
-            local.m0 = Vec3::yAxis().cross(local.m2).normalized();
-            local.m1 = local.m2.cross(local.m0);
-            // Then Matrix34::Rotate(XAXIS, arotX = -20 degrees): about the
-            // camera's X axis, after orienting. Far parts dip, so the arrow
-            // faces the camera more (it floats above eye level).
-            local = local * Mat34::rotationX(-20.0f * kDegToRad);
-            local.m3 = {0.0f, 2.0f, -6.1f};
-            const int paintjob = dir.z > 0.0f ? 1 : 0; // target behind the camera
-            drawFlat(m_device, m_textures, *mesh, model->materials(paintjob), local * cam, 0.5f, false);
-        }
-    }
+// --- 3D: checkpoint stands, icons, arrow, dashboard ---------------------------------------
 
+void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerState& player, float steering,
+                    std::span<const MapBlip> blips) {
+    drawStands(session);
+    drawIcons(session, camera, blips);
+    if (m_options.visible)
+        drawArrow(session, camera);
     if (m_options.dashboard)
         drawDash(camera, player, steering);
 }
 
+void Hud::drawStands(const Session& session) {
+    const auto& cps = session.checkpoints();
+    // mmSingleStunt::InitNewEvent gives every crash course stand variant 1 (CCStand).
+    const int paintjob = session.mode() == GameMode::CrashCourse ? 1 : 0;
+    for (std::size_t i = 0; i < cps.size(); ++i) {
+        if (!session.checkpointVisible(i))
+            continue;
+        const GpuModel* model = m_models.get(cps[i].finish ? "pt_finish" : "pt_check");
+        // The L mesh (arch and banner); the VL one is the banner alone for
+        // far LODs, which are not selected here.
+        const GpuMesh* mesh = model ? model->find("", asset::Lod::Low) : nullptr;
+        if (mesh)
+            drawFlat(m_device, m_textures, *mesh, model->materials(paintjob), hud::standMatrix(cps[i]), true,
+                     true);
+    }
+}
+
+void Hud::drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips) {
+    if (!m_options.opponentIcons)
+        return;
+    // mmIcons::Cull: a triangle card facing the camera, pointing down, 2 m
+    // wide and 4 m tall with its tip 4 m above the object, drawn over
+    // everything.
+    const Mat34& cam = camera.transform;
+    auto card = [&](const Vec3& p, std::uint32_t argb) {
+        drawTriangle(p + cam.m1 * 4.0f, p + cam.m0 * 1.0f + cam.m1 * 8.0f, p - cam.m0 * 1.0f + cam.m1 * 8.0f,
+                     argb);
+    };
+    if (session.mode() == GameMode::Blitz) {
+        // mmSingleBlitz::InitHUD / Update: cyan cards 5 m above the
+        // checkpoints still to clear.
+        const auto& cps = session.checkpoints();
+        for (std::size_t i = 1; i < cps.size(); ++i)
+            if (session.checkpointVisible(i))
+                card(cps[i].position + Vec3{0.0f, 5.0f, 0.0f}, 0xFF00FFFFu);
+        return;
+    }
+    // Opponents (registered for every single-player mode): violet.
+    for (const auto& b : blips)
+        if (b.kind == MapBlip::Kind::Opponent)
+            card(b.transform.m3, 0xFFB400FFu);
+}
+
+void Hud::drawArrow(const Session& session, const Camera& camera) {
+    // mmArrow: hudarrow01 in every mode, 2.5 m above and 6.1 m ahead of the
+    // camera, turned toward the target, tilted 20 degrees, unlit, opaque and
+    // drawn without depth test; paint job 1 (yellow) while the target is
+    // behind.
+    if (!hud::arrowShown(session.mode(), session.currentLesson()) || session.phase() == Phase::PostRace)
+        return;
+    const auto target = session.arrowTarget();
+    if (!target)
+        return;
+    const GpuModel* model = m_models.get("hudarrow01");
+    const GpuMesh* mesh = model ? model->find("", asset::Lod::High) : nullptr;
+    if (!mesh)
+        return;
+    const hud::ArrowPose pose = hud::arrowPose(camera.transform, *target);
+    if (pose.behind)
+        m_arrowPaint = *pose.behind ? 1 : 0;
+    drawFlat(m_device, m_textures, *mesh, model->materials(m_arrowPaint), pose.local * camera.transform,
+             false);
+}
+
 void Hud::drawDash(const Camera& camera, const PlayerState& player, float steering) {
-    // mmDashView: the <car>_dash model in camera space at DashPos; needles
-    // (RadialGauge) turn about Z by RotMin + value / max * (RotMax - RotMin),
-    // clamped. Pivot placement inferred: the needle's end at PivotOffset.
+    // mmDashView::Cull: the parts follow the camera (DashPos / RoofPos),
+    // unlit, without depth test, painted in this order.
     const GpuModel* model = m_models.get(m_vehicle + "_dash");
     if (!model || !m_dash)
         return;
     const DashParams& d = *m_dash;
     const Mat34& cam = camera.transform;
-    auto draw = [&](std::string_view part, const Mat34& local) {
+    const Mat34 dash = Mat34::translation(d.dashPos) * cam;
+    auto draw = [&](std::string_view part, const Mat34& world, int paintjob = 0) {
         if (const GpuMesh* mesh = model->find(part, asset::Lod::High))
-            drawFlat(m_device, m_textures, *mesh, model->materials(0), local * cam, 1.0f, true);
+            drawFlat(m_device, m_textures, *mesh, model->materials(paintjob), world, false);
     };
-    const Mat34 dash = Mat34::translation(d.dashPos);
     draw("dash", dash);
-    draw("roof", Mat34::translation(d.roofPos));
-    auto needle = [&](std::string_view part, float value, float maxValue, float rotMin, float rotMax,
-                      const Vec3& pivotOffset) {
-        const GpuMesh* mesh = model->find(part, asset::Lod::High);
-        if (!mesh)
-            return;
-        const float frac = maxValue > 0.0f ? clampf(value / maxValue, 0.0f, 1.0f) : 0.0f;
-        const float rot = rotMin + frac * (rotMax - rotMin);
-        const Vec3 pivot{mesh->bounds.max.x - pivotOffset.x, mesh->bounds.center().y, 0.0f};
-        const Mat34 m = Mat34::translation(-pivot) * Mat34::rotationZ(-rot) * Mat34::translation(pivot) * dash;
-        if (const GpuMesh* mm = mesh)
-            drawFlat(m_device, m_textures, *mm, model->materials(0), m * cam, 1.0f, true);
+    draw("roof", Mat34::translation(d.roofPos) * cam);
+
+    // Gear indicator: in dash space, moved by GearPivotOffset; its paint job
+    // is the transmission gear (0 R, 1 N, 2 first, ...), automatic or not.
+    Mat34 gear = dash;
+    gear.m3 = dash.transform(d.gearPivotOffset);
+    const int lastPaint = std::max(0, static_cast<int>(model->paintjobs.size()) - 1);
+    const int gearPaint = std::clamp(player.gear + 1, 0, lastPaint);
+    draw("gear_indicator", gear, gearPaint);
+
+    // RadialGauge::Cull: rotate about pivot (box centre + PivotOffset), then
+    // move by Offset in dash space.
+    auto needle = [&](std::string_view part, float angle, const Vec3& pivot, const Vec3& offset) {
+        const Mat34 m = Mat34::translation(-pivot) * Mat34::rotationZ(-angle) * Mat34::translation(pivot) *
+                        Mat34::translation(offset) * dash;
+        draw(part, m);
     };
-    needle("speed_needle", player.speedMph, 160.0f, d.speedRotMin, d.speedRotMax, d.speedPivotOffset);
-    needle("tach_needle", player.rpm, player.maxRpm, d.rpmRotMin, d.rpmRotMax, d.tachPivotOffset);
-    needle("damage_needle", player.damage01, 1.0f, d.damageRotMin, d.damageRotMax, d.dmgPivotOffset);
-    if (const GpuMesh* wheel = model->find("wheel", asset::Lod::High)) {
-        const Vec3 c = wheel->bounds.center() + d.wheelPivotOffset;
-        const Mat34 m = Mat34::translation(-c) * Mat34::rotationZ(-steering * d.wheelFact) * Mat34::translation(c) *
-                        Mat34::translation(d.wheelPos) * dash;
-        drawFlat(m_device, m_textures, *wheel, model->materials(0), m * cam, 1.0f, true);
-    }
+    // mmDashView::Init: speed against 160 (display units), rpm against a
+    // fixed 8000 with the needle resting at 800, damage against its maximum.
+    needle("speed_needle", hud::gaugeAngle(player.speedMph, 0.0f, 160.0f, d.speedRotMin, d.speedRotMax),
+           d.speedPivot + d.speedPivotOffset, d.speedOffset);
+    needle("tach_needle", hud::gaugeAngle(player.rpm, 800.0f, 8000.0f, d.rpmRotMin, d.rpmRotMax),
+           d.tachPivot + d.tachPivotOffset, d.tachOffset);
+    needle("damage_needle", hud::gaugeAngle(player.damage01, 0.0f, 1.0f, d.damageRotMin, d.damageRotMax),
+           d.dmgPivot + d.dmgPivotOffset, d.dmgOffset);
+    draw("dash_extra", dash);
+
+    // Steering wheel: turns by steering x WheelFact about its pivot, placed at WheelPos.
+    const Vec3 p = d.wheelPivot + d.wheelPivotOffset;
+    draw("wheel", Mat34::translation(-p) * Mat34::rotationZ(-steering * d.wheelFact) * Mat34::translation(p) *
+                      Mat34::translation(d.wheelPos) * dash);
 }
 
-// --- Map -----------------------------------------------------------------------
+// --- Map -----------------------------------------------------------------------------------
 
 Vec4 Hud::mapRect(const render::UiLayout& l) const {
-    if (m_options.fullScreenMap)
-        return {l.left + 40.0f, l.top + 40.0f, (l.right - l.left) - 80.0f, (l.bottom - l.top) - 80.0f};
-    const float w = l.right - l.left, h = l.bottom - l.top;
-    return {l.left + m_map.pos.x * w, l.top + m_map.pos.y * h, m_map.size.x * w, m_map.size.y * h};
+    return hud::mapRect(l, m_map, m_options, m_rightHandDrive);
 }
 
-void Hud::drawMap(const Session& session, const PlayerState& player, std::span<const MapBlip> blips, float dt) {
-    if (!m_options.showMap)
+void Hud::drawMap(const Session& session, const PlayerState& player, std::span<const MapBlip> blips,
+                  float dt) {
+    if (m_options.mapMode == MapMode::Off)
         return;
     const GpuModel* mapModel = m_models.get("hudmap_" + m_city);
     const GpuMesh* mapMesh = mapModel ? mapModel->find("", asset::Lod::High) : nullptr;
     if (!mapMesh)
-        return;
+        return; // "Missing hud asset 'hudmap_%s.pkg', disabling hudmap"
 
     const render::Extent2D scene = m_device.sceneExtent();
     const render::UiLayout layout = render::computeUiLayout(scene, m_options.uiScale);
     const Vec4 r = mapRect(layout);
     const Vec2 p0 = layout.toPixels({r.x, r.y});
     const float pw = r.z * layout.scaleX, ph = r.w * layout.scaleY;
-    if (pw < 2.0f || ph < 2.0f)
+    if (pw < 2.0f || ph < 2.0f || r.z <= 0.0f || r.w <= 0.0f)
         return;
+
+    // Zoom (camera height) and icon size: snapped when the mode changes,
+    // then approaching the Map Zoom setting linearly (mmHudMap::Cull).
+    const bool fs = m_options.mapMode == MapMode::FullScreen;
+    const float zIn = fs ? m_map.zoomInDistFS : m_map.zoomInDist;
+    const float zOut = fs ? m_map.zoomOutDistFS : m_map.zoomOutDist;
+    const float iMin = fs ? m_map.iconScaleMinFS : m_map.iconScaleMin;
+    const float iMax = fs ? m_map.iconScaleMaxFS : m_map.iconScaleMax;
+    const float zoomTarget = m_options.zoomedIn ? zIn : zOut;
+    const float iconTarget = m_options.zoomedIn ? iMin : iMax;
+    if (m_mapModeApplied != m_options.mapMode) {
+        m_mapModeApplied = m_options.mapMode;
+        m_mapZoom = zoomTarget;
+        m_mapIconScale = iconTarget;
+    }
+    m_mapZoom = hud::approach(m_mapZoom, zoomTarget, (zOut - zIn) * m_map.approachRate, dt);
+    m_mapIconScale = hud::approach(m_mapIconScale, iconTarget, (iMax - iMin) * m_map.approachRate, dt);
+
     m_device.setViewport({p0.x, p0.y, pw, ph, 0.0f, 1.0f});
     const render::Rect scissor{static_cast<std::int32_t>(p0.x), static_cast<std::int32_t>(p0.y),
                                static_cast<std::uint32_t>(pw), static_cast<std::uint32_t>(ph)};
@@ -325,260 +638,275 @@ void Hud::drawMap(const Session& session, const PlayerState& player, std::span<c
     clear.color = {m_map.oceanColor.x, m_map.oceanColor.y, m_map.oceanColor.z, 1.0f};
     m_device.clear(clear);
 
-    // Zoom eases toward the chosen distance at "Approach Rate".
-    const bool fs = m_options.fullScreenMap;
-    const float zIn = fs ? m_map.zoomInDistFS : m_map.zoomInDist, zOut = fs ? m_map.zoomOutDistFS : m_map.zoomOutDist;
-    const float target = m_options.zoomedIn ? zIn : zOut;
-    if (m_mapZoom <= 0.0f)
-        m_mapZoom = target;
-    m_mapZoom += (target - m_mapZoom) * std::min(1.0f, m_map.approachRate * dt);
-    const float t = zOut > zIn ? clampf((m_mapZoom - zIn) / (zOut - zIn), 0.0f, 1.0f) : 0.0f;
-    const float iconSize = fs ? lerp(m_map.iconScaleMinFS, m_map.iconScaleMaxFS, t)
-                              : lerp(m_map.iconScaleMin, m_map.iconScaleMax, t);
-
-    // Top-down camera over the player; up = the car's heading (rotating map)
-    // or north, +Z: the race preview maps (jpg/<city>_map*.jpg) are north-up
-    // and put e.g. London Blitz 1's finish (z = +150) above its start
-    // (z = -295). The map mesh is in true world coordinates (verified by
-    // test: the Thames' street triangles land on the map's water).
-    const Vec3 at = player.transform.m3;
-    Vec3 up{0, 0, 1};
-    if (m_options.rotatingMap) {
-        const Vec3 f = -player.transform.m2;
-        const Vec3 flat{f.x, 0, f.z};
-        if (flat.mag2() > 1e-6f)
-            up = flat.normalized();
-    }
-    Mat34 camM;
-    camM.m2 = Vec3::yAxis();       // back: the camera looks down -Y
-    camM.m1 = up;                  // screen up
-    camM.m0 = camM.m1.cross(camM.m2).normalized();
-    camM.m3 = at + Vec3{0, 1000.0f, 0};
+    // Perspective camera, 60 degrees vertical field of view, near 10, far
+    // 1600, aspect 1.25 (2.5 split) whatever the viewport's shape at 4:3. On
+    // other aspect ratios the horizontal field grows with the viewport.
+    const float aspect43 = [&] {
+        const render::UiLayout ref = render::computeUiLayout({640, 480}, render::UiScaleMode::Stretch);
+        const Vec4 r43 = mapRect(ref);
+        return r43.w > 0.0f ? r43.z / r43.w : 1.0f;
+    }();
+    const float mm2Aspect = m_options.mapMode == MapMode::Split ? 2.5f : 1.25f;
+    const float aspect = mm2Aspect * ((r.z / r.w) / aspect43);
     render::FrameConstants fc;
+    const Mat34 camM = hud::mapCamera(player.transform, m_mapZoom, m_options.rotatingMap);
     fc.view = Mat44::fromMat34(camM.fastInverse());
-    const float halfH = m_mapZoom * 0.5f, halfW = halfH * (pw / ph);
-    fc.proj = Mat44::orthographic(-halfW, halfW, -halfH, halfH, 1.0f, 3000.0f, true);
+    fc.proj = Mat44::perspective(60.0f * kDegToRad, aspect, 10.0f, 1600.0f, true);
+    fc.cameraPosition = camM.m3;
     fc.fogMode = render::FogMode::None;
     fc.ambient = {1, 1, 1};
     m_device.setFrameConstants(fc);
 
-    drawFlat(m_device, m_textures, *mapMesh, mapModel->materials(0), Mat34::identity(), 1.0f, false);
+    drawFlat(m_device, m_textures, *mapMesh, mapModel->materials(0), Mat34::identity(), false);
 
-    // Icons: squares for places, triangles for cars. IconScale is read as the
-    // icon's size in metres (the square model is 14 m wide; inferred).
+    // mmHudMap::DrawWaypoints: squares (hudmap_square scaled by icon / 7.51)
+    // 10 m above the waypoint; green to clear, yellow for the current goal,
+    // grey cleared (circuits), the finish dot for the finish line.
     const GpuModel* square = m_models.get("hudmap_square");
-    const GpuModel* tri = m_models.get("hudmap_tri");
-    auto place = [&](const Vec3& p, int paintjob) {
-        const GpuMesh* mesh = square ? square->find("", asset::Lod::High) : nullptr;
-        if (!mesh)
+    const GpuMesh* squareMesh = square ? square->find("", asset::Lod::High) : nullptr;
+    auto dot = [&](const Vec3& p, int paintjob) {
+        if (!squareMesh)
             return;
-        const float s = iconSize / 14.0f;
-        Mat34 m = Mat34::identity();
+        const float s = m_mapIconScale / 7.51f;
+        Mat34 m;
         m.m0 = {s, 0, 0};
         m.m1 = {0, s, 0};
         m.m2 = {0, 0, s};
-        m.m3 = {p.x, 1.0f, p.z};
-        drawFlat(m_device, m_textures, *mesh, square->materials(paintjob), m, 1.0f, false);
-    };
-    auto car = [&](const Mat34& tm, int paintjob) {
-        const GpuMesh* mesh = tri ? tri->find("", asset::Lod::High) : nullptr;
-        if (!mesh)
-            return;
-        const float s = iconSize / 28.0f;
-        const Vec3 f = -tm.m2;
-        const float yaw = std::atan2(-f.x, -f.z);
-        Mat34 m = Mat34::rotationY(yaw);
-        m.m0 *= s;
-        m.m1 *= s;
-        m.m2 *= s;
-        m.m3 = {tm.m3.x, 2.0f, tm.m3.z};
-        drawFlat(m_device, m_textures, *mesh, tri->materials(paintjob), m, 1.0f, false);
+        m.m3 = {p.x, std::max(p.y, 0.0f) + 10.0f, p.z};
+        drawFlat(m_device, m_textures, *squareMesh, square->materials(paintjob), m, false);
     };
     const auto& cps = session.checkpoints();
-    for (std::size_t i = 0; i < cps.size(); ++i)
-        if (session.checkpointVisible(i))
-            place(cps[i].position, cps[i].finish ? 5 : 2); // FINISH_DOT / GREEN_DOT
-    for (const auto& b : blips) {
-        // Colours from hudmap_tri's paint jobs: red opponents, blue police,
-        // grey traffic, green teammates (inferred).
-        const int pj = b.kind == MapBlip::Kind::Police    ? 2
-                       : b.kind == MapBlip::Kind::Ambient ? 9
-                       : b.kind == MapBlip::Kind::Teammate ? 3
-                                                           : 4;
-        car(b.transform, pj);
+    const int current = session.targetCheckpoint();
+    for (std::size_t i = 0; i < cps.size(); ++i) {
+        if (session.mode() == GameMode::Circuit) {
+            if (i == 0)
+                dot(cps[i].position, kDotFinish);
+            else if (session.checkpointCleared(i))
+                dot(cps[i].position, kDotGrey);
+            else
+                dot(cps[i].position, static_cast<int>(i) == current ? kDotYellow : kDotGreen);
+            continue;
+        }
+        if (!session.checkpointVisible(i))
+            continue;
+        if (cps[i].finish && session.mode() == GameMode::Checkpoint)
+            dot(cps[i].position, kDotFinish);
+        else
+            dot(cps[i].position, static_cast<int>(i) == current ? kDotYellow : kDotGreen);
     }
-    car(player.transform, 5); // the player: yellow (inferred)
 
-    const render::Extent2D out = scene;
-    m_device.setViewport({0, 0, static_cast<float>(out.width), static_cast<float>(out.height), 0, 1});
+    // Car arrows: flat triangles (DrawColoredTri), police, then opponents,
+    // then the player over a black outline 1.3 times its size.
+    auto car = [&](const Mat34& tm, hud::MapIcon icon, float scale) {
+        const Mat34 m = hud::mapIconMatrix(tm, scale);
+        drawTriangle(m.transform({0.0f, 0.0f, -1.0f}), m.transform({-0.7f, 0.0f, 1.0f}),
+                     m.transform({0.7f, 0.0f, 1.0f}), hud::mapIconColor(icon));
+    };
+    for (const auto& b : blips)
+        if (b.kind == MapBlip::Kind::Police)
+            car(b.transform, hud::MapIcon::Police, m_mapIconScale);
+    for (const auto& b : blips) {
+        if (b.kind == MapBlip::Kind::Opponent)
+            car(b.transform, hud::MapIcon::Opponent, m_mapIconScale);
+        else if (b.kind == MapBlip::Kind::Teammate)
+            car(b.transform, hud::MapIcon::Teammate, m_mapIconScale);
+    }
+    car(player.transform, hud::MapIcon::Outline, m_mapIconScale * 1.3f);
+    car(player.transform, hud::MapIcon::Player, m_mapIconScale);
+
+    m_device.setViewport({0, 0, static_cast<float>(scene.width), static_cast<float>(scene.height), 0, 1});
     m_device.setScissor(nullptr);
 }
 
-// --- 2D overlay -------------------------------------------------------------------
+// --- 2D overlay ------------------------------------------------------------------------------
 
-void Hud::drawCluster(render::Overlay2D& ov, ui::TextureCache& art, const PlayerState& player, float x, float y) {
-    const ui::UiTexture& panel = art.get("texture/speed.tga");
-    ui::drawImage(ov, panel, x, y, 194 * kArt, 110 * kArt);
+void Hud::drawCluster(render::Overlay2D& ov, ui::TextureCache& art, const PlayerState& player, float x,
+                      float y) {
+    // mmExternalView: origin at the left edge, 100 pixels above the bottom.
+    // Painted in this order: damage meter, gear, tachometer, speed.
+    const ui::UiTexture& ticks = art.get("texture/speed_ticks.tga");
+    const ui::UiTexture& damage = art.get("texture/damage.tga");
+    const ui::UiTexture& label = art.get("texture/damage_lable.tga");
 
-    // Tachometer LEDs in the top slot (10,9.5)-(153,22.5) of speed.tga,
-    // lit up to the current rpm.
-    const ui::UiTexture& ticks = art.get("texture/tacometer ticks_half.tga");
-    const float frac = player.maxRpm > 0.0f ? clampf(player.rpm / player.maxRpm, 0.0f, 1.0f) : 0.0f;
-    if (ticks && frac > 0.0f)
-        ov.image(ticks.handle, x + 10 * kArt, y + 9.5f * kArt, 143 * kArt * frac, 13 * kArt,
-                 {0.0f, ui::UiTexture::uvTop}, {frac, ui::UiTexture::uvBottom});
-
-    // Speed: three green digits in the left window (10,31)-(71,74.5).
-    const int speed = static_cast<int>(std::lround(m_options.metric ? player.speedMph * 1.609344f : player.speedMph));
-    const std::string digits = std::format("{:>3}", std::clamp(speed, 0, 999));
-    const float dw = 20 * kArt, dh = 27 * kArt;
-    const float wx = x + 10 * kArt, wy = y + 31 * kArt, ww = 61 * kArt, wh = 43.5f * kArt;
-    const float startX = wx + ww - 3 * dw - 1.0f, digitY = wy + (wh - dh) * 0.35f;
-    for (int i = 0; i < 3; ++i) {
-        if (digits[static_cast<std::size_t>(i)] == ' ')
-            continue;
-        const auto& tex = art.get(std::format("texture/digitac_{}_half.tga", digits[static_cast<std::size_t>(i)]));
-        ui::drawImage(ov, tex, startX + static_cast<float>(i) * dw, digitY, dw, dh);
+    // mmSlidingGauge at (8, 88): a window as wide as speed_ticks slides
+    // across the 500-pixel colour bar with the damage; the label on top.
+    if (damage && ticks) {
+        const int window = static_cast<int>(ticks.width);
+        const int off = hud::slidingGaugeOffset(clampf(player.damage01, 0.0f, 1.0f), 1.0f,
+                                                static_cast<int>(damage.width), window);
+        const float dw = static_cast<float>(damage.width);
+        ov.image(damage.handle, x + px(8), y + px(88), px(static_cast<float>(window)),
+                 px(static_cast<float>(damage.height)), {static_cast<float>(off) / dw, ui::UiTexture::uvTop},
+                 {static_cast<float>(off + window) / dw, ui::UiTexture::uvBottom});
     }
-    // "MPH" label (stored upside down in mph.tga, so drawn without the flip).
-    if (!m_options.metric) {
-        const ui::UiTexture& mph = art.get("texture/mph.tga");
-        if (mph)
-            ov.image(mph.handle, wx + ww - 23 * kArt - 2, wy + wh - 7 * kArt - 1.5f, 23 * kArt, 7 * kArt, {0, 0},
-                     {1, 1});
-    }
+    ui::drawImage(ov, label, x + px(8), y + px(88), px(static_cast<float>(label.width)),
+                  px(static_cast<float>(label.height)));
 
-    // Gear in the right window (128,31)-(153,54).
-    std::string gear;
-    if (player.gear < 0)
-        gear = "r";
-    else if (player.gear == 0)
-        gear = "n";
-    else if (player.automatic)
-        gear = "d";
-    else
-        gear = std::to_string(std::min(player.gear, 8));
-    ui::drawImage(ov, art.get(std::format("texture/digitac_gear_{}.tga", gear)), x + 130 * kArt, y + 31 * kArt,
-                  20 * kArt, 23 * kArt);
-}
+    // mmGearIndicator at (16, 46).
+    const std::string gearName = hud::gearArt(player.gear, player.automatic);
+    const ui::UiTexture& gear = art.get(std::format("texture/digitac_gear_{}.tga", gearName));
+    ui::drawImage(ov, gear, x + px(16), y + px(46), px(static_cast<float>(gear.width)),
+                  px(static_cast<float>(gear.height)));
 
-void Hud::drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float right, float y) {
-    seconds = std::max(seconds, 0.0f);
-    const int total = static_cast<int>(seconds);
-    const int hundredths = static_cast<int>((seconds - static_cast<float>(total)) * 100.0f);
-    const std::string mmss = std::format("{}:{:02}", total / 60, total % 60);
-    const float dw = 21 * kArt, dh = 32 * kArt, cw = 10 * kArt;
-    const float hw = 11 * kArt, hh = 16 * kArt;
-    float width = 0.0f;
-    for (char c : mmss)
-        width += c == ':' ? cw : dw;
-    width += 2.0f + 2 * hw;
-    float x = right - width;
-    for (char c : mmss) {
-        if (c == ':') {
-            ui::drawImage(ov, art.get("texture/digi_colon.tga"), x, y, cw, dh);
-            x += cw;
-        } else {
-            ui::drawImage(ov, art.get(std::format("texture/digi_{}.tga", c)), x, y, dw, dh);
-            x += dw;
+    // mmLinearGauge at (8, 41): speed_ticks lit from the left up to rpm / MaxRPM.
+    if (ticks) {
+        const int lit = hud::linearGaugeLength(player.rpm, player.maxRpm, static_cast<int>(ticks.width));
+        if (lit > 0) {
+            const float frac = static_cast<float>(lit) / static_cast<float>(ticks.width);
+            ov.image(ticks.handle, x + px(8), y + px(41), px(static_cast<float>(lit)),
+                     px(static_cast<float>(ticks.height)), {0.0f, ui::UiTexture::uvTop},
+                     {frac, ui::UiTexture::uvBottom});
         }
     }
-    x += 2.0f;
-    const std::string hs = std::format("{:02}", hundredths);
-    for (char c : hs) {
-        ui::drawImage(ov, art.get(std::format("texture/digi_{}_half.tga", c)), x, y + dh - hh, hw, hh);
-        x += hw;
+
+    // mmSpeedIndicator at (19, -14): digitac digits at x, x + w + 1, x + 2w + 1.
+    const float speed = m_options.metric ? player.speedMph * 1.609344f : player.speedMph;
+    const auto digits = hud::speedDigits(std::max(speed, 0.0f));
+    const ui::UiTexture& zero = art.get("texture/digitac_0.tga");
+    const float w = static_cast<float>(zero.width);
+    const float offsets[3] = {0.0f, w + 1.0f, 2.0f * w + 1.0f};
+    for (std::size_t i = 0; i < digits.size(); ++i) {
+        if (digits[i] == ' ')
+            continue;
+        const ui::UiTexture& tex = art.get(std::format("texture/digitac_{}.tga", digits[i]));
+        ui::drawImage(ov, tex, x + px(19.0f + offsets[i]), y + px(-14.0f), px(static_cast<float>(tex.width)),
+                      px(static_cast<float>(tex.height)));
     }
 }
 
-void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art, const Session& session,
-                      const PlayerState& player) {
+void Hud::drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y) {
+    // mmHUD::Cull: eight colour-keyed bitmaps MM:SS:HH at the top of the
+    // screen, starting three digits and a colon left of the centre.
+    const std::string s = hud::clockText(seconds);
+    const ui::UiTexture& colon = art.getColorKeyed("texture/digi_colon.tga");
+    const ui::UiTexture& zero = art.getColorKeyed("texture/digi_0.tga");
+    float x = centerX - px(3.0f * static_cast<float>(zero.width) + static_cast<float>(colon.width));
+    for (char c : s) {
+        const ui::UiTexture& tex =
+            c == ':' ? colon : art.getColorKeyed(std::format("texture/digi_{}.tga", c));
+        ui::drawImage(ov, tex, x, y, px(static_cast<float>(tex.width)), px(static_cast<float>(tex.height)));
+        x += px(static_cast<float>(tex.width));
+    }
+}
+
+void Hud::trackLapTimes(const Session& session) {
+    // mmCircuitHUD::SetLapTime fills one row per completed lap.
+    if (session.mode() != GameMode::Circuit)
+        return;
+    if (session.phase() == Phase::Countdown) {
+        m_lapTimes.clear();
+        m_lastLapSeen = 0.0f;
+    }
+    const float last = session.lastLapTime();
+    if (last > 0.0f && last != m_lastLapSeen) {
+        m_lastLapSeen = last;
+        m_lapTimes.push_back(last);
+    }
+}
+
+void Hud::drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session) {
+    // mmWPHUD / mmCircuitHUD / mmCollideHUD: light green labels at the left
+    // edge, white numbers right after them, rows at 3.5 %, 8.5 % and 13.5 %
+    // of the screen height. No shadow.
+    const render::UiLayout& l = ov.layout();
+    const float h = l.bottom - l.top;
+    const GameMode mode = session.mode();
+    const bool circuit = mode == GameMode::Circuit;
+    const ui::FontSpec labelFont = circuit ? font(258, "Gill Sans MT, 16, 22, 0, 700")
+                                           : font(253, "Gill Sans MT, 16, 22, 0, 700");
+    const ui::FontSpec numberFont = circuit ? font(256, "Gill Sans MT, 16, 22, 0, 700")
+                                            : font(251, "Gill Sans MT, 16, 22, 0, 700");
+    auto row = [&](float yFrac, const std::string& label, const std::string& value) {
+        const float y = l.top + yFrac * h;
+        const float w = text.draw(ov, labelFont, label, l.left, y, kLabelColor);
+        text.draw(ov, numberFont, value, l.left + w, y, kNumberColor);
+    };
+    const LessonEvent* lesson = session.currentLesson();
+    if (circuit) {
+        row(0.035f, m_strings.get(259, "Place:  "),
+            std::format("{}/{}", session.position(), session.racerCount()));
+        row(0.085f, m_strings.get(260, "Check:  "),
+            std::format("{}/{}", session.checkpointsCleared(), session.checkpointsTotal()));
+        row(0.135f, m_strings.get(261, "Lap:  "), std::format("{}/{}", session.lap(), session.laps()));
+        // Lap times: "1." ... at 18.5 %, 5 % apart, the time after the
+        // width of "10.  ".
+        const float timeX = l.left + text.measure(ov, labelFont, "10.  ");
+        for (std::size_t i = 0; i < m_lapTimes.size() && static_cast<int>(i) < session.laps(); ++i) {
+            const float y = l.top + (static_cast<float>(i + 1) * 0.05f + 0.135f) * h;
+            text.draw(ov, labelFont, std::format("{}.", i + 1), l.left, y, kLabelColor);
+            text.draw(ov, numberFont, hud::lapTimeText(m_lapTimes[i]), timeX, y, kNumberColor);
+        }
+        return;
+    }
+    if (!hud::checkReadoutShown(mode, lesson))
+        return;
+    float y = 0.035f;
+    if (mode == GameMode::Checkpoint) { // mmSingleRace::InitHUD shows the place
+        row(y, m_strings.get(254, "Place:  "),
+            std::format("{}/{}", session.position(), session.racerCount()));
+        y = 0.085f;
+    }
+    row(y, m_strings.get(255, "Check:  "),
+        std::format("{}/{}", session.checkpointsCleared(), session.checkpointsTotal()));
+    if (lesson && lesson->type == LessonType::Clean) {
+        // mmCollideHUD::Init creates "Hit Vehicles:" at 19 % as well, but
+        // never adds it to the HUD: only the object count shows.
+        row(0.14f, m_strings.get(269, "Hit Objects:  "), std::format("{}", session.objectHits()));
+    }
+}
+
+void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& m) {
+    if (m.timeLeft <= 0.0f || m.text.empty())
+        return;
+    // mmHUD: a full-width text node at 80 % of the screen height, 15 % tall
+    // (SetMessage mode 0), or at 20 % for the upper messages (mode 1); yellow
+    // Gill Sans (string 60), centred and word-wrapped, with a dark shadow
+    // offset by a 18th of the line height. Lines past the node are cut off.
+    const render::UiLayout& l = ov.layout();
+    const float w = l.right - l.left, h = l.bottom - l.top;
+    const ui::FontSpec f = font(60, "Gill Sans MT, 20, 36, 0, 400");
+    const float top = l.top + (m.top ? 0.2f : 0.8f) * h;
+    const float boxBottom = top + 0.15f * h;
+    const float lineHeight = static_cast<float>(f.size2); // DrawText steps by the cell height
+    // RenderText: shadow offset = text height / 9, halved for word-wrapped
+    // nodes, at least one pixel.
+    const int cellPixels = static_cast<int>(std::lround(static_cast<float>(f.size2) / m_options.pixelSize));
+    const float shadow = px(static_cast<float>(std::max(1, cellPixels / 9 / 2)));
+    float y = top;
+    for (const auto& line : wrapText(ov, text, f, m.text, w)) {
+        if (y + lineHeight > boxBottom + 0.5f)
+            break;
+        const float cx = l.left + w * 0.5f;
+        text.draw(ov, f, line, cx + shadow, y + shadow, kShadowColor, ui::Align::Center);
+        text.draw(ov, f, line, cx, y, kMessageColor, ui::Align::Center);
+        y += lineHeight;
+    }
+}
+
+void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art,
+                      const Session& session, const PlayerState& player) {
     ov.begin(m_options.uiScale);
     const render::UiLayout& l = ov.layout();
-    const std::uint32_t white = render::packColor(255, 255, 255);
-    const std::uint32_t yellow = render::packColor(255, 230, 40);
-
-    if (!m_options.dashboard) {
-        // Instrument cluster bottom-left, damage meter above it.
-        const float cx = l.left + 6.0f, cy = l.bottom - 110 * kArt - 4.0f;
-        drawCluster(ov, art, player, cx, cy);
-        const ui::UiTexture& label = art.get("texture/damage_lable.tga");
-        ui::drawImage(ov, label, cx, cy - 16.0f, 129 * kArt, 12 * kArt);
-        const ui::UiTexture& bar = art.get("texture/damage.tga");
-        const float dmg = clampf(player.damage01, 0.0f, 1.0f);
-        if (bar && dmg > 0.0f) {
-            const float bw = 194 * kArt * dmg;
-            ov.image(bar.handle, cx, cy - 9.0f, bw, 12 * kArt * 0.8f, {0.0f, ui::UiTexture::uvTop},
-                     {dmg, ui::UiTexture::uvBottom});
-        }
-    }
-
-    // Race clock top right: the count-down where there is one, otherwise
-    // the race time (lap time in circuits).
     const GameMode mode = session.mode();
-    if (mode != GameMode::Cruise) {
+    trackLapTimes(session);
+
+    // The instrument cluster (mmExternalView) is replaced by the dashboard.
+    if (m_options.visible && !m_options.dashboard)
+        drawCluster(ov, art, player, l.left, l.bottom - px(100.0f));
+
+    // Race clock, top centre (mmHUD::Cull): the count-down in Blitz and the
+    // crash course, otherwise the race time. Stays with the HUD toggled off.
+    if (hud::clockShown(mode, session.currentLesson())) {
         const float remaining = session.timeRemaining();
-        const float shown = remaining >= 0.0f ? remaining : (mode == GameMode::Circuit ? session.lapTime() : session.raceTime());
-        drawClock(ov, art, session.phase() == Phase::Countdown ? (remaining >= 0.0f ? remaining : 0.0f) : shown,
-                  l.right - 8.0f, l.top + 8.0f);
+        const bool countDown = mode == GameMode::Blitz || mode == GameMode::CrashCourse;
+        const float shown = countDown ? std::max(remaining, 0.0f) : session.raceTime();
+        drawClock(ov, art, shown, (l.left + l.right) * 0.5f, l.top);
     }
 
-    // Position / checkpoint / lap readouts, top left.
-    if (m_options.showPosition && mode != GameMode::Cruise) {
-        const ui::FontSpec labelFont = font(251, "Gill Sans MT, 16, 22, 0, 700");
-        const ui::FontSpec valueFont = font(252, "Gill Sans MT, 20, 40, 0, 700");
-        float y = l.top + 8.0f;
-        auto line = [&](std::uint32_t id, const char* fallback, const std::string& value) {
-            const std::string lab(str::trim(m_strings.get(id, fallback)));
-            const float w = text.measure(ov, labelFont, lab);
-            shadowText(ov, text, labelFont, lab, l.left + 10.0f, y + 3.0f, white);
-            shadowText(ov, text, valueFont, value, l.left + 14.0f + w, y, yellow);
-            y += 24.0f;
-        };
-        if (mode == GameMode::Circuit || mode == GameMode::Checkpoint)
-            line(254, "Place:", std::format("{}/{}", session.position(), session.racerCount()));
-        if (mode != GameMode::Circuit)
-            line(255, "Check:", std::format("{}/{}", session.checkpointsCleared(), session.checkpointsTotal()));
-        if (mode == GameMode::Circuit) {
-            line(260, "Check:", std::format("{}/{}", session.checkpointsCleared(), session.checkpointsTotal()));
-            line(261, "Lap:", std::format("{}/{}", session.lap(), session.laps()));
-        }
-        if (const auto* lesson = session.currentLesson(); lesson && lesson->type == LessonType::Clean) {
-            const ui::FontSpec small = font(262, "Gill Sans MT, 12, 20, 0, 700");
-            shadowText(ov, text, small, std::format("{}{}", m_strings.get(269, "Hit Objects:  "), session.objectHits()),
-                       l.left + 10.0f, y, white);
-            shadowText(ov, text, small,
-                       std::format("{}{}", m_strings.get(270, "Hit Vehicles:  "), session.vehicleHits()),
-                       l.left + 10.0f, y + 16.0f, white);
-        }
-    }
-
-    // Messages: the upper line, then the centre line (Ready... Set... Go!).
-    const ui::FontSpec small = font(562, "Arial Bold, 18, 24, 0, 400");
-    const ui::FontSpec big = font(564, "Arial Bold, 24, 48, 0, 400");
-    if (const HudMessage& m = session.message2(); m.timeLeft > 0.0f && !m.text.empty()) {
-        float y = l.top + 96.0f;
-        for (const auto& lineText : splitMessage(m.text)) {
-            shadowText(ov, text, small, lineText, 320.0f, y, white, ui::Align::Center);
-            y += 22.0f;
-        }
-    }
-    if (const HudMessage& m = session.message(); m.timeLeft > 0.0f && !m.text.empty()) {
-        float y = 160.0f;
-        for (const auto& lineText : splitMessage(m.text)) {
-            shadowText(ov, text, big, lineText, 320.0f, y, yellow, ui::Align::Center);
-            y += 30.0f;
-        }
-    }
-
-    // Map frame (the map itself is drawn in the scene pass).
-    if (m_options.showMap) {
-        const Vec4 r = mapRect(l);
-        const std::uint32_t frame = render::packColor(0, 0, 0, 255);
-        ov.rect(r.x - 1, r.y - 1, r.z + 2, 1, frame);
-        ov.rect(r.x - 1, r.y + r.w, r.z + 2, 1, frame);
-        ov.rect(r.x - 1, r.y, 1, r.w, frame);
-        ov.rect(r.x + r.z, r.y, 1, r.w, frame);
+    if (m_options.visible) {
+        drawReadouts(ov, text, session);
+        drawMessage(ov, text, session.message());
+        drawMessage(ov, text, session.message2());
     }
     ov.end();
 }

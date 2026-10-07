@@ -17,15 +17,25 @@ void TextureCache::clear() {
     m_textures.clear();
 }
 
-const UiTexture& TextureCache::get(std::string_view path) {
-    const std::string key = str::normalizeVirtualPath(path);
+const UiTexture& TextureCache::get(std::string_view path) { return load(path, false); }
+
+const UiTexture& TextureCache::getColorKeyed(std::string_view path) { return load(path, true); }
+
+const UiTexture& TextureCache::load(std::string_view path, bool colorKey) {
+    const std::string file = str::normalizeVirtualPath(path);
+    const std::string key = colorKey ? file + "#key" : file;
     if (auto it = m_textures.find(key); it != m_textures.end())
         return it->second;
     UiTexture tex;
-    if (auto bytes = m_vfs.readAll(key)) {
+    if (auto bytes = m_vfs.readAll(file)) {
         std::string error;
-        if (auto image = asset::decodeImageFile(key, *bytes, &error); image && !image->empty()) {
-            const auto& level = image->levels[0];
+        if (auto image = asset::decodeImageFile(file, *bytes, &error); image && !image->empty()) {
+            auto& level = image->levels[0];
+            if (colorKey) {
+                for (std::size_t i = 0; i + 3 < level.rgba.size(); i += 4)
+                    if (level.rgba[i] == 0 && level.rgba[i + 1] == 0 && level.rgba[i + 2] == 0)
+                        level.rgba[i + 3] = 0;
+            }
             render::TextureDesc desc;
             desc.width = level.width;
             desc.height = level.height;
@@ -35,10 +45,10 @@ const UiTexture& TextureCache::get(std::string_view path) {
             tex.width = level.width;
             tex.height = level.height;
         } else {
-            log::warn("ui: cannot decode {}: {}", key, error);
+            log::warn("ui: cannot decode {}: {}", file, error);
         }
     } else {
-        log::warn("ui: missing image {}", key);
+        log::warn("ui: missing image {}", file);
     }
     return m_textures.emplace(key, tex).first->second;
 }
