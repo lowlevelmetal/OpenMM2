@@ -825,19 +825,23 @@ void Menu::update(UiFrame& f) {
     if (!focused() || !focused()->focusable())
         resetFocus();
     Widget* cur = focused();
-    if (cur && cur->modal()) {
-        cur->modalInput(f);
-        // A text entry hands Tab and Escape on to the menu.
-        if (cur->modal() || !(nav.tabNext || nav.back))
-            return;
-    }
-
-    // Mouse: the widget under the pointer takes the focus; over empty space
-    // the highlight disappears (MenuManager::ClearAllWidgets).
     Widget* hovered = nullptr;
     for (auto& w : m_widgets)
         if (w->focusable() && w->box.contains(nav.mouse))
             hovered = w.get();
+    if (cur && cur->modal()) {
+        // A click on another widget takes the focus from a text entry.
+        const bool clickAway = nav.mousePressed && hovered && hovered != cur && dynamic_cast<TextEntry*>(cur);
+        if (!clickAway) {
+            cur->modalInput(f);
+            // A text entry hands Tab and Escape on to the menu.
+            if (cur->modal() || !(nav.tabNext || nav.back))
+                return;
+        }
+    }
+
+    // Mouse: the widget under the pointer takes the focus; over empty space
+    // the highlight disappears (MenuManager::ClearAllWidgets).
     if (nav.mouseMoved || nav.mousePressed) {
         if (hovered) {
             if (hovered != cur)

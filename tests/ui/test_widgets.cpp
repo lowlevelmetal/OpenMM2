@@ -265,3 +265,27 @@ TEST(TextEntry, FirstKeyReplacesTheText) {
     EXPECT_FALSE(entry.modal());
     EXPECT_TRUE(committed);
 }
+
+TEST(TextEntry, ClickOnAnotherWidgetTakesTheFocus) {
+    Fixture fx;
+    ui::Menu m;
+    std::string name;
+    auto& entry = m.add<ui::TextEntry>(ui::Box{10, 10, 200, 26}, &name, 18);
+    bool clicked = false;
+    auto& button = m.add<ui::SpriteButton>(ui::SpriteSheet{"texture/none.tga", 4}, 10, 100, [&] { clicked = true; });
+    button.box.w = button.box.h = 30; // no texture in the test: give it a size
+    auto f = fx.frame();
+    m.update(f);
+    ASSERT_EQ(m.focused(), &entry);
+    fx.nav = {};
+    fx.nav.mouse = {20, 110};
+    fx.nav.mouseMoved = fx.nav.mousePressed = fx.nav.mouseDown = true;
+    m.update(f);
+    EXPECT_EQ(m.focused(), &button);
+    EXPECT_FALSE(entry.modal());
+    fx.nav = {};
+    fx.nav.mouse = {20, 110};
+    fx.nav.mouseReleased = true;
+    m.update(f);
+    EXPECT_TRUE(clicked);
+}
