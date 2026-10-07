@@ -227,12 +227,12 @@ public:
             m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
-            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering);
             std::vector<game::session::MapBlip> blips;
             for (const auto& o : m_opponents)
                 blips.push_back({o.sim->sim().modelMatrix(), game::session::MapBlip::Kind::Opponent});
             for (const auto& c : m_cops)
                 blips.push_back({c.sim->sim().modelMatrix(), game::session::MapBlip::Kind::Police});
+            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
             m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
         dev.endScene();
