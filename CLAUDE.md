@@ -9,10 +9,11 @@ with UPnP).
 ## Hard rules
 
 - **No DRM circumvention.** Never decrypt, unwrap, dump or disassemble the
-  SafeDisc-protected retail executable (`MIDTOWN2.EXE` / `MIDTOWN2.ICD`), and
-  never analyse CD-key formats. Learn about the game only from unencrypted data
-  (the `.AR` archives, plaintext PE metadata such as imports and resources),
-  public community documentation and observed behaviour.
+  SafeDisc-protected retail executable (`MIDTOWN2.EXE` / `MIDTOWN2.ICD`, build
+  3390), and never analyse CD-key formats. Learn about the game from
+  unencrypted data (the `.AR` archives, plaintext PE metadata such as imports
+  and resources), public community documentation, observed behaviour and the
+  MM2Recomp reference below.
 - **No game data in git.** Original files, extracted assets and anything
   derived from them stay under the gitignored `local/` directory. Tests that
   need retail data read `$OPENMM2_GAME_DATA` and skip when it is unset.
@@ -24,6 +25,18 @@ with UPnP).
   the same operation order and 32-bit float math, then adapt only where MM2
   data proves a difference. mm2hook has no licence: use it as documentation of
   layouts and behaviour only, never copy code.
+- MM2Recomp (`git@github.com:lowlevelmetal/MM2Recomp.git`, the maintainer's
+  private repository) is the primary reference for MM2's own behaviour, and
+  using it is approved by the maintainer. It is a symbol-named NASM
+  disassembly, Ghidra project and transpiled C of the **unprotected**
+  `midtown2.exe` build 3393 (the exe mm2hook targets; no SafeDisc involved),
+  with the original names from the NuHook linker map. Reading it and
+  decompiling functions from its Ghidra project are allowed. It is derived from
+  Microsoft's copyrighted executable, so treat it like mm2hook: documentation
+  only. Port behaviour to readable C++ in this project's style (same operation
+  order, 32-bit float math), cite the original function names in comments and
+  docs, and never copy its generated assembly or C into this repository.
+  Where it disagrees with an MM1 port or an inference, MM2Recomp wins.
 
 ## Layout
 
