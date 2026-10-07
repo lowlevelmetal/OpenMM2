@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "data/TextTables.h"
+#include "game/fx/Random.h"
 
 #include <cmath>
 #include <format>
@@ -11,43 +12,33 @@
 namespace mm2::game::bangers {
 namespace {
 
-// Rotation about +Y so that the model's +X axis points along `x` (projected
-// onto the ground plane).
-Mat34 yawFrame(const Vec3& xAxis, const Vec3& pos) {
-    Vec3 x{xAxis.x, 0.0f, xAxis.z};
-    x = x.mag2() > 1e-8f ? x.normalized() : Vec3{1, 0, 0};
-    Mat34 m;
-    m.m0 = x;
-    m.m1 = {0, 1, 0};
-    m.m2 = x.cross(m.m1);
-    m.m3 = pos;
-    return m;
-}
-
 std::string_view text(const std::vector<std::byte>& b) { return {reinterpret_cast<const char*>(b.data()), b.size()}; }
 
-// Walks a polyline and calls `fn(position, tangent, index)` every `spacing`
-// metres starting at `start`, at most `max` times.
-template <class Fn>
-void walk(const std::vector<Vec3>& line, float start, float spacing, int max, Fn&& fn) {
-    if (line.size() < 2 || max <= 0)
-        return;
-    spacing = std::max(spacing, 0.1f);
-    float target = start, travelled = 0.0f;
-    int placed = 0;
-    for (std::size_t i = 1; i < line.size() && placed < max; ++i) {
-        const Vec3 a = line[i - 1], b = line[i];
-        const float len = a.dist(b);
-        if (len < 1e-4f)
-            continue;
-        while (target <= travelled + len && placed < max) {
-            const float t = (target - travelled) / len;
-            fn(lerp(a, b, t), (b - a) * (1.0f / len), placed);
-            ++placed;
-            target += spacing;
+bool degenerate(const Vec3& v) { return v.x == 0.0f && v.y == 0.0f && v.z == 0.0f; }
+
+// A road's sidewalk edge (lvlAiMap's road vertices for one side): the curb
+// and outer edge polylines through all the road's rooms, and the room of
+// each segment.
+struct Sidewalk {
+    std::vector<Vec3> curb, outer;
+    std::vector<int> room; // per point; a segment belongs to its first point's room
+};
+
+// lvlSDL::IsoLerp: the point `d` metres along a polyline (and its segment's
+// room); false past the end.
+bool isoLerp(const std::vector<Vec3>& line, const std::vector<int>& rooms, float d, Vec3& out, int& room) {
+    for (std::size_t i = 0; i + 1 < line.size(); ++i) {
+        const Vec3 a = line[i], b = line[i + 1];
+        const float len = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
+        room = rooms[i];
+        if (d <= len) {
+            const float t = d / len;
+            out = {(b.x - a.x) * t + a.x, (b.y - a.y) * t + a.y, (b.z - a.z) * t + a.z};
+            return true;
         }
-        travelled += len;
+        d -= len;
     }
+    return false;
 }
 
 } // namespace
@@ -55,20 +46,26 @@ void walk(const std::vector<Vec3>& line, float start, float spacing, int max, Fn
 std::vector<PropDef> parsePropDefs(std::string_view t) {
     std::vector<PropDef> out;
     const auto csv = data::CsvTable::parse(t);
+    auto col = [&](const char* name, int fallback) {
+        const int c = csv.column(name);
+        return c >= 0 ? static_cast<std::size_t>(c) : static_cast<std::size_t>(fallback);
+    };
+    const std::size_t start = col("start", 1), distance = col("distance", 2), maxUse = col("maxUse", 3),
+                      minLerp = col("minLerp", 4), maxLerp = col("maxLerp", 5), file1 = col("file1", 6);
     for (std::size_t r = 0; r < csv.rows().size(); ++r) {
         const auto& row = csv.rows()[r];
         if (row.empty() || row[0].empty())
             continue;
         PropDef d;
         d.name = str::lower(row[0]);
-        d.start = csv.cellFloat(r, 1);
-        d.distance = csv.cellFloat(r, 2, 1.0f);
-        d.maxUse = csv.cellInt(r, 3, 1);
-        d.minLerp = csv.cellFloat(r, 4, 0.1f);
-        d.maxLerp = csv.cellFloat(r, 5, d.minLerp);
-        for (std::size_t c = 6; c < row.size(); ++c)
-            if (!row[c].empty())
-                d.files.push_back(str::lower(row[c]));
+        d.start = csv.cellFloat(r, start);
+        d.distance = csv.cellFloat(r, distance, 1.0f);
+        d.maxUse = csv.cellInt(r, maxUse, 1);
+        d.minLerp = csv.cellFloat(r, minLerp, 0.1f);
+        d.maxLerp = csv.cellFloat(r, maxLerp, d.minLerp);
+        // file1..file4; the variant count stops at the first missing one.
+        for (std::size_t c = file1; c < file1 + 4 && c < row.size() && !row[c].empty(); ++c)
+            d.files.push_back(str::lower(row[c]));
         if (!d.files.empty())
             out.push_back(std::move(d));
     }
@@ -83,6 +80,7 @@ std::vector<PropRule> parsePropRules(std::string_view t) {
             continue;
         PropRule r;
         r.name = str::lower(row[0]);
+        // prop1... up to the end of the row; empty cells are skipped.
         for (std::size_t c = 1; c < row.size(); ++c)
             if (!row[c].empty())
                 r.props.push_back(str::lower(row[c]));
@@ -95,9 +93,12 @@ PathPlacement decodePathPlacement(const city::PathSetPath& path) {
     PathPlacement p;
     if (path.points.empty())
         return p;
+    // dgPath::Load: type byte, then the spacing byte in quarter metres
+    // (fmul by 0.25); a spacing of 0 means 5 m.
     const std::uint32_t w = path.points.back().extra;
     p.type = static_cast<int>(w & 0xFF);
-    p.spacing = static_cast<float>((w >> 8) & 0xFF) * 0.1f;
+    const auto spacing = (w >> 8) & 0xFF;
+    p.spacing = spacing ? static_cast<float>(spacing) * 0.25f : 5.0f;
     if (p.type > 2)
         p.type = 0;
     return p;
@@ -114,25 +115,49 @@ std::vector<PlacedProp> placePathSet(const city::PathSet& set, PlacedProp::Sourc
         if (model.empty() || path.points.empty() || (bangerOnly && !bangerOnly->has(model)))
             continue;
         const PathPlacement pl = decodePathPlacement(path);
-        auto add = [&](const Vec3& pos, const Vec3& xAxis) {
-            out.push_back({model, yawFrame(xAxis, pos), 0, source});
-        };
-        if (pl.type == 2 && path.points.size() >= 2) {
-            std::vector<Vec3> line;
-            for (const auto& p : path.points)
-                line.push_back(p.position);
-            walk(line, 0.0f, pl.spacing > 0.0f ? pl.spacing : 2.0f, 4096,
-                 [&](const Vec3& pos, const Vec3& dir, int) { add(pos, dir); });
-        } else if (pl.type == 1 && path.points.size() >= 2) {
-            // Position / look-at pairs; the model faces the second point (-Z towards it).
-            for (std::size_t i = 0; i + 1 < path.points.size(); i += 2) {
-                const Vec3 pos = path.points[i].position, at = path.points[i + 1].position;
-                const Vec3 fwd = at - pos;
-                add(pos, Vec3{-fwd.z, 0, fwd.x}); // +X to the right of the facing direction
+        const auto& pts = path.points;
+        if (pl.type == 2) {
+            // Each segment on its own: floor(length / spacing) props at equal
+            // steps from its start, +X along the (possibly sloping) segment.
+            for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
+                const Vec3 a = pts[i].position, b = pts[i + 1].position;
+                const float length = a.dist(b);
+                const int n = static_cast<int>(std::floor(length / pl.spacing));
+                if (n <= 0)
+                    continue;
+                const Vec3 x = (b - a) * (1.0f / length);
+                const Vec3 z = x.cross({0, 1, 0});
+                if (degenerate(z)) {
+                    log::debug("bangers: {}: vertical path segment skipped", model);
+                    continue;
+                }
+                Mat34 m;
+                m.m0 = x;
+                m.m2 = z.normalized();
+                m.m1 = m.m2.cross(m.m0);
+                const float step = length / static_cast<float>(n);
+                for (int k = 0; k < n; ++k) {
+                    m.m3 = a + x * (step * static_cast<float>(k));
+                    out.push_back({model, m, 0, source, true});
+                }
+            }
+        } else if (pl.type == 1) {
+            // Position / direction pairs: +X towards the second point.
+            for (std::size_t i = 0; i + 1 < pts.size(); i += 2) {
+                Vec3 x = pts[i + 1].position - pts[i].position;
+                x.y = 0.0f;
+                if (degenerate(x))
+                    continue;
+                Mat34 m;
+                m.m0 = x.normalized();
+                m.m1 = {0, 1, 0};
+                m.m2 = m.m0.cross(m.m1);
+                m.m3 = pts[i].position;
+                out.push_back({model, m, 0, source, false});
             }
         } else {
-            for (const auto& p : path.points)
-                add(p.position, {1, 0, 0});
+            for (const auto& p : pts)
+                out.push_back({model, Mat34::translation(p.position), 0, source, false});
         }
     }
     return out;
@@ -148,66 +173,122 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
     for (const auto& r : rules)
         ruleByName[r.name] = &r;
 
-    std::size_t variant = 0;
-    for (std::size_t room = 1; room < psdl.rooms.size(); ++room) {
-        const auto& rm = psdl.rooms[room];
-        if (rm.propRule == 0)
+    for (const auto& road : psdl.roads) {
+        // Roads without sidewalks (flag 0x40 clear) have their curb on the
+        // outer edge: nothing is placed.
+        if (road.rooms.empty() || !(road.flags & 0x40))
             continue;
-        const auto left = ruleByName.find(std::format("n{:02}left", rm.propRule));
-        const auto right = ruleByName.find(std::format("n{:02}right", rm.propRule));
-        if (left == ruleByName.end() && right == ruleByName.end())
+        const auto firstRoom = city::PsdlRoad::roomId(road.rooms.front());
+        if (firstRoom >= psdl.rooms.size())
             continue;
-        for (const auto& a : rm.attributes) {
-            if (a.type != city::PsdlAttrType::RoadStrip)
+        const int ruleNumber = psdl.rooms[firstRoom].propRule;
+        const PropRule* sideRules[2] = {nullptr, nullptr};
+        if (auto it = ruleByName.find(std::format("n{:02}left", ruleNumber)); it != ruleByName.end())
+            sideRules[0] = it->second;
+        if (auto it = ruleByName.find(std::format("n{:02}right", ruleNumber)); it != ruleByName.end())
+            sideRules[1] = it->second;
+        if (!sideRules[0] && !sideRules[1])
+            continue;
+
+        // The road's sections through all its rooms (lvlAiMap::SetRoad); a
+        // room whose first section repeats the previous room's last one
+        // continues it. Joining and orientation are inferred: rooms whose
+        // sections run backwards are reversed.
+        struct Section {
+            std::uint16_t v[6];
+            int stride;
+            int room;
+        };
+        std::vector<Section> sections;
+        for (const auto rid : road.rooms) {
+            const auto r = city::PsdlRoad::roomId(rid);
+            if (r >= psdl.rooms.size())
                 continue;
-            const auto v = a.vertices();
-            if (v.size() < 8 || v.size() % 4 != 0)
-                continue;
-            // Per section: outer L, curb L, curb R, outer R.
-            for (int side = 0; side < 2; ++side) {
-                const auto& ruleIt = side == 0 ? left : right;
-                if (ruleIt == ruleByName.end())
+            std::vector<Section> mine;
+            for (const auto& a : psdl.rooms[r].attributes) {
+                const int stride = a.type == city::PsdlAttrType::RoadStrip           ? 4
+                                   : a.type == city::PsdlAttrType::DividedRoadStrip ? 6
+                                                                                     : 0;
+                if (!stride)
                     continue;
-                std::vector<Vec3> curb, outer;
-                for (std::size_t s = 0; s + 3 < v.size(); s += 4) {
-                    const auto c = side == 0 ? v[s + 1] : v[s + 2];
-                    const auto o = side == 0 ? v[s + 0] : v[s + 3];
-                    if (c >= psdl.vertices.size() || o >= psdl.vertices.size())
-                        continue;
-                    curb.push_back(psdl.vertices[c]);
-                    outer.push_back(psdl.vertices[o]);
+                const auto v = a.vertices();
+                for (std::size_t s = 0; s + static_cast<std::size_t>(stride) <= v.size(); s += static_cast<std::size_t>(stride)) {
+                    Section sec{};
+                    sec.stride = stride;
+                    sec.room = static_cast<int>(r);
+                    for (int k = 0; k < stride; ++k)
+                        sec.v[k] = v[s + static_cast<std::size_t>(k)];
+                    mine.push_back(sec);
                 }
-                if (curb.size() < 2)
+            }
+            if (mine.empty())
+                continue;
+            auto same = [](const Section& a, const Section& b) {
+                return a.stride == b.stride && std::equal(a.v, a.v + a.stride, b.v);
+            };
+            if (!sections.empty() && same(mine.back(), sections.back()))
+                std::reverse(mine.begin(), mine.end());
+            for (const auto& sec : mine)
+                if (sections.empty() || !same(sec, sections.back()))
+                    sections.push_back(sec);
+        }
+        if (sections.size() < 2)
+            continue;
+        auto vertex = [&](std::uint16_t i) { return i < psdl.vertices.size() ? psdl.vertices[i] : Vec3{}; };
+        Sidewalk walks[2];
+        for (const auto& sec : sections) {
+            // Left: curb 1, outer 0. Right: curb 2 / outer 3 (road strips) or
+            // curb 4 / outer 5 (divided roads).
+            const int rc = sec.stride == 6 ? 4 : 2, ro = sec.stride == 6 ? 5 : 3;
+            walks[0].curb.push_back(vertex(sec.v[1]));
+            walks[0].outer.push_back(vertex(sec.v[0]));
+            walks[1].curb.push_back(vertex(sec.v[rc]));
+            walks[1].outer.push_back(vertex(sec.v[ro]));
+            walks[0].room.push_back(sec.room);
+            walks[1].room.push_back(sec.room);
+        }
+        // Walks per prop: one per road strip of the first room.
+        int strips = 0;
+        for (const auto& a : psdl.rooms[firstRoom].attributes)
+            if (a.type == city::PsdlAttrType::RoadStrip || a.type == city::PsdlAttrType::DividedRoadStrip)
+                ++strips;
+
+        fx::Rand rng(1); // ResetRandomSeed
+        for (int ruleSide = 0; ruleSide < 2; ++ruleSide) {
+            if (!sideRules[ruleSide])
+                continue;
+            for (const auto& propName : sideRules[ruleSide]->props) {
+                const auto defIt = defByName.find(propName);
+                if (defIt == defByName.end())
                     continue;
-                for (const auto& propName : ruleIt->second->props) {
-                    const auto defIt = defByName.find(propName);
-                    if (defIt == defByName.end())
-                        continue;
-                    const PropDef& d = *defIt->second;
-                    // Walk the curb; find the matching outer point by segment fraction.
-                    walk(curb, d.start, d.distance, d.maxUse, [&](const Vec3& pos, const Vec3&, int) {
-                        // Nearest outer point: interpolate on the same segment index.
-                        std::size_t seg = 0;
-                        float best = 1e30f, bestT = 0.0f;
-                        for (std::size_t i = 1; i < curb.size(); ++i) {
-                            const Vec3 ab = curb[i] - curb[i - 1];
-                            const float len2 = ab.mag2();
-                            const float t = len2 > 0 ? clampf((pos - curb[i - 1]).dot(ab) / len2, 0, 1) : 0.0f;
-                            const float d2 = (curb[i - 1] + ab * t).dist2(pos);
-                            if (d2 < best) {
-                                best = d2;
-                                seg = i;
-                                bestT = t;
+                const PropDef& d = *defIt->second;
+                int maxUse = d.maxUse;
+                for (int strip = 0; strip < strips; ++strip) {
+                    for (int side = 0; side < 2; ++side) {
+                        const Sidewalk& w = walks[side];
+                        float along = d.start;
+                        Vec3 curb, outer;
+                        int curbRoom = 0, outerRoom = 0;
+                        while (isoLerp(w.curb, w.room, along, curb, curbRoom) &&
+                               isoLerp(w.outer, w.room, along, outer, outerRoom)) {
+                            const float f = (d.maxLerp - d.minLerp) * rng.frand() + d.minLerp;
+                            Mat34 m;
+                            m.m0 = outer - curb;
+                            m.m1 = {0, 1, 0};
+                            m.m3 = {(outer.x - curb.x) * f + curb.x, (outer.y - curb.y) * f + curb.y + 0.15f,
+                                    (outer.z - curb.z) * f + curb.z};
+                            const float len2 = m.m0.mag2();
+                            m.m0 = len2 == 0.0f ? Vec3{} : m.m0 * (1.0f / std::sqrt(len2));
+                            m.m2 = m.m0.cross(m.m1);
+                            if (!degenerate(m.m0) && !degenerate(m.m2) && side == ruleSide && maxUse != 0) {
+                                --maxUse;
+                                const std::string& file =
+                                    d.files[static_cast<std::size_t>(rng.irand()) % d.files.size()];
+                                out.push_back({file, m, outerRoom, PlacedProp::Source::StreetRule, false});
                             }
+                            along = (d.distance - d.distance) * rng.frand() + d.distance + along;
                         }
-                        const Vec3 o = lerp(outer[seg - 1], outer[seg], bestT);
-                        // Sidewalks are raised to the outer edge's height.
-                        Vec3 p = lerp(pos, o, d.minLerp);
-                        p.y = o.y;
-                        const Vec3 away = o - pos;
-                        const std::string& file = d.files[variant++ % d.files.size()];
-                        out.push_back({file, yawFrame(away, p), static_cast<int>(room), PlacedProp::Source::StreetRule});
-                    });
+                    }
                 }
             }
         }
@@ -217,11 +298,20 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
 
 std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vfs& vfs, const BangerDataLibrary& data) {
     std::vector<PlacedProp> out;
+    // .inst banger entries keep their matrix unless instance flag 0x80 asks
+    // for a Y rotation (cityLevel::LoadInstances).
     for (const auto* list : {&city.instances, &city.aiInstances})
         for (const auto& inst : *list)
             if (data.has(inst.name))
-                out.push_back({str::lower(inst.name), inst.transform, inst.room, PlacedProp::Source::Instance});
+                out.push_back({str::lower(inst.name), inst.transform, inst.room, PlacedProp::Source::Instance,
+                               !(inst.flags & 0x80)});
     const std::string dir = "city/" + str::lower(city.info.mapName) + "/";
+    const auto defs = vfs.readAll(dir + "propdefs.csv");
+    const auto rules = vfs.readAll(dir + "proprules.csv");
+    if (defs && rules) {
+        auto props = placeStreetProps(city.psdl, parsePropDefs(text(*defs)), parsePropRules(text(*rules)));
+        out.insert(out.end(), props.begin(), props.end());
+    }
     if (auto bytes = vfs.readAll(dir + "props.pathset")) {
         std::string error;
         if (auto set = city::parsePathSet(*bytes, &error)) {
@@ -230,12 +320,6 @@ std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vf
         } else {
             log::warn("bangers: {}props.pathset: {}", dir, error);
         }
-    }
-    const auto defs = vfs.readAll(dir + "propdefs.csv");
-    const auto rules = vfs.readAll(dir + "proprules.csv");
-    if (defs && rules) {
-        auto props = placeStreetProps(city.psdl, parsePropDefs(text(*defs)), parsePropRules(text(*rules)));
-        out.insert(out.end(), props.begin(), props.end());
     }
     return out;
 }

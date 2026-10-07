@@ -20,6 +20,7 @@
 #include "game/TrafficBodies.h"
 #include "game/bangers/BangerSet.h"
 #include "game/bangers/PropPlacement.h"
+#include "game/bangers/RoadDecals.h"
 #include "game/fx/EffectLibrary.h"
 #include "game/fx/ParticleRenderer.h"
 #include "game/fx/SkidMarks.h"
@@ -200,14 +201,14 @@ public:
         dev.setFrameConstants(frame);
         const game::Frustum frustum(frame.view * frame.proj);
         m_cityRenderer->draw(m_camera, frustum, m_env, m_detail);
+        m_roadDecals.draw(dev, *m_textures);
         if (m_ai && m_aiRenderer)
             m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay == game::TimeOfDay::Night,
                                [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
         drawRemoteCars(ctx, m_frameDt);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
-            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera,
-                            {1.0f, m_env.fogEnd + 50.0f, night});
+            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera, {m_detail.objects, night});
         const bool lights = carLights();
         if (m_vehicle && (m_flyCamera || m_cams.display() == game::CarDisplay::Body)) {
             m_pose.headlights = lights;
@@ -802,6 +803,10 @@ private:
 
     void loadEffects(Context& ctx) {
         m_effects.load(ctx.game->vfs);
+        // Road decals (city/<map>/decals.pathset, dgRoadDecalInstance).
+        if (auto bytes = ctx.game->vfs.readAll("city/" + str::lower(m_city->info.mapName) + "/decals.pathset"))
+            if (auto set = city::parsePathSet(*bytes))
+                m_roadDecals.load(*set);
         if (m_world) {
             m_bangers = std::make_unique<game::bangers::BangerSet>(*m_bangerData);
             m_bangers->add(game::bangers::placeCityProps(*m_city, ctx.game->vfs, *m_bangerData));
@@ -1316,6 +1321,7 @@ private:
     // Props that can be knocked over, and particle effects.
     std::unique_ptr<game::bangers::BangerDataLibrary> m_bangerData;
     std::unique_ptr<game::bangers::BangerSet> m_bangers;
+    game::bangers::RoadDecals m_roadDecals;
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;
     std::unique_ptr<game::fx::Weather> m_weather;
