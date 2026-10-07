@@ -49,8 +49,9 @@ struct CityInfo {
 
 class Catalog {
 public:
-    // Loads tune/cars.txt + tune/*.info and tune/*.cinfo. Missing or malformed
-    // entries are logged and skipped.
+    // Loads the vehicles in MM2's order (mmVehList::LoadAll: its built-in list,
+    // then other tune/vp*.info) and tune/*.cinfo. Missing or malformed entries
+    // are logged and skipped.
     static Catalog load(const vfs::Vfs& vfs);
 
     const std::vector<VehicleInfo>& vehicles() const { return m_vehicles; }
@@ -59,7 +60,7 @@ public:
     const CityInfo* city(std::string_view name) const;
 
 private:
-    std::vector<VehicleInfo> m_vehicles; // in tune/cars.txt order
+    std::vector<VehicleInfo> m_vehicles; // in MM2's vehicle list order
     std::vector<CityInfo> m_cities;
 };
 
