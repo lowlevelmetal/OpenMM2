@@ -10,7 +10,10 @@ namespace mm2::game {
 // the world (m0 right, m1 up, m2 back, m3 position); it looks down -m2.
 struct Camera {
     Mat34 transform;
-    float horizontalFov = 1.2217f; // radians, as authored for a 4:3 screen
+    // Horizontal field of view on a 4:3 screen, radians; render::computeProjection
+    // widens it for other aspect ratios. The car cameras convert their
+    // vertical CameraFOV to it (cam::horizontalFov4x3).
+    float horizontalFov = 1.2217f;
     float nearPlane = 0.1f;
     float farPlane = 1000.0f;
 
