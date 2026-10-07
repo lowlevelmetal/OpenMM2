@@ -18,7 +18,11 @@ namespace {
 
 // A temporary game folder with a few banger files.
 struct TempBangers {
-    std::filesystem::path dir = std::filesystem::temp_directory_path() / "openmm2_bangers_test";
+    // One directory per test: ctest runs the tests in parallel processes, and
+    // Windows cannot delete files another process still has open.
+    std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                (std::string("openmm2_bangers_") +
+                                 ::testing::UnitTest::GetInstance()->current_test_info()->name());
     vfs::Vfs vfs;
     TempBangers() {
         std::filesystem::remove_all(dir);
@@ -30,7 +34,10 @@ struct TempBangers {
         write("split_break02", 20.0f, 1e6f, 0);
         vfs.mount(std::make_shared<vfs::DirectoryFs>(dir));
     }
-    ~TempBangers() { std::filesystem::remove_all(dir); }
+    ~TempBangers() {
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
     void write(const char* name, float mass, float limit2, int parts) {
         std::ofstream f(dir / "tune" / "banger" / (std::string(name) + ".dgbangerdata"));
         f << "type: a\ndgBangerData {\n  Size 0.5 2.0 0.5\n  CG 0 1 0\n  Mass " << mass << "\n  Elasticity 0.5\n"
