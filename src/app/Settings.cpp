@@ -24,7 +24,18 @@ void Settings::load(const std::filesystem::path& path) {
     ambientVolume = volume(ini, "Ambient", ambientVolume);
     voiceVolume = volume(ini, "Voice", voiceVolume);
     musicVolume = volume(ini, "Music", musicVolume);
-    audioHighQuality = ini.getBool("Audio", "HighQuality", audioHighQuality);
+    soundEffects = ini.getBool("Audio", "SoundEffects", soundEffects);
+    commentary = ini.getBool("Audio", "Commentary", commentary);
+    music = ini.getBool("Audio", "MusicOn", music);
+    citySounds = ini.getBool("Audio", "CitySounds", citySounds);
+    if (music && citySounds)
+        citySounds = false; // MM2's toggles are exclusive (AudioOptions::ToggleMusic)
+    stereo = ini.getBool("Audio", "Stereo", stereo);
+    // Files from before the three-step option only have HighQuality.
+    const bool high = ini.getBool("Audio", "HighQuality", true);
+    soundQuality = static_cast<int>(std::clamp<long long>(ini.getInt("Audio", "Quality", high ? 2 : 0), 0, 2));
+    audioHighQuality = soundQuality >= 1;
+    balance = std::clamp(static_cast<float>(ini.getDouble("Audio", "Pan", balance)), -1.0f, 1.0f);
     playerName = ini.getString("Network", "PlayerName", playerName);
     port = static_cast<int>(std::clamp<long long>(ini.getInt("Network", "Port", port), 0, 65535));
     upnp = ini.getBool("Network", "UPnP", upnp);
@@ -39,7 +50,16 @@ bool Settings::save(const std::filesystem::path& path) {
     ini.setDouble("Audio", "Ambient", ambientVolume);
     ini.setDouble("Audio", "Voice", voiceVolume);
     ini.setDouble("Audio", "Music", musicVolume);
+    audioHighQuality = soundQuality >= 1;
     ini.setBool("Audio", "HighQuality", audioHighQuality);
+    ini.setInt("Audio", "Quality", soundQuality);
+    ini.setBool("Audio", "SoundEffects", soundEffects);
+    ini.setBool("Audio", "Commentary", commentary);
+    ini.setBool("Audio", "MusicOn", music);
+    ini.setBool("Audio", "CitySounds", citySounds);
+    ini.setBool("Audio", "Stereo", stereo);
+    ini.setDouble("Audio", "Pan", balance);
+    ini.remove("Audio", "Balance"); // 0..1 balance of earlier versions
     ini.set("Network", "PlayerName", playerName);
     ini.setInt("Network", "Port", port);
     ini.setBool("Network", "UPnP", upnp);
