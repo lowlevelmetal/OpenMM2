@@ -296,8 +296,8 @@ trailer. `phys/vehicle/Trailer` ports `vehTrailer` (`Init`, `Reset`,
 `DoJointTorque`, `DoJointLimits`, both `ComputeInvMassMatrix`, `FileIO`) and
 `phys/Joint` its base `phJoint` (`Init`, `Reset`, `Update`,
 `ComputeInvMassMatrix`, `ComputeJointForce`, `ComputeJointPush`,
-`GetInvMassMatrix`, `IsBroken`). `Body::joint` and `Body::invMassMatrix` are
-`phColliderJointed`'s `Attach` and `GetInvMassMatrix`. MM1's `Joint3Dof`,
+`GetInvMassMatrix`, `IsBroken`). `Collider::joint` and `Collider::invMassMatrix`
+are `phColliderJointed`'s `Attach` and `GetInvMassMatrix`. MM1's `Joint3Dof`,
 which OpenMM2 used before, is gone; `dgTrailerJoint` descends from it.
 
 **Integration.** MM2's joint does not integrate anything. The trailer is its
@@ -668,8 +668,7 @@ as speeds at MaxRPM and capped every car at High.)
   than `lvlSDL::CollideProbe` over `sdlPage16::Collect`'s polygons.
 - Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
   (MM2's values make vpcentury's trailer ride on its bump stops, see
-  "Trailers"); contacts of jointed bodies use each body's own mass; the
-  trailer's impact parameters are inferred.
+  "Trailers"); the trailer's impact parameters are inferred.
 - The per-axis angular velocity limits of non-car bodies other than
   trailers and `vehSuspension` (the visual shocks) are not ported.
 - The engine pivot (`<car>_engine.mtx`) and axle pivots are not loaded yet;
