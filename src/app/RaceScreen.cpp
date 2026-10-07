@@ -225,6 +225,12 @@ public:
         }
         if (m_vehicleFx)
             m_vehicleFx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
+        for (const auto& o : m_opponents)
+            if (o.fx)
+                o.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
+        for (const auto& c : m_cops)
+            if (c.fx)
+                c.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
         if (m_weather)
             m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
@@ -466,6 +472,7 @@ private:
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
+            opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model());
             if (m_ai) {
                 std::string error;
                 opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
@@ -517,6 +524,7 @@ private:
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
+            cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model());
             m_cops.push_back(std::move(cop));
         }
         log::info("race: {} police cars", m_cops.size());
@@ -687,12 +695,18 @@ private:
                 m_cams.startWaterCam();
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
+                if (m_vehicleFx)
+                    m_vehicleFx->reset(); // vehCar::Reset
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
                 // The race starts over (mmGame::Reset): every car to its start.
                 m_player->reset(m_spawn);
+                if (m_vehicleFx)
+                    m_vehicleFx->reset();
                 for (auto& o : m_opponents) {
                     o.sim->reset(o.spawn);
+                    if (o.fx)
+                        o.fx->reset();
                     if (o.driver)
                         o.driver->reset();
                 }
@@ -768,22 +782,8 @@ private:
             m_bangers->add(game::bangers::placeCityProps(*m_city, ctx.game->vfs, *m_bangerData));
             m_bangers->setWorld(m_world.get());
         }
-        // Damage smoke from the car's vehCarDamage particle fields.
-        std::optional<game::fx::BirthRule> damageRule;
-        Vec3 smoke1;
-        std::optional<Vec3> smoke2;
-        if (auto bytes = ctx.game->vfs.readAll("tune/vehicle/" + m_result.config.vehicle + ".vehcardamage")) {
-            if (auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
-                f && f->top()) {
-                game::fx::BirthRule rule;
-                if (game::fx::loadBirthRule(*f->top(), rule))
-                    damageRule = rule;
-                f->top()->read("SmokeOffset", smoke1);
-                smoke2 = f->top()->getVec3("SmokeOffset2");
-            }
-        }
-        m_vehicleFx = std::make_unique<game::fx::VehicleEffects>(m_effects, damageRule ? &*damageRule : nullptr, smoke1,
-                                                                 smoke2);
+        if (m_player)
+            m_vehicleFx = loadVehicleFx(ctx, m_result.config.vehicle, m_player->model());
         const auto w = m_result.config.weather;
         m_weather = std::make_unique<game::fx::Weather>(
             m_effects, w == game::Weather::Rain   ? game::fx::Weather::Kind::Rain
@@ -791,42 +791,43 @@ private:
                                                   : game::fx::Weather::Kind::None);
     }
 
+    // vehCar's effects (tracks, wheel particles, damage and exhaust smoke) for
+    // one car: the .vehCarDamage particle fields over the engine smoke
+    // defaults, the exhaust pivots of its model.
+    std::unique_ptr<game::fx::VehicleEffects> loadVehicleFx(Context& ctx, const std::string& vehicle,
+                                                            const asset::VehicleModel& model) {
+        game::fx::VehicleFxSetup setup;
+        if (auto bytes = ctx.game->vfs.readAll("tune/vehicle/" + vehicle + ".vehcardamage"))
+            if (auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+                f && f->top())
+                game::fx::loadBirthRule(*f->top(), setup.smokeRule);
+        for (int i = 0; i < 2; ++i)
+            if (const auto* pivot = model.pivot(std::format("exhaust{}", i)))
+                setup.exhaust[static_cast<std::size_t>(i)] = pivot->origin;
+        setup.rain = m_result.config.weather == game::Weather::Rain;
+        return std::make_unique<game::fx::VehicleEffects>(m_effects, setup);
+    }
+
+    // vehCar::UpdateTrack: no tracks while the car's room is an intersection.
+    game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim& sim) const {
+        game::fx::VehicleFxContext c;
+        const int room = m_cityRenderer->roomAt(sim.modelMatrix().m3);
+        if (room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size())
+            c.tracksAllowed = !(m_city->psdl.rooms[static_cast<std::size_t>(room)].flags & city::RoomFlag::Intersection);
+        return c;
+    }
+
     void updateEffects(float dt) {
-        if (!m_player || !m_vehicleFx)
-            return;
-        const auto& sim = m_player->sim();
-        game::fx::VehicleFxInput in;
-        const bool shouldSkid = sim.speed() > 7.0f || m_lastPedals.accelerator > 0.5f || m_lastPedals.brake > 0.7f;
-        for (std::size_t i = 0; i < 4; ++i) {
-            const auto& w = sim.wheels[i];
-            auto& wi = in.wheels[i];
-            wi.skid.carSpeed = sim.speed();
-            wi.skid.wheelSpeed = std::abs(w.rotationSpeed * w.radius);
-            wi.skid.latSlip = w.latSlipPercent;
-            wi.skid.longSlip = w.longSlipPercent;
-            wi.skid.onGround = w.onGround;
-            wi.skid.shouldSkid = shouldSkid;
-            wi.skid.groundNormal = w.intersection.normal;
-            wi.skid.contact = Mat34::identity();
-            wi.skid.contact.m0 = m_pose.body.m0;
-            wi.skid.contact.m3 = w.intersection.position;
-            wi.skid.width = w.width;
-            wi.skid.lightMarks = m_result.config.weather == game::Weather::Snow;
-            if (w.material) {
-                wi.ptxIndex[0] = w.material->ptxIndex[0];
-                wi.ptxIndex[1] = w.material->ptxIndex[1];
-                wi.ptxThreshold[0] = w.material->ptxThreshold[0];
-                wi.ptxThreshold[1] = w.material->ptxThreshold[1];
-            }
-        }
-        in.body = m_pose.body;
-        in.damage01 = sim.damage.damage;
-        m_vehicleFx->update(dt, in);
+        if (m_player && m_vehicleFx)
+            m_vehicleFx->update(dt, m_player->sim(), vehicleFxContext(m_player->sim()));
+        for (auto& o : m_opponents)
+            if (o.fx)
+                o.fx->update(dt, o.sim->sim(), vehicleFxContext(o.sim->sim()));
+        for (auto& c : m_cops)
+            if (c.fx)
+                c.fx->update(dt, c.sim->sim(), vehicleFxContext(c.sim->sim()));
         if (m_weather)
-            m_weather->update(dt, m_camera.transform, [this](const Vec3& p) {
-                phys::RayHit hit;
-                return m_world && m_world->probe(p + Vec3{0, 50, 0}, p - Vec3{0, 50, 0}, hit) ? hit.position.y : p.y;
-            });
+            m_weather->update(dt, m_camera.transform);
     }
 
     void loadAudio(Context& ctx) {
@@ -1235,6 +1236,7 @@ private:
         std::unique_ptr<game::VehicleRenderer> renderer;
         std::unique_ptr<ai::Opponent> driver;
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        std::unique_ptr<game::fx::VehicleEffects> fx;
     };
     std::vector<Opponent> m_opponents;
     struct Cop {
@@ -1242,6 +1244,7 @@ private:
         std::unique_ptr<game::VehicleRenderer> renderer;
         ai::PoliceCar* driver = nullptr; // owned by m_police
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        std::unique_ptr<game::fx::VehicleEffects> fx;
     };
     std::unique_ptr<ai::PoliceSquad> m_police;
     std::vector<Cop> m_cops;

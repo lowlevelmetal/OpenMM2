@@ -1,7 +1,6 @@
 /*
-    OpenMM2 - per-vehicle effects: skid marks, surface particles, damage smoke.
-    Particle accumulation ported from Open1560 (mmcar/wheel.cpp
-    mmWheel::GenerateSkidParticles), Copyright (C) 2020 Brick, GPL-3.0-or-later.
+    OpenMM2 - a car's effects: tyre tracks (vehCar::UpdateTrack), wheel
+    particles (vehWheelPtx) and damage/exhaust smoke (vehCarDamage).
 */
 #pragma once
 
@@ -9,59 +8,69 @@
 #include "game/fx/ParticleRenderer.h"
 #include "game/fx/Particles.h"
 #include "game/fx/SkidMarks.h"
+#include "phys/vehicle/CarSim.h"
 
 #include <array>
-#include <memory>
+#include <optional>
 
 namespace mm2::game::fx {
 
-struct WheelFxInput {
-    SkidInput skid;
-    // Surface particle selection from the ground material (city/materials.mtl
-    // ptxindex / ptxthreshold); -1 = none.
-    int ptxIndex[2] = {-1, -1};
-    float ptxThreshold[2] = {0.25f, 0.5f};
+struct VehicleFxSetup {
+    // The particle fields of tune/vehicle/<car>.vehCarDamage, read over the
+    // engine smoke defaults (see engineSmokeDefaults()).
+    BirthRule smokeRule = engineSmokeDefaults();
+    // geometry/<car>_exhaust0.mtx / _exhaust1.mtx pivots (model space).
+    std::array<std::optional<Vec3>, 2> exhaust;
+    // mmGame::InitWeather in rain: the road's tyre smoke turns into splash.
+    bool rain = false;
+
+    // vehCarDamage::Init's EngineSmokeRule before the car's file is read.
+    static BirthRule engineSmokeDefaults();
 };
 
-struct VehicleFxInput {
-    std::array<WheelFxInput, 4> wheels;
-    Mat34 body;          // car model matrix (for damage smoke)
-    float damage01 = 0.0f; // vehCarDamage fraction (CarDamage::damage)
+// What the car's surroundings say this frame.
+struct VehicleFxContext {
+    // vehCar::UpdateTrack lays no tracks while the car's room is an
+    // intersection (PSDL room flag 0x10).
+    bool tracksAllowed = true;
 };
 
 class VehicleEffects {
 public:
-    // MM1 PtxMaxSkidCount = PtxFrameRate * maxskid (default 1).
-    static constexpr float kMaxSkidCount = 30.0f;
+    // vehWheelPtx: 128 particles from texture/ptx_wheel (8 x 8 frames).
+    static constexpr int kWheelParticles = 128;
+    // vehCarDamage: 64 smoke particles from texture/fxpt8 (2 x 2 frames).
+    static constexpr int kSmokeParticles = 64;
 
-    // `damageRule`: the particle fields of tune/vehicle/<car>.vehCarDamage
-    // (optional), with its SmokeOffset/SmokeOffset2 emitter positions.
-    VehicleEffects(const EffectLibrary& library, const BirthRule* damageRule = nullptr,
-                   Vec3 smokeOffset = {}, std::optional<Vec3> smokeOffset2 = {});
+    VehicleEffects(const EffectLibrary& library, const VehicleFxSetup& setup);
 
     void reset();
-    void update(float dt, const VehicleFxInput& in);
-    // Skid marks and particles; call inside the scene pass.
+    // Runs the original per-frame updates at a fixed 60 Hz (FixedTicker).
+    void update(float dt, const phys::CarSim& car, const VehicleFxContext& context = {});
+    // Tracks and particles; call inside the scene pass.
     void draw(render::Device& device, TextureLibrary& textures, ParticleRenderer& cards, SkidRenderer& skids,
               const Mat34& cameraBasis);
 
-    float particleMultiplier = 1.0f; // ParticleMultiplier (graphics option)
-    const std::array<SkidTrail, 4>& trails() const { return m_trails; }
-    int liveParticles() const;
+    const std::array<SkidTrack, 4>& tracks() const { return m_tracks; }
+    const ParticleSystem& wheelParticles() const { return m_wheelPtx; }
+    const ParticleSystem& smoke() const { return m_smoke; }
+    int liveParticles() const { return m_wheelPtx.count() + m_smoke.count(); }
 
 private:
-    std::array<SkidTrail, 4> m_trails{SkidTrail(64), SkidTrail(64), SkidTrail(64), SkidTrail(64)};
-    std::array<float, 4> m_particleCount{};
-    // One system per surface effect (ptxindex 0..8), drawing from ptx_wheel.
-    std::array<ParticleSystem, 9> m_surface;
-    std::array<BirthRule, 9> m_surfaceRules;
-    std::array<Mat34, 4> m_emitters;
+    void step(float dt, const phys::CarSim& car, const VehicleFxContext& context);
+    void blastWheel(const phys::Wheel& wheel, float dt, float threshold, int rule, int slot);
+    void spewSmoke(const Mat34& car, const Vec3& offset, float amount);
+
+    std::array<SkidTrack, 4> m_tracks;
+    ParticleSystem m_wheelPtx;
+    std::array<BirthRule, EffectLibrary::kWheelRules> m_wheelRules{};
+    std::array<float, 2> m_wheelFraction{}; // one per ptxindex slot, shared by the four wheels
     ParticleSystem m_smoke;
     BirthRule m_smokeRule;
-    bool m_hasSmoke = false;
-    Vec3 m_smokeOffset;
-    std::optional<Vec3> m_smokeOffset2;
-    Mat34 m_smokeMatrix;
+    VehicleFxSetup m_setup;
+    float m_smokeFraction = 0.0f;
+    int m_nextPivot = 0; // DoublePivot alternation
+    FixedTicker m_ticker;
 };
 
 } // namespace mm2::game::fx
