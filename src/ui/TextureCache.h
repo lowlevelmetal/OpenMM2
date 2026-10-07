@@ -47,9 +47,15 @@ public:
 
     // Loads (once) and returns the texture; an empty UiTexture if missing.
     const UiTexture& get(std::string_view path);
+    // The same image with pure black made transparent, as the original's
+    // colour-keyed 2D blits draw it (gfxBitmap surfaces carry a black source
+    // colour key; gfxPipeline::CopyBitmap with `transparent`).
+    const UiTexture& getColorKeyed(std::string_view path);
     void clear();
 
 private:
+    const UiTexture& load(std::string_view path, bool colorKey);
+
     render::Device& m_device;
     const vfs::Vfs& m_vfs;
     std::unordered_map<std::string, UiTexture> m_textures;
