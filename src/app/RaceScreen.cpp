@@ -457,21 +457,27 @@ private:
         log::info("race: {} opponents", m_opponents.size());
     }
 
-    // The race's police posts (.aimap [Police]); cruise places a share of
-    // them by the menu's cop density. Cops stay for the whole race.
+    // The race's police posts (.aimap [Police]): aiMap::Init places the first
+    // trunc(count * cop density) of them, the density being the menu's in
+    // cruise, the race table's cop count (0, or 1+ for all) in races, 1 in
+    // the crash course. Cops stay for the whole race.
     void spawnPolice(Context& ctx) {
         if (!m_session || !m_world || !m_ai)
             return;
         const auto& posts = m_session->police();
-        std::vector<std::size_t> picked;
-        if (m_result.config.mode == game::GameMode::Cruise) {
-            picked = ai::PoliceSquad::pickByDensity(posts.size(), m_result.config.copDensity);
-        } else {
-            for (std::size_t i = 0; i < posts.size(); ++i)
-                picked.push_back(i);
-        }
+        const auto mode = m_result.config.mode;
+        float density = 1.0f;
+        if (mode == game::GameMode::Cruise)
+            density = m_result.config.copDensity;
+        else if (mode == game::GameMode::Blitz || mode == game::GameMode::Circuit ||
+                 mode == game::GameMode::Checkpoint)
+            density = static_cast<float>(m_session->setup().settings.cops);
+        const std::size_t count = ai::PoliceSquad::countForDensity(posts.size(), density);
+        std::optional<float> chaseDistance;
+        if (m_session->setup().aiMap)
+            chaseDistance = m_session->setup().aiMap->copChaseDistance;
         m_police = std::make_unique<ai::PoliceSquad>(m_ai->network());
-        for (const std::size_t i : picked) {
+        for (std::size_t i = 0; i < count; ++i) {
             const auto& p = posts[i];
             Cop cop;
             Mat34 post = p.spawn;
@@ -479,7 +485,9 @@ private:
             cop.sim = loadAiCar(ctx, p.vehicle, "_cop", post);
             if (!cop.sim)
                 continue;
-            cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()));
+            ai::PoliceSettings settings = ai::PoliceSettings::fromData(p.params, chaseDistance);
+            settings.seed += i;
+            cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings);
             // vpcop paint job 0 is the California livery (vpcop_ca_*), 1 the
             // London one (vpcop_ln_*); picked by city (inferred).
             const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
@@ -512,6 +520,7 @@ private:
         ai::TrackedCar player = trackedCar(m_player->sim(), 0);
         player.isPlayer = true;
         player.suspect = true;
+        player.reversing = m_player->sim().trans.getCurrentGear() == -1;
         const int impacts = m_vehicleImpacts + m_objectImpacts;
         player.collided = impacts != m_lastImpacts;
         m_lastImpacts = impacts;
