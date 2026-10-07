@@ -65,6 +65,48 @@ TEST(Settings, RoundTripKeepsUnknownSections) {
     std::filesystem::remove(path);
 }
 
+TEST(Settings, AudioOptionsFollowMM2) {
+    // MM2's start-up defaults: music off, city sounds on, high quality.
+    const app::Settings d;
+    EXPECT_FALSE(d.music);
+    EXPECT_TRUE(d.citySounds);
+    EXPECT_TRUE(d.soundEffects);
+    EXPECT_EQ(d.soundQuality, 2);
+    EXPECT_FLOAT_EQ(d.musicVolume, 1.0f);
+    EXPECT_FLOAT_EQ(d.balance, 0.0f);
+
+    const auto path = std::filesystem::temp_directory_path() / "openmm2_settings_audio.ini";
+    {
+        app::Settings s;
+        s.music = true;
+        s.citySounds = false;
+        s.soundQuality = 1;
+        s.balance = -0.5f;
+        s.commentary = false;
+        ASSERT_TRUE(s.save(path));
+    }
+    app::Settings t;
+    t.load(path);
+    EXPECT_TRUE(t.music);
+    EXPECT_FALSE(t.citySounds);
+    EXPECT_FALSE(t.commentary);
+    EXPECT_EQ(t.soundQuality, 1);
+    EXPECT_TRUE(t.audioHighQuality);
+    EXPECT_FLOAT_EQ(t.balance, -0.5f);
+
+    // Music and city sounds are never both on; files from before the
+    // three-step quality option keep their choice.
+    app::Settings u;
+    u.ini.parse("[Audio]\nMusicOn=true\nCitySounds=true\nHighQuality=false\n");
+    ASSERT_TRUE(u.ini.save(path));
+    u.load(path);
+    EXPECT_TRUE(u.music);
+    EXPECT_FALSE(u.citySounds);
+    EXPECT_EQ(u.soundQuality, 0);
+    EXPECT_FALSE(u.audioHighQuality);
+    std::filesystem::remove(path);
+}
+
 TEST(GameData, RejectsNonGameFolder) {
     const auto r = app::checkGameSource(std::filesystem::temp_directory_path());
     EXPECT_FALSE(r.ok);
