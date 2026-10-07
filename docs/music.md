@@ -8,6 +8,7 @@ instruments from DLS collections (`.dls`). All of it is in `aud/dmusic/` in
 [dmusic changes](#dmusic-changes)).
 
 Code: `src/audio/Music.{h,cpp}` (tables, loader, engine, threaded player),
+`src/audio/MusicDirector.{h,cpp}` (MM2's rules for when the music changes),
 `src/audio/MusicMotif.{h,c}` (motif support, built into the dmusic library),
 the dmusic section of `cmake/Dependencies.cmake`. Tools:
 `mm2tool musicinfo <source>` and `mm2tool music <source> ...`.
@@ -68,29 +69,51 @@ Commands are applied in the order they were issued.
 | Call | Effect |
 |------|--------|
 | `playMenu()` | menu segment, immediately |
-| `startRace(song, cruise)` | preloads the song's segments, then plays its Start segment immediately; `song < 0` picks a random song |
-| `setState(Racing)` | Start the first time, Return afterwards |
-| `setState(Idle / IdleCops / CopChase)` | that segment, from the next measure |
-| `setState(Paused / Results)` | Pause / results segment, immediately (resuming from Paused is also immediate) |
-| `triggerBigAir()` | the motif, once, from the next beat of the soundtrack, following its tempo and chord |
+| `startRace(song, cruise, play)` | preloads the song's segments, then plays its Start segment immediately (or, with `play = false`, only selects the song for a `MusicDirector`); `song < 0` picks a random song |
+| `setState(state, timing)` | that state's segment on the next beat or measure, or immediately (`MusicTiming`); `Start` / `Return` name the song's two racing segments |
+| `setState(Racing)` | Start the first time, Return afterwards (tools) |
+| `setState(state)` | without a timing: menus, pause and results immediately, the rest on the next measure |
+| `triggerBigAir()` | the motif from the next beat of the soundtrack, played twice, following its tempo and chord |
 | `setAmbience("london" / "sf" / "underground" / "")` | city ambience on its own stream |
 | `stop()` | silence |
 
 The original's "Music/City Volume" option controlled music and ambience
-together, so both streams normally go to `Bus::Music`.
+together, so both streams normally go to `Bus::Music`. In MM2 the audio
+options make "Music" and "Ambient" exclusive (`AudioOptions::ToggleMusic` /
+`ToggleAmbient`): with music on, the city's DirectMusic ambience segment and
+its 3D ambient emitters are not loaded (`mmGameMusicData::Load`,
+`mmPlayer::Init`). OpenMM2 plays both.
 
-**Inferred, not known** (the triggers live in the game executable):
+### When the music changes (`MusicDirector`)
 
-* When the game enters each state: Idle presumably when the player is stopped
-  or making no progress for a while; IdleCops / CopChase while police pursue
-  the player; Racing again on moving on. The game module owns these rules.
-* Timing: segment switches on the next measure, Start, Pause and Results
-  immediate, motif on the next beat. DirectMusic games normally used
-  `DMUS_SEGF_MEASURE`/`DMUS_SEGF_BEAT`. MM2's explicit Return segments
-  suggest it did not rely on composed transitions, and dmusic's composed fill
-  transitions are silent for styles without fill patterns, so none are used.
-* Random song choice: whether the original picked songs randomly, in order, or
-  per city is unknown.
+Ported from MM2 (`mmGame::StartMusic`, `UpdateDMusic`,
+`MMDMusicManager::UpdateMusic`, `MatchMusicToPlayerSpeed`, `mmPopup`'s
+`PlayPauseMusic` / `PlayReturnMusic` / `ShowRoster`, the race modes'
+`StopSegment` calls). The game calls `MusicDirector::update` every unpaused
+frame with the player's speed, the number of cops pursuing the player
+(`vehPoliceCarAudio::GetNumCopsPursuingPlayer`) and the car's airborne flag
+(`vehCarAudio::IsAirBorne`, see `docs/audio.md`), and passes the director's
+commands to `MusicPlayer`.
+
+| Rule | Evidence |
+|------|----------|
+| The song is a uniformly random row of `singlerace.csv` / `singleroam.csv` | MM2 (`mmGameMusicData::RandomizeNumber`, `mmSingleRaceMusicData::LoadMusic`) |
+| The Start segment begins 1.25 s into the game, on the next beat | MM2 (`mmGame::StartMusic`, `DAT_005c3c20`) |
+| Idle: speed at or below 5 m/s for 5 s; the switch waits for the next measure. The idle timer starts expired, so in cruise (no countdown) a stationary player gets the idle segment at once; the race modes hold the idle logic from the music start until "Go!", which also resets the timer | MM2 (`MatchMusicToPlayerSpeed`, `DAT_005d3a7c` / `DAT_005d3a80` = 5.0; flag +0x50 set by `StartMusic` for races, cleared by `mmSingleCircuit` / `mmSingleBlitz` / `mmMultiRace` at the start) |
+| Leaving idle (above 5 m/s): Idle → Return, IdleCops → CopChase, on the next measure | MM2 (`MatchMusicToPlayerSpeed`) |
+| Stopping during a chase gives IdleCops in races; cruise has no idle-cop segment (the cruise table's column is loaded but its index never set), so the chase music keeps playing | MM2 (`mmSingleRoamMusicData::LoadMusic` leaves +0x30 at -1) |
+| Cop chase: when the pursuing-cop count goes from 0 to exactly 1; Return when it goes from 1 to 0, both on the next beat. Other changes (0 → 2, 2 → 0) switch nothing | MM2 (`UpdateMusic`) |
+| Big Air: when the car becomes airborne (once per jump); the motif plays as a secondary segment with one repeat (twice) from the next beat (flags DMUS_SEGF_SECONDARY, GRID and BEAT; the beat is assumed to win) | MM2 (`UpdateMusic`, `DMusicObject::PlayMotif`, `DAT_005d3a78` = 0x880) |
+| Pause: the Pause segment on the next beat; resuming restarts the previous segment from its beginning | MM2 (`mmPopup::PlayPauseMusic`, `PlayReturnMusic`) |
+| Finish: the race modes stop the music at once; the results roster then starts the results segment on the next beat (with an END embellishment, not rendered by dmusic) | MM2 (`mmSingleCircuit` / `mmSingleBlitz` `StopSegment`, `mmPopup::ShowRoster`) |
+| A segment switch to the segment already playing does nothing | MM2 (`DMusicObject::SegmentSwitch`) |
+
+Notes on the port:
+
+* MM2's measure switches are composer transitions (`AutoTransition` with the
+  groove command and `DMUS_COMPOSEF_MEASURE`). dmusic's composed fill
+  transitions are silent for styles without fill patterns, so the new
+  segment simply starts on the measure.
 * Music variation is random per play, as with DirectMusic's `rand()`-based
   pattern and variation choice. `$OPENMM2_MUSIC_SEED` fixes the seed for
   reproducible renders.
@@ -159,11 +182,11 @@ Two more fixes live in `MusicMotif.c`:
   samples, no silent seconds, per-second RMS between about -37 and -12 dBFS.
 * A full state sequence (racing → idle → cop chase → racing → paused →
   racing → results) renders without gaps.
-* The Big Air motif adds sound only in the measure after the trigger; the rest
-  of the render is bit-identical with a fixed seed.
+* The Big Air motif adds sound only from the beat after the trigger (it plays
+  twice); the render before it is bit-identical with a fixed seed.
 * Rendering runs at about 300× real time (release build); the player keeps
   about 85 ms (4096 frames at 48 kHz) buffered, which is also the worst-case
   latency of a command before the musical boundary it waits for.
 * `tests/audio/test_music.cpp` covers table parsing, loading, audible output,
-  the motif, silence after stop, the default-chord fix and streaming through
-  the mixer.
+  the motif, silence after stop, the default-chord fix, streaming through
+  the mixer and the `MusicDirector` rules.

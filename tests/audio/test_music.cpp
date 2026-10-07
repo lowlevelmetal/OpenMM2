@@ -1,6 +1,7 @@
 #include "TestData.h"
 #include "audio/Mixer.h"
 #include "audio/Music.h"
+#include "audio/MusicDirector.h"
 
 #include <gtest/gtest.h>
 
@@ -34,7 +35,107 @@ std::vector<float> renderSeconds(MusicEngine& engine, double seconds, std::vecto
     return out;
 }
 
+// Runs the director for `seconds` at a fixed speed and returns the commands.
+std::vector<MusicDirector::Command> run(MusicDirector& d, double seconds, float speed, int cops = 0,
+                                        bool airborne = false) {
+    std::vector<MusicDirector::Command> all;
+    for (int i = 0; i < static_cast<int>(seconds * 20.0 + 0.5); ++i) {
+        d.update(0.05f, speed, cops, airborne);
+        for (const auto& c : d.takeCommands())
+            all.push_back(c);
+    }
+    return all;
+}
+
 } // namespace
+
+TEST(MusicDirector, RaceStartIdleAndReturn) {
+    MusicDirector d(false);
+    EXPECT_TRUE(run(d, 1.0, 0.0f).empty()); // StartMusic waits 1.25 s
+    auto c = run(d, 0.5, 0.0f);
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Start);
+    EXPECT_EQ(c[0].timing, MusicTiming::Beat);
+    // The countdown holds the idle logic however long the car stands still.
+    EXPECT_TRUE(run(d, 10.0, 0.0f).empty());
+    d.raceStarted();
+    EXPECT_TRUE(run(d, 4.9, 0.0f).empty());
+    c = run(d, 0.3, 0.0f); // 5 s at or below 5 m/s: idle, on the next measure
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Idle);
+    EXPECT_EQ(c[0].timing, MusicTiming::Measure);
+    c = run(d, 0.1, 6.0f); // moving again: the Return segment
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Return);
+    EXPECT_EQ(c[0].timing, MusicTiming::Measure);
+}
+
+TEST(MusicDirector, CopChaseFollowsThePursuitCount) {
+    MusicDirector d(false);
+    run(d, 2.0, 10.0f);
+    d.raceStarted();
+    auto c = run(d, 0.1, 10.0f, 1); // 0 -> 1 cop: the chase, next beat
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::CopChase);
+    EXPECT_EQ(c[0].timing, MusicTiming::Beat);
+    EXPECT_TRUE(run(d, 1.0, 10.0f, 2).empty()); // 1 -> 2: nothing
+    EXPECT_TRUE(run(d, 1.0, 10.0f, 1).empty());
+    c = run(d, 6.0, 0.0f, 1); // stopped during the chase: the idle-cop segment
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::IdleCops);
+    c = run(d, 0.1, 10.0f, 1);
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::CopChase);
+    c = run(d, 0.1, 10.0f, 0); // 1 -> 0: Return
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Return);
+    EXPECT_TRUE(run(d, 1.0, 10.0f, 2).empty()); // 0 -> 2: no chase music
+}
+
+TEST(MusicDirector, CruiseGoesIdleAtOnceAndKeepsChasing) {
+    MusicDirector d(true);
+    auto c = run(d, 1.5, 0.0f);
+    ASSERT_EQ(c.size(), 2u); // Start, then idle at once: the idle timer starts expired
+    EXPECT_EQ(c[0].state, MusicState::Start);
+    EXPECT_EQ(c[1].state, MusicState::Idle);
+    run(d, 0.1, 10.0f);
+    c = run(d, 0.1, 10.0f, 1);
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::CopChase);
+    EXPECT_TRUE(run(d, 8.0, 0.0f, 1).empty()); // cruise has no idle-cop segment
+}
+
+TEST(MusicDirector, BigAirPauseAndResults) {
+    MusicDirector d(false);
+    run(d, 2.0, 10.0f);
+    d.raceStarted();
+    run(d, 0.1, 10.0f, 0, true);
+    EXPECT_TRUE(d.takeBigAir());
+    run(d, 0.5, 10.0f, 0, true); // still in the air: once per jump
+    EXPECT_FALSE(d.takeBigAir());
+    run(d, 0.1, 10.0f, 0, false);
+    run(d, 0.1, 10.0f, 0, true);
+    EXPECT_TRUE(d.takeBigAir());
+
+    d.pause();
+    auto c = d.takeCommands();
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Paused);
+    d.resume();
+    c = d.takeCommands();
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Start); // the segment before the pause, from its start
+
+    d.finish();
+    c = d.takeCommands();
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Silent);
+    d.results();
+    c = d.takeCommands();
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Results);
+    EXPECT_TRUE(run(d, 10.0, 0.0f).empty()); // the results segment is left alone
+}
 
 TEST(MusicTables, ParsesRaceAndCruiseTables) {
     const char* race =

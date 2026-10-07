@@ -108,20 +108,28 @@ private:
     std::unordered_map<std::string, DmSegment*> m_cache; // lower-case "name.sgt" -> segment
 };
 
-// Which music the game wants. The original's exact triggers are not known;
-// see docs/music.md for the inferred rules the game module applies.
+// Which music the game wants. MusicDirector (MusicDirector.h) ports MM2's
+// rules for when each is chosen; see docs/music.md.
 enum class MusicState {
     Silent,
     Menu,     // frontend ("UI")
-    Racing,   // Start, then Return after leaving another state
-    Idle,     // player stopped / not progressing
-    IdleCops, // idle while police are chasing
+    Racing,   // Start, then Return after leaving another state (tools)
+    Idle,     // player slow for a while
+    IdleCops, // idle during a cop chase
     CopChase, // police pursuing the player
     Paused,   // pause menu
     Results,  // race results
+    Start,    // the song's Start segment
+    Return,   // the song's Return / Restart segment
 };
 
 const char* toString(MusicState s);
+
+// When a state change takes effect. MM2's DMusicObject::SegmentSwitch(int)
+// starts the new segment on the next beat (DMUS_SEGF_BEAT) and its composer
+// transitions (AutoTransition with DMUS_COMPOSEF_MEASURE) on the next measure.
+// Auto keeps OpenMM2's default for setState() callers that do not say.
+enum class MusicTiming { Auto, Immediate, Beat, Measure };
 
 // Single-threaded music core: one performance for the soundtrack, one for the
 // "Big Air" motif (DirectMusic played it as a secondary segment; dmusic has no
@@ -144,8 +152,10 @@ public:
     void selectSong(int song, bool cruise);
     int song() const { return m_song; }
     bool cruise() const { return m_cruise; }
-    void setState(MusicState state);
+    void setState(MusicState state, MusicTiming timing = MusicTiming::Auto);
     MusicState state() const { return m_state; }
+    // The "Big Air" motif. DMusicObject::PlayMotif sets one repeat, so it
+    // plays twice.
     void triggerMotif();
     // "london", "sf", "underground" or "" to stop.
     void setAmbience(std::string_view which);
@@ -163,7 +173,7 @@ public:
 private:
     const MusicSong* currentSong() const;
     std::string segmentFor(MusicState state) const;
-    void transitionTo(const std::string& segment, bool immediate);
+    void transitionTo(const std::string& segment, MusicTiming timing);
     bool loadMotifStyle();
     void startMotif();
     void renderMotif(float* out, int frames);
@@ -183,6 +193,7 @@ private:
     std::string m_motifStyleName;
     std::int64_t m_motifDelay = -1;    // frames until a pending motif starts (-1: none)
     std::int64_t m_motifRemaining = 0; // frames until the motif is stopped
+    int m_motifRepeats = 0;            // plays left after the current one
     std::string m_ambienceSegment;
     std::vector<float> m_scratch;
 };
@@ -212,9 +223,11 @@ public:
     std::shared_ptr<StreamSource> ambienceStream() { return m_ambienceStream; }
 
     void playMenu();
-    // song < 0: random. Preloads the song's segments in the background, then plays Start.
-    void startRace(int song, bool cruise);
-    void setState(MusicState state);
+    // song < 0: random. Preloads the song's segments in the background, then
+    // plays Start, or with play = false only selects the song (a
+    // MusicDirector then starts it).
+    void startRace(int song, bool cruise, bool play = true);
+    void setState(MusicState state, MusicTiming timing = MusicTiming::Auto);
     void triggerBigAir();
     void setAmbience(std::string_view which);
     void playSegment(std::string_view name);

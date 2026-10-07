@@ -4,6 +4,7 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "asset/VehicleModel.h"
+#include "audio/MusicDirector.h"
 #include "audio/SoundBank.h"
 #include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
@@ -296,8 +297,11 @@ private:
         if (m_session)
             m_session->start();
         if (auto* music = ctx.music()) {
-            music->startRace(-1, m_result.config.mode == game::GameMode::Cruise);
+            // The song is chosen now; MusicDirector starts it 1.25 s in.
+            const bool cruise = m_result.config.mode == game::GameMode::Cruise;
+            music->startRace(-1, cruise, false);
             music->setAmbience(m_result.config.city);
+            m_musicDirector = std::make_unique<audio::MusicDirector>(cruise);
         }
         // Development aid for reproducible screenshots: "x,y,z,yaw,pitch".
         if (const char* cam = std::getenv("OPENMM2_DEBUG_CAMERA")) {
@@ -644,16 +648,26 @@ private:
                         o.driver->finish();
             }
         }
-        if (auto* music = ctx.music()) {
-            using game::session::MusicHint;
-            const auto hint = m_session->musicHint();
-            const auto state = hint == MusicHint::Results ? audio::MusicState::Results
-                             : hint == MusicHint::Idle    ? audio::MusicState::Idle
-                                                          : audio::MusicState::Racing;
-            if (state != m_musicState) {
-                music->setState(state);
-                m_musicState = state;
+        if (auto* music = ctx.music(); music && m_musicDirector) {
+            using game::session::Phase;
+            auto& director = *m_musicDirector;
+            const Phase phase = m_session->phase();
+            if (phase != Phase::Countdown)
+                director.raceStarted();
+            if (phase == Phase::PostRace && !m_musicFinished) {
+                director.finish(); // the race modes stop the music at the finish
+                m_musicFinished = true;
             }
+            if (phase == Phase::Done && !m_musicResults) {
+                director.results();
+                m_musicResults = true;
+            }
+            director.update(dt, m_player->sim().speed(), audio::game::SirenPlayer::copsPursuingPlayer(),
+                            m_carAudio.airborne());
+            for (const auto& c : director.takeCommands())
+                music->setState(c.state, c.timing);
+            if (director.takeBigAir())
+                music->triggerBigAir();
         }
         if (m_session->finished() && !m_resultsShown) {
             m_resultsShown = true;
@@ -1178,7 +1192,8 @@ private:
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;
     phys::PedalInput m_lastPedals;
-    audio::MusicState m_musicState = audio::MusicState::Racing;
+    std::unique_ptr<audio::MusicDirector> m_musicDirector;
+    bool m_musicFinished = false, m_musicResults = false;
     Vec3 m_position;
     float m_yaw = 0.0f, m_pitch = 0.0f;
 };
