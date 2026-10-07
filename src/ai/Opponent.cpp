@@ -105,7 +105,14 @@ void Opponent::onImpact(const phys::Impact& impact) {
 int Opponent::lapsDone() const {
     if (!m_course.loop() || m_course.length() <= 0.0f)
         return 0;
-    return std::max(0, static_cast<int>(std::floor(m_progress / m_course.length())));
+    // Reaching the finish (within kFinishRadius, as PlanRoute decides)
+    // completes the last lap.
+    if (m_settings.laps > 0 && m_course.raceDistance(m_settings.laps) - m_progress <= kFinishRadius)
+        return m_settings.laps;
+    // Laps end at the finish line, which can lie a few metres behind or
+    // ahead of the car's grid place.
+    const float lineOffset = m_course.raceDistance(1) - m_course.length();
+    return std::max(0, static_cast<int>(std::floor((m_progress - lineOffset) / m_course.length())));
 }
 
 void Opponent::trackProgress(float dt) {

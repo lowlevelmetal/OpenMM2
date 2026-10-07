@@ -146,10 +146,10 @@ float turnBrake(const Course& course, float s, float side, float speed, float la
                 float* vmax = nullptr);
 
 // Running estimate of how hard a car decelerates with the brakes on
-// (OpenMM2, inferred adaptation): the opponents' "_opp" tunes are MM1-format
-// files whose brakes are several times weaker in the current physics than
-// the MM2 player tunes, so MM1's assumption that every car can lose
-// 23.76 m/s^2 would send them into corners far too fast.
+// (OpenMM2, inferred adaptation): MM1 assumes every car can lose 23.76 m/s^2,
+// which no retail tune achieves in this physics (about 11 m/s^2 for the
+// "_opp" tunes, see docs/ai.md), so planning with it would send the cars into
+// corners too fast.
 class BrakeMeter {
 public:
     void reset(float initial = 6.0f) {

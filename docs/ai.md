@@ -271,13 +271,14 @@ not decoded). Bends closer than 25 m (within 40 m) are merged into turns.
 | Target behind a wall or median → pulled closer (needs `settings.world`) | **inferred** |
 | Rubber-banding | none: MM1 has no code that scales opponents by position |
 
-**Braking capability.** The opponents' `*_opp.vehCarSim` tunes are MM1-format
-files. In the current physics they accelerate and brake far more weakly
-than the player tunes (vpcoop_opp: 0→9 m/s in 9 s and 30→1 m/s in 16.6 s,
-against 3 s and 0.8 s for vpcoop), so MM1's assumption of 23.76 m/s² of
-braking sent them into corners far too fast. `BrakeMeter` measures what the
-car achieves under braking and CalcSpeed uses that. If the physics port of
-MM1-format tunes changes, this adapts automatically.
+**Braking capability.** MM1's CalcSpeed assumes every car can lose
+23.76 m/s². The opponents' `*_opp.vehCarSim` tunes (MM1-format files) brake
+at about 11 m/s² in this physics (vpcoop_opp: 30→1 m/s in about 2.7 s),
+so `BrakeMeter` measures what the car achieves under braking (starting from
+a cautious 6 m/s²) and CalcSpeed uses that. Until the drivetrain fix in
+`docs/physics.md` ("Wheel spin and the stiff `*_opp` tyres") these tunes
+braked and launched several times more weakly; the meter adapted then and
+adapts to any later physics change.
 
 ### Police (`aiVehiclePolice`, `aiGoalChase`, `aiPoliceForce`)
 
@@ -294,18 +295,22 @@ MM1-format tunes changes, this adapts automatically.
 
 ### Evidence (retail data, `test_game`)
 
-* London circuit0, amateur, 7 opponents, 3 laps: all finish in 57–60 s;
-  flying laps 12.5–15.5 s on a 412–449 m line (27–35 m/s), none more than
-  1 m beyond a curb for longer than 0.7 s, no resets.
+* London circuit0, amateur, 7 opponents, 3 laps: all finish in 44–50 s;
+  first laps 18–20 s from the grid, flying laps 12.2–15.5 s on a 412–449 m
+  line (27–35 m/s), no resets. The field reaches the first bend together:
+  car 7, three abreast with cars 5 and 6 at 25–30 m/s, rides up on car 5 and
+  runs up to 22 m wide for 4.7 s before rejoining (a first-lap racing
+  incident, tolerated by the test); otherwise no car is more than 1 m beyond
+  a curb for longer than 2 s.
 * London race0 with full ambient traffic (solid traffic bodies): all 4
-  finish in 48.4–49.5 s over 945–973 m, no backups or resets.
+  finish in 34–37 s over 945–973 m, no backups or resets.
 * A car put nose-first against a wall: backs up after 3.2 s, is put back on
   its line at 10 s, and is 150 m along it at 30 s.
 * A player-tuned car passing a parked London cop at up to 26 m/s: the chase
-  starts at 6.8 s (reason: speeding); the suspect slows to 8 m/s at 10 s and
-  the cop is within 8 m at 16.8 s, closing in. At 13 m/s no chase starts.
+  starts at 5.5 s (reason: speeding); the suspect slows to 8 m/s at 10 s and
+  the cop is within 8 m at 10.7 s, closing in. At 13 m/s no chase starts.
 * Sweep of every circuit and checkpoint race, both cities and difficulties,
-  one lap, all opponents (`OPENMM2_AI_SWEEP=1`): 487 of 517 opponents
+  one lap, all opponents (`OPENMM2_AI_SWEEP=1`): 488 of 517 opponents
   finish. Nearly all others end wrecked (point-to-point opponents stay
   wrecked in MM1), mostly at SF hairpins and jumps.
 
