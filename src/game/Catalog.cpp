@@ -4,6 +4,8 @@
 #include "core/StringUtil.h"
 #include "data/TextTables.h"
 
+#include <format>
+
 namespace mm2::game {
 namespace {
 
@@ -59,24 +61,31 @@ std::optional<CityInfo> parseCityInfo(std::string_view name, std::string_view te
 
 Catalog Catalog::load(const vfs::Vfs& vfs) {
     Catalog cat;
-    if (auto list = vfs.readAll("tune/cars.txt")) {
-        for (auto line : data::splitLines(asText(*list))) {
-            line = str::trim(line);
-            if (line.empty())
-                continue;
-            const std::string path = "tune/" + str::lower(line);
-            auto bytes = vfs.readAll(path);
-            if (!bytes) {
-                log::warn("catalog: {} listed in tune/cars.txt is missing", path);
-                continue;
-            }
-            if (auto v = parseVehicleInfo(asText(*bytes)))
-                cat.m_vehicles.push_back(std::move(*v));
-            else
-                log::warn("catalog: {} has no BaseName", path);
+    // MM2 mmVehList::LoadAll: the cars of its built-in list in that order,
+    // then any other tune/vp*.info. tune/cars.txt is never read.
+    static constexpr const char* kBuiltIn[] = {"vpcoop",   "vpbug",    "vpcab",   "vpcaddie", "vpford",
+                                               "vpmustang99", "vpcop", "vpbullet", "vppanoz", "vpbus",
+                                               "vpddbus",  "vpcentury", "vpcoop2k", "vpdune",  "vpvwcup",
+                                               "vp4x4",    "vpauditt", "vpdb7",   "vppanozgt", "vpsemi"};
+    auto loadInfo = [&](const std::string& path) {
+        auto bytes = vfs.readAll(path);
+        if (!bytes)
+            return;
+        auto v = parseVehicleInfo(asText(*bytes));
+        if (!v) {
+            log::warn("catalog: {} has no BaseName", path);
+            return;
         }
-    } else {
-        log::warn("catalog: tune/cars.txt missing");
+        if (!cat.vehicle(v->baseName))
+            cat.m_vehicles.push_back(std::move(*v));
+    };
+    for (const char* name : kBuiltIn)
+        loadInfo(std::format("tune/{}.info", name));
+    for (const auto& e : vfs.listFiles()) {
+        const std::string path = str::lower(e.path);
+        if (path.starts_with("tune/vp") && path.ends_with(".info") && path.find('/', 5) == std::string::npos &&
+            !cat.vehicle(path.substr(5, path.size() - 5 - 5)))
+            loadInfo(path);
     }
 
     for (const auto& e : vfs.listFiles()) {

@@ -21,6 +21,12 @@ TEST(Catalog, RetailCatalog) {
     MM2_REQUIRE_GAME_DATA();
     const auto cat = game::Catalog::load(*test::gameData());
     EXPECT_EQ(cat.vehicles().size(), 20u);
+    // mmVehList::LoadAll's built-in order.
+    ASSERT_GE(cat.vehicles().size(), 20u);
+    EXPECT_EQ(cat.vehicles()[0].baseName, "vpcoop");
+    EXPECT_EQ(cat.vehicles()[1].baseName, "vpbug");
+    EXPECT_EQ(cat.vehicles()[7].baseName, "vpbullet");
+    EXPECT_EQ(cat.vehicles()[19].baseName, "vpsemi");
     ASSERT_TRUE(cat.vehicle("vpbug"));
     EXPECT_EQ(cat.vehicle("vpbug")->description, "VW New Beetle");
     ASSERT_TRUE(cat.city("london"));
