@@ -3,8 +3,8 @@
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
 Summary: 608 reachable functions (overloads counted separately) in 38
-classes and the free functions; ported 381 (of which newly ported 62),
-replaced 66, not needed 151, open 10. Constructors, destructors and the
+classes and the free functions; ported 382 (of which newly ported 62),
+replaced 66, not needed 151, open 9. Constructors, destructors and the
 deleting destructors of a class share one row. Some behaviours inside
 ported or replaced functions are still open too; every open item is listed
 under Open items.
@@ -31,7 +31,9 @@ parallel (merged into this branch): the vehicle audit the cars' reset
 places (`SimVehicle::setResetPos` / `reset` / `settleOnGround` /
 `respawnAt`), the input audit mmReplayManager's input quantisation, the HUD
 audit the icons and the map mode, the audio audit the music restart and the
-final stretch, the props audit the restart's prop reset. Rows credit them.
+final stretch, the props audit the restart's prop reset, the world-objects
+audit the gizmos and the cable cars (none in network games). Rows credit
+them.
 
 ## Spawns at a glance
 
@@ -107,7 +109,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmGame::mmGame`, `~mmGame`, `` `scalar_deleting_destructor' `` | not needed | — | constants: auto-reverse 0.8 / 5, throttle cap 1, the eight icon colours (`hud::netIconColor`) |
 | `mmGame::Init` | ported | `RaceScreen::loadStep` parts | order above; the physics sample 1/35 s, 3 samples (phys-core); the TEXTURED SKY option (integration); the results title is the frontend's |
 | `mmGame::InitGameStrings` | ported | `Session::updateOpponents` | "Opponent 1..8" (13-20), "finished 1st..8th" (21-28) |
-| `mmGame::InitGizmos` | open | — | world-objects subsystem: sailboat, bridge (proximity triggers, multiplayer London bridges state 3), train, ferry (single player), parked cars (not in multiplayer cruise or Cops and Robbers); `<city>_<type>_<mode><race>.pathset` before `<city>_<type>.pathset` |
+| `mmGame::InitGizmos` | ported | `game::world::initGizmos`, `GizmoKinds::forSession`, `RaceScreen::loadEffects` | the world-objects audit: sailboats, bridges (London's open in a network game), trains, ferries (single player), parked cars (not in network cruise or Cops and Robbers), the race's own path set first; see [world-objects.md](world-objects.md) |
 | `mmGame::InitWeather` | ported | `RaceScreen::weatherFriction`, `carLights`, effects | lights for evening, night or fog; rain friction 0.75 at night else 0.8 |
 | `mmGame::InitOtherPlayers` | ported (new) | `RaceSetup::playerDrop`, `SimVehicle::settleOnGround` (vehicle audit) | from the body 2 m up to 10 m down, 0.9 m above the hit; OpenMM2 put the model origin on the ground (0.7 m lower) |
 | `mmGame::CollideAIOpponents` | ported (new) | `RaceScreen::spawnOpponents` | the same probe from each racer's model origin |
@@ -488,7 +490,6 @@ the game tree: it records the player's inputs every frame and
 
 | MM2 | What it needs |
 | --- | --- |
-| `mmGame::InitGizmos` | sailboats, bridges, trains, ferries, parked cars (world-objects subsystem) |
 | `aiMap::Reset` in `mmGame::Reset` | the ambient traffic, pedestrians and lights back to their start (seed 1) on a restart (ai subsystem: an `ai::World::reset`) |
 | F2 pause (`mmGame::UpdateDebugInput`, `UpdatePaused`) | F2 is OpenMM2's fly camera; MM2 pauses a single-player game (with the HUD off) |
 | F4 inside the menu (`mmPopup::Update` state 6) | closes the menu and restarts |
@@ -516,5 +517,3 @@ the game tree: it records the player's inputs every frame and
 - audio: the ambience segment only with music off and London's for every
   city but "sf"; multiplayer modes load none.
 - rendering: the stands' LOD; the player's siren lights.
-- world-objects: `mmGame::InitGizmos`, and no rail cars in multiplayer
-  (`mmGameMulti::Init`).
