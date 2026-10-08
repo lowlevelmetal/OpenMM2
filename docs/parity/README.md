@@ -186,6 +186,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/audio/Wav.h` | 27 | F | audio |
 | `src/audio/game/Ambience.cpp` | 390 | P | audio |
 | `src/audio/game/Ambience.h` | 118 | P | audio |
+| `src/audio/game/AudioManager.cpp` | 32 | P | mm2-audio |
+| `src/audio/game/AudioManager.h` | 50 | P | mm2-audio |
 | `src/audio/game/AudioTables.cpp` | 541 | P | audio |
 | `src/audio/game/AudioTables.h` | 297 | P | audio |
 | `src/audio/game/CarAudio.cpp` | 1127 | P | audio |
