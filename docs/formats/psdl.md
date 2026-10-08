@@ -232,11 +232,47 @@ bits (0x04..0x80, 0x0200..0x1000, 0x4000) and the role of `height2` are
 unknown. Junction walls are built along perimeter edges whose bit is set in
 any mask word.
 
+## Drawing (sdlPage16::Draw)
+
+MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
+detail chosen per room by `cityLevel::DrawRooms`, the primitives coloured by
+the room colour or `GetShadedColor`). `src/city/SdlDraw.{h,cpp}`
+(`buildSdlRoomDraw`, `sdlArcMap`, `sdlRoomCentroid`, `sdlRoomBoundSphere`,
+`sdlRoomLod`, `sdlBackface`) ports it, with `sdlPage16::ArcMap`,
+`GetCentroid`, `ComputeBoundSphere` and `sdlCommon::BACKFACE`, and
+`CityRenderer` draws its primitives:
+
+- Road and divided road strips: level 0 one strip from outer edge to outer
+  edge with the group's third texture over every other section; level 1 the
+  same over every section with the outer edges lowered 0.15 m; levels 2 and
+  3 the sidewalks (second texture) and the road (first, in two halves
+  mirrored about the centre line) separately, level 3 with the curb line
+  raised 0.15 m and half-bright curb faces. `ArcMap` gives s along the strip
+  (whole repeats of about the average width, run back and forth) and t
+  across. Dividers by type (flat, raised with bevels, wedged) at levels 2
+  and 3.
+- Sidewalk strips: planar 4 m repeats; curb faces and end caps half bright
+  at level 3.
+- Crosswalks, road fans and roofs: drawn only when not above the camera;
+  fans and roofs planar 8 m repeats.
+- Facades (repeats read unsigned, v 0 at the bottom) and slivers: back-face
+  culled and shaded by the light of the last FacadeBound attribute.
+- An untextured flat-colour facade path at level 0 hangs on a switch that is
+  never set.
+
+Not yet ported: the tunnel attribute (case 0x48: walls, railings 0.333 x
+height1 out, sloped sides at 0.75 / 0.25 of the height and ceilings with
+their own mapping). `CityRenderer` still draws tunnels from the CityMesh
+reconstruction below, at every level of detail. `GetDrawnSDLPrims` (an
+untextured primitive list) is not called anywhere in the executable.
+
 ## Geometry builder (CityMesh)
 
 `buildCityMesh()` produces per-room batches keyed by (texture index, surface
-kind), CCW front faces, with flat normals and Direct3D-style UVs. The
-following parts are *reconstructions*, not known original behaviour:
+kind), CCW front faces, with flat normals and Direct3D-style UVs. The game
+uses it for the tunnels the drawing port lacks and for the static probe soup
+(`World::probe`: line-of-sight tests); mm2tool exports it. The following
+parts are *reconstructions*, not known original behaviour:
 
 - UVs: road and rectangle strips run u 0→1 across, v along the length / width.
   Fans and roofs use planar world mapping at 8 m per repeat. Facades use
@@ -246,39 +282,7 @@ following parts are *reconstructions*, not known original behaviour:
 - Crosswalks and flat medians are lifted 1 cm to avoid z-fighting.
 - Tunnel walls rise `height1` (or `max(height1, height2)` with a ceiling). Railings
   are double-sided.
-- Low-detail textures are not used yet.
-
-MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
-detail, the drawn primitives coloured by `GetShadedColor`); compared with
-it (build 3393) the builder differs as follows, not yet ported:
-
-- Levels of detail (road strips): 0 draws one strip from outer edge to
-  outer edge with the group's third texture (road LOD) over every other
-  section; 1 the same strip over every section with the outer edges lowered
-  0.15 m; 2 and 3 draw the sidewalks (second texture) and the road (first)
-  separately, and only level 3 raises the curb line by 0.15 m and adds the
-  curb faces, at half brightness. The builder raises curbs to the outer
-  vertex height.
-- Road and rectangle strips: `ArcMap` texture coordinates: t is 1 at the
-  curbs and 0 at the road's centre line (the texture mirrored about it),
-  s the distance along the strip scaled to a whole number of repeats of
-  about the strip's average width and run back and forth (each segment's s
-  added while the running value is not positive, subtracted while it is).
-- Sidewalk strips: planar 4 m texture repeats (x / 4 and z / 4, offset by
-  the whole repeats at the first vertex); curb end caps are half-bright
-  triangles.
-- Crosswalks: texture (1, 0) and (0, 0) on the first pair, v = the length
-  over the width on the second pair. Road fans, crosswalks and roofs are
-  only drawn when they are not above the camera.
-- Facades: u and v are the stored repeats read *unsigned*, v 0 at the
-  bottom and the repeat at the top. Slivers: u = round(length x density),
-  v = (vertex height - top) x density. Both are back-face culled and
-  coloured by the light of the last FacadeBound attribute (its first
-  word indexes `sdlCommon::sm_LightTable`).
-- Fans and roofs: planar 8 m repeats, as the builder (MM2 subtracts the
-  whole repeats at the first vertex, which wrap addressing ignores).
-- `GetDrawnSDLPrims` (an untextured primitive list) is not called anywhere
-  in the executable.
+- Low-detail textures are not used.
 
 ## Collision polygons (sdlPage16::Collect)
 
