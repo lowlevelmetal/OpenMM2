@@ -1233,6 +1233,10 @@ private:
             } else if (e.type == EventType::Restart) {
                 // The race starts over (mmGame::Reset): every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
+                // lvlLevel::ResetInstances first: every prop back in its
+                // place, standing (the banger managers' Reset).
+                if (m_bangers)
+                    m_bangers->reset();
                 phys::setElasticityCap(phys::kElasticityCap);
                 m_player->reset(m_spawn);
                 if (m_vehicleFx)
