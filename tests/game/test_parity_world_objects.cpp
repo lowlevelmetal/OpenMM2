@@ -341,3 +341,28 @@ TEST(WorldGizmos, BridgeRoomsFlagged) {
     // The parked cars went to the props.
     EXPECT_GT(set.instances().size(), 100u);
 }
+
+// lvlLandmark (a .inst record with flag 0x100 and without 0x200): its
+// IsCollidable answers false, IsTerrainCollidable true; the movers gather it
+// through their city flag only (dgPhysManager::GatherCollidables).
+TEST(WorldLandmarks, CollideThroughTheCityFlagOnly) {
+    MM2_REQUIRE_GAME_DATA();
+    const auto& v = *test::gameData();
+    auto city = city::loadCity(v, "london");
+    ASSERT_TRUE(city);
+    CityLevel level(*city, v, {});
+    int landmarks = 0;
+    for (const auto& inst : city->instances) {
+        if (!(inst.flags & 0x100) || (inst.flags & 0x200))
+            continue;
+        std::vector<phys::Instance*> listed;
+        level.instances(inst.room, listed);
+        for (const auto* i : listed)
+            if (const auto* s = dynamic_cast<const StaticInstance*>(i); s && s->name == inst.name) {
+                EXPECT_FALSE(s->collidable) << inst.name;
+                EXPECT_TRUE(s->terrainCollidable) << inst.name;
+                ++landmarks;
+            }
+    }
+    EXPECT_GT(landmarks, 50);
+}
