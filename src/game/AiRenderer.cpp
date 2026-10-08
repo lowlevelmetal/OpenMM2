@@ -35,7 +35,9 @@ const asset::PedType* AiRenderer::pedType(const std::string& name) {
         std::string error;
         auto read = [this](std::string_view path) { return m_vfs.readAll(path); };
         auto type = asset::loadPedType(name, read, &error);
-        if (!type)
+        if (type)
+            asset::normalizePedRoots(*type); // pedAnimation::Load
+        else
             log::warn("ai: pedestrian type {}: {}", name, error);
         it = m_pedTypes.emplace(name, std::move(type)).first;
     }
@@ -46,18 +48,11 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
     const asset::PedAnimation* anim = type.animation(ped.animFile);
     if (!anim)
         anim = type.animation(ped.state);
+    // pedAnimationInstance::Draw poses the sequence's current frame with the
+    // root translations pedAnimation::Load adjusted (normalizePedRoots): the
+    // pose starts and ends at the pedestrian's origin, which carries the
+    // motion.
     asset::posePed(type.skeleton, anim, ped.frame, m_bones);
-    // pedAnimation::Load takes the root's straight-line x/z drift over the
-    // clip out of every frame: the pedestrian moves by its sequence's speed,
-    // so the pose stays in place.
-    if (anim && anim->frameCount > 1) {
-        const Vec3 drift = anim->rootTranslation(anim->frameCount - 1) - anim->rootTranslation(0);
-        const float k = std::clamp(ped.frame, 0.0f, static_cast<float>(anim->frameCount - 1)) /
-                        static_cast<float>(anim->frameCount - 1);
-        const Vec3 shift{drift.x * k, 0.0f, drift.z * k};
-        for (auto& b : m_bones)
-            b.m3 -= shift;
-    }
     // aiPedestrianInstance::Draw: the posed model within 35 m of the camera,
     // the stick figure (pedAnimation::DrawSkeleton) beyond.
     if (ped.transform.m3.dist2(camera.position()) >= 1225.0f) {
