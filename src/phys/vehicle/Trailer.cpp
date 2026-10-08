@@ -72,6 +72,7 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     }
     body.collisionBound = m_bound.get();
     body.boundOrigin = {};
+    body.aboveCentreOfMass = false; // vehTrailerInstance::GetPosition
     body.resetCollider();
 
     // Wheels: vehWheel::Init without a vehCarSim (the body frame, a static

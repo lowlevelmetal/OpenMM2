@@ -251,3 +251,38 @@ TEST(VehicleParity, CtrlBBreaksTheTrailerHitch) {
     Trailer::breakKeyPressed = false;
     EXPECT_TRUE(trailer.joint.isBroken());
 }
+
+// The level's sphere of a car (vehCarModel::GetPosition, lvlInstance::
+// GetRadius): one up axis above the centre of mass, with the body
+// geometry's radius; a trailer's (vehTrailerInstance) sits at its centre of
+// mass.
+TEST(VehicleParity, VehicleSphereIsMm2s) {
+    CarSim car;
+    car.init(CarSimParams{}, VehicleGeometry::placeholder());
+    Mat34 m = Mat34::identity();
+    m.m0 = {0.0f, 1.0f, 0.0f}; // on its side
+    m.m1 = {-1.0f, 0.0f, 0.0f};
+    m.m3 = {10.0f, 2.0f, -5.0f};
+    car.reset(m);
+    const Vec3& p = car.body.ics.matrix.m3;
+    const Vec3 c = car.body.position();
+    EXPECT_FLOAT_EQ(c.x, p.x - 1.0f);
+    EXPECT_FLOAT_EQ(c.y, p.y);
+    EXPECT_FLOAT_EQ(c.z, p.z);
+    // Without its model, the bound's sphere; with it, the geometry's.
+    EXPECT_FLOAT_EQ(car.body.radius(), car.body.Body::radius());
+    car.body.geometryRadius = 3.25f;
+    EXPECT_FLOAT_EQ(car.body.radius(), 3.25f);
+
+    TrailerGeometry tg;
+    for (std::size_t i = 0; i < 4; ++i)
+        tg.wheels[i] = VehicleGeometry::placeholder().wheels[i];
+    tg.carHitch = Vec3{0.0f, 0.5f, 2.5f};
+    tg.trailerHitch = Vec3{0.0f, 0.5f, -3.0f};
+    Trailer trailer;
+    trailer.init(TrailerParams{}, TrailerJointParams{}, tg, car);
+    const Vec3 t = trailer.body.position();
+    EXPECT_EQ(t.x, trailer.body.ics.matrix.m3.x);
+    EXPECT_EQ(t.y, trailer.body.ics.matrix.m3.y);
+    EXPECT_EQ(t.z, trailer.body.ics.matrix.m3.z);
+}

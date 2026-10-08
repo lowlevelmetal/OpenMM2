@@ -4,6 +4,7 @@
 #include "phys/World.h"
 #include "phys/vehicle/Drivetrain.h"
 #include "phys/vehicle/TuneParams.h"
+#include "phys/vehicle/VehicleBody.h"
 #include "phys/vehicle/VehicleGeometry.h"
 #include "phys/vehicle/Wheel.h"
 
@@ -101,7 +102,7 @@ public:
     // breaks. The game sets it once a frame.
     static inline bool breakKeyPressed = false;
 
-    Body body;
+    VehicleBody body;
     TrailerJoint joint;
     TrailerParams params;
     Vec3 carHitchOffset;     // tractor InertialCS space
