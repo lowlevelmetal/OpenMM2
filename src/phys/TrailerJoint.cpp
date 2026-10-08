@@ -137,7 +137,8 @@ void TrailerJoint::reset() {
 void TrailerJoint::setPosition(const Vec3& pos) {
     for (auto [ics, o] : {std::pair{ics1, offset1}, std::pair{ics2, offset2}}) {
         const Mat34& m = ics->matrix;
-        const Vec3 r{(m.m2.x * o.z + m.m1.x * o.y) + m.m0.x * o.x, (m.m0.y * o.x + m.m2.y * o.z) + m.m1.y * o.y,
+        const Vec3 r{(m.m2.x * o.z + m.m1.x * o.y) + m.m0.x * o.x,
+                     (m.m0.y * o.x + m.m2.y * o.z) + m.m1.y * o.y,
                      (m.m0.z * o.x + m.m2.z * o.z) + m.m1.z * o.y};
         ics->matrix.m3 = {pos.x - r.x, pos.y - r.y, pos.z - r.z};
     }

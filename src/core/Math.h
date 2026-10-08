@@ -159,7 +159,8 @@ struct Mat34 {
     // p * M (point, includes translation). AGE: Vector3::Dot(const Vector3&,
     // const Matrix34&) and Matrix34::Transform.
     constexpr Vec3 transform(const Vec3& p) const {
-        return {((m1.x * p.y + m2.x * p.z) + m0.x * p.x) + m3.x, ((m0.y * p.x + m1.y * p.y) + m2.y * p.z) + m3.y,
+        return {((m1.x * p.y + m2.x * p.z) + m0.x * p.x) + m3.x,
+                ((m0.y * p.x + m1.y * p.y) + m2.y * p.z) + m3.y,
                 ((m0.z * p.x + m1.z * p.y) + m2.z * p.z) + m3.z};
     }
     // v * M3x3 (direction). AGE: Vector3::Dot3x3.

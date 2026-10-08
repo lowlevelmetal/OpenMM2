@@ -94,7 +94,8 @@ void InertialCS::finishForces(float, float invDt) {
                    mass * gravity.z + linearForce.z};
     // phInertialCS::Update(): the contact accumulators join this sample's
     // forces.
-    linearForce = {contactForce.x + linearForce.x, contactForce.y + linearForce.y, contactForce.z + linearForce.z};
+    linearForce = {contactForce.x + linearForce.x, contactForce.y + linearForce.y,
+                   contactForce.z + linearForce.z};
     angularTorque = {contactTorque.x + angularTorque.x, contactTorque.y + angularTorque.y,
                      contactTorque.z + angularTorque.z};
 }
@@ -212,7 +213,8 @@ void InertialCS::finishUpdate(float h) {
         // The sample's rotation (and the rotational push) about its axis
         // (Matrix34::RotateUnitAxis).
         Vec3& turn = turnForce;
-        turn = {h * angularVelocity.x + turn.x, h * angularVelocity.y + turn.y, h * angularVelocity.z + turn.z};
+        turn = {h * angularVelocity.x + turn.x, h * angularVelocity.y + turn.y,
+                h * angularVelocity.z + turn.z};
         const float a2 = age::mag2(turn);
         if (1e-15 < static_cast<double>(a2)) {
             const float angle = std::sqrt(a2);

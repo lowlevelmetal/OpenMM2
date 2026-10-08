@@ -115,7 +115,8 @@ void Impact::startMakingNewImpact(float d, const Vec3& n, const Vec3& p, Collide
         position = {((m->m2.x * p.z + m->m0.x * p.x) + m->m1.x * p.y) + m->m3.x,
                     ((p.z * m->m2.y + p.y * m->m1.y) + m->m0.y * p.x) + m->m3.y,
                     ((p.z * m->m2.z + p.y * m->m1.z) + m->m0.z * p.x) + m->m3.z};
-        normal = {(m->m0.x * n.x + m->m2.x * n.z) + m->m1.x * n.y, (m->m0.y * n.x + n.z * m->m2.y) + n.y * m->m1.y,
+        normal = {(m->m0.x * n.x + m->m2.x * n.z) + m->m1.x * n.y,
+                  (m->m0.y * n.x + n.z * m->m2.y) + n.y * m->m1.y,
                   (m->m0.z * n.x + n.z * m->m2.z) + n.y * m->m1.z};
     }
     depth = d;
