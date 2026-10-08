@@ -1218,6 +1218,18 @@ private:
                 at = hit.position;
                 return true;
             });
+            // aiPedestrian's wall probe is dgPhysManager::Collide with the
+            // wheels' mask: lvlSDL::CollideProbe's polygons and the objects
+            // flagged 0x20. (MM2 keeps a segment cache per pedestrian whose
+            // start room is the pedestrian's; here each probe finds its rooms
+            // afresh.)
+            m_ai->pedestrians().setProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
+                phys::RayHit hit;
+                if (!m_world->wheelProbe(from, to, hit, nullptr, nullptr))
+                    return false;
+                at = hit.position;
+                return true;
+            });
         }
     }
 
