@@ -34,13 +34,15 @@ VehicleEffects::VehicleEffects(const EffectLibrary& library, const VehicleFxSetu
     : m_setup(setup), m_sparks(setup.sparkColors) {
     // vehCarDamage::Init and the car's file: the shared rule.
     engineSmokeRule() = setup.smokeRule;
+    // vehWheelPtx::vehWheelPtx (ConstructClass: the shared rules) and Init.
     const ParticleSheet sheet = EffectLibrary::wheelSheet();
     m_wheelPtx.init(kWheelParticles, sheet.framesWide, sheet.framesHigh);
     m_wheelPtx.rng().seed(0x1234u);
     for (int i = 0; i < EffectLibrary::kWheelRules; ++i)
         if (const BirthRule* r = library.wheelRule(i))
             m_wheelRules[static_cast<std::size_t>(i)] = *r;
-    // mmGame::InitWeather: in rain the smoke rule becomes a copy of splash.
+    // mmGame::InitWeather: in rain the smoke rule becomes a copy of splash
+    // (asBirthRule::Copy: every field FileIO reads).
     if (setup.rain)
         m_wheelRules[4] = m_wheelRules[6];
     m_smoke.init(kSmokeParticles, 2, 2);

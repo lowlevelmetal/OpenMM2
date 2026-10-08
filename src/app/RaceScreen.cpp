@@ -1229,8 +1229,11 @@ private:
                     m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
-                // The race starts over (mmGame::Reset): every car to its start,
+                // The race starts over (mmGame::Reset): every prop back in its
+                // place (lvlLevel::ResetInstances), every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
+                if (m_bangers)
+                    m_bangers->reset();
                 phys::setElasticityCap(phys::kElasticityCap);
                 m_player->reset(m_spawn);
                 if (m_vehicleFx)
@@ -2058,14 +2061,19 @@ private:
         const auto impacts = fx.takeImpacts();
         if (!m_bangers || !m_bangerData)
             return;
-        const Mat34 body = sim.modelMatrix();
+        const Mat34 body = sim.modelMatrix(); // vehBreakableMgr::Init: the car's matrix
         auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
             const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
             if (!data)
                 return false;
-            r.detach(b.part);
-            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed,
-                                 sim.body.room);
+            // vehBreakableMgr::Reset (the car's damage cleared) takes the
+            // ejected part out of the world again (dgHitBangerInstance::Detach).
+            r.setEjectedPartReset([this](std::size_t i) {
+                if (m_bangers)
+                    m_bangers->detachHit(i);
+            });
+            r.detach(b.part, m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(),
+                                                  Mat34::translation(b.pivot) * body, speed, sim.body.room));
             return true;
         };
         for (const auto& impact : impacts)
