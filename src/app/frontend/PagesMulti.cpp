@@ -534,8 +534,10 @@ public:
     bool modal() const override { return m_editing; }
 
     void modalInput(ui::UiFrame& f) override {
+        // NetArena::NetArena: the chat field takes 128 characters.
+        constexpr std::size_t kMaxLength = std::min<std::size_t>(128, net::kMaxChatLength);
         for (char c : f.nav.text)
-            if (static_cast<unsigned char>(c) >= 0x20 && c != 0x7F && m_text.size() < net::kMaxChatLength)
+            if (static_cast<unsigned char>(c) >= 0x20 && c != 0x7F && m_text.size() < kMaxLength)
                 m_text.push_back(c);
         if (f.nav.backspace && !m_text.empty()) {
             std::size_t n = m_text.size() - 1;
