@@ -78,7 +78,12 @@ cams.display();                          // draw body / hide it / draw the dash 
 * **Probe.** `CameraProbe(from, to, hit)` returns the nearest hit on the
   segment, with the hit's fraction along it. It is used for the floor and
   ceiling clamp (`MinMax`) and for keeping the camera out of walls
-  (`Collide`). Without a probe the cameras still work, without collision.
+  (`Collide`), and for the big vehicles' overhead test. MM2's cameras use
+  `dgPhysManager::Collide` with mask 0x20, ignoring the player's car (the
+  city's collision polygons and the rooms' instances flagged 0x20):
+  RaceScreen passes `phys::World::wheelProbe`, the same query the wheels
+  use, with the player's body as the one never hit. Without a probe the
+  cameras still work, without collision.
 * **FOV.** `CameraFOV` is the *vertical* field of view in degrees:
   `gfxViewport::Perspective(fov, aspect, near, far)` takes the tangent of
   half of it for the height and multiplies by the window's aspect ratio for

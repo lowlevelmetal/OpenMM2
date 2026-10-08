@@ -1764,9 +1764,12 @@ private:
         m_camPan = input.camPan;
         if (const auto extent = ctx.device().sceneExtent(); extent.height)
             input.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        // The cameras' floor, ceiling and wall probes (camTrackCS::MinMax,
+        // Collide; mmPlayer::Update's overhead test): dgPhysManager::Collide
+        // with mask 0x20, never hitting the player's car.
         const game::CameraProbe probe = [this](const Vec3& from, const Vec3& to, game::CameraHit& out) {
             phys::RayHit hit;
-            if (!m_world->probe(from, to, hit))
+            if (!m_world->wheelProbe(from, to, hit, &m_player->sim().body, nullptr))
                 return false;
             out = {hit.position, hit.normal, hit.t};
             return true;
