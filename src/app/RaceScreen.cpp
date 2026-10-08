@@ -11,6 +11,8 @@
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
 #include "audio/game/Voices.h"
+#include "game/CamMirror.h"
+#include "game/Profile.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
 #include "ai/Opponent.h"
@@ -127,7 +129,7 @@ public:
         if (multiplayer(ctx)) {
             ctx.netGame->update();
             if (ctx.netGame->takeReturnToLobby() || !ctx.netGame->inSession()) {
-                ctx.nextScreen = makeFrontendScreen(ctx, m_result);
+                leaveRace(ctx, m_result);
                 return;
             }
         }
@@ -505,6 +507,15 @@ private:
             m_cams.setVehicleFlags(static_cast<int>(info->flags));
         for (const auto& m : missing)
             log::debug("race: camera file {} missing (engine defaults)", m);
+        // mmPlayerConfig::SetViewSettings: the driver's camera, wide angle and
+        // dashboard before mmPlayer::Init and Reset read them; mmViewMgr::Init
+        // leaves the mirror on only when the driver had it on.
+        m_mirror.load(ctx.game->vfs, m_result.config.vehicle);
+        loadProfile();
+        if (m_profile) {
+            m_cams.setViewSettings({m_profile->camera, m_profile->wideAngle, m_profile->dashboard});
+            m_mirror.setEnabled(m_profile->mirror);
+        }
         m_cams.reset(cameraTarget());
         loadAudio(ctx);
         m_position = pos + Mat34::rotationY(heading).transformDir({0, 2.2f, 7.0f});
@@ -870,7 +881,7 @@ private:
         // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
             m_result.config.mode != game::GameMode::Cruise)
-            m_cams.startPostRace();
+            startFinishCamera(ctx);
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
             if (e.type == EventType::HitWater)
@@ -968,8 +979,23 @@ private:
             if (!m_result.finished && !multiplayer(ctx))
                 openPopup(ctx, false);
             else
-                ctx.nextScreen = makeFrontendScreen(ctx, m_result);
+                leaveRace(ctx, m_result);
         }
+    }
+
+    // The camera at the end of a race: mmPlayer::SetPostRaceCam, or in a
+    // multiplayer checkpoint race or circuit mmGameMulti::SetFinishCam: the
+    // orbit camera on the finish (the last waypoint, a circuit's first) at
+    // azimuth (heading + 180) x -0.017453292, which the keyboard then turns.
+    void startFinishCamera(Context& ctx) {
+        const auto& cps = m_session->checkpoints();
+        const auto mode = m_result.config.mode;
+        if (!multiplayer(ctx) || mode == game::GameMode::Blitz || cps.empty()) {
+            m_cams.startPostRace();
+            return;
+        }
+        const auto& finish = mode == game::GameMode::Circuit ? cps.front() : cps.back();
+        m_cams.startMultiplayerPostRace(finish.position, (finish.headingDeg + 180.0f) * -0.017453292f);
     }
 
     // The modes' and mmWaypoints' 2D sounds (AudSoundBase): `mode` 0 plays
@@ -1060,7 +1086,23 @@ private:
     void quitToMenu(Context& ctx) {
         game::RaceResult r = m_session ? m_session->result() : m_result;
         r.ended = false;
-        ctx.nextScreen = makeFrontendScreen(ctx, r);
+        leaveRace(ctx, r);
+    }
+
+    // Back to the menus. mmPlayerConfig::GetViewSettings when the game ends:
+    // the driver keeps the camera, wide angle, dashboard and mirror choices
+    // (stored before the frontend reads the driver again).
+    void leaveRace(Context& ctx, const game::RaceResult& result) {
+        if (m_profile) {
+            const auto v = m_cams.viewSettings();
+            m_profile->camera = v.camera;
+            m_profile->wideAngle = v.wideAngle;
+            m_profile->dashboard = v.dashboard;
+            m_profile->mirror = m_mirror.enabled();
+            if (!m_profile->save())
+                log::warn("race: cannot save driver '{}'", m_profile->name);
+        }
+        ctx.nextScreen = makeFrontendScreen(ctx, result);
     }
 
     void buildPopup(Context& ctx) {
@@ -1658,6 +1700,9 @@ private:
             m_cams.toggleWideAngle();
         if (pressed(Action::Dashboard))
             m_cams.toggleDashboard();
+        // mmViewMgr::SetViewSetting(9), input event 0x1E: the rear-view mirror.
+        if (pressed(Action::RearViewMirror))
+            m_mirror.toggle();
         for (const auto& pad : in.gamepads())
             if (pad.pressed.test(static_cast<std::size_t>(platform::GamepadButton::North)))
                 m_cams.toggleCamera();
@@ -1691,6 +1736,20 @@ private:
             m_session->cycleTarget(false);
         if (viewChanged)
             saveViewSettings(ctx);
+    }
+
+    // The driver the frontend last selected (mmPlayerData), for the view
+    // settings it keeps.
+    void loadProfile() {
+        game::ProfileStore store(game::ProfileStore::defaultDir());
+        const std::string name = store.lastUsed();
+        if (name.empty())
+            return;
+        for (auto& p : store.list())
+            if (p.name == name) {
+                m_profile = std::move(p);
+                return;
+            }
     }
 
     // The view settings MM2 keeps per driver (mmPlayerConfig): OpenMM2 keeps
@@ -1769,9 +1828,23 @@ private:
         m_camPan = input.camPan;
         if (const auto extent = ctx.device().sceneExtent(); extent.height)
             input.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        // camPolarCS::Update reads these keys itself (the orbit camera at a
+        // multiplayer finish).
+        if (!m_flyCamera && m_popup == Popup::None) {
+            using platform::Key;
+            input.orbit.azimuthDown = in.keyDown(Key::Delete);
+            input.orbit.azimuthUp = in.keyDown(Key::PageDown);
+            input.orbit.inclineDown = in.keyDown(Key::End);
+            input.orbit.inclineUp = in.keyDown(Key::Home);
+            input.orbit.closer = in.keyDown(Key::PageUp);
+            input.orbit.farther = in.keyDown(Key::Insert);
+            input.orbit.fast = in.keyDown(Key::LShift) || in.keyDown(Key::RShift);
+        }
+        // The cameras collide as dgPhysManager::Collide with flags 0x20: the
+        // city and the rooms' instances flagged for it, not the player's car.
         const game::CameraProbe probe = [this](const Vec3& from, const Vec3& to, game::CameraHit& out) {
             phys::RayHit hit;
-            if (!m_world->probe(from, to, hit))
+            if (!m_world->wheelProbe(from, to, hit, &m_player->sim().body, nullptr))
                 return false;
             out = {hit.position, hit.normal, hit.t};
             return true;
@@ -1923,6 +1996,8 @@ private:
     float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
+    game::RearViewMirror m_mirror;       // mmMirror: on / off and its camera (drawn by the renderer)
+    std::optional<game::Profile> m_profile; // the driver, for the view settings
     std::unique_ptr<ai::World> m_ai;
 
     // Race rules, opponents and HUD (src/game/session).
