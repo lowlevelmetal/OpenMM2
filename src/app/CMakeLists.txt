@@ -6,6 +6,7 @@ add_library(mm2_app STATIC
     GameData.cpp
     CommandLine.cpp
     Context.cpp
+    Controls.cpp
     App.cpp
     SetupScreen.cpp
     RaceScreen.cpp

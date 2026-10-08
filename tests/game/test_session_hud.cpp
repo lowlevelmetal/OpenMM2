@@ -183,6 +183,8 @@ TEST(HudLogic, MapRect) {
     const render::UiLayout l = render::computeUiLayout({640, 480}, render::UiScaleMode::Fit);
     HudMapParams params;
     HudOptions options;
+    EXPECT_EQ(options.mapMode, MapMode::Off); // a new player's default (mmStatePack)
+    options.mapMode = MapMode::Small;
     // tune/<city>.mmhudmap Pos/Size, less 10 pixels: (499, 360) 124 x 110 at 640x480.
     Vec4 r = hud::mapRect(l, params, options, false);
     EXPECT_NEAR(r.x, 499.2f, 1e-3f);

@@ -83,8 +83,9 @@ std::vector<Checkpoint> buildCheckpoints(const std::vector<city::Waypoint>& poin
             setHeading(out[i - 1], headingTowards(out[i - 1].position, out[i].position));
     if (loop && n > 1 && out[n - 1].headingDeg == 0.0f)
         setHeading(out[n - 1], headingTowards(out[n - 1].position, out[0].position));
+    // Which stand is the "pt_finish" depends on the waypoint type
+    // (mmWaypoints::LoadCSV): the caller marks it.
     out.front().start = true;
-    out.back().finish = n > 1;
     return out;
 }
 
@@ -164,12 +165,13 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             return std::nullopt;
         }
         s.checkpoints = std::move(*cps);
-        if (circuit) {
-            // The start line is also the finish line of every lap
-            // (mmWaypoints::LoadCSV makes waypoint 0 the "pt_finish").
-            s.checkpoints.back().finish = false;
+        // mmWaypoints::LoadCSV: circuits (type 1) make waypoint 0, the start
+        // and finish of every lap, the "pt_finish"; checkpoint races (type 2)
+        // the last waypoint; Blitz (type 3) uses "pt_check" for every one.
+        if (circuit)
             s.checkpoints.front().finish = true;
-        }
+        else if (config.mode == GameMode::Checkpoint)
+            s.checkpoints.back().finish = true;
     }
 
     // Time limit: single player Blitz only (mmSingleBlitz::InitHUD); the
@@ -215,7 +217,9 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
                 le.minimumSpeedMph = e.extra[0];
             if (le.type == LessonType::MinimumSpeed && le.minimumSpeedMph < 1.0f)
                 le.minimumSpeedMph = 50.0f; // mmSingleStunt::InitHUD
-            le.singleCheckpoint = e.extra.size() > 1 && (static_cast<int>(e.extra[1]) & 1) != 0;
+            // mmSingleStunt::InitNewEvent passes "chkflags != 0" to
+            // mmWaypoints::ReInit as the show-only-the-next flag.
+            le.singleCheckpoint = e.extra.size() > 1 && static_cast<int>(e.extra[1]) != 0;
             le.opponents = e.extra.size() > 2 ? static_cast<int>(e.extra[2]) : 0;
             auto cps = loadCheckpoints(vfs, dir + str::lower(e.file) + ".csv", false);
             if (!cps) {
@@ -235,7 +239,9 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     if (s.aiMap && s.race && (racing || config.mode == GameMode::CrashCourse)) {
         const std::string& any = !s.race->aiMap.empty() ? s.race->aiMap : s.race->waypoints;
         const std::string dir = any.substr(0, any.rfind('/') + 1);
-        const int wanted = !racing ? 64 : (config.opponents >= 0 ? config.opponents : s.settings.opponents);
+        // aiMap::Init loads min(table count, OpponentDensity) racers; the
+        // crash course sets OpponentDensity to 8 (CrashCourse::SetEnvironment).
+        const int wanted = !racing ? 8 : (config.opponents >= 0 ? config.opponents : s.settings.opponents);
         for (const auto& o : s.aiMap->opponents) {
             if (static_cast<int>(s.opponents.size()) >= wanted)
                 break;
