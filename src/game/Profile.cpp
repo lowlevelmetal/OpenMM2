@@ -26,12 +26,30 @@ constexpr int kMaxRaces = 32;
 
 RaceMask bit(int i) { return i >= 0 && i < kMaxRaces ? RaceMask{1} << i : RaceMask{0}; }
 
-// Merges a finish into a record (MM2 `mmPlayerCityRecord::NewRecord`): the
-// first result is taken as it is; afterwards the lower time is kept with the
-// car that set it, the higher score, and the passed flag once set.
+// MM2 names its two cities in the progress code: mmInterface::CitySetupCB
+// gates races only in "sf" and "london", mmInterface::PlayerResolveCars locks
+// the rewards of those two, and mmInterface::PlayerFillStats adds up their
+// scores. Other cities behave as if they had no progress rules.
+constexpr std::string_view kProgressCities[] = {"sf", "london"};
+
+bool isProgressCity(std::string_view name) {
+    for (const auto c : kProgressCities)
+        if (str::iequals(c, name))
+            return true;
+    return false;
+}
+
+// Merges a finish into a record (MM2 `mmPlayerCityRecord::NewRecord`): a
+// record without a time (none yet) takes the result as it is; afterwards the
+// lower time is kept with the car that set it (an equal time keeps the old
+// car), the higher score, and the passed flag once set. `passed` also stands
+// for MM2's per-city passed mask, which NewRecord only ever sets, so it
+// survives the overwrite too.
 void merge(RaceRecord& r, bool fresh, const RaceRecord& n) {
-    if (fresh) {
+    if (fresh || r.time == 0.0f) {
+        const bool wasPassed = !fresh && r.passed;
         r = n;
+        r.passed = r.passed || wasPassed;
         return;
     }
     if (n.time < r.time) {
@@ -86,6 +104,11 @@ bool Profile::load(const std::filesystem::path& path) {
     city = ini.getString("Prefs", "City", city);
     mode = clampEnum(ini.getInt("Prefs", "Mode", 0), GameMode::CopsAndRobbers);
     raceIndex = static_cast<int>(ini.getInt("Prefs", "Race", 0));
+    // mmPlayerConfig::SetViewSettings; mmPlayer::Reset indexes its three car
+    // cameras with the camera number.
+    camera = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Camera", 0), 0, 2));
+    wideAngle = ini.getBool("Prefs", "WideAngle", false);
+    dashboard = ini.getBool("Prefs", "Dashboard", false);
 
     for (const auto& key : ini.keys("Races")) {
         const std::string value = ini.getString("Races", key); // split() returns views into it
@@ -140,8 +163,13 @@ bool Profile::save() const {
     ini.set("Prefs", "City", city);
     ini.setInt("Prefs", "Mode", static_cast<int>(mode));
     ini.setInt("Prefs", "Race", raceIndex);
+    ini.setInt("Prefs", "Camera", camera);
+    ini.setBool("Prefs", "WideAngle", wideAngle);
+    ini.setBool("Prefs", "Dashboard", dashboard);
+    // The times in full (MM2's mmPlayerRecord keeps the float), so later
+    // finishes compare against the time that was driven.
     for (const auto& [key, r] : races)
-        ini.set("Races", key, std::format("{:.2f},{},{},{}", r.time, r.vehicle, r.score, r.passed ? 1 : 0));
+        ini.set("Races", key, std::format("{},{},{},{}", r.time, r.vehicle, r.score, r.passed ? 1 : 0));
     return ini.save(file);
 }
 
@@ -172,6 +200,10 @@ std::vector<Profile> ProfileStore::list() const {
 }
 
 std::optional<Profile> ProfileStore::create(std::string_view rawName, CreateError* error) {
+    // mmInterface::PlayerCreate takes the name as typed and refuses only an
+    // empty one. The INI files trim values, so OpenMM2 trims the name (and
+    // refuses one of spaces only) to keep what is stored and what is listed
+    // the same.
     const std::string name(str::trim(rawName));
     auto fail = [&](CreateError e) -> std::optional<Profile> {
         if (error)
@@ -287,6 +319,7 @@ bool HallOfFame::load(const std::filesystem::path& path) {
             e.vehicle = std::string(parts[1]);
             e.time = static_cast<float>(str::parseDouble(parts[2]).value_or(0.0));
             e.score = static_cast<int>(str::parseInt(parts[3]).value_or(0));
+            e.passed = parts.size() >= 5 && str::parseInt(parts[4]).value_or(0) != 0;
         }
         return e;
     };
@@ -304,8 +337,10 @@ bool HallOfFame::load(const std::filesystem::path& path) {
 bool HallOfFame::save(const std::filesystem::path& path) const {
     IniFile ini;
     ini.parse("; OpenMM2 race records (hall of fame)\n");
+    // Times are written in full (MM2 stores the float), so a reloaded record
+    // compares as the original did.
     auto format = [](const HallEntry& e) {
-        return std::format("{}|{}|{:.2f}|{}", e.driver, e.vehicle, e.time, e.score);
+        return std::format("{}|{}|{}|{}|{}", e.driver, e.vehicle, e.time, e.score, e.passed ? 1 : 0);
     };
     for (const auto& [section, t] : m_tables) {
         ini.set("Index", section, "1");
@@ -387,7 +422,9 @@ int Progress::passedCount(const Profile& p, std::string_view cityName, std::stri
 }
 
 RaceMask Progress::openMask(const Profile* p, std::string_view cityName, std::string_view mode) const {
-    if (!p || !city(cityName))
+    // mmInterface::CitySetupCB: without a driver, or in a city other than
+    // San Francisco and London, every mask is all ones.
+    if (!p || !city(cityName) || !isProgressCity(cityName))
         return ~RaceMask{0};
     const RaceMask passed = passedMask(*p, cityName, mode);
     auto all = [&](RaceMask bits) { return (passed & bits) == bits; };
@@ -443,8 +480,12 @@ bool Progress::vehicleUnlocked(const Profile& p, std::string_view vehicle) const
 }
 
 bool Progress::variantUnlocked(const Profile& p, std::string_view vehicle, int variant) const {
+    // mmInterface::PlayerResolveCars clears every lock, then
+    // mmRewardList::UnlockPlayerRewards locks what the rows of San Francisco
+    // and London still ask for.
     for (const auto& r : m_rewards)
-        if (r.variant == variant && str::iequals(r.vehicle, vehicle) && !rewardMet(p, r))
+        if (r.variant == variant && str::iequals(r.vehicle, vehicle) && isProgressCity(r.city) &&
+            !rewardMet(p, r))
             return false;
     return true;
 }
@@ -509,18 +550,26 @@ std::optional<Reward> Progress::record(Profile& p, const RaceResult& result) con
 }
 
 int Progress::totalScore(const Profile& p, std::string_view cityName) const {
+    // mmPlayerData::GetTotalScore: the records of the city's checkpoint
+    // races, blitzes and circuits, up to each mode's race count.
+    const CityProgressInfo* c = city(cityName);
+    if (!c)
+        return 0;
     int total = 0;
-    for (const char* mode : {"race", "blitz", "circuit"})
-        for (int i = 0; i < kMaxRaces; ++i)
+    for (const char* mode : {"race", "blitz", "circuit"}) {
+        const int count = std::min(raceCount(*c, mode), kMaxRaces);
+        for (int i = 0; i < count; ++i)
             if (const RaceRecord* r = p.record(cityName, mode, i))
                 total += r->score;
+    }
     return total;
 }
 
 int Progress::totalScore(const Profile& p) const {
+    // mmInterface::PlayerFillStats: London plus San Francisco.
     int total = 0;
-    for (const auto& c : m_cities)
-        total += totalScore(p, c.name);
+    for (const auto c : kProgressCities)
+        total += totalScore(p, c);
     return total;
 }
 
