@@ -226,7 +226,8 @@ public:
         m_cityRenderer->draw(m_camera, frustum, m_env, m_detail);
         m_roadDecals.draw(dev, *m_textures);
         if (m_ai && m_aiRenderer)
-            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay,
+            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay, carLights(),
+                               m_detail.objects,
                                [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
         drawRemoteCars(ctx, m_frameDt);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
