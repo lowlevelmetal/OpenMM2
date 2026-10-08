@@ -61,6 +61,12 @@ been drawn at). Not ported yet: cloud shadows (`shadmap_day`/`shadmap_nite` in a
 pass with UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts and
 the room flood fill used without a PVS.
 
+## Rear-view mirror
+
+| Topic | Behaviour | Evidence |
+|---|---|---|
+| Drawing | while the mirror is on (whatever the camera), after the HUD map: the inset `RearViewMirror::viewport` gives (top right, one pixel in) cleared to black colour and full depth, the level drawn from the mirror's frame times the player car's model matrix with `Perspective(Fov, Aspect 2, NearClip, FarClip)`, every draw's winding swapped (the frame is mirrored), the player's car hidden (its trailer stays). Everything the level draws is drawn: sky, streets, objects, traffic, props, cars, effects and rain | MM2 (`mmMirror::Cull`, `mmMirror::Reset`, `mmGameManager::Update`); `render::Device::setFrontFaceFlipped` swaps the winding, RaceScreen's `drawLevel` is shared with the main view |
+
 ## Cars
 
 | Topic | Behaviour | Evidence |

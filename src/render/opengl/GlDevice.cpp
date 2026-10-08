@@ -878,7 +878,7 @@ void GlDevice::draw(const DrawCall& call) {
     const GlBuffer* ib = call.indices ? m_buffers.get(call.indices.buffer.id) : nullptr;
     if (call.indices && !ib)
         return;
-    const PipelineState& s = call.state;
+    const PipelineState s = effectiveState(call.state);
     applyState(s, call);
 
     // Vertex input.

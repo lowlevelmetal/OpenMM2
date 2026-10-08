@@ -215,8 +215,8 @@ in the original.
 
 ## Rear-view mirror
 
-`CamMirror.*` (`RearViewMirror`) ports `mmMirror`'s camera; drawing it is
-the renderer's job (open for rendering).
+`CamMirror.*` (`RearViewMirror`) ports `mmMirror`'s camera; RaceScreen's
+`drawMirror` draws it (docs/rendering.md, "Rear-view mirror").
 
 * **Data** (`mmMirror::FileIO`): `tune/<car>.mmmirror`, which only 11 cars
   ship (vp4x4, vpauditt, vpbus, vpcaddie, vpcentury, vpcop, vpdb7,
