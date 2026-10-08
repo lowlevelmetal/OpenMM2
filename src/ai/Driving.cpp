@@ -17,6 +17,7 @@
 
 #include "ai/MapView.h"
 #include "ai/PathGeometry.h"
+#include "ai/Pedestrians.h"
 #include "ai/Traffic.h"
 #include "phys/AgeMath.h"
 #include "phys/Bound.h"
@@ -247,6 +248,9 @@ void AiStuck::update(phys::CarSim& car, float dt) {
 
 float blockingDistance(const TrackedCar& obstacle, const Vec3& from, const Vec3& to, float extra,
                        float width) {
+    // A prop: aiBanger::IsBlockingTarget.
+    if (obstacle.prop >= 0)
+        return bangerBlockingDistance(obstacle.position, obstacle.propRadius, from, to, extra, width);
     // aiVehicle::IsBlockingTarget: the first corner (front left, front right,
     // back left, back right) ahead within the way plus `extra`, within
     // width / 2 + 1 m of the line and 0.7 rad of it (XZ).
@@ -268,6 +272,22 @@ float blockingDistance(const TrackedCar& obstacle, const Vec3& from, const Vec3&
 
 void avoidPoints(const TrackedCar& obstacle, const Vec3& from, const Vec3& dir, float clearance, Vec3& left,
                  Vec3& right) {
+    if (obstacle.prop >= 0) {
+        // aiBanger::PreAvoid: from its origin P, across the (3D, unit) line
+        // of sight n to it in XZ, at its radius (YRadius, at most 2) plus the
+        // clearance: right P + (-n.z, 0, n.x) r, left P - (-n.z, 0, n.x) r
+        // (`dir` is not used).
+        const Vec3& p = obstacle.position;
+        Vec3 n{p.x - from.x, p.y - from.y, p.z - from.z};
+        const float m2 = (n.x * n.x + n.y * n.y) + n.z * n.z;
+        const float inv = m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2);
+        const float nx = inv * n.x;
+        const float nz = -(inv * n.z);
+        const float r = std::min(obstacle.propRadius, 2.0f) + clearance;
+        right = {nz * r + p.x, p.y + 0.0f, p.z + r * nx};
+        left = {p.x - r * nz, p.y - 0.0f, p.z - r * nx};
+        return;
+    }
     // aiVehicle::PreAvoid: every corner pushed `clearance` both ways across
     // the (3D, unit) line of sight u to it, along (-u.z, u.y, u.x); the
     // leftmost and rightmost of these eight points seen along `dir`.

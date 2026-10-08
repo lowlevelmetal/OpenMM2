@@ -81,6 +81,29 @@ struct CityWorld {
         w->ai = ai::World::create(*w->city, vfs, settings);
         if (!w->ai)
             return nullptr;
+        // As RaceScreen: the props on the roads' obstacle lists
+        // (aiPath / aiIntersection::AddBangersToObsMap), which the racers
+        // steer round, then mmGame::Init's aiMap::Reset.
+        std::vector<ai::PedObstacle> props;
+        for (const auto& inst : w->bangers->instances()) {
+            ai::PedObstacle o;
+            o.room = inst.room;
+            const Mat34& m = inst.matrix;
+            o.position = m.m3;
+            o.origin = m.m3;
+            if (inst.data) {
+                const Vec3& cg = inst.data->cg;
+                o.origin = {((m.m3.x - m.m0.x * cg.x) - m.m1.x * cg.y) - m.m2.x * cg.z,
+                            ((m.m3.y - m.m0.y * cg.x) - m.m1.y * cg.y) - m.m2.y * cg.z,
+                            ((m.m3.z - m.m0.z * cg.x) - m.m1.z * cg.y) - m.m2.z * cg.z};
+                o.yRadius = inst.data->yRadius;
+                o.impulseLimit2 = inst.data->impulseLimit2;
+                o.drivable = (inst.data->collisionType & 0x20) != 0;
+            }
+            props.push_back(o);
+        }
+        w->ai->pedestrians().setObstacles(std::move(props), {});
+        w->ai->reset();
         if (trafficDensity > 0.0f) {
             w->traffic = std::make_unique<game::TrafficBodies>(*w->ai, *w->world);
             w->level->addSource(w->traffic.get());

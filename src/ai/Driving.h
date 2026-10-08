@@ -44,8 +44,10 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace mm2::phys {
@@ -101,6 +103,14 @@ struct TrackedCar {
     int ambient = -1;    // Traffic car index
     int playerRoad = -1;
     int playerVert = 0;
+    // A prop of the roads' obstacle lists (aiBanger): its index in the
+    // pedestrians' prop list, and the road (or intersection) whose list
+    // holds it. `position` is aiBanger::Position (its ground origin).
+    int prop = -1;
+    int propComponent = -1;
+    bool propOnRoad = false;
+    float propRadius = 0.0f; // dgBangerData YRadius
+    Vec3 propCentre;         // lvlInstance::GetPosition (centre of gravity)
 
     // MM2 obstacle classes (aiVehiclePhysics::IsTargetBlocked).
     bool isOpponent() const { return suspect && !isPlayer && !isPolice; }
@@ -159,7 +169,7 @@ struct RouteParams {
     float brakeThreshold = 0.7f;    // brake when (v - vmax) / (a t) exceeds this
     float lookAhead = 50.0f;        // the route is planned this far (m)
     bool avoidTraffic = true;       // steer round ambient vehicles
-    bool avoidProps = true;         // steer round unbreakable props (not modelled in OpenMM2)
+    bool avoidProps = true;         // steer round the props of the roads' obstacle lists
     bool avoidPlayers = true;       // steer round the players
     bool avoidOpponents = true;     // steer round other racers (after the third waypoint)
     bool preferSidewalk = false;    // DetermineBestRoute: take a route over the sidewalk first
@@ -378,6 +388,9 @@ private:
     int obstacleRoadIdx(const TrackedCar& o, int* vert) const;
     const TrackedCar* trackedById(int id) const;
     const TrackedCar* ambientObstacle(int index) const;
+    // Prop `index` as listed by road or intersection `component` (one aiBanger
+    // per listing, as AddBangersToObsMap makes them).
+    const TrackedCar* propObstacle(int index, int component, bool onRoad);
 
     // Targets and turns (DrivingTargets.cpp).
     void calcRoadTarget(int i, Vec3& from);
@@ -426,6 +439,7 @@ private:
 
     // The cars of this frame (for the obstacle lookups).
     std::span<const TrackedCar> m_cars;
+    std::map<std::tuple<int, int, bool>, TrackedCar> m_propObstacles; // by (prop, component, on a road)
 
     // Waypoints (RegisterRoute).
     std::vector<int> m_wayPts; // +0x9674

@@ -24,6 +24,7 @@
 
 #include <array>
 #include <functional>
+#include <span>
 #include <map>
 #include <string>
 #include <vector>
@@ -77,6 +78,14 @@ struct PedObstacle {
     bool drivable = false; // dgBangerData CollisionType 0x20 (aiBanger::Drivable)
 };
 
+// aiBanger::IsBlockingTarget: how far along the way from `from` to `to` a
+// prop at `origin` (aiBanger::Position, its ground origin) lies in the path
+// of something `width` wide (-1: clear): within its radius (YRadius, at
+// most 2) + width / 2 + 1 m of the line, ahead within the way plus `reach`,
+// and within 0.7 rad of it (XZ).
+float bangerBlockingDistance(const Vec3& origin, float yRadius, const Vec3& from, const Vec3& to, float reach,
+                             float width);
+
 struct PedSettings {
     float density = 1.0f; // menu pedestrian density
     int pool = kDefaultPedPool; // [Ped Pool] of the city's AI map
@@ -117,6 +126,14 @@ public:
     void reset();
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
+    // The props the roads and intersections list (aiPath / aiIntersection
+    // AddBangersToObsMap), which the racers and police also steer round
+    // (aiVehiclePhysics::IsTargetBlocked): a road section's list for side 1
+    // (aiPath +0xf8) or -1 (+0x94), an intersection's (+0x28, emptied by
+    // aiMap::Reset). Entries index obstacles().
+    const std::vector<PedObstacle>& obstacles() const { return m_obstacles; }
+    std::span<const int> sectionObstacles(int path, int section, int side) const;
+    std::span<const int> nodeObstacles(int node) const;
     std::size_t activeCount() const;
     const std::vector<PedTypeInfo>& types() const { return m_types; }
 

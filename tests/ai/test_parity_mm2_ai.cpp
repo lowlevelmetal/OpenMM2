@@ -1,6 +1,7 @@
 // Parity checks for the AI from MM2's side (build 3393, MM2Recomp): what
 // aiMap::Reset does on a restart, the ambient cars' set-up draws and the
 // lights aiVehicleInstance::DrawGlow shows. See docs/parity/mm2/ai.md.
+#include "ai/Driving.h"
 #include "ai/Pedestrians.h"
 #include "ai/Random.h"
 #include "ai/RoadNetwork.h"
@@ -287,4 +288,26 @@ TEST(ParityMm2Ai, AvoidingCarKeepsItsRoadDistance) {
         }
     }
     EXPECT_TRUE(avoided);
+}
+
+// aiBanger as the drivers' obstacle: IsBlockingTarget within its radius
+// (YRadius, at most 2) + half the car's width + 1 m of the way, and
+// PreAvoid's two points square to the line of sight at that radius plus the
+// clearance (right P + (-n.z, 0, n.x) r, left the other way).
+TEST(ParityMm2Ai, DriversSeePropsAsMm2Does) {
+    ai::TrackedCar prop;
+    prop.prop = 0;
+    prop.position = {10.0f, 0.0f, 0.5f};
+    prop.propRadius = 0.5f;
+    EXPECT_FLOAT_EQ(ai::blockingDistance(prop, {0, 0, 0}, {20, 0, 0}, 0.0f, 2.0f), 10.0f);
+    prop.position = {10.0f, 0.0f, 3.0f}; // beyond 0.5 + 1 + 1
+    EXPECT_FLOAT_EQ(ai::blockingDistance(prop, {0, 0, 0}, {20, 0, 0}, 0.0f, 2.0f), -1.0f);
+    prop.position = {10.0f, 0.0f, 0.0f};
+    prop.propRadius = 5.0f; // capped at 2
+    Vec3 left, right;
+    ai::avoidPoints(prop, {0, 0, 0}, {0, 0, -1}, 2.0f, left, right);
+    EXPECT_FLOAT_EQ(right.x, 10.0f);
+    EXPECT_FLOAT_EQ(right.z, 4.0f);
+    EXPECT_FLOAT_EQ(left.x, 10.0f);
+    EXPECT_FLOAT_EQ(left.z, -4.0f);
 }

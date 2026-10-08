@@ -2,8 +2,8 @@
 
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
-Summary: 507 reachable functions in 35 classes; ported 404 (of which newly
-ported 12, and 8 more fixed in this pass), replaced 6, not needed 92, open 5.
+Summary: 507 reachable functions in 35 classes; ported 408 (of which newly
+ported 15, and 9 more fixed in this pass), replaced 6, not needed 92, open 1.
 
 Scope: every ai* class except aiSubway and aiCableCar (world objects), and
 lvlAiMap / lvlAiRoad. The first audit verified OpenMM2's side
@@ -34,6 +34,8 @@ Fixed or newly ported in this pass:
   no longer keeps an old regain count); set-up draws in MM2's order; the
   indicators no longer cleared where MM2 leaves them.
 - **Intersection prop lists** are empty in play, as aiMap::Reset leaves them.
+- **Racers and police steer round props** (aiVehiclePhysics::IsTargetBlocked's
+  prop lists, aiBanger::IsBlockingTarget / PreAvoid / CurrentRoadIdx).
 - **-pedpool** sets the pedestrian pool (aiCityData).
 - **Players' tracked roads** forgotten at a reset (aiVehiclePlayer::Reset).
 - OpenMM2's stranded-racer recovery places the car as MM2 places racers
@@ -158,7 +160,7 @@ A road of the .bai: lanes, sidewalks, the obstacle lists, the population links.
 | `SharpTurnCenter`, `SharpTurnDir`, `SharpTurnEndDir`, `SharpTurnIntersection`, `SharpTurnRadius`, `SharpTurnSetback`, `SharpTurnStartDir` | ported | `PathGeometry` (`sharpTurn`) | Accessors of the turn records, by direction. |
 | `Reset` | ported (new) | `Traffic::reset`, `Pedestrians::reset` | Lane, vehicle and pedestrian lists, AllwaysStop / AllwaysGo, the player masks; not the prop lists. |
 | `ResetObstacles`, `AddVehicle`, `RemoveVehicle` | ported | `Traffic::clearPath`, `updateObstacleMap` | The per-section vehicle lists (+0x90 / +0xf4). |
-| `AddBanger`, `AddBangersToObsMap` | ported | `Pedestrians::setObstacles` | The per-section prop lists (+0x94 / +0xf8); the drivers do not read them yet (see aiVehiclePhysics::IsTargetBlocked). |
+| `AddBanger`, `AddBangersToObsMap` | ported | `Pedestrians::setObstacles` | The per-section prop lists (+0x94 / +0xf8), read by the pedestrians and the drivers. |
 | `AddAmbPlayer`, `RemAmbPlayer`, `ClearAmbients`, `AddAmbVehicle`, `PushAmbVehicle`, `PopAmbVehicle`, `RemoveAmbVehicle`, `UpdateAmbients`, `RoadCapacity`, `NumVehiclesAfterDist`, `ResetVehicleReactTicks`, `AllwaysStop` | ported | `Traffic` (`activate`, `clearPath`, queues, `step`, `roadCapacity`, `solveLane`, `resetReactTicks`, `alwaysStop`) | First audit. |
 | `AddPedPlayer`, `RemPedPlayer`, `AddPedestrian`, `RemovePedestrian (both)`, `UpdatePedestrians` | ported | `Pedestrians` (`adjust`, `pathAdd`, `pathRemove`, `updateRoad`) | First audit. |
 | `SidewalkVertice`, `SidewalkSubSectionLength`, `GetHeading`, `Index (both)`, `SubSectionDir`, `SubSectionPt`, `IntersectionEntryPt`, `IntersectionEntryVector`, `IntersectionExitVector`, `Direction`, `RoadVertice (both)`, `CenterLength`, `CenterPosition`, `IsPosOnRoad`, `DetermineRoadPosInfo` | ported | `Pedestrians`, `Traffic`, `PathGeometry` | First audit. |
@@ -318,7 +320,7 @@ A prop as an obstacle (for the pedestrians and the drivers).
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
 | `aiBanger: aiBanger`, `IsBlockingTarget`, `Position`, `Radius`, `BreakThreshold`, `Drivable` | ported | `Pedestrians` (`PedObstacle`, `isBlockingTarget`) | First audit (pedestrians). |
-| `aiBanger: CurrentRoadIdx`, `CurrentRdVert`, `PreAvoid` | open |  | For the drivers (below): the prop's slot and vertex in a driver's window, and the two avoid points at its radius (up to 2 m) + the car's clearance either side, square to the line of sight. |
+| `aiBanger: CurrentRoadIdx`, `CurrentRdVert`, `PreAvoid` | ported (new) | `PhysicsDriver::obstacleRoadIdx`, `ai::avoidPoints`, `PhysicsDriver::propObstacle` | For the drivers (below): on a road the first window slot with its road and the vertex ahead of the prop's centre there; in an intersection the slot after a road arriving there (vertex 1), else slot 0 when the first road leaves it. PreAvoid: the two points square to the line of sight at its radius (YRadius, at most 2) + the clearance. One obstacle per listing, as AddBangersToObsMap makes one aiBanger per list; the position is where the prop was placed (inferred: MM2 reads the instance's current matrix). |
 | `aiBanger::Speed` | ported |  | Zero. |
 
 ## aiVehiclePhysics / aiStuck
@@ -328,7 +330,7 @@ The racers' and police drivers (first audit: ai-vehicles, two passes).
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
 | `Init`, `Reset`, `DriveRoute`, `RegisterRoute`, `PlanRoute`, `LocateWayPtFromRoad`, `DestMapComponent`, `CalcRoute`, `DetermineBestRoute`, `ContinueCheck`, `SaveTarget`, `SaveTurnTarget`, `SetTargetPtToDestination`, `EnumRoutes`, `EnumTargets`, `CalcObstacleAvoidPoints`, `CalcRoadTarget`, `CalcDestinationTarget`, `CalcRoadSpeed`, `CheckDistance`, `CalcSpeed`, `InitRoadTurns`, `CalcRoadTurns`, `CalcTurnIntersection`, `InSharpTurn`, `CalcSharpTurnTarget`, `CalcCurrentMaxWidthAdjustment`, `CalcNextMaxWidthAdjustment`, `CalcCurrentRdOffset`, `CalcNextRdOffset`, `SolveRoadTargetPoint`, `SolveShortcutTargetPoint`, `Forward`, `InitForward`, `Backup`, `InitBackup`, `FinishedBackingUp`, `Shortcut`, `InitShortcut`, `Stop`, `Mirror`, `StopRoadTraffic`, `CurrentRoadIdx`, `LSideDistance` | ported | `ai::PhysicsDriver` | First audit. |
-| `IsTargetBlocked` | open | `PhysicsDriver::isTargetBlocked` | Traffic, players and racers verified (first audit). Its props part is not ported (`RouteParams::avoidProps` is read but unused): with avoid-props set it also tests, step by step, the intersection's prop list (empty in play), the side-1 section list (props whose break threshold is over 250 000) and the side -1 list (every prop, as coded) with aiBanger::IsBlockingTarget, kind 5, and CalcObstacleAvoidPoints then goes round the prop with aiBanger::PreAvoid. Needs the prop lists (`Pedestrians::setObstacles`) shared with the drivers and a prop kind of TrackedCar; a few hundred lines. |
+| `IsTargetBlocked` | ported | `PhysicsDriver::isTargetBlocked` | Traffic, players and racers verified (first audit). Fixed: its props part was missing (`RouteParams::avoidProps` was read but unused). With avoid-props set (the [Opponent] line's sixth number, the police always) each step tests, after the side-1 cars, the intersection's prop list (empty in play) or the side-1 section list (props whose break threshold is over 250 000), then after the side -1 cars the side -1 list (every prop, as coded, read with the side-1 index) with aiBanger::IsBlockingTarget, kind 5; CalcObstacleAvoidPoints then goes round the prop. The lists are the pedestrians' (`MapView::props`). Racers in the sweep meet props (london circuit3 a: thousands of tests block) and still finish. |
 | `CheckForShortcut` | not needed |  | Empty in build 3393. |
 | `Position`, `GetMatrix`, `Speed`, `FrontBumperDistance`, `BackBumperDistance`, `RSideDistance`, `CurrentLane`, `CurrentRoadId`, `CurrentRdVert`, `Type` | ported | `ai::trackedCar`, `PhysicsDriver` accessors | Accessors (`frontBumper()` new, for aiRouteRacer::Finished). |
 | `aiVehiclePhysics`, `~aiVehiclePhysics`, `DrawId`, `ReplayDebug` | not needed |  |  |
@@ -394,8 +396,9 @@ defaults; no code addresses it), so none ever exists.
 - Pedestrians: pool, types, variants, dealing round new roads, recycling,
   restart (new), no collision with cars (MM2's instance has no bound), the
   intersections' prop lists empty in play (fixed).
-- Opponents: count, grid, routes, held start, finish line (fixed),
-  stranded-racer recovery placing as MM2 places racers (OpenMM2 extra).
+- Opponents: count, grid, routes, held start, finish line (fixed), props
+  as obstacles (new), stranded-racer recovery placing as MM2 places racers
+  (OpenMM2 extra).
 - Police: count from density, posts, pursuit, restart resets the force
   (fixed).
 

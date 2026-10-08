@@ -826,6 +826,26 @@ void Pedestrians::setObstacles(std::vector<PedObstacle> props, ObstacleStanding 
 // + 1 m to either side and less than 0.7 rad off the line; -1 when not.
 float Pedestrians::isBlockingTarget(const PedObstacle& o, const Vec3& from, const Vec3& to, float reach,
                                     float width) const {
+    return bangerBlockingDistance(o.origin, o.yRadius, from, to, reach, width);
+}
+
+std::span<const int> Pedestrians::sectionObstacles(int path, int section, int side) const {
+    if (path < 0 || static_cast<std::size_t>(path) >= m_sectionObstacles.size())
+        return {};
+    const auto& sections = m_sectionObstacles[static_cast<std::size_t>(path)];
+    if (section < 0 || static_cast<std::size_t>(section) >= sections.size())
+        return {};
+    return sections[static_cast<std::size_t>(section)][side == 1 ? 0u : 1u];
+}
+
+std::span<const int> Pedestrians::nodeObstacles(int node) const {
+    if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+        return {};
+    return m_nodeObstacles[static_cast<std::size_t>(node)];
+}
+
+float bangerBlockingDistance(const Vec3& origin, float yRadius, const Vec3& from, const Vec3& to, float reach,
+                             float width) {
     Vec3 d{to.x - from.x, to.y - from.y, to.z - from.z};
     const float len2 = d.x * d.x + d.y * d.y + d.z * d.z;
     const float inv = len2 == 0.0f ? 0.0f : 1.0f / std::sqrt(len2);
@@ -833,10 +853,10 @@ float Pedestrians::isBlockingTarget(const PedObstacle& o, const Vec3& from, cons
     const float nx = -d.z, nz = d.x;
     const float fx = from.x - to.x, fz = from.z - to.z;
     const float span = std::sqrt(fx * fx + fz * fz);
-    const float ox = o.origin.x - from.x, oz = o.origin.z - from.z;
+    const float ox = origin.x - from.x, oz = origin.z - from.z;
     const float lateral = ox * nx + nz * oz;
     const float along = ox * d.x + oz * d.z;
-    const float r = (std::min(o.yRadius, 2.0f) + width * 0.5f) + 1.0f; // aiBanger::Radius
+    const float r = (std::min(yRadius, 2.0f) + width * 0.5f) + 1.0f; // aiBanger::Radius
     const float angle = std::atan2(lateral, along);
     if (-r < lateral && lateral < r && 0.0f < along && along < span + reach && -0.7f < angle && angle < 0.7f)
         return along;

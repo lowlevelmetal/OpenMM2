@@ -22,6 +22,7 @@
 
 namespace mm2::ai {
 
+class Pedestrians;
 class Traffic;
 struct TrackedCar;
 
@@ -81,6 +82,10 @@ public:
     // whose intersections the racers hold (aiIntersection::StopSources).
     void setTraffic(Traffic* traffic) { m_traffic = traffic; }
     Traffic* traffic() const { return m_traffic; }
+    // The props listed on the roads and intersections (the pedestrians keep
+    // the lists; the drivers steer round them).
+    void setProps(const Pedestrians* props) { m_props = props; }
+    const Pedestrians* props() const { return m_props; }
 
     // [Ambients Drive On The Left] of the city.
     bool driveOnLeft() const { return m_net.driveOnLeft(); }
@@ -104,6 +109,7 @@ private:
     RoomFinder m_findRoom;
     std::vector<std::vector<RoomComponent>> m_rooms;
     Traffic* m_traffic = nullptr;
+    const Pedestrians* m_props = nullptr;
     struct PlayerTrack {
         int room = 0;
         int road = -1;

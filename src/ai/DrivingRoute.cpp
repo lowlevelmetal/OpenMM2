@@ -7,6 +7,7 @@
 #include "ai/Driving.h"
 #include "ai/MapView.h"
 #include "ai/PathGeometry.h"
+#include "ai/Pedestrians.h"
 #include "ai/Traffic.h"
 #include "phys/vehicle/CarSim.h"
 
@@ -469,7 +470,37 @@ const TrackedCar* PhysicsDriver::trackedById(int id) const {
     for (const TrackedCar& c : m_cars)
         if (c.id == id)
             return &c;
+    for (const auto& [key, c] : m_propObstacles)
+        if (c.id == id)
+            return &c;
     return nullptr;
+}
+
+// Ids of the props as obstacles: beyond every car's.
+constexpr int kPropObstacleIds = 1000000;
+
+const TrackedCar* PhysicsDriver::propObstacle(int index, int component, bool onRoad) {
+    const Pedestrians* props = m_map ? m_map->props() : nullptr;
+    if (!props || index < 0 || static_cast<std::size_t>(index) >= props->obstacles().size())
+        return nullptr;
+    const auto key = std::make_tuple(index, component, onRoad);
+    if (auto it = m_propObstacles.find(key); it != m_propObstacles.end())
+        return &it->second;
+    // aiBanger: the prop's ground origin (Position), its YRadius (Radius
+    // caps it at 2) and centre (the instance's GetPosition); still, as the
+    // pedestrians' lists keep it where it was placed (inferred: MM2 reads
+    // the instance's current matrix).
+    const PedObstacle& o = props->obstacles()[static_cast<std::size_t>(index)];
+    TrackedCar t;
+    t.id = kPropObstacleIds + static_cast<int>(m_propObstacles.size());
+    t.position = o.origin;
+    t.speed = 0.0f; // aiBanger::Speed
+    t.prop = index;
+    t.propComponent = component;
+    t.propOnRoad = onRoad;
+    t.propRadius = o.yRadius;
+    t.propCentre = o.position;
+    return &m_propObstacles.emplace(key, t).first->second;
 }
 
 const TrackedCar* PhysicsDriver::ambientObstacle(int index) const {
@@ -755,6 +786,38 @@ int PhysicsDriver::obstacleRoadIdx(const TrackedCar& o, int* vert) const {
     // aiObstacle::CurrentRoadIdx of each kind of car, against this car's
     // window.
     const bool dirs[3] = {m_roadDir[0], m_roadDir[1], m_roadDir[2]};
+    if (o.prop >= 0) {
+        // aiBanger::CurrentRoadIdx: on a road, the first window slot with
+        // that road (the vertex ahead of the prop's centre there,
+        // aiPath::RoadVertice by the slot's direction); in an intersection,
+        // the slot after a road (of the first two) arriving there, vertex 1,
+        // else slot 0 when the first road leaves from it; else none.
+        if (o.propOnRoad) {
+            for (int i = 0; i < 3; ++i) {
+                if (m_roads[i] < 0 || m_roads[i] != o.propComponent)
+                    continue;
+                const city::AiPath* p = m_map ? m_map->path(o.propComponent) : nullptr;
+                *vert = p ? pathRoadVertice(*p, o.propCentre, dirs[i] ? 1 : -1) : 0;
+                return i;
+            }
+            return -1;
+        }
+        for (int i = 0; i < 2; ++i) {
+            const PathInfo* info = roadInfo(i);
+            if (!info)
+                continue;
+            if (info->intersection[dirs[i] ? 0 : 1] == o.propComponent) {
+                *vert = 1;
+                return i + 1;
+            }
+        }
+        const PathInfo* first = roadInfo(0);
+        if (first && first->intersection[dirs[0] ? 1 : 0] == o.propComponent) {
+            *vert = 1;
+            return 0;
+        }
+        return -1;
+    }
     if (o.racer)
         return o.racer->currentRoadIdx(m_roads, dirs, vert);
     if (o.ambient >= 0 && m_map && m_map->traffic())
@@ -804,12 +867,24 @@ const TrackedCar* PhysicsDriver::isTargetBlocked(const Vec3& from, const Vec3& t
             *kind = k;
         }
     };
-    const Traffic* traffic = m_map ? m_map->traffic() : nullptr;
+    const Traffic* traffic = params.avoidTraffic && m_map ? m_map->traffic() : nullptr;
+    const Pedestrians* props = params.avoidProps && m_map ? m_map->props() : nullptr;
+    // A prop of a list counts only when nothing short of a car can break it
+    // (aiBanger::BreakThreshold over 250 000), except on the side -1 lists,
+    // which MM2 tests without the threshold (as coded).
+    auto testProps = [&](std::span<const int> list, int component, bool onRoad, bool threshold) {
+        for (int i : list) {
+            if (threshold && !(250000.0f < props->obstacles()[static_cast<std::size_t>(i)].impulseLimit2))
+                continue;
+            if (const TrackedCar* o = propObstacle(i, component, onRoad))
+                test(*o, 5);
+        }
+    };
     if (const city::AiPath* pe = road(endSlot); pe && endVert > static_cast<int>(pe->center.size())) {
         ++endSlot;
         endVert = 1;
     }
-    if (params.avoidTraffic && traffic) {
+    if (traffic || props) {
         int v = startVert;
         bool done = false;
         for (int r = startSlot; r <= endSlot && !done; ++r) {
@@ -822,18 +897,31 @@ const TrackedCar* PhysicsDriver::isTargetBlocked(const Vec3& from, const Vec3& t
             const int roadId = r == 3 ? m_turnsRoad : m_roads[r];
             for (; v < n; ++v) {
                 if (v == 0) {
-                    // The intersection the road is entered from.
+                    // The intersection the road is entered from: its cars,
+                    // then its props (none in play: aiMap::Reset empties
+                    // that list).
                     const int node = info->intersection[fwd ? 1 : 0];
-                    for (int id : traffic->intersectionVehicles(node))
-                        if (const TrackedCar* o = ambientObstacle(id))
-                            test(*o, 1);
+                    if (traffic)
+                        for (int id : traffic->intersectionVehicles(node))
+                            if (const TrackedCar* o = ambientObstacle(id))
+                                test(*o, 1);
+                    if (props)
+                        testProps(props->nodeObstacles(node), node, false, true);
                 } else {
-                    for (int id : traffic->roadVehicles(roadId, 1, fwd ? v : n - v))
-                        if (const TrackedCar* o = ambientObstacle(id))
-                            test(*o, 1);
-                    for (int id : traffic->roadVehicles(roadId, -1, fwd ? n - v : v))
-                        if (const TrackedCar* o = ambientObstacle(id))
-                            test(*o, 1);
+                    // The section's side-1 cars, side-1 props, side -1 cars
+                    // and side -1 props, in MM2's order.
+                    if (traffic)
+                        for (int id : traffic->roadVehicles(roadId, 1, fwd ? v : n - v))
+                            if (const TrackedCar* o = ambientObstacle(id))
+                                test(*o, 1);
+                    if (props)
+                        testProps(props->sectionObstacles(roadId, fwd ? v : n - v, 1), roadId, true, true);
+                    if (traffic)
+                        for (int id : traffic->roadVehicles(roadId, -1, fwd ? n - v : v))
+                            if (const TrackedCar* o = ambientObstacle(id))
+                                test(*o, 1);
+                    if (props)
+                        testProps(props->sectionObstacles(roadId, fwd ? v : n - v, -1), roadId, true, false);
                 }
                 if ((v == endVert && r == endSlot) || result) {
                     done = true;

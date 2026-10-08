@@ -318,7 +318,9 @@ MM2's pedestrians (build 3393, **MM2** unless marked):
     from the section's centre point back along its z axis, within the centre
     line's length to the point before), by side; each intersection lists the
     unbreakable props (break threshold above 7.5e7) in its room; newest
-    first (`aiPath` / `aiIntersection::AddBangersToObsMap`). Wander takes the
+    first (`aiPath` / `aiIntersection::AddBangersToObsMap`). `aiMap::Reset`,
+    which runs right after the load, empties the intersections' lists again,
+    so only the sections' lists are ever consulted. Wander takes the
     first prop on the section's list (on a corner, the list of the
     intersection it heads for), else on the next section's, whose ground
     origin lies ahead on the way to the target point, nearer than it, within
@@ -445,7 +447,7 @@ its route (OpenMM2).
   | 3 | look-ahead: the route is planned this far (m) | 50, 99, 101, 150 |
   | 4 | brake threshold (brake when the demand exceeds it) | 0.07 – 1.0, mostly 0.68 – 0.7 |
   | 5 | steer round ambient traffic | 0 / 1 |
-  | 6 | steer round props (unbreakable ones; not modelled) | 0 / 1 |
+  | 6 | steer round the props of the roads' lists | 0 / 1 |
   | 7 | steer round the players | 0 / 1 |
   | 8 | steer round other racers (after the third waypoint of a lap) | 0 / 1 |
   | 9 | prefer routes over the sidewalk | 0 |
@@ -472,7 +474,7 @@ its route (OpenMM2).
 | Target = the first point of the best planned route (`SolveRoadTargetPoint`) | MM2 |
 | Route points (`CalcRoadTarget`): the farthest point of the window's roads reachable in a straight line between the curbs, the left one moved in by the car's LSideDistance + 1 m and the right one by its RSideDistance + 1 m, narrowing vertex by vertex in each road's own section frame; when the road bends, the curb point at the inside of the bend; at a window road's end with a turn over 0.7 rad, the turn's corner; on a straight, at the look-ahead distance, keeping the car's place across the road. A point inside a turn circle aims at the arc's start and the route steps round the arc (`CalcSharpTurnTarget`, `SaveTurnTarget`). Points are chained (`EnumRoutes`/`ContinueCheck`) until the look-ahead is covered, 1 m above the road | MM2 |
 | Divided roads (`aiPath` flag 0x1, ten SF roads): the centre line is a curb on the car's side | MM2 |
-| Obstacles (`IsTargetBlocked`, `aiVehicle::IsBlockingTarget`): a vehicle whose corner (from its matrix and bumper and side distances: a player's half InertiaBox about its centre of mass, an AI physics car's bound box from its model origin, an ambient car's data box about its CG) lies ahead within the way + 2 car lengths, within half the car's width + 1 m and 0.7 rad of the way; the nearest. The ambient cars come from the obstacle map (each car listed after its update in its intersection's list or its road's section list by side), searched section by section along the window up to the target; the players by the road and vertex they were last found on; other racers by their own window, only after the third waypoint of a lap; police cars are no obstacle | MM2 (props not modelled) |
+| Obstacles (`IsTargetBlocked`, `aiVehicle::IsBlockingTarget`): a vehicle whose corner (from its matrix and bumper and side distances: a player's half InertiaBox about its centre of mass, an AI physics car's bound box from its model origin, an ambient car's data box about its CG) lies ahead within the way + 2 car lengths, within half the car's width + 1 m and 0.7 rad of the way; the nearest. The ambient cars come from the obstacle map (each car listed after its update in its intersection's list or its road's section list by side), searched section by section along the window up to the target; the players by the road and vertex they were last found on; other racers by their own window, only after the third waypoint of a lap; police cars are no obstacle. With avoid-props set, each step also tests the props the roads list (the side-1 section list: props whose break threshold is over 250 000; the side -1 list: every prop, as coded; an intersection's list: empty in play) within their radius (YRadius, at most 2) + half the car's width + 1 m of the way (`aiBanger::IsBlockingTarget`), passed on either side at that radius + the clearance (`aiBanger::PreAvoid`) | MM2 |
 | Going round (`CalcObstacleAvoidPoints`, `aiVehicle::PreAvoid`, `EnumTargets`): the corners pushed out by the side distance + 2 m along MM2's sideways vector of the 3D line of sight; the leftmost and rightmost each start a route if within 1.57 rad of the road and on the road or the sidewalk (never the sidewalk for `vppanozgt`, `aiVehiclePhysics::Init`'s type 3 of its ten named cars); a further vehicle in the way is passed on the same side (ten deep), an ambient car more than 15 m beyond the first through the gap before it; avoid points 1 m above the ground; no way round keeps the point, marked | MM2 (no sharp-turn node state: **not ported**) |
 | On the road (`aiPath::IsPosOnRoad`, margin the car's side distance): the lateral at the first section whose outer edge puts the point ahead; the road's right side layout (`.bai` side params, lane and sidewalk boundaries in turn) gives, with n lanes, the road to params[2n − 1] from the centre line and the sidewalk to params[2n + 1], on both sides; a side without lanes (nine one-way SF alleys) has no road part. The road part ends inside the curb on 325 of 540 London paths (lanes to 5 m, curb at 6 m, typically); the sidewalk ends at the outer edge on all but 24 London and 3 SF paths. Asked of the road the obstacle is on | MM2 |
 | Best route (`DetermineBestRoute`): least total turning; first among routes over the sidewalk when preferred, then among those with a way round every obstacle | MM2 |
