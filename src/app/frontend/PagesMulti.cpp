@@ -30,10 +30,6 @@ using ui::Box;
 using ui::SpriteSheet;
 using namespace layout;
 
-// Original dialogs of this size sit here (tune/menu.csv: "Host Options,
-// serial_dlg,36,120,75,400,330").
-constexpr Vec2 kDialogOrigin{120, 75};
-
 // The menu ids of MM2's network dialogs (tune/widget.csv).
 constexpr int kAddressDialog = 14;  // Dialog_TCPIP, "Enter an Address"
 constexpr int kBadPassDialog = 24;  // badpass_dlg
@@ -186,7 +182,8 @@ public:
             item.enabled = p.available;
             item.help = p.help;
         }
-        auto& name = menu.add<ui::TextEntry>(Box{kBoxX, 66, kBoxWide, kBoxH}, &m_netName, net::kMaxNameLength);
+        // NetSelectMenu::NetSelectMenu: the NET NAME field takes 12 characters.
+        auto& name = menu.add<ui::TextEntry>(Box{kBoxX, 66, kBoxWide, kBoxH}, &m_netName, 12);
         name.onCommit = [this, &fe] {
             const auto trimmed = std::string(str::trim(m_netName));
             m_netName = trimmed.empty() ? netName(fe) : trimmed;
@@ -1206,21 +1203,28 @@ private:
 
 class EjectDialog final : public Page {
 public:
+    // Dialog_Eject (menu 42): picking a player boots them at once and takes
+    // the name off the list (Dialog_Eject::BootButtonCB,
+    // mmInterface::BootPlayerCB); DONE (dlg_done, 280,288) closes it. The
+    // list's place is inferred.
     explicit EjectDialog(Frontend& fe) {
         dialog = true;
         dialogPicture = "jpg/ejct_dlg.jpg";
-        origin = kDialogOrigin;
+        menuId = 42;
+        origin = centredOrigin(fe, "jpg/ejct_dlg.jpg", {400, 330});
         const float ox = origin.x, oy = origin.y;
-        menu.add<ui::ListBox>(
+        auto& list = menu.add<ui::ListBox>(
             Box{ox + 72, oy + 90, 258, 165}, [&fe] { return names(fe); }, [this] { return m_selected; },
             [this](int i) { m_selected = i; });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_ok.tga", 4}, ox + 60, oy + 280, [this, &fe] {
+        list.onPick = [this, &fe](int i) {
             const auto ids = others(fe);
-            if (fe.ctx.netGame && m_selected >= 0 && m_selected < static_cast<int>(ids.size()))
-                fe.ctx.netGame->kick(ids[static_cast<std::size_t>(m_selected)]);
-            fe.pop();
-        });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_can.tga", 4}, ox + 240, oy + 280, [&fe] { fe.pop(); });
+            if (fe.ctx.netGame && i >= 0 && i < static_cast<int>(ids.size()))
+                fe.ctx.netGame->kick(ids[static_cast<std::size_t>(i)]);
+            m_selected = -1;
+        };
+        const Vec2 done = fe.layout.position(42, 0, {280, 288}, origin);
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_done.tga", 4}, done.x, done.y, [&fe] { fe.pop(); })
+            .sound = "Selectionmade";
         menu.onBack = [&fe] { fe.pop(); };
     }
 

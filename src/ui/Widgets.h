@@ -372,6 +372,9 @@ public:
     std::function<int()> get;
     std::function<void(int)> set;
     std::function<void()> onDoubleClick;
+    // A row picked with a click or Enter (MM2's boot list acts on a click).
+    std::function<void(int)> onPick;
+    bool activate(UiFrame&) override;
     float rowHeight = 18.0f;
 
 private:

@@ -712,9 +712,19 @@ void ListBox::mouse(UiFrame& f, bool hovered) {
         set(row);
         m_lastClick = f.time;
         m_lastClickRow = row;
+        if (onPick)
+            onPick(row);
         if (dbl && onDoubleClick)
             onDoubleClick();
     }
+}
+
+bool ListBox::activate(UiFrame&) {
+    const int sel = get();
+    if (!onPick || sel < 0 || sel >= static_cast<int>(items().size()))
+        return false;
+    onPick(sel);
+    return true;
 }
 
 // --- TextEntry ------------------------------------------------------------------------------
