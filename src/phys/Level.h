@@ -103,7 +103,7 @@ public:
 };
 
 // lvlSegmentInfo with the state vehWheel::Init allocates for it
-// (AllocateState): the rooms of the probe's ends (lvlSegment's room cache)
+// (lvlSegmentInfo::AllocateState): the rooms of the probe's ends (lvlSegment's room cache)
 // and the level polygon the last probe hit (sdlPolyCached, a copy with its
 // own vertices), which lvlSDL::CollideProbe tests first. Each wheel keeps
 // one across samples.

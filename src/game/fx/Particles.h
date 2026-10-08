@@ -42,7 +42,8 @@ struct SparkPos {
     Vec3 position;
 };
 
-// asParticles: a pool of particles born by BirthRules.
+// asParticles: a pool of particles born by BirthRules (defaults as
+// asParticles::asParticles: intensity 1, no wind).
 //
 // update() is one MM2 update with the frame time `dt`. Several rules work per
 // update rather than per second (frame cycling advances one frame, alpha and

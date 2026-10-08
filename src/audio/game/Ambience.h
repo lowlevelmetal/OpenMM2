@@ -53,6 +53,12 @@ public:
     void playOneShot(int index);
     // GetSoundIndex: the sample with this name (exact case), or -1.
     int soundIndex(std::string_view wave) const;
+    // Aud3DAmbientObject::Reset (Aud3DObject::Reset), which the owners call
+    // from their own Reset (gizBridge, gizFerry, gizTrain, aiSubway): an
+    // object holding a slot gives it up (UnAssignSounds: the echo goes off,
+    // every sample stops) and its distance history is forgotten. The samples'
+    // active flags and one-shot timers stay.
+    void reset();
     void stop();
 
     const AmbientSoundSet& definition() const { return m_def; }
@@ -166,6 +172,11 @@ public:
     // aiCableCar::Update: the car's position and speed, then Aud3DObject::
     // Update and, while it holds a slot, UpdateAudio.
     void update(const Mat34& listener, const Vec3& position, float speed, float dt);
+    // aiCableCarAudio::Reset (Aud3DObject::Reset, from aiCableCar::Reset): a
+    // car holding a slot gives it up (UnAssignSounds: the loop and the start
+    // sound stop) and its distance history is forgotten. The state and the
+    // previous speed stay.
+    void reset();
     void stop();
     bool audible() const { return hasSlot(); }
     State state() const { return static_cast<State>(m_state); }

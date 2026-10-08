@@ -93,8 +93,13 @@ TEST(AudioParity, TablesReadLikeTheOriginalLoaders) {
     EXPECT_EQ(car->flags, 4u);
     EXPECT_EQ(car->clutch, "0.8"); // as MM2 reads it
     ASSERT_EQ(car->engine.size(), 1u);
-    // The "Volume Divisor" engine layout is not supported.
-    EXPECT_FALSE(parseCarAudio("h\nHORN,0.9,0,4,CLUTCH,0.8\nEngine,a,b,Volume Divisor\nX,1,2,3\n"));
+    // The "Volume Divisor" engine layout (ParseCSVBufferOld; see
+    // test_parity_mm2_audio.cpp).
+    const auto old = parseCarAudio("h\nHORN,0.9,0,4,CLUTCH,0.8\nEngine,a,b,Volume Divisor\nX,1,2,3\n");
+    ASSERT_TRUE(old);
+    EXPECT_TRUE(old->oldEngineLayout);
+    ASSERT_EQ(old->engine.size(), 1u);
+    EXPECT_TRUE(old->engine[0].oldLayout);
 
     // AudImpact::ReadCSV discards a table without ENDOFDATA.
     const char* impacts = "***\nBanger name,Num samples,ID\nWALL,1,0\n"

@@ -46,6 +46,19 @@ public:
     // MM2's dgBangerDataManager keeps 20 such sheets), 2x2 frames
     // (dgBangerActive: asParticles::Init(64, 2, 2)).
     static ParticleSheet bangerSheet(int texNumber) { return {"fxpt" + std::to_string(texNumber), 2, 2}; }
+    // dgBangerActive::Attach: the sheet (1-based, for bangerSheet) a
+    // dgBangerData TexNumber selects, 0 for none. TexNumber 0 has none; MM2
+    // clamps TexNumber - 1 to 0..20 in dgBangerDataManager's table of 20
+    // sheets, so a negative number takes fxpt1, and 21 and above read the
+    // word after the table, which is not a texture (OpenMM2: none). Retail
+    // banger data uses 1-7 and 16.
+    static int bangerSheetNumber(int texNumber) {
+        if (texNumber == 0)
+            return 0;
+        const int index = texNumber - 1 < 0 ? 0 : texNumber - 1;
+        return index < kBangerSheets ? index + 1 : 0;
+    }
+    static constexpr int kBangerSheets = 20; // dgBangerDataManager: fxpt1 .. fxpt20
 
 private:
     std::map<std::string, BirthRule, std::less<>> m_rules;

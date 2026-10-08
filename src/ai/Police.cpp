@@ -198,8 +198,10 @@ void PoliceCar::reset() {
     // aiPoliceOfficer::Reset: at the post, braked, watching; the opponents
     // that lost the dice roll may be pursued again. The route to the post
     // has no waypoints (RegisterRoute: destination speed 0, 5 m short, corner
-    // factor 2). The last suspect is kept.
-    m_car.reset(m_post);
+    // factor 2). The last suspect is kept. The car: vehCarSim::SetResetPos at
+    // the post with its rotation, then vehCar::Reset (no drop onto the
+    // ground).
+    m_car.resetAt(m_post.m3, phys::resetRotationOf(m_post));
     m_driver.reset();
     m_ignored.clear();
     m_target = -1;

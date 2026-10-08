@@ -60,7 +60,7 @@ std::optional<Skeleton> parseSkeleton(std::string_view text, std::string* error 
 //   u32 reserved        0 in every retail file (see below)
 //   u32 frameCount      1..10000
 //   u32 channelCount    1..1000; always 60 = 3 root translation + 19 bones x 3 Euler angles
-//   f32 cycleDistance   inferred: forward travel of one full playback, see docs
+//   f32 cycleDistance   forward travel of one loop (crAnimation::Normalize), see docs
 //   u8  flags           always 1, meaning unknown
 // followed by frameCount x channelCount f32. A nonzero first word marks the
 // older layout: it is the frame count itself, and the following word is the
@@ -246,8 +246,26 @@ struct PedType {
 };
 
 // Loads anim/<name>.{skel,mod,csv} (required), .shaders/.rays/.remap
-// (optional) and every animation the table references.
+// (optional) and every animation the table references. The animations are
+// the files' own data; normalizePedRoots turns them into what the game poses.
 std::optional<PedType> loadPedType(std::string_view name, const ReadFileFn& read, std::string* error = nullptr);
+
+// The root translations as MM2 changes them when a pedestrian type loads
+// (pedAnimation::Load), so a sequence is posed at the pedestrian's origin and
+// the pedestrian itself carries the motion:
+//  - crAnimation::GetAnimation(name, normalize) runs crAnimation::Normalize
+//    on an animation's first load: frame i's root z gains
+//    i * cycleDistance / frameCount (the travel of the loop);
+//  - then each table row, in file order, takes m = lastFrame - firstFrame
+//    (at most frameCount - 1) and moves the root x and z of frames 0..m by
+//    i * (v0 - vm) / m - v0, with v0 and vm read before the change: frame 0
+//    and frame m end at 0. Rows sharing an animation adjust it in turn;
+//    frames past m are left alone.
+// MM2 keeps one copy of an animation for every type that names it (the
+// rows of a later type adjust the shared, already adjusted data: a no-op
+// for the retail tables up to float rounding); OpenMM2 adjusts each type's
+// own copy.
+void normalizePedRoots(PedType& type);
 
 // Pedestrian type names present in a list of virtual paths (anim/<type>.mod).
 std::vector<std::string> findPedTypes(const std::vector<std::string>& paths);

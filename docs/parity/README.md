@@ -75,12 +75,12 @@ record's summary counts them:
 | ai-ambient-city | 236 | 116 | 61 | 13 | 22 | 4 | 20 |
 | session | 205 | 89 | 86 | 6 | 4 | 1 | 19 |
 | camera-props | 195 | 107 | 57 | 11 | 2 | 0 | 18 |
-| rendering-fx | 197 | 67 | 94 | 9 | 3 | 4 | 20 |
+| rendering-fx | 197 | 67 | 95 | 8 | 3 | 4 | 20 |
 | audio | 265 | 69 | 155 | 11 | 10 | 0 | 20 |
 | frontend-ui | 151 | 80 | 39 | 11 | 3 | 2 | 16 |
 | formats | 119 | 23 | 44 | 11 | 7 | 0 | 34 |
 | OpenMM2-only | 34 | 6 | 8 | 5 | 4 | 1 | 10 |
-| **Total** | **2078** | **880** | **785** | **108** | **70** | **15** | **220** |
+| **Total** | **2078** | **880** | **786** | **107** | **70** | **15** | **220** |
 
 The open rows and each record's "Missing" table list what still differs
 from MM2 and what porting it needs. The larger missing features are the
@@ -125,8 +125,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/ai/World.h` | 113 | P | ai-ambient-city |
 | `src/app/App.cpp` | 216 | M | openmm2-only |
 | `src/app/App.h` | 11 | O | - |
-| `src/app/CommandLine.cpp` | 111 | O | - |
-| `src/app/CommandLine.h` | 38 | O | - |
+| `src/app/CommandLine.cpp` | 111 | M | mm2-infrastructure |
+| `src/app/CommandLine.h` | 38 | M | mm2-infrastructure |
 | `src/app/Context.cpp` | 61 | M | openmm2-only |
 | `src/app/Context.h` | 103 | O | - |
 | `src/app/Controls.cpp` | 105 | P | session |
@@ -146,6 +146,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/app/SetupScreen.cpp` | 248 | O | - |
 | `src/app/frontend/Frontend.h` | 244 | P | frontend-ui |
 | `src/app/frontend/FrontendScreen.cpp` | 871 | P | frontend-ui |
+| `src/app/frontend/MenuPointer.cpp` | 40 | P | mm2-infrastructure |
 | `src/app/frontend/PagesCrash.cpp` | 233 | P | frontend-ui |
 | `src/app/frontend/PagesMain.cpp` | 481 | P | frontend-ui |
 | `src/app/frontend/PagesMulti.cpp` | 1078 | P | frontend-ui |
@@ -190,6 +191,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/audio/Wav.h` | 27 | F | audio |
 | `src/audio/game/Ambience.cpp` | 390 | P | audio |
 | `src/audio/game/Ambience.h` | 118 | P | audio |
+| `src/audio/game/AudioManager.cpp` | 32 | P | mm2-audio |
+| `src/audio/game/AudioManager.h` | 50 | P | mm2-audio |
 | `src/audio/game/AudioTables.cpp` | 541 | P | audio |
 | `src/audio/game/AudioTables.h` | 297 | P | audio |
 | `src/audio/game/CarAudio.cpp` | 1127 | P | audio |
@@ -285,6 +288,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/Profile.cpp` | 527 | P | camera-props |
 | `src/game/Profile.h` | 212 | P | camera-props |
 | `src/game/RaceConfig.h` | 80 | P | session |
+| `src/game/RoomVisibility.h` | 70 | P | mm2-city-render |
 | `src/game/Strings.cpp` | 38 | P | session |
 | `src/game/Strings.h` | 43 | P | session |
 | `src/game/TexelDamage.cpp` | 168 | P | rendering-fx |

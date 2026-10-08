@@ -17,6 +17,15 @@
 
 namespace mm2::audio::game {
 
+// AudSoundBase::SetPriority (audControl::SetPriority) of the race modes'
+// sounds (mmSingleRace / mmSingleCircuit / mmSingleBlitz / mmSingleRoam /
+// mmSingleStunt and the multiplayer modes' InitGameObjects), the
+// waypoints' (mmWaypoints::Init / InitStatic) and the HUD's network alert
+// (mmHUD::mmHUD): 0x17. Every other sample keeps audControl's default of 0, so
+// when all 32 voices are busy these take a voice from the game's samples and
+// are not taken by them (audManager::MoveToActive, Mixer::pickSlot).
+inline constexpr int kGameSoundPriority = 23;
+
 class SoundSlot {
 public:
     // The "leave as is" argument of AudSoundBase::PlayLoop / PlayOnce: a

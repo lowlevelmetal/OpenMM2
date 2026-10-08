@@ -4,7 +4,7 @@ Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 197 rows (functions; some rows split a constructor's or a draw
 function's parts, group small helpers, or cover a shader); verified 67,
-fixed 94, deviation 9, inferred 3, open 4, openmm2 20. Missing MM2
+fixed 95, deviation 8, inferred 3, open 4, openmm2 20. Missing MM2
 behaviour: 7 items. A second pass (2026-10-08) ported the tunnels, the
 rear-view mirror, the wide-angle letterbox, emissive materials, the sirens'
 lens flares, cloud shadows, the far pedestrians' stick figures, the Texture
@@ -121,7 +121,7 @@ GREATER 100, and that every retail room colour is white because
 | `AiRenderer::draw`: cars | `aiVehicleInstance::Draw`, `aiVehicleInstance::SetColor` | fixed | the traffic path of VehicleRenderer, Object Detail thresholds (was an invented draw distance), paint trunc(frand × (count − 1)) |
 | `AiRenderer::draw`: pedestrians | `aiPedestrianInstance::Draw` | fixed | nothing beyond NoDraw (was a fixed distance) |
 | `AiRenderer::draw`: signals | `aiTrafficLightInstance::Draw` | fixed | `lvlInstance::IsVisible` with the Object Detail thresholds |
-| `AiRenderer::draw`: room visibility | `cityLevel::DrawRooms` | deviation | MM2 draws traffic, pedestrians and signals from the visible rooms' lists; OpenMM2 tests the view frustum only, so objects the PVS hides are drawn (and depth-hidden) |
+| `AiRenderer::draw`: room visibility | `cityLevel::DrawRooms` | fixed | MM2 draws traffic, pedestrians and signals from the visible rooms' lists; ported in the MM2-side audit (`RoomVisibility`, see mm2/city-render.md) |
 | `AiRenderer::drawPed` | `pedAnimationInstance::Draw`, `modModel::Draw` | fixed | posed with the root drift taken out; the default culling (was none; the retail meshes face out counter-clockwise, tested) |
 | `AiRenderer::drawSkeleton` | `aiPedestrianInstance::Draw`, `pedAnimation::DrawSkeleton`, the pedestrian type loader's .rays reading | fixed | second pass: beyond 35 m, for each bone with a start width its position raised by the offset, a quad to its parent across the camera's right axis, coloured trunc(255 x diffuse) of the variant's shader its row names; untextured, unlit, both sides |
 | `AiRenderer::drawSignal` | `aiTrafficLightInstance::Draw`, `DrawGlow` | fixed | the first shader set; the light's glow and the walk signal both or neither, added, unfogged, default alpha test, only within NoDraw |

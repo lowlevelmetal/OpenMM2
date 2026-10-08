@@ -12,6 +12,7 @@
 #include "audio/MusicDirector.h"
 #include "audio/SoundBank.h"
 #include "audio/game/Ambience.h"
+#include "audio/game/AudioManager.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
 #include "audio/AngelRandom.h"
@@ -141,6 +142,11 @@ public:
             load(ctx);
             return;
         }
+        // GameLoop: AudManager::Update before the game's update, with the
+        // pause state the frame starts with (every sound stops while paused).
+        if (ctx.mixer)
+            m_audioManager.update(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
+                                  static_cast<float>(dt));
         // mmInput::Update: the controller's bindings against the devices.
         {
             const auto size = ctx.window().size();
@@ -180,7 +186,10 @@ public:
             updateGameInput(ctx);
         if (m_paused) {
             // asRoot paused (the full-screen map in single player): the
-            // game, the physics and the clocks stand still.
+            // game, the physics and the clocks stand still. mmGame::Update
+            // still updates the announcer's queue (mmSpeechContainer::Update).
+            if (m_announcerOk)
+                m_announcer.update(static_cast<float>(dt));
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
             m_textures->update(m_time);
@@ -364,7 +373,8 @@ public:
         drawRemoteCars(ctx, dt, camera);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
-            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera, {m_detail.objects, night});
+            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera,
+                            {m_detail.objects, night, &m_cityRenderer->rooms()});
         const bool lights = carLights();
         if (m_vehicle && playerBody) {
             m_pose.headlights = lights;
@@ -498,6 +508,8 @@ private:
             // mmGame::SetLevelGraphics: vglCloudMapEnable by CLOUD SHADOWS.
             const auto clouds = ctx.settings.ini.getInt("Graphics", "CloudShadows", 2);
             m_envOptions.cloudShadows = static_cast<int>(std::clamp(clouds, 0LL, 2LL));
+            // mmGame::SetLevelGraphics: cityLevel::EnableSky(TEXTURED SKY).
+            m_envOptions.texturedSky = ctx.settings.ini.getBool("Graphics", "TexturedSky", true);
         }
         applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
@@ -539,7 +551,9 @@ private:
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                 m_cams.startPreRace();
         }
-        if (auto* music = ctx.music()) {
+        // -nomusic: mmGameMusicData::Load loads neither the song nor the
+        // city's ambience segment, so the race plays neither.
+        if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic) {
             // The song is chosen now; MusicDirector starts it 1.25 s in.
             const bool cruise = m_result.config.mode == game::GameMode::Cruise;
             music->startRace(-1, cruise, false);
@@ -623,10 +637,14 @@ private:
             setupVehicleRenderer(ctx, *m_trailer);
         }
         auto [pos, heading] = spawnPoint(ctx);
+        // mmGame::FindGroundPos drops only the multiplayer race grids onto the
+        // road; the single-player starts are placed as the race data gives
+        // them and settled 0.9 m above the road below (InitOtherPlayers).
+        bool findGround = !m_session;
         if (m_session) {
             const Mat34 sp = m_session->playerSpawn();
             pos = sp.m3;
-            heading = std::atan2(sp.m2.x, sp.m2.z);
+            heading = phys::resetRotationOf(sp);
             // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitMyPlayer: the
             // player's start slot on the grid behind the start
             // (mmGameMulti::StartXYZ; the slot is NetStartArray's, here the
@@ -637,26 +655,35 @@ private:
                 const bool longVehicle = m_player->sim().body.radius() > 6.0f || m_player->trailerModel();
                 pos += Mat34::rotationY(heading).transformDir(
                     game::session::multiplayerGridOffset(ctx.netGame->localId(), longVehicle));
+                findGround = true;
             }
         }
-        // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading".
+        // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading" (dropped onto
+        // the ground below it).
         if (const char* sp = std::getenv("OPENMM2_DEBUG_SPAWN")) {
             const auto parts = str::split(sp, ',');
             if (parts.size() == 4) {
                 auto f = [&](int i) { return static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)); };
                 pos = {f(0), f(1), f(2)};
                 heading = f(3);
+                findGround = true;
             }
         }
-        m_spawn = Mat34::rotationY(heading);
-        m_spawn.m3 = pos;
-        // Drop the spawn point onto the surface below it (mmGame::FindGroundPos
-        // probes as the wheels do, lvlSDL::CollideProbe).
+        // mmGame::FindGroundPos: dgPhysManager::Collide with the wheels' probe
+        // mask from 7.5 m above to 15 m below; the point itself on a miss.
         phys::RayHit hit;
-        if (m_world->wheelProbe(pos + Vec3{0, 5, 0}, pos - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            m_spawn.m3 = hit.position;
+        if (findGround &&
+            m_world->wheelProbe(pos + Vec3{0, 7.5f, 0}, pos - Vec3{0, 15.0f, 0}, hit, nullptr, nullptr))
+            pos = hit.position;
         m_player->addTo(*m_world);
-        m_player->reset(m_spawn);
+        // The modes' InitGameObjects / InitMyPlayer: vehCarSim::SetResetPos at
+        // the start, the reset rotation, vehCar::Reset.
+        m_player->setResetPos(pos, heading);
+        m_player->reset();
+        // mmGame::InitOtherPlayers (every single-player mode but cruise):
+        // the player's start dropped onto the road, 0.9 m up.
+        if (m_session && !multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+            m_player->settleOnGround(*m_world, m_player->sim().body.ics.matrix.m3);
         m_pose = m_player->pose();
         std::vector<std::string> missing;
         // mmPlayer::Init: the dashboard eye depends on the screen's shape.
@@ -706,9 +733,12 @@ private:
             log::warn("race: no race rules: {}", error);
     }
 
-    // Loads an AI-driven car onto the ground at `spawn`.
+    // Loads an AI-driven car at `spawn`: aiRouteRacer::Init (its route's
+    // first point) and aiPoliceOfficer::Reset (its post) set the reset
+    // position and rotation there and vehCar::Reset places it (racers are
+    // then settled onto the road, see spawnOpponents; police are not).
     std::unique_ptr<game::SimVehicle> loadAiCar(Context& ctx, const std::string& vehicle, std::string_view tune,
-                                                Mat34& spawn) {
+                                                const Mat34& spawn) {
         std::string error;
         auto car = game::SimVehicle::load(ctx.game->vfs, vehicle, &error, tune);
         if (!car) {
@@ -722,10 +752,8 @@ private:
         if (vehicle == m_result.config.vehicle)
             car->sim().setPolygonalBound(true);
         car->addTo(*m_world);
-        phys::RayHit hit;
-        if (m_world->wheelProbe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            spawn.m3 = hit.position;
-        car->reset(spawn);
+        car->setResetPos(spawn);
+        car->reset();
         return car;
     }
 
@@ -790,9 +818,15 @@ private:
             opp.sim = loadAiCar(ctx, s.vehicle, {}, spawn);
             if (!opp.sim)
                 continue;
+            // mmGame::CollideAIOpponents (from InitOtherPlayers): the racer's
+            // start dropped onto the road below its model origin, 0.9 m up.
+            if (!multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+                opp.sim->settleOnGround(*m_world, opp.sim->sim().modelMatrix().m3);
             opp.spawn = spawn;
+            // aiVehiclePhysics::Init: vehCar::Init's paint job is the racer's
+            // id (its index) & 3.
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
-                                                                    opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
+                                                                    opp.sim->model(), static_cast<int>(i) & 3);
             setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
             opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
@@ -808,7 +842,11 @@ private:
                                                   m_session->laps(), 1 + static_cast<int>(i),
                                                   static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
-                    opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
+                    opp.driver->setResetCar([&v = *opp.sim, a = opp.audio.get()](const Mat34& m) {
+                        v.reset(m);
+                        if (a)
+                            a->reset(); // vehCar::Reset -> vehCarAudioContainer::Reset
+                    });
                 else
                     log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
             }
@@ -838,7 +876,8 @@ private:
             const auto& p = posts[i];
             Cop cop;
             Mat34 post = p.spawn;
-            // vpcop has a pursuit tune (vpcop_cop.vehcarsim); other cars use their base tune.
+            // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
+            // (MM2 never loads vpcop_cop.vehCarSim).
             cop.sim = loadAiCar(ctx, p.vehicle, {}, post);
             if (!cop.sim)
                 continue;
@@ -846,9 +885,14 @@ private:
             settings.seed += i;
             cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings,
                                         p.vehicle);
-            // vpcop paint job 0 is the California livery (vpcop_ca_*), 1 the
-            // London one (vpcop_ln_*); picked by city (inferred).
-            const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
+            // aiVehiclePhysics::Init: the paint job is the officer's id (its
+            // index) & 3, except for vpcop: 1 (the London livery, vpcop_ln_*)
+            // when the AI map has no cable cars, else 0 (California,
+            // vpcop_ca_*). OpenMM2 has no cable cars yet; of the retail cities
+            // only San Francisco has them.
+            int livery = static_cast<int>(i & 3);
+            if (str::iequals(p.vehicle, "vpcop"))
+                livery = str::iequals(m_result.config.city, "sf") ? 0 : 1;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
             setupVehicleRenderer(ctx, *cop.renderer);
@@ -1059,37 +1103,34 @@ private:
             a->active = true;
             if (a->hasVoice)
                 a->voice.update(playerSpeed, dt);
+            // The voice follows the car's attenuation, pan and echo while
+            // the car holds its sound slot (AmbientCarAudio::setVoice).
             a->car.update(c.speed, c.transform, c.velocity, dt, listener);
-            // The voice follows the car's attenuation and pan while the car
-            // holds its sound slot.
-            if (a->hasVoice && a->car.audible())
-                a->voice.updateAttenuation(a->car.attenuation(), a->car.pan(), a->car.distance2());
         }
         for (std::size_t i = 0; i < m_ambientAudio.size(); ++i) {
             AmbientAudio* a = m_ambientAudio[i].get();
             if (a && a->active && (i >= seen.size() || !seen[i])) {
-                // Back in the pool (aiAmbientVehicleAudio::Reset).
-                a->car.stop();
+                // Back in the pool (aiVehicleSpline::Reset ->
+                // aiAmbientVehicleAudio::Reset).
+                a->car.reset();
                 a->active = false;
             }
         }
         // aiGoalAvoidPlayer::Reset: PlayAvoidanceHorn, and when a horn
-        // pattern starts, PlayAvoidanceReaction (for a car holding a sound
-        // slot).
+        // pattern starts, PlayAvoidanceReaction.
         for (int id : m_ai->takeAvoidEvents()) {
-            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk() && a->hasVoice && a->car.audible())
-                a->voice.avoid();
+            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk())
+                a->car.avoidReaction();
         }
         // aiVehicleActive's impact callback: AudImpact::Play and
         // PlayImpactHorn with |x| + |y| + |z| of the impulse, then
-        // PlayImpactReaction (for a car holding a sound slot).
+        // PlayImpactReaction.
         for (const game::TrafficImpact& e : m_trafficImpacts) {
             AmbientAudio* a = ambientAudioOf(e.carId);
             if (!a)
                 continue;
             a->car.impact({e.strength, e.audioId, {}});
-            if (a->hasVoice && a->car.audible())
-                a->voice.impact(e.strength);
+            a->car.impactReaction(e.strength);
         }
         m_trafficImpacts.clear();
     }
@@ -1125,6 +1166,7 @@ private:
             if (const auto* def = ambientVoice(ctx.game->vfs, c.data->model)) {
                 a->voice.load(*ctx.mixer, *m_bank, *def);
                 a->voice.setOwner(a.get());
+                a->car.setVoice(&a->voice);
                 a->hasVoice = true;
             }
             m_ambientAudio[id] = std::move(a);
@@ -1241,31 +1283,52 @@ private:
                     m_hud->options().opponentIcons = true;
             }
             if (e.type == EventType::Respawn) {
-                m_player->reset(m_session->respawnTransform());
+                // Without waypoints mmGame::HitWaterHandler is mmPlayer::Reset
+                // (back to the reset position); with them mmSingleCircuit /
+                // mmGameMulti::HitWaterHandler reset the car at the last
+                // checkpoint and put the reset position back.
+                if (m_session->setup().checkpoints.empty())
+                    m_player->reset();
+                else
+                    m_player->respawnAt(m_session->respawnTransform());
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 if (m_vehicle)
                     m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
-                // The race starts over (mmGame::Reset): every car to its start,
+                // The race starts over (mmGame::Reset): every prop back in its
+                // place (lvlLevel::ResetInstances), every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
+                if (m_bangers)
+                    m_bangers->reset();
                 phys::setElasticityCap(phys::kElasticityCap);
-                m_player->reset(m_spawn);
+                // mmPlayer::Reset, aiVehiclePhysics::Reset: vehCar::Reset at
+                // the reset positions.
+                m_player->reset();
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
                 if (m_vehicle)
                     m_vehicle->resetDamage();
                 for (auto& o : m_opponents) {
-                    o.sim->reset(o.spawn);
+                    o.sim->reset();
                     if (o.fx)
                         o.fx->reset();
+                    if (o.audio)
+                        o.audio->reset(); // vehCarAudioContainer::Reset
                     o.renderer->resetDamage();
                     if (o.driver)
                         o.driver->reset();
                 }
-                for (auto& c : m_cops)
+                for (auto& c : m_cops) {
                     c.driver->reset();
+                    if (c.audio)
+                        c.audio->reset(); // aiPoliceOfficer::Reset -> vehPoliceCarAudio::Reset
+                }
+                // mmGame::Reset: StartMusic again.
+                if (m_musicDirector)
+                    m_musicDirector->restart();
+                m_musicFinished = m_musicResults = false;
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -1296,6 +1359,16 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
+            } else if (e.type == EventType::FinalCheckpoint || e.type == EventType::FinalLap) {
+                // mmWaypoints::Update: the last stretch switches the music to
+                // the cop chase segment; the final checkpoint is announced
+                // (mmRaceSpeech::PlayFinalCheckPoint; the race speech exists
+                // outside the crash course). PlayFinalLap has no caller.
+                if (m_musicDirector)
+                    m_musicDirector->finalStretch();
+                if (e.type == EventType::FinalCheckpoint && m_announcerOk &&
+                    m_result.config.mode != game::GameMode::CrashCourse)
+                    m_announcer.playFinalCheckpoint();
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
@@ -1366,7 +1439,8 @@ private:
         auto it = m_gameSounds.find(name);
         if (it == m_gameSounds.end()) {
             audio::game::SoundSlot slot;
-            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects);
+            // AudSoundBase::SetPriority(0x17) after loading them.
+            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects, audio::game::kGameSoundPriority);
             it = m_gameSounds.emplace(name, std::move(slot)).first;
         }
         auto& slot = it->second;
@@ -1909,6 +1983,8 @@ private:
         }
         m_ai->setLightsDeferred(true); // updated after the racers and police
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
+        if (m_cityRenderer)
+            m_aiRenderer->setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
             m_trafficBodies->setWeatherFriction(weatherFriction());
@@ -2040,6 +2116,8 @@ private:
     // Object Detail, reflections and the shadow's ground probe of a car renderer.
     void setupVehicleRenderer(Context& ctx, game::VehicleRenderer& r) {
         r.setDetail(m_detail.objects);
+        if (m_cityRenderer)
+            r.setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         r.setReflections(ctx.settings.ini.getBool("Graphics", "VehicleReflections", true));
         r.setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
             phys::RayHit hit;
@@ -2083,14 +2161,19 @@ private:
         const auto impacts = fx.takeImpacts();
         if (!m_bangers || !m_bangerData)
             return;
-        const Mat34 body = sim.modelMatrix();
+        const Mat34 body = sim.modelMatrix(); // vehBreakableMgr::Init: the car's matrix
         auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
             const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
             if (!data)
                 return false;
-            r.detach(b.part);
-            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed,
-                                 sim.body.room);
+            // vehBreakableMgr::Reset (the car's damage cleared) takes the
+            // ejected part out of the world again (dgHitBangerInstance::Detach).
+            r.setEjectedPartReset([this](std::size_t i) {
+                if (m_bangers)
+                    m_bangers->detachHit(i);
+            });
+            r.detach(b.part, m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(),
+                                                  Mat34::translation(b.pivot) * body, speed, sim.body.room));
             return true;
         };
         for (const auto& impact : impacts)
@@ -2250,7 +2333,7 @@ private:
         m_audioSlots.setTunnel(m_tunnel);
         // MMDMusicManager::UpdateAmbientSFX: the city's ambience segment stops
         // underground (StopSegment(0)) and starts again outside (PlaySegment).
-        if (auto* music = ctx.music(); music && m_tunnel != m_ambienceStopped) {
+        if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic && m_tunnel != m_ambienceStopped) {
             music->setAmbience(m_tunnel ? std::string_view{} : std::string_view(m_result.config.city));
             m_ambienceStopped = m_tunnel;
         }
@@ -2276,8 +2359,10 @@ private:
         updateAiAudio(dt);
         updateAmbientAudio(ctx, dt);
         updatePedestrianAudio(dt);
+        // mmGame::Update's mmSpeechContainer::Update (AudSpeech::Update); the
+        // frame's first one was AudManager::Update's (m_audioManager).
         if (m_announcerOk)
-            m_announcer.update(dt); // AudSpeech::Update
+            m_announcer.update(dt);
         m_ambience.update(m_camera.transform, dt, m_tunnel);
         // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
         // hood camera (car view 1) and the dashboard, off for the others.
@@ -2472,7 +2557,7 @@ private:
         // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
         if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
-            m_player->reset(m_spawn);
+            m_player->reset();
     }
 
     // Force feedback (mmPlayer::Update -> UpdateFF while mmInput::DoingFF;
@@ -2831,7 +2916,6 @@ private:
     std::unique_ptr<game::VehicleRenderer> m_trailer;
     game::VehiclePose m_pose;
     game::VehiclePose m_trailerPose;
-    Mat34 m_spawn;
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
@@ -2948,6 +3032,7 @@ private:
     audio::game::PedestrianAudio m_pedAudio;
     std::vector<audio::game::PedestrianSoundInput> m_pedSounds;
     audio::game::Announcer m_announcer;
+    audio::game::AudioManager m_audioManager; // AudManager::Update
     bool m_announcerOk = false;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)

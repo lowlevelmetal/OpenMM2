@@ -8,6 +8,7 @@
 #include "game/ModelLibrary.h"
 #include "game/RaceConfig.h"
 #include "city/RoomLocator.h"
+#include "game/RoomVisibility.h"
 #include "game/TextureLibrary.h"
 #include "render/Device.h"
 
@@ -29,6 +30,10 @@ struct EnvironmentOptions {
     float farClip = 1000.0f;
     // The Cloud Shadows option: 0 none, 1 low, 2 high (gfxCloudShadows).
     int cloudShadows = 2;
+    // The Textured Sky option (gfxEnableSky): mmGame::SetLevelGraphics
+    // passes it to cityLevel::EnableSky; without it lvlSky::Draw draws
+    // nothing and the fog colour the frame is cleared to shows instead.
+    bool texturedSky = true;
 };
 
 // Lighting, fog and sky for one time of day and weather.
@@ -48,12 +53,44 @@ struct Environment {
     // setting, 2 for high, 0 none).
     std::string cloudMap;
     std::uint32_t cloudMask = 0;
+    bool sky = true; // EnvironmentOptions::texturedSky
 };
 
 // Builds the environment from the city's .ltNN and _fog.csv tables.
 // Snow (an OpenMM2 option; MM2's weather is 0-3) uses the rain tables.
 Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather weather,
                             const EnvironmentOptions& options = {});
+
+// What lvlLevel::LoadInstances makes of a city/<map>.inst or _ai.inst record,
+// by its flags (the record header's high 16 bits; the low byte is the
+// variant, see staticVariant).
+enum class StaticKind {
+    Fixed,     // lvlFixedMatrix: instance flags 0x600 (visible, static)
+    Landmark,  // 0x100: lvlLandmark (terrain-local bound), instance flags
+               // 0x730 (0x710 with record flag 0x400)
+    MultiRoom, // 0x2000: a collidable lvlFixedMatrix (instance flags 0x730)
+               // placed by lvlMultiRoomInstance::Create
+    Banger,    // 0x200: dgUnhitBangerInstance::RequestBanger (BangerSet)
+};
+StaticKind staticKind(std::uint16_t flags);
+
+// lvlLevel::LoadInstances calls SetVariant with the flags' low byte;
+// lvlFixedAny::SetVariant keeps it modulo the geometry's number of shader
+// sets, the paint job lvlFixedAny::Draw uses (GpuModel::materials applies
+// the modulo).
+inline int staticVariant(std::uint16_t flags) { return flags & 0xFF; }
+
+// lvlFixedMatrix::IsVisible: in physics mode (cityLevel::Load sets it) an
+// object without instance flag 0x100 (a Fixed record: landmarks and
+// collidable objects have it) is not drawn while the camera is behind the
+// vertical plane through its origin facing along its Z axis:
+// (eye.x - x) * z.x + (eye.z - z) * z.z < 0. (lvlFixedRotY::IsVisible has
+// the same test, but only landmarks are stored that way and they are exempt.)
+bool fixedObjectFacesAway(const Mat34& transform, const Vec3& eye);
+
+// cityLevel::Draw lists at most this many rooms (its cityRoomRec array);
+// later rooms are not drawn.
+inline constexpr std::size_t kCityMaxDrawnRooms = 512;
 
 // Level of detail for city objects.
 struct DetailSettings {
@@ -90,6 +127,10 @@ public:
     };
     const Stats& stats() const { return m_stats; }
 
+    // The rooms the last draw() listed (cityLevel::Draw), from which the
+    // dynamic objects of the same view are drawn.
+    const RoomVisibility& rooms() const { return m_visibility; }
+
     // Draws one model mesh with its materials (shared with vehicles).
     void drawMesh(const GpuMesh& mesh, const std::vector<asset::PkgMaterial>& materials, const Mat44& world,
                   bool fog = true, bool lighting = true);
@@ -124,13 +165,15 @@ private:
         // its rooms is drawn first.
         bool multiRoom = false;
         std::uint32_t drawnFrame = 0;
+        int variant = 0;         // staticVariant
+        bool cullBehind = false; // fixedObjectFacesAway applies (StaticKind::Fixed)
     };
 
     void drawSky(const Camera& camera, const Environment& env);
     void gatherStreets(const Room& room, int lod, const Vec3& eye);
     void drawStreets(bool alphaPass);
     void drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail);
-    void drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth);
+    void drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int variant);
     void drawCloudShadow(const GpuMesh& mesh, const std::vector<asset::PkgMaterial>& materials,
                          const Mat44& world);
     void resolve(InstanceDraw& inst);
@@ -154,6 +197,8 @@ private:
     std::vector<Room> m_rooms;
     std::vector<InstanceDraw> m_instances;
     std::vector<std::uint8_t> m_roomMarks;
+    std::vector<int> m_drawnRooms; // this frame's cityLevel::Draw room list
+    RoomVisibility m_visibility;
     const GpuModel* m_sky = nullptr;
     float m_skyAngle = 0.0f;
     int m_lastRoom = 0; // cityLevel's sm_LastPvsRoom

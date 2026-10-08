@@ -30,6 +30,7 @@ class LineSparks {
 public:
     static constexpr int kMax = 64; // vehCarDamage::Init
 
+    // asLineSparks::Init(64, "spark") from vehCarDamage::Init.
     explicit LineSparks(SparkLut lut = SparkLut::builtin());
 
     // asLineSparks::RadialBlast: `count` sparks from `position`, 4-5 m/s
