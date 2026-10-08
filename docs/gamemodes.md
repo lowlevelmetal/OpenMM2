@@ -365,9 +365,14 @@ HUD, car):
   delivered!" (117), "<name> delivered the Gold!" (137). The gold spins at
   3 rad/s 1.5 m above its place (`mmPowerupInstance`); the bases are
   billboards 12 x 7.5 x 12 (`mmBillInstance`); the arrow points at the gold,
-  or at the carrier's base. The team totals ("COPS" / "ROBBERS", or "BLUE" /
-  "RED") show in blue and red at the top left (mmCRHUD's corner inferred;
-  its roster of names is not drawn), the time limit's clock top centre.
+  or at the carrier's base. `mmCRHUD` (its corner at the top left,
+  inferred): in team games "COPS" / "ROBBERS" or "BLUE" / "RED" in blue and
+  red (font string 262) with the team totals under them; then the player's
+  name (blue, red on team 1) and score, and the roster of the other players
+  in their colours with their scores and "$" (string 268) by the gold
+  carrier. The numbers are yellow Gill Sans MT (20 and 16 pixels). While
+  the player carries the gold a `wpobj_gold` spins (0.05 rad a frame) 5.5 m
+  up and 13.1 m ahead of the camera. The time limit's clock is top centre.
   The announcer's Cops & Robbers lines are loaded but build 3393 never
   plays them.
 
@@ -401,18 +406,19 @@ fractions of the whole output.
 | Place / Check | Labels in light green (0.5, 1, 0.5), numbers white, no shadow, flush with the left edge; label font string 253, numbers 251 (both Gill Sans MT bold, 22 px). Checkpoint races: Place at 3.5 % of the height, Check at 8.5 %; Blitz and the crash course: Check at 3.5 %, hidden in follow and destroy lessons | `mmWPHUD::Init`, `mmSingleRace::InitHUD`, `mmSingleBlitz::InitHUD` |
 | Circuit readouts | Place, Check, Lap at 3.5 / 8.5 / 13.5 % (strings 259-261, fonts 258 / 256); one row per completed lap from 18.5 %, 5 % apart: "1." and the lap time as M:SS:HH (`GetLocTime`), the time starting at the width of "10.  " | `mmCircuitHUD::Init`, `::SetLapTime` |
 | Clean lessons | "Hit Objects:" at 14 %. The "Hit Vehicles:" line is created at 19 % but never added to the HUD, so it never shows | `mmCollideHUD::Init` |
-| Messages | Gill Sans MT 36 px (string 60), yellow, centred across the screen, word-wrapped, with a (15, 15, 15) shadow offset by 1/18 of the text height. A message box 15 % tall at 80 % of the height, or at 20 % for "upper" messages (`SetMessage` mode 1: countdown, water); MM2's second line sits at 87.5 % / 35 %. `HudMessage::top` selects the upper box | `mmHUD::mmHUD`, `::Update`, `::SetMessage`, `mmTextNode::RenderText` |
+| Messages | Gill Sans MT 36 px (string 60), yellow, centred across the screen, word-wrapped, with a (15, 15, 15) shadow offset by 1/18 of the text height. A message box 15 % tall at 80 % of the height, or at 20 % for "upper" messages (`SetMessage` mode 1: countdown, water); MM2's second line sits at 87.5 % / 35 %. While the 3D view does not start at the top of the screen (wide angle, full-screen map) both boxes move to 5 % / 10 %. `HudMessage::top` selects the upper box | `mmHUD::mmHUD`, `::Update`, `::SetMessage`, `mmTextNode::RenderText` |
 | Arrow | `hudarrow01` in every mode (the `_blitz` and `_cc` models are unused); camera space (0, 2.5, −6.1); points at the target taken at the camera's height (the vertical component is kept, the basis is not renormalised); tilted −20° about X; unlit, opaque, no depth test; paint job 1 (yellow) while the target is behind. None in cruise and circuits, nor in follow, destroy and map lessons; off after a Blitz is over. Drawn in the dashboard view too (under the dash) | `mmArrow::mmArrow`, `::Update`, `mmHUD::Init`, `mmSingleStunt::InitHUD`, `mmSingleBlitz::Update` |
 | Checkpoint stands | `pt_check` / `pt_finish` (2 × 1 units), rotated by −heading about Y, scaled by (radius, 7.5, radius) and centred 3.75 m above the waypoint, so the arch spans the gate and stands 7.5 m tall; pre-lit (no lighting); crash course stands use paint job 1 (`CCStand`) | `mmWaypointObject::mmWaypointObject`, `mmCheckpointInstance::Init`, `::Draw`, `mmSingleStunt::InitNewEvent` |
-| Opponent icons | "Opponent Position" (on for new players): a violet triangle facing the camera, 2 m wide, 4 m tall, tip 4 m above each opponent, drawn over everything. In Blitz the same cards in cyan mark the checkpoints still to clear, growing from 1.9 near the camera to 4.1 at 300 m, with their numbers as cyan labels (font string 48) 7 m above the checkpoint, sorted by depth; Blitz and the follow and destroy lessons force the icons on | `mmIcons::Cull`, `mmSingleBlitz::InitHUD`, `::Update`, `mmSingleStunt::InitHUD`, `mmPlayerConfig::DefaultViewSettings` |
-| Map: placement | Small: (Pos.x × W, Pos.y × H), size (Size.x × W − 10, Size.y × H − 10); at the left edge for right-hand-drive cars (vehicle Flags 0x40) in the dashboard view. Split: bottom half. Full screen: whole screen. No frame | `mmHudMap::SetMapMode` |
+| Opponent icons | "Opponent Position" (on for new players): a violet triangle facing the camera, 2 m wide, 4 m tall, tip 4 m above each opponent, drawn over everything. In checkpoint races and circuits each opponent's place (`UpdateScore`) shows above it as a digit of `opp_icon.tex` on a 4 × 4 m card 13 to 17 m up (the 4 m lift is scaled with the size there); the icons are drawn by place in as many passes as there are opponents, places over 7 in the first, so an opponent placed past the passes is not drawn. Network players: coloured by slot (blue, green, red, yellow, orange, violet, cyan, pink; red / blue by team in Cops & Robbers, the gold carrier marked "$"), their names in that colour with a dark outline (font string 48) over the cars within 300 m. In Blitz cyan cards mark the checkpoints still to clear, growing from 1.9 near the camera to 4.1 at 300 m (their number labels are registered but only network games draw labels); Blitz and the follow and destroy lessons force the icons on | `mmIcons::Cull`, `::RegisterOpponents`, `mmGame::mmGame`, `mmSingleRace::UpdateScore`, `mmGameMulti::RegisterMapNetObjects`, `mmSingleBlitz::InitHUD`, `::Update`, `mmSingleStunt::InitHUD`, `mmPlayerConfig::DefaultViewSettings` |
+| Map: placement | Small: (Pos.x × W, Pos.y × H), size (Size.x × W − 10, Size.y × H − 10); at the left edge for right-hand-drive cars (vehicle Flags 0x40) while the dashboard is on. Split: bottom half, the 3D view in the top half. Full screen: whole screen, drawn before the level, the 3D view in (Pos × screen, Size × screen) on black. No frame | `mmHudMap::SetMapMode`, `mmGameManager::Cull` |
 | Map: camera | Perspective, 60° vertical field of view, aspect 1.25 (2.5 split) regardless of the viewport's shape, near 10, far 1600; above the car at an absolute height = the zoom distance. Rotating: the car's heading up; otherwise −Z up and +X right. Zoom and icon size move linearly at (out − in) × 1.2 per second toward the Map Zoom setting (FS values in full screen) and snap on mode changes. "Approach Rate" and "Ocean Color" in the `.mmhudmap` are never read (datParser names are one token). OpenMM2 widens the horizontal field on non-4:3 outputs | `mmHudMap::mmHudMap`, `::FileIO`, `::Cull`, `::SetMapMode` |
 | Map: look | Cleared to a hard-coded ocean colour: London (0.92, 0.84, 0.778), elsewhere (0.084, 0.68, 0.92) (the `.mmhudmap` Ocean Color is overwritten); `hudmap_<city>.pkg` unlit | `mmHudMap::Init` |
-| Map: icons | Car arrows are flat untextured triangles (0, 0, −1), (±0.7, 0, 1) × icon scale, 15 m above the car: police (red) while chasing, opponents (violet), the player (yellow) over a black one 1.3 times larger; traffic is not shown; `hudmap_tri` is loaded but unused. Waypoints are `hudmap_square` × icon / 7.51, 10 m above: green to clear, yellow the current goal, grey cleared (circuits), the finish dot for the open finish (checkpoint races) or the start line (circuits) | `mmHudMap::DrawIcon`, `DrawColoredTri`, `::DrawPlayer`, `::DrawCops`, `::DrawOpponents`, `::DrawWaypoints`, `::DrawIndicator` |
+| Map: icons | Car arrows are flat untextured triangles (0, 0, −1), (±0.7, 0, 1) × icon scale, 15 m above the car: police (red) while chasing, opponents (violet; network players IconType slot + 4: red, yellow, orange, violet, cyan, pink, and two colours read past the table for the last two slots), the player (yellow) over a black one 1.3 times larger; traffic is not shown; `hudmap_tri` is loaded but unused. Waypoints are `hudmap_square` × icon / 7.51, 10 m above: green to clear, yellow the current goal, grey cleared (circuits), the finish dot for the open finish (checkpoint races) or the start line (circuits) | `mmHudMap::DrawIcon`, `DrawColoredTri`, `::DrawPlayer`, `::DrawCops`, `::DrawOpponents`, `::DrawWaypoints`, `::DrawIndicator` |
 | Dashboard | `<car>_dash.pkg` in camera space (DashPos, RoofPos), unlit, no depth test, painted dash, roof, gear indicator, speed, tach and damage needles, dash_extra, wheel. Needles turn by −angle about Z around (box centre of `<car>_dash_<part>.mtx` + PivotOffset) and are moved by Speed/Tach/DmgOffset; angle = RotMin + value / max × (RotMax − RotMin), clamped. Speed against 160, rpm against a fixed 8000 with a floor of 800, damage against its maximum. The gear indicator sits at GearPivotOffset with paint job = transmission gear (R, N, One…), also in automatics | `mmDashView::LoadPkg`, `::LoadPivotInfo`, `::Init`, `::Cull`, `RadialGauge::Cull`, `::GetArrowAngle` |
 | HUD toggle | The "HUD Toggle" key is `mmHUD::ToggleExternalView`: it hides and shows the instrument cluster only. `mmHUD::Disable` (looking around from a point-of-view camera, the in-race menu) hides the dashboard with the readouts, and the messages in single player only | `mmGame::UpdateGameInput`, `mmHUD::ToggleExternalView`, `::Disable` |
 | Circuit lap rows | `mmWaypoints::Update` sets the row of the lap being driven every frame, so a live time shows under the completed laps | `mmWaypoints::Update`, `mmCircuitHUD::SetLapTime` |
 | Map police | Police cars show on the map only while they pursue | `mmHudMap::DrawCops` |
+| Map: Cops & Robbers | After the player: the gold (`GOLD_DOT`), the bank and the hideout (`BANK_DOT`, `HIDEOUT_DOT`), or in Robber Teams the blue and red bases (`BLUE_DOT`, `RED_DOT`) | `mmHudMap::DrawCopsnRobbers`, `::RegisterCopsnRobbers`, `mmMultiCR::InitHUD` |
 
 Defaults for a new player in MM2: map off, rotating map on, zoomed out,
 opponent icons on, mirror off (`mmStatePack`,
@@ -494,18 +500,8 @@ the camera (a probe from 100 m up).
 
 Not implemented, all verified to exist in MM2:
 
-* **Rear-view mirror** drawing ("Rear View Mirror", off by default;
-  `mmMirror`): a viewport `Size` (0.3 × 0.16 of the screen) at the top
-  right, one pixel from the edges, showing the city from `Position` in car
-  space looking backwards, mirrored left-right, with `Fov` / `Aspect` /
-  `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
-  hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
-  the renderer draws it.
-* The 3D view moving to the top half (split map) or into the small rectangle
-  (full-screen map), `mmHudMap::SetMapMode`.
-* The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`),
-  the CD player display (`mmCDPlayer`) and the Cops & Robbers roster of
-  names (`mmCRHUD`).
+* The CD player display (`mmCDPlayer`): unused in retail (the disc carries
+  `cdid.txt`, so the in-race CD player does nothing).
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

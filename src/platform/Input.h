@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/Math.h"
+#include "platform/ForceFeedback.h"
 
 #include <array>
 #include <bitset>
@@ -106,6 +107,10 @@ public:
     // Rumble motors 0..1 for `ms` milliseconds. Returns false if unsupported.
     bool rumbleGamepad(std::size_t index, float low, float high, std::uint32_t ms);
     bool rumbleJoystick(std::size_t index, float low, float high, std::uint32_t ms);
+    // Force feedback on the first joystick (the first game pad when
+    // `preferGamepad`, else the first raw joystick, else the other kind):
+    // opened on first use and closed with the device. Null without one.
+    FFDevice* forceFeedback(bool preferGamepad);
 
     // Set by pollEvents(); true once when a device was connected/disconnected.
     bool devicesChanged() const { return m_devicesChanged; }
@@ -126,6 +131,8 @@ private:
     std::vector<void*> m_gamepadHandles;  // SDL_Gamepad*, parallel to m_gamepads
     std::vector<void*> m_joystickHandles; // SDL_Joystick*, parallel to m_joysticks
     bool m_devicesChanged = false;
+    std::unique_ptr<FFDevice> m_ff;
+    std::uint32_t m_ffId = 0;
 };
 
 } // namespace mm2::platform

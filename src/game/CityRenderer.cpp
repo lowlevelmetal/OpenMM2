@@ -72,6 +72,25 @@ std::string sdlTextureName(std::string_view name) {
     return std::string(name);
 }
 
+StaticKind staticKind(std::uint16_t flags) {
+    // lvlLevel::LoadInstances tests the banger bit first, then the
+    // terrain-local one; a collidable record that is not terrain local goes
+    // through lvlMultiRoomInstance::Create.
+    constexpr std::uint16_t kTerrainLocal = 0x100, kBanger = 0x200, kCollidable = 0x2000;
+    if (flags & kBanger)
+        return StaticKind::Banger;
+    if (flags & kTerrainLocal)
+        return StaticKind::Landmark;
+    if (flags & kCollidable)
+        return StaticKind::MultiRoom;
+    return StaticKind::Fixed;
+}
+
+bool fixedObjectFacesAway(const Mat34& transform, const Vec3& eye) {
+    // lvlFixedMatrix::IsVisible, in its operation order.
+    return (eye.x - transform.m3.x) * transform.m2.x + (eye.z - transform.m3.z) * transform.m2.z < 0.0f;
+}
+
 const GpuMesh* findFilledLod(const GpuModel& model, std::string_view part, asset::Lod lod) {
     for (int l = static_cast<int>(lod); l <= static_cast<int>(asset::Lod::VeryLow); ++l)
         for (const auto& m : model.meshes)
@@ -155,6 +174,7 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
     // m = midnight in the texture names) times four weathers (c clear, p
     // partly cloudy, f fog, r rain): the lighting tables' order.
     env.skyPaintjob = t * 4 + w;
+    env.sky = options.texturedSky;
     return env;
 }
 
@@ -231,35 +251,43 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
     m_vertices = m_device.createBuffer(render::BufferKind::Vertex,
                                        m_streetVertices.size() * sizeof(render::Vertex3D), m_streetVertices.data());
 
-    for (const auto& inst : city.instances) {
-        if (isDynamic && isDynamic(inst.name))
-            continue;
-        InstanceDraw d;
-        d.model = inst.name;
-        d.transform = inst.transform;
-        d.world = Mat44::fromMat34(inst.transform);
-        const std::size_t index = m_instances.size();
-        // lvlLevel::LoadInstances: a collidable object that is not terrain
-        // local goes through lvlMultiRoomInstance::Create, which leaves it in
-        // room 0 and puts a stand-in in every neighbour of its room that its
-        // sphere (position, the model's radius) reaches across the
-        // perimeter; reaching none, it is never drawn.
-        constexpr std::uint16_t kInstTerrainLocal = 0x100, kInstBanger = 0x200, kInstCollidable = 0x2000;
-        if ((inst.flags & kInstCollidable) && !(inst.flags & (kInstTerrainLocal | kInstBanger))) {
-            resolve(d);
-            d.multiRoom = true;
-            int rooms[32];
-            const int n = cityTouchedNeighbors(city.psdl, rooms, 32, inst.room, inst.transform.m3, d.radius);
+    // lvlLevel::LoadInstances of city/<map>.inst, then city/<map>_ai.inst
+    // (cityLevel::Load). Each static object goes into its room's list with
+    // lvlLevel::MoveToRoom, which inserts it before the room's earlier static
+    // objects: a room draws its statics newest first (draw() walks the lists
+    // backwards).
+    for (const auto* list : {&city.instances, &city.aiInstances})
+        for (const auto& inst : *list) {
+            const StaticKind kind = staticKind(inst.flags);
+            if (kind == StaticKind::Banger || (isDynamic && isDynamic(inst.name)))
+                continue;
+            InstanceDraw d;
+            d.model = inst.name;
+            d.transform = inst.transform;
+            d.world = Mat44::fromMat34(inst.transform);
+            d.variant = staticVariant(inst.flags);
+            d.cullBehind = kind == StaticKind::Fixed;
+            const std::size_t index = m_instances.size();
+            // A collidable object that is not terrain local goes through
+            // lvlMultiRoomInstance::Create, which puts a stand-in in every
+            // neighbour of its room that its sphere (position, the model's
+            // radius) reaches across the perimeter and the object itself in
+            // room 0 (never drawn); reaching none, it is never drawn.
+            if (kind == StaticKind::MultiRoom) {
+                resolve(d);
+                d.multiRoom = true;
+                int rooms[32];
+                const int n = cityTouchedNeighbors(city.psdl, rooms, 32, inst.room, inst.transform.m3, d.radius);
+                m_instances.push_back(std::move(d));
+                for (int k = n; k-- > 0;)
+                    if (rooms[k] > 0 && static_cast<std::size_t>(rooms[k]) < m_rooms.size())
+                        m_rooms[static_cast<std::size_t>(rooms[k])].instances.push_back(index);
+                continue;
+            }
             m_instances.push_back(std::move(d));
-            for (int k = 0; k < n; ++k)
-                if (rooms[k] > 0 && static_cast<std::size_t>(rooms[k]) < m_rooms.size())
-                    m_rooms[static_cast<std::size_t>(rooms[k])].instances.push_back(index);
-            continue;
+            if (inst.room < m_rooms.size())
+                m_rooms[inst.room].instances.push_back(index);
         }
-        m_instances.push_back(std::move(d));
-        if (inst.room < m_rooms.size())
-            m_rooms[inst.room].instances.push_back(index);
-    }
     m_roomMarks.assign(m_rooms.size(), 0);
     if (city.sky)
         m_sky = m_models.get(city.sky->model);
@@ -278,8 +306,9 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
         for (const auto& xref : model->xrefs)
             declareModel(m_models.get(xref.name), depth + 1);
     };
-    for (const auto& inst : city.instances)
-        declareModel(m_models.get(inst.name), 0);
+    for (const auto* list : {&city.instances, &city.aiInstances})
+        for (const auto& inst : *list)
+            declareModel(m_models.get(inst.name), 0);
     declareModel(m_sky, 0);
     log::info("city: {} rooms, {} vertices, {} triangles, {} instances", m_rooms.size(), m_streetVertices.size(),
               m_streetIndices.size() / 3, m_instances.size());
@@ -331,8 +360,9 @@ void CityRenderer::drawSky(const Camera& camera, const Environment& env) {
     const GpuMesh* mesh = m_sky->find("", asset::Lod::High);
     if (!mesh)
         return;
-    // lvlSky::DrawHat: at the camera, its height scaled and offset by the
-    // .sky parameters, turned about Y; unlit, unfogged, no depth.
+    // lvlSky::Draw (its states) and lvlSky::DrawHat: at the camera, its
+    // height scaled and offset by the .sky parameters, turned about Y;
+    // unlit, unfogged, no depth.
     const auto& p = m_city.sky->params;
     const float yOffset = p.size() > 0 ? p[0] : 0.0f, yScale = p.size() > 1 ? p[1] : 1.0f;
     const Vec3 eye = camera.position();
@@ -370,10 +400,12 @@ void CityRenderer::resolve(InstanceDraw& inst) {
     }
 }
 
-void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth) {
+void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int variant) {
     if (const GpuMesh* mesh = findFilledLod(model, "", lod)) {
-        drawMesh(*mesh, model.materials(0), Mat44::fromMat34(transform));
-        if (depth == 0 && m_cloud && m_cloudMask)
+        // lvlFixedAny::Draw: the instance's shader set; its cloud pass
+        // (DrawOrthoMapped) is handed the first set whatever the variant.
+        drawMesh(*mesh, model.materials(variant), Mat44::fromMat34(transform));
+        if (m_cloud && m_cloudMask)
             drawCloudShadow(*mesh, model.materials(0), Mat44::fromMat34(transform));
     }
     // A model's PKG xrefs are not drawn with it: lvlLevel::LoadInstances
@@ -421,6 +453,10 @@ void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, cons
             return;
         inst.drawnFrame = m_frame;
     }
+    // lvlFixedMatrix::IsVisible: an object that is neither a landmark nor
+    // collidable is skipped while the camera is behind it.
+    if (inst.cullBehind && fixedObjectFacesAway(inst.transform, camera.m3))
+        return;
     if (!inst.resolved)
         resolve(inst);
     if (!inst.gpu || !frustum.intersects(inst.worldBounds))
@@ -430,7 +466,7 @@ void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, cons
     const auto lod = objectLod(viewDepth(camera, inst.transform.m3), inst.radius, detail.objects);
     if (!lod)
         return;
-    drawModel(*inst.gpu, inst.transform, *lod, 0);
+    drawModel(*inst.gpu, inst.transform, *lod, inst.variant);
     ++m_stats.instancesDrawn;
 }
 
@@ -511,7 +547,8 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
     ++m_frame;
     m_cloudMask = env.cloudMask;
     m_cloud = m_cloudMask && !env.cloudMap.empty() ? m_textures.cloudMap(env.cloudMap) : nullptr;
-    if (m_skyEnabled)
+    // lvlSky::Draw: nothing while cityLevel::EnableSky has the sky off.
+    if (env.sky)
         drawSky(camera, env);
 
     const Vec3 eye = camera.position();
@@ -536,34 +573,38 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
         std::fill(m_roomMarks.begin() + 1, m_roomMarks.end(), std::uint8_t{1});
     }
     // cityLevel::Draw lists the camera's room and the rooms whose spheres
-    // are in view, each with its sphere's depth minus its radius (the
-    // camera's room minus its radius). cityLevel::DrawRooms draws their
-    // street geometry in one batch at the level of detail that distance
-    // picks (opaque textures, then those with alpha), then the static
+    // are in view, in room order and at most kCityMaxDrawnRooms of them,
+    // each with its sphere's depth minus its radius (the camera's room minus
+    // its radius). cityLevel::DrawRooms draws their street geometry in one
+    // batch at the level of detail that distance picks (opaque textures,
+    // then those with alpha), then (cityLevel_drawStatics) the static
     // instances room by room from the last room in the list to the first.
     for (auto& bucket : m_buckets)
         bucket.clear();
-    for (std::size_t r = 1; r < m_rooms.size(); ++r) {
+    m_drawnRooms.clear();
+    m_visibility.begin(&m_locator, m_rooms.size(), detail.objects.noDraw);
+    for (std::size_t r = 1; r < m_rooms.size() && m_drawnRooms.size() < kCityMaxDrawnRooms; ++r) {
         if (!m_roomMarks[r])
             continue;
         const Room& rm = m_rooms[r];
         float distance = -rm.radius;
         if (static_cast<int>(r) != room) {
-            if (!frustum.intersectsSphere(rm.centre, rm.radius)) {
-                m_roomMarks[r] = 0;
+            if (!frustum.intersectsSphere(rm.centre, rm.radius))
                 continue;
-            }
             distance = viewDepth(camera.transform, rm.centre) - rm.radius;
         }
+        m_drawnRooms.push_back(static_cast<int>(r));
+        m_visibility.list(static_cast<int>(r), distance);
         gatherStreets(rm, city::sdlRoomLod(distance), eye);
         ++m_stats.roomsDrawn;
     }
     for (bool alphaPass : {false, true})
         drawStreets(alphaPass);
-    for (std::size_t r = m_rooms.size(); r-- > 1;)
-        if (m_roomMarks[r])
-            for (std::size_t i : m_rooms[r].instances)
-                drawInstance(m_instances[i], frustum, camera.transform, detail);
+    for (auto r = m_drawnRooms.rbegin(); r != m_drawnRooms.rend(); ++r) {
+        const auto& list = m_rooms[static_cast<std::size_t>(*r)].instances;
+        for (auto i = list.rbegin(); i != list.rend(); ++i)
+            drawInstance(m_instances[*i], frustum, camera.transform, detail);
+    }
 }
 
 } // namespace mm2::game

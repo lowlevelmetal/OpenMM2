@@ -7,7 +7,15 @@ namespace mm2::phys {
 // A car's or a trailer's body as the level and dgPhysManager see it: the
 // sphere of TrivialCollideInstances, GatherCollidables, CollideProbe and the
 // room bookkeeping (vehCar::Update moves the car to the room
-// FindRoomId(GetPosition()) returns).
+// FindRoomId(GetPosition()) returns). It stands for the dgPhysEntity
+// accessors (vehCar::GetICS, vehCar::GetInst, vehTrailer::GetICS,
+// vehTrailer::GetInst) and the lvlInstance virtuals of vehCarModel and
+// vehTrailerInstance (vehCarModel::GetMatrix / vehCarModel::SetMatrix: the
+// ICS matrix, vehCarModel::GetVelocity / vehTrailerInstance::GetVelocity:
+// its velocity, vehCarModel::GetEntity / vehTrailerInstance::GetEntity: the
+// body; vehCarModel::AttachEntity answers none and
+// vehTrailerInstance::AttachEntity the trailer, which CollideInstances never
+// asks for since GetEntity already has one).
 class VehicleBody final : public Body {
 public:
     // vehCarModel::GetPosition: one up axis above the centre of mass (the

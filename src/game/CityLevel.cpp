@@ -320,8 +320,10 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
         // it from being attached), and 0x20, the wheels' mask, is on all but
         // the terrain-bound ones with record flag 0x400.
         // lvlMultiRoomInstance's stand-ins answer IsCollidable false and
-        // IsTerrainCollidable once per gather.
-        si->collidable = (inst.flags & kInstTerrainLocal) != 0;
+        // IsTerrainCollidable once per gather. A terrain-bound instance is an
+        // lvlLandmark (record flag 0x100 without 0x200), whose IsCollidable
+        // answers false too: movers gather it through their city flag only.
+        si->collidable = false;
         si->terrainCollidable = true;
         si->wheelCollidable = !(inst.flags & kInstTerrainLocal) || !(inst.flags & kInstNoWheels);
         si->multiRoom = false;
@@ -595,11 +597,17 @@ void CityLevel::collectProbe(int room, const Vec3& centre, float radius, phys::L
 }
 
 void CityLevel::instances(int room, std::vector<phys::Instance*>& out) const {
-    if (room > 0 && static_cast<std::size_t>(room) < m_roomInstances.size())
-        for (StaticInstance* si : m_roomInstances[static_cast<std::size_t>(room)])
-            out.push_back(si);
+    // lvlLevel::MoveToRoom links a movable instance at the head of the
+    // room's list and a static one (flag 0x400) in front of the room's
+    // earlier statics, after every movable one: the sources' instances
+    // first, then the statics newest first.
     for (const InstanceSource* s : m_sources)
         s->instancesIn(room, out);
+    if (room > 0 && static_cast<std::size_t>(room) < m_roomInstances.size()) {
+        const auto& list = m_roomInstances[static_cast<std::size_t>(room)];
+        for (auto it = list.rbegin(); it != list.rend(); ++it)
+            out.push_back(*it);
+    }
 }
 
 } // namespace mm2::game

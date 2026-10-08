@@ -42,6 +42,35 @@ class Vfs;
 
 namespace mm2::game {
 
+// mmViewMgr::SetViewSetting's settings: what mmGame::UpdateGameInput passes
+// for each view key (input events in brackets).
+enum class ViewSetting : int {
+    ChangeCamera = 0,   // "Change Camera" (0x0B)
+    MapCycle = 1,       // "Map Toggle" (0): off -> small -> split -> off
+    XCam = 2,           // (0x0C, 0x2F)
+    Hud = 3,            // mmHUD::Toggle; no input event passes it
+    Cluster = 4,        // "HUD Toggle" (4): mmHUD::ToggleExternalView
+    WideAngle = 5,      // (0x12)
+    Dashboard = 6,      // (0x13)
+    MapZoom = 7,        // (2): mmHudMap::ToggleMapRes
+    MapOrient = 8,      // (3): mmHudMap::ToggleMapOrient
+    Mirror = 9,         // (0x1E)
+    FullScreenMap = 10, // "Full Screen Map" (1)
+};
+
+// mmHudMap's map modes (mmHudMap +0x44, the view settings' map byte). They
+// move the 3D view too (mmHudMap::SetMapMode; session::Hud::sceneRect).
+enum class MapMode : std::uint8_t {
+    Off = 0,
+    Small = 1,      // tune/<city>.mmhudmap Pos/Size, minus 10 pixels
+    Split = 2,      // the bottom half of the screen; the 3D view takes the top half
+    FullScreen = 3, // the whole screen; the 3D view moves into the small map's place
+};
+
+// mmHudMap::GetNextMapMode ("Map Toggle"): Off -> Small -> Split -> Off;
+// from full screen, the mode it was opened from.
+MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen);
+
 class PlayerCameras {
 public:
     enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash, Pre, Point, Polar, XCam };
@@ -71,7 +100,9 @@ public:
         bool wideAngle = false;
         bool dashboard = false;
     };
-    ViewSettings viewSettings() const { return {m_savedIndex, m_wide, m_dashActive}; }
+    // The wide angle saved is the player's choice (the view settings' wide
+    // byte), not the wide view the split map forces.
+    ViewSettings viewSettings() const { return {m_savedIndex, m_wideChoice, m_dashActive}; }
     void setViewSettings(const ViewSettings& settings);
 
     // (Not named near()/far(): those are macros in <windows.h>.)
@@ -94,16 +125,41 @@ public:
     void update(float dt, const CameraTarget& target, const CameraProbe& probe, const CameraInput& input);
     void apply(Camera& out) const { m_view.apply(out); }
 
+    // mmViewMgr::SetViewSetting for the settings that change the camera,
+    // the wide angle, the dashboard and the HUD map's mode (the HUD-only
+    // ones, Hud, Cluster, MapZoom, MapOrient and Mirror, do nothing here).
+    // Each ends as the original does: mmPlayer::SetCamera, SetWideFOV,
+    // mmHUD::SetDash and mmHudMap::SetMapMode with the new values.
+    void setViewSetting(ViewSetting setting);
+
     // mmViewMgr::SetViewSetting(0), "Change Camera": next camera in the
     // cycle near -> pov -> far; from the dashboard, back to the cycled camera.
-    void toggleCamera();
+    void toggleCamera() { setViewSetting(ViewSetting::ChangeCamera); }
     // mmViewMgr::SetViewSetting(6), "Dashboard": the dashboard cuts in at
-    // once; switching it off blends back to the cycled camera.
-    void toggleDashboard();
+    // once; switching it off blends back to the cycled camera. Not with the
+    // split map, from an XCam, before or after the race.
+    void toggleDashboard() { setViewSetting(ViewSetting::Dashboard); }
     void setDashboard(bool on);
+    // The HUD's dashboard flag (mmHUD::ActivateDash / DeactivateDash): the
+    // dash model is drawn while the dashboard camera shows.
     bool dashboard() const { return m_dashActive; }
-    // mmViewMgr::SetViewSetting(5), wide angle (not with the dashboard).
-    void toggleWideAngle();
+    // mmViewMgr::SetViewSetting(5), wide angle (not with the dashboard, nor
+    // with the split or full-screen map).
+    void toggleWideAngle() { setViewSetting(ViewSetting::WideAngle); }
+    // mmViewMgr::SetViewSetting(1), "Map Toggle": off -> small -> split ->
+    // off, or from full screen back to the mode it was opened from
+    // (mmHudMap::GetNextMapMode). The split map forces the wide angle (the
+    // 3D view in the top half at 70 degrees) and turns the dashboard off,
+    // remembering it; leaving it restores the player's wide angle and the
+    // dashboard.
+    void cycleMap() { setViewSetting(ViewSetting::MapCycle); }
+    // mmViewMgr::SetViewSetting(10), "Full Screen Map": to full screen,
+    // remembering the mode (mmHudMap +0x40), and back to it.
+    void toggleFullScreenMap() { setViewSetting(ViewSetting::FullScreenMap); }
+    MapMode mapMode() const { return m_mapMode; }
+    // mmHudMap::Reset applies the view settings' map mode at the start
+    // (mmHudMap::SetMapMode, without the camera side of SetViewSetting).
+    void setMapMode(MapMode mode) { m_mapMode = mode; }
     // mmViewMgr::SetViewSetting(2) (input events 0x0C and 0x2F): the first
     // press blends (mode 3, 0.8 s) to an "XCam", a camPolarCS orbiting the
     // car that the keyboard steers (CameraInput::orbit) and that remembers
@@ -112,9 +168,14 @@ public:
     // between the two XCams instead (mmPlayer::GetNextCycleXCamIndex); the
     // cheat's flag is never set in midtown2.exe, so only the first is
     // reached.
-    void toggleXCam();
+    void toggleXCam() { setViewSetting(ViewSetting::XCam); }
     void setXCamCheat(bool on) { m_xcamCheat = on; }
+    // The wide view (camViewCS +0x18): letterboxed at 70 degrees, or the
+    // split map's top half.
     bool wideAngle() const { return m_wide; }
+    // The player's wide-angle choice (the view settings' wide byte, which
+    // SetWideFOV sets and entering the split map clears).
+    bool wideAngleChoice() const { return m_wideChoice; }
     // Selects a camera of the cycle (Near, Pov or Far) as "Change Camera"
     // would (mmPlayer::SetCamera(0, index)), or the dashboard.
     void select(View view);
@@ -154,6 +215,9 @@ private:
     bool isPov() const;
     void setCamera(int group, int index);
     void setWideFov(bool wide);
+    // mmHUD::SetDash: ActivateDash / DeactivateDash (the dash view's
+    // Activate / Deactivate set and clear its activated flag too).
+    void setDash(bool on);
 
     TrackCamera m_near, m_far, m_ind;
     PovCamera m_pov, m_dash;
@@ -167,10 +231,16 @@ private:
     int m_savedIndex = 0; // kept across resets (the original's global)
     int m_group = 0;      // mmPlayer+0x28: 0 cycled cameras, 1 XCams, 2 dashboard
     int m_xcamIndex = 0;  // mmPlayer+0xE50
-    bool m_xcamDash = false;  // the dash view's "activated" flag (mmDashView +0x5DE)
+    // The dash view's "activated" flag (mmDashView +0x5DE, mmHUD +0x5FA):
+    // set and cleared with the dashboard, and set again to remember it while
+    // an XCam or the split map has turned it off.
+    bool m_xcamDash = false;
     bool m_xcamCheat = false; // XcamCheat
-    bool m_dashActive = false; // HUD dashboard on
-    bool m_wide = false;
+    bool m_dashActive = false; // HUD dashboard on (the view settings' dash byte)
+    bool m_wide = false;       // camViewCS +0x18
+    bool m_wideChoice = false; // the view settings' wide byte
+    MapMode m_mapMode = MapMode::Off;         // mmHudMap +0x44 (the view settings' map byte)
+    MapMode m_mapBeforeFull = MapMode::Off;   // mmHudMap +0x40
     bool m_firstUpdate = true; // +0xE58
     bool m_preRace = false;    // +0xE5A
     bool m_postRace = false;   // +0xE59

@@ -27,6 +27,8 @@ public:
     static constexpr int kNeutral = 1;
     static constexpr int kFirst = 2;
 
+    // vehTransmission::vehTransmission's tables and vehTransmission::FileIO
+    // (vehTransmission::Init only stores the vehCarSim).
     void configure(const TransmissionParams& p);
     // vehTransmission::ComputeConstants (needs the engine curve and the
     // driven wheel's radius).
@@ -36,11 +38,12 @@ public:
     float currentRatio() const { return ratio(currentGear); }
     float ratio(int gear) const { return isAutomatic ? gearRatios[gear] : manualGearRatios[gear]; }
 
+    // vehTransmission::Upshift / vehTransmission::Downshift.
     int upshift();
     int downshift();
-    void setReverse() { setCurrentGear(kReverse); }
-    void setDrive(); // vehTransmission::SetForward
-    void setNeutral() { setCurrentGear(kNeutral); }
+    void setReverse() { setCurrentGear(kReverse); } // vehTransmission::SetReverse
+    void setDrive();                                // vehTransmission::SetForward
+    void setNeutral() { setCurrentGear(kNeutral); } // vehTransmission::SetNeutral
     // -1 reverse, 0 neutral, 1.. forward.
     int getCurrentGear() const { return currentGear - 1; }
     int setCurrentGear(int gear);

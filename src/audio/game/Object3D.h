@@ -43,7 +43,17 @@ public:
     // each make this call, so on the update in which an object takes a slot
     // (both run) the second one sees no change and the doppler shift is 0.
     void updateDistance(const Vec3& position, const Vec3& listener);
-    // Aud3DObject::Reset: forget the previous pseudo distance.
+    // Aud3DObject::Reset (the distance part, for a positioned object): the
+    // squared distance back to 1000000, the pseudo distance and its change to
+    // 0 and the previous pseudo distance forgotten (-1), so the next update has
+    // no doppler shift. The drop-offs and the last percentage stay.
+    void reset() {
+        m_dist2 = 1.0e6f;
+        m_manhattan = 0.0f;
+        m_approach = 0.0f;
+        m_prevManhattan = -1.0f;
+    }
+    // Only the previous pseudo distance (the doppler history).
     void resetDistance() { m_prevManhattan = -1.0f; }
     float distance2() const { return m_dist2; }
 

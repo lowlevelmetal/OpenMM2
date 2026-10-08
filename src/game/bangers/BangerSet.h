@@ -12,6 +12,7 @@
 #include "game/CityLevel.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
+#include "game/RoomVisibility.h"
 #include "game/TextureLibrary.h"
 #include "game/bangers/BangerData.h"
 #include "game/bangers/PropPlacement.h"
@@ -78,6 +79,10 @@ public:
         ObjectDetail detail;
         // dgBangerManager::InitGlow is called at night only (mmGame::InitWeather).
         bool glows = false;
+        // The rooms the city listed for the view (CityRenderer::rooms()):
+        // props are then drawn from their rooms (cityLevel_drawObjects) and
+        // their lamp glows by the room alone (cityLevel_drawLights).
+        const RoomVisibility* rooms = nullptr;
     };
     // Inside a scene pass after setFrameConstants().
     void draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, fx::ParticleRenderer& cards,
@@ -95,7 +100,7 @@ public:
         Gone,   // in no room: a prop that broke loose, or an unused hit instance
     };
     struct Instance {
-        const BangerData* data = nullptr;
+        const BangerData* data = nullptr; // dgBangerInstance::GetData
         std::string model;
         int part = -1;   // -1 whole model, k = mesh "BREAK{k+1:02}"
         std::string mesh; // a car part's mesh (ejected parts), else empty
@@ -117,6 +122,11 @@ public:
     const phys::Body* body(std::size_t i) const;
     // dgBangerData's bound for `data`, built on first use.
     const phys::Bound* bound(const BangerData& data) const;
+    // dgBangerInstance::GetBound(which) and lvlInstance::GetRadius for any
+    // dgUnhitBangerInstance of `data` (the gizmos own theirs): the bound, or
+    // for 1 the box around a bound that is not a box; the bound's radius.
+    const phys::Bound* boundOf(const BangerData& data, int which) const;
+    float boundRadius(const BangerData& data) const;
     std::size_t skipped() const { return m_skipped; } // props without banger data
     int activeCount() const { return m_attached; }
     // dgBangerDataManager's age mode: actives declared by age rather than by
@@ -129,9 +139,31 @@ public:
     // `paint`; `frame` its world placement (the part's pivot); `room` the
     // car's room (-1: found from the world's level). It is given momentum
     // `speed` +- 1 in a random upward direction and an angular impulse of
-    // 1-3 (as momentum, not velocity: see the .cpp).
-    void ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
-                   const Mat34& frame, float speed, int room = -1);
+    // 1-3 (as momentum, not velocity: see the .cpp). Returns the hit
+    // instance it became (vehBreakable +0x44 keeps it for Reset).
+    std::size_t ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
+                          const Mat34& frame, float speed, int room = -1);
+
+    // dgHitBangerInstance::Detach of instance i, as vehBreakableMgr::Reset
+    // calls it for an ejected car part when the car's damage is cleared: its
+    // active (if any) detaches and it leaves its room, so it disappears. MM2
+    // keeps the instance's address, not its prop: when the ring has handed
+    // the slot out again since, whatever prop it now holds disappears (kept).
+    // A placed prop (dgUnhitBangerInstance) keeps lvlInstance's empty Detach.
+    void detachHit(std::size_t i);
+
+    // The debris of instance i's active (dgBangerActive's asParticles) and
+    // the fxpt sheet it draws with (0: none), or nullopt without an active.
+    struct Debris {
+        const fx::ParticleSystem* particles = nullptr;
+        int sheet = 0;
+    };
+    std::optional<Debris> debris(std::size_t i) const;
+
+    // lvlInstance flag 1 of instance i: a placed prop that has not broken
+    // loose (also while an active holds it, before dgUnhitBangerInstance::
+    // Impact clears the flag). dgBangerInstance::DrawGlow tests it.
+    bool standing(std::size_t i) const;
 
 private:
     struct Active;

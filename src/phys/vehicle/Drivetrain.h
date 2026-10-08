@@ -33,14 +33,14 @@ class Transmission;
 // engine's MaxRPM in gear, and the engine speed follows the wheels.
 class Drivetrain {
 public:
-    // vehDrivetrain::FileIO fields / CopyVars.
+    // vehDrivetrain::FileIO fields / vehDrivetrain::CopyVars.
     void configure(const DrivetrainParams& p);
     void reset();
 
     bool addWheel(Wheel* w);
     void attach(Engine* engine, Transmission* trans);
     void attach(); // re-attach to the last engine/transmission
-    void detach();
+    void detach(); // vehDrivetrain::Detach
     bool attached() const { return m_engine != nullptr; }
 
     // vehDrivetrain::Update, then the wheels' own updates (its children).

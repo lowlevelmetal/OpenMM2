@@ -23,13 +23,22 @@ void Context::applyAudioSettings() {
     // sound class that SOUND FX VOLUME scales through
     // AudManager::AssignWaveVolume). The commentary's AudSpeech streams are
     // AudSoundBase sounds, so commentary falls silent too.
-    mixer->setMasterVolume(settings.masterVolume);
+    // The original's command-line switches mute for this run only, leaving
+    // the saved options alone: -noaudio/-nosoundfx (InitAudioManager never
+    // initialises AudManager), -nomusic (mmGameMusicData::Load loads neither
+    // the race music nor the ambience segment, so the race starts neither;
+    // the menu music still plays) and -nospeech (mmPlayer::InitSpeechAudio
+    // loads no announcer).
+    const CommandLine& cl = commandLine;
+    const bool music = settings.music;
+    const bool ambience = settings.citySounds;
+    const bool speech = settings.soundEffects && settings.commentary && !cl.noSpeech;
+    mixer->setMasterVolume(cl.noAudio ? 0.0f : settings.masterVolume);
     mixer->setBusVolume(audio::Bus::Effects, settings.soundEffects ? settings.effectsVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Engine, settings.soundEffects ? settings.engineVolume : 0.0f);
-    mixer->setBusVolume(audio::Bus::Ambient, settings.citySounds ? settings.musicVolume : 0.0f);
-    mixer->setBusVolume(audio::Bus::Voice,
-                        settings.soundEffects && settings.commentary ? settings.voiceVolume : 0.0f);
-    mixer->setBusVolume(audio::Bus::Music, settings.music ? settings.musicVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Ambient, ambience ? settings.musicVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Voice, speech ? settings.voiceVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Music, music ? settings.musicVolume : 0.0f);
     mixer->setBalance(settings.balance);
     // AudioOptions::SetStereoFX: mono centres every voice; surround only adds
     // an EAX/3D flag, so it plays as stereo.

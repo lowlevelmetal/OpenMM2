@@ -10,6 +10,9 @@ constexpr const char* kWheelRuleNames[] = {"dirt", "dust", "grass", "leaf", "smo
 
 } // namespace
 
+// The "asBirthRule" files of tune/effects (asBirthRule::GetClassName,
+// asBirthRule::GetDirName) and the weather rules beside them; the wheel
+// rules are vehWheelPtx::ConstructClass's eight, shared by every car.
 void EffectLibrary::load(const vfs::Vfs& vfs) {
     m_rules.clear();
     for (const auto& e : vfs.listFiles()) {

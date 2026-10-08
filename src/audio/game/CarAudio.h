@@ -19,6 +19,8 @@
 
 namespace mm2::audio::game {
 
+class CreatureVoice; // audio/game/Voices.h
+
 // --- Inputs the game supplies every update ---------------------------------------
 
 struct WheelAudioInput {
@@ -395,6 +397,15 @@ public:
               const CarAudioOptions& options = {}, std::string* error = nullptr);
     void update(const CarAudioInputs& in, float dt, const Mat34& listener);
     void update(const CarAudioInputs& in, float dt, const Vec3& listener);
+    // vehCar::Reset (a car put back at its start or reset by its driver) ->
+    // vehCarAudioContainer::Reset -> vehCarAudio::Reset, vehPoliceCarAudio::
+    // Reset and vehSemiCarAudio::Reset, all Aud3DObject::Reset: a car holding
+    // a slot gives it up (UnAssignSounds: the loops stop, impacts and an
+    // explosion play out) and its distance history is forgotten, so the
+    // update after it asks for a slot again with no doppler shift; the
+    // attenuation, pan and doppler become 0, 0 and 1. The siren state stays
+    // (aiPoliceOfficer::Reset stops it itself).
+    void reset();
     void stop();
     bool audible() const { return hasSlot(); }
     bool sirenOn() const { return m_siren && m_siren->on(); }
@@ -458,6 +469,26 @@ public:
     bool honk(int pattern = -1);
     // aiVehicleActive's impact: the impact sounds and vehHornAudio::PlayImpact.
     void impact(const ImpactInput& impact);
+    // The driver's voice (aiAmbientVehicleAudio +0x78, an AudCreature the
+    // owner loads: aiAmbientVehicleAudio::LoadVoices), or null; it must
+    // outlive this object's use of it. While the car holds its slot the voice
+    // follows the car's attenuation, pan and squared distance
+    // (AudCreature::UpdateAttenuation, in UpdateAudio), its echo goes on and
+    // off with the car's (EchoOn / EchoOff / UpdateEcho), and losing the slot
+    // drops its queued lines (UnAssignSounds).
+    void setVoice(CreatureVoice* voice) { m_voice = voice; }
+    // PlayAvoidanceReaction (aiGoalAvoidPlayer::Reset, after the avoidance
+    // horn started a pattern) and PlayImpactReaction (aiVehicleActive's
+    // impact, with the impact strength): the voice's AudCreature::
+    // PlayAvoidance / PlayImpact, only while the car holds its slot.
+    void avoidReaction();
+    void impactReaction(float force);
+    // aiAmbientVehicleAudio::Reset (aiVehicleSpline::Reset: the car is put
+    // back on the road, or returned to the pool): Aud3DObject::Reset (a slot
+    // holder gives its slot up, UnAssignSounds: the engine and horn stop,
+    // impacts play out, the voice's queued lines go; the distance history is
+    // forgotten) and its speed and previous speed back to 0.
+    void reset();
     void stop();
     bool audible() const { return hasSlot(); }
     // The last attenuation, pan and squared listener distance the update
@@ -487,6 +518,7 @@ private:
     void echoOff();
 
     bool m_echo = false; // aiAmbientVehicleAudio +0x89
+    CreatureVoice* m_voice = nullptr; // +0x78
 
     AmbientEngineDef m_engineDef;
     std::optional<HornDef> m_hornDef;

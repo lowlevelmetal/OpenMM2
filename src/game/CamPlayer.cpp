@@ -114,11 +114,13 @@ bool PlayerCameras::isPov() const {
 
 void PlayerCameras::setWideFov(bool wide) {
     // mmPlayer::SetWideFOV: the perspective of the selected camera, or
-    // 70 degrees on the letterboxed wide view.
+    // 70 degrees on the letterboxed wide view. The view settings' wide byte
+    // follows (SetViewSetting may clear it after, for the split map).
     CarCamera* cam = m_dashActive ? static_cast<CarCamera*>(&m_dash) : currentCameraPtr();
     m_view.setPerspective(wide ? CameraPerspective{70.0f, cam->base().cameraNear} : cam->perspective());
     m_view.setWideAngle(wide);
     m_wide = wide;
+    m_wideChoice = wide;
 }
 
 void PlayerCameras::setCamera(int group, int index) {
@@ -169,7 +171,11 @@ void PlayerCameras::reset(const CameraTarget& target) {
         m_camIndex = 1;
         m_view.setCurrent(&m_dash);
     }
-    setWideFov(m_wide);
+    // ActivateDash with the dashboard, mmDashView::Deactivate without; then
+    // SetWideFOV with the player's wide angle (in the split map too, whose
+    // top-half viewport mmHudMap::Reset puts back).
+    setDash(m_dashActive);
+    setWideFov(m_wideChoice);
     m_view.reset(target);
 }
 
@@ -219,6 +225,9 @@ void PlayerCameras::update(float dt, const CameraTarget& target, const CameraPro
     if (m_waterPending && !m_waterDone) {
         m_waterPending = false;
         m_waterDone = true;
+        // mmDashView::Deactivate while the dash shows (the HUD's flag stays).
+        if (m_dashActive)
+            m_xcamDash = false;
         const Vec3 p = m_view.matrix().m3;
         m_point.setPosition({p.x, p.y + 9.0f, p.z});
         m_point.setVelocity({});
@@ -235,8 +244,12 @@ void PlayerCameras::update(float dt, const CameraTarget& target, const CameraPro
         } else if (want == &m_dash) {
             if (cur == &m_near)
                 m_view.newCam(&m_pov, CameraView::Blend::EaseIn, 0.3f);
-            else if (cur == &m_pov)
+            else if (cur == &m_pov) {
                 m_view.newCam(&m_dash, CameraView::Blend::EaseOut, 0.3f);
+                // mmHUD::ActivateDash, except with the split map.
+                if (m_mapMode != MapMode::Split)
+                    setDash(true);
+            }
         } else if (want == &m_pov && cur == &m_near) {
             m_view.newCam(&m_pov, CameraView::Blend::EaseInOut, 0.5f);
         }
@@ -273,74 +286,140 @@ void PlayerCameras::update(float dt, const CameraTarget& target, const CameraPro
     m_view.update(dt, target, probe, input);
 }
 
-void PlayerCameras::toggleCamera() {
-    // mmViewMgr::SetViewSetting(0)
-    if (m_group != 0)
-        setCamera(0, m_camIndex);
-    else
-        setCamera(0, (m_camIndex + 1) % 3);
-    setWideFov(m_wide);
-    m_dashActive = false;
+MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen) {
+    // mmHudMap::GetNextMapMode
+    if (mode == MapMode::FullScreen)
+        return beforeFullScreen;
+    return static_cast<MapMode>((static_cast<int>(mode) + 1) % 3);
 }
 
-void PlayerCameras::toggleDashboard() {
-    // mmViewMgr::SetViewSetting(6): not from an XCam.
-    if (m_preRace || m_postRace || m_group == 1)
-        return;
-    bool dash = !m_dashActive;
-    if (!dash)
-        setCamera(0, m_camIndex);
-    else if (!m_wide)
-        setCamera(2, 0);
-    else
+void PlayerCameras::setViewSetting(ViewSetting setting) {
+    // mmViewMgr::SetViewSetting. The current state first: mmPlayer::GetCamera,
+    // mmHUD::IsDashActive, mmHudMap::GetCurrentMapMode and the view's wide
+    // flag.
+    int group = m_group;
+    int index = m_group == 0 ? m_camIndex : (m_group == 1 ? m_xcamIndex : 0);
+    bool dash = m_dashActive;
+    MapMode map = m_mapMode;
+    bool wide = m_wide;
+    bool rememberDash = false;    // set the dash view's activated flag after
+    bool clearWideChoice = false; // clear the player's wide-angle choice after
+    switch (setting) {
+    case ViewSetting::ChangeCamera:
+        // The next cycled camera (GetNextCycleCamIndex); from an XCam or the
+        // dashboard, the cycled camera (GetCurrentGameCamIndex).
         dash = false;
-    setWideFov(m_wide);
-    m_dashActive = dash;
-}
-
-void PlayerCameras::toggleXCam() {
-    // mmViewMgr::SetViewSetting(2)
-    const int next = m_xcamCheat ? (m_xcamIndex + 1) % 2 : 0; // GetNextCycleXCamIndex
-    bool dash = false;
-    bool remember = false;
-    int group = 1, index = 0;
-    if (m_group != 1) {
-        remember = m_dashActive; // mmHUD::IsDashActive
-        index = m_xcamIndex;
-    } else if (next == m_xcamIndex) {
-        if (m_xcamDash) {
-            dash = true;
-            group = 2;
-        } else {
+        if (group != 0) {
             group = 0;
             index = m_camIndex;
+        } else {
+            index = (m_camIndex + 1) % 3;
         }
-    } else {
-        index = next;
+        break;
+    case ViewSetting::MapCycle:
+        map = nextMapMode(m_mapMode, m_mapBeforeFull);
+        if (map == MapMode::Split) {
+            // The 3D view goes into the top half at the wide angle, without
+            // the dashboard (remembered when it was on).
+            if (!m_wide || !m_wideChoice)
+                clearWideChoice = true;
+            wide = true;
+            dash = false;
+            rememberDash = m_dashActive;
+        } else {
+            // Off or small: the player's wide angle, and the dashboard back
+            // when it was remembered and its camera still shows.
+            wide = m_wideChoice;
+            if (m_xcamDash && group == 2)
+                dash = true;
+        }
+        break;
+    case ViewSetting::XCam: {
+        const int next = m_xcamCheat ? (m_xcamIndex + 1) % 2 : 0; // GetNextCycleXCamIndex
+        dash = false;
+        if (group != 1) {
+            rememberDash = m_dashActive;
+            group = 1;
+            index = m_xcamIndex; // GetCurrentXCamIndex
+        } else if (next == index) {
+            if (m_xcamDash) {
+                dash = true;
+                group = 2;
+            } else {
+                group = 0;
+                index = m_camIndex;
+            }
+        } else {
+            index = next;
+        }
+        break;
+    }
+    case ViewSetting::WideAngle:
+        if (map == MapMode::Split || map == MapMode::FullScreen || group == 2)
+            return;
+        wide = !wide;
+        if (wide)
+            dash = false;
+        break;
+    case ViewSetting::Dashboard:
+        if (group == 1 || map == MapMode::Split || m_preRace || m_postRace)
+            return;
+        dash = !dash;
+        if (!dash) {
+            index = m_camIndex;
+            group = 0;
+        } else if (!wide) {
+            group = 2;
+        } else {
+            dash = false;
+        }
+        break;
+    case ViewSetting::FullScreenMap:
+        if (m_mapMode == MapMode::FullScreen) {
+            map = m_mapBeforeFull;
+        } else {
+            map = MapMode::FullScreen;
+            m_mapBeforeFull = m_mapMode;
+        }
+        if (!m_wide || !m_wideChoice)
+            clearWideChoice = true;
+        break;
+    case ViewSetting::Mirror:
+        // The caller toggles the mirror; the rest runs with the values
+        // unchanged (which still writes the dash flag over the dash view's
+        // activated flag).
+        break;
+    case ViewSetting::Hud:
+    case ViewSetting::Cluster:
+    case ViewSetting::MapZoom:
+    case ViewSetting::MapOrient:
+        return; // the HUD's own (mmHUD::Toggle, ToggleExternalView, mmHudMap)
     }
     setCamera(group, index);
-    setWideFov(m_wide);
-    // mmHUD::SetDash: switching the dash view on or off sets or clears its
-    // flag; entering an XCam with the dashboard on sets it again after.
-    m_dashActive = dash;
-    m_xcamDash = dash;
-    if (remember)
+    setWideFov(wide);
+    setDash(dash);
+    m_mapMode = map; // mmHudMap::SetMapMode (its viewports: session::Hud::sceneRect)
+    // mmHUD::SetTransparency (whether the clock's digits are colour keyed)
+    // is not kept: OpenMM2 always keys them, which looks the same on the
+    // black letterbox.
+    if (rememberDash)
         m_xcamDash = true;
+    if (clearWideChoice)
+        m_wideChoice = false;
+}
+
+void PlayerCameras::setDash(bool on) {
+    // mmHUD::SetDash -> ActivateDash / DeactivateDash: the HUD's dash flag,
+    // and mmDashView::Activate / Deactivate, which set or clear the dash
+    // view's activated flag. Hiding the instrument cluster with it is the
+    // HUD's (HudOptions::dashActive).
+    m_dashActive = on;
+    m_xcamDash = on;
 }
 
 void PlayerCameras::setDashboard(bool on) {
     if (on != m_dashActive)
         toggleDashboard();
-}
-
-void PlayerCameras::toggleWideAngle() {
-    // mmViewMgr::SetViewSetting(5)
-    if (m_group == 2)
-        return;
-    const bool wide = !m_wide;
-    setWideFov(wide);
-    if (wide)
-        m_dashActive = false;
 }
 
 void PlayerCameras::select(View view) {
@@ -355,7 +434,7 @@ void PlayerCameras::select(View view) {
     default: return;
     }
     setWideFov(m_wide);
-    m_dashActive = false;
+    setDash(false);
 }
 
 void PlayerCameras::startPreRace() {
@@ -378,6 +457,7 @@ void PlayerCameras::setViewSettings(const ViewSettings& settings) {
     m_savedIndex = settings.camera >= 0 && settings.camera < 3 ? settings.camera : 0;
     m_camIndex = m_savedIndex;
     m_wide = settings.wideAngle;
+    m_wideChoice = settings.wideAngle;
     m_dashActive = settings.dashboard;
 }
 
