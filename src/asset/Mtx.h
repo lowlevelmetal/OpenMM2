@@ -19,6 +19,12 @@ namespace mm2::asset {
 // min/max/center describe the mesh's box, and occur in two flavours in the
 // retail files: relative to the part (center is then usually zero) or already
 // offset by `origin` (center == origin). halfExtent() is the same either way.
+//
+// MM2 reads the 48 bytes with GetPivot straight into a Matrix34 (rows m0 =
+// min, m1 = max, m2 = center, m3 = origin) and each caller picks what it
+// needs: most take only the position row, vehWheel::Init the box
+// (radius |max.y - min.y| / 2, width max.x - min.x), and some (vehAxle,
+// vehSuspension, dgBangerData) use the rows as a matrix.
 struct Mtx {
     Vec3 min;
     Vec3 max;

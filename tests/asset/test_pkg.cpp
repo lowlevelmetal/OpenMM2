@@ -131,6 +131,8 @@ TEST(Mtx, ParsesFloats) {
     EXPECT_FLOAT_EQ(m->origin.z, 11.0f);
     EXPECT_FLOAT_EQ(m->halfExtent().x, 1.5f);
     b.u8(0);
+    EXPECT_TRUE(asset::parseMtx(b.data)); // GetPivot reads the first 48 bytes
+    b.data.resize(47);
     EXPECT_FALSE(asset::parseMtx(b.data));
 }
 
