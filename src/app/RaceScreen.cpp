@@ -10,6 +10,7 @@
 #include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
+#include "audio/game/Voices.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
 #include "ai/Opponent.h"
@@ -92,6 +93,7 @@ public:
             if (c.audio)
                 c.audio->stop();
         m_rain.stop();
+        m_announcer.stop();
         if (m_ctxMixer)
             m_ctxMixer->stopAll();
         // The police drivers hand their cars' impact callbacks back when they
@@ -928,6 +930,8 @@ private:
                     }
             } else if (e.type == EventType::Sound) {
                 playGameSound(ctx, static_cast<game::session::GameSound>(e.index), e.value);
+            } else if (e.type == EventType::Speech) {
+                announce(static_cast<game::session::SpeechCue>(e.index), e.value);
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
@@ -992,6 +996,40 @@ private:
             slot.playLoop(volume, 1.0f);
         else if (sound != game::session::GameSound::TimerWarning || !slot.playing())
             slot.playOnce(volume);
+    }
+
+    // The announcer's lines the modes ask for (mmRaceSpeech, mmCCSpeech).
+    void announce(game::session::SpeechCue cue, float value) {
+        if (!m_announcerOk)
+            return;
+        using game::session::SpeechCue;
+        const bool lessons = m_result.config.mode == game::GameMode::CrashCourse;
+        const int lesson = std::max(0, m_result.config.raceIndex);
+        switch (cue) {
+        case SpeechCue::PreRace:
+            if (lessons)
+                m_announcer.playCrashCourse(lesson, "PRERACE");
+            else
+                m_announcer.playPreRace();
+            break;
+        case SpeechCue::Results:
+            // PlayResults(place, (int)OpponentDensity).
+            if (!lessons)
+                m_announcer.playResults(static_cast<int>(value), m_result.config.opponents);
+            break;
+        case SpeechCue::ResultsPoor:
+            if (!lessons)
+                m_announcer.playResults(10, 10);
+            break;
+        case SpeechCue::DamagePenalty:
+            if (!lessons)
+                m_announcer.playDamagePenalty();
+            break;
+        case SpeechCue::LessonResults:
+            if (lessons)
+                m_announcer.playCrashCourse(lesson, value != 0.0f ? "RESULTSWIN" : "RESULTSPOOR");
+            break;
+        }
     }
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
@@ -1320,6 +1358,26 @@ private:
         if (ctx.settings.citySounds)
             m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city, &m_audioSlots);
         m_rain.load(*m_bank, *ctx.mixer, m_result.config.timeOfDay == game::TimeOfDay::Night);
+        // mmPlayer::InitSpeechAudio, with COMMENTARY on: mmSpeechContainer
+        // gives cruise and the races an mmRaceSpeech (InitRace), the crash
+        // course an mmCCSpeech (InitCC); Cops and Robbers' mmCNRSpeech is not
+        // wired (the mode is not playable yet).
+        if (ctx.settings.commentary && m_announcer.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city)) {
+            using audio::game::AnnouncerMode;
+            std::optional<AnnouncerMode> mode;
+            switch (m_result.config.mode) {
+            case game::GameMode::Cruise: mode = AnnouncerMode::Cruise; break;
+            case game::GameMode::Blitz: mode = AnnouncerMode::Blitz; break;
+            case game::GameMode::Checkpoint: mode = AnnouncerMode::Checkpoint; break;
+            case game::GameMode::Circuit: mode = AnnouncerMode::Circuit; break;
+            default: break;
+            }
+            m_announcer.beginSession();
+            if (mode)
+                m_announcer.beginRace(*mode, m_result.config.vehicle, static_cast<int>(m_result.config.timeOfDay),
+                                      static_cast<int>(m_result.config.weather));
+            m_announcerOk = mode || m_result.config.mode == game::GameMode::CrashCourse;
+        }
         // Impacts reported by the simulation feed the impact sounds.
         m_player->sim().onImpactCallback = [this](const phys::CarImpact& impact) { playerImpact(impact); };
     }
@@ -1404,6 +1462,8 @@ private:
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
         updateAiAudio(dt);
+        if (m_announcerOk)
+            m_announcer.update(dt); // AudSpeech::Update
         m_ambience.update(m_camera.transform, dt, m_tunnel);
         // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
         // hood camera (car view 1) and the dashboard, off for the others.
@@ -1930,6 +1990,8 @@ private:
     audio::game::PlayerCarAudio m_carAudio;
     audio::game::CityAmbience m_ambience;
     audio::game::RainAudio m_rain;
+    audio::game::Announcer m_announcer;
+    bool m_announcerOk = false;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
     float m_playerRadius = 0.0f; // the player's car's geometry radius (lvlInstance::GetRadius)

@@ -205,6 +205,7 @@ private:
     void push(EventType t, int index = -1, float value = 0.0f) { m_events.push_back({t, index, value}); }
     // AudSoundBase::PlayOnce / PlayLoop on the mode's sound (`mode` 0 once, 1 loop).
     void sound(GameSound s, float mode = 0.0f) { push(EventType::Sound, static_cast<int>(s), mode); }
+    void speech(SpeechCue c, float value = 0.0f) { push(EventType::Speech, static_cast<int>(c), value); }
     void stopTimerWarning();
     bool lastEvent() const { return m_lessonEvent == static_cast<int>(m_setup.lessonEvents.size()) - 1; }
 
@@ -239,7 +240,7 @@ private:
     // `latch`: the event sets the original's "race over" flag (+0x7c) before
     // moving on to the next event, so it stays set for the rest of the lesson.
     void lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay, bool latch);
-    void lessonFailed(float delay = 5.0f, PlayerHold hold = PlayerHold::FinishBrake);
+    void lessonFailed(float delay = 5.0f, PlayerHold hold = PlayerHold::FinishBrake, bool registerFinish = true);
     void playerFinished();
     void endRace(bool finished, bool won, float delay, PlayerHold hold = PlayerHold::FinishBrake);
     int lessonOpponentOffset() const;

@@ -288,6 +288,7 @@ void Session::resetWaypoints() {
 
 void Session::start() {
     m_started = true;
+    speech(SpeechCue::PreRace); // mmGame::Reset
     if (mode() == GameMode::Cruise) {
         // mmSingleRoam has no countdown; mmMultiRoam says "Go!".
         m_phase = Phase::Racing;
@@ -791,7 +792,7 @@ void Session::hitWater() {
         // mmSingleStunt::HitWaterHandler.
         if (!m_lessonDone) {
             sound(GameSound::DamageLose);
-            lessonFailed(kWaterLoseDelay, PlayerHold::None);
+            lessonFailed(kWaterLoseDelay, PlayerHold::None, false);
         }
         break;
     default: break;
@@ -912,6 +913,11 @@ void Session::playerFinished() {
     m_resultPosition = place;
     m_rank = place;
     push(EventType::PlayerFinished, place, m_raceTime);
+    // The single-player modes' RegisterFinish -> mmGameSingle::UpdateRewards
+    // (OpenMM2: whether the finish is registered, or unlocks a reward, is
+    // decided later by the frontend, so the results line always plays).
+    if (!multiplayer())
+        speech(SpeechCue::Results, static_cast<float>(place));
 }
 
 void Session::updateRace(float dt, const PlayerState& player) {
@@ -975,6 +981,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             stopTimerWarning();
             if (m_timeUp) {
                 m_wp.stopped = true;
+                speech(SpeechCue::ResultsPoor);
                 sound(GameSound::YouLose);
                 setMessage(mt.timeUp, "Time's up!", 5.0f, false);
                 endRace(false, false, kPostRace);
@@ -999,6 +1006,8 @@ void Session::updateRace(float dt, const PlayerState& player) {
             m_wp.stopped = true;
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
+            if (mode() == GameMode::Blitz)
+                speech(SpeechCue::DamagePenalty); // mmSingleBlitz::UpdateGame
             m_damagedOut = m_engineSilenced = true; // StopSegment(1), SilenceEngine(1)
             setMessage(mt.wreck, "Game over!", 5.0f, false);
             endRace(false, false, kPostRace, PlayerHold::Undrivable);
@@ -1032,6 +1041,8 @@ void Session::updateRace(float dt, const PlayerState& player) {
             m_wp.stopped = true;
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
+            if (mode() == GameMode::Blitz)
+                speech(SpeechCue::DamagePenalty); // mmSingleBlitz::UpdateGame
             m_damagedOut = m_engineSilenced = true; // StopSegment(1), SilenceEngine(1)
             setMessage(mt.wreck, "Game over!", 5.0f, false);
             endRace(false, false, kPostRace, PlayerHold::Undrivable);
@@ -1058,14 +1069,18 @@ bool Session::copPursuit(const PlayerState& player, std::span<const OpponentStat
     return false;
 }
 
-void Session::lessonFailed(float delay, PlayerHold hold) {
+void Session::lessonFailed(float delay, PlayerHold hold, bool registerFinish) {
     // Several failures can come in one frame (UpdateCorner and UpdateFrogger
     // go on checking after one): report the lesson failed once.
     const bool alreadyFailed = (m_phase == Phase::PostRace || m_phase == Phase::Done) && !m_resultWon;
     m_lessonDone = true;
     m_wp.stopped = true;
-    if (!alreadyFailed)
+    if (!alreadyFailed) {
         push(EventType::LessonFailed, m_lessonEvent);
+        // RegisterFinish(0) (not after the water): mmCCSpeech::PlayResults.
+        if (registerFinish)
+            speech(SpeechCue::LessonResults, 0.0f);
+    }
     endRace(false, false, delay, hold);
 }
 
@@ -1075,6 +1090,7 @@ void Session::lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool 
         m_lessonDone = true;
         setMessage(passMessage, "Good driving!", seconds, top);
         push(EventType::LessonPassed, m_lessonEvent);
+        speech(SpeechCue::LessonResults, 1.0f); // RegisterFinish(1)
         endRace(true, true, delay);
         return;
     }

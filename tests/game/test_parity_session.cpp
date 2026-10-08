@@ -440,3 +440,31 @@ TEST(ParitySession, EndingsHoldThePlayersCarAsTheModesDo) {
         EXPECT_TRUE(s->engineSilenced());
     }
 }
+
+TEST(ParitySession, ModesCueTheAnnouncer) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    auto s = paritySession(GameMode::Blitz, 0);
+    ASSERT_TRUE(s);
+    RaceRun r(*s);
+    auto cues = [&](SpeechCue c) {
+        int n = 0;
+        for (const auto& e : r.events)
+            n += e.type == EventType::Speech && e.index == static_cast<int>(c);
+        return n;
+    };
+    // mmGame::Reset: mmRaceSpeech::PlayPreRace.
+    r.countdown();
+    EXPECT_EQ(cues(SpeechCue::PreRace), 1);
+    const auto& cps = s->checkpoints();
+    for (std::size_t i = 1; i < cps.size() && s->phase() == Phase::Racing; ++i)
+        r.driveTo(cps[i].position, 30.0f);
+    // RegisterFinish -> mmGameSingle::UpdateRewards: PlayResults(1, ...).
+    ASSERT_EQ(cues(SpeechCue::Results), 1);
+    for (const auto& e : r.events)
+        if (e.type == EventType::Speech && e.index == static_cast<int>(SpeechCue::Results))
+            EXPECT_EQ(e.value, 1.0f);
+    s->restart();
+    r.tick();
+    EXPECT_EQ(cues(SpeechCue::PreRace), 2);
+}

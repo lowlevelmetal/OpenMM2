@@ -92,6 +92,16 @@ enum class EventType : std::uint8_t {
     OpponentDamageLimits,// index = opponent, value = MaxDamage (MedDamage value / 2)
     SessionOver,         // results can be shown
     Sound,               // index = GameSound; value: 0 play once, 1 loop, -1 stop
+    Speech,              // index = SpeechCue, value = its argument (the announcer)
+};
+
+// What the modes ask of the announcer (mmRaceSpeech, mmCCSpeech).
+enum class SpeechCue : std::uint8_t {
+    PreRace,       // mmGame::Reset: mmRaceSpeech / mmCCSpeech::PlayPreRace
+    Results,       // value = the player's place: mmGameSingle::UpdateRewards' PlayResults(place, opponents)
+    ResultsPoor,   // mmSingleBlitz: finished after the time ran out, PlayResults(10, 10)
+    DamagePenalty, // mmSingleBlitz: wrecked
+    LessonResults, // value 1 passed, 0 failed: mmSingleStunt::RegisterFinish -> mmCCSpeech::PlayResults
 };
 
 // The modes' 2D sounds (the AudSoundBase handles their InitGameObjects load)
