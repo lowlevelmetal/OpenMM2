@@ -1,7 +1,9 @@
 // Parity checks for the camera fixes of the camera-props audit
 // (docs/parity/camera-props.md), against MM2's camTrackCS::UpdateCar,
 // mmPlayer::Update, mmPlayer::SetMPPostCam and camPolarCS.
+#include "TestData.h"
 #include "game/CamMath.h"
+#include "game/CamMirror.h"
 #include "game/CamPlayer.h"
 
 #include <gtest/gtest.h>
@@ -217,4 +219,57 @@ TEST(ParityCameraProps, ViewSettingsCarryOver) {
         // only shows 70 degrees again after a view setting changes.
         EXPECT_FLOAT_EQ(cams.viewManager().perspective().fov, cams.povCam().base().cameraFov);
     }
+}
+
+// mmMirror: the rear-view mirror's camera.
+TEST(ParityCameraProps, RearViewMirrorCamera) {
+    RearViewMirror mirror;
+    const auto& p = mirror.params();
+    EXPECT_FLOAT_EQ(p.fov, 10.0f);
+    EXPECT_FLOAT_EQ(p.aspect, 2.0f);
+    EXPECT_FLOAT_EQ(p.nearClip, 1.2f);
+    EXPECT_FLOAT_EQ(p.farClip, 100.0f);
+    EXPECT_FLOAT_EQ(p.size.x, 0.3f);
+    EXPECT_FLOAT_EQ(p.size.y, 0.16f);
+    EXPECT_TRUE(mirror.enabled());
+
+    // Looking backwards (the camera looks down -m2, the car forwards down
+    // -Z), mirrored left to right: m0 stays +X, so the determinant is -1.
+    const Mat34& m = mirror.localMatrix();
+    EXPECT_NEAR(m.m0.x, 1.0f, 1e-6f);
+    EXPECT_NEAR(m.m1.y, 1.0f, 1e-6f);
+    EXPECT_NEAR(m.m2.z, -1.0f, 1e-6f);
+    EXPECT_NEAR(m.m0.cross(m.m1).dot(m.m2), -1.0f, 1e-6f);
+
+    // In the world: the eye 1.4 m up and 1 m ahead of the car, looking back.
+    Mat34 car = Mat34::rotationY(cam::kHalfPi);
+    car.m3 = {5.0f, 0.0f, 7.0f};
+    const Mat34 w = mirror.worldMatrix(car);
+    const Vec3 ahead = -car.m2;
+    EXPECT_NEAR((w.m3 - (car.m3 + Vec3{0.0f, 1.4f, 0.0f} + ahead)).mag(), 0.0f, 1e-5f);
+    EXPECT_NEAR((-w.m2).dot(ahead), -1.0f, 1e-5f);
+
+    // mmMirror::Reset: top right, one pixel in.
+    const auto v = mirror.viewport(640, 480);
+    EXPECT_EQ(v.width, 192);
+    EXPECT_EQ(v.height, 76);
+    EXPECT_EQ(v.x, 447);
+    EXPECT_EQ(v.y, 1);
+
+    mirror.toggle();
+    EXPECT_FALSE(mirror.enabled());
+}
+
+TEST(ParityCameraProps, RetailMirrorFiles) {
+    MM2_REQUIRE_GAME_DATA();
+    // Only 11 cars ship a mirror; vpbug keeps the defaults.
+    EXPECT_FALSE(loadMirrorParams(*test::gameData(), "vpbug"));
+    const auto bus = loadMirrorParams(*test::gameData(), "vpbus");
+    ASSERT_TRUE(bus);
+    EXPECT_FLOAT_EQ(bus->nearClip, 5.8f);
+    EXPECT_FLOAT_EQ(bus->fov, 10.0f);
+    RearViewMirror mirror;
+    mirror.load(*test::gameData(), "vpbus");
+    EXPECT_FLOAT_EQ(mirror.params().nearClip, 5.8f);
+    EXPECT_NEAR(mirror.localMatrix().m3.y, bus->position.y, 1e-6f);
 }

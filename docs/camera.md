@@ -213,6 +213,39 @@ camera, and otherwise keeps its value. A blend therefore ends a little short
 of the target camera's FOV (by up to one update's share of the blend), as
 in the original.
 
+## Rear-view mirror
+
+`CamMirror.*` (`RearViewMirror`) ports `mmMirror`'s camera; drawing it is
+the renderer's job (open for rendering).
+
+* **Data** (`mmMirror::FileIO`): `tune/<car>.mmmirror`, which only 11 cars
+  ship (vp4x4, vpauditt, vpbus, vpcaddie, vpcentury, vpcop, vpdb7,
+  vpddbus, vpford, vppanoz, vpsemi); the others keep the defaults. Fields:
+  Position (the eye in the car's frame; `mmMirror::Init` sets 0, 1.4, -1:
+  1.4 m up and 1 m ahead), Size (0.3, 0.16 of the screen), Fov (10, the
+  vertical FOV in degrees), Aspect (2), NearClip (1.2; 1.2 to 5.8 in the
+  files), FarClip (100).
+* **Frame** (`mmMirror::Init`, `Cull`): the identity turned pi about Y
+  with m0 then negated, so it looks backwards and the picture is mirrored
+  left to right (determinant -1), at Position; the view is that frame times
+  the car's world matrix (`Matrix34::Dot`, `worldMatrix`).
+* **Inset** (`mmMirror::Reset`): `gfxViewport::SetWindow(width - w - 1, 1,
+  w, h)` with w = (int)(width x Size.x) and h = (int)(height x Size.y): the
+  top right corner, one pixel in, and `Perspective(Fov, Aspect, NearClip,
+  FarClip)`: the aspect is fixed at 2 whatever the inset's shape.
+* **On / off**: `mmViewMgr::Init` creates it and leaves it on only when the
+  driver's view settings say so (`mmPlayerConfig`, the byte after the
+  camera globals); `SetViewSetting(9)` (input event 0x1E) toggles it.
+  `mmGameManager::Update` declares it for drawing every frame while it is on,
+  whatever the camera, after the dashboard and the HUD map.
+
+What the renderer must do (`mmMirror::Cull`): set the inset's viewport,
+clear its colour (black) and depth, render from `worldMatrix(car)` with the
+fixed-aspect projection, swap the cull winding (the frame is mirrored),
+hide the player's car body, and draw the level as for the main view
+(`lvlLevel` draw for that viewport), then restore the viewport and the cull
+mode. The inset follows the screen size, so it works at any resolution.
+
 ## Port status
 
 | Function | Status |
@@ -231,7 +264,8 @@ in the original.
 | `Matrix34::LookAt`, `GetEulers("zxy")`, `FromEulersZXY`, `MakeRotate*`, `Dot`, `Dot3x3`, `Rotate`, `RotateFull`, `PolarView`, `Vector3::Approach`, `Angle`, `InvMag` | ported with the original association of every sum |
 | `camPolarCS` | ported (`PolarCamera`), used for the multiplayer finish line; the two cheat "XCams" (`SetViewSetting(2)` with the camera cheat) are not ported |
 | `camAICS` (keyboard-driven free camera), `camPostCS` (only its `MakeActive` is called; it is never shown) | not ported |
-| `mmExternalView` (HUD gauges over the chase views), `mmMirror` (rear-view mirror) | HUD, not part of the cameras |
+| `mmMirror::Init`, `Reset`, `FileIO`, the camera part of `Cull` | ported (`RearViewMirror`); drawing it is open (rendering) |
+| `mmExternalView` (HUD gauges over the chase views) | HUD, not part of the cameras |
 | HUD hidden while looking around in the point-of-view cameras (`mmGame::UpdateGameInput`) | not ported (HUD) |
 
 The math is 32-bit float, like the original's single-precision x87. It can
@@ -310,4 +344,5 @@ see `docs/parity/camera-props.md`): the chase camera keeping its offset over
 a car spinning in the air by angular momentum (and not by angular
 velocity); the _ind camera under geometry in flag 0x20 rooms; the polar
 camera's defaults, keys and limits; the multiplayer finish camera in open
-and covered rooms; the view settings carried into the next race.
+and covered rooms; the view settings carried into the next race; the
+rear-view mirror's frame, inset and retail files.
