@@ -149,10 +149,19 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
         axle.stiffness = axle.params.torqueCoef * ics.inertia.z;
         const float d = std::sqrt(axle.stiffness * ics.inertia.z) * axle.params.dampCoef;
         axle.damping = d + d;
+        // vehAxle::Init: with an "axle0/1" pivot, the left wheel's offset
+        // from it along the pivot's Z and X axes scales the visual pitch and
+        // roll. (MM2 divides unguarded; a zero offset keeps the factor 1.)
         axle.matrix = g.axlePivots[a].value_or(Mat34::identity());
+        axle.pitchFactor = 1.0f;
         axle.rollFactor = 1.0f;
         if (g.axlePivots[a]) {
-            const float across = (wheels[a * 2].center - axle.matrix.m3).dot(axle.matrix.m0);
+            const Mat34& m = axle.matrix;
+            const Vec3 off = wheels[a * 2].center - m.m3;
+            const float along = (off.z * m.m2.z + off.y * m.m2.y) + off.x * m.m2.x;
+            if (along != 0.0f)
+                axle.pitchFactor = 1.0f / along;
+            const float across = (off.z * m.m0.z + off.y * m.m0.y) + off.x * m.m0.x;
             if (across != 0.0f)
                 axle.rollFactor = 1.0f / across;
         }
@@ -386,6 +395,10 @@ void CarSim::updateAxles() {
         const float dr = r.suspension - r.visualDispVert();
         const float diff = dl - dr;
         axle.roll = diff * axle.rollFactor * 0.5f;
+        // The axle's own matrix takes the roll and the mean travel (its m0.y
+        // and m2.y), tilting the axis the wheels are rolled about.
+        axle.matrix.m2.y = (dr + dl) * axle.pitchFactor * 0.5f;
+        axle.matrix.m0.y = axle.roll;
         if (options.axleCoupling && axle.stiffness != 0.0f) {
             const float t =
                 -(diff * axle.stiffness + (l.suspensionVelocity - r.suspensionVelocity) * axle.damping);
@@ -395,12 +408,7 @@ void CarSim::updateAxles() {
         const bool camber = 0.0f <= l.params.camberLimit && 0.0f <= r.params.camberLimit;
         for (Wheel* w : {&l, &r}) {
             const float angle = camber ? w->camber : axle.roll;
-            if (angle != 0.0f) {
-                const Mat34 rot = age::arbitraryRotation(axleWorld.m2, angle);
-                w->matrix.m0 = rot.transformDir(w->matrix.m0);
-                w->matrix.m1 = rot.transformDir(w->matrix.m1);
-                w->matrix.m2 = rot.transformDir(w->matrix.m2);
-            }
+            age::rotate(w->matrix, axleWorld.m2, angle); // Matrix34::Rotate
         }
     }
 }

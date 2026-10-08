@@ -4,6 +4,7 @@
 
 #include "phys/vehicle/Engine.h"
 
+#include "phys/AgeMath.h"
 #include "phys/InertialCS.h"
 #include "phys/vehicle/Drivetrain.h"
 #include "phys/vehicle/Transmission.h"
@@ -115,11 +116,16 @@ void Engine::update(float dt, Transmission& trans, Drivetrain& primary, Inertial
     if (trans.currentGear == Transmission::kNeutral) {
         const float t = (torque / calcTorqueAtFullThrottle(optRotationSpeed)) * angInertia;
         Vec3 axis;
+        // The frame the torque is given in: the body's, or the engine pivot
+        // rocked by 0.05 t about its own Z axis and carried into the world
+        // (vehEngine::Update keeps that matrix for drawing too).
         Mat34 frame = ics.matrix;
         if (pivot) {
             const float k = -(t * angInertia);
             axis = {k * pivot->m2.x, k * pivot->m2.y, k * pivot->m2.z};
-            frame = Mat34::mul(*pivot, ics.matrix);
+            Mat34 rocked = *pivot;
+            age::rotate(rocked, pivot->m2, t * 0.05f); // Matrix34::Rotate
+            frame = Mat34::mul(rocked, ics.matrix);
         } else if (drivetrainType == 1) {
             axis = {t * angInertia, 0.0f, 0.0f};
         } else {

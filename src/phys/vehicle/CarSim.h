@@ -97,8 +97,11 @@ struct Axle {
     float stiffness = 0.0f; // TorqueCoef * Izz
     float damping = 0.0f;   // 2 sqrt(stiffness * Izz) * DampCoef
     float roll = 0.0f;      // visual roll of the wheels (rad)
-    Mat34 matrix;           // pivot (model space)
-    float rollFactor = 1.0f; // 1 / lateral offset of the left wheel (1 without a pivot)
+    // The "axle0/1" pivot (model space; identity without one). vehAxle::Update
+    // writes the roll into its m0.y and the mean travel into its m2.y.
+    Mat34 matrix;
+    float rollFactor = 1.0f;  // 1 / the left wheel's offset along the pivot's X (1 without a pivot)
+    float pitchFactor = 1.0f; // 1 / its offset along the pivot's Z
 };
 
 struct CarSimOptions {
