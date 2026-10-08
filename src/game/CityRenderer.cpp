@@ -250,6 +250,24 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
     m_roomMarks.assign(m_rooms.size(), 0);
     if (city.sky)
         m_sky = m_models.get(city.sky->model);
+    // cityLevel::Load loads the city's textures under gfxTexReduceSize: the
+    // streets', the objects' (props included) with their xrefs', and the
+    // sky's. OpenMM2 loads textures on first use, so it names them now.
+    for (const auto& name : m_slotNames)
+        m_textures.declare(name);
+    std::unordered_map<std::string, bool> declared;
+    std::function<void(const GpuModel*, int)> declareModel = [&](const GpuModel* model, int depth) {
+        if (!model || depth > 3 || !declared.try_emplace(model->name, true).second)
+            return;
+        for (const auto& paintjob : model->paintjobs)
+            for (const auto& material : paintjob)
+                m_textures.declare(material.texture);
+        for (const auto& xref : model->xrefs)
+            declareModel(m_models.get(xref.name), depth + 1);
+    };
+    for (const auto& inst : city.instances)
+        declareModel(m_models.get(inst.name), 0);
+    declareModel(m_sky, 0);
     log::info("city: {} rooms, {} vertices, {} triangles, {} instances", m_rooms.size(), m_streetVertices.size(),
               m_streetIndices.size() / 3, m_instances.size());
 }

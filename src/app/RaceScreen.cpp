@@ -411,8 +411,14 @@ private:
         m_textures = std::make_unique<game::TextureLibrary>(ctx.device(), ctx.game->vfs);
         m_models = std::make_unique<game::ModelLibrary>(ctx.device(), ctx.game->vfs);
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
+        // cityLevel::Load: gfxTexReduceSize = 32 << the Texture Quality
+        // option (gfxTextureQuality) while the city loads, no limit after.
+        const int textureQuality =
+            static_cast<int>(std::clamp(ctx.settings.ini.getInt("Graphics", "TextureQuality", 2), 0LL, 3LL));
+        m_textures->setSizeLimit(32 << textureQuality);
         m_cityRenderer = std::make_unique<game::CityRenderer>(ctx.device(), *m_textures, *m_models, *m_city,
                                                               [this](std::string_view n) { return m_bangerData->has(n); });
+        m_textures->setSizeLimit(0);
         m_objectDetail = std::clamp(static_cast<int>(ctx.settings.ini.getInt("Graphics", "ObjectDetail", 3)), 0, 3);
         m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
         // Development aid for screenshots: "<timeOfDay 0-3>,<weather 0-3>".
