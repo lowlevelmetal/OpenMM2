@@ -1292,6 +1292,16 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
+            } else if (e.type == EventType::FinalCheckpoint || e.type == EventType::FinalLap) {
+                // mmWaypoints::Update: the last stretch switches the music to
+                // the cop chase segment; the final checkpoint is announced
+                // (mmRaceSpeech::PlayFinalCheckPoint; the race speech exists
+                // outside the crash course). PlayFinalLap has no caller.
+                if (m_musicDirector)
+                    m_musicDirector->finalStretch();
+                if (e.type == EventType::FinalCheckpoint && m_announcerOk &&
+                    m_result.config.mode != game::GameMode::CrashCourse)
+                    m_announcer.playFinalCheckpoint();
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car

@@ -9,6 +9,7 @@
 
 #include "audio/AngelRandom.h"
 #include "audio/Mixer.h"
+#include "audio/MusicDirector.h"
 #include "audio/SoundBank.h"
 #include "audio/game/Ambience.h"
 #include "audio/game/AudioManager.h"
@@ -346,6 +347,30 @@ TEST(AudioParityMm2, AmbientDriverVoiceFollowsItsCar) {
     setRandomizeSeedSource({});
     voice.stop();
     car.stop();
+}
+
+TEST(AudioParityMm2, FinalStretchSwitchesToTheChaseMusic) {
+    // mmWaypoints::Update: SegmentSwitch(cop chase, END, BEAT) at the final
+    // checkpoint and a circuit's final lap; nothing when it already plays.
+    MusicDirector d(false);
+    for (int i = 0; i < 100; ++i) // past the 1.25 s start, moving
+        d.update(0.02f, 20.0f, 0, false);
+    d.raceStarted();
+    d.takeCommands();
+    d.finalStretch();
+    const auto c = d.takeCommands();
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::CopChase);
+    EXPECT_EQ(c[0].timing, MusicTiming::Beat);
+    EXPECT_EQ(d.current(), MusicState::CopChase);
+    d.finalStretch();
+    EXPECT_TRUE(d.takeCommands().empty());
+    // A cop chase ending afterwards (1 -> 0 pursuing cops) returns as usual.
+    d.update(0.02f, 20.0f, 1, false);
+    d.update(0.02f, 20.0f, 0, false);
+    const auto r = d.takeCommands();
+    ASSERT_EQ(r.size(), 1u);
+    EXPECT_EQ(r[0].state, MusicState::Return);
 }
 
 TEST(AudioParityMm2, OldEngineTableLayout) {

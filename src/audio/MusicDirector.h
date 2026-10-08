@@ -54,6 +54,16 @@ public:
     // mmPopup::ShowResults: the results segment, on the next beat (race
     // songs only).
     void results();
+    // mmWaypoints::Update when the race enters its last stretch: in a
+    // checkpoint race when the last checkpoint but the finish is cleared,
+    // in a circuit when the final lap starts and when its last checkpoint is
+    // cleared. The cop chase segment (MMDMusicManager +0x24) through
+    // SegmentSwitch(segment, DMUS_COMMANDT_END, DMUS_COMPOSEF_BEAT): a
+    // composed ending on the next beat (OpenMM2: the switch on the beat,
+    // inferred as for results); nothing if it is already playing. MM2 does it
+    // only in music mode (CITY SOUNDS off), where the director's commands are
+    // heard.
+    void finalStretch();
 
     std::vector<Command> takeCommands();
     // The "Big Air" motif: the player's car took off (rising edge).

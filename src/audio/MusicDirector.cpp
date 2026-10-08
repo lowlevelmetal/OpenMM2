@@ -122,6 +122,16 @@ void MusicDirector::results() {
     m_commands.push_back({MusicState::Results, MusicTiming::Beat});
 }
 
+void MusicDirector::finalStretch() {
+    // mmWaypoints::Update: SegmentSwitch(+0x24, DMUS_COMMANDT_END,
+    // DMUS_COMPOSEF_BEAT), which does nothing for the segment already playing.
+    if (m_current == MusicState::CopChase)
+        return;
+    m_previous = m_current;
+    m_current = MusicState::CopChase;
+    m_commands.push_back({MusicState::CopChase, MusicTiming::Beat});
+}
+
 std::vector<MusicDirector::Command> MusicDirector::takeCommands() {
     std::vector<Command> out;
     out.swap(m_commands);
