@@ -47,10 +47,13 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
   acts when the mouse button is released over it, wherever the press began
   (`UIMenu::CheckMouseHits`), or on Enter. 5-frame
   sheets are toggles: off, off+highlight, on, on+highlight, disabled; they
-  flip on the press, Enter or Space.
+  flip on the press, Enter or Space. A click on an exclusive lamp that is
+  already on (the race and host mode lamps, the Cops & Robbers lamps) only
+  plays its sound and shows it unlit until the focus leaves it
+  (`UIBMButton::DoToggle`); Enter still reselects it.
 * **Drop-downs** (`UITextDropdown`, `mmDropDown`): 23 px tall whatever the
   layout says, text 5 px from the left, `drop_arrow` at the right (frames
-  unfocused / focused / open). Enter or a click opens a list of every option
+  unfocused / focused / open), also on a read-only box. Enter or a click opens a list of every option
   (black cells of the box's size, a white outline on the highlight, more
   columns when it would leave the screen: when two columns would not fit
   right of the box, the list starts one box width further left per extra
@@ -96,8 +99,10 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
   "UIoptions", races and crash course intro "UIraces", garage and host
   "UIvehicles", multiplayer "UImulti". Buttons have their own sounds
   (`UIBMButton::AllocateSounds`): "Selectionmade" for the navigation strip,
-  dialogs and option pages, "Moveselector" for CREATE/DELETE/STATS, "Uigo"
-  for GO; RACE RECORDS plays "UIrecords". Sliders and rollers play
+  dialogs, option pages, the mode lamps and the lobby's buttons and team
+  lamps, "Moveselector" for CREATE/DELETE/STATS, "Uigo" for the garage's
+  and the lobby's GO (the Crash Course's GO is silent); RACE RECORDS plays
+  "UIrecords". Sliders and rollers play
   "Switch". Focus moves are silent in the frontend; the generic
   "Moveselector"/"Selectionmade" sounds play only in the in-game popups (the
   results page here). Files: `aud/aud22/<name>.22k.wav` or the 11 kHz ones.
@@ -389,7 +394,10 @@ the screen, or 0.9 x 0.8 centred for the control and graphics pages and
 the label, type 2 (rows) centres it, type 0 (PUExit's Yes / No, the results)
 centres it vertically only. Titles use GetFont 32 at the card's top-left;
 slider and drop-down labels GetFont 16, 16 pixels above their control.
-Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch".
+Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch",
+drop-downs "Selectionmade" when opened with Enter, on every key in the open
+list and on a mouse pick, and PUChat "Moveselector" for every character
+typed and on Enter.
 
 * **PUMain**: Resume Driving (0.5, 0.9), then Restart Race / Restart Lesson
   (read-only in network games), Options, Quit to Race Menu / Back to

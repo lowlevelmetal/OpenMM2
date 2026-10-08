@@ -575,6 +575,7 @@ public:
                 fe.ctx.netGame->setReady(false);
             fe.push(makeVehiclePage(fe));
         });
+        m_vehicle->sound = "Selectionmade"; // NetArena: sound slot 0
         if (host) {
             const Vec2 p = l.position(id, 3, {395, 380});
             menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_hst.tga", 4}, p.x, p.y,
@@ -590,6 +591,7 @@ public:
         m_team0 = &menu.add<ui::LampItem>(SpriteSheet{"texture/lobb_cop.tga", 5}, t0.x, t0.y,
                                           [&fe] { return fe.ctx.netGame && fe.ctx.netGame->localCar().team == 0; },
                                           [&fe] { setTeam(fe, 0); });
+        m_team1->sound = m_team0->sound = "Selectionmade"; // NetArena: sound slot 0
 
         const Vec2 go = l.position(id, 6, kNext);
         if (host) {
@@ -608,6 +610,9 @@ public:
             });
         }
         // NetArena::LoadRaceMap: the race's map, hidden when the race has none.
+        // GO / READY (id 9999): sound slot 10.
+        m_go->sound = "Uigo";
+        m_go->soundVolume = 0.9f;
         m_map = &menu.add<ui::Picture>(l.widget(id, 7, {22, 194, 242, 184}), [this] { return m_mapPath; });
         m_map->focusStop = true;
         if (host) {
@@ -937,6 +942,8 @@ public:
                                                 [this, m] { return m_cfg.mode == m; },
                                                 [this, &fe, m] { selectMode(fe, m); });
             item.help = lamps[i].help;
+            item.radio = true;
+            item.sound = "Selectionmade"; // sound slot 0
         }
 
         // 6-8: race name (host_rnm panel) and its clamping arrows.
@@ -972,6 +979,8 @@ public:
                                                 [this, mode] { return m_cfg.copsAndRobbers == mode; },
                                                 [this, mode] { m_cfg.copsAndRobbers = mode; });
             item.help = crModes[i].help;
+            item.radio = true;
+            item.sound = "Selectionmade"; // HostRaceMenu::InitCRWidgets: slot 0
             m_crItems.push_back(&item);
         }
         const struct {
@@ -989,6 +998,8 @@ public:
                                                 [this, limit] { return limitKind() == limit; },
                                                 [this, limit] { setLimit(limit); });
             item.help = limits[i].help;
+            item.radio = true;
+            item.sound = "Selectionmade"; // HostRaceMenu::InitCRWidgets: slot 0
             m_crItems.push_back(&item);
         }
 

@@ -205,7 +205,10 @@ void LampItem::draw(UiFrame& f, bool focused) {
     const Vec2 size = spriteFrameSize(f, sheet);
     box.w = size.x;
     box.h = size.y;
-    const bool on = isOn && isOn();
+    const bool selected = isOn && isOn();
+    if (!selected)
+        m_shownOff = false;
+    const bool on = selected && !m_shownOff;
     const int frame = !enabled ? 4 : (on ? (focused ? 3 : 2) : (focused ? 1 : 0));
     drawSpriteFrame(f, sheet, frame, box.x, box.y);
 }
@@ -221,9 +224,17 @@ bool LampItem::activate(UiFrame& f) {
 
 void LampItem::mouse(UiFrame& f, bool hovered) {
     // UIBMButton::DoToggle: toggles flip on the press.
-    if (hovered && f.nav.mousePressed)
-        activate(f);
+    if (!hovered || !f.nav.mousePressed)
+        return;
+    if (radio && enabled && !readOnly && isOn && isOn()) {
+        f.play(sound, soundVolume);
+        m_shownOff = !m_shownOff;
+        return;
+    }
+    activate(f);
 }
+
+void LampItem::focusChanged(bool) { m_shownOff = false; }
 
 // --- ValueBox ---------------------------------------------------------------------------
 
@@ -258,7 +269,9 @@ void ValueBox::draw(UiFrame& f, bool focused) {
     f.overlay.setClip(nullptr);
     if (popup)
         outline(f.overlay, box, rgba(255, 255, 255)); // text effect 4: a white-pen rectangle
-    if (showArrow && enabled && !readOnly)
+    // UITextDropdown::Cull copies the arrow's frame whenever the box is
+    // drawn, read-only or not.
+    if (showArrow && enabled)
         drawSpriteFrame(f, {popup ? "texture/drop_arrow2.tga" : "texture/drop_arrow.tga", 3},
                         m_open ? 2 : (focused ? 1 : 0), box.x + box.w - 21, box.y + 1);
 }
@@ -288,11 +301,15 @@ std::vector<ValueBox::Cell> ValueBox::listCells(std::size_t count) const {
     return cells;
 }
 
-bool ValueBox::activate(UiFrame&) {
+bool ValueBox::activate(UiFrame& f) {
     if (!enabled || readOnly || options().empty())
         return false;
     m_open = true;
     m_hover = std::max(0, get());
+    // UITextDropdown::Action: opening with Enter plays
+    // MenuManager::PlaySound(1), which only the popups hear.
+    if (popup && !f.nav.mousePressed)
+        f.play("Selectionmade", 0.75f);
     return true;
 }
 
@@ -326,6 +343,12 @@ void ValueBox::modalInput(UiFrame& f) {
         return 0;
     };
     const NavInput& nav = f.nav;
+    // UITextDropdown::CaptureAction: every Home, Up, Left, Down, Right and
+    // End in the open list, and a mouse pick, play MenuManager::PlaySound(1)
+    // (heard in the popups only).
+    const bool step = nav.up || nav.left || nav.down || nav.right || nav.home || nav.end;
+    if (popup && step)
+        f.play("Selectionmade", 0.75f);
     if (nav.up || nav.left)
         m_hover = settle(m_hover - 1);
     if (nav.down || nav.right)
@@ -345,6 +368,8 @@ void ValueBox::modalInput(UiFrame& f) {
     // UITextDropdown::CaptureAction: Enter or a release over an entry picks
     // it (an entry that cannot be picked picks the first one that can).
     if (nav.accept || (nav.mouseReleased && under)) {
+        if (popup && !nav.accept)
+            f.play("Selectionmade", 0.75f);
         set(settle(nav.accept ? m_hover : under->index));
         m_open = false;
     } else if (nav.back || (nav.mousePressed && !under && !box.contains(nav.mouse))) {
@@ -516,6 +541,7 @@ void Roller::draw(UiFrame& f, bool focused) {
 }
 
 bool Roller::adjust(UiFrame& f, int dir) {
+    m_clicked = 0; // UITextRoller2::Action: Left / Right clear the pressed arrow
     if (!enabled || readOnly)
         return true;
     const int n = static_cast<int>(options().size());
@@ -528,6 +554,10 @@ bool Roller::adjust(UiFrame& f, int dir) {
 }
 
 void Roller::mouse(UiFrame& f, bool hovered) {
+    // UITextRoller2::Action: the pressed arrow shows until the button is
+    // released.
+    if (f.nav.mouseReleased)
+        m_clicked = 0;
     if (!hovered || !f.nav.mousePressed || readOnly)
         return;
     const float ax = box.x + box.w - kRollerArrowW;
@@ -620,7 +650,15 @@ bool Slider::adjust(UiFrame& f, int dir) {
 }
 
 void Slider::mouse(UiFrame& f, bool hovered) {
+    // UISlider::Action: the pressed arrow shows until the button is released.
+    if (f.nav.mouseReleased)
+        m_clicked = 0;
     if (!enabled || readOnly || !hovered || !f.nav.mousePressed)
+        return;
+    // UISlider::EvalMouseXY: only the arrows' row counts (not a popup
+    // slider's label above it).
+    const float rowH = spriteFrameSize(f, {balance ? "texture/slider_lbal.tga" : "texture/slider_larr.tga", 5}).y;
+    if (f.nav.mouse.y < rowY() || (rowH > 0.0f && f.nav.mouse.y >= rowY() + rowH))
         return;
     const float trackX = box.x + kArrowW;
     const float trackW = 2.0f * static_cast<float>(segments());
@@ -778,8 +816,13 @@ void TextEntry::modalInput(UiFrame& f) {
             value->clear();
             m_fresh = false;
         }
-        if (value->size() < maxLength)
+        if (value->size() < maxLength) {
             value->push_back(c);
+            // UITextField::WmCharHandler: MenuManager::PlaySound(0) for every
+            // accepted character, heard in the popups only (PUChat).
+            if (popup)
+                f.play("Moveselector", 0.75f);
+        }
     }
     if (f.nav.backspace && !value->empty()) {
         m_fresh = false;
@@ -792,6 +835,8 @@ void TextEntry::modalInput(UiFrame& f) {
     // Enter commits; Tab and Escape end editing and are handled by the menu.
     if (f.nav.enter) {
         m_editing = false;
+        if (popup)
+            f.play("Moveselector", 0.75f); // UITextField::KeyAction
         if (onCommit)
             onCommit();
     } else if (f.nav.tabNext || f.nav.back) {

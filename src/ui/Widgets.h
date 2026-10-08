@@ -193,11 +193,20 @@ public:
     bool activate(UiFrame&) override;
     bool activateSpace(UiFrame& f) override { return activate(f); }
     void mouse(UiFrame& f, bool hovered) override;
+    void focusChanged(bool focused) override;
     SpriteSheet sheet;
     std::function<bool()> isOn;
     std::function<void()> onClick;
     std::string sound;
     float soundVolume = 0.86f;
+    // One of a group of exclusive lamps (UIBMButton::MexOn): a mouse press
+    // on the lamp that is already on only flips the lamp's own state
+    // (UIBMButton::DoToggle): its sound, no onClick, and it shows unlit
+    // (frame 1) until the focus leaves it. Enter and Space still run onClick.
+    bool radio = false;
+
+private:
+    bool m_shownOff = false;
 };
 
 // Value box with a drop-down list (UITextDropdown / mmDropDown): the value

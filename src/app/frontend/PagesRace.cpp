@@ -101,6 +101,9 @@ public:
             m_lamps[i] = &menu.add<ui::LampItem>(
                 SpriteSheet{lamps[i].sprite, 5}, p.x, p.y, [&fe, m] { return fe.config.mode == m; },
                 [this, &fe, m] { selectMode(fe, m); });
+            // RaceMenuBase: exclusive lamps with sound slot 0.
+            m_lamps[i]->radio = true;
+            m_lamps[i]->sound = "Selectionmade";
             m_modes[i] = m;
         }
 

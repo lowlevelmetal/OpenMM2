@@ -129,9 +129,9 @@ public:
         m_raceBox->visible = !training;
         m_raceArrows.show(!training);
         const bool schoolCar = training && !lessonPassed(fe);
+        // CrashCourse::SetVehicleNext swaps only the picture; GO has no sound
+        // slot (CrashCourse::CrashCourse), so it is silent either way.
         m_go->sheet.path = schoolCar ? "texture/veh_go.tga" : "texture/race_veh.tga";
-        m_go->sound = schoolCar ? "Uigo" : "";
-        m_go->soundVolume = 0.9f;
         // The help label shows the lesson's picture in training only.
         menu.defaultHelp = training ? std::format("jpg/{}_cc{}.jpg", m_city == "sf" ? "sf" : "lon", m_lesson) : "";
     }

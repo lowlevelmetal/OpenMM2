@@ -419,7 +419,9 @@ void PopupOptions::buildGraphics(ui::Menu& menu, const PopupOptionsHost& host) {
                 ini.setBool("Graphics", key, !ini.getBool("Graphics", key, true));
                 apply();
             });
-        t.stateWidth = popup::kWidgetHeight * card.w; // UIToggleButton2::Init: the last 0.075
+        // UIToggleButton2::Init: the last 0.075 of the screen's width (48 px),
+        // taken off the already scaled toggle.
+        t.stateWidth = 0.075f * 640.0f;
         t.onText = s.get(607, "ON");
         t.offText = s.get(606, "OFF");
     };
