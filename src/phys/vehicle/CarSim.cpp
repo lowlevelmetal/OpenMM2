@@ -106,7 +106,9 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     drivetrains[2].configure(p.drivetrain);
     drivetrains[2].attach(&engine, &trans);
 
-    // vehCarSim::ConfigureDrivetrain.
+    // vehCarSim::ConfigureDrivetrain (vehCarSim::Init reaches it through
+    // vehCarSim::ReconfigureDrivetrain, which first runs
+    // vehCarSim::UnconfigureDrivetrain on the still empty drivetrains).
     Wheel& fl = wheels[0];
     Wheel& fr = wheels[1];
     Wheel& bl = wheels[2];
@@ -263,10 +265,11 @@ void CarSim::setPolygonalBound(bool polygonal) {
 
 void CarSim::buildBound() {
     // vehCarModel::InitBound: bound/<car>_bound.bnd (phBoundGeometry::Load
-    // into a vehBound, whose single own material every polygon uses); AI
-    // cars replace it with a dgBoundBox of its box (SetOffset to the box's
-    // centre, SetSize to its extent). vehCar::Init then gives the bound
-    // BoundFriction and BoundElasticity.
+    // into a vehBound, whose single own material every polygon uses:
+    // vehBound::vehBound, vehBound::Init); AI cars replace it with a
+    // dgBoundBox of its box (SetOffset to the box's centre, SetSize to its
+    // extent). vehCar::Init then gives the bound BoundFriction and
+    // BoundElasticity (vehBound::SetFriction, vehBound::SetElasticity).
     std::unique_ptr<BoundGeometry> geometry;
     if (m_boundData)
         geometry = makeGeometryBound(*m_boundData);
@@ -540,7 +543,8 @@ void CarSim::onImpact(Collider& self, const Impact& impact, const Vec3& impulse)
 
 void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Collider* other) {
     // vehCarDamage::InsertImpact. The impact is worth the impulse times
-    // GetDamageModifier (1) times the other body's share of the masses.
+    // vehCarDamage::GetDamageModifier (1; no class overrides it) times the
+    // other body's share of the masses.
     float share = 1.0f;
     if (other && other->ics) {
         share = other->ics->mass;

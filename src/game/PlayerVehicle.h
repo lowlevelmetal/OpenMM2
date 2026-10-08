@@ -16,7 +16,10 @@ namespace mm2::game {
 // A simulated car: its model and pivots, tune parameters
 // (tune/vehicle/<base>.vehCarSim, .vehGyro, .vehStuck, .vehCarDamage), body
 // collision box (bound/<base>_bound.bbnd) and the CarSim built from them.
-// Semis (vehTrailer data present) also get their trailer.
+// Semis (vehTrailer data present) also get their trailer. The physical part
+// of MM2's vehCar (vehCar::vehCar, vehCar::Init, vehCar::Reset); its
+// drawing, effects and audio are the race screen's renderer, effects and
+// audio objects.
 class SimVehicle {
 public:
     // `tuneSuffix` selects a tune variant (e.g. "_opp") when present. MM2

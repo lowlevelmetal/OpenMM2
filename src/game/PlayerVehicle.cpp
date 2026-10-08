@@ -178,6 +178,8 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
             v->m_trailer->body.geometryRadius = geomSetRadius(*v->m_trailerModel, "TRAILER");
         }
     }
+    // vehGyro::Init, vehStuck::Init, vehCarDamage::Init: each part loads
+    // its own tune file.
     if (auto f = readDat(vfs, tunePath("vehgyro")); f && f->top()) {
         phys::GyroParams p;
         if (phys::loadGyroParams(*f->top(), p))

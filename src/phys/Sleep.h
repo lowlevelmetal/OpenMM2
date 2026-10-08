@@ -15,8 +15,9 @@ class Sleep {
 public:
     enum State : int { Asleep = 0, Awake = 1, Dormant = 2 };
 
-    // phSleep::Init: 15 still updates to fall asleep, 120 more to go
-    // dormant, thresholds 0.005 (speed^2) and 0.01 (spin^2).
+    // phSleep::Init (phSleep::phSleep leaves the rest to it): 15 still
+    // updates to fall asleep, 120 more to go dormant, thresholds 0.005
+    // (speed^2) and 0.01 (spin^2).
     void init(InertialCS* ics);
     // phSleep::Reset / WakeUp: awake, counters and sums cleared, the body
     // active again.

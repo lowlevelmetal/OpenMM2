@@ -77,6 +77,8 @@ public:
     void setJointForceFlag();
     // dgTrailerJoint::MoveICS: applies both bodies' pending pushes.
     void moveICS();
+    // dgTrailerJoint::BreakJoint, dgTrailerJoint::UnbreakJoint,
+    // dgTrailerJoint::IsBroken: bit 0 of the joint's flags.
     void breakJoint() { status |= kBroken; }
     void unbreakJoint() { status &= ~kBroken; }
     bool isBroken() const override { return (status & kBroken) != 0; }

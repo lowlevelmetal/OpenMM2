@@ -213,7 +213,9 @@ public:
     // Ground used by the wheels; defaults to the World the body is in.
     void setGround(const GroundQuery* ground) { m_ground = ground; }
     // Called with every impact vehCarDamage::ApplyImpact applies (sounds,
-    // effects, game logic).
+    // effects, game logic): the effects MM2 runs in ApplyImpact itself and
+    // the game callback (vehCarDamage::SetGameCallback, which only
+    // mmPlayer::Init sets: mmPlayer::ImpactCallback).
     std::function<void(const CarImpact&)> onImpactCallback;
 
     // vehCarModel::InitBound again with another choice of bound (see
