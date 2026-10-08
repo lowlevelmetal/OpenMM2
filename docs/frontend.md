@@ -345,6 +345,69 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   constructors); the help pictures are MM2's lists (`gfx_tsky … gfx_shd`,
   with `gfx_tdis` for DISPLAY missing from the data; `ctl_trev … ctl_dd`).
 
+## In-race popup
+
+Escape in the race opens MM2's popup (`mmPopup`), pausing a single-player
+game; `RaceScreen` keeps its state machine (`mmPopup::Update`) and
+`app/frontend/PopupOptions.*` builds the PUMenuBase pages. Positions are
+fractions of the card (`UIMenu::ScaleWidget`); the card is MenuManager's
+Card2D, dark blue (16, 31, 93) at half alpha, x 0.2-0.8 and y 0.1-0.9 of
+the screen, or 0.9 x 0.8 centred for the control and graphics pages and
+0.9 x 0.9 for the key map. Buttons are 0.1 of the card high in GetFont 24
+(string 570), white, yellow-green when focused, grey when disabled; type 1
+(OK, Cancel, Previous Menu, Resume Driving) outlines its box and centres
+the label, type 2 (rows) centres it, type 0 (PUExit's Yes / No, the results)
+centres it vertically only. Titles use GetFont 32 at the card's top-left;
+slider and drop-down labels GetFont 16, 16 pixels above their control.
+Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch".
+
+* **PUMain**: Resume Driving (0.5, 0.9), then Restart Race / Restart Lesson
+  (read-only in network games), Options, Quit to Race Menu / Back to
+  School and Exit to Windows across the card at 0.125, 0.25, 0.375, 0.5.
+  For the host of a network race, Quit opens **PUQuit**: Quit to Lobby
+  (everyone back to the lobby), End Session and Cancel at 0.35, 0.45,
+  0.55. MM2's middle button reads Quit Game and lets the others race on
+  under a migrated DirectPlay host (End Session only in Cops and Robbers);
+  OpenMM2 has no host migration, so leaving as host ends the session.
+* **PUExit**: the question (string 457) centred in 0..1 x 0.2-0.4, Yes and
+  No at (0.2, 0.7) and (0.6, 0.7), 0.2 x 0.2.
+* **PUOptions** (no title): Audio, Control and Graphics Options at 0.2,
+  0.4, 0.6 and Previous Menu. On the three pages Cancel (0, 0.9) and OK
+  (0.6, 0.9) return to PUOptions; Escape does nothing there (mmPopup
+  leaves the pages' back-up state unhandled).
+  * **Audio Options**: Sound FX Volume, Music/City Volume and Balance
+    (balance arrows) at x 0.05, 0.6 wide, from y 0.11 every 2/15 + 0.11;
+    changes apply at once, Cancel restores the values the page opened with.
+  * **Control Options**: the CONTROL drop-down (the five controller types)
+    at 0.05, 0.11; Steering Sensitivity and Collision Intensity at y 0.36,
+    Controller Dead Zone and Road Force Intensity at 0.61, columns x 0.05
+    and 0.55, 0.4 wide. Usable sliders follow `PUControl::SetRWStates` and
+    `ControlBase::InitSensitivity` (keyboard and game pad: none; mouse:
+    sensitivity, and the dead zone when the page opens; joystick and
+    wheel: both, plus the force-feedback intensities when force feedback
+    runs). Choosing a joystick type without a joystick drives with the
+    keyboard (`mmInput::Init`). Cancel restores the settings.
+  * **Graphics Options**: Object Detail, Visibility (far clip 100-1000 m)
+    and Lighting Quality (1-3, snapped like the options page's) on the left,
+    Cloud Shadows and the Vehicle Reflections and Textured Sky toggles
+    (label box plus ON / OFF) on the right, rows 0.11, 0.385, 0.66. Changes
+    apply to the running race at once (the sky toggle is stored only);
+    Cancel keeps them, as `PUGraphics::CancelAction` is empty.
+* **PUKey** (F1): the actions the controller uses and their keys in two
+  columns (names at x 0.05 / 0.5, keys at 0.25 / 0.7 of a text node at
+  0.05, 0.075 of the screen, rows every 0.03 from 0.05), Resume Driving.
+  F1 again or Escape closes it.
+* **PUChat**: one 40-character text field, 0.75 of the screen wide and one
+  line high, centred on the screen (PUMenuBase centres the card and ignores
+  the position mmPopup passes), white-outlined.
+
+OpenMM2 writes the options as the page closes (`openmm2.ini`); MM2 writes
+the driver's configuration when the game ends (`mmGame::BeDone`). The
+results are a frontend page (see Results above).
+`OPENMM2_POPUP_SCRIPT` drives the popup for screenshots:
+`open:<main|options|audio|control|graphics|keymap|quit|exit>`,
+`nav:<up|down|left|right|accept|back>`, `wait:<frames>`.
+
 ## Drivers and unlocks
 
 Driver profiles are OpenMM2's own INI files in `<user data>/players/`
@@ -448,8 +511,6 @@ defaults), `vehicle:<name>`, `go` (start the race), `result:<position>`,
 * Instant replay (MM2's REPLAY button is switched off anyway).
 * Options per driver (`mmPlayerConfig`), mouse/joystick bindings, MM2's
   log-200 volume curve.
-* The in-race OPTIONS pages (`PUOptions`: audio, control and graphics
-  options in the race's popup); the popup shows Options disabled.
 * MM2's own multiplayer menus (`NetSelectMenu`, `NetArena`); OpenMM2 has
   its own session and lobby screens over UDP. The host's race settings
   follow `HostRaceMenu` (menu 11, `host_bk`): DONE first, the five race
