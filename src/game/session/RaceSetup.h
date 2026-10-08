@@ -111,4 +111,10 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
 // the race's definition (null for cruise).
 void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race);
 
+// mmGameMulti::StartXYZ: where the player in start slot `slot` (0..7)
+// starts a multiplayer race, relative to the start waypoint in its own frame
+// (+X right, +Z behind). Cars with a trailer or a model radius over 6 m use
+// the wider grid (16 and 34 m back), the others one 6 m apart.
+Vec3 multiplayerGridOffset(int slot, bool longVehicle);
+
 } // namespace mm2::game::session

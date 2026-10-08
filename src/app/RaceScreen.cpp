@@ -161,6 +161,7 @@ public:
         updateAiDrivers(static_cast<float>(dt));
         if (m_ai)
             m_ai->updateLights(); // the light sets last (aiMap::Update)
+        updateRemoteCars(ctx);
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
         if (m_trafficBodies)
@@ -490,6 +491,17 @@ private:
             const Mat34 sp = m_session->playerSpawn();
             pos = sp.m3;
             heading = std::atan2(sp.m2.x, sp.m2.z);
+            // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitMyPlayer: the
+            // player's start slot on the grid behind the start
+            // (mmGameMulti::StartXYZ; the slot is NetStartArray's, here the
+            // player's id, inferred).
+            const auto raceMode = m_result.config.mode;
+            if (multiplayer(ctx) && (raceMode == game::GameMode::Blitz || raceMode == game::GameMode::Circuit ||
+                                     raceMode == game::GameMode::Checkpoint)) {
+                const bool longVehicle = bodyRadius(m_player->model()) > 6.0f || m_player->trailerModel();
+                pos += Mat34::rotationY(heading).transformDir(
+                    game::session::multiplayerGridOffset(ctx.netGame->localId(), longVehicle));
+            }
         }
         // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading".
         if (const char* sp = std::getenv("OPENMM2_DEBUG_SPAWN")) {
@@ -502,9 +514,10 @@ private:
         }
         m_spawn = Mat34::rotationY(heading);
         m_spawn.m3 = pos;
-        // Drop the spawn point onto the surface below it.
+        // Drop the spawn point onto the surface below it (mmGame::FindGroundPos
+        // probes as the wheels do, lvlSDL::CollideProbe).
         phys::RayHit hit;
-        if (m_world->probe(pos + Vec3{0, 5, 0}, pos - Vec3{0, 30, 0}, hit))
+        if (m_world->wheelProbe(pos + Vec3{0, 5, 0}, pos - Vec3{0, 30, 0}, hit, nullptr, nullptr))
             m_spawn.m3 = hit.position;
         m_player->addTo(*m_world);
         m_player->reset(m_spawn);
@@ -540,6 +553,10 @@ private:
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             opts.scoringBias = info->scoringBias;
         opts.playerName = ctx.settings.playerName;
+        // mmMultiRoam: RespawnXYZ draws the cruise start from a random stream
+        // seeded with the player's id, so every player starts elsewhere.
+        if (multiplayer(ctx))
+            opts.seed = 1u + ctx.netGame->localId();
         // Crash course pursuit checks look through the level (the world is
         // built after the session).
         opts.lineOfSight = [this](const Vec3& a, const Vec3& b) {
@@ -569,7 +586,7 @@ private:
             car->sim().setPolygonalBound(true);
         car->addTo(*m_world);
         phys::RayHit hit;
-        if (m_world->probe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit))
+        if (m_world->wheelProbe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit, nullptr, nullptr))
             spawn.m3 = hit.position;
         car->reset(spawn);
         return car;
@@ -1643,34 +1660,97 @@ private:
                                       sim.damage.damage, flags);
     }
 
+    // mmNetObject: every other player's car is a vehCar of the level (built
+    // with the polygonal bound, a vpcop on vpmustang99's tuning, towing its
+    // trailer except in multiplayer cruise and Cops and Robbers), declared
+    // each frame as a type-3 mover (its room and the neighbours stay active)
+    // with its trailer. MM2 drives it with the player's inputs and pulls it
+    // toward the received positions (mmNetObject::Predict, Update); OpenMM2
+    // places it at its interpolated snapshot as a kinematic body, which the
+    // local car collides with as with a wall (deviation), and simulates only
+    // the trailer behind it.
+    void updateRemoteCars(Context& ctx) {
+        if (!multiplayer(ctx) || !m_world)
+            return;
+        const auto mode = m_result.config.mode;
+        const bool towing = mode != game::GameMode::Cruise && mode != game::GameMode::CopsAndRobbers;
+        std::vector<std::uint8_t> present;
+        for (const auto& rc : ctx.netGame->remoteCars()) {
+            if (!rc.hasState)
+                continue;
+            present.push_back(rc.id);
+            RemoteVehicle& rv = m_remotes[rc.id];
+            if (rv.base != rc.car.vehicle || rv.color != rc.car.color || !rv.renderer) {
+                if (rv.sim)
+                    rv.sim->removeFrom(*m_world);
+                rv = {};
+                rv.base = rc.car.vehicle;
+                rv.color = rc.car.color;
+                std::string error;
+                rv.sim = game::SimVehicle::load(ctx.game->vfs, rv.base, &error, {}, true, towing);
+                if (!rv.sim) {
+                    log::warn("race: network car {}: {}", rv.base, error);
+                    continue;
+                }
+                auto& sim = rv.sim->sim();
+                sim.options.weatherFriction = weatherFriction();
+                sim.setPolygonalBound(true); // vehCar::Init(..., true) in mmNetObject::Init
+                sim.body.kinematic = true;
+                sim.body.resetCollider();
+                rv.sim->addTo(*m_world);
+                rv.sim->reset(rc.transform);
+                rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
+                                                                      rv.sim->model(), rv.color);
+                setupVehicleRenderer(ctx, *rv.renderer);
+                if (const auto* trailer = rv.sim->trailerModel()) {
+                    rv.trailer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
+                                                                         *trailer, rv.color, "TRAILER", "TWHL");
+                    setupVehicleRenderer(ctx, *rv.trailer);
+                }
+                // mmNetObject::Init -> vehCar::Init -> vehSiren::vehSiren.
+                game::VehicleRenderer::setLightGlowScales(0.2f, 0.6f);
+            }
+            auto& sim = rv.sim->sim();
+            // The snapshot is the model matrix; the body is at the centre of
+            // mass (vehCarSim::SetWorldMatrix's offset).
+            Mat34 ics = rc.transform;
+            ics.m3 = rc.transform.m3 - rc.transform.transformDir(sim.centerOfGravity);
+            const bool jumped = sim.body.ics.matrix.m3.dist2(ics.m3) > 20.0f * 20.0f;
+            sim.body.place(ics);
+            sim.body.ics.linearVelocity = rc.velocity;
+            sim.body.ics.angularVelocity = rc.angularVelocity;
+            sim.setInputs(rc.controls.throttle, rc.controls.brake, rc.controls.steering, rc.controls.handbrake);
+            sim.body.declare(3, 0x1b); // mmNetObject::Update
+            if (auto* trailer = rv.sim->trailer()) {
+                trailer->body.declare(3, 0x1b);
+                if (jumped)
+                    trailer->reset(); // respawned: hitched again behind it
+            }
+        }
+        for (auto it = m_remotes.begin(); it != m_remotes.end();) {
+            if (std::find(present.begin(), present.end(), it->first) == present.end()) {
+                if (it->second.sim)
+                    it->second.sim->removeFrom(*m_world);
+                it = m_remotes.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     void drawRemoteCars(Context& ctx, float dt) {
         if (!multiplayer(ctx))
             return;
         for (const auto& rc : ctx.netGame->remoteCars()) {
-            if (!rc.hasState)
+            const auto it = m_remotes.find(rc.id);
+            if (!rc.hasState || it == m_remotes.end() || !it->second.renderer || !it->second.sim)
                 continue;
-            RemoteVehicle& rv = m_remotes[rc.id];
-            if (rv.base != rc.car.vehicle || rv.color != rc.car.color || !rv.renderer) {
-                rv = {};
-                rv.base = rc.car.vehicle;
-                rv.color = rc.car.color;
-                auto read = [&](std::string_view path) { return ctx.game->vfs.readAll(path); };
-                if (auto model = asset::loadVehicleModel(rv.base, read, nullptr)) {
-                    rv.model = std::make_unique<asset::VehicleModel>(std::move(*model));
-                    rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
-                                                                          *rv.model, rv.color);
-                    setupVehicleRenderer(ctx, *rv.renderer);
-                    // mmNetObject::Init -> vehCar::Init -> vehSiren::vehSiren.
-                    game::VehicleRenderer::setLightGlowScales(0.2f, 0.6f);
-                }
-            }
-            if (!rv.renderer)
-                continue;
+            RemoteVehicle& rv = it->second;
             game::VehiclePose pose;
             pose.body = rc.transform;
             // Wheels roll with the forward speed (radius from the model).
             const float forward = -rc.velocity.dot(rc.transform.m2);
-            for (const auto& w : rv.model->wheels) {
+            for (const auto& w : rv.sim->model().wheels) {
                 const auto i = static_cast<std::size_t>(std::clamp(w.index, 0, 5));
                 rv.spin[i] -= forward / std::max(w.radius, 0.1f) * dt;
                 pose.wheelSpin[i] = rv.spin[i];
@@ -1680,6 +1760,8 @@ private:
             pose.brakeLights = (rc.flags & net::kVehicleBrakeLights) != 0;
             pose.reverseLights = rc.controls.gear < 0;
             rv.renderer->draw(pose, m_camera.transform);
+            if (rv.trailer)
+                rv.trailer->draw(rv.sim->trailerPose(), m_camera.transform);
         }
     }
 
@@ -2267,8 +2349,8 @@ private:
     struct RemoteVehicle {
         std::string base;
         int color = -1;
-        std::unique_ptr<asset::VehicleModel> model;
-        std::unique_ptr<game::VehicleRenderer> renderer;
+        std::unique_ptr<game::SimVehicle> sim; // kinematic body (and its trailer)
+        std::unique_ptr<game::VehicleRenderer> renderer, trailer;
         std::array<float, 6> spin{};
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;

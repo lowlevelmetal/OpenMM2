@@ -136,6 +136,16 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
     return std::nullopt;
 }
 
+Vec3 multiplayerGridOffset(int slot, bool longVehicle) {
+    static constexpr std::array<Vec3, 8> kShort{{{2.25f, 0, 6}, {-2.25f, 0, 6}, {4.5f, 0, 0}, {0, 0, 0},
+                                                  {-4.5f, 0, 0}, {4.5f, 0, -6}, {0, 0, -6}, {-4.5f, 0, -6}}};
+    static constexpr std::array<Vec3, 8> kLong{{{2.75f, 0, 16}, {-2.75f, 0, 16}, {5.5f, 0, 16}, {0, 0, 16},
+                                                 {2.75f, 0, 34}, {-2.75f, 0, 34}, {0, 0, 34}, {5.5f, 0, 34}}};
+    if (slot < 0 || slot > 7)
+        return {};
+    return (longVehicle ? kLong : kShort)[static_cast<std::size_t>(slot)];
+}
+
 void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race) {
     if (cfg.mode == GameMode::Cruise) {
         // RaceMenuBase::SetStateRace for cruise.
