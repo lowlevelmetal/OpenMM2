@@ -17,6 +17,7 @@ DRAW_BLOCK {
     vec4 color;
     float alphaRef;
     uint flags;
+    vec4 emissive; // lit draws: the material's emissive colour
 } draw;
 
 const uint kLighting = 16u;
@@ -48,8 +49,9 @@ void main() {
         vec3 light = frame.ambient.rgb;
         for (int i = 0; i < 3; ++i)
             light += frame.lightColor[i].rgb * max(dot(worldNormal, -frame.lightDir[i].xyz), 0.0);
-        // Direct3D 7 clamps the lit colour to 0..1 per vertex.
-        color.rgb = clamp(color.rgb * light, 0.0, 1.0);
+        // Direct3D 7: emissive + (ambient + lights) x material, clamped to
+        // 0..1 per vertex (the material's ambient is its diffuse).
+        color.rgb = clamp(draw.emissive.rgb + color.rgb * light, 0.0, 1.0);
     }
     vColor = color;
     vUv0 = aUv0;
