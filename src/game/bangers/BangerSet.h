@@ -12,6 +12,7 @@
 #include "game/CityLevel.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
+#include "game/RoomVisibility.h"
 #include "game/TextureLibrary.h"
 #include "game/bangers/BangerData.h"
 #include "game/bangers/PropPlacement.h"
@@ -78,6 +79,10 @@ public:
         ObjectDetail detail;
         // dgBangerManager::InitGlow is called at night only (mmGame::InitWeather).
         bool glows = false;
+        // The rooms the city listed for the view (CityRenderer::rooms()):
+        // props are then drawn from their rooms (cityLevel_drawObjects) and
+        // their lamp glows by the room alone (cityLevel_drawLights).
+        const RoomVisibility* rooms = nullptr;
     };
     // Inside a scene pass after setFrameConstants().
     void draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, fx::ParticleRenderer& cards,

@@ -3,6 +3,7 @@
 #include "asset/VehicleModel.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
+#include "game/RoomVisibility.h"
 #include "game/TexelDamage.h"
 #include "game/TextureLibrary.h"
 #include "game/fx/LensFlares.h"
@@ -104,6 +105,15 @@ public:
 
     // Draws everything for the camera placed at `camera`.
     void draw(const VehiclePose& pose, const Mat34& camera);
+    // The same with cityLevel::DrawRooms' room gates of the car's room
+    // (RoomVisibility): the car itself in cityLevel_drawObjects, its shadow
+    // and glows (vehCarModel::DrawShadow / DrawGlow, without IsVisible) in
+    // cityLevel_drawShadows / cityLevel_drawLights.
+    void draw(const VehiclePose& pose, const Mat34& camera, const RoomVisibility::Passes& passes);
+    // The rooms the city listed for the view: draw() then keeps the car's
+    // room (vehCar::Update: FindRoomId from the last one) and gates by it.
+    // Not for the traffic renderers AiRenderer shares between cars.
+    void setRooms(const RoomVisibility* rooms) { m_rooms = rooms; }
 
     // The level of detail at that camera; nullopt beyond NoDraw.
     std::optional<asset::Lod> lodFor(const VehiclePose& pose, const Mat34& camera) const;
@@ -164,6 +174,8 @@ private:
     std::function<void(std::size_t)> m_ejectedPartReset;
     bool m_wreckEjected = false;
     bool m_traffic = false;
+    const RoomVisibility* m_rooms = nullptr;
+    int m_room = 0; // lvlInstance's room (vehCar::Update)
 };
 
 } // namespace mm2::game

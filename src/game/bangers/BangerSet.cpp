@@ -1072,24 +1072,36 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
     const Mat34& cam = camera.transform;
     std::vector<Vec3> glows;
     std::vector<std::pair<const Instance*, const GpuMesh*>> trees;
+    // cityLevel::DrawRooms draws the props from their rooms (lvlLevel::
+    // MoveToRoom's, which BangerSet keeps) when the city listed the view's.
+    const bool rooms = params.rooms && params.rooms->active() && roomsTracked();
     for (std::size_t i = 0; i < m_instances.size(); ++i) {
         const Instance& inst = m_instances[i];
         if (inst.state == State::Gone)
             continue;
+        RoomVisibility::Passes passes;
+        if (rooms) {
+            passes = params.rooms->passes(inst.room);
+            if (!passes.objects && !passes.shadowsAndGlows)
+                continue;
+        }
         const GpuModel* model = models.get(inst.model);
         if (!model)
             continue;
         const float radius = (model->bounds.max - model->bounds.min).mag() * 0.5f;
         // lvlInstance::IsVisible with the dynamic objects' NoDraw limit.
         const auto lod = objectLod(viewDepth(cam, inst.matrix.m3), radius, params.detail, params.detail.noDraw);
-        if (!lod || !frustum.intersectsSphere(inst.matrix.m3, radius))
-            continue;
+        const bool visible = lod && frustum.intersectsSphere(inst.matrix.m3, radius);
         // Lamp glows of props still standing (dgBangerInstance::DrawGlow:
         // lvlInstance flag 1, which stays set while an active holds the prop
-        // and only goes when it breaks loose).
-        if (params.glows && standing(i))
+        // and only goes when it breaks loose). cityLevel_drawLights draws
+        // them by the room alone, whatever IsVisible says; without the
+        // city's room list, with the prop.
+        if (params.glows && standing(i) && (rooms ? passes.shadowsAndGlows : visible))
             for (const Vec3& g : inst.data->glowOffsets)
                 glows.push_back(inst.matrix.transform(g));
+        if (!visible || !passes.objects)
+            continue;
         const std::string part = !inst.mesh.empty() ? inst.mesh
                                  : inst.part < 0 ? std::string()
                                                  : std::format("BREAK{:02}", inst.part + 1);

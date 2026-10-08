@@ -8,6 +8,7 @@
 #include "game/ModelLibrary.h"
 #include "game/RaceConfig.h"
 #include "city/RoomLocator.h"
+#include "game/RoomVisibility.h"
 #include "game/TextureLibrary.h"
 #include "render/Device.h"
 
@@ -126,6 +127,10 @@ public:
     };
     const Stats& stats() const { return m_stats; }
 
+    // The rooms the last draw() listed (cityLevel::Draw), from which the
+    // dynamic objects of the same view are drawn.
+    const RoomVisibility& rooms() const { return m_visibility; }
+
     // Draws one model mesh with its materials (shared with vehicles).
     void drawMesh(const GpuMesh& mesh, const std::vector<asset::PkgMaterial>& materials, const Mat44& world,
                   bool fog = true, bool lighting = true);
@@ -193,6 +198,7 @@ private:
     std::vector<InstanceDraw> m_instances;
     std::vector<std::uint8_t> m_roomMarks;
     std::vector<int> m_drawnRooms; // this frame's cityLevel::Draw room list
+    RoomVisibility m_visibility;
     const GpuModel* m_sky = nullptr;
     float m_skyAngle = 0.0f;
     int m_lastRoom = 0; // cityLevel's sm_LastPvsRoom

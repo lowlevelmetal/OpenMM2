@@ -353,7 +353,8 @@ public:
         drawRemoteCars(ctx, dt, camera);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
-            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera, {m_detail.objects, night});
+            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera,
+                            {m_detail.objects, night, &m_cityRenderer->rooms()});
         const bool lights = carLights();
         if (m_vehicle && playerBody) {
             m_pose.headlights = lights;
@@ -1889,6 +1890,8 @@ private:
         }
         m_ai->setLightsDeferred(true); // updated after the racers and police
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
+        if (m_cityRenderer)
+            m_aiRenderer->setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
             m_trafficBodies->setWeatherFriction(weatherFriction());
@@ -2020,6 +2023,8 @@ private:
     // Object Detail, reflections and the shadow's ground probe of a car renderer.
     void setupVehicleRenderer(Context& ctx, game::VehicleRenderer& r) {
         r.setDetail(m_detail.objects);
+        if (m_cityRenderer)
+            r.setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         r.setReflections(ctx.settings.ini.getBool("Graphics", "VehicleReflections", true));
         r.setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
             phys::RayHit hit;

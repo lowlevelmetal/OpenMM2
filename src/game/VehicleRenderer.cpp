@@ -301,6 +301,14 @@ void VehicleRenderer::drawReflection(const Mat34& body) {
 void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
     if (!m_gpu)
         return;
+    if (m_rooms && m_rooms->active()) {
+        // vehCar::Update moves the car's instance to FindRoomId's room.
+        m_room = m_rooms->findRoom(pose.body.m3, m_room);
+        draw(pose, camera, m_rooms->passes(m_room));
+        return;
+    }
+    // Without a city view's room list: the car, its shadow and its glows
+    // while it is visible.
     const auto visible = lodFor(pose, camera);
     if (!visible)
         return;
@@ -310,6 +318,24 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
         drawCar(pose, *visible);
     drawShadow(pose);
     drawGlows(pose, camera);
+}
+
+void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera, const RoomVisibility::Passes& passes) {
+    if (!m_gpu)
+        return;
+    // cityLevel_drawObjects: the car itself through lvlInstance::IsVisible.
+    if (passes.objects)
+        if (const auto visible = lodFor(pose, camera)) {
+            if (m_traffic)
+                drawTraffic(pose, *visible);
+            else
+                drawCar(pose, *visible);
+        }
+    // cityLevel_drawShadows, cityLevel_drawLights: by the room alone.
+    if (passes.shadowsAndGlows) {
+        drawShadow(pose);
+        drawGlows(pose, camera);
+    }
 }
 
 void VehicleRenderer::drawCar(const VehiclePose& pose, asset::Lod lod) {

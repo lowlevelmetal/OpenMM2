@@ -4,9 +4,9 @@ Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
 Summary: 354 reachable functions in 44 classes (the free functions counted
 as one; the five infrastructure render classes included); ported 233 (of
-which newly ported 2 and fixed 8), replaced 68, not needed 53, open 0. Two
-behaviours of ported functions stay open (the room visibility of dynamic
-objects and the race loading bar, see Open). Two functions of
+which newly ported 2 and fixed 11), replaced 68, not needed 53, open 0. One
+behaviour of a ported function stays open (the race loading bar, handed to
+game-flow; see Open). Two functions of
 world-objects' classes that `lvlLevel::LoadInstances` depends on were
 ported here as well (`lvlFixedAny::SetVariant`, `lvlFixedMatrix::IsVisible`).
 
@@ -87,10 +87,24 @@ objects and a dynamic one at the head of the list.
    rain, unless the camera's room is subterranean (flags 0x0A) or a landmark
    room with something within 100 m above (`RaceScreen::rainVisible`).
 
-OpenMM2 draws passes 4 to 7 per object kind rather than per room: traffic,
-pedestrians, props and cars are culled by the view only, not by the rooms
-`cityLevel::Draw` lists (the room visibility deviation already recorded for
-`AiRenderer`; see Open).
+OpenMM2 draws passes 4 to 7 per object kind rather than per room, but with
+MM2's room gates (`RoomVisibility`, second pass): `CityRenderer::draw`
+records the rooms it lists for the view with their distances, and the cars
+(`VehicleRenderer`), traffic, pedestrians and signals (`AiRenderer`) and
+props (`BangerSet`) are drawn only from a listed room, the object itself when
+the room's distance is at most NoDraw and it passes `IsVisible`, its shadow
+and glows when the distance is under NoDraw whatever `IsVisible` says (so a
+lamp post's glow or a car's lights can show beyond the object's own NoDraw,
+as in MM2). Each object keeps its room as MM2 does: `FindRoomId` of its
+position from its last room (`vehCar::Update`, `vehTrailer::Update`,
+`mmNetObject::Update`, `aiPedestrian::Update`, the ambient cars after their
+spline update and `aiVehicleActive::Update`; the signals once,
+`aiTrafficLightSet::SetFourWay`), or the room `BangerSet` keeps for a prop.
+An object outside every room is in room 0, which no view lists. The order of
+the objects within the passes stays per kind (MM2 goes room by room; it
+matters only where translucent objects overlap). Road decals and skid marks
+are not gated: decals are static instances and the skid marks a drawable of
+the shadow pass.
 
 ## cityLevel
 
@@ -105,9 +119,9 @@ pedestrians, props and cars are culled by the view only, not by the rooms
 | `cityLevel::DrawRooms` | ported | `CityRenderer::draw`, `RaceScreen::drawLevel` | the passes above; the sky is drawn when the draw mask is all ones, which both callers (`mmGameManager::Cull`, `mmMirror::Cull`) pass |
 | `cityLevel_drawSDL` | ported | `CityRenderer::gatherStreets`, `drawStreets` | `gfxTexture::sm_LOD` is set per room (texture residency, replaced) |
 | `cityLevel_drawStatics` | ported (fixed) | `CityRenderer::draw`, `drawInstance` | rooms from the last listed one; within a room the statics now newest first, as `lvlLevel::MoveToRoom` links them (were oldest first) |
-| `cityLevel_drawShadows` | ported | `RoadDecals::draw`, `VehicleRenderer::drawShadow`, `AiRenderer`, `SkidMarks` | per object kind (see above); city statics have no shadow geometry in retail |
-| `cityLevel_drawObjects` | ported | `AiRenderer::draw`, `BangerSet::draw`, `VehicleRenderer::draw`, `RaceScreen::drawLevel` | dynamic objects by the view, not the room list (open, see Open) |
-| `cityLevel_drawLights` | ported | `VehicleRenderer::drawGlows`, `AiRenderer::drawSignal`, `BangerSet::draw` | added, unfogged, per object |
+| `cityLevel_drawShadows` | ported (fixed) | `RoadDecals::draw`, `VehicleRenderer::draw` (`drawShadow`), `AiRenderer`, `SkidMarks` | per object kind, gated by the object's room under NoDraw (`RoomVisibility::Passes::shadowsAndGlows`; was drawn with the visible car only); city statics have no shadow geometry in retail |
+| `cityLevel_drawObjects` | ported (fixed) | `AiRenderer::draw`, `BangerSet::draw`, `VehicleRenderer::draw`, `RaceScreen::drawLevel`, `RoomVisibility` | dynamic objects from a listed room at most NoDraw away, through `IsVisible` (were culled by the view only) |
+| `cityLevel_drawLights` | ported (fixed) | `VehicleRenderer::draw` (`drawGlows`), `AiRenderer::drawSignal`, `BangerSet::draw` | added, unfogged, per object, by the object's room under NoDraw whatever `IsVisible` says (car and prop glows were drawn with the visible object only, the signals' by their own distance) |
 | `cityLevel::SetupLighting` | ported | `makeEnvironment` | verified by rendering-fx |
 | `cityLevel::SetupPerRoomLighting` | not needed | — | runs only with per-room lighting, which `Load` switches off when the lightmap is missing or rejected (every retail city's room count differs) |
 | `cityLevel::SetObjectDetail` | ported | `ObjectDetail::forLevel` | |
@@ -283,5 +297,4 @@ pedestrians, props and cars are culled by the view only, not by the rooms
 
 | MM2 | What it does | What porting needs |
 | --- | --- | --- |
-| room visibility of dynamic objects (`cityLevel_drawObjects`, `_drawShadows`, `_drawLights`) | traffic, pedestrians, props, signals and cars are drawn from the rooms `cityLevel::Draw` lists (PVS and view), their shadows and glows only in rooms within NoDraw | each dynamic object's room (the movers' rooms exist in phys) and a per-frame list of drawn rooms from `CityRenderer` that `AiRenderer`, `BangerSet` and `VehicleRenderer` test; touches vehicle, ai-vehicles and camera-props |
-| `lvlProgress::UpdateTask` during a race load | the loading bar on the race's loading screen | split `RaceScreen::load` into steps run over several frames, drawing the bar at MM2's percentages (session's file) |
+| `lvlProgress::UpdateTask` during a race load | the loading bar on the race's loading screen | split `RaceScreen::load` into steps run over several frames, drawing the bar at MM2's percentages (handed to game-flow) |

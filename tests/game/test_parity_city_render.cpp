@@ -6,6 +6,8 @@
 #include "asset/Ped.h"
 #include "asset/Pkg.h"
 #include "city/CityData.h"
+#include "city/RoomLocator.h"
+#include "city/SdlDraw.h"
 #include "core/StringUtil.h"
 #include "game/CityLevel.h"
 #include "game/CityRenderer.h"
@@ -150,6 +152,50 @@ TEST(ParityCityRender, RoomListsPutMoversFirstAndStaticsNewestFirst) {
     }
     level.removeSource(&marker);
     EXPECT_GT(checked, 0);
+}
+
+TEST(ParityCityRender, DynamicObjectsAreDrawnFromListedRooms) {
+    // cityLevel::DrawRooms: an object of a listed room whose distance is at
+    // most NoDraw is drawn (cityLevel_drawObjects); its shadow and glows need
+    // the distance under NoDraw (cityLevel_drawShadows / _drawLights); an
+    // unlisted room draws nothing. Before any city view, everything passes.
+    RoomVisibility v;
+    EXPECT_TRUE(v.passes(3).objects);
+    EXPECT_TRUE(v.passes(3).shadowsAndGlows);
+    v.begin(nullptr, 6, 300.0f);
+    v.list(1, -20.0f); // the camera's room: minus its radius
+    v.list(2, 120.0f);
+    v.list(3, 300.0f);
+    v.list(4, 450.0f);
+    EXPECT_TRUE(v.passes(1).objects && v.passes(1).shadowsAndGlows);
+    EXPECT_TRUE(v.passes(2).objects && v.passes(2).shadowsAndGlows);
+    EXPECT_TRUE(v.passes(3).objects);
+    EXPECT_FALSE(v.passes(3).shadowsAndGlows);
+    EXPECT_FALSE(v.passes(4).objects || v.passes(4).shadowsAndGlows);
+    EXPECT_FALSE(v.passes(5).objects || v.passes(5).shadowsAndGlows); // not listed
+    EXPECT_FALSE(v.passes(0).objects);                                // outside every room
+    EXPECT_FALSE(v.passes(99).objects);
+    EXPECT_EQ(v.findRoom({0, 0, 0}, 4), 0); // no locator
+}
+
+TEST(ParityCityRender, RetailObjectsKeepTheirRoomsLikeFindRoomId) {
+    // vehCar::Update, aiPedestrian::Update: FindRoomId from the last room.
+    MM2_REQUIRE_GAME_DATA();
+    auto city = city::loadCity(*test::gameData(), "sf");
+    ASSERT_TRUE(city);
+    const city::RoomLocator locator(city->psdl, city->info.mapName);
+    RoomVisibility v;
+    v.begin(&locator, city->psdl.rooms.size(), 300.0f);
+    int checked = 0;
+    for (const auto& inst : city->instances) {
+        if (inst.room == 0 || (inst.flags & 0x2300))
+            continue;
+        const Vec3 p = city::sdlRoomCentroid(city->psdl, inst.room);
+        EXPECT_EQ(v.findRoom(p, inst.room), locator.find(p, inst.room));
+        if (++checked == 50)
+            break;
+    }
+    EXPECT_EQ(checked, 50);
 }
 
 TEST(ParityCityRender, RetailFacadesUseTheirRecordVariant) {

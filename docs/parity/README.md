@@ -282,6 +282,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/Profile.cpp` | 527 | P | camera-props |
 | `src/game/Profile.h` | 212 | P | camera-props |
 | `src/game/RaceConfig.h` | 80 | P | session |
+| `src/game/RoomVisibility.h` | 70 | P | mm2-city-render |
 | `src/game/Strings.cpp` | 38 | P | session |
 | `src/game/Strings.h` | 43 | P | session |
 | `src/game/TexelDamage.cpp` | 168 | P | rendering-fx |

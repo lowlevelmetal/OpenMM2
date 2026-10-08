@@ -581,6 +581,7 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
     for (auto& bucket : m_buckets)
         bucket.clear();
     m_drawnRooms.clear();
+    m_visibility.begin(&m_locator, m_rooms.size(), detail.objects.noDraw);
     for (std::size_t r = 1; r < m_rooms.size() && m_drawnRooms.size() < kCityMaxDrawnRooms; ++r) {
         if (!m_roomMarks[r])
             continue;
@@ -592,6 +593,7 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
             distance = viewDepth(camera.transform, rm.centre) - rm.radius;
         }
         m_drawnRooms.push_back(static_cast<int>(r));
+        m_visibility.list(static_cast<int>(r), distance);
         gatherStreets(rm, city::sdlRoomLod(distance), eye);
         ++m_stats.roomsDrawn;
     }
