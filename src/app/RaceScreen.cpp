@@ -1081,7 +1081,6 @@ private:
             return ui::Box{card.x + x * card.w, card.y + y * card.h, w * card.w, 0.075f * card.h};
         };
         if (m_popup == Popup::Main) {
-            m_popupTitle = s.get(463, "MAIN MENU");
             auto& restart = menu.add<ui::TextButton>(
                 at(0.0f, 0.125f, 1.0f), crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"),
                 [this] {
@@ -1108,7 +1107,6 @@ private:
             menu.setInitialFocus(&resume);
             menu.onBack = [this] { closePopup(); };
         } else {
-            m_popupTitle = s.get(456, "QUIT MENU");
             auto& yes = menu.add<ui::TextButton>(at(0.2f, 0.7f, 0.2f), s.get(458, "Yes"), [&ctx] { ctx.quit = true; });
             auto& no = menu.add<ui::TextButton>(at(0.6f, 0.7f, 0.2f), s.get(459, "No"), [this, &ctx] {
                 m_popup = Popup::Main;
@@ -1144,9 +1142,8 @@ private:
         ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
         const ui::NavInput none;
         ui::UiFrame f{ov, m_ui, m_text, none, m_time};
-        // PUMenuBase::CreateTitle: the menu's name across the top 0.1.
-        m_text.draw(ov, ui::style::popupFont(), m_popupTitle, card.x + card.w * 0.5f, card.y + 0.03f * card.h,
-                    ui::style::kPopupText, ui::Align::Center);
+        // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none,
+        // and PUExit only names its menu (UIMenu::AssignName).
         if (m_popup == Popup::ConfirmExit)
             m_text.draw(ov, ui::style::popupFont(), ctx.game->strings.get(457, "Do you want to exit the game?"),
                         card.x + card.w * 0.5f, card.y + 0.2f * card.h, ui::style::kPopupText, ui::Align::Center);
@@ -1921,7 +1918,6 @@ private:
     Popup m_popup = Popup::None;
     std::unique_ptr<ui::Menu> m_popupMenu;
     std::vector<std::unique_ptr<ui::Menu>> m_popupGraveyard;
-    std::string m_popupTitle;
     ui::NavReader m_nav;
     bool m_popupPaused = false;
     float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
