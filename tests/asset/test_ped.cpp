@@ -47,7 +47,8 @@ TEST(Ped, ParsesSkeleton) {
     EXPECT_EQ(s->bones[2].name, "hand");
     EXPECT_EQ(s->bones[2].parent, 1);
     EXPECT_EQ(s->bones[0].parent, -1);
-    EXPECT_EQ(s->find("ARM"), 1);
+    EXPECT_EQ(s->find("arm"), 1);
+    EXPECT_EQ(s->find("ARM"), -1); // crSkeletonData::FindBone is case-sensitive
     EXPECT_FALSE(asset::parseSkeleton("NumBones 2\nbone root {\n offset 0 0 0\n}\n"));
     EXPECT_FALSE(asset::parseSkeleton("NumBones 1\nbone root {\n offset 0 0\n}\n"));
     EXPECT_FALSE(asset::parseSkeleton("NumBones 1\nbone root {\n"));
@@ -157,11 +158,14 @@ TEST(Ped, ParsesShadersRaysRemapAndTable) {
     auto set = asset::parsePedShaders(sh.data, &err);
     ASSERT_TRUE(set) << err;
     EXPECT_EQ(set->get(1, 0)->texture, "tex");
-    EXPECT_FLOAT_EQ(set->get(1, 0)->ambient.x, 104.0f);
+    // modShader::Load: colours above 0.95 become 1, the ambient colour is
+    // replaced by the diffuse one.
+    EXPECT_FLOAT_EQ(set->get(1, 0)->diffuse.x, 1.0f);
+    EXPECT_FLOAT_EQ(set->get(1, 0)->ambient.x, 1.0f);
     EXPECT_FLOAT_EQ(set->get(1, 0)->power, 116.0f);
     EXPECT_EQ(set->get(2, 0), nullptr);
     sh.u8(0);
-    EXPECT_FALSE(asset::parsePedShaders(sh.data)); // trailing data
+    EXPECT_TRUE(asset::parsePedShaders(sh.data)); // trailing data is ignored, as in MM2
 
     auto rays = asset::parsePedRays("2\r\n0.1 0.2 0.3 1 2\r\n0 0 0 0 0\r\n3 4\r\n5 6\r\n", &err);
     ASSERT_TRUE(rays) << err;
@@ -178,7 +182,8 @@ TEST(Ped, ParsesShadersRaysRemapAndTable) {
                                           "WALK_LDIVE,pedanim_manw2dl,1,24,0,0,0,2.224,LDIVE_GROUNDL\n",
                                           &err);
     ASSERT_TRUE(table) << err;
-    ASSERT_TRUE(table->find("walk_ldive"));
+    ASSERT_TRUE(table->find("WALK_LDIVE"));
+    EXPECT_FALSE(table->find("walk_ldive")); // pedAnimation::LookupSequence is case-sensitive
     EXPECT_FLOAT_EQ(table->find("WALK")->forwardDistance, 1.409f);
     EXPECT_EQ(table->find("WALK_LDIVE")->next, "LDIVE_GROUNDL");
 }
@@ -236,12 +241,17 @@ TEST(Ped, RetailTypesAreConsistent) {
         for (const auto& s : t->table.states)
             EXPECT_TRUE(t->animation(s.name)) << name << " " << s.name;
 
-        // One shader variant reproduces the mesh's own material colours.
+        // One shader variant reproduces the mesh's own material colours (as
+        // modShader::Load rounds them: to 1/32 steps, 0 below 0.05, 1 above 0.95).
+        auto round32 = [](float c) {
+            return c < 0.05f ? 0.0f : (c > 0.95f ? 1.0f : std::floor(c * 32.0f) * 0.03125f);
+        };
         bool found = false;
         for (std::uint32_t v = 0; v < t->shaders.variantCount && !found; ++v) {
             bool all = true;
             for (std::uint32_t m = 0; m < t->shaders.materialCount && all; ++m) {
-                const Vec3 a = t->shaders.get(v, m)->diffuse.xyz(), b = t->mesh.materials[m].diffuse;
+                const Vec3 a = t->shaders.get(v, m)->diffuse.xyz(), d = t->mesh.materials[m].diffuse;
+                const Vec3 b{round32(d.x), round32(d.y), round32(d.z)};
                 all = (a - b).mag() < 1e-4f;
             }
             found = all;

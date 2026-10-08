@@ -36,28 +36,35 @@ namespace mm2::asset {
 //   }
 // Bones are listed depth-first; that order is also the animation channel
 // order. `offset` is the bone origin in its parent's (rotated) space.
+// crBoneData::Load also accepts optional "rotmin x y z" and "rotmax x y z"
+// after the offset (Euler limits for crBoneData::ApplyLimits, default -pi and
+// pi); no retail file has them.
 struct Skeleton {
     struct Bone {
         std::string name;
         int parent = -1;
         Vec3 offset;
+        Vec3 rotMin{-3.14159265f, -3.14159265f, -3.14159265f};
+        Vec3 rotMax{3.14159265f, 3.14159265f, 3.14159265f};
     };
     std::vector<Bone> bones;
 
-    int find(std::string_view name) const; // -1 when absent
+    int find(std::string_view name) const; // exact name; -1 when absent
 };
 
 std::optional<Skeleton> parseSkeleton(std::string_view text, std::string* error = nullptr);
 
 // --- Animation (anim/pedanim_*.anim) -----------------------------------------
 //
-// 17-byte header, little-endian:
-//   u32 reserved        always 0
-//   u32 frameCount
-//   u32 channelCount    always 60 = 3 root translation + 19 bones x 3 Euler angles
+// 17-byte header, little-endian (crAnimation::LoadAnim):
+//   u32 reserved        0 in every retail file (see below)
+//   u32 frameCount      1..10000
+//   u32 channelCount    1..1000; always 60 = 3 root translation + 19 bones x 3 Euler angles
 //   f32 cycleDistance   inferred: forward travel of one full playback, see docs
 //   u8  flags           always 1, meaning unknown
-// followed by frameCount x channelCount f32. Per frame: root translation
+// followed by frameCount x channelCount f32. A nonzero first word marks the
+// older layout: it is the frame count itself, and the following word is the
+// bone count (channels = bones x 3 + 3). Per frame: root translation
 // (model space; replaces the root bone's skeleton offset), then one Euler
 // vector (radians) per bone in skeleton order, applied with
 // matrixFromEulersXZY.
@@ -76,31 +83,35 @@ struct PedAnimation {
 
 std::optional<PedAnimation> parsePedAnimation(std::span<const std::byte> data, std::string* error = nullptr);
 
-// Rotation from Euler angles as built by the Angel engine's
-// Matrix34::FromEulersXZY (ported from Open1560 game.asm): rotate about X,
-// then Z, then Y (row vectors: M = Rx * Rz * Ry with Mat34::rotationX/Y/Z).
-// The translation part is zero.
+// Rotation from Euler angles as built by MM2's Matrix34::FromEulersXZY:
+// rotate about X, then Z, then Y (row vectors: M = Rx * Rz * Ry with
+// Mat34::rotationX/Y/Z). The translation part is zero.
 Mat34 matrixFromEulersXZY(const Vec3& eulers);
 
-// Bone-to-model transforms for a pose, following the engine's
-// bnSkeleton::Pose/bnBone::Transform (Open1560 game.asm): each bone's local
-// matrix is matrixFromEulersXZY(rotation) with the skeleton offset as
-// translation (the root's translation comes from the animation), and
-// model = local * parentModel. `frame` is 0-based; fractional frames
-// interpolate the channels linearly (inferred; the original's interpolation is
-// not known). Frames are clamped to the animation. With `anim` == nullptr the
-// bind pose (zero rotations, skeleton offsets) is produced.
+// Bone-to-model transforms for a pose, as MM2's crAnimFrame::Pose and
+// crBoneData::Transform build them: each bone's local matrix is
+// matrixFromEulersXZY(rotation) with the skeleton offset as translation (the
+// root's translation comes from the animation), and model = local *
+// parentModel. `frame` is 0-based; MM2 poses whole frames, and fractional
+// frames here interpolate the channels linearly (an OpenMM2 addition for
+// tools; the game passes whole frames). Frames are clamped to the animation.
+// With `anim` == nullptr the bind pose (zero rotations, skeleton offsets) is
+// produced.
 void posePed(const Skeleton& skeleton, const PedAnimation* anim, float frame, std::vector<Mat34>& out);
 
 // --- Mesh (anim/*.mod) ---------------------------------------------------------
 //
-// Text format "version: 1.09" with header counts, then
+// Text format "version: 1.09" (modModel::LoadAscii reads 1.08 and 1.09;
+// "2.00" is the binary form, not supported here) with header counts, then
 //   v x y z | n x y z | c r g b a | t1 u v
-// pools, then materials and geometry in one of two layouts:
+// pools (with fewer than two colours MM2 drops per-vertex colour and the
+// vertices are white), then materials and geometry in one of two layouts:
 //   * packet layout (pedmodel_man/manw): each material has "packets: N" and
 //     the packets follow in material order:
-//       packet <adjuncts> <triangles> <matrices> {
+//       packet <adjuncts> <triangles> <matrices> [<reskins>] {
 //         adj <vertex> <normal> <color> <tex1> <tex2> <matrix slot>
+//                                 (no slot when the packet has no matrices)
+//         reskin ...              (blend weights; skipped, none in retail files)
 //         tri <a> <b> <c>          (indices into the packet's adjuncts)
 //         mtx <bone>...            (bone index for each matrix slot)
 //       }
@@ -124,6 +135,7 @@ struct PedMesh {
         Vec3 ambient, diffuse, specular;
         std::string illum; // "diffuse"
         int textureCount = 0;
+        std::string texture; // first "texture:" name; no retail material has one
         std::uint32_t firstIndex = 0;
         std::uint32_t indexCount = 0;
     };
@@ -139,13 +151,17 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error = 
 
 // --- Clothing variants (anim/*.shaders) ----------------------------------------
 //
-//   u32 variantCount, u32 materialCount
+// The shader table of a PKG "shaders" chunk (asset::parseShaderTable;
+// pedAnimationInstance::Load reads it with modShader::LoadShaderSet):
+//   u32 variantCount (low 7 bits; 0x80 = compact byte colours), u32 materialCount
 //   variantCount x materialCount entries:
 //     u8 nameLength, char name[nameLength] (texture; empty in all retail files)
 //     f32 diffuse[4], ambient[4], specular[4], emissive[4], power
-// The floats are a Direct3D 7 D3DMATERIAL7. Material i of a variant colours
-// material i of the .mod (verified: one variant of every type reproduces the
-// .mod's own material colours exactly).
+// The floats are a Direct3D 7 D3DMATERIAL7, rounded as modShader::Load does
+// (see PkgMaterial). Material i of a variant colours material i of the .mod
+// (verified: one variant of every type reproduces the .mod's own material
+// colours exactly). Without a .shaders file MM2 uses one variant made of the
+// .mod's own materials.
 struct PedShader {
     std::string texture;
     Vec4 diffuse, ambient, specular, emissive;
@@ -162,11 +178,12 @@ struct PedShaderSet {
 
 std::optional<PedShaderSet> parsePedShaders(std::span<const std::byte> data, std::string* error = nullptr);
 
-// --- anim/*.rays (meaning unknown) ---------------------------------------------
+// --- anim/*.rays (pedAnimationInstance::Load) -----------------------------------
 //
-//   <boneCount>
-//   boneCount rows: f32 f32 f32 i32 i32
-//   one row of boneCount i32 per shader variant
+//   <boneCount>             must equal the skeleton's, else MM2 ignores the file
+//   boneCount rows: f32 f32 f32 i32 i32   (two per-bone floats, a third float,
+//                                          two per-bone bytes; meaning unknown)
+//   one row of boneCount i32 per shader variant (bytes)
 struct PedRays {
     struct Row {
         Vec3 values;
@@ -180,13 +197,16 @@ struct PedRays {
 std::optional<PedRays> parsePedRays(std::string_view text, std::string* error = nullptr);
 
 // --- anim/*.remap (meaning unknown): "<count>" then <count> integers -----------
+// MM2 never reads this file (there is no "remap" in the executable).
 std::optional<std::vector<int>> parsePedRemap(std::string_view text, std::string* error = nullptr);
 
 // --- Animation state table (anim/pedmodel_*.csv) --------------------------------
 //
 // Columns: anim name, mma name, first frame, last frame, Y AXIS Offset,
-// Y AXIS DISTANCE, X AXIS Offset, X AXIS DISTANCE, default next. Lines
-// starting with '#' are comments. Transitions are named FROM_TO.
+// Y AXIS DISTANCE, X AXIS Offset, X AXIS DISTANCE, default next (optional).
+// Lines starting with '#' are comments. Transitions are named FROM_TO.
+// pedAnimation::Load splits lines with strtok (empty fields between commas
+// are skipped) and reads numbers with atoi/atof.
 struct PedAnimState {
     std::string name;     // "WALK", "WALK_STAND"
     std::string animFile; // "pedanim_manwalk" -> anim/pedanim_manwalk.anim
@@ -204,7 +224,7 @@ struct PedAnimState {
 
 struct PedAnimTable {
     std::vector<PedAnimState> states;
-    const PedAnimState* find(std::string_view name) const; // case-insensitive
+    const PedAnimState* find(std::string_view name) const; // exact name, first match
 };
 
 std::optional<PedAnimTable> parsePedAnimTable(std::string_view text, std::string* error = nullptr);
@@ -225,8 +245,8 @@ struct PedType {
     const PedAnimation* animation(std::string_view stateOrFile) const;
 };
 
-// Loads anim/<name>.{skel,mod,shaders,csv} (required), .rays/.remap (optional)
-// and every animation the table references.
+// Loads anim/<name>.{skel,mod,csv} (required), .shaders/.rays/.remap
+// (optional) and every animation the table references.
 std::optional<PedType> loadPedType(std::string_view name, const ReadFileFn& read, std::string* error = nullptr);
 
 // Pedestrian type names present in a list of virtual paths (anim/<type>.mod).
