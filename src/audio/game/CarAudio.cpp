@@ -144,7 +144,11 @@ float impactStrength(const Vec3& impulse) {
     return std::abs(impulse.z) + std::abs(impulse.y) + std::abs(impulse.x);
 }
 
-int surfaceSoundIndex(std::string_view, int mtlSound) { return mtlSound == -1 ? 0 : mtlSound; }
+int surfaceSoundIndex(std::string_view, int mtlSound) {
+    // The material keeps the sound as a short (+0x26).
+    const auto sound = static_cast<std::int16_t>(mtlSound);
+    return sound == -1 ? 0 : sound;
+}
 
 std::string carAudioPath(const vfs::Vfs& vfs, std::string_view folder, std::string_view car) {
     const std::string specific = std::format("aud/cardata/{}/{}.csv", folder, str::lower(car));

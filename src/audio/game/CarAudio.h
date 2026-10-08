@@ -89,10 +89,12 @@ struct CarAudioInputs {
 
 enum class SurfaceWeather { Dry, Wet, Snow };
 
-// The surface sound index of a wheel's material: its "sound:" value
-// (vehWheel::GetSurfaceSound reads lvlMaterial's sound field; "none" and
-// negative values count as 0). The name is not used: cobblestone, for
-// example, has sound 0 and sounds like road.
+// The surface sound index of a wheel's material (vehWheel::GetSurfaceSound):
+// its "sound:" value as a short, with -1 (the default material's) as 0; a
+// wheel without a material also gets 0 (the caller's part). "none" is
+// already 0 (lvlMaterial::Load). Other values are used as they are; the
+// surface table index is checked by the caller. The name is not used:
+// cobblestone, for example, has sound 0 and sounds like road.
 int surfaceSoundIndex(std::string_view materialName, int mtlSound);
 
 // --- Engine -------------------------------------------------------------------------
