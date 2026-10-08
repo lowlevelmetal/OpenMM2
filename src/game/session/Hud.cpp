@@ -344,7 +344,10 @@ HudMapParams loadHudMapParams(const vfs::Vfs& vfs, const std::string& city) {
         n.read("Pos", p.pos);
         if (auto z = n.getInt("ZoomIn"))
             p.zoomIn = *z != 0;
-        n.read("Approach Rate", p.approachRate);
+        // mmHudMap::FileIO also names "Approach Rate" and "Ocean Color", but
+        // datParser field names are one token: the file's values are never
+        // read and the constructor's (1.2, and the colour mmHudMap::Init
+        // sets below) stay.
         n.read("ZoomInDist", p.zoomInDist);
         n.read("ZoomOutDist", p.zoomOutDist);
         n.read("IconScaleMin", p.iconScaleMin);
@@ -353,10 +356,9 @@ HudMapParams loadHudMapParams(const vfs::Vfs& vfs, const std::string& city) {
         n.read("ZoomOutDistFS", p.zoomOutDistFS);
         n.read("IconScaleMinFS", p.iconScaleMinFS);
         n.read("IconScaleMaxFS", p.iconScaleMaxFS);
-        n.read("Ocean Color", p.oceanColor);
     }
-    // mmHudMap::Init overwrites the loaded Ocean Color: London's map sits on
-    // beige, every other city on blue.
+    // mmHudMap::Init sets the ocean colour: London's map sits on beige,
+    // every other city on blue.
     p.oceanColor = str::lower(city) == "london" ? Vec3{0.92f, 0.84f, 0.778f} : Vec3{0.084f, 0.68f, 0.92f};
     return p;
 }
