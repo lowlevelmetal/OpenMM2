@@ -487,6 +487,8 @@ private:
             // mmGame::SetLevelGraphics: vglCloudMapEnable by CLOUD SHADOWS.
             const auto clouds = ctx.settings.ini.getInt("Graphics", "CloudShadows", 2);
             m_envOptions.cloudShadows = static_cast<int>(std::clamp(clouds, 0LL, 2LL));
+            // mmGame::SetLevelGraphics: cityLevel::EnableSky(TEXTURED SKY).
+            m_envOptions.texturedSky = ctx.settings.ini.getBool("Graphics", "TexturedSky", true);
         }
         applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
