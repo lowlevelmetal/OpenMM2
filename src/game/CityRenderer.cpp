@@ -128,7 +128,7 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
 
 CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
                            const city::CityData& city, const std::function<bool(std::string_view)>& isDynamic)
-    : m_device(device), m_textures(textures), m_models(models), m_city(city), m_locator(city.psdl) {
+    : m_device(device), m_textures(textures), m_models(models), m_city(city), m_locator(city.psdl, city.info.mapName) {
     const city::CityMesh mesh = city::buildCityMesh(city.psdl);
     std::vector<std::uint32_t> indices;
     m_streetVertices.reserve(mesh.vertexCount());

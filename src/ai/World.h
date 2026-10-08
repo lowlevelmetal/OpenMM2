@@ -82,8 +82,9 @@ public:
     const std::vector<AmbientCar>& cars() const { return m_traffic->cars(); }
     const std::vector<Pedestrian>& peds() const { return m_peds->peds(); }
     const std::vector<Signal>& signals() const { return m_signals; }
-    // PSDL room of a position (0 outside every room).
-    int roomAt(const Vec3& position) const { return m_rooms ? m_rooms->find(position) : 0; }
+    // PSDL room of a position (0 outside every room), looked up from `hint`
+    // (cityLevel::FindRoomId).
+    int roomAt(const Vec3& position, int hint = 0) const { return m_rooms ? m_rooms->find(position, hint) : 0; }
 
 private:
     World() = default;
@@ -96,6 +97,7 @@ private:
     std::unique_ptr<Pedestrians> m_peds;
     std::vector<Signal> m_signals;
     float m_accumulator = 0.0f;
+    int m_playerRoom = 0; // the player's last room, the next lookup's hint
 };
 
 // Vehicle types for ambient traffic of a city when no AI map lists them:

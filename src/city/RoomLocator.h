@@ -3,32 +3,49 @@
 #include "city/Psdl.h"
 #include "core/Math.h"
 
+#include <cstdint>
+#include <string_view>
 #include <vector>
 
 namespace mm2::city {
 
-// Finds the PSDL room containing a world position, using each room's
-// perimeter polygon in the XZ plane (a uniform grid narrows the candidates).
-// Where rooms overlap (bridges over roads, tunnels), the room whose floor is
-// highest but still below the position wins.
+// MM2's room lookup (cityLevel::FindRoomId, FullProbe, InitFullProbe and the
+// warps cityLevel::Load sets up): the PSDL room whose perimeter contains a
+// position in the XZ plane.
+//
+// A room flagged Warp (tunnels, bridges) also needs the height inside its
+// span (cityLevel::Load: subterranean rooms reach from -1000 to their
+// highest perimeter point plus 7 m, or the tunnel's height; other rooms
+// from 1 m below their lowest perimeter point to 1000). An ordinary room a
+// warp room overlaps lists it as a warp and does not claim positions that
+// are inside the warp room.
 class RoomLocator {
 public:
-    explicit RoomLocator(const Psdl& psdl, float cellSize = 32.0f);
+    // `cityName` is the map name ("london" adds MM2's four hand-made warps).
+    explicit RoomLocator(const Psdl& psdl, std::string_view cityName = {});
 
-    // Room id, or 0 when the position is outside every room.
-    int find(const Vec3& position) const;
+    // cityLevel::FindRoomId: the `hint` room (the caller's last room) if the
+    // position is in it, else the highest-numbered of its neighbours that
+    // holds it, else the last room of the 64 x 64 grid cell that holds it
+    // (FullProbe); 0 when none does.
+    int find(const Vec3& position, int hint = 0) const;
 
 private:
-    struct RoomShape {
-        std::vector<Vec2> polygon;
-        float minX = 0, minZ = 0, maxX = 0, maxZ = 0;
-        float floorY = 0;
+    struct Room {
+        std::vector<std::uint16_t> perimeter; // PSDL vertex indices
+        std::vector<std::uint16_t> neighbors; // room across each perimeter edge
+        std::uint8_t flags = 0;
+        float minY = 0.0f, maxY = 0.0f; // lvlRoomInfo +0x20 / +0x24
+        std::vector<int> warps;
     };
-    std::vector<RoomShape> m_rooms;
-    float m_cell;
-    float m_originX = 0, m_originZ = 0;
-    int m_cols = 0, m_rows = 0;
-    std::vector<std::vector<int>> m_grid;
+    bool pointInPerimeter(const Room& r, float x, float z) const;
+    bool inRoom(int room, const Vec3& p) const;
+    int fullProbe(const Vec3& p) const;
+
+    std::vector<Vec3> m_points; // the PSDL vertices
+    std::vector<Room> m_rooms;
+    float m_originX = 0, m_originZ = 0, m_scaleX = 0, m_scaleZ = 0;
+    std::vector<std::vector<int>> m_cells; // 64 x 64, room ids in ascending order
 };
 
 } // namespace mm2::city

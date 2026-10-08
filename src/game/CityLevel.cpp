@@ -88,7 +88,7 @@ const phys::Bound* StaticInstance::bound(int which) const {
 
 CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
                      const std::function<bool(std::string_view)>& isBanger)
-    : m_city(city), m_locator(city.psdl) {
+    : m_city(city), m_locator(city.psdl, city.info.mapName) {
     // lvlMaterialMgr: city/materials.mtl, then the materials the bounds name.
     // Two views of the city's materials. lvlMaterialMgr (m_manager): its
     // built-in default material (lvlMaterial's constructor), then every new
@@ -345,7 +345,7 @@ int CityLevel::findRoom(const Vec3& position, int hint) const {
     // the whole city (FullProbe). OpenMM2's RoomLocator answers the last;
     // off every room the body keeps its last room (OpenMM2: MM2 moves it
     // to room 0, where it collides with nothing).
-    const int room = m_locator.find(position);
+    const int room = m_locator.find(position, hint);
     return room != 0 ? room : hint;
 }
 
