@@ -41,8 +41,10 @@ bool iniBool(Context& ctx, const char* section, const char* key, bool def) {
 
 // An options sub-page (MM2 `OptionsBase`): widgets 0-2 are DEFAULTS, CANCEL
 // and DONE. DEFAULTS asks first (odef_dlg) and applies the defaults without
-// saving them; CANCEL, Escape and the strip's OPTIONS button restore the
-// settings the page was entered with; DONE keeps and saves them.
+// saving them; CANCEL and Escape restore the settings the page was entered
+// with; DONE keeps and saves them. The strip's OPTIONS runs only the page's
+// CancelAction (OptionsBase::IsAnOptionMenu, mmInterface::Update strip id
+// 100), then shows the options menu.
 class SettingsPage : public Page {
 public:
     SettingsPage(Frontend& fe, const char* background, int id)
@@ -62,16 +64,22 @@ public:
     }
 
 protected:
-    // Call after the page's own widgets: the strip's OPTIONS button cancels
-    // back to the options menu; option sub-pages have no PREV.
-    void finish(Frontend& fe) { addNavStrip(fe, *this, NavOptions::Cancel, [this, &fe] { cancel(fe); }); }
+    // Call after the page's own widgets: the strip's OPTIONS button goes back
+    // to the options menu through stripOptions; option sub-pages have no PREV.
+    void finish(Frontend& fe) { addNavStrip(fe, *this, NavOptions::Cancel, [this, &fe] { stripOptions(fe); }); }
 
     virtual void resetDefaults(Frontend& fe) = 0;
     virtual void cancel(Frontend& fe) {
+        restore(fe);
+        fe.pop();
+    }
+    // The page's CancelAction (Audio and Control restore from their
+    // snapshot), then the options menu.
+    virtual void stripOptions(Frontend& fe) { cancel(fe); }
+    void restore(Frontend& fe) {
         fe.ctx.settings = m_savedSettings;
         fe.config.automatic = m_savedAutomatic;
         fe.ctx.applyAudioSettings();
-        fe.pop();
     }
     virtual void done(Frontend& fe) {
         if (fe.profile && fe.profile->automatic != fe.config.automatic) {
@@ -251,6 +259,14 @@ protected:
             fe.ctx.settings.ini.remove("Graphics", k);
         m_resolutions = resolutions();
     }
+
+    // GraphicsOptions::CancelAction is empty, and only CANCEL and Escape
+    // restore the graphics (mmInterface::Update, mmPlayerConfig::SetGraphics):
+    // from the strip's OPTIONS the changed options stay (MM2 writes them into
+    // the driver's file at the next race start, mmInterface::BeDone; OpenMM2
+    // saves them with the settings). The display mode, like MM2's
+    // DoneAction, changes only on DONE.
+    void stripOptions(Frontend& fe) override { fe.pop(); }
 
     void done(Frontend& fe) override {
         Context& ctx = fe.ctx;
@@ -593,25 +609,12 @@ public:
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/ctrl_cus.tga", 4}, cus.x, cus.y,
                                    [&fe] { fe.push(makeCustomizeControlsPage(fe)); })
             .help = "jpg/ctl_tcus.jpg";
-        // ControlSetup's steering bar (mmMouseSteerBar).
-        menu.add<ui::Custom>([this, &fe](ui::UiFrame& f) { drawSteeringBar(fe, f); });
+        // ControlSetup::ControlSetup also creates and initialises an
+        // mmMouseSteerBar (mouse_bar at 0.1, 0.85) that ControlSetup::Update
+        // feeds with mmInput::GetSteering, but never adds it to the menu's
+        // node tree: its Cull never runs and nothing is drawn (only the
+        // constructor and destructor touch it, ControlSetup +0x7224).
         finish(fe);
-    }
-
-    // mmMouseSteerBar::Init(0.1, 0.85) / Cull: mouse_bar at a tenth of the
-    // width and 0.85 of the height, mouse_ar 16 pixels above it at (bar
-    // width / 2 - 15) x (1 + the steering) plus a quarter of its own width.
-    void drawSteeringBar(Frontend& fe, ui::UiFrame& f) const {
-        const ui::UiTexture& bar = fe.textures.get("texture/mouse_bar.tga");
-        const ui::UiTexture& arrow = fe.textures.get("texture/mouse_ar.tga");
-        if (!bar || !arrow)
-            return;
-        constexpr float kX = 64.0f, kY = 408.0f; // ftol(640 x 0.1), ftol(480 x 0.85)
-        const int half = static_cast<int>(bar.width / 2) - 15;
-        const int travel = static_cast<int>(static_cast<float>(half) * m_steering); // ftol
-        ui::drawImage(f.overlay, bar, kX, kY);
-        ui::drawImage(f.overlay, arrow, kX + static_cast<float>(travel + static_cast<int>(arrow.width / 4) + half),
-                      kY - 16.0f);
     }
 
     // Which widgets are usable (ControlSetup::ActivateDeviceOptions per
@@ -620,24 +623,12 @@ public:
     // DEAD ZONE and CALIBRATE for joystick and wheel; POV HAT for a joystick
     // with a hat; FORCE FEEDBACK whenever a force-feedback device is present,
     // whatever the type; the two intensities while FORCE FEEDBACK is on.
-    void update(Frontend& fe, double dt) override {
+    void update(Frontend& fe, double) override {
         Context& ctx = fe.ctx;
         const Controller c = controller(ctx);
         const bool stick = c == Controller::Joystick || c == Controller::Wheel;
-        // ControlSetup::Update: the bar shows mmInput::GetSteering(none) for
-        // the chosen controller, read as the race reads it (app/GameInput).
         const auto bound = static_cast<controls::Controller>(static_cast<int>(c));
         const float deadZone = iniFloat(ctx, "Controls", "DeadZone", ControlDefaults::kDeadZone, 0.0f, 0.33f);
-        if (!m_inputReady || bound != m_inputChosen) {
-            m_input.load(ctx.settings.ini, controls::readJoystick(ctx.input, bound, deadZone));
-            m_inputChosen = bound;
-            m_inputReady = true;
-        }
-        const auto size = ctx.window().size();
-        m_input.update(controls::readFrame(ctx.input, m_input.controller(), deadZone, static_cast<float>(size.width),
-                                           static_cast<float>(size.height)),
-                       static_cast<float>(dt));
-        m_steering = m_input.steeringUnfiltered(static_cast<float>(dt));
         m_autoReverse->enabled = true;
         m_sensitivity->enabled = c != Controller::Keyboard;
         m_deadZone->enabled = stick;
@@ -712,10 +703,6 @@ private:
     ui::Slider* m_collision = nullptr;
     ui::Slider* m_roadForce = nullptr;
     ui::SpriteButton* m_calibrate = nullptr;
-    controls::GameInput m_input; // mmInput, for the steering bar
-    controls::Controller m_inputChosen = controls::Controller::Keyboard;
-    bool m_inputReady = false;
-    float m_steering = 0.0f; // ControlSetup +0x7248
 };
 
 // --- Customize controls ----------------------------------------------------------------------
@@ -981,8 +968,10 @@ public:
         auto& list =
             menu.add<BindingList>(fe, fe.layout.widget(menu_id::kControlCustom, 3, {50, 62, 250, 20}));
         list.onEscape = [this, &fe] { cancel(fe); };
+        // xasn_dlg: Dialog_Message::Init(100, "dlg_ok") in
+        // mmInterface::mmInterface, one OK button.
         list.onRefused = [&fe] {
-            fe.dialog("jpg/xasn_dlg.jpg", kRefusedDialog, {{"texture/dlg_done.tga", {296, 38}, {}}});
+            fe.dialog("jpg/xasn_dlg.jpg", kRefusedDialog, {{"texture/dlg_ok.tga", {296, 38}, {}}});
         };
         list.onDuplicate = [&fe](std::function<void()> force) {
             // OK assigns the control anyway and leaves the other action
@@ -992,11 +981,20 @@ public:
                       {{"texture/dlg_ok.tga", {180, 176}, std::move(force)},
                        {"texture/dlg_can.tga", {18, 176}, {}}});
         };
+        // ControlCustom::ControlCustom sets no focus widget: the page opens
+        // on DEFAULTS (widget 0).
         finish(fe);
-        menu.setInitialFocus(&list);
     }
 
 protected:
+    // ControlCustom::CancelAction, then the options menu itself, not the
+    // control page (only CANCEL and Escape go back there, mmInterface::Update
+    // case 0x29). The control page's changes stay, as in MM2.
+    void stripOptions(Frontend& fe) override {
+        restore(fe);
+        fe.popTo(fe.depth() - 2);
+    }
+
     void resetDefaults(Frontend& fe) override {
         // UICWArray::DefaultCFG: every controller's set back to its defaults.
         auto& ini = fe.ctx.settings.ini;

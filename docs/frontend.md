@@ -302,9 +302,13 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   pictures `opt_tabt/taud/tctl/tgfx` follow the focus.
 * **Sub-pages** start with DEFAULTS (347,379; 346,379 on Control/Customize),
   CANCEL (290,415) and DONE (439,415). DEFAULTS asks with `odef_dlg` and
-  applies the defaults without saving; CANCEL, Escape and the strip's
-  OPTIONS button restore the settings the page was entered with; DONE saves.
-  Sub-pages have no PREV. Help pictures are per widget, none otherwise.
+  applies the defaults without saving; CANCEL and Escape restore the
+  settings the page was entered with; DONE saves. The strip's OPTIONS runs
+  only the page's CancelAction and shows the options menu: Audio and
+  Control restore, Customize restores its bindings and skips the Control
+  page, and Graphics keeps its changes (`GraphicsOptions::CancelAction` is
+  empty; the display mode changes only on DONE). Sub-pages have no PREV.
+  Help pictures are per widget, none otherwise.
 * **Graphics** (`gfx_bk`): toggles sky/reflections/pedestrians at x 40,
   y 62/89/116 (SMART RENDERING, `gfx_port`, is created hidden and stays on);
   DISPLAY/RENDERER/RESOLUTION at 404,66/104/139 hold OpenMM2's window mode,
@@ -338,14 +342,15 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   joystick or wheel controller and a force-feedback joystick (an SDL haptic
   device, or in OpenMM2 also a pad with rumble motors), the intensities
   while it is on (`ControlSetup::ActivateDeviceOptions`,
-  `InitCustomControls`, `SetFFPermissions`); CUSTOMIZE at 348,315. The
-  steering bar (`mmMouseSteerBar`, `mouse_bar` / `mouse_ar` at 0.1, 0.85 of
-  the screen) shows the chosen controller's steering. DEFAULTS also
-  selects the keyboard and an automatic transmission. Calibration is left to
-  the operating system.
-* **Customize** (`cuss_bk`): the chosen controller's binding set: the slots
-  it reads and does not fix (`mmInput::Init`: Steering and Camera Pan are
-  not listed for the keyboard, Steer Left / Right not for the others, the
+  `InitCustomControls`, `SetFFPermissions`); CUSTOMIZE at 348,315. No
+  steering bar: `ControlSetup` creates an `mmMouseSteerBar` (`mouse_bar` at
+  0.1, 0.85) and feeds it the steering, but never adds it to the menu, so
+  MM2 never draws it. DEFAULTS also selects the keyboard and an automatic
+  transmission. Calibration is left to the operating system.
+* **Customize** (`cuss_bk`, opens on DEFAULTS): the chosen controller's
+  binding set: the slots it reads and does not fix (`mmInput::Init`:
+  Steering and Camera Pan are not listed for the keyboard, Steer Left /
+  Right not for the others, the
   steering axis only for the game pad), two columns at 50,62 in 20 px rows,
   15 visible, with MM2's defaults for that controller
   (`mmInput::SetDefaultConfig`) and its descriptions
@@ -353,7 +358,7 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   Y-Axis Up"). Enter or a click waits for a key, a mouse button or (for the
   joystick types) a joystick button or axis (`mmInput::PollStates`); Escape
   cancels; F1–F10 and controls the slot cannot take are refused
-  (`xasn_dlg`); a control already in use asks with `ctrl_dlg` and unbinds
+  (`xasn_dlg`, OK); a control already in use asks with `ctrl_dlg` and unbinds
   the other action (`mmInput::BuildCaptureIO`). Bindings are stored per
   controller as `[Controls] Bind.<string id>` (keyboard) or
   `Bind.<Mouse|Joystick|GamePad|Wheel>.<string id>`; the page and the race
