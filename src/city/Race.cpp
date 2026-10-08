@@ -1,8 +1,10 @@
 #include "city/Race.h"
 
+#include "city/Reader.h"
 #include "core/StringUtil.h"
 #include "data/TextTables.h"
 
+#include <algorithm>
 #include <format>
 
 namespace mm2::city {
@@ -13,17 +15,14 @@ void setError(std::string* error, std::string msg) {
         *error = std::move(msg);
 }
 
-float toFloat(std::string_view s, float fallback = 0.0f) {
-    auto d = str::parseDouble(s);
-    return d ? static_cast<float>(*d) : fallback;
+// MM2's loaders read these fields with atof / atoi (mmRaceData::Load,
+// mmPositions::Load): the numeric prefix, 0 without one.
+float toFloat(std::string_view s) {
+    return detail::cAtof(s);
 }
 
-int toInt(std::string_view s, int fallback = 0) {
-    if (auto i = str::parseInt(s))
-        return static_cast<int>(*i);
-    if (auto d = str::parseDouble(s))
-        return static_cast<int>(*d);
-    return fallback;
+int toInt(std::string_view s) {
+    return detail::cAtoi(s);
 }
 
 // Whitespace tokenizer for .aimap lines.
@@ -50,7 +49,7 @@ bool forNumericRows(std::string_view text, std::size_t minColumns, std::string* 
         const auto& row = table.rows()[r];
         if (row.empty() || (row.size() == 1 && row[0].empty()))
             continue;
-        if (row.size() < minColumns || !str::parseDouble(row[0])) {
+        if (row.size() < minColumns || !detail::scanFloat(row[0])) {
             setError(error, std::format("row {}: expected at least {} numeric columns", r + 2, minColumns));
             return false;
         }
@@ -85,14 +84,15 @@ CityInfo parseCityInfo(std::string_view text) {
     c.localizedName = kv.getString("LocalizedName");
     c.mapName = kv.getString("MapName");
     c.raceDir = kv.getString("RaceDir", c.mapName);
-    c.blitzCount = kv.getInt("BlitzCount");
-    c.circuitCount = kv.getInt("CircuitCount");
-    c.checkpointCount = kv.getInt("CheckpointCount");
+    // mmCityInfo::Load reads the counts with "%d".
+    c.blitzCount = detail::cAtoi(kv.getString("BlitzCount"));
+    c.circuitCount = detail::cAtoi(kv.getString("CircuitCount"));
+    c.checkpointCount = detail::cAtoi(kv.getString("CheckpointCount"));
     c.blitzNames = kv.getList("BlitzNames");
     c.circuitNames = kv.getList("CircuitNames");
     c.checkpointNames = kv.getList("CheckpointNames");
-    c.mustPlace = kv.getInt("MustPlace");
-    c.unlockGroup = kv.getInt("UnlockGroup");
+    c.mustPlace = detail::cAtoi(kv.getString("MustPlace"));
+    c.unlockGroup = detail::cAtoi(kv.getString("UnlockGroup"));
     return c;
 }
 
@@ -149,13 +149,35 @@ std::optional<AiMapConfig> parseAiMapConfig(std::string_view text, std::string* 
         }
         cur->lines.emplace_back(line);
     }
-    // A section is a list when its first line is an integer equal to the
-    // number of lines that follow it.
+    // The list sections aiCityData and aiRaceData know start with a count
+    // (sscanf "%d", 0 when it does not parse) and take that many entries,
+    // fewer when the next section starts first. Sections MM2 does not read
+    // (kept for the tools) are a list when their first line is an integer
+    // equal to the number of lines that follow it.
     for (auto& sec : cfg.sections) {
         if (sec.lines.empty())
             continue;
+        const bool known = str::iequals(sec.name, "Ambient Types/Density") ||
+                           str::istartsWith(sec.name, "GoodWeatherPedName") ||
+                           str::iequals(sec.name, "Exceptions") || str::iequals(sec.name, "Police") ||
+                           str::iequals(sec.name, "Opponent") || str::iequals(sec.name, "Hookmen");
+        if (known) {
+            const auto count = static_cast<std::size_t>(std::max(0, detail::scanInt(sec.lines[0]).value_or(0)));
+            sec.isList = true;
+            sec.lines.erase(sec.lines.begin());
+            if (sec.lines.size() > count)
+                sec.lines.resize(count);
+            continue;
+        }
+        // The value sections MM2 reads take the line itself ("0" included).
+        const bool value = str::iequals(sec.name, "Speed Limit") || str::iequals(sec.name, "Ped Pool") ||
+                           str::iequals(sec.name, "Subway") ||
+                           str::iequals(sec.name, "Ambients Drive On The Left") ||
+                           str::iequals(sec.name, "Traffic Lights") ||
+                           str::iequals(sec.name, "AmbientLaneChanges") ||
+                           str::iequals(sec.name, "CopChaseDistance");
         const auto n = str::parseInt(sec.lines[0]);
-        if (n && *n >= 0 && static_cast<std::size_t>(*n) == sec.lines.size() - 1) {
+        if (!value && n && *n >= 0 && static_cast<std::size_t>(*n) == sec.lines.size() - 1) {
             sec.isList = true;
             sec.lines.erase(sec.lines.begin());
         }
@@ -163,11 +185,17 @@ std::optional<AiMapConfig> parseAiMapConfig(std::string_view text, std::string* 
 
     for (const auto& sec : cfg.sections) {
         const auto& name = sec.name;
+        // aiCityData / aiRaceData read a value with sscanf "%f" or "%d": the
+        // numeric prefix of the line, or nothing (the default stays).
         auto firstNumber = [&]() -> std::optional<float> {
             if (sec.isList || sec.lines.empty())
                 return std::nullopt;
-            auto d = str::parseDouble(tokens(sec.lines[0]).empty() ? "" : tokens(sec.lines[0])[0]);
-            return d ? std::optional<float>(static_cast<float>(*d)) : std::nullopt;
+            return detail::scanFloat(sec.lines[0]);
+        };
+        auto firstInt = [&]() -> std::optional<int> {
+            if (sec.isList || sec.lines.empty())
+                return std::nullopt;
+            return detail::scanInt(sec.lines[0]);
         };
         if (str::iequals(name, "Speed Limit")) {
             cfg.speedLimit = firstNumber();
@@ -176,11 +204,11 @@ std::optional<AiMapConfig> parseAiMapConfig(std::string_view text, std::string* 
         } else if (str::iequals(name, "CopChaseDistance")) {
             cfg.copChaseDistance = firstNumber();
         } else if (str::iequals(name, "AmbientLaneChanges")) {
-            if (auto v = firstNumber())
-                cfg.ambientLaneChanges = static_cast<int>(*v);
+            cfg.ambientLaneChanges = firstInt();
         } else if (str::iequals(name, "Ambients Drive On The Left")) {
-            if (auto v = firstNumber())
-                cfg.driveOnLeft = static_cast<int>(*v);
+            cfg.driveOnLeft = firstInt();
+        } else if (str::iequals(name, "Ped Pool")) {
+            cfg.pedPool = firstInt();
         } else if (str::iequals(name, "Traffic Lights")) {
             for (const auto& l : sec.lines)
                 for (auto t : tokens(l))
@@ -228,6 +256,13 @@ std::optional<AiMapConfig> parseAiMapConfig(std::string_view text, std::string* 
                 }
             }
         }
+    }
+    // A negative first probability makes the types equally likely: the i-th
+    // cumulative probability becomes (1 / n) x (i + 1).
+    if (!cfg.ambientTypes.empty() && cfg.ambientTypes[0].cumulative < 0.0f) {
+        const float n = static_cast<float>(cfg.ambientTypes.size());
+        for (std::size_t i = 0; i < cfg.ambientTypes.size(); ++i)
+            cfg.ambientTypes[i].cumulative = 1.0f / n * static_cast<float>(i + 1);
     }
     if (cfg.sections.empty()) {
         setError(error, "no sections");

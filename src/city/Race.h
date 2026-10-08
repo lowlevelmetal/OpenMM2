@@ -83,6 +83,7 @@ struct AiMapConfig {
     std::optional<float> copChaseDistance;
     std::optional<int> ambientLaneChanges;
     std::optional<int> driveOnLeft; // [Ambients Drive On The Left]
+    std::optional<int> pedPool;     // [Ped Pool] (aiCityData)
     std::vector<AiRoadException> exceptions;
     std::vector<AiPoliceInit> police;
     std::vector<AiOpponentInit> opponents;

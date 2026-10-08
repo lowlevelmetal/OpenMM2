@@ -161,11 +161,8 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     PedSettings peds;
     peds.density = settings.pedestrianDensity;
     peds.pool = settings.maxPeds >= 0 ? settings.maxPeds : kDefaultPedPool;
-    if (settings.maxPeds < 0 && cityConfig) {
-        for (const auto& sec : cityConfig->sections)
-            if (str::iequals(sec.name, "Ped Pool") && !sec.lines.empty())
-                peds.pool = static_cast<int>(str::parseDouble(sec.lines.front()).value_or(kDefaultPedPool));
-    }
+    if (settings.maxPeds < 0 && cityConfig && cityConfig->pedPool)
+        peds.pool = *cityConfig->pedPool; // aiCityData: sscanf "%d", default 100
     std::vector<std::pair<std::string, std::string>> names;
     if (config && !config->pedNames.empty())
         names = config->pedNames;
