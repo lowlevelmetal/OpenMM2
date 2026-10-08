@@ -335,9 +335,28 @@ public:
                 (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
                 (m_popup == Popup::None || m_popup == Popup::Chat); // mmPopup::ProcessEscape: mmHUD::Disable
             std::vector<game::session::MapBlip> blips;
-            // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
+            // mmHudMap and mmIcons follow the cars' phInertialCS matrices;
+            // the icons carry each racer's place (UpdateScore's IconIndex).
             for (const auto& o : m_opponents)
-                blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent});
+                blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent,
+                                 m_session->opponentPlace(o.sessionIndex)});
+            // mmGameMulti::RegisterMapNetObjects: the other network players
+            // (cruise and the races; Cops and Robbers registers its own).
+            if (multiplayer(ctx) && m_result.config.mode != game::GameMode::CopsAndRobbers) {
+                const auto& players = ctx.netGame->players();
+                std::size_t other = 0;
+                for (std::size_t slot = 0; slot < players.size(); ++slot) {
+                    const auto& p = players[slot];
+                    if (p.id == ctx.netGame->localId())
+                        continue;
+                    const std::size_t index = other++;
+                    const auto it = m_remotes.find(p.id);
+                    if (it == m_remotes.end() || !it->second.sim)
+                        continue;
+                    blips.push_back({it->second.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Network,
+                                     m_session->netRacerPlace(index), static_cast<int>(slot), p.name});
+                }
+            }
             // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
             for (const auto& c : m_cops)
                 if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)

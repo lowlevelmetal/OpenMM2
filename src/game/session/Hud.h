@@ -89,8 +89,15 @@ struct MapBlip {
     Mat34 transform;
     // Ambient traffic is accepted but not drawn (MM2's map shows only the
     // player, opponents and police). Police should be passed while they
-    // chase (mmHudMap::DrawCops).
-    enum class Kind : std::uint8_t { Opponent, Police, Ambient, Teammate } kind = Kind::Opponent;
+    // chase (mmHudMap::DrawCops). Network: another player's car
+    // (mmGameMulti::RegisterMapNetObjects).
+    enum class Kind : std::uint8_t { Opponent, Police, Ambient, Teammate, Network } kind = Kind::Opponent;
+    // The icon's OppIconInfo: IconIndex (the place digit, 10 = none, 0 =
+    // the icon is off), the network player's start slot (its colour) and
+    // name (the label mmIcons draws in network games).
+    int place = 10;
+    int slot = -1;
+    std::string name;
 };
 
 // mmHudMap map modes 0-3: "Map Toggle" cycles Off, Small, Split;
@@ -178,6 +185,13 @@ enum class MapIcon : std::uint8_t {
 };
 // The icon's colour as 0xAARRGGBB (the table DrawIcon indexes).
 std::uint32_t mapIconColor(MapIcon icon);
+// mmGame's icon colours (its constructor's table of eight, OppIconInfo
+// Color): the cards over the other network players' cars, by start slot.
+std::uint32_t netPlayerColor(int slot);
+// mmHudMap::DrawOpponents in a network game: the arrow of the player in
+// start slot s takes the map colour s + 4; slots 6 and 7 read past MM2's
+// ten-colour table, where OpenMM2 uses their card colour (inferred).
+std::uint32_t netMapColor(int slot);
 
 // mmHudMap::GetNextMapMode ("Map Toggle"): Off -> Small -> Split -> Off;
 // from full screen, the mode it was opened from.
@@ -274,7 +288,8 @@ private:
                      float y);
     void drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y);
     void drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
-    void drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
+    void drawNameLabels(render::Overlay2D& ov, ui::TextRenderer& text);
+    void drawDigit(const Vec3& at, float size, int place, const Mat34& cam);
     // `second`: the SetMessage2 line, in its own one-line node under the message.
     void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
@@ -301,6 +316,8 @@ private:
     MapMode m_mapModeBeforeFull = MapMode::Off; // mmHudMap +0x40
     Mat44 m_viewProj;
     bool m_viewProjValid = false;
+    std::vector<MapBlip> m_labelBlips; // the network players, for mmIcons' name labels
+    Vec3 m_labelEye;                   // the camera position when they were drawn
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;

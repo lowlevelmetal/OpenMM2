@@ -57,12 +57,13 @@ FlowRetail* flowRetail() {
     return r.get();
 }
 
-std::unique_ptr<Session> flowSession(GameMode mode, int index, bool multiplayer = false) {
+std::unique_ptr<Session> flowSession(GameMode mode, int index, bool multiplayer = false, int opponents = 0) {
     RaceConfig cfg;
     cfg.mode = mode;
     cfg.city = "london";
     cfg.raceIndex = index;
     cfg.multiplayer = multiplayer;
+    cfg.opponents = opponents;
     SessionOptions options;
     options.seed = 11;
     std::string error;
@@ -388,6 +389,34 @@ TEST(GameFlowParity, CopsAndRobbersGoldRules) {
     c2[0].wrecked = true;
     h2.updateNetwork(0.1f, 0, true, c2, {});
     EXPECT_EQ(h2.goldPosition(), (Vec3{h2.set().gold.x, -1.0f, h2.set().gold.z}));
+}
+
+// mmSingleRace::UpdateScore's second half: the digit over each opponent's
+// icon is its live place among the racers and the player, and a finished
+// opponent keeps its finish place.
+TEST(GameFlowParity, OpponentIconPlaces) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    auto s = flowSession(GameMode::Checkpoint, 0, false, 3);
+    ASSERT_TRUE(s);
+    ASSERT_GE(s->opponents().size(), 2u);
+    FlowRun run(*s);
+    ASSERT_EQ(s->phase(), Phase::Racing);
+    const int racers = static_cast<int>(s->opponents().size()) + 1;
+    std::vector<int> seen;
+    for (std::size_t i = 0; i < s->opponents().size(); ++i) {
+        const int p = s->opponentPlace(i);
+        EXPECT_GE(p, 1);
+        EXPECT_LE(p, racers);
+        seen.push_back(p);
+    }
+    std::ranges::sort(seen);
+    EXPECT_EQ(std::ranges::adjacent_find(seen), seen.end()); // distinct places
+    run.opponents[1].finished = true;
+    run.tick();
+    EXPECT_EQ(s->opponentPlace(1), 1);
+    EXPECT_GE(s->opponentPlace(0), 2);
 }
 
 // mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand

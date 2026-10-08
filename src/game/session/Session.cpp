@@ -762,6 +762,7 @@ void Session::updateRank(const PlayerState& player, std::span<const OpponentStat
     const int n = static_cast<int>(m_checkpoints.size());
     if (n < 2 || m_opponents.empty())
         return;
+    updateOpponentPlaces(player, opponents);
     const Vec3 target = m_checkpoints[static_cast<std::size_t>(std::clamp(m_wp.current, 0, n - 1))].position;
     const float mine = dist2(player.transform.m3, target);
     int rank = 1;
@@ -774,6 +775,43 @@ void Session::updateRank(const PlayerState& player, std::span<const OpponentStat
             ++rank;
     }
     m_rank = rank;
+}
+
+void Session::updateOpponentPlaces(const PlayerState& player, std::span<const OpponentState> opponents) {
+    // The second half of mmSingleRace / mmSingleCircuit::UpdateScore: each
+    // opponent's place for the digit over its icon (OppIconInfo IconIndex),
+    // every frame: a finished one keeps its finish place; the others count
+    // the opponents ahead (more waypoints passed, finished, or level and
+    // nearer the opponent's next waypoint, waypoint[count % n]) and the
+    // player likewise.
+    const int n = static_cast<int>(m_checkpoints.size());
+    if (n < 2 || (mode() != GameMode::Checkpoint && mode() != GameMode::Circuit)) {
+        m_oppPlaces.clear();
+        return;
+    }
+    m_oppPlaces.assign(m_opponents.size(), 10);
+    for (std::size_t i = 0; i < m_opponents.size() && i < opponents.size(); ++i) {
+        const Racer& r = m_opponents[i];
+        if (r.finished) {
+            m_oppPlaces[i] = r.place;
+            continue;
+        }
+        const Vec3 wp = m_checkpoints[static_cast<std::size_t>(r.count % n)].position;
+        const float own = dist2(opponents[i].transform.m3, wp);
+        int place = 1;
+        for (std::size_t j = 0; j < m_opponents.size() && j < opponents.size(); ++j) {
+            if (j == i)
+                continue;
+            const Racer& o = m_opponents[j];
+            if (o.count > r.count || o.finished)
+                ++place;
+            else if (o.count == r.count && dist2(opponents[j].transform.m3, wp) < own)
+                ++place;
+        }
+        if (m_wp.count > r.count || (m_wp.count == r.count && dist2(player.transform.m3, wp) < own))
+            ++place;
+        m_oppPlaces[i] = place;
+    }
 }
 
 // --- Hazards (mmGame::Update) ------------------------------------------------------
@@ -1030,6 +1068,32 @@ void Session::updateNetRace(float dt, const PlayerState& player) {
         }
         m_rank = place;
         m_netRacerCount = racers;
+    }
+    // Each other player's rank over its icon (IconIndex); a finished
+    // player's icon is turned off (0 here), a missing car has none.
+    m_netPlaces.assign(m_netRacers.size(), 0);
+    if (n >= 2) {
+        for (std::size_t i = 0; i < m_netRacers.size(); ++i) {
+            const NetRacer& r = m_netRacers[i];
+            if (!r.present || r.finished)
+                continue;
+            const Vec3 wp = m_checkpoints[static_cast<std::size_t>(r.waypoints % n)].position;
+            const float own = dist2(r.position, wp);
+            int place = 1;
+            for (std::size_t j = 0; j < m_netRacers.size(); ++j) {
+                const NetRacer& o = m_netRacers[j];
+                if (j == i || (!o.present && !o.finished))
+                    continue;
+                if (o.waypoints > r.waypoints || o.finished)
+                    ++place;
+                else if (o.present && o.waypoints == r.waypoints && dist2(o.position, wp) < own)
+                    ++place;
+            }
+            if (m_wp.count > r.waypoints || m_wp.finished ||
+                (m_wp.count == r.waypoints && dist2(player.transform.m3, wp) < own))
+                ++place;
+            m_netPlaces[i] = place;
+        }
     }
     if (!m_netTimeoutOn)
         return;
@@ -1593,6 +1657,7 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
     case Phase::PostRace: {
         updateClock(dt);
         updateOpponents(opponents);
+        updateOpponentPlaces(player, opponents); // UpdateScore runs after every state
         if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
             updateNetRace(dt, player);
         m_postWait -= dt;

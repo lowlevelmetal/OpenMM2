@@ -167,6 +167,12 @@ public:
     int lap() const; // current lap, 1-based (circuit)
     int laps() const { return m_setup.laps; }
     int position() const { return m_rank; }
+    // The live place over each racer's icon (mmSingleRace / mmSingleCircuit::
+    // UpdateScore, mmGameMulti::UpdateScore write it as the icon's
+    // IconIndex): an opponent's (in opponents() order) or another network
+    // player's (in setNetRacers() order); 10 = no number, 0 = no icon.
+    int opponentPlace(std::size_t i) const { return i < m_oppPlaces.size() ? m_oppPlaces[i] : 10; }
+    int netRacerPlace(std::size_t i) const { return i < m_netPlaces.size() ? m_netPlaces[i] : 10; }
     int racerCount() const { return multiplayer() ? m_netRacerCount : static_cast<int>(m_opponents.size()) + 1; }
 
     float raceTime() const { return m_raceTime; }
@@ -274,6 +280,7 @@ private:
     void setTarget(int index);
     void updateOpponents(std::span<const OpponentState> opponents);
     void updateRank(const PlayerState& player, std::span<const OpponentState> opponents);
+    void updateOpponentPlaces(const PlayerState& player, std::span<const OpponentState> opponents);
     bool updateHazards(float dt, const PlayerState& player);
     void hitWater();
     void dropThroughCity();
@@ -364,6 +371,7 @@ private:
         bool self = false;
     };
     std::vector<NetRacer> m_netRacers;
+    std::vector<int> m_oppPlaces, m_netPlaces; // the icons' IconIndex
     std::vector<NetResult> m_netResults; // mmGameMulti::SortResults' table, by time
     int m_netRacerCount = 1;
     bool m_netTimeoutOn = false;         // SetTimeoutOn / SetTimeoutOff
