@@ -2,6 +2,7 @@
 
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "game/CityLevel.h"
 #include "game/MeshDraw.h"
 
 #include <algorithm>
@@ -241,6 +242,23 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
         d.transform = inst.transform;
         d.world = Mat44::fromMat34(inst.transform);
         const std::size_t index = m_instances.size();
+        // lvlLevel::LoadInstances: a collidable object that is not terrain
+        // local goes through lvlMultiRoomInstance::Create, which leaves it in
+        // room 0 and puts a stand-in in every neighbour of its room that its
+        // sphere (position, the model's radius) reaches across the
+        // perimeter; reaching none, it is never drawn.
+        constexpr std::uint16_t kInstTerrainLocal = 0x100, kInstBanger = 0x200, kInstCollidable = 0x2000;
+        if ((inst.flags & kInstCollidable) && !(inst.flags & (kInstTerrainLocal | kInstBanger))) {
+            resolve(d);
+            d.multiRoom = true;
+            int rooms[32];
+            const int n = cityTouchedNeighbors(city.psdl, rooms, 32, inst.room, inst.transform.m3, d.radius);
+            m_instances.push_back(std::move(d));
+            for (int k = 0; k < n; ++k)
+                if (rooms[k] > 0 && static_cast<std::size_t>(rooms[k]) < m_rooms.size())
+                    m_rooms[static_cast<std::size_t>(rooms[k])].instances.push_back(index);
+            continue;
+        }
         m_instances.push_back(std::move(d));
         if (inst.room < m_rooms.size())
             m_rooms[inst.room].instances.push_back(index);
@@ -350,6 +368,12 @@ void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asse
 
 void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera,
                                 const DetailSettings& detail) {
+    if (inst.multiRoom) {
+        // lvlMultiRoomInstance::Draw: once per cityLevel::DrawRooms.
+        if (inst.drawnFrame == m_frame)
+            return;
+        inst.drawnFrame = m_frame;
+    }
     if (!inst.resolved)
         resolve(inst);
     if (!inst.gpu || !frustum.intersects(inst.worldBounds))
@@ -424,6 +448,7 @@ void CityRenderer::drawStreets(bool alphaPass) {
 void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Environment& env,
                         const DetailSettings& detail) {
     m_stats = {};
+    ++m_frame;
     drawSky(camera, env);
 
     const Vec3 eye = camera.position();

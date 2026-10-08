@@ -51,17 +51,15 @@ decisions: levels of detail, distances, textures, states and order.
 | Skipped primitives | road fans, crosswalks and roofs above the camera's height; facades and slivers seen from behind (`sdlCommon::BACKFACE`); after a Texture attribute of value 0 the road, sidewalk, rectangle, crosswalk, fan and divided road attributes | MM2 (`sdlPage16::Draw`); MM2's height is the camera's plus the view matrix's third row times the near distance (ignored) |
 | Tunnels | walls, ceilings and railings from the CityMesh reconstruction at every level of detail | inferred: `sdlPage16::Draw`'s tunnel code is not ported yet |
 | City objects | `city/<map>.inst` instances, LOD by lvlInstance::IsVisible (below) with no distance limit beyond the far plane; a missing LOD takes the next less detailed one (VL → L → M → H) and a missing VL draws nothing; PKG xrefs drawn with their parent | MM2 (`lvlInstance::IsVisible`, `GetGeomSet`); the radius is the farthest vertex from the model origin over its levels of detail (`modGetStatic`) |
+| Collidable objects | a .inst flag 0x2000 object (not terrain local) is drawn through stand-ins in the neighbours of its room that its sphere (position, model radius) reaches across the perimeter, once per frame, from the first such room drawn; never from its own room, and never when it reaches none | MM2 (`lvlLevel::LoadInstances`, `lvlMultiRoomInstance::Create`, `Draw`: the stand-ins' marker is the counter `cityLevel::DrawRooms` bumps) |
 | Object LOD | d = view depth − radius: H up to Med, M up to Low, L up to VLow, VL beyond; dynamic objects (cars, bangers) are not drawn deeper than NoDraw. Object Detail 0–3: Med 20/30/40/70, Low 70/90/100/130, VLow 150/175/200/200, NoDraw 200/250/300/300 m | MM2 (`cityLevel::SetObjectDetail`) |
 
 Not ported: `gfxTexture::sm_LOD` (3 − the street level), which only limits
 the mip levels Direct3D's texture manager keeps resident (`MarkHigherUse`,
 `SetLOD`; a texture's limit only ever drops to the most detailed level it has
 been drawn at). Not ported yet: cloud shadows (`shadmap_day`/`shadmap_nite` in a second
-pass with UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts, the
-room flood fill used without a PVS, and multi-room objects: MM2 draws a
-collidable (.inst flag 0x2000) object through its stand-ins in the
-neighbouring rooms its sphere reaches (`lvlMultiRoomInstance::Draw`, once per
-frame), not from its own room.
+pass with UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts and
+the room flood fill used without a PVS.
 
 ## Cars
 

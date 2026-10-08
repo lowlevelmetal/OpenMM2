@@ -420,13 +420,18 @@ int CityLevel::findRoom(const Vec3& position, int hint) const {
 }
 
 int CityLevel::touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const {
+    return cityTouchedNeighbors(m_city.psdl, out, max, room, centre, radius);
+}
+
+int cityTouchedNeighbors(const city::Psdl& psdl, int* out, int max, int room, const Vec3& centre,
+                         float radius) {
     // cityLevel::GetTouchedNeighbors: the rooms across the room's perimeter
     // edges the sphere reaches (in the ground plane), each once; instance
     // rooms whatever the sphere.
-    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size() || max <= 0)
+    if (room <= 0 || static_cast<std::size_t>(room) >= psdl.rooms.size() || max <= 0)
         return 0;
-    const city::PsdlRoom& r = m_city.psdl.rooms[static_cast<std::size_t>(room)];
-    const auto& verts = m_city.psdl.vertices;
+    const city::PsdlRoom& r = psdl.rooms[static_cast<std::size_t>(room)];
+    const auto& verts = psdl.vertices;
     const float r2 = radius * radius;
     const auto n = r.perimeter.size();
     int count = 0;
@@ -438,10 +443,10 @@ int CityLevel::touchedNeighbors(int* out, int max, int room, const Vec3& centre,
     };
     for (std::size_t i = 0; i < n; ++i) {
         const int neighbor = r.perimeter[i].neighbor;
-        if (neighbor == 0 || seen(neighbor) || static_cast<std::size_t>(neighbor) >= m_city.psdl.rooms.size())
+        if (neighbor == 0 || seen(neighbor) || static_cast<std::size_t>(neighbor) >= psdl.rooms.size())
             continue;
         bool touched = false;
-        if (m_city.psdl.rooms[static_cast<std::size_t>(neighbor)].flags & kRoomInstance) {
+        if (psdl.rooms[static_cast<std::size_t>(neighbor)].flags & kRoomInstance) {
             touched = true;
         } else {
             const std::size_t next = i + 1 != n ? i + 1 : 0;

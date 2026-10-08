@@ -111,6 +111,11 @@ private:
         Mat34 transform;
         Aabb worldBounds; // valid once resolved
         float radius = 0.0f;
+        // A collidable (.inst flag 0x2000) object, drawn through
+        // lvlMultiRoomInstance stand-ins: once per frame from whichever of
+        // its rooms is drawn first.
+        bool multiRoom = false;
+        std::uint32_t drawnFrame = 0;
     };
 
     void drawSky(const Camera& camera, const Environment& env);
@@ -142,6 +147,7 @@ private:
     const GpuModel* m_sky = nullptr;
     float m_skyAngle = 0.0f;
     int m_lastRoom = 0; // cityLevel's sm_LastPvsRoom
+    std::uint32_t m_frame = 0;
     Stats m_stats;
 };
 
