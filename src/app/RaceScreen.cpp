@@ -1,5 +1,6 @@
 // A session in the city.
 #include "app/Controls.h"
+#include "app/ForceFeedback.h"
 #include "app/GameInput.h"
 #include "app/Screens.h"
 #include "city/CityData.h"
@@ -124,6 +125,7 @@ public:
         // The police drivers hand their cars' impact callbacks back when they
         // go: before the cars (m_cops) are destroyed.
         m_police.reset();
+        m_ff.stopAll(); // mmInput::StopAllFF
     }
 
     bool usesScene() const override { return m_city != nullptr; }
@@ -182,6 +184,7 @@ public:
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
             m_textures->update(m_time);
+            updateForceFeedback(ctx, static_cast<float>(dt), true);
             return;
         }
         updatePlayer(ctx, static_cast<float>(dt));
@@ -503,6 +506,10 @@ private:
         m_controlOptions = controls::Options::load(ctx.settings.ini);
         m_gameInput.load(ctx.settings.ini, controls::readJoystick(ctx.input, m_controlOptions.controller,
                                                                   m_controlOptions.deadZone));
+        // mmPlayer::Init: the force feedback's switches and the road wave.
+        m_ff.configure(m_gameInput.controller(), m_controlOptions);
+        m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
+        m_ff.start();
         createSession(ctx);
         loadVehicle(ctx); // places the camera behind the car
         loadAi(ctx);
@@ -1261,6 +1268,7 @@ private:
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                     m_cams.startPreRace();
                 m_gameInput.reset();
+                m_ff.reset(); // mmPlayer::Reset: ResetFF, mmCarRoadFF::Reset
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
                 if (m_vehicle)
@@ -1720,6 +1728,7 @@ private:
         // ProcessEscape: pauses unless the game already is (the full-screen
         // map), and remembers it so closing does not resume it.
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
+        m_ff.stopAll(); // mmPopup::ProcessEscape: mmInput::StopAllFF
         if (m_popupPaused)
             m_paused = true;
         buildPopup(ctx);
@@ -2180,8 +2189,10 @@ private:
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
             m_vehicleFx->impact(impact, m_player->sim());
-        if (impact.damaging)
+        if (impact.damaging) {
             ++(impact.otherIsBody ? m_vehicleImpacts : m_objectImpacts);
+            m_ff.impact(impact.total, m_player->sim().speedMph()); // mmPlayer::FFImpactCallback
+        }
     }
 
     audio::game::SurfaceWeather surfaceWeather() const {
@@ -2448,11 +2459,20 @@ private:
             m_player->drive(pedals);
         }
         m_lastPedals = pedals;
+        updateForceFeedback(ctx, dt, false);
         // Falling out of the city is the session's rule
         // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
         if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
             m_player->reset(m_spawn);
+    }
+
+    // Force feedback (mmPlayer::Update -> UpdateFF while mmInput::DoingFF;
+    // paused: ResetFF) on the race's joystick (app/ForceFeedback).
+    void updateForceFeedback(Context& ctx, float dt, bool paused) {
+        m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
+        if (m_player)
+            m_ff.update(controls::ffCarState(m_player->sim()), dt, paused);
     }
 
     // The horn (mmGame::UpdateHorn: the slot's held bit), not in the free
@@ -2810,6 +2830,7 @@ private:
     // The player's controls: the [Controls] options and the chosen
     // controller's bindings read each frame (mmInput, app/GameInput).
     controls::GameInput m_gameInput;
+    controls::ForceFeedback m_ff; // mmPlayer::UpdateFF and the effects
     controls::Options m_controlOptions;
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.

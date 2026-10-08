@@ -611,10 +611,13 @@ public:
         m_deadZone->enabled = stick;
         // OpenMM2 cannot tell whether a stick has a POV hat; any joystick may use it.
         m_pov->enabled = c == Controller::Joystick;
-        // Inferred: any connected joystick or game pad stands for MM2's
-        // force-feedback device (OpenMM2 does not query rumble support).
-        m_feedback->enabled = joystickConnected(ctx);
-        const bool feedbackOn = iniBool(ctx, "Controls", "ForceFeedback", false);
+        // ControlSetup::ActivateDeviceOptions / InitCustomControls: FORCE
+        // FEEDBACK with the joystick or the wheel controller and a
+        // force-feedback joystick (mmInput +0x160; OpenMM2 also counts a
+        // pad with rumble motors), the intensities while it is on
+        // (SetFFPermissions).
+        m_feedback->enabled = stick && ctx.input.forceFeedback(false) != nullptr;
+        const bool feedbackOn = m_feedback->enabled && iniBool(ctx, "Controls", "ForceFeedback", false);
         m_collision->enabled = feedbackOn;
         m_roadForce->enabled = feedbackOn;
         m_calibrate->enabled = stick;
