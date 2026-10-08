@@ -269,6 +269,7 @@ private:
     void updateRegainRail(int idx, float dt, const PlayerCar& p);
     void fitOffRail(Car& c);
 
+    void updateCar(int idx, float dt, const PlayerCar& player);
     void publish();
 
     const RoadNetwork& m_net;
