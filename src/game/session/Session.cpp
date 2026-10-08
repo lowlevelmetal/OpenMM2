@@ -155,6 +155,11 @@ const LessonEvent* Session::currentLesson() const {
     return &m_setup.lessonEvents[static_cast<std::size_t>(m_lessonEvent)];
 }
 
+bool Session::wantsMap() const {
+    const LessonEvent* lesson = currentLesson();
+    return lesson && lesson->type == LessonType::Evade && m_phase == Phase::Countdown && m_stage == Stage::Ready;
+}
+
 int Session::lessonOpponentOffset() const {
     // mmSingleStunt::GetOpponentIndex: the opponents of the earlier events.
     int offset = 0;
@@ -208,6 +213,10 @@ void Session::resetRace() {
     m_message = m_message2 = HudMessage{};
     m_vehicleHits = m_objectHits = 0;
     m_baseVehicleImpacts = m_baseObjectImpacts = -1;
+    m_lessonDone = false; // mmGame::Reset clears the "race over" flag (+0x7c)
+    // mmSingleStunt::Reset (not InitNewEvent) clears the minimum speed state.
+    m_reachedMinSpeed = false;
+    m_belowMinSpeed = 0.0f;
     resetTimerWarning();
     beginEvent(0);
     m_respawn = m_setup.playerSpawn;
@@ -226,9 +235,6 @@ void Session::beginEvent(int index) {
     m_stage = Stage::Intro;
     m_wait = 0.0f;
     m_skipToGo = index > 0;
-    m_reachedMinSpeed = false;
-    m_belowMinSpeed = 0.0f;
-    m_lessonDone = false;
     m_accelWait = -1.0f;
 
     m_hasClock = false;
@@ -310,12 +316,37 @@ bool Session::playerHeld() const {
 
 // --- Countdown ---------------------------------------------------------------------
 
+void Session::enableLessonOpponents() {
+    // mmSingleStunt::EnableRacers: opponents from the earlier events' count
+    // up to this event's "numopp" (the original's loop bound).
+    const LessonEvent* lesson = currentLesson();
+    if (!lesson)
+        return;
+    const int enabled = std::min(lesson->opponents, static_cast<int>(m_oppEnabled.size()));
+    for (int i = lessonOpponentOffset(); i < enabled; ++i)
+        m_oppEnabled[static_cast<std::size_t>(i)] = 1;
+}
+
 void Session::updateCountdown(float dt) {
     if (m_skipToGo) {
-        // Later events of an exam start at once (state 0 -> 2 with no wait).
-        go();
+        // A later event of an exam: mmSingleStunt::Update* state 0 resets the
+        // timers, enables the event's cars and goes to state 2 with no wait,
+        // so "Go" comes with the next update.
+        m_skipToGo = false;
+        enableLessonOpponents();
+        m_stage = Stage::Set;
+        m_wait = 0.0f;
         return;
     }
+    // mmSingleCircuit / mmSingleRace::UpdateGame state 0 waits for the
+    // pre-race camera to finish (mmPlayer +0xE5A); Blitz does not.
+    if (m_stage == Stage::Intro && m_preRaceCamera && !multiplayer() &&
+        (mode() == GameMode::Circuit || mode() == GameMode::Checkpoint))
+        return;
+    // mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame state 0 waits
+    // for the host's start message.
+    if (m_stage == Stage::Intro && !m_startSignal)
+        return;
     const LessonEvent* lesson = currentLesson();
     ModeText mt = modeText(mode(), multiplayer());
     LessonText lt;
@@ -395,11 +426,11 @@ void Session::go() {
         else
             setMessage(lt.go, "Go!", kStep, true);
         m_clockRunning = m_hasClock;
-        // mmSingleStunt::EnableRacers: opponents from the earlier events'
-        // count up to this event's "numopp" (the original's loop bound).
-        const int enabled = std::min(lesson->opponents, static_cast<int>(m_oppEnabled.size()));
-        for (int i = lessonOpponentOffset(); i < enabled; ++i)
-            m_oppEnabled[static_cast<std::size_t>(i)] = 1;
+        // Every Update* but UpdateJump enables the event's cars at "Go"
+        // (UpdateJump only for a later event, in state 0; no retail jump
+        // lesson has cars).
+        if (lesson->type != LessonType::Jump)
+            enableLessonOpponents();
         if (lesson->type == LessonType::Destroy && !m_opponents.empty()) {
             const int target = lessonOpponentOffset();
             if (target < static_cast<int>(m_opponents.size()))
@@ -475,6 +506,12 @@ void Session::displayCleared(int index) {
     m_wp.visible[k] = 0;
     ++m_wp.count;
     push(EventType::CheckpointCleared, index);
+    // mmHUD::ShowSplitTime: the race time (in circuits the time since the
+    // lap started) for 1 s, placement 0; not in the crash course.
+    if (mode() != GameMode::CrashCourse) {
+        const float split = mode() == GameMode::Circuit ? m_raceTime - m_lapStart : m_raceTime;
+        setMessage(formatTime(split), 1.0f, false);
+    }
 }
 
 void Session::updateWaypoints(const PlayerState& player) {
@@ -826,8 +863,9 @@ void Session::updateRace(float dt, const PlayerState& player) {
         wreckPenalty();
         if (m_wp.finished) {
             playerFinished();
-            setMessage(std::format("{} {}", str(mt.finishedIn, "finished in"), formatTime(m_raceTime)), 5.0f,
-                       false);
+            // The player's name, and "finished in M:SS:HH" under it.
+            setMessage(m_options.playerName, 5.0f, false);
+            setMessage2(std::format("{} {}", str(mt.finishedIn, "finished in"), formatTime(m_raceTime)));
             // Blitz shows the results when the clock would have run out;
             // the others 3 s after the finish.
             const float wait = mode() == GameMode::Blitz ? m_clock : 3.0f;
@@ -933,23 +971,34 @@ bool Session::copPursuit(const PlayerState& player, std::span<const OpponentStat
 }
 
 void Session::lessonFailed(float delay) {
+    // Several failures can come in one frame (UpdateCorner and UpdateFrogger
+    // go on checking after one): report the lesson failed once.
+    const bool alreadyFailed = (m_phase == Phase::PostRace || m_phase == Phase::Done) && !m_resultWon;
     m_lessonDone = true;
     m_wp.stopped = true;
-    push(EventType::LessonFailed, m_lessonEvent);
+    if (!alreadyFailed)
+        push(EventType::LessonFailed, m_lessonEvent);
     endRace(false, false, delay);
 }
 
-void Session::lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay) {
-    m_lessonDone = true;
+void Session::lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay, bool latch) {
     const int events = static_cast<int>(m_setup.lessonEvents.size());
     if (m_lessonEvent == events - 1) {
+        m_lessonDone = true;
         setMessage(passMessage, "Good driving!", seconds, top);
         push(EventType::LessonPassed, m_lessonEvent);
         endRace(true, true, delay);
         return;
     }
     // An exam continues with its next event where the car is
-    // (mmSingleStunt::InitNewEvent; no respawn).
+    // (mmSingleStunt::InitNewEvent; no respawn). Most Update* functions set
+    // the "race over" flag before they get here, and only mmGame::Reset
+    // clears it: in the later events the water no longer fails the lesson
+    // and the Clean lesson's clock is no longer checked. (They also set the
+    // post-race camera and brake, which OpenMM2 does not carry over; no
+    // retail exam has such an event before another one.)
+    if (latch)
+        m_lessonDone = true;
     beginEvent(m_lessonEvent + 1);
 }
 
@@ -983,7 +1032,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
     switch (lesson->type) {
     case LessonType::Jump: // UpdateJump
         if (m_wp.finished) {
-            lessonPassedOrNext(209, 5.0f, true, kPostRace);
+            lessonPassedOrNext(209, 5.0f, true, kPostRace, true);
         } else if (timeOut) {
             setMessage(614, "Time's up!", 5.0f, false);
             push(EventType::TimeUp);
@@ -1021,7 +1070,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             break;
         const float d2 = dist2(player.transform.m3, target->transform.m3);
         if ((target->finished || m_wp.finished) && d2 < kChaseArrive2) {
-            lessonPassedOrNext(221, 5.0f, true, kPostRace);
+            lessonPassedOrNext(221, 5.0f, true, kPostRace, false);
             break;
         }
         if (d2 > kChaseEscape2) {
@@ -1040,7 +1089,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 lessonFailed();
             } else {
                 setMessage(196, "You survived the gauntlet!", 5.0f, true);
-                lessonPassedOrNext(196, 5.0f, true, kPostRace);
+                lessonPassedOrNext(196, 5.0f, true, kPostRace, true);
             }
         } else if (timeOut) {
             setMessage(198, "Time's up!  Drive faster to win!", 5.0f, false);
@@ -1056,7 +1105,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 setMessage(197, "Lose your pursuers before you finish!", 5.0f, true);
                 lessonFailed();
             } else {
-                lessonPassedOrNext(234, 5.0f, true, kPostRace);
+                lessonPassedOrNext(234, 5.0f, true, kPostRace, true);
             }
             break;
         }
@@ -1067,11 +1116,12 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             break;
         }
         if (!m_reachedMinSpeed) {
+            // UpdateCorner does not return after this failure: the rest of
+            // the frame's checks still run (and their messages win).
             if (m_wp.count > 1) {
                 setMessage(235, "You need to get up to speed", 3.0f, true);
                 setMessage2(str(236, "before hitting a checkpoint"));
                 lessonFailed();
-                break;
             }
             if (minimum < speed) {
                 m_reachedMinSpeed = true;
@@ -1096,26 +1146,40 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
         }
         break;
     }
-    case LessonType::Clean: // UpdateFrogger
+    case LessonType::Clean: { // UpdateFrogger
         if (m_hasClock && m_clock < kTimerWarning && !m_lessonDone)
             timerWarning(dt);
         if (timeOut && !m_lessonDone) {
             setMessage(228, "Time's up!", kStep, true);
             push(EventType::TimeUp);
             lessonFailed();
-        } else if (m_wp.finished) {
-            lessonPassedOrNext(229, kStep, true, 3.0f);
-        } else if (wrecked(player)) {
+            break;
+        }
+        bool passed = false;
+        if (m_wp.finished) {
+            passed = m_lessonEvent == static_cast<int>(m_setup.lessonEvents.size()) - 1;
+            lessonPassedOrNext(229, kStep, true, 3.0f, true);
+            if (!passed)
+                break; // InitNewEvent: the next event starts
+        }
+        // UpdateFrogger checks the damage after the finish too: a car wrecked
+        // in the frame it finishes still fails the lesson.
+        if (wrecked(player)) {
             push(EventType::Wrecked);
             setMessage(230, "You scraped the paint!", 5.0f, false);
             lessonFailed();
+            if (passed) {
+                m_resultFinished = m_resultWon = false;
+                m_postWait = kPostRace;
+            }
         }
         break;
+    }
     case LessonType::Acceleration: // UpdateAccel (no retail lesson)
         if (m_accelWait >= 0.0f) {
             m_accelWait -= dt;
             if (m_accelWait < 0.0f)
-                lessonPassedOrNext(204, 5.0f, true, kPostRace);
+                lessonPassedOrNext(204, 5.0f, true, kPostRace, true);
             break;
         }
         if (wrecked(player))
@@ -1131,7 +1195,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
     case LessonType::Course:
     case LessonType::Map: // UpdateBlitz
         if (m_wp.finished) {
-            lessonPassedOrNext(609, 5.0f, false, kPostRace);
+            lessonPassedOrNext(609, 5.0f, false, kPostRace, false);
         } else if (timeOut) {
             setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
             push(EventType::TimeUp);
@@ -1145,7 +1209,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
     case LessonType::Destroy: // UpdateStop
         if (target && target->currentDamage >= kDestroyMaxDamage) {
             m_oppEnabled[static_cast<std::size_t>(targetIndex)] = 0; // the car stops
-            lessonPassedOrNext(620, 5.0f, true, kPostRace);
+            lessonPassedOrNext(620, 5.0f, true, kPostRace, true);
             break;
         }
         if (target && target->finished) {
@@ -1172,12 +1236,25 @@ void Session::update(float dt, const PlayerState& player, std::span<const Oppone
                      std::span<const OpponentState> police) {
     if (!m_started)
         return;
-    if (m_message.timeLeft > 0.0f) {
+    updateRules(dt, player, opponents, police);
+    // mmHUD::Update runs after the game's UpdateGame: a message set this
+    // frame already loses this frame's time.
+    tickMessage(dt);
+}
+
+void Session::tickMessage(float dt) {
+    // mmHUD::Update: the time counts down while it is not 0; below 0 both
+    // lines are cleared.
+    if (m_message.timeLeft != 0.0f) {
         m_message.timeLeft -= dt;
         m_message2.timeLeft = m_message.timeLeft;
-        if (m_message.timeLeft <= 0.0f)
+        if (m_message.timeLeft < 0.0f)
             m_message = m_message2 = HudMessage{};
     }
+}
+
+void Session::updateRules(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
+                          std::span<const OpponentState> police) {
     m_resultDamage = player.damage01;
     m_idleTime = player.speedMph < 2.0f ? m_idleTime + dt : 0.0f;
 

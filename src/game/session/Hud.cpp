@@ -856,7 +856,8 @@ void Hud::drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Sess
 }
 
 void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& m, float drop) {
-    if (m.timeLeft <= 0.0f || m.text.empty())
+    // mmHUD::Update clears the text when the time runs out; until then it shows.
+    if (m.text.empty())
         return;
     // mmHUD: a full-width text node at 80 % of the screen height, 15 % tall
     // (SetMessage mode 0), or at 20 % for the upper messages (mode 1); yellow

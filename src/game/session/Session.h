@@ -51,6 +51,9 @@ struct SessionOptions {
     // Line of sight between two points for mmSingleStunt::CheckCopPursuit
     // (the original probes the level); unset = always clear.
     std::function<bool(const Vec3& from, const Vec3& to)> lineOfSight;
+    // The local player's network name: multiplayer races show it over
+    // "finished in" (mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame).
+    std::string playerName;
 };
 
 class Session {
@@ -69,8 +72,21 @@ public:
     const std::vector<PoliceSetup>& police() const { return m_setup.police; }
 
     void start();
+    // Whether the pre-race camera is still blending to the game camera
+    // (mmPlayer +0xE5A). Circuit and checkpoint races start their countdown
+    // only once it has finished (mmSingleCircuit / mmSingleRace::UpdateGame
+    // state 0). Set before update().
+    void setPreRaceCamera(bool active) { m_preRaceCamera = active; }
+    // Multiplayer races: whether the host's start message has arrived (the
+    // countdown of mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame
+    // waits for it in state 0; OpenMM2 sends a shared start time instead and
+    // signals 2.5 s before it). Single player ignores it.
+    void setStartSignal(bool received) { m_startSignal = received || !multiplayer(); }
     // `opponents` in the order of opponents(); `police` in the order of
     // police() (crash course chasers, cop chase lessons).
+    //
+    // Expects the cars' physics matrices (vehCarSim's phInertialCS, i.e. at
+    // the centre of gravity): every rule of the original tests those.
     void update(float dt, const PlayerState& player, std::span<const OpponentState> opponents = {},
                 std::span<const OpponentState> police = {});
     // The whole race starts over (mmGame::Reset, e.g. the pause menu's
@@ -121,6 +137,9 @@ public:
     // Crash course.
     int lessonEvent() const { return m_lessonEvent; }
     const LessonEvent* currentLesson() const;
+    // mmSingleStunt::UpdateEvade turns the overhead map on (mmViewMgr map
+    // toggle) while its first countdown line shows, if it is off.
+    bool wantsMap() const;
     int vehicleHits() const { return m_vehicleHits; }
     int objectHits() const { return m_objectHits; }
 
@@ -174,7 +193,11 @@ private:
     void beginEvent(int index);
     void resetWaypoints();
     void updateCountdown(float dt);
+    void enableLessonOpponents();
     void go();
+    void updateRules(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
+                     std::span<const OpponentState> police);
+    void tickMessage(float dt);
     void updateWaypoints(const PlayerState& player);
     void displayCleared(int index);
     void closestTarget(const Vec3& pos);
@@ -193,7 +216,9 @@ private:
     void updateLesson(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
                       std::span<const OpponentState> police);
     bool copPursuit(const PlayerState& player, std::span<const OpponentState> police) const;
-    void lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay);
+    // `latch`: the event sets the original's "race over" flag (+0x7c) before
+    // moving on to the next event, so it stays set for the rest of the lesson.
+    void lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay, bool latch);
     void lessonFailed(float delay = 5.0f);
     void playerFinished();
     void endRace(bool finished, bool won, float delay);
@@ -219,6 +244,8 @@ private:
     Phase m_phase = Phase::Countdown;
     Stage m_stage = Stage::Intro;
     bool m_skipToGo = false; // later crash course events start at once
+    bool m_preRaceCamera = false;
+    bool m_startSignal = true;
     float m_wait = 0.0f;
     bool m_started = false;
     bool m_released = false;
