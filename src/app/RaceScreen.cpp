@@ -535,7 +535,9 @@ private:
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                 m_cams.startPreRace();
         }
-        if (auto* music = ctx.music()) {
+        // -nomusic: mmGameMusicData::Load loads neither the song nor the
+        // city's ambience segment, so the race plays neither.
+        if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic) {
             // The song is chosen now; MusicDirector starts it 1.25 s in.
             const bool cruise = m_result.config.mode == game::GameMode::Cruise;
             music->startRace(-1, cruise, false);
@@ -2304,7 +2306,7 @@ private:
         m_audioSlots.setTunnel(m_tunnel);
         // MMDMusicManager::UpdateAmbientSFX: the city's ambience segment stops
         // underground (StopSegment(0)) and starts again outside (PlaySegment).
-        if (auto* music = ctx.music(); music && m_tunnel != m_ambienceStopped) {
+        if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic && m_tunnel != m_ambienceStopped) {
             music->setAmbience(m_tunnel ? std::string_view{} : std::string_view(m_result.config.city));
             m_ambienceStopped = m_tunnel;
         }

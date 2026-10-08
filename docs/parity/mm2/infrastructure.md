@@ -51,7 +51,7 @@ every option build 3393 reads (each `datArgParser::Get` call):
 | `-novblank` | `gfxPipeline::SetRes` | Presents without waiting for the vertical blank. | ported (new): vsync off. |
 | `-noaudio` | `InitAudioManager`, `mmGameMusicData::Load`, `mmPlayer::InitSpeechAudio` | No audio manager (so no sound at all), no music, no speech. | ported (new): master volume 0 for the run. |
 | `-nosoundfx` | `InitAudioManager` | Leaves AudManager uninitialised: no sound effects, and (inferred: DirectMusic is started on AudManager's DirectSound, `MMDMusicManager::Init`) no music either. | ported (new): as -noaudio. |
-| `-nomusic` | `mmGameMusicData::Load` | The race loads neither its music nor the city's ambience segment. The menu music (`mmInterface::PlayUIMusic`) is not affected. | ported (new): the music and ambience buses are muted; deviation: the menu music, which shares the music bus, is muted too. |
+| `-nomusic` | `mmGameMusicData::Load` | The race loads neither its music nor the city's ambience segment. The menu music (`mmInterface::PlayUIMusic`) is not affected. | ported (new): the race starts neither the song, the music director nor the ambience segment; the menu music plays on. |
 | `-nospeech` | `mmPlayer::InitSpeechAudio` | No announcer. | ported (new): the voice bus (only the announcer plays on it) is muted. |
 | `-tune_car` | `mmPlayer::Init` | Without it, a player driving vpcop gets vpmustang99's vehCarSim (the cop car drives like the Mustang); with it, vpcop keeps its own (for tuning the cop). | The swap is ported (`game/PlayerVehicle.cpp`); the option is a development switch: not needed. |
 | `-tune_ai` | `mmGame::Init` (passed as `aiMap::Init`'s last argument) | Development switch for AI tuning. | not needed. |

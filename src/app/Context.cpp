@@ -26,12 +26,12 @@ void Context::applyAudioSettings() {
     // The original's command-line switches mute for this run only, leaving
     // the saved options alone: -noaudio/-nosoundfx (InitAudioManager never
     // initialises AudManager), -nomusic (mmGameMusicData::Load loads neither
-    // the music nor the ambience segment; OpenMM2 also silences the menu
-    // music, which shares the music bus) and -nospeech
-    // (mmPlayer::InitSpeechAudio loads no announcer).
+    // the race music nor the ambience segment, so the race starts neither;
+    // the menu music still plays) and -nospeech (mmPlayer::InitSpeechAudio
+    // loads no announcer).
     const CommandLine& cl = commandLine;
-    const bool music = settings.music && !cl.noMusic;
-    const bool ambience = settings.citySounds && !cl.noMusic;
+    const bool music = settings.music;
+    const bool ambience = settings.citySounds;
     const bool speech = settings.soundEffects && settings.commentary && !cl.noSpeech;
     mixer->setMasterVolume(cl.noAudio ? 0.0f : settings.masterVolume);
     mixer->setBusVolume(audio::Bus::Effects, settings.soundEffects ? settings.effectsVolume : 0.0f);
