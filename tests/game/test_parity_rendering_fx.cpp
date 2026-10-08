@@ -8,6 +8,7 @@
 #include "game/CityLevel.h"
 #include "game/CityRenderer.h"
 #include "game/MeshDraw.h"
+#include "game/fx/LensFlares.h"
 #include "game/fx/LineSparks.h"
 #include "game/fx/Particles.h"
 #include "game/fx/Shards.h"
@@ -265,4 +266,32 @@ TEST(ParityRenderingFx, SdlTunnelsDrawFiniteGeometry) {
         EXPECT_GT(tunnels, 50) << name;
         EXPECT_GT(junctions, 0) << name;
     }
+}
+
+TEST(ParityRenderingFx, LensFlaresFollowLtLensFlare) {
+    // ltLensFlare(20): flare 0 sits on the light (0.3 across), flare 1 is
+    // mirrored through the centre (0.25); the rest come from ltFlare::Random.
+    fx::Rand rng(7);
+    const fx::LensFlare flare(20, rng);
+    ASSERT_EQ(flare.flares().size(), 20u);
+    EXPECT_FLOAT_EQ(flare.flares()[0].along, 1.0f);
+    EXPECT_FLOAT_EQ(flare.flares()[0].size, 0.3f);
+    EXPECT_FLOAT_EQ(flare.flares()[1].along, -1.0f);
+    for (const auto& f : flare.flares()) {
+        EXPECT_GE(f.reach, 1.5f);
+        EXPECT_LE(f.brightness, 1.0f);
+    }
+    // A light straight ahead at the centre of the screen draws every flare
+    // that reaches it; a dim one draws nothing.
+    const Mat44 viewProj = Mat44::perspective(1.0f, 4.0f / 3.0f, 0.1f, 100.0f, true);
+    std::vector<fx::LensFlareQuad> quads;
+    flare.draw({0, 0, -10}, {1, 0, 0}, 1.0f, viewProj, 4.0f / 3.0f, quads);
+    EXPECT_EQ(quads.size(), 20u);
+    EXPECT_NEAR(quads[0].min.x * (4.0f / 3.0f), -0.3f, 1e-5f);
+    quads.clear();
+    flare.draw({0, 0, -10}, {1, 0, 0}, 0.05f, viewProj, 4.0f / 3.0f, quads);
+    EXPECT_TRUE(quads.empty());
+    // ltLight::ComputeIntensity: 25 / d^2 x cos^3, less the threshold.
+    EXPECT_NEAR(fx::spotIntensity({0, 0, 0}, {0, 0, 1}, {0, 0, 5}, 0.05f), 1.0f - 0.05f, 1e-6f);
+    EXPECT_EQ(fx::spotIntensity({0, 0, 0}, {0, 0, -1}, {0, 0, 5}, 0.05f), 0.0f);
 }

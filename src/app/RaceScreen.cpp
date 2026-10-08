@@ -251,7 +251,17 @@ public:
         dev.setFrameConstants(frame);
         const game::Frustum frustum(frame.view * frame.proj);
         const bool playerBody = m_flyCamera || m_cams.display() == game::CarDisplay::Body;
+        // The sirens' lens flares (vehSiren::Draw, ltLensFlare) are queued
+        // while the level draws and added over it afterwards.
+        std::vector<game::fx::LensFlareQuad> flares;
+        const Mat44 viewProj = frame.view * frame.proj;
+        game::VehicleRenderer::setLensFlareTarget(&viewProj, proj.aspect, &flares);
         drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
+        game::VehicleRenderer::setLensFlareTarget(nullptr, 1.0f, nullptr);
+        if (!flares.empty()) {
+            game::fx::drawLensFlares(dev, *m_textures, flares);
+            dev.setFrameConstants(frame);
+        }
         if (letterbox) {
             dev.setScissor(nullptr);
             dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
