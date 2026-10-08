@@ -5,6 +5,7 @@
 #include "core/Math.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,9 @@ struct PlayerState {
     int vehicleImpacts = 0;   // running count of impacts against other vehicles
     int objectImpacts = 0;    // running count of impacts against props and buildings
     Vec3 inertiaBox = kDefaultInertiaBox; // tune InertiaBox: the checkpoint hit test's car size
+    // With the mouse controller, the steering the car was given (mmPlayer
+    // +0x2264), which the instrument cluster's steering bar shows.
+    std::optional<float> mouseSteer;
 };
 
 // The other cars the rules track: race opponents, or the crash course

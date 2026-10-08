@@ -593,7 +593,25 @@ public:
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/ctrl_cus.tga", 4}, cus.x, cus.y,
                                    [&fe] { fe.push(makeCustomizeControlsPage(fe)); })
             .help = "jpg/ctl_tcus.jpg";
+        // ControlSetup's steering bar (mmMouseSteerBar).
+        menu.add<ui::Custom>([this, &fe](ui::UiFrame& f) { drawSteeringBar(fe, f); });
         finish(fe);
+    }
+
+    // mmMouseSteerBar::Init(0.1, 0.85) / Cull: mouse_bar at a tenth of the
+    // width and 0.85 of the height, mouse_ar 16 pixels above it at (bar
+    // width / 2 - 15) x (1 + the steering) plus a quarter of its own width.
+    void drawSteeringBar(Frontend& fe, ui::UiFrame& f) const {
+        const ui::UiTexture& bar = fe.textures.get("texture/mouse_bar.tga");
+        const ui::UiTexture& arrow = fe.textures.get("texture/mouse_ar.tga");
+        if (!bar || !arrow)
+            return;
+        constexpr float kX = 64.0f, kY = 408.0f; // ftol(640 x 0.1), ftol(480 x 0.85)
+        const int half = static_cast<int>(bar.width / 2) - 15;
+        const int travel = static_cast<int>(static_cast<float>(half) * m_steering); // ftol
+        ui::drawImage(f.overlay, bar, kX, kY);
+        ui::drawImage(f.overlay, arrow, kX + static_cast<float>(travel + static_cast<int>(arrow.width / 4) + half),
+                      kY - 16.0f);
     }
 
     // Which widgets are usable (ControlSetup::ActivateDeviceOptions per
@@ -602,10 +620,24 @@ public:
     // DEAD ZONE and CALIBRATE for joystick and wheel; POV HAT for a joystick
     // with a hat; FORCE FEEDBACK whenever a force-feedback device is present,
     // whatever the type; the two intensities while FORCE FEEDBACK is on.
-    void update(Frontend& fe, double) override {
+    void update(Frontend& fe, double dt) override {
         Context& ctx = fe.ctx;
         const Controller c = controller(ctx);
         const bool stick = c == Controller::Joystick || c == Controller::Wheel;
+        // ControlSetup::Update: the bar shows mmInput::GetSteering(none) for
+        // the chosen controller, read as the race reads it (app/GameInput).
+        const auto bound = static_cast<controls::Controller>(static_cast<int>(c));
+        const float deadZone = iniFloat(ctx, "Controls", "DeadZone", ControlDefaults::kDeadZone, 0.0f, 0.33f);
+        if (!m_inputReady || bound != m_inputChosen) {
+            m_input.load(ctx.settings.ini, controls::readJoystick(ctx.input, bound, deadZone));
+            m_inputChosen = bound;
+            m_inputReady = true;
+        }
+        const auto size = ctx.window().size();
+        m_input.update(controls::readFrame(ctx.input, m_input.controller(), deadZone, static_cast<float>(size.width),
+                                           static_cast<float>(size.height)),
+                       static_cast<float>(dt));
+        m_steering = m_input.steeringUnfiltered(static_cast<float>(dt));
         m_autoReverse->enabled = true;
         m_sensitivity->enabled = c != Controller::Keyboard;
         m_deadZone->enabled = stick;
@@ -679,6 +711,10 @@ private:
     ui::Slider* m_collision = nullptr;
     ui::Slider* m_roadForce = nullptr;
     ui::SpriteButton* m_calibrate = nullptr;
+    controls::GameInput m_input; // mmInput, for the steering bar
+    controls::Controller m_inputChosen = controls::Controller::Keyboard;
+    bool m_inputReady = false;
+    float m_steering = 0.0f; // ControlSetup +0x7248
 };
 
 // --- Customize controls ----------------------------------------------------------------------

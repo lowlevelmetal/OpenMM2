@@ -1178,6 +1178,9 @@ private:
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
+        // mmExternalView::Cull draws the steering bar for the mouse.
+        if (m_gameInput.controller() == controls::Controller::Mouse)
+            ps.mouseSteer = m_steerApplied;
         return ps;
     }
 
@@ -2434,6 +2437,7 @@ private:
         // ... and records them, and the car is driven with the recorded
         // values (bytes).
         pedals = controls::replayQuantize(pedals);
+        m_steerApplied = pedals.steering; // mmPlayer::SetSteering: +0x2264
         m_gameInput.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during wreck
         // penalties, and after a wreck or a multiplayer finish), and until
@@ -2831,6 +2835,7 @@ private:
     // controller's bindings read each frame (mmInput, app/GameInput).
     controls::GameInput m_gameInput;
     controls::ForceFeedback m_ff; // mmPlayer::UpdateFF and the effects
+    float m_steerApplied = 0.0f;  // the recorded steering (mmPlayer +0x2264)
     controls::Options m_controlOptions;
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.
