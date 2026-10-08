@@ -4,27 +4,29 @@
 
 namespace mm2::ai {
 
-// Deterministic random numbers standing in for the Angel engine's global
-// frand()/irand(). Each AI world owns one, so identical seeds and inputs
-// replay identically.
+// MM2's irand() and frand() (build 3393): the MSVC rand() linear
+// congruential generator, seed = seed * 214013 + 2531011, returning bits 16..30
+// (0 .. 32767); frand() is irand() * 2^-15, so [0, 32767/32768]. The original
+// has one global seed for everything (traffic, pedestrians, police, audio,
+// effects), set to 1 by aiMap::Reset (ResetRandomSeed). OpenMM2 gives each AI
+// subsystem its own generator so identical seeds and inputs replay
+// identically; the draws and their scaling are MM2's.
 class Random {
 public:
-    explicit Random(std::uint64_t seed = 0x6D6D32u) : m_state(seed ? seed : 1) {}
+    explicit Random(std::uint64_t seed = 1) : m_seed(static_cast<std::uint32_t>(seed)) {}
 
-    std::uint32_t next() {
-        // xorshift64*
-        m_state ^= m_state >> 12;
-        m_state ^= m_state << 25;
-        m_state ^= m_state >> 27;
-        return static_cast<std::uint32_t>((m_state * 0x2545F4914F6CDD1Dull) >> 32);
+    void seed(std::uint32_t s) { m_seed = s; }
+
+    // irand(): 0 .. 32767.
+    int irand() {
+        m_seed = m_seed * 214013u + 2531011u;
+        return static_cast<int>((m_seed >> 16) & 0x7FFFu);
     }
-    // [0, 1), like frand().
-    float frand() { return static_cast<float>(next() >> 8) * (1.0f / 16777216.0f); }
-    // [0, n), like irand(n).
-    int irand(int n) { return n > 0 ? static_cast<int>(next() % static_cast<std::uint32_t>(n)) : 0; }
+    // frand(): irand() times 3.0517578e-05.
+    float frand() { return static_cast<float>(irand()) * 3.0517578125e-05f; }
 
 private:
-    std::uint64_t m_state;
+    std::uint32_t m_seed;
 };
 
 } // namespace mm2::ai
