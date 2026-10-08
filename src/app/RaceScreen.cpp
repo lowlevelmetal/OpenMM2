@@ -37,6 +37,7 @@
 #include "render/Projection.h"
 #include "ui/Text.h"
 #include "ui/TextureCache.h"
+#include "ui/Widgets.h"
 
 #include <imgui.h>
 
@@ -111,9 +112,15 @@ public:
             load(ctx);
             return;
         }
-        if (ctx.input.keyPressed(platform::Key::Escape)) {
-            ctx.nextScreen = makeFrontendScreen(ctx, m_result);
-            return;
+        // mmPopup: Escape opens the main menu (pausing a single-player game,
+        // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
+        m_popupGraveyard.clear();
+        if (m_popup != Popup::None) {
+            updatePopup(ctx, dt);
+            if (ctx.nextScreen)
+                return;
+        } else if (ctx.input.keyPressed(platform::Key::Escape)) {
+            openPopup(ctx, true);
         }
         if (multiplayer(ctx)) {
             ctx.netGame->update();
@@ -124,7 +131,7 @@ public:
         }
         if (ctx.input.keyPressed(platform::Key::F2))
             m_flyCamera = !m_flyCamera;
-        if (!m_flyCamera)
+        if (!m_flyCamera && m_popup == Popup::None)
             updateGameInput(ctx);
         if (m_paused) {
             // asRoot paused (the full-screen map in single player): the
@@ -287,7 +294,9 @@ public:
             // mmGame::UpdateGameInput: looking around from a point-of-view
             // camera disables the HUD (mmHUD::Disable), straight ahead
             // enables it again.
-            m_hud->options().visible = m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f;
+            m_hud->options().visible =
+                (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
+                m_popup == Popup::None; // mmPopup::ProcessEscape: mmHUD::Disable
             std::vector<game::session::MapBlip> blips;
             // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
             for (const auto& o : m_opponents)
@@ -298,7 +307,9 @@ public:
                     blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
             m_hud->setViewProjection(frame.view * frame.proj);
             m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
-            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
+            // mmPopup::ProcessEscape deactivates the map.
+            if (m_popup == Popup::None)
+                m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
         dev.endScene();
     }
@@ -306,6 +317,8 @@ public:
     void drawOverlay(Context& ctx) override {
         if (m_state == State::Running && m_hud && m_session && m_player && !m_showDebugOnly) {
             m_hud->drawOverlay(*ctx.overlay, m_text, m_ui, *m_session, m_playerState);
+            if (m_popup != Popup::None)
+                drawPopup(ctx);
             return;
         }
         if (m_state != State::Running) {
@@ -907,8 +920,138 @@ private:
         if (m_session->finished() && !m_resultsShown) {
             m_resultsShown = true;
             m_result = m_session->result();
-            ctx.nextScreen = makeFrontendScreen(ctx, m_result);
+            // A lost race or lesson (state 4) opens the main menu without
+            // pausing (mmPopup::ProcessEscape(0)); a finished one shows the
+            // results (mmPopup::ShowResults), which OpenMM2 shows as the
+            // first page of the menus.
+            if (!m_result.finished && !multiplayer(ctx))
+                openPopup(ctx, false);
+            else
+                ctx.nextScreen = makeFrontendScreen(ctx, m_result);
         }
+    }
+
+    // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
+
+    void openPopup(Context& ctx, bool pause) {
+        m_popup = Popup::Main;
+        // ProcessEscape: pauses unless the game already is (the full-screen
+        // map), and remembers it so closing does not resume it.
+        m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
+        if (m_popupPaused)
+            m_paused = true;
+        buildPopup(ctx);
+    }
+
+    void closePopup() {
+        // mmPopup::DisablePU.
+        m_popup = Popup::None;
+        // Buttons close the popup from inside its update: keep the menu
+        // until the next frame.
+        if (m_popupMenu)
+            m_popupGraveyard.push_back(std::move(m_popupMenu));
+        if (m_popupPaused)
+            m_paused = false;
+        m_popupPaused = false;
+    }
+
+    // The quit button: back to the race menu (or the crash course page),
+    // without the results.
+    void quitToMenu(Context& ctx) {
+        game::RaceResult r = m_session ? m_session->result() : m_result;
+        r.ended = false;
+        ctx.nextScreen = makeFrontendScreen(ctx, r);
+    }
+
+    void buildPopup(Context& ctx) {
+        // mmPopup(game, 0.2, 0.1, 0.6, 0.8): the popup card covers x 0.2-0.8
+        // and y 0.1-0.9 of the screen. PUMain's buttons sit at 0.125, 0.25,
+        // 0.375 and 0.5 of it, "Resume Driving" (PUMenuBase::AddExit) at
+        // x 0.5, y 0.9; PUExit's question at 0.2 and Yes / No at 0.7.
+        const auto& s = ctx.game->strings;
+        const bool crash = m_result.config.mode == game::GameMode::CrashCourse;
+        const bool net = multiplayer(ctx);
+        if (m_popupMenu)
+            m_popupGraveyard.push_back(std::move(m_popupMenu));
+        m_popupMenu = std::make_unique<ui::Menu>();
+        auto& menu = *m_popupMenu;
+        menu.popupSounds = true;
+        const ui::Box card = popupCard();
+        auto at = [&](float x, float y, float w) {
+            return ui::Box{card.x + x * card.w, card.y + y * card.h, w * card.w, 0.075f * card.h};
+        };
+        if (m_popup == Popup::Main) {
+            m_popupTitle = s.get(463, "MAIN MENU");
+            auto& restart = menu.add<ui::TextButton>(
+                at(0.0f, 0.125f, 1.0f), crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"),
+                [this] {
+                    // mmReplayManager's reset flag: the race starts over.
+                    closePopup();
+                    m_resultsShown = false;
+                    if (m_session)
+                        m_session->restart();
+                });
+            // PUMain::RestartRO: no restart in a network game.
+            restart.enabled = !net;
+            // The in-race option pages (PUOptions, PUAudioOptions,
+            // PUControl, PUGraphics) are not ported.
+            menu.add<ui::TextButton>(at(0.0f, 0.25f, 1.0f), s.get(466, "Options"), [] {}).enabled = false;
+            menu.add<ui::TextButton>(at(0.0f, 0.375f, 1.0f),
+                                     crash ? s.get(656, "Back to School") : s.get(468, "Quit to Race Menu"),
+                                     [this, &ctx] { quitToMenu(ctx); });
+            menu.add<ui::TextButton>(at(0.0f, 0.5f, 1.0f), s.get(469, "Exit to Windows"), [this, &ctx] {
+                m_popup = Popup::ConfirmExit;
+                buildPopup(ctx);
+            });
+            auto& resume = menu.add<ui::TextButton>(at(0.5f, 0.9f, 0.5f), s.get(473, "Resume Driving"),
+                                                    [this] { closePopup(); });
+            menu.setInitialFocus(&resume);
+            menu.onBack = [this] { closePopup(); };
+        } else {
+            m_popupTitle = s.get(456, "QUIT MENU");
+            auto& yes = menu.add<ui::TextButton>(at(0.2f, 0.7f, 0.2f), s.get(458, "Yes"), [&ctx] { ctx.quit = true; });
+            auto& no = menu.add<ui::TextButton>(at(0.6f, 0.7f, 0.2f), s.get(459, "No"), [this, &ctx] {
+                m_popup = Popup::Main;
+                buildPopup(ctx);
+            });
+            menu.setInitialFocus(&no);
+            (void)yes;
+            menu.onBack = [this, &ctx] {
+                m_popup = Popup::Main;
+                buildPopup(ctx);
+            };
+        }
+    }
+
+    static ui::Box popupCard() { return {0.2f * 640.0f, 0.1f * 480.0f, 0.6f * 640.0f, 0.8f * 480.0f}; }
+
+    void updatePopup(Context& ctx, double dt) {
+        if (!m_popupMenu)
+            return;
+        const render::UiLayout layout = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
+        const ui::NavInput nav = m_nav.read(ctx.input, layout, dt);
+        ui::UiFrame f{*ctx.overlay, m_ui, m_text, nav, m_time};
+        m_popupMenu->update(f); // a button may replace or close it (see m_popupGraveyard)
+    }
+
+    void drawPopup(Context& ctx) {
+        if (!m_popupMenu)
+            return;
+        auto& ov = *ctx.overlay;
+        ov.begin(ctx.display.uiScale);
+        // The popup card (MenuManager::AdjustPopupCard); its shade is inferred.
+        const ui::Box card = popupCard();
+        ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
+        const ui::NavInput none;
+        ui::UiFrame f{ov, m_ui, m_text, none, m_time};
+        // PUMenuBase::CreateTitle: the menu's name across the top 0.1.
+        m_text.draw(ov, ui::style::popupFont(), m_popupTitle, card.x + card.w * 0.5f, card.y + 0.03f * card.h,
+                    ui::style::kPopupText, ui::Align::Center);
+        if (m_popup == Popup::ConfirmExit)
+            m_text.draw(ov, ui::style::popupFont(), ctx.game->strings.get(457, "Do you want to exit the game?"),
+                        card.x + card.w * 0.5f, card.y + 0.2f * card.h, ui::style::kPopupText, ui::Align::Center);
+        m_popupMenu->drawContent(f);
+        ov.end();
     }
 
     void loadAi(Context& ctx) {
@@ -1258,7 +1401,7 @@ private:
         // through mmInput::FilterDiscreteSteering.
         float keyTarget = 0.0f;
         std::optional<float> analog;
-        if (!m_flyCamera) {
+        if (!m_flyCamera && m_popup == Popup::None) {
             // mmInput::GetThrottleVal / GetBrakesVal / GetHandBrake: a bound
             // key gives 1.
             pedals.accelerator = m_bindings.down(in, Action::Throttle) ? 1.0f : 0.0f;
@@ -1618,8 +1761,17 @@ private:
     controls::Bindings m_bindings;
     controls::Options m_controlOptions;
     controls::DiscreteSteering m_keySteer;
-    // The game is paused (asRoot): the full-screen map in single player.
+    // The game is paused (asRoot): the full-screen map or the popup in
+    // single player.
     bool m_paused = false;
+    // The in-race popup (mmPopup).
+    enum class Popup : std::uint8_t { None, Main, ConfirmExit };
+    Popup m_popup = Popup::None;
+    std::unique_ptr<ui::Menu> m_popupMenu;
+    std::vector<std::unique_ptr<ui::Menu>> m_popupGraveyard;
+    std::string m_popupTitle;
+    ui::NavReader m_nav;
+    bool m_popupPaused = false;
     float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
