@@ -62,8 +62,9 @@ generated assembly or C.
 
 ## Manifest
 
-Lines as of the start of the audit. Classes as above; `-` means
-OpenMM2-only with no audit area. The OpenMM2-only check reclassified the
+Lines as of the start of the audit (files the audit added: as of when
+they were added). Classes as above; `-` means OpenMM2-only with no audit
+area. The OpenMM2-only check reclassified the
 files whose area reads `openmm2-only` from O to M; their game behaviour is
 audited in [openmm2-only.md](openmm2-only.md).
 
@@ -100,6 +101,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/app/CommandLine.h` | 38 | O | - |
 | `src/app/Context.cpp` | 61 | M | openmm2-only |
 | `src/app/Context.h` | 103 | O | - |
+| `src/app/Controls.cpp` | 105 | P | session |
+| `src/app/Controls.h` | 104 | P | session |
 | `src/app/GameData.cpp` | 153 | O | - |
 | `src/app/GameData.h` | 37 | O | - |
 | `src/app/IntroScreen.cpp` | 233 | M | rendering-fx |
@@ -131,8 +134,14 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/asset/Reader.h` | 94 | F | formats |
 | `src/asset/VehicleModel.cpp` | 73 | F | formats |
 | `src/asset/VehicleModel.h` | 59 | F | formats |
+| `src/audio/AngelRandom.cpp` | 90 | P | audio |
+| `src/audio/AngelRandom.h` | 44 | P | audio |
+| `src/audio/AngelUnits.cpp` | 33 | P | audio |
+| `src/audio/AngelUnits.h` | 32 | P | audio |
 | `src/audio/AudioDevice.cpp` | 75 | O | - |
 | `src/audio/AudioDevice.h` | 38 | O | - |
+| `src/audio/EchoEffect.cpp` | 209 | P | audio |
+| `src/audio/EchoEffect.h` | 112 | P | audio |
 | `src/audio/Mixer.cpp` | 316 | M | audio |
 | `src/audio/Mixer.h` | 135 | M | audio |
 | `src/audio/Music.cpp` | 767 | M | audio |
@@ -143,6 +152,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/audio/MusicMotif.h` | 44 | M | audio |
 | `src/audio/SoundBank.cpp` | 70 | F | audio |
 | `src/audio/SoundBank.h` | 45 | F | audio |
+| `src/audio/TextFields.cpp` | 101 | F | audio |
+| `src/audio/TextFields.h` | 34 | F | audio |
 | `src/audio/Wav.cpp` | 100 | F | audio |
 | `src/audio/Wav.h` | 27 | F | audio |
 | `src/audio/game/Ambience.cpp` | 390 | P | audio |
@@ -153,6 +164,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/audio/game/CarAudio.h` | 426 | P | audio |
 | `src/audio/game/Object3D.cpp` | 127 | P | audio |
 | `src/audio/game/Object3D.h` | 122 | P | audio |
+| `src/audio/game/PedAudio.cpp` | 298 | P | audio |
+| `src/audio/game/PedAudio.h` | 98 | P | audio |
 | `src/audio/game/SoundSlot.cpp` | 128 | P | audio |
 | `src/audio/game/SoundSlot.h` | 70 | P | audio |
 | `src/audio/game/Voices.cpp` | 523 | P | audio |
@@ -176,10 +189,14 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/city/Race.cpp` | 337 | F | ai-ambient-city |
 | `src/city/Race.h` | 143 | F | ai-ambient-city |
 | `src/city/Reader.h` | 99 | F | ai-ambient-city |
+| `src/city/RoomInfo.cpp` | 89 | P | ai-ambient-city |
+| `src/city/RoomInfo.h` | 58 | P | ai-ambient-city |
 | `src/city/RoomLocator.cpp` | 101 | P | ai-ambient-city |
 | `src/city/RoomLocator.h` | 34 | P | ai-ambient-city |
 | `src/city/SdlCollect.cpp` | 1141 | P | ai-ambient-city |
 | `src/city/SdlCollect.h` | 127 | P | ai-ambient-city |
+| `src/city/SdlDraw.cpp` | 1264 | P | rendering-fx |
+| `src/city/SdlDraw.h` | 89 | P | rendering-fx |
 | `src/core/File.cpp` | 184 | O | - |
 | `src/core/File.h` | 108 | O | - |
 | `src/core/Ini.cpp` | 189 | O | - |
@@ -192,6 +209,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/core/Paths.h` | 24 | O | - |
 | `src/core/StringUtil.cpp` | 135 | M | openmm2-only |
 | `src/core/StringUtil.h` | 35 | M | openmm2-only |
+| `src/data/CNumbers.h` | 128 | F | formats |
 | `src/data/DatFile.cpp` | 275 | F | formats |
 | `src/data/DatFile.h` | 63 | F | formats |
 | `src/data/PeResources.cpp` | 200 | F | formats |
@@ -204,6 +222,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/CamCar.h` | 149 | P | camera-props |
 | `src/game/CamMath.cpp` | 185 | P | camera-props |
 | `src/game/CamMath.h` | 77 | P | camera-props |
+| `src/game/CamMirror.cpp` | 79 | P | camera-props |
+| `src/game/CamMirror.h` | 86 | P | camera-props |
 | `src/game/CamParams.cpp` | 151 | P | camera-props |
 | `src/game/CamParams.h` | 111 | P | camera-props |
 | `src/game/CamPlayer.cpp` | 316 | P | camera-props |
@@ -255,6 +275,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/fx/BirthRule.h` | 68 | P | rendering-fx |
 | `src/game/fx/EffectLibrary.cpp` | 60 | P | rendering-fx |
 | `src/game/fx/EffectLibrary.h` | 54 | P | rendering-fx |
+| `src/game/fx/LensFlares.cpp` | 159 | P | rendering-fx |
+| `src/game/fx/LensFlares.h` | 61 | P | rendering-fx |
 | `src/game/fx/LineSparks.cpp` | 143 | P | rendering-fx |
 | `src/game/fx/LineSparks.h` | 63 | P | rendering-fx |
 | `src/game/fx/ParticleRenderer.cpp` | 126 | P | rendering-fx |
@@ -363,6 +385,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/phys/vehicle/Transmission.h` | 66 | P | vehicle |
 | `src/phys/vehicle/TuneParams.cpp` | 209 | P | vehicle |
 | `src/phys/vehicle/TuneParams.h` | 188 | P | vehicle |
+| `src/phys/vehicle/VehicleBody.h` | 37 | P | vehicle |
 | `src/phys/vehicle/VehicleGeometry.cpp` | 28 | P | vehicle |
 | `src/phys/vehicle/VehicleGeometry.h` | 56 | P | vehicle |
 | `src/phys/vehicle/Wheel.cpp` | 657 | P | vehicle |
