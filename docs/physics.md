@@ -107,7 +107,12 @@ InertiaBox 2 1 3, BoundFriction 0.3, BoundElasticity 0.2, ...;
 
 Geometry from the wheel's pivot `.mtx` (`vehWheel::Init`): centre = the
 pivot in model space, radius = half the box height, width = the box width.
-The steered wheel turns about its inner edge.
+The steered wheel turns about its inner edge. The tune file's WheelFront and
+WheelBack are the left wheels'; the right ones take them by
+`vehWheel::CopyVars`, which copies every field except HandbrakeCoef and
+WobbleLimit, so the right wheels keep HandbrakeCoef 1 whatever the file
+says (a car with HandbrakeCoef 2 brakes its back-left wheel twice as hard as
+its back-right one).
 
 Constants (`ComputeConstants`, `SetNormalLoad`), with static load
 L = mass * 19.6 / 4 * |z - cg.z| / |z| (z the wheel's model z, cg the
@@ -156,6 +161,12 @@ on surfaces without drag), the longitudinal part × (1 + sinking).
 Visual: the wheel drops by its travel less the tyre squash
 (Radius * 0.05 * force / L, at most Radius * 0.3) and spins; with
 CamberLimit > 0 it cambers with its travel, otherwise it rolls with its axle.
+A damaged car's wheels wobble about their forward axis (`vehCarDamage::Update`,
+see Damage).
+
+The arithmetic follows the build 3393 assembly, including the grouping of
+sums and products (Ghidra's printed expressions reorder commutative operands,
+which changes the last bits with 32-bit floats).
 
 ## Drivetrain (vehDrivetrain) — MM2
 
@@ -198,7 +209,10 @@ limited to 1.25 at rest falling to 1.03 at 50 rad/s (`diffRatioMax`,
   blends from the old value.
 * Revving in neutral rocks the car: a reaction torque about the engine's axis
   (the `engine` pivot if the car has one; otherwise X for front-wheel drive,
-  Z otherwise).
+  Z otherwise). With a pivot, the torque is given in the pivot's frame rocked
+  by 0.05 × torque / peak torque × AngInertia about its own Z axis
+  (`vehEngine::Update` keeps that rocked matrix, which would also place an
+  engine model). No retail car has an `engine` pivot.
 
 ## Transmission (vehTransmission) — MM2
 
@@ -238,7 +252,10 @@ TorqueCoef and DampCoef make an anti-roll coupling: a torque about the body's
 length of -(Δtravel * TorqueCoef * Izz + Δrate * 2 sqrt(TorqueCoef) Izz *
 DampCoef) between the axle's wheels. The axle also rolls its wheels visually
 (by half the travel difference over the left wheel's offset from the `axleN`
-pivot; factor 1 without a pivot).
+pivot along its X axis; factor 1 without a pivot). `vehAxle::Update` writes
+that roll into the pivot matrix's m0.y and the mean travel (over the left
+wheel's offset along the pivot's Z) into its m2.y, which tilts the axis the
+wheels are rolled about. No retail car has an axle pivot.
 
 ## Gyro (vehGyro) — MM2
 
@@ -267,21 +284,69 @@ each point below the surface adding Mass × buoyancy upwards and
 19.6 for the whole car) and falls by 0.03 per second to 0.4, so a car bobs
 high, then settles lower. The point velocity includes the unit vector of the
 car's world position, a quirk of the original kept as is. The race rules
-respawn or end the race after 5 s in the water.
+respawn or end the race after 5 s in the water. `vehCar::Reset` only clears
+the splash's active flag (`vehSplash::Reset` runs once, from its
+constructor), so a car reset after sinking keeps its lowered buoyancy, and
+`vehCar::Update` runs the splash (and `vehStuck`) only while the car is
+drivable (not while it is held on the start line). `vehSplash::Init` first
+fills the points with random directions (192 calls of the game's `frand`)
+and then overwrites them with the grid; OpenMM2 skips the random fill.
 
 ## Damage (vehCarDamage) — MM2
 
 CurrentDamage falls by RegenerateRate per second; damage is the fraction
-between MedDamage and MaxDamage and the car is wrecked at MaxDamage. Impacts
-add to it through the impact list (see "Collision", "Damage and sounds"). A
-wrecked car stops responding with the brakes on (`vehCar::PreUpdate`'s
-disabled state; which state MM2 uses for a wreck is inferred).
+between MedDamage and MaxDamage. Impacts add to it through the impact list
+(see "Collision", "Damage and sounds"). MM2 has no global damage scale
+(Midtown Madness 1's GlobalDamageScale is gone).
+
+* With damage enabled and CurrentDamage strictly past MaxDamage
+  (`mmPlayer::IsMaxDamaged`), `mmPlayer::Update` takes the player's throttle,
+  steering and brake away (all 0) every frame; the race modes then hold the
+  wreck with `vehCar::SetDrivable(0, 1)` (brake on, neutral; game rules).
+* The wheels wobble with the damage fraction (`vehCarDamage::Update`, its
+  `bWobble` switch is on): front-left and back-right by -0.15 of it, the
+  other two by 0.35, faded out as the front-left wheel spins faster
+  (factor 1 - |w| dt 2/pi, clamped).
+* Cops and Robbers (`mmPlayer::EnableRegen`): `mmPlayer::UpdateRegen` heals
+  the player's car by MaxDamage / 2000 a frame above 5 m/s and clears the
+  damage once that empties it (`CarSim::regenerate`).
 
 ## Opponents and police
 
 MM2 builds AI cars with `vehCar::Init(<car>)` (`aiVehiclePhysics::Init`):
 the same tune as the player's. The retail `*_opp.vehCarSim` and
 `vpcop_cop.vehCarSim` files (MM1-era layouts) are never loaded by the game.
+The player's own vpcop is the exception the other way round: `mmPlayer::Init`
+runs `vehCarSim::Init` again with "vpmustang99" (unless the `-tune_car`
+option is given), so the player's police car drives on the Mustang's tune and
+wheel pivots, with vpcop's body, bound, damage, gyro and stuck tunes
+(`SimVehicle::loadPlayer`).
+
+## Player input (mmGame, mmInput, mmPlayer) — MM2
+
+* `mmGame::UpdateSteeringBrakes` hands the car the pedals (swapped while
+  reversing) and runs the automatic reverse (see Transmission).
+* Keyboard and gamepad steering go through `mmInput::FilterDiscreteSteering`
+  / `FilterGamepadSteering`: a filtered position moves towards the target
+  (full lock or the stick) at DeltaOut per second when it turns further the
+  same way and DeltaIn otherwise, and the car gets sign × |position|^Filter.
+  `mmPlayer::Update` sets the three from the player's tune by speed:
+  f = clamp(speed, 5, 100) / 95 (the clamped speed over the range), value =
+  Lo + (Hi - Lo) f, with DeltaIn 2.5 → 1.5, DeltaOut 3.5 → 2.5, Filter 2 →
+  1 (the constructor's values; the retail game has no `mmPlayer` tune).
+  Mouse and wheel steering (`mmPlayer::FilterSteering`) are not ported.
+* After `mmGame`'s input, `mmPlayer::Update`: once the race is over the car
+  brakes with the wheel turned full left; a wreck loses throttle, steering
+  and brake; below 4 mph without throttle the handbrake holds the car.
+  `mmPlayer::UpdateHOG` (setting a flipped car upright) never fires in build
+  3393: its "collided" flag (vehCarSim +0x1540) is only ever cleared.
+* Before the start the game holds the car with `vehCar::SetDrivable(0, 1)`:
+  `vehCar::PreUpdate` puts the brake on and the gearbox in neutral each
+  frame, the throttle revs the engine freely and the steering and handbrake
+  stay the player's; `SetDrivable(1, ...)` selects first gear
+  (`SimVehicle::hold` / `drive`).
+* The player's semi has no trailer in multiplayer cruise and Cops and Robbers
+  (`mmPlayer::Init`'s flag to `vehCar::Init`); AI semis always tow theirs.
 
 ## Trailers (vehTrailer and dgTrailerJoint) — MM2
 
@@ -417,16 +482,18 @@ steady circle vpsemi's trailer then lags (its body velocity reads 10 m/s at
 | Offset0, Offset1 (vpcentury) | not read by MM2 (an older layout) | MM2 |
 | vehTrailer Mass, InertiaBox | `InitBoxMass` (defaults 3000, 3 4 9) | MM2 |
 | CarHitchOffset, TrailerHitchOffset | replace the models' hitch pivots (above) | MM2 |
-| WheelFront, WheelBack, Drivetrain | TWHL0 (TWHL1 copies), TWHL2 (TWHL3 copies), the first drivetrain (the others copy) | MM2 |
+| WheelFront, WheelBack, Drivetrain | TWHL0 (TWHL1 copies all but HandbrakeCoef and WobbleLimit), TWHL2 (TWHL3 likewise), the first drivetrain (the others copy) | MM2 |
 | (impact elasticity/friction) | vehTrailer sets none: the trailer's bound (`bound/<car>_trailer_bound.bnd`) keeps the materials it names, which MM2 looks up in the city's material manager; OpenMM2 gives it the bound default (elasticity 0.5, friction 1) | inferred |
 
 Impacts see the inverse mass matrix through the joint while it holds
 (`phColliderJointed::GetInvMassMatrix`), and the tractor and its trailer do
 not collide with each other (`dgPhysManager::Update`). The
 Ctrl+B debug key that breaks the joint (`dgTrailerJoint::Update`) is not
-ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are not simulated: MM2
-keeps only their offset from TWHL2/3 (vehCarSim
-TrailerBackBackLeft/RightWheelPosDiff in mm2hook's layout) to draw them.
+ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
+nor drawn: `vehTrailerInstance::Init` loads only TWHL0–3 (drawing them at
+their offset from TWHL2/3 is mm2hook's addition). A car's own WHL4/WHL5
+(`vehCarModel::Draw`) are drawn with the WHL2/WHL3 matrices moved back along
+the car's Z axis by 2.2 times that wheel's radius, not at their pivots.
 
 **Results** (`mm2tool simcar`, flat asphalt, 1/60 s, defaults; the gap is
 measured before the FreeRange correction):
@@ -625,7 +692,8 @@ game's impact callback (the hit counts).
 (`_default` material), automatic gearbox, fixed 1/60 s step, retail geometry
 (wheel pivots from `.mtx`, body box from the bound). The `.info` Top Speed is
 the menu's statistic, not a measurement. vpsemi and vpcentury tow their
-trailers.
+trailers. vpcop is the police car's own tune (as the AI drives it); the
+player's vpcop drives as vpmustang99.
 
 | car | drive | mass | hp | High (mph) | 0-60 (s) | 1/4 mile (s) | top (mph) | .info Top Speed |
 |---|---|---|---|---|---|---|---|---|
@@ -640,7 +708,7 @@ trailers.
 | vpcoop | FWD | 800 | 250 | 80 | 9.28 | 17.27 | 104.3 | 60 |
 | vpcoop2k | FWD | 800 | 300 | 108 | 7.93 | 16.05 | 131.9 | 115 |
 | vpcop | RWD | 1300 | 750 | 140 | 2.93 | 10.68 | 164.9 | 160 |
-| vpdb7 | FWD | 1573 | 550 | 150 | 4.60 | 12.70 | 177.3 | 206 |
+| vpdb7 | FWD | 1573 | 550 | 150 | 4.58 | 12.70 | 177.3 | 206 |
 | vpddbus | RWD | 4915 | 456 | 65 | 9.87 | 17.38 | 99.4 | 25 |
 | vpdune | FWD | 1000 | 400 | 106 | 4.45 | 12.73 | 136.7 | 170 |
 | vpford | RWD | 2500 | 550 | 85 | 6.42 | 14.88 | 104.1 | 58 |
@@ -671,6 +739,8 @@ as speeds at MaxRPM and capped every car at High.)
   "Trailers"); the trailer's impact parameters are inferred.
 - The per-axis angular velocity limits of non-car bodies other than
   trailers and `vehSuspension` (the visual shocks) are not ported.
-- The engine pivot (`<car>_engine.mtx`) and axle pivots are not loaded yet;
-  the original's fallbacks apply.
+- `dgPhysManager::CollideTerrain` asks each mover `RequiresTerrainCollision`
+  (`CarSim` and `Trailer` port it) before colliding its body with the room's
+  terrain; the World does not ask yet, so an upright car on its wheels still
+  collides its body with the terrain.
 
