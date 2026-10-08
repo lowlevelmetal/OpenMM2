@@ -29,7 +29,8 @@ std::optional<MirrorParams> loadMirrorParams(const vfs::Vfs& vfs, std::string_vi
         return std::nullopt;
     }
     std::string err;
-    auto dat = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()), &err);
+    const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+    auto dat = data::parseDat(text, &err);
     if (!dat || !dat->top()) {
         if (error)
             *error = std::format("{}: {}", path, dat ? "empty" : err);
