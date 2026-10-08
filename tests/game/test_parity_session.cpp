@@ -493,3 +493,30 @@ TEST(ParitySession, DeferredLightsCatchUp) {
     for (std::size_t i = 0; i < a->signals().size(); ++i)
         EXPECT_EQ(a->signals()[i].state, b->signals()[i].state) << i;
 }
+
+// cityLevel::Load / lvlLevel::LoadInstances build the level's own room
+// flags from the PSDL's: 0x0A for subterranean rooms, 0x01 for open streets,
+// 0x04 for deep water, 0x20 for rooms with a flag-0x100 instance.
+TEST(ParitySession, LevelRoomFlagsFromThePsdl) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    const auto& city = parityRetail()->london;
+    const auto flags = city::levelRoomFlags(city);
+    ASSERT_EQ(flags.size(), city.psdl.rooms.size());
+    int streets = 0, under = 0, water = 0, landmarks = 0;
+    for (std::size_t i = 1; i < flags.size(); ++i) {
+        const auto sdl = city.psdl.rooms[i].flags;
+        EXPECT_EQ((flags[i] & 0x0A) == 0x0A, (sdl & 0x02) != 0) << i;
+        EXPECT_EQ(flags[i] & 0x08, (flags[i] & 0x02) ? 0x08 : 0) << i;
+        streets += (flags[i] & 0x01) != 0;
+        under += (flags[i] & 0x02) != 0;
+        water += (flags[i] & 0x04) != 0;
+        landmarks += (flags[i] & 0x20) != 0;
+    }
+    std::printf("london level rooms: %d streets, %d underground, %d water, %d landmark\n", streets, under, water,
+                landmarks);
+    EXPECT_GT(streets, 500);
+    EXPECT_GT(under, 100);
+    EXPECT_GT(water, 0);
+    EXPECT_GT(landmarks, 0);
+}

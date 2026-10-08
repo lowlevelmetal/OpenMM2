@@ -275,12 +275,7 @@ public:
         for (const auto& c : m_cops)
             if (c.fx)
                 c.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
-        // cityLevel::DrawRooms draws no rain while the camera is underground
-        // (PSDL room flag 0x02).
-        const int cameraRoom = m_cityRenderer->stats().cameraRoom;
-        const bool underground = cameraRoom > 0 && static_cast<std::size_t>(cameraRoom) < m_city->psdl.rooms.size() &&
-                                 (m_city->psdl.rooms[static_cast<std::size_t>(cameraRoom)].flags & city::RoomFlag::Subterranean);
-        if (m_weather && !underground)
+        if (m_weather && rainVisible())
             m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
@@ -337,6 +332,7 @@ private:
         for (const auto& w : city->warnings)
             log::debug("city: {}", w);
         m_city = std::make_unique<city::CityData>(std::move(*city));
+        m_levelRoomFlags = city::levelRoomFlags(*m_city); // cityLevel::Load, lvlLevel::LoadInstances
         m_textures = std::make_unique<game::TextureLibrary>(ctx.device(), ctx.game->vfs);
         m_models = std::make_unique<game::ModelLibrary>(ctx.device(), ctx.game->vfs);
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
@@ -1479,12 +1475,7 @@ private:
         // (subterranean) the audio flag 0x80 is set (the tunnel: surface
         // sounds, ambience areas, rain shelter, Aud3DObjectManager::EchoOn).
         // The room is the car's (its ICS position), not the camera's.
-        m_tunnel = false;
-        if (m_cityRenderer) {
-            const int room = m_cityRenderer->roomAt(sim.body.ics.matrix.m3);
-            m_tunnel = room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size() &&
-                       (m_city->psdl.rooms[static_cast<std::size_t>(room)].flags & city::RoomFlag::Subterranean);
-        }
+        m_tunnel = (levelFlagsAt(sim.body.ics.matrix.m3) & city::kLevelRoomSubterranean) != 0;
         if (m_carAudioOk) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = m_lastPedals.accelerator;
@@ -1782,6 +1773,33 @@ private:
         ctx.saveSettings();
     }
 
+    // The level's flags (lvlRoomInfo, see city::levelRoomFlags) of the room
+    // holding `p` (cityLevel::FindRoomId), 0 outside every room.
+    int levelFlagsAt(const Vec3& p) const {
+        if (!m_cityRenderer)
+            return 0;
+        const int room = m_cityRenderer->roomAt(p);
+        return room > 0 && static_cast<std::size_t>(room) < m_levelRoomFlags.size()
+                   ? m_levelRoomFlags[static_cast<std::size_t>(room)]
+                   : 0;
+    }
+
+    // cityLevel::DrawRooms: no rain while the camera's room is subterranean
+    // (0x0A), nor in a landmark room (0x20) when something lies over the
+    // camera (dgPhysManager::Collide with flags 0x20 from 100 m above it).
+    bool rainVisible() const {
+        const Vec3 eye = m_camera.position();
+        const int flags = levelFlagsAt(eye);
+        if (flags & (city::kLevelRoomSubterranean | city::kLevelRoomCovered))
+            return false;
+        if ((flags & city::kLevelRoomLandmark) && m_world) {
+            phys::RayHit hit;
+            if (m_world->wheelProbe(eye + Vec3{0.0f, 100.0f, 0.0f}, eye, hit, nullptr, nullptr))
+                return false;
+        }
+        return true;
+    }
+
     game::CameraTarget cameraTarget() const {
         const auto& sim = m_player->sim();
         game::CameraTarget t;
@@ -1795,12 +1813,8 @@ private:
         t.reverseGear = m_player->reversing();
         for (std::size_t i = 0; i < t.wheels.size(); ++i)
             t.wheels[i] = {sim.wheels[i].onGround, sim.wheels[i].intersection.normal};
-        // mmPlayer::Update: the flags of the room the car's model is in.
-        if (m_cityRenderer) {
-            const int room = m_cityRenderer->roomAt(t.matrix.m3);
-            if (room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size())
-                t.roomFlags = m_city->psdl.rooms[static_cast<std::size_t>(room)].flags;
-        }
+        // mmPlayer::Update: the level flags of the room the car's model is in.
+        t.roomFlags = levelFlagsAt(t.matrix.m3);
         return t;
     }
 
@@ -2070,6 +2084,7 @@ private:
     bool m_announcerOk = false;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
+    std::vector<std::uint16_t> m_levelRoomFlags; // lvlRoomInfo flags per room (city::levelRoomFlags)
     float m_playerRadius = 0.0f; // the player's car's geometry radius (lvlInstance::GetRadius)
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;

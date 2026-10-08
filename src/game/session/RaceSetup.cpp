@@ -107,13 +107,13 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
     if (!city.aiMap || city.aiMap->intersections.size() < 2)
         return std::nullopt;
     const auto& xs = city.aiMap->intersections;
+    // The level's room flags (not the PSDL's): mmSingleRoam asks for no
+    // subterranean rooms (0x0A), and RespawnXYZ never takes water or
+    // landmark rooms (0x24).
+    const auto levelFlags = city::levelRoomFlags(city);
     auto acceptable = [&](const city::AiIntersection& x) {
-        if (x.room < city.psdl.rooms.size()) {
-            const std::uint8_t flags = city.psdl.rooms[x.room].flags;
-            if (flags & (city::RoomFlag::Subterranean | city::RoomFlag::Road | city::RoomFlag::Standard |
-                         city::RoomFlag::SpecialBound))
-                return false;
-        }
+        if (x.room < levelFlags.size() && (levelFlags[x.room] & 0x2E))
+            return false;
         for (const auto pathId : x.paths) {
             if (pathId >= city.aiMap->paths.size())
                 continue;
