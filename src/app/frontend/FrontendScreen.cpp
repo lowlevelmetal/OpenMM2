@@ -223,7 +223,9 @@ std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& resul
         return std::nullopt;
     auto reward = progress.record(*profile, result);
     // The race records (mmMiscData::NewRecord): races only; a circuit enters
-    // every lap's time, the score with the first.
+    // every lap's time, the score with the first. Each entry keeps whether
+    // the race was passed (mmRecord::SetPassed with the mode's ProgressCheck
+    // result, which mmInterface::HOFFillRecords hands to the records list).
     const auto& cfg = result.config;
     const std::string mode = game::modeKey(cfg.mode);
     const bool race = cfg.mode == game::GameMode::Blitz || cfg.mode == game::GameMode::Checkpoint ||
@@ -233,10 +235,11 @@ std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& resul
         if (cfg.mode == game::GameMode::Circuit && !result.lapSeconds.empty()) {
             for (std::size_t i = 0; i < result.lapSeconds.size(); ++i)
                 hallOfFame.submit(cfg.difficulty, cfg.city, mode, cfg.raceIndex,
-                                  {profile->name, cfg.vehicle, result.lapSeconds[i], i == 0 ? score : 0});
+                                  {profile->name, cfg.vehicle, result.lapSeconds[i], i == 0 ? score : 0,
+                                   result.won});
         } else {
             hallOfFame.submit(cfg.difficulty, cfg.city, mode, cfg.raceIndex,
-                              {profile->name, cfg.vehicle, result.timeSeconds, score});
+                              {profile->name, cfg.vehicle, result.timeSeconds, score, result.won});
         }
         if (!hallOfFame.save(store.dir() / "records.ini"))
             log::warn("frontend: cannot save the race records");
