@@ -1,3 +1,5 @@
+// MM2 (docs/parity/ai-vehicles.md, docs/parity/mm2/ai.md): aiMap::ReadBinary,
+// aiIntersection::NumSinks, aiIntersection::SetFourWay, aiIntersection::Road.
 #include "ai/RoadNetwork.h"
 
 #include <algorithm>

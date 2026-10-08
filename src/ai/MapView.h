@@ -22,6 +22,7 @@
 
 namespace mm2::ai {
 
+class Pedestrians;
 class Traffic;
 struct TrackedCar;
 
@@ -56,6 +57,9 @@ public:
     int findRoom(const Vec3& position, int hint) const;
     const std::vector<RoomComponent>& components(int room) const;
 
+    // aiMap::MapComponentType(room, &id): the room's first road or
+    // intersection (type 1 or 3, its id), else none with id = the room.
+    int mapComponentType(int room, int& id) const;
     // aiMap::MapComponent(pos, &id, &type, room): the room's first road or
     // intersection, else a shortcut road the position is on or next to
     // (IsPosOnRoad < 3), else none with id = the room. Returns the room.
@@ -78,6 +82,10 @@ public:
     // whose intersections the racers hold (aiIntersection::StopSources).
     void setTraffic(Traffic* traffic) { m_traffic = traffic; }
     Traffic* traffic() const { return m_traffic; }
+    // The props listed on the roads and intersections (the pedestrians keep
+    // the lists; the drivers steer round them).
+    void setProps(const Pedestrians* props) { m_props = props; }
+    const Pedestrians* props() const { return m_props; }
 
     // [Ambients Drive On The Left] of the city.
     bool driveOnLeft() const { return m_net.driveOnLeft(); }
@@ -87,6 +95,18 @@ public:
     // counted from vertex 0; both kept while the player is in an
     // intersection or off the roads. Fills `car`'s playerRoad / playerVert.
     void trackPlayer(TrackedCar& car);
+    // aiVehiclePlayer::Reset (aiMap::Reset): the players' rooms, roads and
+    // vertices are found afresh on their next update: from room 0, in an
+    // intersection the road the player is leaving
+    // (aiMap::PredictIntersectionPath). (MM2 maps the reset position at once;
+    // OpenMM2 at the next update, where the player still stands.)
+    void resetPlayers() { m_players.clear(); }
+    // aiMap::PredictIntersectionPath: of the roads at intersection `node` that
+    // have side-1 sidewalks (the regular roads), the one whose first section
+    // away from the node points most along `axis` (a car's m2, its back,
+    // turned round while it reverses: the road it is leaving); `leavesFromStart`
+    // tells whether that road starts (its vertex 0) at the node. -1: none.
+    int predictIntersectionPath(int node, const Vec3& axis, bool* leavesFromStart) const;
 
 private:
     void buildRooms();
@@ -95,10 +115,12 @@ private:
     RoomFinder m_findRoom;
     std::vector<std::vector<RoomComponent>> m_rooms;
     Traffic* m_traffic = nullptr;
+    const Pedestrians* m_props = nullptr;
     struct PlayerTrack {
         int room = 0;
         int road = -1;
         int vert = 0;
+        bool reset = true; // aiVehiclePlayer::Reset still to run
     };
     std::unordered_map<int, PlayerTrack> m_players;
 };

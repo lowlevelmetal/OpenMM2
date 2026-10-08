@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <format>
 #include <string_view>
 
@@ -40,8 +41,7 @@ MM2Option takeMM2Option(int argc, char** argv, int& i) {
 // that OpenMM2 has no equivalent for. Device and driver choices (Direct3D,
 // DirectDraw, DirectInput's IME, the archive and memory debugging switches)
 // belong to plumbing OpenMM2 replaces; -level/-car (mmStatePack::SetDefaults'
-// default city and car), -pedpool (aiCityData's pedestrian pool), -pvs
-// (cityLevel::Load's PVS file name), -texframeskip (gfxGetTextureMovie),
+// default city and car), -pvs (cityLevel::Load's PVS file name), -texframeskip (gfxGetTextureMovie),
 // -nomipmap (gfxRenderState::Init), -tune_car (mmPlayer::Init keeps vpcop's
 // own simulation) and -tune_ai (aiMap::Init) are development switches.
 constexpr auto kMM2IgnoredOptions = std::to_array<std::string_view>({
@@ -51,7 +51,7 @@ constexpr auto kMM2IgnoredOptions = std::to_array<std::string_view>({
     "ref", "blade", "bladed", "swage", "sw", "sysmem", "triple", "nomt", "nohwtnl", "nomultitexture", "tex32",
     "primary", "display", "single", "cdepth", "zdepth", "nativevb", "nonativevb", "nomipmap",
     // Development switches.
-    "texframeskip", "pvs", "pedpool", "level", "car", "tune_car", "tune_ai", "andyglasshack",
+    "texframeskip", "pvs", "level", "car", "tune_car", "tune_ai", "andyglasshack",
 });
 
 } // namespace
@@ -163,6 +163,11 @@ CommandLine parseCommandLine(int argc, char** argv) {
                 // mmGameMusicData::Load loads neither the music nor the
                 // city's ambience segment.
                 cl.noMusic = true;
+            } else if (o.name == "pedpool") {
+                // aiCityData::aiCityData: datArgParser::Get("pedpool", 0, int&)
+                // after the city's [Ped Pool], so it overrides it.
+                if (!o.values.empty())
+                    cl.pedPool = std::atoi(o.values[0].c_str());
             } else if (o.name == "nospeech") {
                 // mmPlayer::InitSpeechAudio returns before loading speech.
                 cl.noSpeech = true;
@@ -214,7 +219,8 @@ std::string commandLineHelp() {
            "  --version               print the version\n"
            "\n"
            "The original's options also work: -nomovie, -window, -max, -fs, -fullscreen,\n"
-           "-width <px>, -height <px>, -novblank, -noaudio, -nosoundfx, -nomusic, -nospeech.\n";
+           "-width <px>, -height <px>, -novblank, -noaudio, -nosoundfx, -nomusic, -nospeech,\n"
+           "-pedpool <n>.\n";
 }
 
 } // namespace mm2::app

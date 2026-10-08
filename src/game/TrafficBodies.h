@@ -67,6 +67,11 @@ public:
     // world or left every room stop being simulated; bodies whose car the AI
     // recycled are let go) and the rail cars follow the AI into their rooms.
     void beforeStep();
+    // aiVehicleManager::Reset (a child of aiMap: aiMap::Reset reaches it
+    // through asNode::Reset): every attached active detached
+    // (aiVehicleActive::Detach: the car back to the AI, a wreck if it is not
+    // standing upright) and the list emptied. Call before ai::World::reset.
+    void reset();
     // Once per frame after the physics step: aiVehicleActive::PostUpdate
     // (the AI's matrix follows the body; asleep or below y = -100: handed
     // back to the AI).

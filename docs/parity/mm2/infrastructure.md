@@ -56,7 +56,7 @@ every option build 3393 reads (each `datArgParser::Get` call):
 | `-tune_car` | `mmPlayer::Init` | Without it, a player driving vpcop gets vpmustang99's vehCarSim (the cop car drives like the Mustang); with it, vpcop keeps its own (for tuning the cop). | The swap is ported (`game/PlayerVehicle.cpp`); the option is a development switch: not needed. |
 | `-tune_ai` | `mmGame::Init` (passed as `aiMap::Init`'s last argument) | Development switch for AI tuning. | not needed. |
 | `-level <city>`, `-car <vehicle>` | `Main`, `mmStatePack::SetDefaults` | The state pack's default city and car ("sf" and "vpcoop" when absent). | not needed: OpenMM2 opens the menus on the profile's last city and car; `--quickstart <city>` is its development shortcut. |
-| `-pedpool <n>` | `aiCityData::aiCityData` | Overrides the city's [Ped Pool] (pedestrian pool, default 100). | not needed: development override. `ai::World` settings have the same override (maxPeds) but nothing sets it. |
+| `-pedpool <n>` | `aiCityData::aiCityData` | Overrides the city's [Ped Pool] (pedestrian pool, default 100). | ported: `CommandLine::pedPool` sets `ai::World`'s pedestrian pool (the AI audit, 48895c4). |
 | `-pvs <name>` | `cityLevel::Load` | Reads city/<name>.cpvs instead of the city's own PVS. | not needed. |
 | `-texframeskip <n>` | `gfxGetTextureMovie` | Texture movies use every n-th frame (name-0001, then 1 + n, ...; default 1). | not needed. |
 | `-nomipmap` | `gfxRenderState::Init` | Turns the mip filter off. | not needed. |

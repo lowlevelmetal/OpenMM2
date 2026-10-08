@@ -37,6 +37,10 @@ struct CommandLine {
     bool noMusic = false;       // -nomusic: no music, no city ambience segment
     bool noSpeech = false;      // -nospeech: no announcer
     std::optional<bool> vsync;  // -novblank: false
+    // -pedpool <n>: the pedestrian pool, read by aiCityData's ctor after the
+    // city's [Ped Pool] (datArgParser::Get, atoi of the first value), so it
+    // wins over the file; aiMap::Init then takes trunc(pool x density).
+    std::optional<int> pedPool;
     // MM2 options with no OpenMM2 equivalent (Direct3D device choices,
     // development switches), and single-dash words the original would not
     // have read either; both are logged at start-up and otherwise ignored.

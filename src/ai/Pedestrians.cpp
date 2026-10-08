@@ -1,5 +1,6 @@
 // Pedestrians after MM2's aiPedestrian (build 3393, MM2Recomp; documentation
 // only); see Pedestrians.h and docs/ai.md.
+// Also: aiPedestrian::GetRoadToLeft (setNextRoad).
 #include "ai/Pedestrians.h"
 
 #include "core/StringUtil.h"
@@ -62,7 +63,7 @@ float turnTowards(float heading, float angle) {
 
 Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types,
                          const PedSettings& settings, std::uint64_t seed)
-    : m_net(network), m_types(std::move(types)), m_settings(settings), m_rng(seed) {
+    : m_net(network), m_types(std::move(types)), m_settings(settings), m_seed(seed), m_rng(seed) {
     // The sequences the AI asks for, by name (aiPedestrian::Init). LDIVE and
     // RDIVE are looked up too but no retail table has them.
     for (const auto& t : m_types) {
@@ -720,6 +721,32 @@ void Pedestrians::populateAll() {
     m_populateAll = true;
 }
 
+void Pedestrians::reset() {
+    // aiMap::Reset: ResetRandomSeed first (OpenMM2: this stream's own seed).
+    m_rng.seed(static_cast<std::uint32_t>(m_seed));
+    // aiPath::Reset: each road's pedestrian list (+0x20), its players' mask
+    // and its link in the populated list (+0x34); aiMap +0x180 emptied.
+    std::ranges::fill(m_pathHead, -1);
+    std::ranges::fill(m_pathActive, 0);
+    std::ranges::fill(m_activeNext, -1);
+    m_activeHead = -1;
+    // aiIntersection::Reset: its prop list (+0x28) emptied.
+    for (auto& list : m_nodeObstacles)
+        list.clear();
+    // aiPedestrian::Reset() (the voice) for each pedestrian, then
+    // aiMap::AddPedestrian in index order: the last is taken first.
+    m_poolHead = -1;
+    for (std::size_t i = 0; i < m_peds.size(); ++i) {
+        Ped& p = m_peds[i];
+        p.lost = false;
+        p.path = p.prevPath = -1;
+        poolAdd(static_cast<int>(i));
+    }
+    m_started = false;
+    m_room = 0;
+    publish();
+}
+
 // --- Props ----------------------------------------------------------------------
 
 void Pedestrians::setObstacles(std::vector<PedObstacle> props, ObstacleStanding standing) {
@@ -799,6 +826,26 @@ void Pedestrians::setObstacles(std::vector<PedObstacle> props, ObstacleStanding 
 // + 1 m to either side and less than 0.7 rad off the line; -1 when not.
 float Pedestrians::isBlockingTarget(const PedObstacle& o, const Vec3& from, const Vec3& to, float reach,
                                     float width) const {
+    return bangerBlockingDistance(o.origin, o.yRadius, from, to, reach, width);
+}
+
+std::span<const int> Pedestrians::sectionObstacles(int path, int section, int side) const {
+    if (path < 0 || static_cast<std::size_t>(path) >= m_sectionObstacles.size())
+        return {};
+    const auto& sections = m_sectionObstacles[static_cast<std::size_t>(path)];
+    if (section < 0 || static_cast<std::size_t>(section) >= sections.size())
+        return {};
+    return sections[static_cast<std::size_t>(section)][side == 1 ? 0u : 1u];
+}
+
+std::span<const int> Pedestrians::nodeObstacles(int node) const {
+    if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+        return {};
+    return m_nodeObstacles[static_cast<std::size_t>(node)];
+}
+
+float bangerBlockingDistance(const Vec3& origin, float yRadius, const Vec3& from, const Vec3& to, float reach,
+                             float width) {
     Vec3 d{to.x - from.x, to.y - from.y, to.z - from.z};
     const float len2 = d.x * d.x + d.y * d.y + d.z * d.z;
     const float inv = len2 == 0.0f ? 0.0f : 1.0f / std::sqrt(len2);
@@ -806,10 +853,10 @@ float Pedestrians::isBlockingTarget(const PedObstacle& o, const Vec3& from, cons
     const float nx = -d.z, nz = d.x;
     const float fx = from.x - to.x, fz = from.z - to.z;
     const float span = std::sqrt(fx * fx + fz * fz);
-    const float ox = o.origin.x - from.x, oz = o.origin.z - from.z;
+    const float ox = origin.x - from.x, oz = origin.z - from.z;
     const float lateral = ox * nx + nz * oz;
     const float along = ox * d.x + oz * d.z;
-    const float r = (std::min(o.yRadius, 2.0f) + width * 0.5f) + 1.0f; // aiBanger::Radius
+    const float r = (std::min(yRadius, 2.0f) + width * 0.5f) + 1.0f; // aiBanger::Radius
     const float angle = std::atan2(lateral, along);
     if (-r < lateral && lateral < r && 0.0f < along && along < span + reach && -0.7f < angle && angle < 0.7f)
         return along;

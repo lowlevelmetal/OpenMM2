@@ -1,5 +1,6 @@
 // Ambient traffic route choice after MM2's aiMap::ChooseNext*Link family
 // (build 3393); see AmbientRoute.h.
+// Also: aiMap::ChooseNextRightStraightLink (chooseTurnOrStraight, +2).
 #include "ai/AmbientRoute.h"
 
 #include <cmath>

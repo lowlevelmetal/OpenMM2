@@ -190,6 +190,17 @@ public:
     void add(Body* body);
     void remove(Body* body);
     bool contains(const Body* body) const;
+    // dgPhysManager::DeclareMover of an instance without a body (an ambient
+    // car off its rail: aiGoalAvoidPlayer and aiGoalRegainRail declare its
+    // aiVehicleInstance (2, 0x0a) each frame, aiGoalCollision a wreck's
+    // (2, 0x08)). It takes part in the next frame only, after the bodies:
+    // nothing updates it; with 0x2 or 0x8 it gathers the instances of its
+    // room and the touched neighbours and collides with them each sample,
+    // as a static side (an impact can give it a body, AttachEntity, and
+    // break props loose). Its own test against the city (0x2) pits two
+    // static colliders against each other, which moves nothing, and is left
+    // out. Without a room it is refused (DeclareMover's "not in a room").
+    void declareInstance(Instance* instance, int type, unsigned flags);
     // dgPhysManager::IgnoreMover: the body takes no further part in this
     // frame (the props and traffic owners call it when they detach a body).
     void ignoreMover(const Body* body);
@@ -246,7 +257,10 @@ public:
 
 private:
     struct Mover {
-        Body* body = nullptr;
+        Body* body = nullptr;         // null: an instance without a body (declareInstance)
+        Instance* instance = nullptr; // the mover's instance (the body itself for a body)
+        bool transient = false;       // declareInstance: this frame only
+        unsigned flags = 0;           // declareInstance's DeclareMover flags
         bool fresh = false;   // NewMover's 0x100: no update or collision until the sample ends
         bool removed = false; // removed during a step (dropped when it ends)
         bool active = true;   // in dgPhysManager's table this frame (declared, within 32, not culled)
@@ -255,7 +269,13 @@ private:
     bool live(const Mover& m) const { return !m.removed; }
     // Taking part this frame; `updating` also has the update flag.
     bool running(const Mover& m) const { return !m.removed && m.active; }
-    bool updating(const Mover& m) const { return running(m) && !m.fresh && m.body->updates; }
+    bool updating(const Mover& m) const { return running(m) && !m.fresh && m.body && m.body->updates; }
+    // The mover's DeclareMover flags.
+    bool collidesTerrain(const Mover& m) const { return m.body ? m.body->collideTerrain : (m.flags & 0x2) != 0; }
+    bool collidesInstances(const Mover& m) const {
+        return m.body ? m.body->collideInstances : (m.flags & 0x8) != 0;
+    }
+    bool collidesMovers(const Mover& m) const { return m.body ? m.body->collideMovers : (m.flags & 0x10) != 0; }
 
     // The frame's mover bookkeeping (dgPhysManager::ResetTable clears the
     // table, DeclareMover fills it).
@@ -279,6 +299,7 @@ private:
     PolygonSoup m_static;
     const Level* m_level = nullptr;
     std::vector<Mover> m_movers;
+    std::vector<Mover> m_pendingInstances; // declareInstance's, for the next frame
     bool m_stepping = false;
     float m_accumulator = 0;
     double m_time = 0;

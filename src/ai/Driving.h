@@ -44,8 +44,10 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <span>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace mm2::phys {
@@ -101,6 +103,14 @@ struct TrackedCar {
     int ambient = -1;    // Traffic car index
     int playerRoad = -1;
     int playerVert = 0;
+    // A prop of the roads' obstacle lists (aiBanger): its index in the
+    // pedestrians' prop list, and the road (or intersection) whose list
+    // holds it. `position` is aiBanger::Position (its ground origin).
+    int prop = -1;
+    int propComponent = -1;
+    bool propOnRoad = false;
+    float propRadius = 0.0f; // dgBangerData YRadius
+    Vec3 propCentre;         // lvlInstance::GetPosition (centre of gravity)
 
     // MM2 obstacle classes (aiVehiclePhysics::IsTargetBlocked).
     bool isOpponent() const { return suspect && !isPlayer && !isPolice; }
@@ -159,7 +169,7 @@ struct RouteParams {
     float brakeThreshold = 0.7f;    // brake when (v - vmax) / (a t) exceeds this
     float lookAhead = 50.0f;        // the route is planned this far (m)
     bool avoidTraffic = true;       // steer round ambient vehicles
-    bool avoidProps = true;         // steer round unbreakable props (not modelled in OpenMM2)
+    bool avoidProps = true;         // steer round the props of the roads' obstacle lists
     bool avoidPlayers = true;       // steer round the players
     bool avoidOpponents = true;     // steer round other racers (after the third waypoint)
     bool preferSidewalk = false;    // DetermineBestRoute: take a route over the sidewalk first
@@ -320,6 +330,8 @@ public:
     // The planner's state, for tests and diagnostics.
     int windowRoad(int slot) const { return m_roads[slot]; }
     bool windowForward(int slot) const { return m_roadDir[slot]; }
+    // aiVehiclePhysics::FrontBumperDistance.
+    float frontBumper() const { return m_frontBumper; }
     int wayPointIndex() const { return m_wayPtIdx; }
     int lap() const { return m_curLap; }
     int numRoutes() const { return m_numRoutes; }
@@ -376,6 +388,9 @@ private:
     int obstacleRoadIdx(const TrackedCar& o, int* vert) const;
     const TrackedCar* trackedById(int id) const;
     const TrackedCar* ambientObstacle(int index) const;
+    // Prop `index` as listed by road or intersection `component` (one aiBanger
+    // per listing, as AddBangersToObsMap makes them).
+    const TrackedCar* propObstacle(int index, int component, bool onRoad);
 
     // Targets and turns (DrivingTargets.cpp).
     void calcRoadTarget(int i, Vec3& from);
@@ -424,6 +439,7 @@ private:
 
     // The cars of this frame (for the obstacle lookups).
     std::span<const TrackedCar> m_cars;
+    std::map<std::tuple<int, int, bool>, TrackedCar> m_propObstacles; // by (prop, component, on a road)
 
     // Waypoints (RegisterRoute).
     std::vector<int> m_wayPts; // +0x9674
@@ -479,7 +495,11 @@ void yawInPlace(phys::CarSim& car, float angle);
 // Puts a car back on a course at arc length `s`, facing along it, at the
 // place across the road (`side` preferred) farthest from the other cars
 // (OpenMM2 recovery when an AI car has made no progress for a long time, or
-// fell off the world; not in MM2). Keeps the car's damage.
+// fell off the world; not in MM2). Keeps the car's damage. The car lands
+// as MM2 places a racer: vehCarSim::SetResetPos at the road under the
+// place raised by 0.9 m (mmGame::CollideAIOpponents' settling, the wheels'
+// probe from 2 m above to 10 m below), turned about Y (vehCarSim::Reset);
+// the car's own reset position is left alone.
 void placeOnCourse(phys::CarSim& car, const Course& course, float s, float side, std::span<const TrackedCar> others,
                    int selfId, const std::function<void(const Mat34&)>& resetCar = {},
                    const phys::GroundQuery* world = nullptr);

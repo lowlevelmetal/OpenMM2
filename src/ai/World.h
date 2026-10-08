@@ -62,6 +62,13 @@ public:
     }
     // One fixed step.
     void step(const PlayerCar& player);
+    // aiMap::Reset (mmGame::Init calls it once the AI map has loaded and
+    // mmGame::Reset when a race restarts): the ambient traffic, the
+    // pedestrians and the light sets as at the start; the next step
+    // populates the roads round the player. (aiMap::Reset also resets the
+    // police force and officers and the racers, which the race owns here,
+    // and aiVehicleManager, game::TrafficBodies::reset.)
+    void reset();
     // aiMap::Update runs the light sets after the racers and the police. A
     // race loop that drives those between update() and the lights sets this
     // and calls updateLights() after them: update() then leaves the lights'
@@ -90,6 +97,12 @@ public:
     Pedestrians& pedestrians() { return *m_peds; }
 
     const std::vector<AmbientCar>& cars() const { return m_traffic->cars(); }
+    // aiVehicleManager::Update's blink counter: trunc(summed time x 16). An
+    // ambient car's lit indicators show while bit 3 of (the low byte of its
+    // blinkPhase + this) is set (aiVehicleInstance::DrawGlow): on and off for
+    // half a second each.
+    int blinkClock() const { return static_cast<int>(m_vehicleClock * 16.0f); }
+    static bool indicatorsOn(const AmbientCar& car, int clock) { return (((car.blinkPhase & 0xFF) + clock) & 8) != 0; }
     // See Traffic::takeAvoidEvents.
     std::vector<int> takeAvoidEvents() { return m_traffic->takeAvoidEvents(); }
     const std::vector<Pedestrian>& peds() const { return m_peds->peds(); }
@@ -110,6 +123,7 @@ private:
     std::unique_ptr<Pedestrians> m_peds;
     std::vector<Signal> m_signals;
     float m_accumulator = 0.0f;
+    float m_vehicleClock = 0.0f; // aiVehicleManager's summed time (never reset)
     bool m_lightsDeferred = false;
     int m_pendingLightSteps = 0;
     int m_playerRoom = 0; // the player's last room, the next lookup's hint

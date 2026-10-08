@@ -1,5 +1,23 @@
 // Ambient traffic after MM2's aiVehicleAmbient and its goals (build 3393,
 // MM2Recomp, documentation only); see Traffic.h and docs/ai.md.
+// Also (MM2 names, docs/parity/mm2/ai.md): aiMap::RemoveAmbient (placeCar
+// takes the pool's head), aiMap::FindAmbAppRoad (m_pathActive),
+// aiPath::RemAmbPlayer, aiPath::RemoveAmbVehicle, aiPath::SubSectionDist,
+// aiPath::SubSectionLength, aiPath::AddVehicle, aiPath::RemoveVehicle,
+// aiPath::Reset, aiIntersection::AddVehicle, aiIntersection::RemoveVehicle,
+// aiIntersection::AddToStopSignCntl, aiIntersection::RemoveFromStopSignCntl,
+// aiIntersection::RemoveTotalFromStopSignCntl, aiIntersection::Reset,
+// aiVehicleSpline::Reset, aiVehicleSpline::CurrentLane,
+// aiVehicleSpline::CurrentRoadId, aiVehicleSpline::CurrentRdVert,
+// aiVehicleSpline::TotLength, aiVehicleSpline::InAccident,
+// aiVehicle::Init, aiVehicle::Reset, aiVehicle::Update, aiGoal::Update,
+// aiGoalRandomDrive::aiGoalRandomDrive, aiGoalRandomDrive::Init,
+// aiGoalRegainRail::aiGoalRegainRail, aiGoalRegainRail::Init,
+// aiGoalAvoidPlayer::aiGoalAvoidPlayer, aiGoalAvoidPlayer::Init,
+// aiGoalCollision::aiGoalCollision, aiGoalCollision::Init,
+// aiVehicleAmbient::aiVehicleAmbient, aiRailSet::aiRailSet,
+// aiRailSet::CalcRailPosOrient, aiRailSet::CalcXZPosOrient,
+// aiObstacle::InAccident.
 #include "ai/Traffic.h"
 
 #include "core/StringUtil.h"
@@ -79,7 +97,8 @@ PlayerCar PlayerCar::at(const Vec3& pos, const Vec3& vel) {
 
 Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
                  const TrafficSettings& settings, std::uint64_t seed)
-    : m_net(network), m_lights(lights), m_types(std::move(types)), m_settings(settings), m_rng(seed) {
+    : m_net(network), m_lights(lights), m_types(std::move(types)), m_settings(settings), m_seed(seed),
+      m_rng(seed) {
     if (m_types.empty()) {
         VehicleData d;
         d.model = "va_sedans_s";
@@ -97,11 +116,21 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
         c.laneRandomness = std::sin(m_rng.frand() * 6.2831f) * 0.5f;
         c.totReactTicks = 8 - static_cast<int>(m_rng.frand() * -17.0f);
     }
-    // Then per car: its type, aiVehicleAmbient::Init (aiVehicleInstance::
-    // SetColor, aiGoalRandomDrive ctor).
+    // Then per car: its type, aiVehicleAmbient::Init: aiVehicleSpline::Init
+    // builds the aiVehicleInstance, whose ctor keeps an arbitrary number
+    // (lvlInstance +0x18, the indicators' blink phase) and draws a paint job
+    // (SetColor); Init then calls SetColor again, so the second draw is the
+    // car's paint; then the aiGoalRandomDrive ctor.
     float exceedCounter = 0.0f;
     for (auto& c : m_cars) {
         c.type = pickType();
+        // MM2's number is irand(int), a stateless LCG step, of the instance's
+        // own address (no draw from the shared seed). OpenMM2 takes the same
+        // step of the car's index scaled by the instance size, a stable
+        // stand-in for its address (inferred).
+        const auto index = static_cast<std::uint32_t>(&c - m_cars.data());
+        c.blinkPhase = static_cast<int>(((index * 0x40u) * 214013u + 2531011u) >> 16 & 0x7FFFu);
+        (void)m_rng.frand(); // aiVehicleInstance ctor's SetColor, overwritten below
         c.paint = m_rng.frand();
         c.exceedLimit = exceedCounter + exceedCounter;
         exceedCounter -= 1.0f;
@@ -484,7 +513,6 @@ void Traffic::returnToPool(int car) {
     c.active = false;
     c.physical = false;
     c.speed = 0.0f;
-    c.signal = TurnSignal::None;
     m_pool.push_back(car);
 }
 
@@ -526,21 +554,37 @@ bool Traffic::placeCar(int slot, int path, int dir, int lane, float dist) {
         if (o.dist2(at) < sq(kAmbientOpponentClearance))
             return true;
     m_pool.pop_back();
-    // aiVehicleAmbient::Reset.
+    // aiVehicleAmbient::Reset: aiVehicleSpline::Reset (speed, tyre
+    // rotation, reaction ticks, the obstacle map state), then each goal's
+    // Init (aiGoalRandomDrive::Init: acceleration and target speed 0, no
+    // lane change or stop sign pending; aiGoalRegainRail::Init: one regain
+    // attempt, its start point at the origin, base 0 and length 30;
+    // aiGoalAvoidPlayer::Init: its heading and offsets 0).
     c.active = true;
     c.mapId = c.mapType = c.mapVert = -1;
     c.mapRoom = 0;
+    c.mapSide = 0;
     c.physical = false;
     c.goal = AmbientGoal::RandomDrive;
     c.goalTicks = 0;
     c.speed = 0.0f;
     c.accel = 0.0f;
     c.target = 0.0f;
+    c.tireRotation = 0.0f;
     c.laneChangeOk = false;
     c.atStopSign = false;
     c.enterInt = false;
     c.curReactTicks = c.totReactTicks;
-    c.signal = TurnSignal::None;
+    c.regainAttempts = 1;
+    c.regainStart = {};
+    c.regainBase = 0.0f;
+    c.regainLength = kRegainDistance;
+    c.heading = 0.0f;
+    c.passOffset = 0.0f;
+    c.centred = false;
+    // (The indicators, aiVehicleInstance +0x1a, are left as they were: only
+    // SolveVelocity, ChangeLanes and the end of a turn or lane change in
+    // SolveRailType, aiGoalCollision::Reset and the end of a regain set them.)
     c.horn = false;
     c.fitted = false;
     c.transform = Mat34::identity();
@@ -648,6 +692,58 @@ int Traffic::poolFree() const {
     return static_cast<int>(m_pool.size());
 }
 
+void Traffic::reset() {
+    // aiMap::Reset: ResetRandomSeed first (OpenMM2: this stream's own seed).
+    m_rng.seed(static_cast<std::uint32_t>(m_seed));
+    // aiPath::Reset: the lane lists, the section obstacle lists
+    // (ResetObstacles), the populated flag and list link, the always
+    // stop / go flags.
+    for (auto& q : m_queues)
+        q.clear();
+    for (auto& path : m_roadObstacles)
+        for (auto& side : path)
+            for (auto& list : side)
+                list.clear();
+    std::ranges::fill(m_pathActive, 0);
+    std::ranges::fill(m_alwaysStop, 0);
+    m_activePaths.clear();
+    // aiIntersection::Reset: the stop sign lists and the vehicle list.
+    for (auto& list : m_stopWaiting)
+        list.clear();
+    for (auto& list : m_stopAllowed)
+        list.clear();
+    for (auto& list : m_nodeObstacles)
+        list.clear();
+    // Every car back into the pool (aiMap::AddAmbient, in index order: the
+    // last one is taken first) with its rail reset (aiRailSet::Reset: no
+    // road, distances 0, the reaction distance 25 m).
+    m_pool.clear();
+    for (std::size_t i = 0; i < m_cars.size(); ++i) {
+        Car& c = m_cars[i];
+        c.active = false;
+        c.physical = false;
+        c.mapType = c.mapId = c.mapVert = -1;
+        c.speed = 0.0f;
+        c.accel = 0.0f;
+        c.target = 0.0f;
+        c.horn = false;
+        c.path = c.nextPath = -1;
+        c.lane = c.drawLane = c.nextLane = 0;
+        c.rail = Rail::Lane;
+        c.section = 0;
+        c.roadDist = c.laneChangeDist = c.segDist = c.segLen = 0.0f;
+        c.enterInt = false;
+        c.reactDist = kIntersectionReactDist;
+        m_pool.push_back(static_cast<int>(i));
+    }
+    // The next step populates the roads round the player's room
+    // (aiMap::Reset's AdjustAmbients from room 0).
+    m_started = false;
+    m_room = 0;
+    m_avoidEvents.clear();
+    publish();
+}
+
 // --- aiGoalRandomDrive ------------------------------------------------------
 
 bool Traffic::chooseNext(Car& c) {
@@ -733,7 +829,6 @@ float Traffic::distanceToVehicle(const Car& a, const Car& b) const {
 void Traffic::resetRandomDrive(Car& c) {
     c.atStopSign = false;
     c.enterInt = false;
-    c.signal = TurnSignal::None;
     const Lane* lane = laneOf(c.path, c.dir, c.lane);
     if (!lane || lane->line.points.size() < 2)
         return;
@@ -821,12 +916,16 @@ bool Traffic::stopSignOkayToGo(int node, int car) {
         const int first = waiting.front();
         waiting.erase(waiting.begin());
         allowed.push_back(first);
-        const int road = m_cars[static_cast<std::size_t>(first)].path;
-        for (auto it = waiting.begin(); it != waiting.end(); ++it) {
-            if (m_cars[static_cast<std::size_t>(*it)].path == road) {
-                allowed.push_back(*it);
-                waiting.erase(it);
-                break;
+        // (Only an ambient car, type 0, takes another of its road along; an
+        // external vehicle such as a cable car, type 5, goes alone.)
+        if (!isExternal(first)) {
+            const int road = m_cars[static_cast<std::size_t>(first)].path;
+            for (auto it = waiting.begin(); it != waiting.end(); ++it) {
+                if (!isExternal(*it) && m_cars[static_cast<std::size_t>(*it)].path == road) {
+                    allowed.push_back(*it);
+                    waiting.erase(it);
+                    break;
+                }
             }
         }
     }
@@ -873,11 +972,55 @@ bool Traffic::okayToEnter(int idx, float dist) {
 // (hit, regaining its lane, avoiding the player, parked) in the intersection
 // ahead or on the next road. MM2 finds them through its obstacle map; here a
 // car counts where its rail registers it (inferred equivalent).
+bool Traffic::inAccident(int o) const {
+    // aiVehicleSpline::InAccident (any goal but driving its rail), or the
+    // external vehicle's own answer.
+    if (o < 0)
+        return false;
+    if (isExternal(o)) {
+        const auto k = static_cast<std::size_t>(o) - m_cars.size();
+        return k < m_externals.size() && m_externals[k]->inAccident();
+    }
+    return m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
+}
+
+int Traffic::addExternal(const ExternalVehicle* vehicle) {
+    m_externals.push_back(vehicle);
+    return static_cast<int>(m_cars.size() + m_externals.size() - 1);
+}
+
+void Traffic::listOnRoad(int entry, int path, int side, int bucket) {
+    if (auto* list = obstacleList(path, side, bucket))
+        list->insert(list->begin(), entry);
+}
+
+void Traffic::unlistFromRoad(int entry, int path, int side, int bucket) {
+    if (auto* list = obstacleList(path, side, bucket))
+        if (auto it = std::ranges::find(*list, entry); it != list->end())
+            list->erase(it);
+}
+
+void Traffic::listAtIntersection(int entry, int node) {
+    if (node >= 0 && static_cast<std::size_t>(node) < m_nodeObstacles.size())
+        m_nodeObstacles[static_cast<std::size_t>(node)].insert(m_nodeObstacles[static_cast<std::size_t>(node)].begin(),
+                                                               entry);
+}
+
+void Traffic::unlistFromIntersection(int entry, int node) {
+    if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+        return;
+    auto& list = m_nodeObstacles[static_cast<std::size_t>(node)];
+    if (auto it = std::ranges::find(list, entry); it != list.end())
+        list.erase(it);
+}
+
+void Traffic::joinStopSign(int node, int entry) {
+    if (node >= 0 && static_cast<std::size_t>(node) < m_stopWaiting.size())
+        m_stopWaiting[static_cast<std::size_t>(node)].push_back(entry);
+}
+
 bool Traffic::upcomingAccident(const Car& c) const {
-    auto inAccident = [&](int o) {
-        return o >= 0 && static_cast<std::size_t>(o) < m_cars.size() &&
-               m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
-    };
+    auto inAccident = [&](int o) { return this->inAccident(o); };
     for (int o : intersectionVehicles(arrivalIntersection(m_net, c.path, c.dir)))
         if (inAccident(o))
             return true;
@@ -1651,14 +1794,51 @@ void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
     }
     if (c.speed < cap)
         brakeFor();
-    // The lane distance from the car's free position (aiMap::DetermineRoadPosInfo
-    // on its road; inferred: the projection onto its lane).
-    if (const Lane* lane = laneOf(c.path, c.dir, c.lane))
-        c.roadDist = lane->line.project(c.transform.m3);
+    // The rail distance from where the car now is: its room
+    // (lvlLevel::FindRoomId from its last) and the room's first road or
+    // intersection (aiMap::MapComponentType). In an intersection, the
+    // drawn lane's whole length plus how far the car is past the road's end
+    // along its axis (XZ); on a road, aiMap::DetermineRoadPosInfo on that
+    // road (with the car's side; only the distance is kept, as coded); in
+    // neither, the same on the car's own road.
+    {
+        int id = c.path;
+        int type = kNoComponent;
+        if (m_map) {
+            c.mapRoom = m_map->findRoom(c.transform.m3, c.mapRoom);
+            type = m_map->mapComponentType(c.mapRoom, id);
+        }
+        const Vec3& pos = c.transform.m3;
+        if (type == kIntersectionComponent) {
+            const city::AiPath& road = m_net.source()->paths[static_cast<std::size_t>(c.path)];
+            const std::size_t n = road.center.size();
+            float past = 0.0f;
+            if (n > 0 && road.zAxis.size() >= n) {
+                if (c.dir == 1) {
+                    const Vec3& e = road.center[n - 1];
+                    const Vec3& z = road.zAxis[n - 1];
+                    past = -z.x * (pos.x - e.x) + -z.z * (pos.z - e.z);
+                } else {
+                    const Vec3& e = road.center[0];
+                    const Vec3& z = road.zAxis[0];
+                    past = (pos.x - e.x) * z.x + (pos.z - e.z) * z.z;
+                }
+            }
+            c.roadDist = laneLength(c.path, c.dir, c.drawLane) + past;
+        } else {
+            const int road = type == kRoadComponent ? id : c.path;
+            int vert = 0, lane = 0;
+            float lateral = 0.0f;
+            determineRoadPosInfo(pos, c.path, road, c.dir, vert, c.roadDist, lane, lateral);
+        }
+    }
     if (!detectPlayerZoneCollision(c, p) && !playerInFront(c, p)) {
         c.goal = AmbientGoal::RegainRail;
         c.goalTicks = 0;
     }
+    // dgPhysManager::DeclareMover(instance, 2, 0x0a): off its rail it
+    // collides with the city and the instances round it.
+    c.moverFlags = 0x0a;
 }
 
 // aiGoalRegainRail::Reset: a curve of up to 30 m from where the car is back
@@ -1702,6 +1882,85 @@ bool Traffic::roadPosInfo(int path, const Mat34& m, int& vert, float& dist, int&
         return true;
     }
     return false;
+}
+
+void Traffic::pathRoadDistance(int path, const Vec3& pos, int lane, int side, int& vert, float& dist,
+                               float& lateral) const {
+    vert = 1;
+    const city::AiMap* map = m_net.source();
+    if (!map || path < 0 || static_cast<std::size_t>(path) >= map->paths.size())
+        return;
+    const city::AiPath& p = map->paths[static_cast<std::size_t>(path)];
+    const city::AiRoadSide& s = side == 1 ? p.right : p.left;
+    const int lanes = static_cast<int>(s.numLanes);
+    if (lanes < lane)
+        lane = lanes;
+    // The row: a lane in its own order (as aiPath keeps it), or the side's
+    // sidewalk row, whose lengths are the file's (3D, within 1e-4 m).
+    std::vector<Vec3> sidewalkRow;
+    std::vector<float> sidewalkCum;
+    const std::vector<Vec3>* row = nullptr;
+    const std::vector<float>* cum = nullptr;
+    if (lane < lanes) {
+        const Lane* l = laneOf(path, side, lane);
+        if (!l)
+            return;
+        row = &l->line.points;
+        cum = &l->line.distances;
+    } else {
+        if (static_cast<std::size_t>(lanes) >= s.polylines.size())
+            return;
+        sidewalkRow = s.polylines[static_cast<std::size_t>(lanes)];
+        sidewalkCum.assign(sidewalkRow.size(), 0.0f);
+        for (std::size_t i = 1; i < sidewalkRow.size(); ++i)
+            sidewalkCum[i] = sidewalkRow[i].dist(sidewalkRow[i - 1]) + sidewalkCum[i - 1];
+        row = &sidewalkRow;
+        cum = &sidewalkCum;
+    }
+    const int n = static_cast<int>(p.center.size());
+    if (static_cast<int>(row->size()) < n || static_cast<int>(cum->size()) < n ||
+        static_cast<int>(p.zAxis.size()) < n || static_cast<int>(p.xAxis.size()) < n)
+        return;
+    for (int i = 1; i < n; ++i) {
+        const auto k = static_cast<std::size_t>(i);
+        const Vec3& z = p.zAxis[k];
+        const Vec3 d = pos - (*row)[k];
+        const float along = (d.x * z.x + d.y * z.y) + d.z * z.z;
+        if (!(0.0f < along))
+            continue;
+        const Vec3& x = p.xAxis[k];
+        const Vec3 e = pos - p.center[k];
+        const float off = -((e.x * x.x + e.y * x.y) + e.z * x.z);
+        lateral = off;
+        if (std::abs(off) < p.halfWidth + 5.0f) {
+            vert = i;
+            dist = (*cum)[k] - along;
+            return;
+        }
+    }
+}
+
+void Traffic::determineRoadPosInfo(const Vec3& pos, int railPath, int path, int side, int& vert, float& dist,
+                                   int& lane, float& lateral) const {
+    const city::AiMap* map = m_net.source();
+    if (!map || path < 0 || static_cast<std::size_t>(path) >= map->paths.size() || railPath < 0 ||
+        static_cast<std::size_t>(railPath) >= map->paths.size())
+        return;
+    pathRoadDistance(path, pos, 0, side, vert, dist, lateral);
+    const city::AiRoadSide& counts = side == 1 ? map->paths[static_cast<std::size_t>(path)].right
+                                               : map->paths[static_cast<std::size_t>(path)].left;
+    const city::AiRoadSide& bounds = side == 1 ? map->paths[static_cast<std::size_t>(railPath)].right
+                                               : map->paths[static_cast<std::size_t>(railPath)].left;
+    lane = static_cast<int>(counts.numLanes) - 1;
+    const int rows = static_cast<int>(counts.numLanes) + static_cast<int>(counts.numSidewalks);
+    for (int l = 0; l < rows && 2 * l + 1 < static_cast<int>(bounds.params.size()); ++l) {
+        if (bounds.params[static_cast<std::size_t>(2 * l)] < lateral &&
+            lateral < bounds.params[static_cast<std::size_t>(2 * l + 1)]) {
+            lane = l;
+            break;
+        }
+    }
+    pathRoadDistance(path, pos, lane, side, vert, dist, lateral);
 }
 
 int Traffic::predictIntersectionPath(int node, const Mat34& m, bool freeway) const {
@@ -1880,6 +2139,7 @@ void Traffic::updateRegainRail(int idx, float dt, const PlayerCar& p) {
         c.goalTicks = 0;
         c.signal = TurnSignal::None; // hazards off
     }
+    c.moverFlags = 0x0a; // DeclareMover(instance, 2, 0x0a), as aiGoalAvoidPlayer
 }
 
 // --- Physics hand-over ---------------------------------------------------------
@@ -1935,10 +2195,7 @@ void Traffic::release(int carId) {
 }
 
 bool Traffic::accidentAt(int intersection, int path, int dir) const {
-    auto inAccident = [&](int o) {
-        return o >= 0 && static_cast<std::size_t>(o) < m_cars.size() &&
-               m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
-    };
+    auto inAccident = [&](int o) { return this->inAccident(o); };
     for (int o : intersectionVehicles(intersection))
         if (inAccident(o))
             return true;
@@ -2007,8 +2264,10 @@ void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
                 resetReactTicks(q.front());
         }
     }
-    for (auto& c : m_cars)
+    for (auto& c : m_cars) {
         c.horn = false;
+        c.moverFlags = 0; // declared afresh by this step's updates
+    }
     // aiPath::UpdateAmbients for each populated road (most recently
     // populated first), direction -1 then +1, each lane list from its front:
     // a car is updated in the list of its logical lane, once a frame (the
@@ -2055,6 +2314,10 @@ void Traffic::updateCar(int idx, float dt, const PlayerCar& player) {
         if (c.goalTicks == 0)
             c.signal = TurnSignal::Hazard; // aiGoalCollision::Reset
         ++c.goalTicks;
+        // aiGoalCollision::Update: a wreck (flag 2) is declared (2, 0x08), so
+        // whatever drives into it collides with it.
+        if (c.wreck)
+            c.moverFlags = 0x08;
         break;
     case AmbientGoal::RegainRail:
         updateRegainRail(idx, dt, player);
@@ -2169,6 +2432,14 @@ void Traffic::updateObstacleMap(int idx) {
 }
 
 int Traffic::currentRoadIdx(int car, const int roads[3], const bool dirs[3], int* vert) const {
+    if (isExternal(car)) {
+        const auto k = static_cast<std::size_t>(car) - m_cars.size();
+        if (k >= m_externals.size()) {
+            *vert = 0;
+            return -1;
+        }
+        return m_externals[k]->currentRoadIdx(roads, dirs, vert);
+    }
     // aiVehicleSpline::CurrentRoadIdx.
     const Car& c = m_cars[static_cast<std::size_t>(car)];
     const city::AiMap* src = m_net.source();
@@ -2228,12 +2499,16 @@ void Traffic::publish() {
         a.speed = c.speed;
         a.velocity = -c.transform.m2 * c.speed;
         a.tireRotation = c.tireRotation;
-        a.braking = c.accel < -0.5f || (c.speed < 0.5f && c.target == 0.0f);
+        // aiVehicleInstance::DrawGlow: the tail lights while decelerating or
+        // standing.
+        a.braking = c.accel < 0.0f || c.speed == 0.0f;
         a.signal = c.signal;
+        a.blinkPhase = c.blinkPhase;
         a.horn = c.horn;
         a.goal = c.goal;
         a.physical = c.physical;
         a.wreck = c.wreck;
+        a.moverFlags = c.moverFlags;
         m_public.push_back(std::move(a));
     }
 }

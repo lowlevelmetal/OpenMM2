@@ -2,6 +2,8 @@
 // dgPath::Load / Enumerate, cityPropulator, lvlSDL::Propulate / IsoLerp and
 // lvlAiMap's sidewalk vertices, from the code of midtown2.exe build 3393
 // (MM2Recomp). See docs/bangers.md.
+// Also: lvlAiMap::GetNumRoads, lvlAiMap::GetNumRooms, lvlAiMap::GetNumVertexs,
+// lvlAiMap::GetRoomChop and lvlAiMap::Delete (cityLevel::Load's road table).
 #include "game/bangers/PropPlacement.h"
 
 #include "core/Log.h"

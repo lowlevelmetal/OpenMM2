@@ -65,6 +65,54 @@ struct CableCars::Car {
     std::array<phys::ProbeCache, 3> probes; // +0x24, +0x30, +0x3c (lvlSegmentInfo)
     std::unique_ptr<Body> body;             // +0x10
     std::unique_ptr<audio::game::CableCarAudio> audio; // +0xe8
+    std::unique_ptr<Obstacle> obstacle;     // its entry in the traffic's lists
+    int entry = -1;
+};
+
+// aiCableCar::CurrentRoadIdx, the slot of a driver's window of three roads
+// (and the vertex there) the car is in: on one of the roads, that slot (the
+// section ahead, counted the window's way; on the turn at the road's end,
+// vertex 0 of the next slot, or of this one against the vertex order);
+// else the slot after a road whose end the car's road shares (as coded, the
+// car's road's end-0 intersection, whatever way it goes), vertex 1; else
+// slot 0 when the first road starts there; else none.
+class CableCars::Obstacle final : public ai::Traffic::ExternalVehicle {
+public:
+    Obstacle(const CableCars& owner, const Car& car) : m_owner(owner), m_car(car) {}
+    int currentRoadIdx(const int roads[3], const bool dirs[3], int* vert) const override {
+        const auto& net = m_owner.m_ai.map().net();
+        const int path = m_car.path;
+        const int n = m_owner.sections(path);
+        for (int i = 0; i < 3; ++i) {
+            if (roads[i] != path)
+                continue;
+            if (n == m_car.vert) {
+                *vert = 0;
+                return dirs[i] ? i + 1 : i;
+            }
+            *vert = dirs[i] ? m_car.vert : n - m_car.vert;
+            return i;
+        }
+        const int end0 = net.paths()[static_cast<std::size_t>(path)].intersection[0];
+        for (int i = 0; i < 3; ++i) {
+            if (roads[i] < 0)
+                continue;
+            const ai::PathInfo& w = net.paths()[static_cast<std::size_t>(roads[i])];
+            if (end0 == w.intersection[dirs[i] ? 0 : 1]) {
+                *vert = 1;
+                return i + 1;
+            }
+        }
+        if (roads[0] >= 0 && end0 == net.paths()[static_cast<std::size_t>(roads[0])].intersection[1]) {
+            *vert = 1;
+            return 0;
+        }
+        return -1;
+    }
+
+private:
+    const CableCars& m_owner;
+    const Car& m_car;
 };
 
 // aiCableCarInstance: a dgUnhitBangerInstance whose matrix is the car's
@@ -267,6 +315,8 @@ void CableCars::create(fx::Rand& random) {
         } else {
             log::warn("cable cars: {} has no banger data", kModel);
         }
+        c->obstacle = std::make_unique<Obstacle>(*this, *c);
+        c->entry = m_ai.traffic().addExternal(c->obstacle.get());
         m_cars.push_back(std::move(c));
     }
     log::info("cable cars: {}", m_cars.size());
@@ -302,12 +352,33 @@ void CableCars::determineSister(Car& c) {
 }
 
 void CableCars::reset(const phys::World& world) {
-    m_sections.clear();
-    m_nodeVehicles.clear();
-    m_stopWaiting.clear();
-    m_stopAllowed.clear();
+    // (aiMap::Reset empties the roads' and intersections' lists and stop
+    // queues the cars share with the traffic: Traffic::reset.)
     for (auto& c : m_cars)
         resetCar(*c, world);
+}
+
+const CableCars::Car* CableCars::carOfEntry(int entry) const {
+    for (const auto& c : m_cars)
+        if (c->entry == entry)
+            return c.get();
+    return nullptr;
+}
+
+ai::TrackedCar CableCars::tracked(std::size_t i, int id) const {
+    const Car& c = *m_cars[i];
+    ai::TrackedCar t;
+    t.id = id;
+    t.ambient = c.entry;
+    t.position = c.matrix.m3;
+    t.forward = -c.matrix.m2;
+    t.right = c.matrix.m0;
+    t.speed = c.speed;
+    t.frontBumper = c.frontBumper;
+    t.backBumper = c.backBumper;
+    t.leftSide = c.leftSide;
+    t.rightSide = c.rightSide;
+    return t;
 }
 
 void CableCars::resetCar(Car& c, const phys::World& world) {
@@ -439,29 +510,20 @@ bool CableCars::checkForObstacles(Car& c, float& distance, const ai::TrackedCar*
         if (dz * dz + dx * dx < 900.0f && blocks(*player, pts[static_cast<std::size_t>(c.vert)]))
             return true;
     }
-    // The obstacles of a section: the cable cars listed there, and the
-    // ambient cars the traffic lists there.
+    // The obstacles of a section, in the list's order (newest first): the
+    // cable cars and the ambient cars listed there.
     const auto& traffic = m_ai.traffic();
     const auto& ambient = m_ai.cars();
     auto vehicles = [&](int section, const Vec3& target) {
-        if (const auto* list = sectionList(c.path, c.dir, section))
-            for (int k : *list) {
-                const Car& o = *m_cars[static_cast<std::size_t>(k)];
-                if (&o == &c)
-                    continue;
-                ai::TrackedCar t;
-                t.id = k;
-                t.position = o.matrix.m3;
-                t.forward = -o.matrix.m2;
-                t.right = o.matrix.m0;
-                t.frontBumper = o.frontBumper;
-                t.backBumper = o.backBumper;
-                t.leftSide = o.leftSide;
-                t.rightSide = o.rightSide;
-                if (blocks(t, target))
-                    return true;
-            }
         for (int id : traffic.roadVehicles(c.path, c.dir, section)) {
+            if (traffic.isExternal(id)) {
+                const Car* o = carOfEntry(id);
+                if (!o || o == &c)
+                    continue;
+                if (blocks(tracked(static_cast<std::size_t>(o->index), o->index), target))
+                    return true;
+                continue;
+            }
             const auto it = std::ranges::find(ambient, id, &ai::AmbientCar::id);
             if (it == ambient.end() || !it->data)
                 continue;
@@ -509,9 +571,9 @@ bool CableCars::okayToEnterIntersection(Car& c, float distance) {
             return true;
         if (!c.atStop) {
             c.atStop = true;
-            m_stopWaiting[node].push_back(c.index); // aiIntersection::AddToStopSignCntl
+            m_ai.traffic().joinStopSign(node, c.entry); // aiIntersection::AddToStopSignCntl
         }
-        return stopSignOkayToGo(node, c.index);
+        return m_ai.traffic().stopSignTurn(node, c.entry);
     }
     case ai::EntryRule::TrafficLight: {
         // The light of the road's end (aiIntersection's light set at the
@@ -528,25 +590,6 @@ bool CableCars::okayToEnterIntersection(Car& c, float distance) {
     return true;
 }
 
-bool CableCars::stopSignOkayToGo(int node, int car) {
-    // aiIntersection::StopSignOkayToGo: with nobody allowed, the first
-    // waiting goes (a car of type 0 would take the others of its road along;
-    // a cable car is type 5).
-    auto& allowed = m_stopAllowed[node];
-    auto& waiting = m_stopWaiting[node];
-    if (allowed.empty() && !waiting.empty()) {
-        allowed.push_back(waiting.front());
-        waiting.erase(waiting.begin());
-    }
-    return std::ranges::find(allowed, car) != allowed.end();
-}
-
-void CableCars::removeFromStopSign(int node, int car) {
-    // aiIntersection::RemoveFromStopSignCntl: off the allowed list.
-    auto& allowed = m_stopAllowed[node];
-    if (auto it = std::ranges::find(allowed, car); it != allowed.end())
-        allowed.erase(it);
-}
 
 void CableCars::solveRailType(Car& c) {
     // aiCableCar::SolveRailType: past the end of the current curve, the next
@@ -615,7 +658,7 @@ void CableCars::solveRailType(Car& c) {
         // As coded: the stop sign at the road's direction-1 end, whatever
         // way the car came.
         if (info.rule[0] == ai::EntryRule::StopSign && info.intersection[0] >= 0)
-            removeFromStopSign(info.intersection[0], c.index);
+            m_ai.traffic().leaveStopSign(info.intersection[0], c.entry); // RemoveFromStopSignCntl
         c.dir = c.nextDir;
         c.path = c.nextPath;
         int next = c.nextPath, nextDir = c.nextDir;
@@ -698,14 +741,6 @@ void CableCars::solvePositionAndOrientation(Car& c, const phys::World& world) {
             m.m0.y * m.m2.x - m.m2.y * m.m0.x};
 }
 
-std::vector<int>* CableCars::sectionList(int path, int dir, int section) {
-    return &m_sections[{path, dir, section}];
-}
-
-const std::vector<int>* CableCars::sectionList(int path, int dir, int section) const {
-    const auto it = m_sections.find({path, dir, section});
-    return it == m_sections.end() ? nullptr : &it->second;
-}
 
 void CableCars::updateObstacleMap(Car& c) {
     // aiCableCar::UpdateObstacleMap: the car's component (aiMap::
@@ -714,11 +749,11 @@ void CableCars::updateObstacleMap(Car& c) {
     // re-listed when that changes; in an intersection, its list.
     int id = c.mapId, type = ai::kNoComponent;
     c.room = m_ai.map().mapComponent(c.matrix.m3, id, type, c.room);
-    auto unlinkRoad = [&] {
-        if (auto* list = sectionList(c.mapId, c.mapSide, c.mapVert))
-            std::erase(*list, c.index);
-    };
-    auto unlinkNode = [&] { std::erase(m_nodeVehicles[c.mapId], c.index); };
+    // (The lists are the traffic's: aiPath::AddVehicle / RemoveVehicle,
+    // aiIntersection::AddVehicle / RemoveVehicle.)
+    ai::Traffic& traffic = m_ai.traffic();
+    auto unlinkRoad = [&] { traffic.unlistFromRoad(c.entry, c.mapId, c.mapSide, c.mapVert); };
+    auto unlinkNode = [&] { traffic.unlistFromIntersection(c.entry, c.mapId); };
     if (type == ai::kRoadComponent) {
         const int side = c.path == id ? c.dir : c.nextDir;
         const int n = sections(id);
@@ -733,7 +768,7 @@ void CableCars::updateObstacleMap(Car& c) {
         c.mapType = type;
         c.mapVert = v;
         c.mapSide = side;
-        sectionList(id, side, v)->push_back(c.index);
+        traffic.listOnRoad(c.entry, id, side, v);
         return;
     }
     if (type == ai::kIntersectionComponent) {
@@ -744,7 +779,7 @@ void CableCars::updateObstacleMap(Car& c) {
         c.mapId = id;
         c.mapType = type;
         c.mapVert = -1;
-        m_nodeVehicles[id].push_back(c.index);
+        traffic.listAtIntersection(c.entry, id);
         return;
     }
     if (type != ai::kNoComponent)

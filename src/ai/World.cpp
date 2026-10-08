@@ -1,3 +1,6 @@
+// MM2 (docs/parity/mm2/ai.md): aiMap::Init, aiMap::Reset, aiMap::Update,
+// aiMap::AddPlayer (the first step's population), aiMap::Player,
+// aiMap::Opponent, aiMap::Police, aiMap::CableCar (the race's lists).
 #include "ai/World.h"
 
 #include "asset/Ped.h"
@@ -184,6 +187,7 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
         std::make_unique<Pedestrians>(*world->m_network, loadPedTypes(vfs), peds, settings.seed * 7919u + 1u);
     world->m_peds->setLights(&world->m_lights);
     Traffic* ambient = world->m_traffic.get();
+    world->m_map->setProps(world->m_peds.get());
     world->m_peds->setAccidentQuery(
         [ambient](int node, int path, int dir) { return ambient->accidentAt(node, path, dir); });
 
@@ -235,6 +239,20 @@ void World::step(const PlayerCar& player) {
     updateSignals();
 }
 
+void World::reset() {
+    // aiMap::Reset: the light sets are children of aiMap (asNode::Reset,
+    // then aiIntersection::Reset resets each set again); the roads,
+    // intersections and ambient cars (Traffic::reset); the pedestrians.
+    m_lights.reset();
+    m_traffic->reset();
+    m_peds->reset();
+    m_map->resetPlayers(); // aiVehiclePlayer::Reset
+    m_accumulator = 0.0f;
+    m_pendingLightSteps = 0;
+    m_playerRoom = 0;
+    updateSignals();
+}
+
 void World::updateLights() {
     if (m_pendingLightSteps == 0)
         return;
@@ -244,6 +262,9 @@ void World::updateLights() {
 }
 
 void World::update(float dt, const PlayerCar& player) {
+    // aiVehicleManager::Update (a child of aiMap, once a frame): the clock
+    // the ambient cars' indicators blink by, the game time summed in a float.
+    m_vehicleClock = m_vehicleClock + dt;
     m_accumulator += dt;
     int steps = 0;
     while (m_accumulator >= kAiStepSeconds && steps < 8) {

@@ -23,10 +23,11 @@
 // listed in its room, colliding as its banger data says; its ImpulseLimit2
 // (7.6e9) keeps it standing like a wall.
 //
-// Where OpenMM2 differs (see docs/parity/mm2/world-objects.md): the
-// ambient traffic does not see the cable cars (MM2 lists them in the same
-// obstacle map, aiCableCar::UpdateObstacleMap), the four-way stops queue
-// cable cars among themselves only, and a car that would break loose stays.
+// The cars share the ambient traffic's obstacle map (aiCableCar::
+// UpdateObstacleMap lists them with the ambient cars, so the racers and
+// police steer round them) and its four-way stop queues
+// (ai::Traffic::addExternal). Where OpenMM2 differs (see
+// docs/parity/mm2/world-objects.md): a car that would break loose stays.
 
 #include "ai/Driving.h"
 #include "ai/World.h"
@@ -117,6 +118,9 @@ public:
     int room(std::size_t i) const;
     int sister(std::size_t i) const;
     int startPath(std::size_t i) const;
+    // Car i as the racers and police see it (aiVehicle Position, matrix,
+    // bumper and side distances; its entry in the traffic's obstacle map).
+    ai::TrackedCar tracked(std::size_t i, int id) const;
 
     // aiIntersection::IsCableCarStart: exactly one road of `intersection`
     // leaves it on a cable-car line; its path index and direction.
@@ -144,23 +148,15 @@ private:
     void updateObstacleMap(Car& c);
     void moveToRoom(Car& c, int room);
     void updateRoom(Car& c, const phys::World& world);
-    // aiIntersection's four-way stop queue (AddToStopSignCntl,
-    // StopSignOkayToGo, RemoveFromStopSignCntl), for the cable cars.
-    bool stopSignOkayToGo(int node, int car);
-    void removeFromStopSign(int node, int car);
-    // The obstacle map's per-section list of a road side (aiPath +0x90 /
-    // +0xf4), the cable cars' entries.
-    std::vector<int>* sectionList(int path, int dir, int section);
-    const std::vector<int>* sectionList(int path, int dir, int section) const;
+    // aiCableCar as an aiObstacle (CurrentRoadIdx) in the traffic's lists.
+    class Obstacle;
+    const Car* carOfEntry(int entry) const;
 
     ai::World& m_ai;
     const bangers::BangerDataLibrary& m_data;
     const bangers::BangerSet& m_bounds;
     std::vector<std::unique_ptr<Car>> m_cars;
     std::vector<std::vector<Body*>> m_rooms;
-    std::map<std::array<int, 3>, std::vector<int>> m_sections; // (path, dir, section) -> cars
-    std::map<int, std::vector<int>> m_nodeVehicles;            // intersection -> cars
-    std::map<int, std::vector<int>> m_stopWaiting, m_stopAllowed;
 };
 
 } // namespace mm2::game::world

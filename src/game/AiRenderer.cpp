@@ -1,3 +1,7 @@
+// MM2: aiVehicleInstance::Draw, aiVehicleInstance::DrawPart,
+// aiVehicleInstance::DrawShadow, aiVehicleInstance::DrawGlow,
+// aiPedestrianInstance::Draw, aiPedestrianInstance::GetMatrix,
+// aiPedestrianInstance::GetPosition, aiPedestrianInstance::ComputeLod.
 #include "game/AiRenderer.h"
 
 #include "core/Log.h"
@@ -217,6 +221,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     m_stats = {};
     m_detail = detail;
     const Vec3 eye = camera.position();
+    const int blinkClock = world.blinkClock();
     const bool rooms = m_rooms && m_rooms->active();
     for (const auto& car : world.cars()) {
         const Mat34* physical = physicalTransform ? physicalTransform(car.id) : nullptr;
@@ -254,6 +259,10 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             pose.wheelSpin[i] = -car.tireRotation; // rolling forward (-Z) spins about -X
         pose.brakeLights = car.braking;
         pose.headlights = lights;
+        // aiVehicleInstance::DrawGlow: the indicators the AI set (+0x1a),
+        // blinking with the car's own phase.
+        if (ai::World::indicatorsOn(car, blinkClock))
+            pose.indicators = static_cast<int>(car.signal);
         if (rooms)
             r->draw(pose, camera.transform, passes);
         else

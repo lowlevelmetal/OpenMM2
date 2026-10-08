@@ -645,6 +645,9 @@ private:
         case 4:
             loadEffects(ctx);
             loadPedestrianProps(ctx);
+            // mmGame::Init: aiMap::Reset right after aiMap::Init.
+            if (m_ai)
+                m_ai->reset();
             spawnOpponents(ctx);
             spawnPolice(ctx);
             m_loadPercent = 100;
@@ -1072,6 +1075,15 @@ private:
                     });
                 else
                     log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
+                // aiMap::SetWaypoints: the line aiRouteRacer::Finished tests
+                // (mmSingleRace: the last checkpoint; mmSingleCircuit: the first).
+                const auto& cps = m_session->checkpoints();
+                const auto mode = m_result.config.mode;
+                if (opp.driver && !cps.empty() &&
+                    (mode == game::GameMode::Checkpoint || mode == game::GameMode::Circuit)) {
+                    const auto& cp = mode == game::GameMode::Circuit ? cps.front() : cps.back();
+                    opp.driver->setFinishLine(cp.position, cp.headingDeg);
+                }
             }
             m_opponents.push_back(std::move(opp));
         }
@@ -1211,6 +1223,11 @@ private:
             for (const ai::AmbientCar& c : m_ai->cars())
                 cars.push_back(ai::trackedAmbient(c, 10000 + c.id));
         }
+        // The cable cars share the ambient cars' obstacle map
+        // (aiCableCar::UpdateObstacleMap): the drivers see them there.
+        if (m_cableCars)
+            for (std::size_t i = 0; i < m_cableCars->size(); ++i)
+                cars.push_back(m_cableCars->tracked(i, 20000 + static_cast<int>(i)));
         // aiMap::Update: the physics cars let the intersections ahead of them
         // go (aiMap::StopRoadTraffic(false)), drive, and hold them again
         // (StopRoadTraffic(true)) while the ambient traffic updates.
@@ -1558,8 +1575,18 @@ private:
                     if (o.driver)
                         o.driver->reset();
                 }
+                // aiMap::Reset: aiVehicleManager (a child node), the police
+                // force and officers, the roads, traffic and pedestrians.
+                if (m_trafficBodies)
+                    m_trafficBodies->reset();
+                if (m_ai)
+                    m_ai->reset();
+                if (m_police)
+                    m_police->reset(); // aiPoliceForce::Reset, then each aiPoliceOfficer::Reset
                 for (auto& c : m_cops) {
-                    c.driver->reset();
+                    if (c.fx)
+                        c.fx->reset(); // vehCar::Reset (aiVehiclePhysics::Reset)
+                    c.renderer->resetDamage();
                     if (c.audio)
                         c.audio->reset(); // aiPoliceOfficer::Reset -> vehPoliceCarAudio::Reset
                 }
@@ -2605,6 +2632,10 @@ private:
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // -pedpool: aiCityData's pool, over the city's [Ped Pool] (a negative
+        // number, which MM2 would not survive, counts as none).
+        if (ctx.commandLine.pedPool)
+            settings.maxPeds = std::max(0, *ctx.commandLine.pedPool);
         // mmGameMulti::Init: no traffic (nor cops, racers or rail cars) in
         // multiplayer cruise and Cops and Robbers; the pedestrians stay, at
         // the host's density (the only density the session carries).

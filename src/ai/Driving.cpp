@@ -1,10 +1,23 @@
 // MM2's AI driving controller, aiVehiclePhysics (build 3393), on an
 // ai::Course. See Driving.h and docs/ai.md ("Opponents and police") for
 // what is ported and what is inferred.
+// Also: aiVehiclePhysics::Position, aiVehiclePhysics::GetMatrix,
+// aiVehiclePhysics::Speed, aiVehiclePhysics::FrontBumperDistance,
+// aiVehiclePhysics::BackBumperDistance, aiVehiclePhysics::RSideDistance,
+// aiVehiclePhysics::CurrentLane, aiVehiclePhysics::CurrentRoadId,
+// aiVehiclePhysics::CurrentRdVert, aiVehiclePhysics::Type (trackedCar and the
+// driver's accessors), aiStuck::Init, aiRouteNode::aiRouteNode,
+// aiRouteNode::Reset (the route nodes), aiVehiclePlayer::Attach,
+// aiVehiclePlayer::GetMatrix, aiVehiclePlayer::FrontBumperDistance,
+// aiVehiclePlayer::BackBumperDistance, aiVehiclePlayer::LSideDistance,
+// aiVehiclePlayer::RSideDistance, aiVehiclePlayer::CurrentLane,
+// aiVehiclePlayer::CurrentRoadId, aiVehiclePlayer::CurrentRdVert,
+// aiVehiclePlayer::Type (trackedCar).
 #include "ai/Driving.h"
 
 #include "ai/MapView.h"
 #include "ai/PathGeometry.h"
+#include "ai/Pedestrians.h"
 #include "ai/Traffic.h"
 #include "phys/AgeMath.h"
 #include "phys/Bound.h"
@@ -235,6 +248,9 @@ void AiStuck::update(phys::CarSim& car, float dt) {
 
 float blockingDistance(const TrackedCar& obstacle, const Vec3& from, const Vec3& to, float extra,
                        float width) {
+    // A prop: aiBanger::IsBlockingTarget.
+    if (obstacle.prop >= 0)
+        return bangerBlockingDistance(obstacle.position, obstacle.propRadius, from, to, extra, width);
     // aiVehicle::IsBlockingTarget: the first corner (front left, front right,
     // back left, back right) ahead within the way plus `extra`, within
     // width / 2 + 1 m of the line and 0.7 rad of it (XZ).
@@ -256,6 +272,22 @@ float blockingDistance(const TrackedCar& obstacle, const Vec3& from, const Vec3&
 
 void avoidPoints(const TrackedCar& obstacle, const Vec3& from, const Vec3& dir, float clearance, Vec3& left,
                  Vec3& right) {
+    if (obstacle.prop >= 0) {
+        // aiBanger::PreAvoid: from its origin P, across the (3D, unit) line
+        // of sight n to it in XZ, at its radius (YRadius, at most 2) plus the
+        // clearance: right P + (-n.z, 0, n.x) r, left P - (-n.z, 0, n.x) r
+        // (`dir` is not used).
+        const Vec3& p = obstacle.position;
+        Vec3 n{p.x - from.x, p.y - from.y, p.z - from.z};
+        const float m2 = (n.x * n.x + n.y * n.y) + n.z * n.z;
+        const float inv = m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2);
+        const float nx = inv * n.x;
+        const float nz = -(inv * n.z);
+        const float r = std::min(obstacle.propRadius, 2.0f) + clearance;
+        right = {nz * r + p.x, p.y + 0.0f, p.z + r * nx};
+        left = {p.x - r * nz, p.y - 0.0f, p.z - r * nx};
+        return;
+    }
     // aiVehicle::PreAvoid: every corner pushed `clearance` both ways across
     // the (3D, unit) line of sight u to it, along (-u.z, u.y, u.x); the
     // leftmost and rightmost of these eight points seen along `dir`.
@@ -838,14 +870,26 @@ void placeOnCourse(phys::CarSim& car, const Course& course, float s, float side,
         if (score >= 7.0f)
             break;
     }
-    Mat34 m = Mat34::rotationY(-std::atan2(f.x, -f.z));
-    m.m3 = p + r * best;
-    // Rest on the ground below the line point when it can be found.
+    // MM2's placement of a racer: the reset position (mmGame::
+    // CollideAIOpponents: the wheels' probe from 2 m above the point to 10 m
+    // below; on a hit, the hit raised by 0.9 m) and rotation, then
+    // vehCarSim::Reset: the body's centre at that position plus
+    // CenterOfGravity, the identity turned about Y; the model origin one
+    // R * CenterOfGravity on (vehCarSim::SetWorldMatrix).
+    const float rotation = phys::resetRotationOf(Mat34::rotationY(-std::atan2(f.x, -f.z)));
+    Vec3 at = p + r * best;
     if (world) {
         phys::RayHit hit;
-        if (world->probe(m.m3 + Vec3{0, 3, 0}, m.m3 - Vec3{0, 6, 0}, hit))
-            m.m3 = hit.position;
+        if (world->wheelProbe({at.x, at.y + 2.0f, at.z}, {at.x, at.y - 10.0f, at.z}, hit, &car.body, nullptr))
+            at = {hit.position.x, hit.position.y + 0.9f, hit.position.z};
     }
+    const Vec3& cg = car.centerOfGravity;
+    Mat34 m = Mat34::identity();
+    m.m3 = {cg.x + at.x, cg.y + at.y, cg.z + at.z};
+    phys::age::rotate(m, {0.0f, 1.0f, 0.0f}, rotation);
+    m.m3 = {((m.m1.x * cg.y + m.m2.x * cg.z) + cg.x * m.m0.x) + m.m3.x,
+            ((m.m1.y * cg.y + m.m0.y * cg.x) + m.m2.y * cg.z) + m.m3.y,
+            ((m.m1.z * cg.y + m.m0.z * cg.x) + m.m2.z * cg.z) + m.m3.z};
     const float current = car.damage.currentDamage, damage = car.damage.damage;
     if (resetCar)
         resetCar(m);

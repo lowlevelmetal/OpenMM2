@@ -536,6 +536,13 @@ void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
     }
     if (pose.headlights)
         drawPart("TLIGHT", asset::Lod::High, pose.body, glow, false);
+    if (m_traffic) {
+        // aiVehicleInstance::DrawGlow: the indicators after the tail lights.
+        if (pose.indicators & 1)
+            drawPart("SLIGHT0", asset::Lod::High, pose.body, glow, false);
+        if (pose.indicators & 2)
+            drawPart("SLIGHT1", asset::Lod::High, pose.body, glow, false);
+    }
     if (!m_traffic && pose.reverseLights)
         drawPart("RLIGHT", asset::Lod::High, pose.body, glow, false);
 

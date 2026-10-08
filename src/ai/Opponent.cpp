@@ -1,6 +1,7 @@
 // Race opponents: MM2's aiRouteRacer (build 3393) driving an ai::PhysicsDriver
 // (aiVehiclePhysics). See Opponent.h and docs/ai.md for what is ported and
 // what is inferred.
+// Also: aiRouteRacer::Disabled (update, below y -200).
 #include "ai/Opponent.h"
 
 #include "ai/MapView.h"
@@ -128,6 +129,7 @@ void Opponent::reset() {
     // aiRouteRacer::Reset / aiVehiclePhysics::Reset.
     m_mode = m_held ? Mode::Held : Mode::Racing;
     m_finished = false;
+    m_arrived = false;
     m_disabled = false;
     m_touchingPlayer = false;
     m_registered = false; // DriveRoute registers the route again
@@ -156,6 +158,40 @@ void Opponent::reset() {
 
 void Opponent::finish() {
     m_finished = true;
+}
+
+void Opponent::setFinishLine(const Vec3& point, float headingDeg) {
+    // aiMap::SetWaypoints: the point, and the z axis (0, 0, 1) turned by
+    // RotateY(heading x -0.017453292).
+    const float a = headingDeg * -0.017453292f;
+    const float s = std::sin(a);
+    const float c = std::cos(a);
+    m_finishPoint = point;
+    m_finishNormal = {s * 1.0f + c * 0.0f, 0.0f, c * 1.0f - s * 0.0f};
+    m_hasFinishLine = true;
+}
+
+bool Opponent::crossedFinishLine() {
+    // aiRouteRacer::Finished: within 30 m (XZ) of the line's point, on the
+    // last lap, aiming at the last waypoint or past it. Between 20 and 30 m
+    // it keeps which side of the line the car is on; within 20 m the car
+    // has finished once its front bumper (+ 1 m) is across.
+    const Vec3& p = m_car.body.ics.matrix.m3; // vehCarSim +0x90
+    const float dx = p.x - m_finishPoint.x;
+    const float dz = p.z - m_finishPoint.z;
+    const float d2 = dz * dz + dx * dx;
+    const PhysicsDriver& d = m_driver;
+    if (!(d2 < 900.0f) || d.lap() != d.numLaps() || !(d.numWayPoints() - 1 <= d.wayPointIndex()))
+        return false;
+    auto sign = [](float v) { return v > 0.0f ? 1.0f : (v < 0.0f ? -1.0f : 0.0f); };
+    if (400.0f <= d2) {
+        m_finishSide = dx * m_finishNormal.x + m_finishNormal.z * dz;
+        return false;
+    }
+    const float before = sign(m_finishSide);
+    const float along = dx * m_finishNormal.x + m_finishNormal.z * dz;
+    const float beyond = along - (d.frontBumper() + 1.0f) * before;
+    return sign(beyond) != before;
 }
 
 void Opponent::onImpact(const phys::CarImpact& impact) {
@@ -271,7 +307,9 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
 
     // OpenMM2 recovery (not in MM2): no progress for a long time, or fallen
     // out of the city, puts the car back on its line.
-    if (!m_finished && !m_disabled && !m_driver.wrecked()) {
+    // (Not once the car has arrived: MM2's racer simply stands at its
+    // destination, finished or not.)
+    if (!m_finished && !m_arrived && !m_disabled && !m_driver.wrecked()) {
         if (m_progress > m_bestProgress + 5.0f) {
             m_bestProgress = m_progress;
             m_noProgressTime = 0.0f;
@@ -322,8 +360,16 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     const Vec3 toDest = m_route.destination - m_car.body.ics.matrix.m3;
     const bool atDestination = toDest.x * toDest.x + toDest.z * toDest.z <= kFinishRadius * kFinishRadius;
     const bool courseEnd = remaining <= m_lastLeg + 0.5f && remaining <= kFinishRadius;
-    if (!m_finished && (courseEnd || (lastLeg && atDestination)))
+    if (courseEnd || (lastLeg && atDestination))
+        m_arrived = true;
+    if (m_hasFinishLine) {
+        // The game asks aiRouteRacer::Finished every frame (mmSingleRace /
+        // mmSingleCircuit::UpdateOpponentStatus) and keeps the answer.
+        if (crossedFinishLine())
+            finish();
+    } else if (!m_finished && m_arrived) {
         finish();
+    }
     // The race being over changes nothing in MM2 (aiRouteRacer::Finished is
     // only asked by the game): the car drives on to its destination, where
     // CalcRoadSpeed holds it with the brakes.

@@ -24,6 +24,7 @@
 
 #include <array>
 #include <functional>
+#include <span>
 #include <map>
 #include <string>
 #include <vector>
@@ -77,6 +78,14 @@ struct PedObstacle {
     bool drivable = false; // dgBangerData CollisionType 0x20 (aiBanger::Drivable)
 };
 
+// aiBanger::IsBlockingTarget: how far along the way from `from` to `to` a
+// prop at `origin` (aiBanger::Position, its ground origin) lies in the path
+// of something `width` wide (-1: clear): within its radius (YRadius, at
+// most 2) + width / 2 + 1 m of the line, ahead within the way plus `reach`,
+// and within 0.7 rad of it (XZ).
+float bangerBlockingDistance(const Vec3& origin, float yRadius, const Vec3& from, const Vec3& to, float reach,
+                             float width);
+
 struct PedSettings {
     float density = 1.0f; // menu pedestrian density
     int pool = kDefaultPedPool; // [Ped Pool] of the city's AI map
@@ -106,8 +115,25 @@ public:
 
     // One update; `room` is the player's PSDL room (0: outside, no change).
     void step(float dt, const PlayerCar& player, int room);
+    // aiMap::Reset's pedestrian part (mmGame::Init after the AI map loads,
+    // and mmGame::Reset when a race restarts): the random seed back to its
+    // start (ResetRandomSeed), every road's list and populated flag cleared
+    // (aiPath::Reset), the intersections' prop lists emptied
+    // (aiIntersection::Reset clears what AddBangersToObsMap listed at load,
+    // so pedestrians never see an intersection's props in play), every
+    // pedestrian reset and back in the pool in index order. The next step
+    // populates the roads round the player's room.
+    void reset();
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
+    // The props the roads and intersections list (aiPath / aiIntersection
+    // AddBangersToObsMap), which the racers and police also steer round
+    // (aiVehiclePhysics::IsTargetBlocked): a road section's list for side 1
+    // (aiPath +0xf8) or -1 (+0x94), an intersection's (+0x28, emptied by
+    // aiMap::Reset). Entries index obstacles().
+    const std::vector<PedObstacle>& obstacles() const { return m_obstacles; }
+    std::span<const int> sectionObstacles(int path, int section, int side) const;
+    std::span<const int> nodeObstacles(int node) const;
     std::size_t activeCount() const;
     const std::vector<PedTypeInfo>& types() const { return m_types; }
 
@@ -240,6 +266,7 @@ private:
     std::vector<PedTypeInfo> m_types;
     std::vector<Seqs> m_seqs;
     PedSettings m_settings;
+    std::uint64_t m_seed = 1; // ResetRandomSeed's value for this stream
     Random m_rng;
     std::vector<Ped> m_peds;
     int m_poolHead = -1;                // aiMap +0x88

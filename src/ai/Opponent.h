@@ -27,7 +27,9 @@
 //   opponent.setHeld(!session.racersReleased() || !session.opponentActive(i));
 //   opponent.update(dt, cars);
 // A racer that crosses the finish line drives on to its destination (MM2's
-// game only reads aiRouteRacer::Finished); finish() is for tools and tests.
+// game only reads aiRouteRacer::Finished, here finished(): the line the race
+// gave aiMap::SetWaypoints, see setFinishLine); finish() is for tools and
+// tests.
 //
 // First ported from Open1560 (MM1's aiVehicleOpponent). Open1560 - An Open
 // Source Re-Implementation of Midtown Madness 1 Beta, Copyright (C) 2020
@@ -134,12 +136,26 @@ public:
     // The race is over for this car: it drives on to its destination and
     // stops there.
     void finish();
+    // aiMap::SetWaypoints: the finish line aiRouteRacer::Finished tests, at
+    // the race's last checkpoint (mmSingleRace::InitGameObjects) or its
+    // first (mmSingleCircuit), `headingDeg` its stored heading: the line's
+    // normal is the z axis turned by -heading (Vector3::RotateY). Without
+    // one (tools, tests) OpenMM2's own end-of-course test decides.
+    void setFinishLine(const Vec3& point, float headingDeg);
     // Collision report for this car (installed on CarSim::onImpactCallback
     // by the constructor, chaining any callback already set).
     void onImpact(const phys::CarImpact& impact);
 
     Mode mode() const { return m_mode; }
+    // aiRouteRacer::Finished as the game keeps it: the racer crossed the
+    // race's finish line (setFinishLine); without a line, arrived().
     bool finished() const { return m_finished; }
+    // OpenMM2: the racer has driven its route: within 10 m of the end of its
+    // course on its last leg, or of its destination past the last waypoint
+    // of the last lap. MM2's racers stop at their destination (RegisterRoute
+    // with destination speed 0), which some .opp routes put short of the
+    // race's finish line, so a racer can arrive without ever finishing.
+    bool arrived() const { return m_arrived; }
     bool disabled() const { return m_disabled; }
     int lapsDone() const;
     // Metres driven along the course since the start (laps included).
@@ -172,6 +188,8 @@ public:
 private:
     void trackProgress(float dt);
     float remainingDistance() const;
+    // aiRouteRacer::Finished.
+    bool crossedFinishLine();
 
     phys::CarSim& m_car;
     Course m_course;
@@ -188,7 +206,12 @@ private:
     bool m_held = false;
     bool m_wasHeld = false; // undrivable last frame (released: into first gear)
     bool m_finished = false;
+    bool m_arrived = false;
     bool m_disabled = false;
+    bool m_hasFinishLine = false;
+    Vec3 m_finishPoint;            // aiMap +0x1a0
+    Vec3 m_finishNormal{0, 0, 1};  // aiMap +0x1ac
+    float m_finishSide = 0.0f;     // aiRouteRacer +0x9790 (never reset)
     bool m_touchingPlayer = false;
     const phys::Body* m_playerBody = nullptr;
     float m_s = 0.0f;        // arc length on the course

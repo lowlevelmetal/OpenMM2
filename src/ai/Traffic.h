@@ -72,12 +72,24 @@ struct AmbientCar {
     float speed = 0.0f;
     float tireRotation = 0.0f; // radians, wraps at 6.28 (aiVehicleSpline::Update)
     float steer = 0.0f;        // rail cars have no steering angle in MM2
+    // aiVehicleInstance::DrawGlow lights the TLIGHT part when the car
+    // decelerates (aiVehicleSpline +0x54 below 0) or stands (speed 0).
     bool braking = false;
+    // The indicators (aiVehicleInstance +0x1a) and their blink phase
+    // (+0x18): DrawGlow lights SLIGHT0 (bit 1) and SLIGHT1 (bit 2) while
+    // bit 3 of (phase + aiVehicleManager's clock) is set; the clock is the
+    // AI time x 16 (aiVehicleManager::Update), so they blink once a second.
     TurnSignal signal = TurnSignal::None;
+    int blinkPhase = 0;
     bool horn = false; // tried to honk this step (aiGoalAvoidPlayer::Reset)
     AmbientGoal goal = AmbientGoal::RandomDrive;
     bool physical = false; // handed over to the physics simulation
     bool wreck = false;    // can never regain its rail (aiVehicleInstance flag 0x02)
+    // dgPhysManager::DeclareMover flags of the car's rail instance (no
+    // body) from its last update: 0x0a while avoiding the player or
+    // regaining its rail (aiGoalAvoidPlayer / aiGoalRegainRail::Update),
+    // 0x08 for a wreck (aiGoalCollision::Update); 0 not declared.
+    unsigned moverFlags = 0;
 };
 
 struct TrafficSettings {
@@ -103,6 +115,14 @@ public:
     // One update (aiMap::Update's ambient part). `playerRoom` is the PSDL room
     // the player is in (0: outside every room, nothing changes).
     void step(float dt, const PlayerCar& player, int playerRoom);
+    // aiMap::Reset's ambient part (mmGame::Init after the AI map loads, and
+    // mmGame::Reset when a race restarts): the random seed back to its start
+    // (ResetRandomSeed), every road and intersection list emptied
+    // (aiPath::Reset, aiIntersection::Reset), every car back in the pool in
+    // index order with its rail reset (aiMap::AddAmbient, aiRailSet::Reset).
+    // The next step populates the roads around the player's room. A car's
+    // wreck flag (aiVehicleInstance flag 2) survives, as in MM2.
+    void reset();
     // Convenience for tools: a player of default size at `pos` moving at `vel`.
     void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 
@@ -161,6 +181,35 @@ public:
     void stopSources(int intersection, bool stop);
     bool alwaysStop(int path) const;
 
+    // A rail vehicle of another system (aiCableCar) that MM2 keeps in the
+    // same obstacle map and four-way stop queues as the ambient cars: the
+    // drivers then see it (IsTargetBlocked) and the stop signs take turns
+    // with it.
+    class ExternalVehicle {
+    public:
+        virtual ~ExternalVehicle() = default;
+        // aiObstacle::CurrentRoadIdx (see currentRoadIdx).
+        virtual int currentRoadIdx(const int roads[3], const bool dirs[3], int* vert) const = 0;
+        // aiObstacle::InAccident.
+        virtual bool inAccident() const { return false; }
+    };
+    // Registers `vehicle` (not owned); returns its entry in the obstacle
+    // lists and stop queues, beyond every ambient car's index.
+    int addExternal(const ExternalVehicle* vehicle);
+    bool isExternal(int entry) const { return entry >= static_cast<int>(m_cars.size()); }
+    // aiPath::AddVehicle / RemoveVehicle (newest first), aiIntersection::
+    // AddVehicle / RemoveVehicle, for an external entry.
+    void listOnRoad(int entry, int path, int side, int bucket);
+    void unlistFromRoad(int entry, int path, int side, int bucket);
+    void listAtIntersection(int entry, int node);
+    void unlistFromIntersection(int entry, int node);
+    // aiIntersection::AddToStopSignCntl, StopSignOkayToGo and
+    // RemoveFromStopSignCntl for an external entry (not of type 0: it takes
+    // no other vehicle of its road along).
+    void joinStopSign(int node, int entry);
+    bool stopSignTurn(int node, int entry) { return stopSignOkayToGo(node, entry); }
+    void leaveStopSign(int node, int entry) { removeFromStopSign(node, entry); }
+
     // Diagnostics for tests and tools.
     struct DebugCar {
         int lane = -1;     // network lane id of the logical lane
@@ -189,6 +238,7 @@ private:
         // Pool slot, fixed for the session (aiVehicleAmbient ctor / Init).
         int type = 0;
         float paint = 0.0f;
+        int blinkPhase = 0; // aiVehicleInstance +0x18 (DrawGlow reads its low byte)
         float laneRandomness = 0.0f; // aiRailSet +0x24
         int totReactTicks = 8;
         float exceedLimit = 0.0f; // +0x48
@@ -236,6 +286,7 @@ private:
         TurnSignal signal = TurnSignal::None;
         bool horn = false;
         bool physical = false;
+        unsigned moverFlags = 0; // DeclareMover of the rail instance this step
         bool fitted = false; // +0xe8
         Mat34 transform;
     };
@@ -264,6 +315,22 @@ private:
     // lateral bounds hold it (else lane 0) and its distance along that lane.
     // False ("Position is not on road segment") leaves the outputs alone.
     bool roadPosInfo(int path, const Mat34& m, int& vert, float& dist, int& lane, int& dir) const;
+    // aiPath::RoadDistance on `path`: from vertex 1 on, the first vertex of
+    // row `lane` of side `side` (the side's sidewalk row when `lane` is its
+    // lane count; higher lanes are clamped to it) that the position lies
+    // before along the section's z axis, with the position within the road's
+    // half width + 5 m of the centre line: `vert` that vertex, `lateral` the
+    // position's offset (along -x), `dist` the row's length to the vertex
+    // less how far before it the position is. `dist` and `lateral` are left
+    // alone when no vertex qualifies (`vert` is then 1).
+    void pathRoadDistance(int path, const Vec3& pos, int lane, int side, int& vert, float& dist,
+                          float& lateral) const;
+    // aiMap::DetermineRoadPosInfo: RoadDistance on lane 0, the lane (or
+    // sidewalk) whose lateral bounds hold that offset, read from the side
+    // `side` of `railPath` (the car's own road, as coded; the counts are
+    // `path`'s; none: the last lane), then RoadDistance again on it.
+    void determineRoadPosInfo(const Vec3& pos, int railPath, int path, int side, int& vert, float& dist,
+                              int& lane, float& lateral) const;
     // aiMap::PredictAmbIntersectionPath / PredictAmbFreewayIntersectionPath:
     // the road leaving `node` that best matches the heading of `m`.
     int predictIntersectionPath(int node, const Mat34& m, bool freeway) const;
@@ -326,6 +393,7 @@ private:
     std::vector<VehicleData> m_types;
     TrafficSettings m_settings;
     float m_density = 0.0f; // aiMap +0x3c
+    std::uint64_t m_seed = 1; // ResetRandomSeed's value for this stream
     Random m_rng;
     std::vector<Car> m_cars;
     std::vector<int> m_pool; // free cars, last = next to use (aiMap +0x44)
@@ -336,6 +404,8 @@ private:
     std::vector<std::array<std::vector<std::vector<int>>, 2>> m_roadObstacles;
     std::vector<std::vector<int>> m_nodeObstacles;
     const MapView* m_map = nullptr;
+    std::vector<const ExternalVehicle*> m_externals; // entries m_cars.size() + k
+    bool inAccident(int entry) const;
     void updateObstacleMap(int idx);
     std::vector<int>* obstacleList(int path, int side, int bucket);
     std::vector<std::vector<int>> m_queues;      // per network lane

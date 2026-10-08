@@ -1,5 +1,7 @@
 // Police: MM2's aiPoliceOfficer and aiPoliceForce (build 3393). See Police.h
 // and docs/ai.md for what is ported and what is inferred.
+// Also: aiPoliceForce::Reset (PoliceForce::reset) and
+// aiPoliceOfficer::StopSiren (PoliceCar::reset; the sound is the audio's).
 #include "ai/Police.h"
 
 #include "ai/MapView.h"

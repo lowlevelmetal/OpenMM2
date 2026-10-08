@@ -20,6 +20,19 @@ app::CommandLine parse(std::initializer_list<const char*> args) {
 
 } // namespace
 
+// aiCityData::aiCityData reads -pedpool (atoi of its first value) after the
+// city's [Ped Pool], which it overrides; without a value nothing changes.
+TEST(MM2CommandLine, PedPoolOverridesTheCityPool) {
+    auto a = parse({"-pedpool", "40"});
+    EXPECT_TRUE(a.error.empty()) << a.error;
+    EXPECT_EQ(a.pedPool, 40);
+    auto z = parse({"-pedpool=0"});
+    EXPECT_EQ(z.pedPool, 0);
+    auto none = parse({"-pedpool"});
+    EXPECT_FALSE(none.pedPool.has_value());
+    EXPECT_TRUE(none.ignoredOptions.empty());
+}
+
 // Main skips LOGOS.AVI with -nomovie, and also in a window (-window, -max):
 // it plays the movie only when inWindow is false.
 TEST(MM2CommandLine, MovieAndWindowOptions) {
