@@ -135,12 +135,13 @@ private:
 
     void detect(std::span<const TrackedCar> cars, PoliceForce& force);
     bool inView(const TrackedCar& c) const;
-    void acquire(const TrackedCar& c, Reason why, std::span<const TrackedCar> cars);
+    void acquire(const TrackedCar& c, Reason why);
     void follow(const TrackedCar& perp, float dist);
     void apprehend(const TrackedCar& perp, std::span<const TrackedCar> cars);
     void block(const TrackedCar& perp);
     void escape(PoliceForce& force);
     void routeTo(const Vec3& goal, const Vec3& heading);
+    void setRouteParams(float destinationSpeed, float stopShort, float cornerSpeedFactor);
     DriveContext context();
 
     const RoadNetwork& m_net;
@@ -154,18 +155,23 @@ private:
 
     Mode m_mode = Mode::Parked;
     Reason m_reason = Reason::None;
-    int m_pursuit = 0;     // 0 watching, 1 apprehend, 2 follow, 12 out of action
+    int m_pursuit = 0;     // 0 watching, 1 apprehend, 2 follow, 5 not pursued (as 1), 12 out of action
     int m_lastPursuit = -1;
     int m_apprehend = 3;
     bool m_siren = false;
     int m_target = -1;
+    int m_lastPerp = -1;          // aiPoliceOfficer 0x9774: the last suspect, kept over escapes and resets
+    int m_perpComponent = -1;     // aiMap::MapComponent of the suspect: id (0x97a4)
+    int m_perpComponentType = 0;  // and type (0x97a2)
     std::vector<int> m_ignored; // opponents that lost the dice roll (until reset)
     const phys::Body* m_playerBody = nullptr;
     bool m_touchingPlayer = false;
 
-    // The route to the current goal (MM2 replans every frame; OpenMM2 every
-    // second or when the goal moves, inferred equivalent).
+    // The route to the current goal: aiMap::CalcRoute's waypoints every frame,
+    // the course along them rebuilt when they change, every second or when
+    // the goal moves 15 m.
     std::optional<Course> m_route;
+    std::vector<int> m_routeIds;
     Vec3 m_routeGoal;
     float m_routeAge = 0.0f;
     float m_lastLeg = 0.0f;
