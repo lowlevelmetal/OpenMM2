@@ -22,6 +22,12 @@ namespace mm2::audio::game {
 // emitters and creatures use 1 / kDopplerSpeed, ambient traffic twice that.
 inline constexpr float kDopplerSpeed = 56.7166633f;
 
+// mmPlayer::Update turns the tunnel echo on with this delay (seconds).
+inline constexpr float kTunnelEchoDelay = 0.5f;
+// The echo plays at this fraction of the sound's volume (every EchoOn passes
+// it to SetEchoAttenuation).
+inline constexpr float kEchoAttenuation = 0.96f;
+
 // Distance state of one positioned sound object.
 class Audio3D {
 public:
@@ -96,8 +102,35 @@ public:
     int used() const;
     int capacity() const { return static_cast<int>(m_slots.size()); }
 
+    // The tunnel echo (Aud3DObjectManager +0x24 / +0xa0). While it is on,
+    // every sound object turns on the echo of its sounds with this delay
+    // (their EchoOn), every car's rolling sound uses its surface table's
+    // tunnel entry, the rain is sheltered and the ambient sets follow their
+    // audible areas.
+    void echoOn(float delay) {
+        m_echo = true;
+        m_echoDelay = delay;
+    }
+    void echoOff() { m_echo = false; }
+    bool echo() const { return m_echo; }
+    float echoDelay() const { return m_echoDelay; }
+    // mmPlayer::Update, once per frame before the sounds update: with the
+    // camera in a room flagged as underground (room flag 2) the echo goes on
+    // with a 0.5 s delay (if it is not already on), else off. The race's hook
+    // for the tunnel state.
+    void setTunnel(bool inTunnel) {
+        if (inTunnel) {
+            if (!m_echo)
+                echoOn(kTunnelEchoDelay);
+        } else if (m_echo) {
+            echoOff();
+        }
+    }
+
 private:
     std::vector<Client*> m_slots;
+    bool m_echo = false;
+    float m_echoDelay = 0.0f;
 };
 
 // A client's slot bookkeeping: with no manager an object has a slot while it

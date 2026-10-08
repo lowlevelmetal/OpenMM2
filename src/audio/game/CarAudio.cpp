@@ -44,6 +44,28 @@ bool g_airBlown = false;
 // vehPoliceCarAudio::s_iNumCopsPursuingPlayer.
 int g_copsPursuingPlayer = 0;
 
+// vehCarAudio::EchoOn: the horn's echo follows 0.05 s behind at 0.997 of the
+// sample rate, whatever the manager's delay.
+constexpr float kHornEchoDelay = 0.05f, kHornEchoFrequency = 0.997f;
+
+// The car is in a tunnel: its inputs say so or its manager's echo is on.
+bool inTunnel(const CarAudioInputs& in, const Object3DManager* manager) {
+    return in.inTunnel || (manager && manager->echo());
+}
+
+// The echo delay EchoOn reads from Aud3DObjectManager +0xa0.
+float echoDelay(const Object3DManager* manager) {
+    return manager && manager->echo() ? manager->echoDelay() : kTunnelEchoDelay;
+}
+
+// SetEffect(1), SetDelayTime(delay), SetEchoAttenuation(0.96): the EchoOn
+// of one sample.
+void sampleEchoOn(SoundSlot& s, float delay) {
+    s.enableEcho();
+    s.setEchoDelay(delay);
+    s.setEchoAttenuation(kEchoAttenuation);
+}
+
 // The clamps MM2 writes as "low if below, else high if above": when high is
 // below low a value above high gives high.
 float mm2Clamp(float v, float low, float high) {
@@ -183,8 +205,9 @@ void EngineSound::load(Mixer& mixer, SoundBank& bank, const std::vector<EngineSa
 
 void EngineSound::silence(bool on) { m_silenced = on; }
 
-void EngineSound::update(float rpm) {
-    // vehEngineSampleWrapper::UpdateRPM(rpm).
+void EngineSound::update(float rpm, float dt) {
+    // vehEngineSampleWrapper::UpdateRPM(rpm), ending with the sample's echo
+    // update (its +0x40 echo flag).
     for (std::size_t i = 0; i < m_defs.size(); ++i) {
         const Evaluation e = evaluate(m_defs[i], rpm, m_silenced);
         m_states[i] = e;
@@ -192,16 +215,17 @@ void EngineSound::update(float rpm) {
         if (!e.audible) {
             if (s.playing())
                 s.stop();
-            continue;
+        } else {
+            s.setVolume(e.volume);
+            s.setPitch(e.pitch);
+            if (!s.playing())
+                s.playLoop();
         }
-        s.setVolume(e.volume);
-        s.setPitch(e.pitch);
-        if (!s.playing())
-            s.playLoop();
+        s.updateEcho(dt);
     }
 }
 
-void EngineSound::update3D(float rpm, float attenuation, float doppler, float pan) {
+void EngineSound::update3D(float rpm, float attenuation, float doppler, float pan, float dt) {
     // vehEngineSampleWrapper::UpdateRPM(rpm, volume, frequency, pan).
     for (std::size_t i = 0; i < m_defs.size(); ++i) {
         const Evaluation e = evaluate(m_defs[i], rpm, m_silenced);
@@ -210,14 +234,25 @@ void EngineSound::update3D(float rpm, float attenuation, float doppler, float pa
         if (!e.audible) {
             if (s.playing())
                 s.stop();
-            continue;
+        } else {
+            s.setVolume(e.volume * attenuation);
+            s.setPitch(e.pitch * doppler);
+            s.setPan(pan);
+            if (!s.playing())
+                s.playLoop();
         }
-        s.setVolume(e.volume * attenuation);
-        s.setPitch(e.pitch * doppler);
-        s.setPan(pan);
-        if (!s.playing())
-            s.playLoop();
+        s.updateEcho(dt);
     }
+}
+
+void EngineSound::echoOn(float delay) {
+    for (auto& s : m_samples)
+        sampleEchoOn(s, delay);
+}
+
+void EngineSound::echoOff() {
+    for (auto& s : m_samples)
+        s.disableEcho();
 }
 
 void EngineSound::stop() {
@@ -322,7 +357,7 @@ bool SurfaceSounds::surfaceChanged(const CarAudioInputs& in) const {
 }
 
 void SurfaceSounds::selectSurface(const CarAudioInputs& in, bool positioned) {
-    if (in.inTunnel) {
+    if (m_inTunnel || in.inTunnel) {
         m_surface = m_tunnelIndex;
         return;
     }
@@ -340,6 +375,32 @@ void SurfaceSounds::selectSurface(const CarAudioInputs& in, bool positioned) {
 void SurfaceSounds::silence() {
     stopSurface(m_surface);
     stopSkid(m_surface);
+}
+
+void SurfaceSounds::echoOn(float delay) {
+    // vehSurfaceAudioData::EchoOn: the skid samples, then the surface sample.
+    for (auto& e : m_entries) {
+        for (auto& s : e.skids)
+            sampleEchoOn(s, delay);
+        sampleEchoOn(e.surface, delay);
+    }
+}
+
+void SurfaceSounds::echoOff() {
+    for (auto& e : m_entries) {
+        for (auto& s : e.skids)
+            s.disableEcho();
+        e.surface.disableEcho();
+    }
+}
+
+void SurfaceSounds::updateEcho(float dt) {
+    // vehSurfaceAudio::UpdateEcho: the entry at +0 (the current surface).
+    if (Entry* e = entry(m_surface)) {
+        for (auto& s : e->skids)
+            s.updateEcho(dt);
+        e->surface.updateEcho(dt);
+    }
 }
 
 void SurfaceSounds::stop() {
@@ -396,7 +457,7 @@ void SurfaceSounds::updateSkid(const CarAudioInputs& in, float attenuation, floa
     for (std::size_t w = 1; w < in.wheels.size(); ++w)
         if (slip < in.wheels[w].slip)
             slip = in.wheels[w].slip;
-    if (in.inTunnel) {
+    if (m_inTunnel || in.inTunnel) {
         m_surface = m_tunnelIndex;
     } else if (surfaceChanged(in)) {
         stopSkid(m_surface);
@@ -635,6 +696,21 @@ void SirenPlayer::stopAll() {
     m_explosion.stop();
 }
 
+void SirenPlayer::echoOn(float delay) {
+    for (auto& s : m_samples)
+        sampleEchoOn(s.slot, delay);
+}
+
+void SirenPlayer::echoOff() {
+    for (auto& s : m_samples)
+        s.slot.disableEcho();
+}
+
+void SirenPlayer::updateEcho(float dt) {
+    for (auto& s : m_samples)
+        s.slot.updateEcho(dt);
+}
+
 void SirenPlayer::fluctuate(float dt) {
     // FluctuateSiren.
     if (m_samples.size() == 1)
@@ -798,7 +874,74 @@ bool PlayerCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, st
     m_prevGear = -1;
     m_hornPressed = false;
     g_airBlown = false;
+    m_manager = options.manager;
+    m_echo = false;
     return true;
+}
+
+void PlayerCarAudio::echoOn(float delay) {
+    // vehPoliceCarAudio::EchoOn (the sirens) or vehSemiCarAudio::EchoOn (the
+    // reverse beeper and air brake), then vehCarAudio::EchoOn.
+    if (m_siren)
+        m_siren->echoOn(delay);
+    if (m_semi)
+        for (auto* s : {&m_reverseBeep, &m_airBlow})
+            sampleEchoOn(*s, delay);
+    m_engine.echoOn(delay);
+    m_surfaces.echoOn(delay);
+    sampleEchoOn(m_horn, kHornEchoDelay);
+    m_horn.setEchoFrequency(kHornEchoFrequency);
+    sampleEchoOn(m_clutch, delay);
+    m_echo = true;
+}
+
+void PlayerCarAudio::echoOff() {
+    if (m_siren)
+        m_siren->echoOff();
+    if (m_semi)
+        for (auto* s : {&m_reverseBeep, &m_airBlow})
+            s->disableEcho();
+    m_engine.echoOff();
+    m_surfaces.echoOff();
+    m_horn.disableEcho();
+    m_clutch.disableEcho();
+    m_echo = false;
+}
+
+void PlayerCarAudio::updateEcho(float dt) {
+    // The sirens or semi samples, then vehCarAudio::UpdateEcho: horn, clutch
+    // and the current surface. The engine samples update theirs in UpdateRPM.
+    if (m_siren)
+        m_siren->updateEcho(dt);
+    if (m_semi)
+        for (auto* s : {&m_reverseBeep, &m_airBlow})
+            s->updateEcho(dt);
+    m_horn.updateEcho(dt);
+    m_clutch.updateEcho(dt);
+    m_surfaces.updateEcho(dt);
+}
+
+void PlayerCarAudio::updateEchoState(bool tunnel, float dt) {
+    if (m_siren || m_semi) {
+        // vehPoliceCarAudio / vehSemiCarAudio::UpdateAudio: no echo update on
+        // the update that turns the echo on.
+        if (!m_echo) {
+            if (tunnel)
+                echoOn(echoDelay(m_manager));
+        } else {
+            if (!tunnel)
+                echoOff();
+            updateEcho(dt);
+        }
+        return;
+    }
+    // vehCarAudio::UpdateAudio.
+    if (!m_echo && tunnel)
+        echoOn(echoDelay(m_manager));
+    else if (m_echo && !tunnel)
+        echoOff();
+    if (m_echo)
+        updateEcho(dt);
 }
 
 void PlayerCarAudio::updateHorn(bool pressed) {
@@ -830,7 +973,12 @@ void PlayerCarAudio::update(const CarAudioInputs& in, float dt) {
     for (const auto& impact : in.impacts)
         m_impacts.play(impact);
 
-    // vehCarAudio::UpdateAudioNon3D (or the police / semi variant).
+    // vehCarAudio::UpdateAudio: the tunnel echo, then UpdateAudioNon3D (or the
+    // police / semi variant).
+    const bool tunnel = inTunnel(in, m_manager);
+    m_surfaces.setTunnel(tunnel);
+    updateEchoState(tunnel, dt);
+
     // UpdateGear: the clutch sample plays whenever the gear changes into or out
     // of reverse (MM2 gear 0). The first update counts as a change from "no
     // gear" (-1), so starting in reverse plays it too.
@@ -839,7 +987,7 @@ void PlayerCarAudio::update(const CarAudioInputs& in, float dt) {
         m_clutch.playOnce();
     m_prevGear = gear;
 
-    m_engine.update(in.rpm);
+    m_engine.update(in.rpm, dt);
     m_surfaces.update(in, dt);
 
     if (m_semi) {
@@ -874,6 +1022,8 @@ void PlayerCarAudio::update(const CarAudioInputs& in, float dt) {
 }
 
 void PlayerCarAudio::stop() {
+    if (m_echo)
+        echoOff();
     m_engine.stop();
     m_surfaces.stop();
     m_impacts.stop();
@@ -937,9 +1087,70 @@ bool OpponentCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, 
     return true;
 }
 
+void OpponentCarAudio::echoOn(float delay) {
+    // As PlayerCarAudio::echoOn; a positioned car has no clutch sample, and a
+    // horn only as a network player's car.
+    if (m_siren)
+        m_siren->echoOn(delay);
+    if (m_semi)
+        for (auto* s : {&m_reverseBeep, &m_airBlow})
+            sampleEchoOn(*s, delay);
+    m_engine.echoOn(delay);
+    m_surfaces.echoOn(delay);
+    sampleEchoOn(m_horn, kHornEchoDelay);
+    m_horn.setEchoFrequency(kHornEchoFrequency);
+    m_echo = true;
+}
+
+void OpponentCarAudio::echoOff() {
+    if (m_siren)
+        m_siren->echoOff();
+    if (m_semi)
+        for (auto* s : {&m_reverseBeep, &m_airBlow})
+            s->disableEcho();
+    m_engine.echoOff();
+    m_surfaces.echoOff();
+    m_horn.disableEcho();
+    m_echo = false;
+}
+
+void OpponentCarAudio::updateEcho(float dt) {
+    if (m_siren)
+        m_siren->updateEcho(dt);
+    if (m_semi)
+        for (auto* s : {&m_reverseBeep, &m_airBlow})
+            s->updateEcho(dt);
+    m_horn.updateEcho(dt);
+    m_surfaces.updateEcho(dt);
+}
+
+void OpponentCarAudio::updateEchoState(bool tunnel, float dt) {
+    if (m_siren || m_semi) {
+        // vehPoliceCarAudio / vehSemiCarAudio::UpdateAudio.
+        if (!m_echo) {
+            if (tunnel)
+                echoOn(echoDelay(manager()));
+        } else {
+            if (!tunnel)
+                echoOff();
+            updateEcho(dt);
+        }
+        return;
+    }
+    if (!m_echo && tunnel)
+        echoOn(echoDelay(manager()));
+    else if (m_echo && !tunnel)
+        echoOff();
+    if (m_echo)
+        updateEcho(dt);
+}
+
 void OpponentCarAudio::silence() {
-    // vehCarAudio::UnAssignSounds (and the semi / police variants): the horn,
-    // engine, surface and siren stop; impacts, thumps and an explosion play out.
+    // vehCarAudio::UnAssignSounds (and the semi / police variants): the echo
+    // goes off, the horn, engine, surface and siren stop; impacts, thumps and
+    // an explosion play out.
+    if (m_echo)
+        echoOff();
     m_engine.stop();
     m_surfaces.silence();
     if (m_horn.playing())
@@ -1011,7 +1222,12 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
     if (!hasSlot() && !acquireSlot(m_3d.withinMaxDistance(position, listener.m3)))
         return;
 
-    // vehCarAudio::UpdateAudio3D(doppler factor).
+    // vehCarAudio::UpdateAudio (Aud3DObjectManager::Update, for slot
+    // holders): the tunnel echo, then UpdateAudio3D(doppler factor).
+    const bool tunnel = inTunnel(in, manager());
+    m_surfaces.setTunnel(tunnel);
+    updateEchoState(tunnel, dt);
+
     if (m_3d.pastMaxDistance(position, listener.m3)) {
         // vehPoliceCarAudio::UpdateAudio3D keeps the slot (and the values of the
         // last update) while an explosion plays.
@@ -1050,10 +1266,10 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
         if (m_siren->on())
             m_siren->update3D(dt, m_attenuation, m_doppler, m_pan);
         else
-            m_engine.update3D(in.rpm, m_attenuation, m_doppler, m_pan);
+            m_engine.update3D(in.rpm, m_attenuation, m_doppler, m_pan, dt);
         return;
     }
-    m_engine.update3D(in.rpm, m_attenuation, m_doppler, m_pan);
+    m_engine.update3D(in.rpm, m_attenuation, m_doppler, m_pan, dt);
     m_surfaces.update3D(in, dt, m_attenuation, m_pan);
     if (m_semi) {
         // vehSemiCarAudio::UpdateReverse / UpdateAirBlow.
@@ -1081,6 +1297,8 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
 
 void OpponentCarAudio::stop() {
     releaseSlot();
+    if (m_echo)
+        echoOff();
     m_engine.stop();
     m_surfaces.stop();
     m_impacts.stop();
@@ -1247,28 +1465,56 @@ void AmbientCarAudio::updateHorn(float dt) {
         m_horn.stop();
 }
 
+void AmbientCarAudio::echoOn(float delay) {
+    // aiEngineAudio::EchoOn, vehHornAudio::EchoOn (the manager's delay, not
+    // the player's horn's 0.05 s); the driver's AudCreature is not ported.
+    sampleEchoOn(m_engine, delay);
+    sampleEchoOn(m_horn, delay);
+    m_echo = true;
+}
+
+void AmbientCarAudio::echoOff() {
+    m_engine.disableEcho();
+    m_horn.disableEcho();
+    m_echo = false;
+}
+
 void AmbientCarAudio::silence() {
-    // aiAmbientVehicleAudio::UnAssignSounds: the engine and horn stop and the
-    // horn pattern goes idle (vehHornAudio::Reset keeps its beep index);
-    // impacts play out.
+    // aiAmbientVehicleAudio::UnAssignSounds: the echo goes off, the engine
+    // and horn stop and the horn pattern goes idle (vehHornAudio::Reset keeps
+    // its beep index); impacts play out.
+    if (m_echo)
+        echoOff();
     m_engine.stop();
     if (m_horn.playing())
         m_horn.stop();
     m_hornState = 2;
 }
 
-void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Vec3& listener) {
+void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3& velocity, float dt,
+                             const Vec3& listener, bool inTunnel) {
     Mat34 l = Mat34::identity();
     l.m3 = listener;
-    update(speed, transform, velocity, dt, l);
+    update(speed, transform, velocity, dt, l, inTunnel);
 }
 
-void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, float dt, const Mat34& listener) {
+void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, float dt,
+                             const Mat34& listener, bool inTunnel) {
     // aiVehicleSpline copies its (non-negative) speed into +0x80.
     m_speed = std::abs(speed);
     if (!hasSlot() && !acquireSlot(m_3d.withinMaxDistance(transform.m3, listener.m3)))
         return;
-    // aiAmbientVehicleAudio::UpdateAudio.
+    // aiAmbientVehicleAudio::UpdateAudio(): the tunnel echo, then
+    // UpdateAudio(doppler factor).
+    const bool tunnel = inTunnel || (manager() && manager()->echo());
+    if (!m_echo && tunnel)
+        echoOn(echoDelay(manager()));
+    else if (m_echo && !tunnel)
+        echoOff();
+    if (m_echo) {
+        m_engine.updateEcho(dt);
+        m_horn.updateEcho(dt);
+    }
     if (m_3d.pastMaxDistance(transform.m3, listener.m3)) {
         releaseSlot();
         silence();
@@ -1317,6 +1563,8 @@ void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, f
 
 void AmbientCarAudio::stop() {
     releaseSlot();
+    if (m_echo)
+        echoOff();
     m_engine.stop();
     m_horn.stop();
     m_impacts.stop();

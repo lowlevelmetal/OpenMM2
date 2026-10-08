@@ -1039,6 +1039,7 @@ private:
         audio::game::CarAudioOptions opts;
         opts.city = m_result.config.city;
         opts.weather = surfaceWeather();
+        opts.manager = &m_audioSlots; // the tunnel echo state (Object3DManager::setTunnel)
         std::string error;
         m_carAudioOk = m_carAudio.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.vehicle, opts, &error);
         if (!m_carAudioOk)
