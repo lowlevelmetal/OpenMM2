@@ -602,6 +602,13 @@ public:
         m_team1->sheet.path = robberTeams ? "texture/lobb_red.tga" : "texture/lobb_rob.tga";
         // Cops vs. Robbers assigns the cars by team (host_cvr.jpg).
         m_vehicle->enabled = !(cr && cfg.copsAndRobbers == game::CopsAndRobbersMode::CopsVsRobbers);
+        // Free-For-All: the team follows the car (the police car is team 0).
+        if (cr && !teams) {
+            const game::NetCar car = net.localCar();
+            const int team = game::freeForAllTeam(fe.ctx.game->catalog.vehicle(car.vehicle));
+            if (car.team != team)
+                setTeam(fe, team);
+        }
         if (net.isHost()) {
             m_go->enabled = net.everyoneReady() && net.phase() == NetGame::Phase::Lobby;
         } else {

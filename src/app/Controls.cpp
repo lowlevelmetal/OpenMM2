@@ -60,17 +60,18 @@ const ActionInfo& info(Action a) { return kActions[static_cast<std::size_t>(a)];
 
 std::string bindKey(std::uint32_t stringId) { return std::format("Bind.{}", stringId); }
 
+Key boundKey(const IniFile& ini, const ActionInfo& a) {
+    const std::string name = ini.getString("Controls", bindKey(a.stringId));
+    if (name.empty())
+        return a.key;
+    if (name == kUnbound)
+        return Key::Unknown;
+    return platform::keyFromName(name);
+}
+
 void Bindings::load(const IniFile& ini) {
-    for (std::size_t i = 0; i < kActions.size(); ++i) {
-        const ActionInfo& a = kActions[i];
-        const std::string name = ini.getString("Controls", bindKey(a.stringId));
-        if (name.empty())
-            m_keys[i] = a.key;
-        else if (name == kUnbound)
-            m_keys[i] = Key::Unknown;
-        else
-            m_keys[i] = platform::keyFromName(name);
-    }
+    for (std::size_t i = 0; i < kActions.size(); ++i)
+        m_keys[i] = boundKey(ini, kActions[i]);
 }
 
 bool Bindings::down(const platform::Input& in, Action a) const {
