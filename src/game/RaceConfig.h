@@ -26,7 +26,8 @@ enum class Difficulty : std::uint8_t { Amateur, Professional };
 
 // Everything needed to start a session in the world, produced by the
 // frontend (single player menus or the multiplayer lobby) and consumed by the
-// race screen.
+// race screen: what MM2 keeps in its game state block (mmStatePack on
+// dgStatePack, MMSTATE).
 struct RaceConfig {
     GameMode mode = GameMode::Cruise;
     std::string city = "london"; // map name (tune/<city>.cinfo)

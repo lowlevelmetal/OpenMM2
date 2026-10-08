@@ -88,8 +88,12 @@ struct Profile {
     std::string selectedVehicle() const { return vehicle.empty() ? std::string(kDefaultVehicle) : vehicle; }
 
     static std::string raceKey(std::string_view city, std::string_view mode, int index);
+    // mmPlayerCityRecord::GetRecord (the per-city mmPlayerRecord).
     const RaceRecord* record(std::string_view city, std::string_view mode, int index) const;
 
+    // Replace MM2's binary files (mmPlayerData::Load / LoadBinary / Save /
+    // SaveBinary, mmPlayerCityRecord::Open / Close, mmPlayerRecord::
+    // LoadBinary / SaveBinary and their CRCs) with one INI file per driver.
     bool load(const std::filesystem::path& path);
     bool save() const;
 };
@@ -109,14 +113,17 @@ public:
 
     explicit ProfileStore(std::filesystem::path dir);
 
-    std::vector<Profile> list() const; // in creation order
+    // mmPlayerDirectory::LoadBinary, GetNumPlayers, GetPlayer: the drivers in
+    // creation order.
+    std::vector<Profile> list() const;
     // Fails on an empty name, an exact (case-sensitive) duplicate or when
     // kMaxDrivers exist (mmInterface::PlayerCreate, mmPlayerDirectory::
     // AddPlayer). The name is kept as typed, spaces included: a name of
     // spaces only is a driver, as in MM2 (the INI file stores it quoted).
     std::optional<Profile> create(std::string_view name, CreateError* error = nullptr);
-    bool remove(const Profile& p);
-    std::string lastUsed() const;          // name of the last selected driver
+    bool remove(const Profile& p); // mmPlayerDirectory::RemovePlayer
+    // mmPlayerDirectory::GetLastPlayer / SetLastPlayer: the last driver chosen.
+    std::string lastUsed() const;
     void setLastUsed(std::string_view name);
     const std::filesystem::path& dir() const { return m_dir; }
 
@@ -136,6 +143,7 @@ private:
 //   time0..time4, score0..score4 = <driver>|<vehicle>|<time>|<score>|<passed>
 //
 // (Files without the passed field are read as not passed.)
+// One MM2 mmRecord (SetName, SetCarName, SetTime / SetScore, SetPassed).
 struct HallEntry {
     std::string driver;
     std::string vehicle;
@@ -159,12 +167,16 @@ public:
     // MM2 `mmMiscData::NewRecord`: the entry goes into the time list before
     // the first slower or empty slot, and into the score list before the
     // first lower score (equal times and scores stay ahead); the last entry
-    // drops out. (MM2 writes only the time into a time slot and only the
-    // score into a score slot, so the other field of a slot is stale; the
-    // Hall of Fame never shows it.)
+    // drops out. (An mmRecord has a single value field, +0x88: a time slot
+    // holds the time, a score slot the score as a float, which GetScore
+    // truncates. OpenMM2 keeps both fields; the Hall of Fame reads only the
+    // slot's own.)
     void submit(Difficulty d, std::string_view city, std::string_view mode, int index, const HallEntry& e);
+    // mmMiscData::GetRecord.
     const Table* table(Difficulty d, std::string_view city, std::string_view mode, int index) const;
 
+    // mmMiscData::Open / Init / Close and mmRecord::LoadBinary / SaveBinary,
+    // as records.ini.
     bool load(const std::filesystem::path& path);
     bool save(const std::filesystem::path& path) const;
 
@@ -172,7 +184,8 @@ private:
     std::map<std::string, Table> m_tables;
 };
 
-// One row of race/<city>/<city>_rewards.csv.
+// One row of race/<city>/<city>_rewards.csv (MM2 mmRewardRecord, read by
+// mmRewardList::Init).
 struct Reward {
     std::string city;
     std::string raceType; // blitz, circuit, race, crash
@@ -202,8 +215,11 @@ public:
 
     const std::vector<Reward>& rewards() const { return m_rewards; }
     const CityProgressInfo* city(std::string_view name) const;
+    // mmPlayerCityRecord::GetNumRaces.
     int raceCount(const CityProgressInfo& c, std::string_view mode) const;
 
+    // mmPlayerData::GetPassedMask / mmPlayerCityRecord::GetPassedMask and
+    // mmPlayerData::GetNumPassed / mmPlayerCityRecord::GetNumPassed.
     RaceMask passedMask(const Profile& p, std::string_view city, std::string_view mode) const;
     int passedCount(const Profile& p, std::string_view city, std::string_view mode) const;
 
@@ -213,6 +229,7 @@ public:
     // crash course lessons open, each midterm after its three lessons and the
     // final after everything else (`ResolveCrashProgress`); blitz and circuit
     // races all open. Without a driver everything is open.
+    // (mmPlayerData::GetProgress, GetCheckpointProgress.)
     RaceMask openMask(const Profile* p, std::string_view city, std::string_view mode) const;
     bool raceOpen(const Profile* p, std::string_view city, std::string_view mode, int index) const;
 
