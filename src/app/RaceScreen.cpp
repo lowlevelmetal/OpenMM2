@@ -1216,6 +1216,11 @@ private:
             for (const ai::AmbientCar& c : m_ai->cars())
                 cars.push_back(ai::trackedAmbient(c, 10000 + c.id));
         }
+        // The cable cars share the ambient cars' obstacle map
+        // (aiCableCar::UpdateObstacleMap): the drivers see them there.
+        if (m_cableCars)
+            for (std::size_t i = 0; i < m_cableCars->size(); ++i)
+                cars.push_back(m_cableCars->tracked(i, 20000 + static_cast<int>(i)));
         // aiMap::Update: the physics cars let the intersections ahead of them
         // go (aiMap::StopRoadTraffic(false)), drive, and hold them again
         // (StopRoadTraffic(true)) while the ambient traffic updates.

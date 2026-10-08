@@ -181,6 +181,35 @@ public:
     void stopSources(int intersection, bool stop);
     bool alwaysStop(int path) const;
 
+    // A rail vehicle of another system (aiCableCar) that MM2 keeps in the
+    // same obstacle map and four-way stop queues as the ambient cars: the
+    // drivers then see it (IsTargetBlocked) and the stop signs take turns
+    // with it.
+    class ExternalVehicle {
+    public:
+        virtual ~ExternalVehicle() = default;
+        // aiObstacle::CurrentRoadIdx (see currentRoadIdx).
+        virtual int currentRoadIdx(const int roads[3], const bool dirs[3], int* vert) const = 0;
+        // aiObstacle::InAccident.
+        virtual bool inAccident() const { return false; }
+    };
+    // Registers `vehicle` (not owned); returns its entry in the obstacle
+    // lists and stop queues, beyond every ambient car's index.
+    int addExternal(const ExternalVehicle* vehicle);
+    bool isExternal(int entry) const { return entry >= static_cast<int>(m_cars.size()); }
+    // aiPath::AddVehicle / RemoveVehicle (newest first), aiIntersection::
+    // AddVehicle / RemoveVehicle, for an external entry.
+    void listOnRoad(int entry, int path, int side, int bucket);
+    void unlistFromRoad(int entry, int path, int side, int bucket);
+    void listAtIntersection(int entry, int node);
+    void unlistFromIntersection(int entry, int node);
+    // aiIntersection::AddToStopSignCntl, StopSignOkayToGo and
+    // RemoveFromStopSignCntl for an external entry (not of type 0: it takes
+    // no other vehicle of its road along).
+    void joinStopSign(int node, int entry);
+    bool stopSignTurn(int node, int entry) { return stopSignOkayToGo(node, entry); }
+    void leaveStopSign(int node, int entry) { removeFromStopSign(node, entry); }
+
     // Diagnostics for tests and tools.
     struct DebugCar {
         int lane = -1;     // network lane id of the logical lane
@@ -375,6 +404,8 @@ private:
     std::vector<std::array<std::vector<std::vector<int>>, 2>> m_roadObstacles;
     std::vector<std::vector<int>> m_nodeObstacles;
     const MapView* m_map = nullptr;
+    std::vector<const ExternalVehicle*> m_externals; // entries m_cars.size() + k
+    bool inAccident(int entry) const;
     void updateObstacleMap(int idx);
     std::vector<int>* obstacleList(int path, int side, int bucket);
     std::vector<std::vector<int>> m_queues;      // per network lane

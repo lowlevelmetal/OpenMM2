@@ -916,12 +916,16 @@ bool Traffic::stopSignOkayToGo(int node, int car) {
         const int first = waiting.front();
         waiting.erase(waiting.begin());
         allowed.push_back(first);
-        const int road = m_cars[static_cast<std::size_t>(first)].path;
-        for (auto it = waiting.begin(); it != waiting.end(); ++it) {
-            if (m_cars[static_cast<std::size_t>(*it)].path == road) {
-                allowed.push_back(*it);
-                waiting.erase(it);
-                break;
+        // (Only an ambient car, type 0, takes another of its road along; an
+        // external vehicle such as a cable car, type 5, goes alone.)
+        if (!isExternal(first)) {
+            const int road = m_cars[static_cast<std::size_t>(first)].path;
+            for (auto it = waiting.begin(); it != waiting.end(); ++it) {
+                if (!isExternal(*it) && m_cars[static_cast<std::size_t>(*it)].path == road) {
+                    allowed.push_back(*it);
+                    waiting.erase(it);
+                    break;
+                }
             }
         }
     }
@@ -968,11 +972,55 @@ bool Traffic::okayToEnter(int idx, float dist) {
 // (hit, regaining its lane, avoiding the player, parked) in the intersection
 // ahead or on the next road. MM2 finds them through its obstacle map; here a
 // car counts where its rail registers it (inferred equivalent).
+bool Traffic::inAccident(int o) const {
+    // aiVehicleSpline::InAccident (any goal but driving its rail), or the
+    // external vehicle's own answer.
+    if (o < 0)
+        return false;
+    if (isExternal(o)) {
+        const auto k = static_cast<std::size_t>(o) - m_cars.size();
+        return k < m_externals.size() && m_externals[k]->inAccident();
+    }
+    return m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
+}
+
+int Traffic::addExternal(const ExternalVehicle* vehicle) {
+    m_externals.push_back(vehicle);
+    return static_cast<int>(m_cars.size() + m_externals.size() - 1);
+}
+
+void Traffic::listOnRoad(int entry, int path, int side, int bucket) {
+    if (auto* list = obstacleList(path, side, bucket))
+        list->insert(list->begin(), entry);
+}
+
+void Traffic::unlistFromRoad(int entry, int path, int side, int bucket) {
+    if (auto* list = obstacleList(path, side, bucket))
+        if (auto it = std::ranges::find(*list, entry); it != list->end())
+            list->erase(it);
+}
+
+void Traffic::listAtIntersection(int entry, int node) {
+    if (node >= 0 && static_cast<std::size_t>(node) < m_nodeObstacles.size())
+        m_nodeObstacles[static_cast<std::size_t>(node)].insert(m_nodeObstacles[static_cast<std::size_t>(node)].begin(),
+                                                               entry);
+}
+
+void Traffic::unlistFromIntersection(int entry, int node) {
+    if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+        return;
+    auto& list = m_nodeObstacles[static_cast<std::size_t>(node)];
+    if (auto it = std::ranges::find(list, entry); it != list.end())
+        list.erase(it);
+}
+
+void Traffic::joinStopSign(int node, int entry) {
+    if (node >= 0 && static_cast<std::size_t>(node) < m_stopWaiting.size())
+        m_stopWaiting[static_cast<std::size_t>(node)].push_back(entry);
+}
+
 bool Traffic::upcomingAccident(const Car& c) const {
-    auto inAccident = [&](int o) {
-        return o >= 0 && static_cast<std::size_t>(o) < m_cars.size() &&
-               m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
-    };
+    auto inAccident = [&](int o) { return this->inAccident(o); };
     for (int o : intersectionVehicles(arrivalIntersection(m_net, c.path, c.dir)))
         if (inAccident(o))
             return true;
@@ -2147,10 +2195,7 @@ void Traffic::release(int carId) {
 }
 
 bool Traffic::accidentAt(int intersection, int path, int dir) const {
-    auto inAccident = [&](int o) {
-        return o >= 0 && static_cast<std::size_t>(o) < m_cars.size() &&
-               m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
-    };
+    auto inAccident = [&](int o) { return this->inAccident(o); };
     for (int o : intersectionVehicles(intersection))
         if (inAccident(o))
             return true;
@@ -2387,6 +2432,14 @@ void Traffic::updateObstacleMap(int idx) {
 }
 
 int Traffic::currentRoadIdx(int car, const int roads[3], const bool dirs[3], int* vert) const {
+    if (isExternal(car)) {
+        const auto k = static_cast<std::size_t>(car) - m_cars.size();
+        if (k >= m_externals.size()) {
+            *vert = 0;
+            return -1;
+        }
+        return m_externals[k]->currentRoadIdx(roads, dirs, vert);
+    }
     // aiVehicleSpline::CurrentRoadIdx.
     const Car& c = m_cars[static_cast<std::size_t>(car)];
     const city::AiMap* src = m_net.source();

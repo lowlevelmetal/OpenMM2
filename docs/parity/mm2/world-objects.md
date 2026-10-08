@@ -2,8 +2,8 @@
 
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
-Summary: 297 reachable functions in 35 classes; ported 186 (of which newly
-ported 123), replaced 30, not needed 75, open 6.
+Summary: 297 reachable functions in 35 classes; ported 187 (of which newly
+ported 124), replaced 30, not needed 75, open 5.
 
 The city's moving and scripted objects. Before this audit OpenMM2 had none of
 the gizmos and no cable cars; they now live in `src/game/world/` (Gizmos,
@@ -240,10 +240,11 @@ network game), updates them after the AI drivers, draws them, plays their
 | `aiCableCar::Update` | ported (new) | `CableCars::updateCar`, `updateAudio` | The knocked-loose branch (instance flag 1 cleared: the sister stops, the car resets once `aiMap::FindAmbAppRoad` finds no ambient car coming) cannot run: see ImpactCB. |
 | `aiCableCar::DetermineNextLink`, `SolveRailType`, `DistanceToIntersection`, `SolveVelocity`, `SolvePositionAndOrientation` | ported (new) | `nextLink`, `solveRailType`, `distanceToIntersection`, `solveVelocity`, `solvePositionAndOrientation` | Leaving an intersection, the stop sign removed from is the road's direction-1 end whatever way the car came, as coded. |
 | `aiCableCar::CheckForObstacles` | ported (new) | `checkForObstacles` | Reads the other cable cars from its own map and the ambient cars from `ai::Traffic::roadVehicles` (the traffic's per-section lists, read only), with aiVehicleSpline's bumper and side distances from their VehicleData. |
-| `aiCableCar::OkayToEnterIntersection` | ported (new) | `okayToEnterIntersection`, `stopSignOkayToGo`, `removeFromStopSign` | Deviation: the four-way stop queue (aiIntersection::AddToStopSignCntl / StopSignOkayToGo / RemoveFromStopSignCntl) holds the cable cars only (MM2 shares it with the ambient cars). The light is the one of the side's first lane. A road told to always go (aiPath +0x160) has no counterpart in OpenMM2's traffic. |
-| `aiCableCar::UpdateObstacleMap` | ported (new) | `updateObstacleMap` | Into the cable cars' own map (see open). |
+| `aiCableCar::OkayToEnterIntersection` | ported (new) | `okayToEnterIntersection`, `ai::Traffic::joinStopSign` / `stopSignTurn` / `leaveStopSign` | The four-way stop queue (aiIntersection::AddToStopSignCntl / StopSignOkayToGo / RemoveFromStopSignCntl) is the ambient traffic's, shared as in MM2 (ai audit). The light is the one of the side's first lane. A road told to always go (aiPath +0x160) has no counterpart in OpenMM2's traffic. |
+| `aiCableCar::UpdateObstacleMap` | ported (new) | `updateObstacleMap` | Into the ambient traffic's obstacle map (`ai::Traffic::listOnRoad` / `listAtIntersection`, ai audit), where the racers and police see the cars. |
 | `aiCableCar::Type`, `Speed`, `FrontBumperDistance`, `BackBumperDistance`, `LSideDistance`, `RSideDistance`, `Position`, `GetMatrix` | ported (new) | `CableCars::Car`, `matrix`, `speed`, the `TrackedCar` built in `checkForObstacles` | Type 5 (no grouping at stop signs). |
-| `aiCableCar::CurrentRoadIdx`, `CurrentRdVert`, `CurrentLane`, `CurrentRoadId` | open | - | The obstacle interface the ambient cars read when they meet a cable car in the obstacle map; open with the traffic side (below). |
+| `aiCableCar::CurrentRoadIdx` | ported (new) | `CableCars::Obstacle` | The car's slot in a driver's window (ai audit: `ai::Traffic::ExternalVehicle`). |
+| `aiCableCar::CurrentRdVert`, `CurrentLane`, `CurrentRoadId` | open | - | Not read by OpenMM2's obstacle users (the drivers ask CurrentRoadIdx); whether MM2 reads them for cable cars is not checked. |
 | `aiCableCar::DrawId` | not needed | - | Debug drawing (empty). |
 | `aiCableCarInstance::GetMatrix`, `SetMatrix`, `GetPosition` | ported (new) | `CableCars::Body::matrix` | The car's matrix. |
 | `aiCableCarInstance::Draw` | ported (new) | `CableCars::draw` | The BODY meshes, first paint job, lit, LOD by lvlInstance::IsVisible. |
@@ -349,12 +350,10 @@ on s_win_trans_01), which nothing then uses.
   rooms, as in MM2. Parked cars are BangerSet props.
 - A race restart resets the gizmos and the cable cars right after the props
   (lvlLevel::ResetInstances), as mmGame::Reset and aiMap::Reset do.
-- ai-vehicles: the ambient traffic does not see the cable cars (MM2 lists them
-  in the same per-section obstacle lists and at the same four-way stops, and
-  the ambient cars read their aiObstacle interface). Porting it needs
-  `ai::Traffic` to hold external rail vehicles in its obstacle lists and stop
-  queues (open: `aiCableCar::CurrentRoadIdx`, `CurrentRdVert`, `CurrentLane`,
-  `CurrentRoadId`).
+- ai: the cable cars are in the ambient traffic's per-section obstacle lists
+  and four-way stop queues (`ai::Traffic::addExternal`, done by the ai
+  audit), so the racers and police see them and the stops take turns with
+  them; `CurrentRdVert`, `CurrentLane`, `CurrentRoadId` remain open.
 - phys: static instances have no velocity (`aiCableCarInstance::GetVelocity`).
 - Edits outside this area: `BangerSet` gained `boundOf` / `boundRadius`
   (accessors), `CityLevel.cpp` the landmark fix, `RaceScreen.cpp` the hooks,

@@ -330,3 +330,57 @@ TEST(ParityMm2Ai, PlayerInAnIntersectionKeepsTheRoadItLeaves) {
     EXPECT_EQ(view.predictIntersectionPath(1, {1, 0, 0}, &fromStart), 1);
     EXPECT_TRUE(fromStart);
 }
+
+namespace {
+
+struct RailVehicle final : ai::Traffic::ExternalVehicle {
+    bool accident = false;
+    int currentRoadIdx(const int*, const bool*, int* vert) const override {
+        *vert = 3;
+        return 1;
+    }
+    bool inAccident() const override { return accident; }
+};
+
+} // namespace
+
+// The cable cars are aiObstacles in the ambient traffic's obstacle map and
+// four-way stop queues (aiCableCar::UpdateObstacleMap, aiIntersection::
+// AddToStopSignCntl): an external entry is listed and unlisted like a car,
+// answers CurrentRoadIdx and InAccident itself, and takes its turn at a stop
+// alone.
+TEST(ParityMm2Ai, ExternalRailVehiclesShareTheObstacleMap) {
+    const auto map = square();
+    const auto net = ai::RoadNetwork::build(map, {});
+    ai::TrafficLights lights;
+    lights.build(net);
+    ai::TrafficSettings settings;
+    settings.poolSize = 4;
+    ai::Traffic traffic(net, lights, {sedan()}, settings, 1);
+    RailVehicle tram;
+    const int entry = traffic.addExternal(&tram);
+    EXPECT_EQ(entry, 4);
+    EXPECT_TRUE(traffic.isExternal(entry));
+    traffic.listOnRoad(entry, 2, 1, 1);
+    ASSERT_EQ(traffic.roadVehicles(2, 1, 1).size(), 1u);
+    EXPECT_EQ(traffic.roadVehicles(2, 1, 1)[0], entry);
+    EXPECT_FALSE(traffic.accidentAt(-1, 2, 1));
+    tram.accident = true;
+    EXPECT_TRUE(traffic.accidentAt(-1, 2, 1));
+    traffic.unlistFromRoad(entry, 2, 1, 1);
+    EXPECT_TRUE(traffic.roadVehicles(2, 1, 1).empty());
+    traffic.listAtIntersection(entry, 3);
+    EXPECT_EQ(traffic.intersectionVehicles(3).size(), 1u);
+    const int roads[3] = {0, 2, -1};
+    const bool dirs[3] = {true, true, false};
+    int vert = 0;
+    EXPECT_EQ(traffic.currentRoadIdx(entry, roads, dirs, &vert), 1);
+    EXPECT_EQ(vert, 3);
+    traffic.joinStopSign(1, entry);
+    EXPECT_TRUE(traffic.stopSignTurn(1, entry));
+    traffic.leaveStopSign(1, entry);
+    // aiMap::Reset empties the lists, the external entries stay registered.
+    traffic.reset();
+    EXPECT_TRUE(traffic.intersectionVehicles(3).empty());
+    EXPECT_TRUE(traffic.isExternal(entry));
+}

@@ -36,6 +36,8 @@ Fixed or newly ported in this pass:
 - **Intersection prop lists** are empty in play, as aiMap::Reset leaves them.
 - **Racers and police steer round props** (aiVehiclePhysics::IsTargetBlocked's
   prop lists, aiBanger::IsBlockingTarget / PreAvoid / CurrentRoadIdx).
+- **Cable cars in the traffic's lists**: the ambient cars' obstacle map and
+  four-way stop queues take external rail vehicles (aiCableCar in MM2).
 - **-pedpool** sets the pedestrian pool (aiCityData).
 - **Players' tracked roads** found afresh at a reset (aiVehiclePlayer::Reset,
   aiMap::PredictIntersectionPath).
@@ -160,7 +162,7 @@ A road of the .bai: lanes, sidewalks, the obstacle lists, the population links.
 | `ReadBinary`, `ReadShortcut`, `ReverseDirection`, `InitRoadTurns`, `CalcRoadTurns`, `IsSharpTurn`, `SharpTurnVertIndex`, `SharpTurnAngle` | ported | `city::parseBai`, `RoadNetwork::build`, `PathGeometry` | First audit. |
 | `SharpTurnCenter`, `SharpTurnDir`, `SharpTurnEndDir`, `SharpTurnIntersection`, `SharpTurnRadius`, `SharpTurnSetback`, `SharpTurnStartDir` | ported | `PathGeometry` (`sharpTurn`) | Accessors of the turn records, by direction. |
 | `Reset` | ported (new) | `Traffic::reset`, `Pedestrians::reset` | Lane, vehicle and pedestrian lists, AllwaysStop / AllwaysGo, the player masks; not the prop lists. |
-| `ResetObstacles`, `AddVehicle`, `RemoveVehicle` | ported | `Traffic::clearPath`, `updateObstacleMap` | The per-section vehicle lists (+0x90 / +0xf4). |
+| `ResetObstacles`, `AddVehicle`, `RemoveVehicle` | ported | `Traffic::clearPath`, `updateObstacleMap`, `listOnRoad`, `unlistFromRoad` | The per-section vehicle lists (+0x90 / +0xf4), shared with the cable cars (`Traffic::addExternal`, new). |
 | `AddBanger`, `AddBangersToObsMap` | ported | `Pedestrians::setObstacles` | The per-section prop lists (+0x94 / +0xf8), read by the pedestrians and the drivers. |
 | `AddAmbPlayer`, `RemAmbPlayer`, `ClearAmbients`, `AddAmbVehicle`, `PushAmbVehicle`, `PopAmbVehicle`, `RemoveAmbVehicle`, `UpdateAmbients`, `RoadCapacity`, `NumVehiclesAfterDist`, `ResetVehicleReactTicks`, `AllwaysStop` | ported | `Traffic` (`activate`, `clearPath`, queues, `step`, `roadCapacity`, `solveLane`, `resetReactTicks`, `alwaysStop`) | First audit. |
 | `AddPedPlayer`, `RemPedPlayer`, `AddPedestrian`, `RemovePedestrian (both)`, `UpdatePedestrians` | ported | `Pedestrians` (`adjust`, `pathAdd`, `pathRemove`, `updateRoad`) | First audit. |
@@ -405,10 +407,12 @@ defaults; no code addresses it), so none ever exists.
 
 ## For other areas
 
-- world-objects: ambient traffic and cable cars share the per-section
-  vehicle lists and four-way stop queues in MM2 (aiCableCar::CurrentRoadIdx,
-  CurrentRdVert, CurrentLane, CurrentRoadId); `ai::Traffic` has no entry for
-  external rail vehicles yet (see the final report).
+- world-objects: the cable cars now share the ambient traffic's per-section
+  vehicle lists and four-way stop queues, as in MM2 (`ai::Traffic::
+  addExternal` and its list and stop calls, `CableCars::Obstacle` for
+  aiCableCar::CurrentRoadIdx; RaceScreen gives the drivers the cable cars).
+  Their record is updated; aiCableCar::CurrentRdVert, CurrentLane and
+  CurrentRoadId stay open there.
 - session: crash course (mmSingleStunt::UpdateChase / UpdateStop) also asks
   aiRouteRacer::Finished, against the line the last race set; OpenMM2 sets
   none there.
