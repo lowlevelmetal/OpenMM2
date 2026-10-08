@@ -267,10 +267,39 @@ Vec4 mapRect(const render::UiLayout& l, const HudMapParams& map, const HudOption
     case MapMode::Small: break;
     }
     // Small: Pos/Size less 10 pixels; right-hand-drive cars move it to the
-    // left edge in the dashboard view.
-    const float x = rightHandDrive && options.dashboard ? l.left : l.left + map.pos.x * w;
+    // left edge while the HUD's dashboard flag is set.
+    const float x = rightHandDrive && options.dashActive ? l.left : l.left + map.pos.x * w;
     const float inset = 10.0f * options.pixelSize;
     return {x, l.top + map.pos.y * h, map.size.x * w - inset, map.size.y * h - inset};
+}
+
+render::Rect sceneRect(int width, int height, const HudMapParams& map, MapMode mode, bool wideAngle) {
+    // __ftol truncates; the products are 32-bit floats as the original's.
+    auto trunc = [](float v) { return static_cast<std::int32_t>(v); };
+    auto rect = [](std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h) {
+        return render::Rect{x, y, static_cast<std::uint32_t>(std::max(w, 0)),
+                            static_cast<std::uint32_t>(std::max(h, 0))};
+    };
+    const float fw = static_cast<float>(width), fh = static_cast<float>(height);
+    switch (mode) {
+    case MapMode::Split: return rect(0, 0, trunc(fw), trunc(fh * 0.5f));
+    case MapMode::FullScreen:
+        return rect(trunc(fw * map.pos.x), trunc(fh * map.pos.y), trunc(fw * map.size.x),
+                    trunc(fh * map.size.y));
+    case MapMode::Off:
+    case MapMode::Small: break;
+    }
+    if (wideAngle)
+        return rect(0, trunc(fh * 0.18f), width, trunc(fh * 0.66f));
+    return rect(0, 0, width, height);
+}
+
+float messageTop(bool top, bool second, bool viewAtTop) {
+    if (!viewAtTop)
+        return second ? 0.1f : 0.05f;
+    if (top)
+        return second ? 0.2f + 0.15f : 0.2f;
+    return second ? 0.875f : 0.8f;
 }
 
 float approach(float current, float target, float rate, float dt) {
@@ -316,12 +345,6 @@ bool checkReadoutShown(GameMode mode, const LessonEvent* lesson) {
     // mmSingleStunt::InitHUD hides the mmWPHUD for follow and destroy lessons.
     return !(mode == GameMode::CrashCourse && lesson &&
              (lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy));
-}
-
-MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen) {
-    if (mode == MapMode::FullScreen)
-        return beforeFullScreen;
-    return static_cast<MapMode>((static_cast<int>(mode) + 1) % 3);
 }
 
 std::uint32_t mapIconColor(MapIcon icon) {
@@ -647,15 +670,9 @@ Vec4 Hud::mapRect(const render::UiLayout& l) const {
     return hud::mapRect(l, m_map, m_options, m_rightHandDrive);
 }
 
-void Hud::cycleMap() { m_options.mapMode = hud::nextMapMode(m_options.mapMode, m_mapModeBeforeFull); }
-
-void Hud::toggleFullScreenMap() {
-    if (m_options.mapMode == MapMode::FullScreen) {
-        m_options.mapMode = m_mapModeBeforeFull;
-    } else {
-        m_mapModeBeforeFull = m_options.mapMode;
-        m_options.mapMode = MapMode::FullScreen;
-    }
+render::Rect Hud::sceneRect(render::Extent2D scene) const {
+    return hud::sceneRect(static_cast<int>(scene.width), static_cast<int>(scene.height), m_map,
+                          m_options.mapMode, m_options.wideAngle);
 }
 
 void Hud::toggleMapZoom() {
@@ -671,7 +688,7 @@ void Hud::toggleMapRotation() {
 void Hud::toggleCluster() {
     if (m_options.cluster)
         m_options.cluster = false;
-    else if (!m_options.dashboard)
+    else if (!m_options.dashActive)
         m_options.cluster = true;
 }
 
@@ -952,8 +969,10 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
     const ui::FontSpec f = font(60, "Gill Sans MT, 20, 36, 0, 400");
     // mmHUD::Update places the nodes: the message at 0.8 (mode 0) or 0.2
     // (mode 1), 0.15 tall; the second line at 0.875 or 0.2 + 0.15, 0.075
-    // tall (mmHUD::mmHUD).
-    const float y0 = second ? (m.top ? 0.2f + 0.15f : 0.875f) : (m.top ? 0.2f : 0.8f);
+    // tall (mmHUD::mmHUD); both at the top (0.05, 0.1) while the 3D view
+    // does not start at the top of the screen.
+    const bool viewAtTop = sceneRect(m_device.sceneExtent()).y == 0;
+    const float y0 = hud::messageTop(m.top, second, viewAtTop);
     const float top = l.top + y0 * h;
     const float boxBottom = top + (second ? 0.075f : 0.15f) * h;
     const float lineHeight = static_cast<float>(f.size2); // DrawText steps by the cell height
@@ -1073,8 +1092,9 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
     const GameMode mode = session.mode();
     trackLapTimes(session);
 
-    // The instrument cluster (mmExternalView) is replaced by the dashboard.
-    if (m_options.visible && m_options.cluster && !m_options.dashboard)
+    // The instrument cluster (mmExternalView): mmHUD::ActivateDash hides it,
+    // DeactivateDash shows it again when it was on.
+    if (m_options.visible && m_options.cluster && !m_options.dashActive)
         drawCluster(ov, art, player, l.left, l.bottom - px(100.0f));
 
     // Race clock, top centre (mmHUD::Cull): the count-down in Blitz and the

@@ -198,6 +198,17 @@ camera's `Offset.z` by 0.7352941.
   `mmPlayer` resets the view on the first update after every reset, so
   after a reset MM2 shows the letterboxed view at the camera's FOV until a
   view setting changes. PlayerCameras keeps this.
+* **Map modes** (`mmViewMgr::SetViewSetting(1)` and `(10)`): the HUD map's
+  mode is a view setting kept with the camera (`PlayerCameras::mapMode`).
+  The split map forces the wide view (70 degrees, the 3D view in the top
+  half) and turns the dashboard off, remembering it in the dash view's
+  activated flag; leaving it restores the player's wide-angle choice (the
+  view settings' wide byte) and the dashboard when its camera still shows.
+  The wide angle cannot change with the split or full-screen map, nor the
+  dashboard with the split map. Every view key ends with SetCamera,
+  SetWideFOV, SetDash and SetMapMode, so even the mirror key writes the
+  dashboard flag over the remembered one. `mmPlayer::Reset` applies the
+  player's wide-angle choice, not the split map's.
 * **View settings** (`mmPlayerConfig::GetViewSettings` /
   `SetViewSettings`): the selected camera, the wide angle and the
   dashboard are globals that `mmPlayer::Init` and `Reset` read. They are
