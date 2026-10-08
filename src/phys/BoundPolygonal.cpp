@@ -501,7 +501,9 @@ void doEndPtSearch(const Mat34* m1, const Mat34* last1, const Mat34* m2, const M
         if (!(f & Intersection::kVertex)) {
             if (0.0f <= s.depth - kPenetration) {
                 const float approach = v.y * s.normal.y + v.z * s.normal.z + v.x * s.normal.x;
-                time = 0.0f <= approach ? (s.depth - kPenetration) / approach : FLT_MAX;
+                // Only a closing speed divides (Ghidra prints this test as
+                // "0 <= approach"; the code tests "0 < approach").
+                time = 0.0f < approach ? (s.depth - kPenetration) / approach : FLT_MAX;
             } else {
                 time = 0.0f;
             }
@@ -611,8 +613,12 @@ void doEndPtSearch(const Mat34* m1, const Mat34* last1, const Mat34* m2, const M
 
 // phBoundPolygonal::RetryVertPolyCollide: a vertex left over by the edge
 // passes gets an impact against its face unless it is deep inside a long
-// edge it did not reach recently.
-void retryVertPolyCollide(Collider* ca, Collider* cb, const Intersection& s, Impact*& imp, int& left, bool isA) {
+// edge it did not reach recently. `vertexOwner` is the collider of the bound
+// whose vertex it is, `faceOwner` that of the face; an A vertex makes a
+// VertexA impact (A = vertexOwner), a B vertex a VertexB one
+// (A = faceOwner).
+void retryVertPolyCollide(Collider* vertexOwner, Collider* faceOwner, const Intersection& s, Impact*& imp,
+                          int& left, bool isA) {
     if (!(s.flags & Intersection::kSoon) && s.t <= 0.75f) {
         const Vec3 e = s.b - s.a;
         if ((e.x * e.x + e.y * e.y + e.z * e.z) * 0.04f <= s.depth * s.depth)
@@ -626,15 +632,15 @@ void retryVertPolyCollide(Collider* ca, Collider* cb, const Intersection& s, Imp
         out.normal = s.normal;
         out.elementA = s.vertexB;
         out.elementB = s.polygon;
-        out.colliderA = ca;
-        out.colliderB = cb;
+        out.colliderA = vertexOwner;
+        out.colliderB = faceOwner;
     } else {
         out.kind = Impact::VertexB;
         out.normal = -s.normal;
         out.elementA = s.polygon;
         out.elementB = s.vertexB;
-        out.colliderA = cb;
-        out.colliderB = ca;
+        out.colliderA = faceOwner;
+        out.colliderB = vertexOwner;
     }
     out.componentA = -1;
     out.componentB = -1;
@@ -850,8 +856,10 @@ int testBoundPolyPolyUseDot(const BoundPolygonal& self, const BoundPolygonal& ot
     }
     int remaining = max;
     for (;;) {
+        // phBound::TestSegment refuses a probe with fewer than 1 slot left
+        // and an edge with fewer than 2; stop here instead.
         if (remaining <= 0)
-            break; // OpenMM2 guard: the original keeps writing past a full table
+            break;
         // phBoundPolygonal::GetNextSegment (the UseDot variant): vertex
         // sweeps first, then edges with at least one vertex in reach.
         Segment seg;
@@ -1233,7 +1241,7 @@ int findImpacts(const BoundPolygonal& /*a*/, const Bound& b, const Mat34* ma, co
     for (int i = 0; i < countB; ++i) {
         const std::uint16_t f = isectsB[i].flags;
         if ((f & Intersection::kNeedsRetry) && !(f & Intersection::kSkip) && !(f & Intersection::kUsed))
-            retryVertPolyCollide(ca, cb, isectsB[i], imp, left, false);
+            retryVertPolyCollide(cb, ca, isectsB[i], imp, left, false);
     }
     const int used = maxImpacts - left;
     // Terrain bounds give every impact the material of the first pierced

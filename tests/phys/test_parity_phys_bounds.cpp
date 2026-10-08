@@ -2,9 +2,12 @@
 // MM2's own code (midtown2.exe build 3393, MM2Recomp). See
 // docs/parity/phys-bounds.md.
 #include "phys/Bound.h"
+#include "phys/Collider.h"
+#include "phys/Collision.h"
 
 #include <gtest/gtest.h>
 
+#include <cfloat>
 #include <cmath>
 #include <memory>
 
@@ -109,4 +112,58 @@ TEST(ParityBounds, CenterAddsTheRotatedOffset) {
     EXPECT_FLOAT_EQ(c.x, 6.0f);
     EXPECT_FLOAT_EQ(c.y, 8.0f);
     EXPECT_FLOAT_EQ(c.z, 10.0f);
+}
+
+// phBoundPolygonal::FindImpacts hands B's vertices to RetryVertPolyCollide
+// as (B, A): the impact keeps collider A = A and collider B = B, like every
+// other VertexB impact. DoEndPtSearch divides only by a closing speed.
+TEST(ParityBounds, RetriedBVertexKeepsTheColliderOrder) {
+    BoundBox a;
+    BoundBox b;
+    Collider ca, cb;
+    const Mat34 m = Mat34::identity();
+    const int top = 2; // the +y face of the box
+    ASSERT_GT(a.polygons[top].normal.y, 0.9f);
+
+    auto isect = [&](int element, int vertexA, int vertexB, const Vec3& from, const Vec3& to, float depth) {
+        Intersection s;
+        s.position = (from + to) * 0.5f;
+        s.normal = a.polygons[top].normal;
+        s.t = 0.5f;
+        s.depth = depth;
+        s.bInside = true;
+        s.polygon = top;
+        s.poly = &a.polygons[top];
+        s.element = element;
+        s.vertexA = vertexA;
+        s.vertexB = vertexB;
+        s.a = from;
+        s.b = to;
+        s.bound = &b;
+        s.otherBound = &a;
+        s.collider = &ca;
+        return s;
+    };
+    // B's edge 8 (vertices 0 -> 4) through A's top face at zero depth, then
+    // B's vertex 0 swept into it. The edge leaving vertex 0 blocks the vertex
+    // search, which flags the vertex for a retry.
+    Intersection isectsB[2] = {
+        isect(8, 0, 4, {0.0f, 0.6f, 0.0f}, {0.0f, 0.4f, 0.0f}, 0.0f),
+        isect(0, -1, 0, {0.2f, 0.6f, 0.2f}, {0.2f, 0.4f, 0.2f}, 0.1f),
+    };
+    isectsB[0].edgeNormal = b.edgeNormal(8);
+    isectsB[1].flags = Intersection::kVertex;
+    Impact impacts[8];
+    const int n = findImpacts(a, b, &m, &m, &m, &m, &ca, &cb, nullptr, isectsB, 0, 2, impacts, 8);
+    int retried = 0;
+    for (int i = 0; i < n; ++i) {
+        if (impacts[i].kind != Impact::VertexB || impacts[i].elementB != 0)
+            continue;
+        ++retried;
+        EXPECT_EQ(impacts[i].colliderA, &ca);
+        EXPECT_EQ(impacts[i].colliderB, &cb);
+    }
+    EXPECT_EQ(retried, 1);
+    // No relative motion and no depth: no time to impact, not 0 / 0.
+    EXPECT_EQ(isectsB[0].timeToImpact, FLT_MAX);
 }
