@@ -675,7 +675,15 @@ float turnBrake(const Course& course, float s, float side, float speed, float co
                 d -= len;
         }
         const float sign = t.deflection >= 0.0f ? 1.0f : -1.0f;
-        const float R = std::max(t.halfWidth - sign * side, 0.5f);
+        // aiPath::CalcRoadTurns keeps the room between 3 m and twice the
+        // road's half width (IsPosOnRoad's road limit) less 1.5 m.
+        float road = 0.0f, sidewalk = 0.0f;
+        course.onRoadLimits(t.s, road, sidewalk);
+        float R = t.halfWidth - sign * side;
+        if (R < 3.0f)
+            R = 3.0f;
+        else if (R > road + road - 1.5f)
+            R = road + road - 1.5f;
         const float h = (3.14f - std::min(std::abs(t.deflection), 3.14f)) * 0.5f;
         const float r = R / std::max(1.0f - std::sin(h), 1e-3f);
         const float setback = r * std::cos(h);

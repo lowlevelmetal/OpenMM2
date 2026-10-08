@@ -113,6 +113,10 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
         // aiVehicleSpline::Init: bumper and side distances from the box bound
         // (aiVehicleManager::AddVehicleDataEntry: centred at CG, Size extents).
         const VehicleData& d = m_types[static_cast<std::size_t>(c.type)];
+        // aiVehicleSpline::Init keeps a vehicle named exactly "vabus" at
+        // lane randomness -0.5 (no retail type has that name).
+        if (d.model == "vabus")
+            c.laneRandomness = -0.5f;
         c.backBumper = d.cg.z + d.size.z * 0.5f;
         c.frontBumper = d.size.z * 0.5f - d.cg.z;
         c.leftSide = d.size.x * 0.5f - d.cg.x;
@@ -770,6 +774,9 @@ void Traffic::resetRandomDrive(Car& c) {
                               src->line.points[static_cast<std::size_t>(std::min(i, S - 1))], t);
     }
     c.curReactTicks = c.totReactTicks;
+    // Reset ends by posing the car on its curve (the pose solver Update
+    // calls), whatever its speed.
+    solvePose(c, m_player);
 }
 
 bool Traffic::stopSignOkayToGo(int node, int car) {
@@ -1020,7 +1027,11 @@ void Traffic::solveVelocity(int idx, float dt) {
                 chooseNext(c);
         }
         if (!c.enterInt) {
-            int lead = ahead(idx, c.lane);
+            // The car ahead, or the one ahead of it when that one is regaining
+            // its lane. As coded, the distance is measured to the car found but
+            // AvoidCollision is given the car directly ahead.
+            const int direct = ahead(idx, c.lane);
+            int lead = direct;
             if (lead >= 0 && m_cars[static_cast<std::size_t>(lead)].goal == AmbientGoal::RegainRail)
                 lead = ahead(lead, c.lane);
             const Car* lc = lead >= 0 ? &m_cars[static_cast<std::size_t>(lead)] : nullptr;
@@ -1030,7 +1041,7 @@ void Traffic::solveVelocity(int idx, float dt) {
                     if (c.target < limit || c.accel < c.accelFactor)
                         cruise();
                 } else if (reacted) {
-                    avoidCollision(c, *lc, leadDist);
+                    avoidCollision(c, m_cars[static_cast<std::size_t>(direct)], leadDist);
                 }
             } else if (!reacted || 2.0f < v || dist <= 1.0f) {
                 // Stop at the line.
@@ -1413,7 +1424,9 @@ void Traffic::updateRandomDrive(int idx, float dt, const PlayerCar& player) {
     if (c.goalTicks == 0)
         resetRandomDrive(c);
     solveVelocity(idx, dt);
-    if (m_settings.laneChanges && c.laneChangeOk && c.rail == Rail::Lane &&
+    // (MM2 does not look at the rail type here: the first quarter of the
+    // lane is always passed on a lane rail.)
+    if (m_settings.laneChanges && c.laneChangeOk &&
         laneLength(c.path, c.dir, c.drawLane) * 0.25f < c.roadDist) {
         solveLane(c);
         changeLanes(idx);
