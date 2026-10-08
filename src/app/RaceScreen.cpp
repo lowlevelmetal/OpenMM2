@@ -1285,7 +1285,9 @@ private:
         m_carAudioOk = m_carAudio.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.vehicle, opts, &error);
         if (!m_carAudioOk)
             log::warn("race: car audio: {}", error);
-        m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city, &m_audioSlots);
+        // mmPlayer::Init creates the city ambience only with CITY SOUNDS on.
+        if (ctx.settings.citySounds)
+            m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city, &m_audioSlots);
         m_rain.load(*m_bank, *ctx.mixer, m_result.config.timeOfDay == game::TimeOfDay::Night);
         // Impacts reported by the simulation feed the impact sounds.
         m_player->sim().onImpactCallback = [this](const phys::CarImpact& impact) { playerImpact(impact); };
@@ -1311,7 +1313,7 @@ private:
     }
 
     // Audio inputs shared by every simulated car (engine, gears, tyres).
-    static audio::game::CarAudioInputs carAudioInputs(const phys::CarSim& sim) {
+    audio::game::CarAudioInputs carAudioInputs(const phys::CarSim& sim) const {
         audio::game::CarAudioInputs in;
         in.rpm = sim.engine.rpm;
         in.idleRpm = sim.params.engine.idleRPM;
@@ -1334,7 +1336,7 @@ private:
         in.wheelRadius = sim.wheels[2].radius;
         in.wrecked = sim.damage.wrecked();
         in.velocity = sim.body.ics.frameVelocity;
-        in.inTunnel = false; // TODO: room flags (subterranean)
+        in.inTunnel = m_tunnel; // audio flag 0x80: every car's surface sound
         return in;
     }
 
@@ -1342,6 +1344,16 @@ private:
         if (!m_player)
             return;
         const auto& sim = m_player->sim();
+        // mmPlayer::Update: with the player's car in a room flagged 0x02
+        // (subterranean) the audio flag 0x80 is set (the tunnel: surface
+        // sounds, ambience areas, rain shelter, Aud3DObjectManager::EchoOn).
+        // The room is the car's (its ICS position), not the camera's.
+        m_tunnel = false;
+        if (m_cityRenderer) {
+            const int room = m_cityRenderer->roomAt(sim.body.ics.matrix.m3);
+            m_tunnel = room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size() &&
+                       (m_city->psdl.rooms[static_cast<std::size_t>(room)].flags & city::RoomFlag::Subterranean);
+        }
         if (m_carAudioOk) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = m_lastPedals.accelerator;
@@ -1355,13 +1367,18 @@ private:
             const Vec3 at = sim.modelMatrix().m3;
             if (m_world && m_world->probe(at, at - Vec3{0, 33, 0}, hit))
                 in.groundBelow = at.y - hit.position.y;
+            m_carAudio.silenceEngine(m_session && m_session->engineSilenced());
             m_carAudio.update(in, dt);
         }
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
         updateAiAudio(dt);
-        m_ambience.update(m_camera.transform, dt);
-        m_rain.update(m_result.config.weather == game::Weather::Rain, false, false, dt);
+        m_ambience.update(m_camera.transform, dt, m_tunnel);
+        // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
+        // hood camera (car view 1) and the dashboard, off for the others.
+        const auto view = m_cams.view();
+        const bool interior = view == game::PlayerCameras::View::Pov || view == game::PlayerCameras::View::Dash;
+        m_rain.update(m_result.config.weather == game::Weather::Rain, interior, m_tunnel, dt);
     }
 
     void sendLocalState(Context& ctx) {
@@ -1877,6 +1894,7 @@ private:
     audio::game::CityAmbience m_ambience;
     audio::game::RainAudio m_rain;
     bool m_carAudioOk = false;
+    bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;
     std::map<std::string, audio::game::SoundSlot> m_gameSounds; // the session's sounds by name

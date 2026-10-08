@@ -419,6 +419,11 @@ TEST(ParitySession, EndingsHoldThePlayersCarAsTheModesDo) {
         ASSERT_EQ(s->phase(), Phase::PostRace);
         EXPECT_EQ(s->playerHold(), PlayerHold::Undrivable);
         EXPECT_TRUE(s->playerHeld());
+        // ... and silences the engine (vehCarAudioContainer::SilenceEngine).
+        EXPECT_TRUE(s->damagedOut());
+        EXPECT_TRUE(s->engineSilenced());
+        s->restart();
+        EXPECT_FALSE(s->engineSilenced());
     }
     {
         // mmSingleRace::HitWaterHandler only switches the state.
@@ -431,5 +436,7 @@ TEST(ParitySession, EndingsHoldThePlayersCarAsTheModesDo) {
             r.tick();
         ASSERT_EQ(s->phase(), Phase::PostRace);
         EXPECT_EQ(s->playerHold(), PlayerHold::None);
+        EXPECT_FALSE(s->damagedOut());
+        EXPECT_TRUE(s->engineSilenced());
     }
 }

@@ -107,6 +107,11 @@ public:
     // finish), braked by mmPlayer +0x2258 after the others.
     PlayerHold playerHold() const;
     bool playerHeld() const { return playerHold() == PlayerHold::Undrivable; }
+    // A single-player race or Blitz lost to a wreck ("damaged out"): the
+    // music stops at once and the engine falls silent
+    // (vehCarAudioContainer::SilenceEngine), as after the water in a race.
+    bool damagedOut() const { return m_damagedOut; }
+    bool engineSilenced() const { return m_engineSilenced; }
     // AI racers may drive (mmGameSingle::EnableRacers at "Go!").
     bool racersReleased() const { return m_released; }
     // Opponents taking part (all in races; the current crash course event's
@@ -298,6 +303,7 @@ private:
     bool m_resultFinished = false;
     bool m_resultWon = false;
     PlayerHold m_endHold = PlayerHold::None; // set by endRace
+    bool m_damagedOut = false, m_engineSilenced = false;
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;

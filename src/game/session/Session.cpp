@@ -210,6 +210,7 @@ void Session::resetRace() {
     m_waterHandled = false;
     m_postWait = 0.0f;
     m_endHold = PlayerHold::None;
+    m_damagedOut = m_engineSilenced = false; // the modes' Reset: SilenceEngine(0)
     m_resultFinished = m_resultWon = false;
     m_resultPosition = 0;
     m_resultTime = 0.0f;
@@ -777,9 +778,12 @@ void Session::hitWater() {
         break;
     case GameMode::Blitz:
     case GameMode::Checkpoint:
-        // mmSingleBlitz / mmSingleRace::HitWaterHandler: the race is lost.
+        // mmSingleBlitz / mmSingleRace::HitWaterHandler: the race is lost
+        // (the race's handler also silences the engine).
         m_wp.stopped = true;
         sound(GameSound::DamageLose);
+        if (mode() == GameMode::Checkpoint)
+            m_engineSilenced = true;
         endRace(false, false, kWaterLoseDelay, PlayerHold::None);
         break;
     case GameMode::Circuit: respawnAtLastCheckpoint(); break;
@@ -995,6 +999,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             m_wp.stopped = true;
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
+            m_damagedOut = m_engineSilenced = true; // StopSegment(1), SilenceEngine(1)
             setMessage(mt.wreck, "Game over!", 5.0f, false);
             endRace(false, false, kPostRace, PlayerHold::Undrivable);
         }
@@ -1027,6 +1032,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             m_wp.stopped = true;
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
+            m_damagedOut = m_engineSilenced = true; // StopSegment(1), SilenceEngine(1)
             setMessage(mt.wreck, "Game over!", 5.0f, false);
             endRace(false, false, kPostRace, PlayerHold::Undrivable);
         }
