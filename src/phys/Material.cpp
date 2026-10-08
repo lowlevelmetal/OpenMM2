@@ -120,7 +120,8 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
             else if (key == "sound")
                 // A plain token: "none" (its first four letters, any case) is 0,
                 // anything else atoi.
-                m.sound = str::istartsWith(val(0), "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(val(0)));
+                m.sound =
+                    str::istartsWith(val(0), "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(val(0)));
             else if (key == "drag")
                 m.drag = data::datTokenFloat(val(0));
             else if (key == "width")

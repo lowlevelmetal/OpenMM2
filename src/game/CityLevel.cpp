@@ -174,7 +174,8 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
             pm.elasticity = m.elasticity;
             pm.friction = m.friction;
             pm.effect = m.effect;
-            pm.sound = str::istartsWith(m.sound, "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(m.sound));
+            pm.sound =
+                str::istartsWith(m.sound, "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(m.sound));
             pm.width = 1.0f;
             if (managerIndex(m.name) < 0)
                 m_manager.push_back(pm);

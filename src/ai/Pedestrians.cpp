@@ -822,7 +822,8 @@ bool Pedestrians::detectBangerCollision(const Ped& p, int& obstacle, float& alon
     const int n = sections.empty() ? 0 : static_cast<int>(sections.size());
     auto test = [&](const std::vector<int>& list) {
         for (const int i : list) {
-            const float a = isBlockingTarget(m_obstacles[static_cast<std::size_t>(i)], p.position, p.target, 0.0f, 0.5f);
+            const PedObstacle& o = m_obstacles[static_cast<std::size_t>(i)];
+            const float a = isBlockingTarget(o, p.position, p.target, 0.0f, 0.5f);
             if (0.0f < a) {
                 along = a;
                 obstacle = i;

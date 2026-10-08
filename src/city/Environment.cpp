@@ -225,7 +225,8 @@ std::optional<std::vector<PhysMaterial>> parseMaterialLibrary(std::string_view t
         else if (key == "effect")
             cur->effect = w.size() > 1 ? std::string(w[1]) : std::string();
         else if (key == "sound")
-            cur->sound = str::istartsWith(token(1), "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(token(1)));
+            cur->sound =
+                str::istartsWith(token(1), "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(token(1)));
         else if (key == "ptxindex")
             cur->ptxIndex = {n(1), n(2)};
         else if (key == "ptxthreshold")

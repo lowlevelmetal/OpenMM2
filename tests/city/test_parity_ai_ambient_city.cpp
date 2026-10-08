@@ -186,7 +186,8 @@ TEST(ParityCityRooms, RetailLevelRoomFlags) {
         }
         ASSERT_TRUE(c->water) << name;
         for (const int room : c->water->rooms)
-            EXPECT_TRUE(c->levelRoomFlags[static_cast<std::size_t>(room)] & city::LevelRoomFlag::WaterOfDeath);
+            EXPECT_TRUE(c->levelRoomFlags[static_cast<std::size_t>(room)] &
+                        city::LevelRoomFlag::WaterOfDeath);
         EXPECT_GT(terrain, 0) << name;
         std::printf("%s: %d water-of-death rooms, %d terrain-instance rooms, %d covered rooms\n", name, water,
                     terrain, covered);
