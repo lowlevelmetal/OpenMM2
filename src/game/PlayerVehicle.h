@@ -32,11 +32,14 @@ public:
     // Places the car's model origin at `model` and resets its state.
     void reset(const Mat34& model);
 
-    // Applies pedal input through the original's automatic-reverse logic.
-    void drive(const phys::PedalInput& input) { m_controls.apply(m_sim, input); }
-    // Held on the start line: full brakes in drive, without the automatic
-    // reverse (which would back the car away while the brake is held).
-    void hold(float steering);
+    // Applies pedal input through the original's automatic-reverse logic
+    // (mmGame::UpdateSteeringBrakes). After hold() it first makes the car
+    // drivable again in first gear (vehCar::SetDrivable(1, ...)).
+    void drive(const phys::PedalInput& input);
+    // Held on the start line (vehCar::SetDrivable(0, 1) and
+    // vehCar::PreUpdate): full brakes and neutral, so the throttle revs the
+    // engine freely; the steering and handbrake stay the player's.
+    void hold(const phys::PedalInput& input);
     bool reversing() const;
 
     // Pose for rendering (body and wheel matrices from the simulation).
@@ -50,6 +53,7 @@ private:
     asset::VehicleModel m_model;
     phys::CarSim m_sim;
     phys::ArcadeControls m_controls;
+    bool m_held = false;
     std::unique_ptr<phys::Trailer> m_trailer;
     std::unique_ptr<asset::VehicleModel> m_trailerModel;
 };

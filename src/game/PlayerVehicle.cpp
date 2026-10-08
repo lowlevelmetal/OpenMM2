@@ -161,12 +161,27 @@ VehiclePose SimVehicle::trailerPose() const {
     return pose;
 }
 
-void SimVehicle::hold(float steering) {
-    if (m_controls.swapThrottle || reversing()) {
-        m_controls.reset();
+void SimVehicle::hold(const phys::PedalInput& in) {
+    // vehCar::SetDrivable(0, 1): not drivable, and vehCar::PreUpdate then
+    // puts the brake on and the gearbox in neutral every frame. The pedals
+    // are not swapped while held (OpenMM2: the automatic reverse cannot
+    // engage on the start line).
+    m_held = true;
+    m_sim.drivable = false;
+    m_controls.reset();
+    m_sim.trans.setNeutral();
+    m_sim.setInputs(in.accelerator, 1.0f, in.steering, in.handbrake);
+}
+
+void SimVehicle::drive(const phys::PedalInput& in) {
+    if (m_held) {
+        // vehCar::SetDrivable(1, ...): drivable again, and
+        // vehTransmission::SetForward takes it out of neutral.
+        m_held = false;
+        m_sim.drivable = true;
         m_sim.trans.setDrive();
     }
-    m_sim.setInputs(0.0f, 1.0f, steering, 1.0f);
+    m_controls.apply(m_sim, in);
 }
 
 bool SimVehicle::reversing() const { return m_sim.trans.getCurrentGear() < 0; }

@@ -374,13 +374,14 @@ void CarSim::afterIntegrate(Body& b, float dt, const World& world) {
     si.steering = steering;
     si.gear = trans.currentGear;
     si.wheelsOnGround = wheelsOnGround();
-    if (stuck.update(ics, dt, si)) {
+    if (drivable && stuck.update(ics, dt, si)) {
         engine.throttle = 0.0f;
         brakes = 1.0f;
     }
     if (m_waterLevel && modelMatrix().m3.y < *m_waterLevel)
         splash.activate(*m_waterLevel);
-    splash.update(ics, dt);
+    if (drivable)
+        splash.update(ics, dt);
     damage.update(dt);
     // vehCarDamage::Update (bWobble, on): damaged wheels wobble, less as the
     // front-left wheel spins faster; the front-left and back-right ones one

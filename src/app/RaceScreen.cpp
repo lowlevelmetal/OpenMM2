@@ -1244,9 +1244,8 @@ private:
             m_player->drive(pedals);
         } else if ((m_session && m_session->playerHeld()) ||
                    (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
-            pedals.accelerator = 0.0f;
+            m_player->hold(pedals); // vehCar::SetDrivable(0, 1)
             pedals.brake = 1.0f;
-            m_player->hold(pedals.steering);
         } else {
             m_player->drive(pedals);
         }

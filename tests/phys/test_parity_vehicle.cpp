@@ -114,3 +114,20 @@ TEST(VehicleParity, PlayerLosesControlStrictlyPastMaxDamage) {
     r.run(1, 1.0f);
     EXPECT_FLOAT_EQ(r.car->engine.throttle, 0.0f);
 }
+
+// vehCar::Update runs vehSplash (and vehStuck) only while the car is
+// drivable: a car held on the start line in water does not float.
+TEST(VehicleParity, HeldCarRunsNoSplash) {
+    Rig held, free;
+    held.car->drivable = false;
+    for (Rig* r : {&held, &free}) {
+        r->run(30);
+        r->car->setWaterLevel(5.0f);
+    }
+    const float y0 = held.car->modelMatrix().m3.y;
+    held.run(60);
+    free.run(60);
+    EXPECT_TRUE(held.car->splash.active());
+    EXPECT_NEAR(held.car->modelMatrix().m3.y, y0, 0.01f);
+    EXPECT_GT(free.car->modelMatrix().m3.y, y0 + 0.5f);
+}

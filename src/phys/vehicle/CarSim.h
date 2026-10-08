@@ -215,6 +215,10 @@ public:
     // mmPlayer +0x2258: the player has finished the race (brakes on, wheel
     // turned full left from then on). Set by the game.
     bool raceFinished = false;
+    // vehCar's drivable flag (vehCar +0xe8 bit 2, vehCar::SetDrivable): the
+    // game clears it while a car is held before the start. vehCar::Update
+    // then runs neither vehStuck nor vehSplash.
+    bool drivable = true;
 
 private:
     WheelEnv makeEnv(float dt, const World& world);
