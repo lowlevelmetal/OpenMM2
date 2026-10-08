@@ -6,6 +6,7 @@
 #include "TestData.h"
 #include "city/CityData.h"
 #include "game/Strings.h"
+#include "game/session/CopsAndRobbers.h"
 #include "game/session/RaceSetup.h"
 #include "game/session/Session.h"
 #include "phys/World.h"
@@ -357,6 +358,72 @@ TEST(GameFlowParity, MultiplayerRaceStandingsTimeoutAndResults) {
     EXPECT_EQ(r.standings[1].opponent, -1);
     EXPECT_TRUE(r.standings[1].dnf);
     EXPECT_EQ(r.position, 0);
+}
+
+// mmMultiCR::DropGold / FindGround, ImpactCallback, UpdateGold and
+// SystemMessage: the dropped gold on the ground (back at its place only from
+// deep water or a forced drop), "You dropped the gold!" only for a hit, no
+// pickup by a host alone, and a leaver's gold dropped by the host.
+TEST(GameFlowParity, CopsAndRobbersGoldRules) {
+    CrLocations loc;
+    for (int i = 0; i < 6; ++i)
+        loc.points.push_back({100.0f * static_cast<float>(i), 0, 0});
+    CrSettings settings;
+    settings.mode = CopsAndRobbersMode::FreeForAll;
+    settings.seed = 7;
+    settings.findGround = [](const Vec3& p) { return Vec3{p.x, -1.0f, p.z}; };
+    settings.canDropAt = [](const Vec3& p) { return p.x < 1000.0f; }; // "deep water" beyond x = 1000
+    CopsAndRobbers host(settings, loc);
+    host.addCar(0, CrTeam::Robber);
+    host.addCar(1, CrTeam::Robber);
+    using Type = CopsAndRobbers::Message::Type;
+    using Car = CopsAndRobbers::Car;
+
+    // The host alone at the gold does not take it.
+    std::vector<Car> alone{{0, CrTeam::Robber, host.set().gold, false, false}};
+    EXPECT_TRUE(host.updateNetwork(0.1f, 0, true, alone, {}).empty());
+    EXPECT_EQ(host.goldCarrier(), -1);
+    // With another player in the game it does.
+    std::vector<Car> cars{{0, CrTeam::Robber, host.set().gold, false, false},
+                          {1, CrTeam::Robber, {5000, 0, 5000}, false, false}};
+    auto sent = host.updateNetwork(0.1f, 0, true, cars, {});
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(sent[0].type, Type::GoldTaken);
+    host.takeEvents();
+
+    // A hit knocks it loose where the car is, on the ground.
+    cars[0].position = {300.0f, 4.0f, 20.0f};
+    sent = host.updateNetwork(0.1f, 0, true, cars, {{0, 1, 300.0f}});
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(sent[0].type, Type::GoldDropped);
+    EXPECT_EQ(host.goldPosition(), (Vec3{300.0f, -1.0f, 20.0f}));
+    auto events = host.takeEvents();
+    ASSERT_FALSE(events.empty());
+    EXPECT_EQ(events.back().value, 1); // knocked loose: "You dropped the gold!"
+
+    // Carried by player 1, who leaves: the host drops it where it was.
+    host.receive({Type::PickupRequest, 1}, 1, true);
+    ASSERT_EQ(host.goldCarrier(), 1);
+    cars[1].position = {700.0f, 0.0f, 0.0f};
+    host.updateNetwork(0.1f, 0, true, cars, {});
+    sent = host.playerLeft(1, true);
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].type, Type::GoldDropped);
+    EXPECT_EQ(host.goldCarrier(), -1);
+    EXPECT_EQ(host.goldPosition(), (Vec3{700.0f, -1.0f, 0.0f}));
+
+    // Dropped in deep water: back at the set's place, on the ground.
+    CopsAndRobbers h2(settings, loc);
+    h2.addCar(0, CrTeam::Robber);
+    h2.addCar(1, CrTeam::Robber);
+    std::vector<Car> c2{{0, CrTeam::Robber, h2.set().gold, false, false},
+                        {1, CrTeam::Robber, {5000, 0, 5000}, false, false}};
+    h2.updateNetwork(0.1f, 0, true, c2, {});
+    ASSERT_EQ(h2.goldCarrier(), 0);
+    c2[0].position = {2000.0f, 0.0f, 0.0f};
+    c2[0].wrecked = true;
+    h2.updateNetwork(0.1f, 0, true, c2, {});
+    EXPECT_EQ(h2.goldPosition(), (Vec3{h2.set().gold.x, -1.0f, h2.set().gold.z}));
 }
 
 // mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand

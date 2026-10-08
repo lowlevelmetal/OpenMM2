@@ -384,21 +384,30 @@ HUD, car):
   `UpdateHideout`: a delivery's points meet the limit in the next frame.
   Nobody takes the gold in the frame it was knocked loose (each machine
   tests its own car and learns of the drop by message; inferred).
-* **Gold**: picked up within 5 m (+25 points); the carrier gets the gold's
+* **Gold**: picked up within 5 m in the gold's room (+25 points; a host
+  alone in the game cannot take it); the carrier gets the gold's
   mass (0 / 100 / 200 kg for the three gold weight options) and, above
   first gear, a throttle cap of 1 / 0.9 / 0.81 (`FondleCarMass`,
-  `mmGame::UpdateSteeringBrakes`). A hit of impulse 250 or more from
-  another player's car makes the carrier drop it where it is (on a road;
-  elsewhere it returns to the set's place); the carrier cannot take it back
-  for 2 s. A wrecked carrier drops it and sits out 5 s ("Wait...5 second
-  penalty!", 114); water or falling out sends it back to its place.
-* **Delivery**: within 12 m of the team's base, +100 points, the car is
-  repaired, and a new set follows.
+  `mmGame::UpdateSteeringBrakes`). A damaging hit whose summed total
+  reaches 250 from another player's car makes the carrier drop it where it
+  is ("You dropped the gold!"; back at the set's place only from a deep
+  water room) and locks it out for 2 s. A wrecked carrier drops it and sits
+  out 5 s ("Wait...5 second penalty!", 114); the water handler (5 s in the
+  water) or falling out of the city sends it back to its place. Dropped gold
+  lies on the ground under the point (`FindGround`, 2 m up to 10 m down).
+  When the carrier leaves the game the host drops it where it was. The
+  carrier does not see the gold it carries. Places come from the city's
+  `multicopwaypoints.csv` and the AI intersections (never one in a deep
+  water or terrain-instance room); a city with fewer than three rows uses
+  intersections only. Cops and Robbers plays the cruise music.
+* **Delivery**: within 12 m of the team's base, whose room is covered or
+  underground or is the car's room, +100 points, the car is repaired, and a
+  new set follows.
 * **Scores and limits**: team scores are the sum of the members'. Time
-  limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142) and end
-  below 0.1 s; point limits end the game when a player (Free-For-All) or a
-  team reaches them ("Time's up!" 118, "Point limit reached" 119); the
-  results follow 3 s later with the car braked (state 9, +0x2258).
+  limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142, 2 s) and
+  end below 0.1 s; point limits end the game when a player (Free-For-All) or
+  a team reaches them ("Time's up!" 118, "Point limit reached" 119, 3 s);
+  the results follow 3 s later with the car braked (state 9, +0x2258).
 * **Car**: regeneration while not carrying (`mmPlayer::UpdateRegen`); the
   gold's mass and throttle cap while carrying; a repair at a delivery.
   The throttle cap applies in a forward gear in every network game (1

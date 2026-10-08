@@ -533,8 +533,11 @@ private:
                 m_cams.startPreRace();
         }
         if (auto* music = ctx.music()) {
-            // The song is chosen now; MusicDirector starts it 1.25 s in.
-            const bool cruise = m_result.config.mode == game::GameMode::Cruise;
+            // The song is chosen now; MusicDirector starts it 1.25 s in. Cops
+            // and Robbers plays the cruise music too (mmMultiCR's music data
+            // is mmSingleRoamMusicData: "singleroam").
+            const bool cruise = m_result.config.mode == game::GameMode::Cruise ||
+                                m_result.config.mode == game::GameMode::CopsAndRobbers;
             music->startRace(-1, cruise, false);
             music->setAmbience(m_result.config.city);
             m_musicDirector = std::make_unique<audio::MusicDirector>(cruise);
@@ -1289,6 +1292,7 @@ private:
                 // or mmPlayer::Reset at the start.
                 const auto at = m_session->respawnPlace().value_or(m_playerPlace);
                 m_player->resetAt(at.position, at.angle);
+                m_crWaterHandled = m_cr != nullptr; // mmMultiCR::HitWaterHandler drops the gold
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 if (m_vehicle)
@@ -1583,8 +1587,10 @@ private:
             return;
         auto locations = game::session::loadCrLocations(ctx.game->vfs, m_city->info.raceDir);
         if (!locations) {
-            log::warn("race: no Cops and Robbers places for {}", m_city->info.raceDir);
-            return;
+            // mmMultiCR::LoadCSV: with fewer than three rows every place
+            // comes from the AI intersections.
+            log::info("race: no Cops and Robbers places for {}: intersections only", m_city->info.raceDir);
+            locations = game::session::CrLocations{};
         }
         game::session::CrSettings st;
         st.mode = m_result.config.copsAndRobbers;
@@ -1595,24 +1601,50 @@ private:
         // start time seeds them; the host's sets follow by message).
         st.seed = std::max(1u, ctx.netGame->raceStartTime());
         m_crRng = st.seed;
+        // GetRandomPoints' picker: mmGame::RespawnXYZ(false, false, false)
+        // less its 2 m, which still never takes an intersection in a
+        // water-of-death or terrain-instance room (level flags 0x24).
         st.randomIntersection = [this]() -> std::optional<Vec3> {
             if (!m_city->aiMap || m_city->aiMap->intersections.size() < 2)
                 return std::nullopt;
-            m_crRng = m_crRng * 1103515245u + 12345u;
             const auto& xs = m_city->aiMap->intersections;
-            return xs[1 + ((m_crRng >> 16) & 0x7fffu) % (xs.size() - 1)].center;
+            const auto& flags = m_city->levelRoomFlags;
+            constexpr std::uint16_t kRejected = city::LevelRoomFlag::WaterOfDeath | city::LevelRoomFlag::TerrainInstance;
+            for (int attempt = 0; attempt < 1000; ++attempt) {
+                m_crRng = m_crRng * 1103515245u + 12345u;
+                const auto& x = xs[1 + ((m_crRng >> 16) & 0x7fffu) % (xs.size() - 1)];
+                if (x.room >= flags.size() || !(flags[x.room] & kRejected))
+                    return x.center;
+            }
+            return xs[1].center;
         };
-        // mmMultiCR::DropGold: on the AI map's roads and intersections
-        // (aiMap::PositionToAIMapComp), not in deep water; inferred here from
-        // the level's street rooms.
-        st.canDropAt = [this](const Vec3& p) {
-            const int f = levelRoomFlagsAt(p);
-            return (f & city::LevelRoomFlag::OpenRoad) && !(f & city::LevelRoomFlag::WaterOfDeath);
+        // mmMultiCR::DropGold: aiMap::PositionToAIMapComp always answers for
+        // a room, so the gold stays where it fell unless that room is deep
+        // water (level flag 0x04).
+        st.canDropAt = [this](const Vec3& p) { return !(levelRoomFlagsAt(p) & city::LevelRoomFlag::WaterOfDeath); };
+        // mmMultiCR::FindGround: the wheels' probe from 2 m above to 10 m below.
+        st.findGround = [this](const Vec3& p) {
+            phys::RayHit hit;
+            if (m_world && m_world->wheelProbe(p + Vec3{0.0f, 2.0f, 0.0f}, p - Vec3{0.0f, 10.0f, 0.0f}, hit, nullptr,
+                                               nullptr))
+                return hit.position;
+            return p;
+        };
+        auto roomOf = [this](const Vec3& p) { return m_cityRenderer ? m_cityRenderer->roomAt(p) : 0; };
+        st.sameRoom = [roomOf](const Vec3& gold, const Vec3& car) {
+            return roomOf(gold + Vec3{0.0f, 1.5f, 0.0f}) == roomOf(car);
+        };
+        st.baseReachable = [this, roomOf](const Vec3& base, const Vec3& car) {
+            const Vec3 at = base + Vec3{0.0f, 3.75f, 0.0f};
+            constexpr int kCovered = city::LevelRoomFlag::Subterranean | city::LevelRoomFlag::Covered;
+            return (levelRoomFlagsAt(at) & kCovered) != 0 || roomOf(at) == roomOf(car);
         };
         m_cr = std::make_unique<game::session::CopsAndRobbers>(st, *locations);
         m_crSelf = ctx.netGame->localId();
-        for (const auto& p : ctx.netGame->players())
+        for (const auto& p : ctx.netGame->players()) {
             m_cr->addCar(p.id, crTeam(ctx, p.id == m_crSelf ? m_result.config.vehicle : p.car, p.team));
+            m_crPlayers.insert(p.id);
+        }
         m_crMyTeam = m_cr->teamOf(m_crSelf);
         m_regen = true; // mmMultiCR::InitMyPlayer: mmPlayer::EnableRegen(1)
         // mmSpeechContainer::InitCNR loads the Cops and Robbers lines; build
@@ -1661,14 +1693,27 @@ private:
             m_vehicle->resetDamage();
         // mmMultiCR::UpdateGame for the local car, with the others' places.
         std::vector<CopsAndRobbers::Car> cars;
+        // mmMultiCR::HitWaterHandler / DropThruCityHandler drop the gold back
+        // at its place when the water handler fires (5 s in the water, or a
+        // fall out of the city), not when the car touches the water.
         cars.push_back({m_crSelf, m_crMyTeam, m_player->sim().body.ics.matrix.m3, m_playerState.wrecked,
-                        m_playerState.inWater});
+                        std::exchange(m_crWaterHandled, false)});
         for (const auto& rc : ctx.netGame->remoteCars())
             if (rc.hasState)
                 cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
                                 false});
         sendCr(ctx, m_cr->updateNetwork(dt, m_crSelf, host, cars, m_crImpacts));
         m_crImpacts.clear();
+        // mmMultiCR::SystemMessage 0x2d: a player left.
+        {
+            std::set<std::uint8_t> now;
+            for (const auto& p : ctx.netGame->players())
+                now.insert(p.id);
+            for (const auto id : m_crPlayers)
+                if (!now.contains(id))
+                    sendCr(ctx, m_cr->playerLeft(id, host));
+            m_crPlayers = std::move(now);
+        }
         // The others' messages (mmMultiCR::GameMessage).
         for (const auto& ev : ctx.netGame->takeGameEvents()) {
             CopsAndRobbers::Message m;
@@ -1719,7 +1764,9 @@ private:
                 if (me) {
                     fondleMass(-m_cr->carrierExtraMassKg());
                     m_regen = true;
-                    if (!m_playerState.wrecked)
+                    // Only ImpactCallback says so; the wreck and the water
+                    // drop it without a line.
+                    if (e.value == 1)
                         m_session->showMessage(s.get(112, "You dropped the gold!"), 5.0f, false);
                 } else {
                     m_session->showMessage(std::format("{} {}", name(e.car), s.get(136, "dropped the Gold!")), 5.0f,
@@ -1743,15 +1790,17 @@ private:
             case E::TimeWarning: {
                 // UpdateTimeWarning: 20, 15, 10, 5, 1 minutes (138-142).
                 static constexpr std::pair<int, std::uint32_t> kIds[] = {{20, 138}, {15, 139}, {10, 140}, {5, 141}, {1, 142}};
+                // DisplayTimeWarning: 2 s at the bottom.
                 for (const auto& [minutes, id] : kIds)
                     if (minutes == e.value)
-                        m_session->showMessage(s.get(id, ""), 5.0f, false);
+                        m_session->showMessage(s.get(id, ""), 2.0f, false);
                 break;
             }
             case E::TimeUp:
             case E::PointLimit:
-                // UpdateLimit: the message, then 3 s to the results (state 9).
-                m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 5.0f, false);
+                // UpdateLimit: the message for 3 s, then 3 s to the results
+                // (state 9).
+                m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 3.0f, false);
                 m_crEnd = 3.0f;
                 break;
             case E::NewSet: break;
@@ -1773,7 +1822,10 @@ private:
             game::session::CrDisplay d;
             d.enabled = true;
             d.time = static_cast<float>(m_time);
-            if (m_cr->goldActive() || m_cr->goldCarrier() >= 0)
+            // The carrier does not see the gold it carries (StealGold and
+            // 0x25a deactivate the gold's waypoint for it); the others see it
+            // above the carrier.
+            if (m_cr->goldActive() || (m_cr->goldCarrier() >= 0 && m_cr->goldCarrier() != m_crSelf))
                 d.gold = m_cr->goldPosition();
             const bool teams = m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
             const bool colours = m_result.config.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
@@ -2348,11 +2400,12 @@ private:
     // sounds), the damage effects, and the game's impact callback
     // (mmPlayer::ImpactCallback), which counts the hits.
     void playerImpact(const phys::CarImpact& impact) {
-        // mmMultiCR::ImpactCallback: a hit from another player's car.
-        if (m_cr && impact.otherBody)
+        // mmMultiCR::ImpactCallback (from vehCarDamage::ApplyImpact's damaging
+        // branch): a hit from another player's car, its summed total.
+        if (m_cr && impact.otherBody && impact.damaging)
             for (const auto& [id, rv] : m_remotes)
                 if (rv.sim && &rv.sim->sim().body == impact.otherBody)
-                    m_crImpacts.push_back({m_crSelf, id, impact.impulse.mag()});
+                    m_crImpacts.push_back({m_crSelf, id, impact.total});
         if (impact.sound)
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
@@ -3124,6 +3177,8 @@ private:
     std::uint32_t m_crRng = 1;  // the places' intersection draws
     float m_crEnd = -1.0f;      // UpdateLimit's wait before the results
     bool m_crFinished = false;
+    bool m_crWaterHandled = false;        // the water / fall handler fired this frame
+    std::set<std::uint8_t> m_crPlayers;   // the players last frame (who left)
     bool m_regen = false;       // mmPlayer::EnableRegen
     float m_throttleCap = 1.0f; // mmGame +0x40c
     controls::AnalogSteering m_analogSteering; // mmPlayer::FilterSteering
