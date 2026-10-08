@@ -19,9 +19,14 @@ namespace mm2::game {
 // Semis (vehTrailer data present) also get their trailer.
 class SimVehicle {
 public:
-    // `tuneSuffix` selects e.g. the opponent tune ("_opp") when present.
+    // `tuneSuffix` selects a tune variant (e.g. "_opp") when present. MM2
+    // itself never loads one (OpenMM2 option, unused by the game).
     static std::unique_ptr<SimVehicle> load(const vfs::Vfs& vfs, std::string_view baseName, std::string* error,
-                                            std::string_view tuneSuffix = {});
+                                            std::string_view tuneSuffix = {}, bool player = false);
+    // The local player's car (mmPlayer::Init): as load(), with the
+    // player-only rules (the police car simulated as vpmustang99).
+    static std::unique_ptr<SimVehicle> loadPlayer(const vfs::Vfs& vfs, std::string_view baseName,
+                                                  std::string* error);
 
     const asset::VehicleModel& model() const { return m_model; }
     phys::CarSim& sim() { return m_sim; }

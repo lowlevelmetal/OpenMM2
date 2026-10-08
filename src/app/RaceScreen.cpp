@@ -402,7 +402,7 @@ private:
         m_world->setLevel(m_cityLevel.get());
 
         std::string error;
-        m_player = game::SimVehicle::load(ctx.game->vfs, m_result.config.vehicle, &error);
+        m_player = game::SimVehicle::loadPlayer(ctx.game->vfs, m_result.config.vehicle, &error);
         if (!m_player) {
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
             return;

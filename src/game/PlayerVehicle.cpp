@@ -1,6 +1,7 @@
 #include "game/PlayerVehicle.h"
 
 #include "asset/Bound.h"
+#include "asset/Mtx.h"
 #include "core/Log.h"
 #include "game/CityLevel.h"
 #include "core/StringUtil.h"
@@ -23,10 +24,43 @@ std::optional<data::DatFile> readDat(const vfs::Vfs& vfs, const std::string& pat
     return f;
 }
 
+// GetPivot(<model>, <part>): the 12 floats of geometry/<model>_<part>.mtx as
+// a matrix (rows min, max, centre, origin).
+std::optional<Mat34> readPivot(const vfs::Vfs& vfs, const std::string& model, std::string_view part) {
+    auto bytes = vfs.readAll(std::format("geometry/{}_{}.mtx", model, part));
+    if (!bytes)
+        return std::nullopt;
+    auto mtx = asset::parseMtx(*bytes);
+    if (!mtx)
+        return std::nullopt;
+    Mat34 m;
+    m.m0 = mtx->min;
+    m.m1 = mtx->max;
+    m.m2 = mtx->center;
+    m.m3 = mtx->origin;
+    return m;
+}
+
+// The pivots vehCarSim::Init reads for `model`: the wheels (vehWheel::Init:
+// centre, radius and width from <model>_whl0..3), the engine and the axles.
+void readSimPivots(const vfs::Vfs& vfs, const std::string& model, phys::VehicleGeometry& geom) {
+    for (int i = 0; i < 4; ++i)
+        if (auto m = readPivot(vfs, model, std::format("whl{}", i)))
+            geom.wheels[static_cast<std::size_t>(i)] = phys::VehicleGeometry::wheelFromPivot(*m);
+    geom.enginePivot = readPivot(vfs, model, "engine");
+    geom.axlePivots[0] = readPivot(vfs, model, "axle0");
+    geom.axlePivots[1] = readPivot(vfs, model, "axle1");
+}
+
 } // namespace
 
+std::unique_ptr<SimVehicle> SimVehicle::loadPlayer(const vfs::Vfs& vfs, std::string_view baseName,
+                                                   std::string* error) {
+    return load(vfs, baseName, error, {}, true);
+}
+
 std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_view baseIn, std::string* error,
-                                             std::string_view tuneSuffix) {
+                                             std::string_view tuneSuffix, bool player) {
     const std::string base = str::lower(baseIn);
     auto v = std::make_unique<SimVehicle>();
     auto read = [&](std::string_view path) { return vfs.readAll(path); };
@@ -51,13 +85,10 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
 
     // Geometry: wheels from the model's pivots, body box from its bound.
     phys::VehicleGeometry geom = phys::VehicleGeometry::placeholder();
-    for (const auto& w : v->m_model.wheels) {
-        phys::WheelGeometry wg{w.position, w.radius, w.width, true};
-        if (w.index >= 0 && w.index < 4)
-            geom.wheels[static_cast<std::size_t>(w.index)] = wg;
-        else if (w.index < 6)
-            geom.extraWheels[static_cast<std::size_t>(w.index - 4)] = wg;
-    }
+    for (const auto& w : v->m_model.wheels)
+        if (w.index >= 4 && w.index < 6)
+            geom.extraWheels[static_cast<std::size_t>(w.index - 4)] = {w.position, w.radius, w.width, true};
+    readSimPivots(vfs, base, geom);
     // vehCarModel::InitBound: bound/<car>_bound.bnd (phBoundGeometry::Load
     // reads the text file; every retail car has one).
     std::optional<asset::BoundGeometry> bound = loadBoundFile(vfs, base, false);
@@ -72,7 +103,25 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
         log::warn("vehicle: {} has no collision bound; using the body mesh box", base);
     }
 
+    // mmPlayer::Init: the player's vpcop runs vehCarSim::Init again with
+    // "vpmustang99" (unless the -tune_car option is given), so its physics
+    // are the Mustang's: tune, wheel, engine and axle pivots. The body,
+    // bound, damage, gyro and stuck stay the police car's, and so does the
+    // splash box vehCar::Init built from its InertiaBox before.
+    const phys::CarSimParams copParams = params;
+    if (player && base == "vpcop") {
+        if (auto f = readDat(vfs, "tune/vehicle/vpmustang99.vehcarsim"); f && f->top()) {
+            params = phys::CarSimParams{};
+            phys::loadCarSimParams(*f->top(), params);
+            readSimPivots(vfs, "vpmustang99", geom);
+        }
+    }
+
     v->m_sim.init(params, geom);
+    {
+        const Vec3 half = copParams.inertiaBox * 0.5f;
+        v->m_sim.splash.init(copParams.centerOfGravity - half, half + copParams.centerOfGravity);
+    }
 
     // Semi trailer: vehTrailer + dgTrailerJoint tunes, <base>_trailer model.
     // vehCar::Init builds one only for a car with a trailer_hitch pivot.
