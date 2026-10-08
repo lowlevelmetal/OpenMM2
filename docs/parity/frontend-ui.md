@@ -2,7 +2,7 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
-Summary: 148 functions; verified 79, fixed 37, deviation 11, inferred 3,
+Summary: 151 functions; verified 80, fixed 39, deviation 11, inferred 3,
 open 2, openmm2 16.
 
 Scope: the menus (`src/app/frontend/*`), the widgets and layout
@@ -179,7 +179,8 @@ the race loop to session (see "For other areas" at the end).
 | `OptionsPage` | `OptionsMenu::OptionsMenu`, `mmInterface::Update` case 2 | verified | ABOUT, AUDIO, CONTROLS, GRAPHICS, hidden PREV hotspot, ABOUT first; help opt_tabt/taud/tctl/tgfx. |
 | `GraphicsPage` (widgets, focus) | `GraphicsOptions::GraphicsOptions`, `FocusDescription` | verified | toggles, gfx_port created hidden, RESOLUTION initial focus, far clip 100-1000, lighting 0-3, help list. |
 | DISPLAY / RENDERER / RESOLUTION contents | adapter, software/hardware renderer, 16-bit modes | deviation | window mode, Vulkan/OpenGL, window size. |
-| lighting slider | `GraphicsOptions::SetLightQuality` | fixed | ceil/floor; MM2 takes the whole part of value + 1 when raised, of the value when lowered, kept in 0..3. |
+| lighting slider | `GraphicsOptions::GraphicsOptions` (LIGHTING QUALITY slider 0..3), `SetLightQuality`, `mmGame::SetLevelGraphics` | fixed | ceil/floor; MM2 takes the whole part of value + 1 when raised, of the value when lowered, kept in 0..3 (read from the asm: the comparisons are against the current `gxLightQuality`, the constants 1, 0 and 3). The slider holds the quality itself (0..3, not 0..1); the race sets `cityLevel::sm_LightQuality` to its whole part. Stored as `[Graphics] LightingQuality` 0..3, which the race reads. |
+| TEXTURE QUALITY | `GraphicsOptions::GraphicsOptions` (TEXTURE RESOLUTION drop-down, strings 390-393), `cityLevel::Load`, `gfxSetTexReduceSize`, `gfxDefaultPrepareImage` | verified | the drop-down sets `gfxTextureQuality` (`mmStatePack` +0x4C), stored as `[Graphics] TextureQuality` 0..3 (default 2). Its only use: `cityLevel::Load` sets the texture size limit to 32 << quality (32, 64, 128, 256 px) while the city loads and puts back the previous limit (none) after `LoadPathSet`; every texture loaded meanwhile that is wider or taller than the limit drops mip levels, or is halved, until it fits. Textures loaded outside the city load (cars, HUD) have no limit. For rendering to apply. |
 | `GraphicsPage::resetDefaults` | `GraphicsOptions::ResetDefaultAction` (`AutoDetect`) | deviation | always the top AutoDetect tier. |
 | `addAdvanced`, `resolutions`, `setResolution`, `GraphicsPage::done` | — | openmm2 | VSync, MSAA, render scale, UI scale, field of view, display modes. |
 | `AudioPage` (toggles, sliders, focus) | `AudioOptions::AudioOptions`, `SetSFXVolume`, `SetMusicVolume`, `SetBalance`, `ToggleMusic`, `ToggleAmbient` | verified | DEVICE initial focus; volumes 0..1, balance -1..1; music and city sounds exclusive; toggles greyed without a device. |
@@ -189,9 +190,10 @@ the race loop to session (see "For other areas" at the end).
 | MM2's log-200 volume curve | `AudManager::AssignWaveVolume` | open | audio area. |
 | `ControlPage` (widgets, ranges) | `ControlSetup::CreateDeviceOptions` | verified | sensitivity 0.5-2, dead zone 0-0.33, force feedback 0-2, CUSTOMIZE id 0x3e9; help list ctl_trev ... ctl_dd. |
 | `ControlPage::update` | `ControlSetup::ActivateDeviceOptions`, `InitCustomControls`, `SetFFPermissions` | fixed | mouse had the dead zone, the game pad no sensitivity, FORCE FEEDBACK needed a stick type; MM2: sensitivity for all but the keyboard, dead zone/calibrate for joystick and wheel, FORCE FEEDBACK whenever a force-feedback device is present, intensities while it is on. |
+| `[Controls]` keys | `mmPlayerConfig` controls, `mmInput` | verified | the page writes what `controls::Options` and `controls::Bindings` read: `Controller` 0-4, `Sensitivity` 0.5..2, `DeadZone` 0..0.33, `AutoReverse`, `UsePovHat`, `ForceFeedback`, `Bind.*`; `FFCollision` and `FFRoadForce` are stored only (no force feedback). |
 | `ControlDefaults`, `ControlPage::resetDefaults` | `mmPlayerConfig::DefaultControls`, `ControlSetup::ResetDefaultAction` | verified | dead zone 0.1, intensities 1, force feedback off, automatic transmission; `mmInput::AutoSetup` picks the device (OpenMM2: keyboard). |
 | CALIBRATE | `ControlSetup::LaunchJoyCpl` | deviation | left to the operating system. |
-| `kActions`, `binding` | `mmInput::SetDefaultConfig` (keyboard) | verified | every slot's default key matches: Tab, Q, E, F, H, (steering), Left, Right, Up, Down, Space, C, V, Enter, keypad 4/6/2/8, W, D, T, A, Z, R, S, X, 2, 3, 4, 5, Backspace, (camera pan), I, Y. |
+| `kActions`, `binding` | `mmInput::SetDefaultConfig` (keyboard) | fixed | the page kept its own copy of the action table; it now uses `app::controls` (the race's table) and `controls::boundKey`, so both read `[Controls] Bind.<string id>` the same way. Verified: | every slot's default key matches: Tab, Q, E, F, H, (steering), Left, Right, Up, Down, Space, C, V, Enter, keypad 4/6/2/8, W, D, T, A, Z, R, S, X, 2, 3, 4, 5, Backspace, (camera pan), I, Y. |
 | `BindingList`, `CustomizePage` | `ControlCustom`, `UICWArray`, `mmInput::BuildCaptureIO` | deviation | 15 rows verified (`ControlCustom::ControlCustom`); only keyboard bindings are offered (MM2 also captured mouse, joystick axes with a ±0.125 threshold in `mmJaxis::Capture`, pads and wheels). |
 | `AboutPage` | `AboutMenu::AboutMenu`, `PreSetup`, `Update`, `Cull` | fixed | scrolled at an inferred 30 px/s; MM2 holds 1.5 s and then scrolls 50 px/s in whole pixels, wrapping. The product ID shows MM2's default "UNKNOWN" (325): no registry read. |
 
@@ -200,6 +202,7 @@ the race loop to session (see "For other areas" at the end).
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
 | sessions, address, password, connecting, lobby chat, eject | `NetSelectMenu`, `Dialog_TCPIP`, `Dialog_Password`, `NetArena`, `Dialog_Eject` over DirectPlay | openmm2 | OpenMM2's UDP/ENet lobby with LAN discovery. |
+| `LobbyPage` teams | `NetArena::NetArena`, `SetTeamWidgets`, `mmMultiCR::InitMyPlayer`, `mmInterface::ChangePlayerData`, `RequestProverb` | fixed | Free-For-All kept whatever team was last chosen; MM2 shows no team buttons there and takes the team from the car: 0 with the police flag (0x08), 1 otherwise (`game::freeForAllTeam`, applied by the lobby whenever the car or the mode changes; NetGame only gains that helper). Verified: Cops vs. Robbers (lobb_cop / lobb_rob) and Robber Teams (lobb_blu / lobb_red) keep the buttons, which set the team; Cops vs. Robbers then gives team 0 the vpcop and team 1 the vpmustang99 (`NetGame::raceConfig`). |
 | `HostSettingsPage` (widgets, order) | `HostRaceMenu::HostRaceMenu`, `InitCRWidgets`, `RaceMenuBase::Init` (multiplayer) | fixed | positions were matched on host_bk, there were no roller arrows, laps was a drop-down, CANCEL discarded the changes and the weather offered snow. Now: DONE first (id 1000), the five race types, race name with arrows, a LAPS roller, the Cops & Robbers type and limit lamps, LIMIT VALUE and GOLD MASS with arrows, locale, time (629-632) and weather (625-628, no snow: `IncWeather` stops at 3) with clamping arrows and the pedestrian slider, positioned by tune/widget.csv (menu 11); DONE and Escape both apply (`mmInterface::Update` host menu), there is no CANCEL. The laps, gold mass, time and slider positions are not in the table and are inferred. |
 | limit value and gold mass steppers | `HostRaceMenu::LimitInc`/`LimitDec`, `MassInc`/`MassDec`, `SetLimit`, `GetLimit` | fixed | one index for both limits starting at 10 min / 250 pts; MM2 keeps a time index and a points index (0..3, both 0 at first) and the limit kind picks one; the mass clamps 0..2. |
 | Cops & Robbers limits and gold mass | `HostRaceMenu::InitCRWidgets` (strings 506-517) | fixed | used OpenMM2's own "min"/"pts" texts and "1000"; now MM2's strings ("5 minutes", "1,000 pts", "Weightless"...). Values 5/10/20/30, 100/250/500/1000 and the three masses verified. |
@@ -222,18 +225,27 @@ the race loop to session (see "For other areas" at the end).
 | `Dialog_Replay`, `Dialog_ReplayEdit`, REPLAY button | instant replays | open: MM2's own REPLAY button is switched off (`MainMenu::EnableReplay` never called). |
 | `mmPlayerConfig` per driver | options saved per driver | deviation (global settings). |
 | `AudManager::SetNumChannels` | SOUND QUALITY's channel limit | open: OpenMM2's mixer has no settable voice limit (audio). |
-| `mmInput` mouse/joystick/pad/wheel bindings, `mmJaxis::Capture` | binding non-keyboard controls, axis capture at ±0.125 | open: OpenMM2 offers keyboard bindings only, and the race does not read `[Controls] Bind.*` yet (session). |
+| `mmInput` mouse/joystick/pad/wheel bindings, `mmJaxis::Capture` | binding non-keyboard controls, axis capture at ±0.125 | open: OpenMM2 offers keyboard bindings only (the race reads them, and the dead zone, through `app::controls`). |
+| `PUOptions`, `PUAudioOptions`, `PUControl`, `PUGraphics` (`mmPopup` pages 5-8) | the in-race OPTIONS pages | open: not ported; the in-race popup shows Options disabled. MM2: OPTIONS (no title) has Previous Menu and Audio / Control / Graphics Options (475-477) at 0.2 / 0.4 / 0.6 of the card; AUDIO OPTIONS (title 442, OK/Cancel) has the Sound FX and Music/City volume and Balance sliders (443-445); CONTROL OPTIONS (448, card 0.05, 0.1, 0.9 x 0.8) has Steering Sensitivity, Collision Intensity, Controller Dead Zone (0..0.33) and Road Force Intensity sliders (449, 451, 450, 452) and the CONTROL drop-down (453); GRAPHICS OPTIONS (460, same card) has Object Detail (648), Visibility (461, the far clip, `FixClip`), Lighting Quality (644), Cloud Shadows (659) and the Vehicle Reflections and Textured Sky toggles (647, 645). Porting them needs popup sliders, drop-downs and toggles (text label + `mmSlider` / `mmDropDown`) and the race applying graphics, sound and control changes mid-race. |
 | `UIBMButton` weather/time sounds (Uisunny, Uicloudy, Uirain, Uisnow, Uimorning, Uinoon, Uisunset, Uinight; `AllocateSounds` slots 1-8) | sounds of the time and weather buttons of `Dialog_RaceEnvironment` (renv_imorn ... renv_irain use slots 5-8 and 1, 2, 4, 3) | not needed: build 3393 never opens that dialog (no `OpenDialog` with its id 22), so nothing in the menus plays these sounds. |
 | `RaceMenuBase::CheatCallback`, unlock-all cheat | opens every race | not ported. |
 | `MenuManager::Help` | WinHelp | deviation (message). |
 
 ## For other areas
 
+- session: in-race popup: `PUMain` calls `CreateTitle(0)`, so MM2's main
+  popup has no "MAIN MENU" title (likewise OPTIONS); the titled pages are
+  AUDIO OPTIONS, CONTROL OPTIONS, GRAPHICS OPTIONS and the key page. In
+  Cops & Robbers Free-For-All the lobby now keeps `NetCar::team` at the
+  car's team (police flag → 0), which the race can use for
+  `CopsAndRobbers::addCar`.
+- rendering: `[Graphics] TextureQuality` 0..3 (default 2) is MM2's texture
+  size limit 32 << quality for the city's textures (see TEXTURE QUALITY
+  above). `[Graphics] LightingQuality` is stored 0..3 directly (docs/rendering.md
+  still describes the option as 0-1).
 - session: lessons get MM2's opponent density 8 (`CrashCourse::SetEnvironment`)
   while OpenMM2 sets 0 opponents; whether a lesson uses it is the race
-  loop's call. The race must still read `[Controls]` (controller type,
-  DeadZone 0..0.33 default 0.1 → `mmJoystick::SetDeadZone`, sensitivity,
-  force feedback, Bind.*) and `[Graphics]`.
+  loop's call.
 - camera-props (merged): names kept as typed, `Profile::hasLastRace`; the
   main menu's LAST RACE and LAST VEHICLE now show "---" while
   `!hasLastRace()`.
