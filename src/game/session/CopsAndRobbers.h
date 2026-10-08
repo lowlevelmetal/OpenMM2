@@ -84,7 +84,36 @@ public:
     CopsAndRobbers(const CrSettings& settings, const CrLocations& locations);
 
     void addCar(int id, CrTeam team);
+    // One authority over every car (tools, tests, a single machine).
     void update(float dt, const std::vector<Car>& cars, const std::vector<Impact>& impacts);
+
+    // --- Network play ---------------------------------------------------------------
+    // mmMultiCR splits the rules between the machines: each one runs them
+    // for its own car (UpdateGame's states, UpdateGold, UpdateBank /
+    // UpdateHideout, ImpactCallback) and tells the others; the host grants
+    // pickups and draws the sets. The messages a machine sends:
+    struct Message {
+        enum class Type : std::uint8_t {
+            PickupRequest, // 0x25e, to the host: the local car reached the gold
+            GoldTaken,     // 0x25a GoldAck: the host gives `car` the gold
+            GoldDropped,   // 0x259: the carrier lost it at `position`
+            GoldDelivered, // 600: the carrier delivered it
+            NewSet,        // 0x261 ChangeSet: the host's new places
+        };
+        Type type{};
+        int car = -1;
+        Vec3 position;
+        CrSet set;
+    };
+    // The local machine's frame for its car `self` (in `cars`, with the
+    // others' places): `impacts` are its car's; `host` grants pickups at
+    // once and draws new sets. Returns the messages to send.
+    std::vector<Message> updateNetwork(float dt, int self, bool host, const std::vector<Car>& cars,
+                                       const std::vector<Impact>& impacts);
+    // A message from another machine (`from`); a host may answer with more.
+    std::vector<Message> receive(const Message& message, int from, bool host);
+    // Whether the gold can be taken (mmWaypointObject active).
+    bool goldActive() const { return m_goldActive; }
 
     bool over() const { return m_over; }
     const CrSet& set() const { return m_set; }
@@ -95,6 +124,7 @@ public:
     // Team totals (team 0: cops / blue, team 1: robbers / red).
     int score(CrTeam team) const;
     int playerScore(int id) const;
+    CrTeam teamOf(int id) const;
     float timeRemaining() const { return m_settings.timeLimitSeconds > 0 ? m_timeLeft : -1.0f; }
     // The carrier's extra mass and throttle cap (FondleCarMass: 0 / 100 /
     // 200 kg, throttle 1 / 0.9 / 0.81 above first gear).
@@ -104,10 +134,12 @@ public:
 
 private:
     static bool teamZero(CrTeam t) { return t == CrTeam::Cop || t == CrTeam::Blue; }
-    CrTeam teamOf(int id) const;
     Vec3 randomPoint();
     void newSet();
     void drop(int carId, const Vec3& at, bool toSpawn);
+    void take(int carId);
+    void deliver(int carId);
+    void tickLimits(float dt);
     void score(int id, int points);
     void checkLimits();
 
@@ -118,6 +150,7 @@ private:
     std::vector<std::pair<int, float>> m_lockout; // car id, seconds it cannot pick up
     CrSet m_set;
     int m_carrier = -1;
+    bool m_goldActive = true; // the gold's waypoint (+0x18 clear): not carried, not requested
     Vec3 m_goldPos;
     std::uint32_t m_rng;
     float m_timeLeft = 0.0f;

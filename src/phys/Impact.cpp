@@ -31,11 +31,20 @@ Mat34 invMass(const Collider* c, const Vec3& position) {
     return m;
 }
 
-// Matrix34::Transform of a direction through an inverse mass matrix (the
-// original adds the matrix's m3, which GetInvMassMatrix leaves at 0).
+// A direction through an inverse mass matrix as CalcCollision transforms it
+// for collider A (the original adds the matrix's m3, which GetInvMassMatrix
+// leaves at 0).
 Vec3 transformed(const Mat34& m, const Vec3& v) {
     return {v.z * m.m2.x + v.y * m.m1.x + m.m0.x * v.x + m.m3.x, v.z * m.m2.y + v.y * m.m1.y + m.m0.y * v.x + m.m3.y,
             v.z * m.m2.z + v.y * m.m1.z + m.m0.z * v.x + m.m3.z};
+}
+
+// The same for collider B, through the original's other helper (its own
+// summation order).
+Vec3 transformedB(const Mat34& m, const Vec3& v) {
+    return {((m.m2.x * v.z + m.m1.x * v.y) + m.m0.x * v.x) + m.m3.x,
+            ((m.m2.y * v.z + m.m0.y * v.x) + m.m1.y * v.y) + m.m3.y,
+            ((m.m2.z * v.z + m.m0.z * v.x) + m.m1.z * v.y) + m.m3.z};
 }
 
 Mat34 added(const Mat34& a, const Mat34& b) {
@@ -50,8 +59,10 @@ Mat34 added(const Mat34& a, const Mat34& b) {
 // The Coulomb limit of phImpact::CalcCollision and dgImpact::CalcCollision:
 // when the tangential part of the stopping impulse j exceeds friction times
 // its normal part, the impulse is redirected along normal + friction *
-// (tangent direction) with the size that stops the normal motion.
-Vec3 frictionLimited(const Vec3& j, const Vec3& normal, float friction, const Mat34& m, const Vec3& relVel) {
+// (tangent direction) with the size that stops the normal motion. The two
+// originals sum the denominator in different orders (`banger`: dgImpact's).
+Vec3 frictionLimited(const Vec3& j, const Vec3& normal, float friction, const Mat34& m, const Vec3& relVel,
+                     bool banger = false) {
     const float jn = j.z * normal.z + j.y * normal.y + j.x * normal.x;
     const Vec3 tangent{j.x - jn * normal.x, j.y - jn * normal.y, j.z - jn * normal.z};
     const float tangentMag = std::sqrt(tangent.z * tangent.z + tangent.y * tangent.y + tangent.x * tangent.x);
@@ -61,7 +72,8 @@ Vec3 frictionLimited(const Vec3& j, const Vec3& normal, float friction, const Ma
     const Vec3 t{tangent.x * k, tangent.y * k, tangent.z * k};
     const Vec3 dir{t.x + normal.x, t.y + normal.y, t.z + normal.z};
     const Vec3 mn = transformed(m, normal);
-    const float denom = mn.z * dir.z + dir.y * mn.y + dir.x * mn.x;
+    const float denom = banger ? (dir.y * mn.y + dir.x * mn.x) + mn.z * dir.z
+                               : (mn.z * dir.z + dir.y * mn.y) + dir.x * mn.x;
     if (denom < 1e-5f && -1e-5f < denom)
         return {};
     const float scale = -((normal.z * relVel.z + normal.y * relVel.y + normal.x * relVel.x) / denom);
@@ -100,11 +112,12 @@ void Impact::startMakingNewImpact(float d, const Vec3& n, const Vec3& p, Collide
         position = p;
         normal = n;
     } else {
-        position = {m->m1.x * p.y + m->m0.x * p.x + m->m2.x * p.z + m->m3.x,
-                    m->m0.y * p.x + p.y * m->m1.y + p.z * m->m2.y + m->m3.y,
-                    m->m0.z * p.x + p.y * m->m1.z + p.z * m->m2.z + m->m3.z};
-        normal = {m->m1.x * n.y + m->m2.x * n.z + m->m0.x * n.x, n.y * m->m1.y + n.z * m->m2.y + m->m0.y * n.x,
-                  n.y * m->m1.z + n.z * m->m2.z + m->m0.z * n.x};
+        position = {((m->m2.x * p.z + m->m0.x * p.x) + m->m1.x * p.y) + m->m3.x,
+                    ((p.z * m->m2.y + p.y * m->m1.y) + m->m0.y * p.x) + m->m3.y,
+                    ((p.z * m->m2.z + p.y * m->m1.z) + m->m0.z * p.x) + m->m3.z};
+        normal = {(m->m0.x * n.x + m->m2.x * n.z) + m->m1.x * n.y,
+                  (m->m0.y * n.x + n.z * m->m2.y) + n.y * m->m1.y,
+                  (m->m0.z * n.x + n.z * m->m2.z) + n.y * m->m1.z};
     }
     depth = d;
     colliderA = a;
@@ -152,9 +165,9 @@ void Impact::cullImpactList(Impact* list, int& count, const Vec3& dir) {
     // phImpactBase::CullImpactList.
     if (count <= 0)
         return;
-    const float limit = (dir.z * dir.z + dir.y * dir.y + dir.x * dir.x) * 0.01f;
+    const float limit = ((dir.x * dir.x + dir.y * dir.y) + dir.z * dir.z) * 0.01f;
     auto small = [&](const Impact& i) {
-        const float d = i.normal.y * dir.y + i.normal.z * dir.z + i.normal.x * dir.x;
+        const float d = (i.normal.x * dir.x + i.normal.z * dir.z) + i.normal.y * dir.y;
         return d * d <= limit;
     };
     int first = 0;
@@ -243,22 +256,22 @@ bool Impact::addImpactShaftPlaneTest(Impact* list, int& count, const Vec3& point
     const Vec3 addedMid{addedNormal.x * half + added.position.x, addedNormal.y * half + added.position.y,
                         addedNormal.z * half + added.position.z};
     const Collider* collider = added.colliderA;
-    const float addedSide = (addedMid.z - point.z) * axis.z + (addedMid.x - point.x) * axis.x +
-                            (addedMid.y - point.y) * axis.y;
+    const float addedSide = ((addedMid.y - point.y) * axis.y + (addedMid.x - point.x) * axis.x) +
+                            (addedMid.z - point.z) * axis.z;
     auto radialNormal = [&](const Impact& i) {
         Vec3 n = i.colliderA == collider ? i.normal : -i.normal;
-        const float along = n.x * axis.x + n.z * axis.z + n.y * axis.y;
+        const float along = (n.y * axis.y + n.z * axis.z) + n.x * axis.x;
         if (along != 0.0f) {
             n = {n.x - along * axis.x, n.y - along * axis.y, n.z - along * axis.z};
-            const float len2 = n.x * n.x + n.y * n.y + n.z * n.z;
+            const float len2 = (n.z * n.z + n.y * n.y) + n.x * n.x;
             const float scale = len2 == 0.0f ? 0.0f : 1.0f / std::sqrt(len2);
             n = {scale * n.x, scale * n.y, scale * n.z};
         }
         return n;
     };
     auto sameSide = [&](const Impact& i) {
-        return 0.0f < ((i.position.z - point.z) * axis.z + (i.position.x - point.x) * axis.x +
-                       (i.position.y - point.y) * axis.y) *
+        return 0.0f < (((i.position.y - point.y) * axis.y + (i.position.x - point.x) * axis.x) +
+                       (i.position.z - point.z) * axis.z) *
                           addedSide;
     };
     auto removeAt = [&](int i) {
@@ -330,7 +343,20 @@ void Impact::findFrictionAndElasticity() {
     const Material& b = materialOf(*colliderB, componentB);
     friction = b.friction * a.friction;
     const float e = b.elasticity * a.elasticity;
-    elasticity = e < kElasticityCap ? e : kElasticityCap;
+    const float cap = elasticityCap();
+    elasticity = e < cap ? e : cap;
+}
+
+namespace {
+float g_elasticityCap = kElasticityCap;
+} // namespace
+
+float elasticityCap() {
+    return g_elasticityCap;
+}
+
+void setElasticityCap(float cap) {
+    g_elasticityCap = cap;
 }
 
 void Impact::localVelocities(Vec3& va, Vec3& vb) const {
@@ -357,9 +383,9 @@ void Impact::calcCollision(const Vec3& relVel, float weight, Vec3& pushA, Vec3& 
     const float d = depth - kPenetration;
     if (0.0f < d) {
         const Vec3 an = transformed(ma, normal);
-        const float a2 = an.x * an.x + an.y * an.y + an.z * an.z;
-        const Vec3 bn = transformed(mb, normal);
-        const float b2 = bn.y * bn.y + bn.z * bn.z + bn.x * bn.x;
+        const float a2 = (an.z * an.z + an.y * an.y) + an.x * an.x;
+        const Vec3 bn = transformedB(mb, normal);
+        const float b2 = (bn.y * bn.y + bn.z * bn.z) + bn.x * bn.x;
         // Each body's share of the push follows how far a unit push moves
         // it: |Ma n| / (|Ma n| + |Mb n|).
         float shareA, shareB;
@@ -399,10 +425,10 @@ float calcCollisionNoFriction(const InertialCS& ics, const Vec3& n, float closin
         return 0.0f;
     Mat34 m;
     ics.calcCMatrix(m, position);
-    const float y = m.m1.y * n.y + m.m2.y * n.z + m.m0.y * n.x;
-    const float z = m.m1.z * n.y + m.m2.z * n.z + m.m0.z * n.x;
-    const float x = m.m1.x * n.y + m.m2.x * n.z + m.m0.x * n.x;
-    return -(closing / (y * n.y + z * n.z + x * n.x));
+    const float x = (m.m0.x * n.x + m.m2.x * n.z) + m.m1.x * n.y;
+    const float y = (m.m0.y * n.x + m.m2.y * n.z) + m.m1.y * n.y;
+    const float z = (m.m0.z * n.x + m.m2.z * n.z) + m.m1.z * n.y;
+    return -(closing / ((x * n.x + z * n.z) + y * n.y));
 }
 
 void calcImpact(Impact& impact, float weight) {
@@ -450,7 +476,7 @@ bool calcBangerImpact(Impact& impact, float weight, float impulseLimit2) {
             j = age::solveSVD(m, {-remaining.x, -remaining.y, -remaining.z});
             broke = true;
         }
-        j = frictionLimited(j, n, impact.friction, m, relVel);
+        j = frictionLimited(j, n, impact.friction, m, relVel, true);
         const float bounce = impact.elasticity + 1.0f;
         j = {bounce * j.x, j.y * bounce, j.z * bounce};
     }
@@ -458,9 +484,9 @@ bool calcBangerImpact(Impact& impact, float weight, float impulseLimit2) {
     const float d = impact.depth - kPenetration;
     if (0.0f < d) {
         const Vec3 an = transformed(ma, n);
-        const float a = std::sqrt(an.y * an.y + an.z * an.z + an.x * an.x);
-        const Vec3 bn = transformed(mb, n);
-        const float b = std::sqrt(bn.y * bn.y + bn.z * bn.z + bn.x * bn.x);
+        const float a = age::mag(an);
+        const Vec3 bn = transformedB(mb, n);
+        const float b = age::mag(bn);
         float sum = b + a;
         float shareA = a, shareB = b;
         if (sum == 0.0f) {

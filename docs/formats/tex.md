@@ -76,9 +76,9 @@ too (row 0 = v 0). Upload rows unchanged and use the game's UVs directly.
 
 ### Flags
 
-The flags are stored in the image and ORed into the texture's state by
-`gfxTexture::Create`. MM2's render-state flush (`gfxRenderState::DoFlush`)
-reads two of them for each texture stage:
+MM2's loader (`gfxLoadTexImage`) keeps the word as the image's texture
+environment and `gfxTexture::Create` copies it to the texture. The renderer
+(`gfxRenderState::DoFlush`) reads two bits of it for each texture stage:
 
 | Bit | Meaning |
 |-----|---------|
@@ -86,8 +86,12 @@ reads two of them for each texture stage:
 | 0x10000 | clamp V (`D3DTSS_ADDRESSV` = CLAMP; otherwise WRAP) |
 
 Nothing else in MM2's renderer reads the file flags; the exporter's other
-bits (0x2, 0x4, 0x8000) have no effect. Textures that are not `.tex` files
-have no flags and repeat in both directions. Retail distribution:
+bits (0x2, 0x4, 0x8000) have no effect (Open1560's MM1 `agiTexParameters`
+names 0x1/0x2/0x4 Alpha/WrapU/WrapV; MM2 does not use that meaning).
+Whether a texture is drawn in the alpha pass comes from its pixel format
+instead (`gfxTexture::Create` sets its own bit 0x20000 for formats with
+alpha). Textures that are not `.tex` files have no flags and repeat in both
+directions. Retail distribution:
 
 | Flags | Count | Typical textures | MM2 addressing (U, V) |
 |-------|------:|------------------|------------------|
@@ -95,8 +99,8 @@ have no flags and repeat in both directions. Retail distribution:
 | 0x10001 | 940 | car paint, trees, cut-out cards | clamp, clamp |
 | 0 | 639 | mixed | wrap, wrap |
 | 0x18001 | 278 | car rears, dashboards | clamp, clamp |
-| 0x8006 | 95 | `r1_*`, `r2_*` road surfaces | wrap, wrap |
-| 0x18006 | 58 | road surfaces | wrap, clamp |
+| 0x8006 | 95 | road surfaces (`r1_*` .. `r6_*` variants), `rinter_*`, `rxwalk*`, `r_alley` | wrap, wrap |
+| 0x18006 | 58 | road surfaces (`r1_*` .. `r8_*`, `rfwy*`) | wrap, clamp |
 | 0x8000 | 44 | `fxpt*` particles, steering wheel | wrap, wrap |
 | 0x10000 | 35 | skies, fences | wrap, clamp |
 | 0x10002 | 21 | | wrap, clamp |

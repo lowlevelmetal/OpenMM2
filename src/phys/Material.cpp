@@ -1,7 +1,9 @@
 #include "phys/Material.h"
 
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 
+#include <cstdint>
 #include <format>
 
 namespace mm2::phys {
@@ -52,12 +54,25 @@ private:
     int m_line = 1;
 };
 
-float toFloat(std::string_view s, float fallback) {
-    auto v = str::parseDouble(s);
-    return v ? static_cast<float>(*v) : fallback;
-}
 
 } // namespace
+
+Material lvlMaterialDefault() {
+    Material m;
+    m.name = "default";
+    m.elasticity = 0.5f;
+    m.friction = 1.0f;
+    m.effect = "none";
+    m.sound = -1;
+    m.drag = 0.0f;
+    m.width = 1.0f;
+    m.height = 0.0f;
+    m.depth = 0.0f;
+    m.ptxIndex[0] = m.ptxIndex[1] = -1;
+    m.ptxThreshold[0] = 0.25f;
+    m.ptxThreshold[1] = 0.5f;
+    return m;
+}
 
 std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::string* error) {
     std::vector<Material> out;
@@ -73,7 +88,7 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
             break;
         if (tok != "mtl")
             continue; // other sections of a .bnd file
-        Material m;
+        Material m = lvlMaterialDefault();
         m.name = std::string(r.next());
         if (r.next() != "{")
             return fail("expected '{' after material name");
@@ -91,28 +106,36 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
                 if (!str::trim(v).empty())
                     vals.push_back(str::trim(v));
             auto val = [&](std::size_t i) { return i < vals.size() ? vals[i] : std::string_view{}; };
+            // lvlMaterial::Load reads the numbers with datAsciiTokenizer's
+            // GetFloat / GetInt (a token not starting like a number is 0,
+            // else atof / atoi of its prefix). It reads the keys in the
+            // retail order and stops after sound or depth at a '}'; any
+            // order is OpenMM2 leniency.
             if (key == "elasticity")
-                m.elasticity = toFloat(val(0), m.elasticity);
+                m.elasticity = data::datTokenFloat(val(0));
             else if (key == "friction")
-                m.friction = toFloat(val(0), m.friction);
+                m.friction = data::datTokenFloat(val(0));
             else if (key == "effect")
                 m.effect = std::string(val(0));
             else if (key == "sound")
-                m.sound = static_cast<int>(toFloat(val(0), static_cast<float>(m.sound)));
+                // A plain token: "none" (its first four letters, any case) is 0,
+                // anything else atoi.
+                m.sound =
+                    str::istartsWith(val(0), "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(val(0)));
             else if (key == "drag")
-                m.drag = toFloat(val(0), m.drag);
+                m.drag = data::datTokenFloat(val(0));
             else if (key == "width")
-                m.width = toFloat(val(0), m.width);
+                m.width = data::datTokenFloat(val(0));
             else if (key == "height")
-                m.height = toFloat(val(0), m.height);
+                m.height = data::datTokenFloat(val(0));
             else if (key == "depth")
-                m.depth = toFloat(val(0), m.depth);
+                m.depth = data::datTokenFloat(val(0));
             else if (key == "ptxindex") {
-                m.ptxIndex[0] = static_cast<int>(toFloat(val(0), -1));
-                m.ptxIndex[1] = static_cast<int>(toFloat(val(1), -1));
+                m.ptxIndex[0] = static_cast<std::int16_t>(data::datTokenInt(val(0)));
+                m.ptxIndex[1] = static_cast<std::int16_t>(data::datTokenInt(val(1)));
             } else if (key == "ptxthreshold") {
-                m.ptxThreshold[0] = toFloat(val(0), m.ptxThreshold[0]);
-                m.ptxThreshold[1] = toFloat(val(1), m.ptxThreshold[1]);
+                m.ptxThreshold[0] = data::datTokenFloat(val(0));
+                m.ptxThreshold[1] = data::datTokenFloat(val(1));
             }
         }
         out.push_back(std::move(m));
@@ -121,13 +144,11 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
 }
 
 MaterialTable::MaterialTable() {
-    m_materials.push_back(Material{});
+    m_materials.push_back(lvlMaterialDefault());
 }
 
 void MaterialTable::add(const Material& m) {
-    if (const int i = find(m.name); i >= 0)
-        m_materials[static_cast<std::size_t>(i)] = m;
-    else
+    if (find(m.name) < 0)
         m_materials.push_back(m);
 }
 

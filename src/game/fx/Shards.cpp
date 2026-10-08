@@ -65,6 +65,16 @@ void Shards::update(float dt) {
     }
 }
 
+std::size_t Shards::materialFor(std::size_t shard, std::size_t materials) {
+    // fxShardManager::Draw steps through the shaders but starts again at 0
+    // after count / materials of them (integer division; never when that is
+    // 0, i.e. with more than 16 materials).
+    if (materials == 0)
+        return 0;
+    const std::size_t cycle = static_cast<std::size_t>(kCount) / materials;
+    return cycle == 0 ? shard : shard % cycle;
+}
+
 void Shards::draw(render::Device& device, TextureLibrary& textures, const std::vector<std::string>& materials) const {
     // draw_textured_tri: (0, 0, 0.1) at (u, v + 0.3), (0, 0, 0) at (u, v),
     // (0.1, 0, 0) at (u + 0.3, v); white, both sides.
@@ -72,7 +82,10 @@ void Shards::draw(render::Device& device, TextureLibrary& textures, const std::v
         const Shard& s = m_shards[i];
         if (!(s.age < kLifetime))
             continue;
-        const WorldTexture* tex = i < materials.size() ? textures.get(materials[i]) : nullptr;
+        // With fewer than 4 materials the cycle runs past the paint job (into
+        // the next one's shaders in MM2); such shards draw untextured here.
+        const std::size_t m = materialFor(i, materials.size());
+        const WorldTexture* tex = m < materials.size() ? textures.get(materials[m]) : nullptr;
         const Vec3 corners[3] = {{0, 0, 0.1f}, {0, 0, 0}, {0.1f, 0, 0}};
         const float uv[3][2] = {{s.u, s.v + 0.3f}, {s.u, s.v}, {s.u + 0.3f, s.v}};
         render::Vertex3D vertices[3]{};
@@ -90,13 +103,18 @@ void Shards::draw(render::Device& device, TextureLibrary& textures, const std::v
         call.vertices = device.uploadTransient(render::BufferKind::Vertex, std::span<const render::Vertex3D>(vertices));
         call.count = 3;
         call.constants.world = Mat44::identity();
-        call.constants.flags = render::DrawFlag::VertexColor | render::DrawFlag::Fog;
+        // Drawn from lvlLevel's late callbacks (cityLevel::DrawRooms): unlit,
+        // no fog, alpha blended with the default alpha test (alpha not 0),
+        // no depth writes; fxShardManager::Draw turns culling off. The
+        // texture keeps its own address modes (car paint clamps).
+        call.constants.flags = render::DrawFlag::VertexColor | render::DrawFlag::AlphaTest;
+        call.constants.alphaRef = 1.0f / 255.0f;
         if (tex) {
             call.constants.flags |= render::DrawFlag::Texture0;
-            render::SamplerDesc sampler = tex->sampler;
-            sampler.addressU = sampler.addressV = render::AddressMode::Wrap;
-            call.textures[0] = {tex->handle, sampler};
+            call.textures[0] = {tex->handle, tex->sampler};
         }
+        call.state.blend = render::BlendMode::Alpha;
+        call.state.depthWrite = false;
         call.state.cull = render::CullMode::None;
         device.draw(call);
     }

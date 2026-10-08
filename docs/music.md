@@ -85,9 +85,11 @@ mixer applies it, see `docs/audio.md`). In MM2 the audio options make "Music"
 and "Ambient" exclusive (`AudioOptions::ToggleMusic` / `ToggleAmbient`): with
 music on, the city's DirectMusic ambience segment and its 3D ambient emitters
 are not loaded (`mmGameMusicData::Load`, `mmPlayer::Init`). OpenMM2 plays
-both. MM2 also stops the ambience segment while the camera is underground and
-restarts it outside (`MMDMusicManager::UpdateAmbientSFX`, audio flag 0x80);
-OpenMM2 has no tunnel state yet. `setAmbience("underground")` plays
+both. MM2 also stops the ambience segment underground and starts it again
+outside (`MMDMusicManager::UpdateAmbientSFX`, audio flag 0x80: the player's
+car in a room flagged underground); the race does the same with
+`setAmbience("")` and the city's name. The music itself has no tunnel echo
+(`MMDMusicManager::EchoOn` is never called). `setAmbience("underground")` plays
 `UndergrounAmbience.sgt`, which MM2 never uses (a tool option).
 
 ### When the music changes (`MusicDirector`)

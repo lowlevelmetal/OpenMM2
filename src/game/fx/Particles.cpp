@@ -11,13 +11,17 @@ void ParticleSystem::init(int maxParticles, int framesWide, int framesHigh) {
     m_pos.assign(capacity, {});
     m_framesWide = std::max(1, framesWide);
     m_framesHigh = std::max(1, framesHigh);
+    // asParticles' constructor zeroes the spew fraction; Reset leaves it.
+    m_spewFraction = 0.0f;
     reset();
 }
 
+// asParticles::Reset: no particles, no birth matrix, elapsed time zero. The
+// spew fraction is kept.
 void ParticleSystem::reset() {
     m_count = 0;
+    m_matrix = nullptr;
     m_elapsed = 0.0f;
-    m_spewFraction = 0.0f;
 }
 
 // asBirthRule::InitSpark. Every varied value is base + (frand() - 0.5) * var,

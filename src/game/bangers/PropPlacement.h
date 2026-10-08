@@ -1,5 +1,6 @@
 #pragma once
 
+#include "asset/Pkg.h"
 #include "city/CityData.h"
 #include "city/PathSet.h"
 #include "game/RaceConfig.h"
@@ -26,6 +27,9 @@ struct PlacedProp {
     // dgBangerInstance::SetVariant: the paint job (the .inst record's
     // variant byte; 0 for the other sources).
     int variant = 0;
+    // With room 0: the room FindRoomId tries first (a PKG xref's parent
+    // record's room, lvlLevel::LoadInstances); 0 for none.
+    int roomHint = 0;
 };
 
 // city/<map>/propdefs.csv: one street prop type (columns by name).
@@ -95,6 +99,19 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
 // "race<N>", "circuit<N>", "blitz<N>", "crash<N>", "multicop" for Cops and
 // Robbers. Empty when a race mode has no race index.
 std::string racePropsName(GameMode mode, int raceIndex);
+
+// lvlInstance::EndGeom: the "xrefs" chunk of geometry/<model>.pkg (models
+// placed relative to this one), empty when the package has none.
+std::vector<asset::PkgXref> pkgXrefs(const vfs::Vfs& vfs, std::string_view model);
+
+// lvlLevel::LoadInstances: the bangers a record's xrefs place. Each xref's
+// matrix times the record's is checked (a zero row, or two rows whose dot
+// product exceeds 0.01, drops it with an error), rows whose squared length
+// is outside 0.97 .. 1.03 are normalised, and an xref whose model has no
+// banger data is not placed ("not exported"). The props keep the full
+// matrix, the record's variant byte and its room as the hint for their own.
+std::vector<PlacedProp> placeXrefs(const city::Instance& record, const std::vector<asset::PkgXref>& xrefs,
+                                   const BangerDataLibrary& data);
 
 // Everything for a city, in cityLevel::Load's order: the street rules,
 // banger instances of city/<map>.inst and <map>_ai.inst (e.g. stop signs),

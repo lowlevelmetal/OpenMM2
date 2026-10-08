@@ -103,8 +103,9 @@ enum class MapMode : std::uint8_t {
 };
 
 struct HudOptions {
-    bool visible = true;              // "HUD Toggle" (mmHUD::Toggle): clock, map and dashboard stay
-    MapMode mapMode = MapMode::Small; // MM2 starts new players with the map off (mmStatePack)
+    bool visible = true;              // mmHUD::Enable / Disable: the clock, map and icons stay
+    bool cluster = true;              // "HUD Toggle" key: mmHUD::ToggleExternalView, the instrument cluster
+    MapMode mapMode = MapMode::Off;   // new players start with the map off (mmStatePack)
     bool rotatingMap = true;          // "Rotating Map" (on in mmStatePack)
     bool zoomedIn = false;            // "Map Zoom" (tune/<city>.mmhudmap ZoomIn)
     bool opponentIcons = true;        // "Opponent Position" (mmIcons; on for new players)
@@ -178,7 +179,30 @@ enum class MapIcon : std::uint8_t {
 // The icon's colour as 0xAARRGGBB (the table DrawIcon indexes).
 std::uint32_t mapIconColor(MapIcon icon);
 
+// mmHudMap::GetNextMapMode ("Map Toggle"): Off -> Small -> Split -> Off;
+// from full screen, the mode it was opened from.
+MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen);
+
 } // namespace hud
+
+// mmMultiCR's objects and readouts for the HUD (Cops and Robbers).
+struct CrDisplay {
+    bool enabled = false;
+    std::optional<Vec3> gold; // the gold's place (drawn while not delivered)
+    struct Base {
+        std::string model; // pt_bank / pt_hideout, pt_blue / pt_red in Robber Teams
+        Vec3 position;
+    };
+    std::vector<Base> bases;
+    std::optional<Vec3> arrowInterest; // mmArrow::SetInterest
+    float time = 0.0f;                 // the powerup's spin (ElapsedTime)
+    // mmCRHUD's readouts: the team totals (team 0 blue, team 1 red) or, in
+    // Free-For-All, the player's score.
+    bool teams = true;
+    bool copsVsRobbers = true; // "COPS" / "ROBBERS", else "BLUE" / "RED"
+    int blueScore = 0, redScore = 0, playerScore = 0;
+    float timeLeft = -1.0f; // the time limit's clock (none below 0)
+};
 
 class Hud {
 public:
@@ -208,6 +232,39 @@ public:
     // Virtual-space rectangle of the map (x, y, w, h) for the current options.
     Vec4 mapRect(const render::UiLayout& layout) const;
 
+    // The scene's view * projection, for the labels mmIcons projects onto
+    // the screen. Set each frame before drawOverlay.
+    void setViewProjection(const Mat44& viewProj) {
+        m_viewProj = viewProj;
+        m_viewProjValid = true;
+    }
+
+    // The in-race view keys, as mmViewMgr::SetViewSetting handles them.
+    // "Map Toggle" (1): Off -> Small -> Split -> Off (mmHudMap::GetNextMapMode);
+    // from full screen, back to the mode it was opened from.
+    void cycleMap();
+    // "Full Screen Map" (10): full screen, remembering the mode (mmHudMap
+    // +0x40), and back to it.
+    void toggleFullScreenMap();
+    // "Map Zoom" (7, mmHudMap::ToggleMapRes) and "Rotating Map" (8,
+    // ToggleMapOrient): nothing while the map is off.
+    void toggleMapZoom();
+    void toggleMapRotation();
+    // "HUD Toggle" (4, mmHUD::ToggleExternalView): the instrument cluster;
+    // it comes back only outside the dashboard view.
+    void toggleCluster();
+    // "Opponent Position" (mmGame::UpdateGameInput, SetIconsState).
+    void toggleOpponentIcons() { m_options.opponentIcons = !m_options.opponentIcons; }
+    void setCopsAndRobbers(CrDisplay display) { m_cr = std::move(display); }
+
+    // mmHUD::PostChatMessage: the chat node's five lines scroll up, the new
+    // one last, and the node shows again; mmHUD::Update hides it 15 s after
+    // the last line.
+    void postChat(std::string line);
+    void updateChat(float dt);
+    const std::array<std::string, 5>& chatLines() const { return m_chat; }
+    bool chatShown() const { return m_chatShown; }
+
 private:
     void drawStands(const Session& session);
     void drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips);
@@ -217,8 +274,13 @@ private:
                      float y);
     void drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y);
     void drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
-    void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, float drop = 0.0f);
+    void drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
+    // `second`: the SetMessage2 line, in its own one-line node under the message.
+    void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
+    void drawChat(render::Overlay2D& ov, ui::TextRenderer& text);
+    void drawCrObjects(const Camera& camera);
+    void drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;
     float px(float pixels) const { return pixels * m_options.pixelSize; }
@@ -236,9 +298,16 @@ private:
     // mmHudMap: current camera height and icon size, approaching the targets.
     float m_mapZoom = 0.0f, m_mapIconScale = 0.0f;
     std::optional<MapMode> m_mapModeApplied; // snaps zoom and icon size on change
+    MapMode m_mapModeBeforeFull = MapMode::Off; // mmHudMap +0x40
+    Mat44 m_viewProj;
+    bool m_viewProjValid = false;
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;
+    std::array<std::string, 5> m_chat; // mmHUD's chat node (+0x8b0)
+    CrDisplay m_cr;
+    bool m_chatShown = false;
+    float m_chatTime = 0.0f;
 };
 
 } // namespace mm2::game::session

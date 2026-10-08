@@ -3,6 +3,9 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace mm2::game {
 namespace {
 
@@ -36,7 +39,9 @@ const std::vector<asset::PkgMaterial>& GpuModel::materials(int paintjob) const {
     static const std::vector<asset::PkgMaterial> none;
     if (paintjobs.empty())
         return none;
-    const auto i = static_cast<std::size_t>(std::clamp(paintjob, 0, static_cast<int>(paintjobs.size()) - 1));
+    // vehCarModel::Init and lvlSky::Init take the paint job modulo the
+    // number of shader sets.
+    const auto i = static_cast<std::size_t>(std::max(paintjob, 0)) % paintjobs.size();
     return paintjobs[i];
 }
 
@@ -106,8 +111,12 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
                     rv.normal[1] = v.normal.y;
                     rv.normal[2] = v.normal.z;
                     rv.color = argbToRgba(v.color);
-                    rv.uv0[0] = rv.uv1[0] = v.uv.x;
-                    rv.uv0[1] = rv.uv1[1] = v.uv.y;
+                    rv.uv0[0] = v.uv.x;
+                    rv.uv0[1] = v.uv.y;
+                    // gfxPacket::OrthoMap's cloud shadow coordinates, from the
+                    // model-space position: ((y + x), (y + z)) / 128.
+                    rv.uv1[0] = (v.position.y + v.position.x) * 0.0078125f;
+                    rv.uv1[1] = (v.position.y + v.position.z) * 0.0078125f;
                     vertices.push_back(rv);
                 }
                 indices.insert(indices.end(), packet.indices.begin(), packet.indices.end());
@@ -117,6 +126,7 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         }
         if (vertices.empty() || indices.empty())
             continue;
+        gm.radius = mesh.radius();
         gm.vertices = m_device.createBuffer(render::BufferKind::Vertex, vertices.size() * sizeof(render::Vertex3D),
                                             vertices.data());
         gm.indices = m_device.createBuffer(render::BufferKind::Index, indices.size() * sizeof(std::uint16_t),

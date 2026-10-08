@@ -75,6 +75,7 @@ struct RaceResult {
     int score = 0;
     int damage = 0;
     std::vector<RaceStanding> standings; // finishers by place (player and opponents)
+    bool cheated = false; // the cheat flag was set: nothing is registered (RegisterFinish)
 };
 
 } // namespace mm2::game

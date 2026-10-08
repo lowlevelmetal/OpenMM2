@@ -8,8 +8,13 @@
 namespace mm2::phys {
 namespace {
 
+// Vector3::Mag2's order (x, y, z), and the order phSleep::Update writes out
+// for the pushed velocity (z, y, x).
 float mag2(const Vec3& v) {
-    return v.z * v.z + v.y * v.y + v.x * v.x;
+    return (v.x * v.x + v.y * v.y) + v.z * v.z;
+}
+float mag2zyx(const Vec3& v) {
+    return (v.z * v.z + v.y * v.y) + v.x * v.x;
 }
 
 } // namespace
@@ -36,8 +41,7 @@ void Sleep::wakeUp() {
     stillUpdates = 0;
     dormantUpdates = 0;
     state = Awake;
-    // The body integrates again (phInertialCS active). InertialCS's own
-    // state Awake would also run MM1's sleep test; phSleep replaces it.
+    // The body integrates again (phInertialCS active).
     if (m_ics && m_ics->state == InertialCS::Asleep)
         m_ics->state = InertialCS::Off;
     m_velocitySum = {};
@@ -46,21 +50,13 @@ void Sleep::wakeUp() {
 
 void Sleep::sendToSleep() {
     // phSleep::SendToSleep: the body is deactivated and frozen
-    // (phInertialCS::Freeze: no motion, no pending forces).
+    // (phInertialCS::Freeze: no motion, no pending forces or pushes).
     state = Asleep;
     dormantUpdates = 0;
     if (!m_ics)
         return;
-    InertialCS& ics = *m_ics;
-    ics.state = InertialCS::Asleep;
-    ics.linearMomentum = {};
-    ics.angularMomentum = {};
-    ics.linearVelocity = {};
-    ics.angularVelocity = {};
-    ics.linearForce = {};
-    ics.angularTorque = {};
-    ics.linearImpulse = {};
-    ics.angularImpulse = {};
+    m_ics->state = InertialCS::Asleep;
+    m_ics->freeze();
 }
 
 void Sleep::update(float invDt) {
@@ -85,7 +81,7 @@ void Sleep::update(float invDt) {
                         ics.linearPush.z + ics.framePush.z};
         const Vec3 v{push.x * invDt + ics.linearVelocity.x, push.y * invDt + ics.linearVelocity.y,
                      push.z * invDt + ics.linearVelocity.z};
-        if (speed2 < mag2(v)) {
+        if (speed2 < mag2zyx(v)) {
             m_velocitySum = {v.x + m_velocitySum.x, v.y + m_velocitySum.y, v.z + m_velocitySum.z};
             if (speed2 * 1.8f < mag2(m_velocitySum)) {
                 m_velocitySum = v;
@@ -101,11 +97,9 @@ void Sleep::update(float invDt) {
                              ics.linearImpulse.z * im + ics.linearVelocity.z};
             if (mag2(after) - mag2(ics.linearVelocity) <= speed2) {
                 if (state != Awake) {
-                    // Asleep: pending forces dropped; dormant after a while.
-                    m_ics->linearForce = {};
-                    m_ics->angularTorque = {};
-                    m_ics->linearImpulse = {};
-                    m_ics->angularImpulse = {};
+                    // Asleep: pending forces and pushes dropped
+                    // (phInertialCS::ZeroForces); dormant after a while.
+                    m_ics->zeroForces();
                     if (++dormantUpdates >= dormantAfter)
                         state = Dormant;
                     return;

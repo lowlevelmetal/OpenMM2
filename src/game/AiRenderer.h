@@ -27,11 +27,13 @@ public:
     AiRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs);
 
     // `physicalTransform` returns the transform of cars that the physics
-    // simulation has taken over (null for cars on their rails).
-    // Headlights at night; the signals switch to their night glows from the
-    // evening on (aiTrafficLightInstance::DrawGlow: time of day > 1).
-    void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time,
-              const std::function<const Mat34*(int)>& physicalTransform = {});
+    // simulation has taken over (null for cars on their rails). `lights` is
+    // mmGame::InitWeather's light flag (evening, night or fog: the cars'
+    // headlights and tail lights); the signals switch to their night glows
+    // from the evening on (aiTrafficLightInstance::DrawGlow: time of day > 1).
+    // `detail`: the Object Detail thresholds (lvlInstance::IsVisible).
+    void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time, bool lights,
+              const ObjectDetail& detail, const std::function<const Mat34*(int)>& physicalTransform = {});
 
     struct Stats {
         int cars = 0;
@@ -49,6 +51,7 @@ private:
     CarModel* carModel(const std::string& name);
     const asset::PedType* pedType(const std::string& name);
     void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
+    void drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
     void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows);
 
     render::Device& m_device;
@@ -59,6 +62,7 @@ private:
     std::map<std::string, std::optional<asset::PedType>> m_pedTypes;
     std::vector<Mat34> m_bones;
     std::vector<render::Vertex3D> m_skinned;
+    ObjectDetail m_detail;
     Stats m_stats;
 };
 

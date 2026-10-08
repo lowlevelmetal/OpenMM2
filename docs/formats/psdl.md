@@ -83,6 +83,28 @@ Names follow mm2hook's `RoomFlags`; the observed use differs for 0x04.
 
 The twelve London rooms flagged 0x46 have no attributes. They are water.
 
+### The game's room flags (lvlRoomInfo)
+
+MM2 keeps a second, separate set of room flags in each room's
+`lvlRoomInfo` (+0). `cityLevel::Load` starts them at 0 and sets them from
+the PSDL; `lvlLevel::LoadInstances` and `gizBridge::Init` add to them.
+mmPlayer::Update (cameras), dgPhysManager::Collide (warp), vehCar
+(sinking, skid marks) and aiPoliceOfficer (giving up a chase) read these,
+not the PSDL byte above. `city::levelRoomFlags` builds them
+(`CityData::levelRoomFlags`, `city::LevelRoomFlag`):
+
+| Bit  | Set when |
+|------|----------|
+| 0x01 | an intersection (PSDL 0x10) that is not a PSDL warp room, or a road (0x08) whose first attribute after its texture and tunnel attributes is not a divided road, in a room that is not a PSDL warp room, after no tunnel or a tunnel whose header has neither of its two low bits. Only `dgPhysManager::CollideTerrain` reads it, behind a switch mmGame keeps off |
+| 0x02, 0x08 | PSDL subterranean (0x02) |
+| 0x04 | "Water of Death": the room's first attribute is a texture whose material is lvlMaterialMgr's second entry (deepwater), or the room is listed in `city/<map>.water` (23 rooms in London, 45 in SF; the .water files list 3 each) |
+| 0x10 | `gizBridge::Init`: the rooms at a bridge and 5 m above it (at run time; not built here) |
+| 0x20 | a `.inst` / `_ai.inst` record with instance flag 0x100 (its own terrain bound) is in the room |
+| 0x40 | rooms 411, 412, 423 and 625 when the city's name contains "sf" |
+
+`cityLevel::GetWaterLevel` returns the `.water` file's level whatever the
+room.
+
 ### Room lookup (cityLevel::FindRoomId)
 
 `city::RoomLocator` follows MM2 (build 3393): the caller's last room if
@@ -210,11 +232,64 @@ bits (0x04..0x80, 0x0200..0x1000, 0x4000) and the role of `height2` are
 unknown. Junction walls are built along perimeter edges whose bit is set in
 any mask word.
 
+## Drawing (sdlPage16::Draw)
+
+MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
+detail chosen per room by `cityLevel::DrawRooms`, the primitives coloured by
+the room colour or `GetShadedColor`). `src/city/SdlDraw.{h,cpp}`
+(`buildSdlRoomDraw`, `sdlArcMap`, `sdlRoomCentroid`, `sdlRoomBoundSphere`,
+`sdlRoomLod`, `sdlBackface`) ports it, with `sdlPage16::ArcMap`,
+`GetCentroid`, `ComputeBoundSphere` and `sdlCommon::BACKFACE`, and
+`CityRenderer` draws its primitives:
+
+- Road and divided road strips: level 0 one strip from outer edge to outer
+  edge with the group's third texture over every other section; level 1 the
+  same over every section with the outer edges lowered 0.15 m; levels 2 and
+  3 the sidewalks (second texture) and the road (first, in two halves
+  mirrored about the centre line) separately, level 3 with the curb line
+  raised 0.15 m and half-bright curb faces. `ArcMap` gives s along the strip
+  (whole repeats of about the average width, run back and forth) and t
+  across. Dividers by type (flat, raised with bevels, wedged) at levels 2
+  and 3.
+- Sidewalk strips: planar 4 m repeats; curb faces and end caps half bright
+  at level 3.
+- Crosswalks, road fans and roofs: drawn only when not above the camera;
+  fans and roofs planar 8 m repeats.
+- Facades (repeats read unsigned, v 0 at the bottom) and slivers: back-face
+  culled and shaded by the light of the last FacadeBound attribute.
+- An untextured flat-colour facade path at level 0 hangs on a switch that is
+  never set.
+- Tunnels (words: flags, height in 8.8, an unused word; a junction's ten
+  words add its first ceiling corner and three edge masks). A junction
+  (count 10, nothing when the height is 0): walls on the perimeter edges of
+  the first mask (u = max(1, length / height)), inner walls too with flag
+  0x4000 unless 0x4; with 0x8 a ceiling fan (third texture) at the highest
+  corner + height from the stored corner backwards; with 0x4 an apron 1 m
+  below the highest corner (sixth texture), its corners pushed out by
+  height x 0.333 beside a wall (0.25 m elsewhere), and on each walled edge
+  a railing face and top (fifth texture) whose ends the second and third
+  masks bevel (x 1.414). A strip tunnel follows the next attribute (past a
+  Texture attribute): a road, divided road or rectangle strip's outer
+  edges. 0x1/0x2 left/right walls (first/second texture; 0x4000 both sides;
+  0x2000 bulging out to height x 0.333 at a quarter and three quarters of
+  the height, capped by 0x10/0x20 and 0x40/0x80); 0x4 railings outside
+  them (fourth/fifth texture, ends pushed along the road by 0x200/0x400 and
+  0x800 — MM2's right-hand loop never reaches the last section, so 0x1000
+  does nothing there — and a deck between them, sixth texture); 0x8 a flat
+  ceiling, 0x100 an arch rising 1.5 m at the quarters and 2 m in the middle
+  (both third texture, `ArcMap` across). Walls take `WallMap` coordinates
+  (whole repeats of the height along the left edge). Drawn at every level.
+- An untextured primitive list (`GetDrawnSDLPrims`) is not called anywhere
+  in the executable.
+
 ## Geometry builder (CityMesh)
 
 `buildCityMesh()` produces per-room batches keyed by (texture index, surface
-kind), CCW front faces, with flat normals and Direct3D-style UVs. The
-following parts are *reconstructions*, not known original behaviour:
+kind), CCW front faces, with flat normals and Direct3D-style UVs. The game
+uses it for the static probe soup (`World::probe`: line-of-sight tests;
+the wheels probe the collision polygons below) and the minimap; mm2tool
+exports it. The following
+parts are *reconstructions*, not known original behaviour:
 
 - UVs: road and rectangle strips run u 0→1 across, v along the length / width.
   Fans and roofs use planar world mapping at 8 m per repeat. Facades use
@@ -224,11 +299,9 @@ following parts are *reconstructions*, not known original behaviour:
 - Crosswalks and flat medians are lifted 1 cm to avoid z-fighting.
 - Tunnel walls rise `height1` (or `max(height1, height2)` with a ceiling). Railings
   are double-sided.
-- Low-detail textures are not used yet.
+- Low-detail textures are not used.
 
-MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
-detail, the drawn primitives coloured by `GetShadedColor`); compared with
-it (build 3393) the builder differs as follows, not yet ported:
+CityMesh differs from what MM2 draws (see "Drawing" above):
 
 - Levels of detail (road strips): 0 draws one strip from outer edge to
   outer edge with the group's third texture (road LOD) over every other
@@ -255,8 +328,6 @@ it (build 3393) the builder differs as follows, not yet ported:
   word indexes `sdlCommon::sm_LightTable`).
 - Fans and roofs: planar 8 m repeats, as the builder (MM2 subtracts the
   whole repeats at the first vertex, which wrap addressing ignores).
-- `GetDrawnSDLPrims` (an untextured primitive list) is not called anywhere
-  in the executable.
 
 ## Collision polygons (sdlPage16::Collect)
 

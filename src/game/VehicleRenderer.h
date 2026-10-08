@@ -5,6 +5,7 @@
 #include "game/ModelLibrary.h"
 #include "game/TexelDamage.h"
 #include "game/TextureLibrary.h"
+#include "game/fx/LensFlares.h"
 #include "game/fx/ParticleRenderer.h"
 
 #include <array>
@@ -96,6 +97,20 @@ public:
     // The level of detail at that camera; nullopt beyond NoDraw.
     std::optional<asset::Lod> lodFor(const VehiclePose& pose, const Mat34& camera) const;
 
+    // Draw like aiVehicleInstance (ambient traffic) instead of vehCarModel:
+    // no texel damage, decal, variant or fender parts; breakables always at
+    // the high LOD; wheels only at the high LOD; tail light glows and one
+    // white headlight glow pair (see VehicleRenderer.cpp).
+    void setTraffic(bool traffic);
+    // ltLight::DrawGlow's card size and colour scales (MM2 globals: 0.2 and
+    // 0.95 after aiVehicleManager::Init, the single-player value; 0.2 and
+    // 0.6 after a vehSiren is constructed later, as network cars are).
+    static void setLightGlowScales(float size, float color);
+    // vehSiren::Draw's lens flares (ltLensFlare::Draw): while a target is
+    // set, the siren lights' flares for that view go into `out`, to be drawn
+    // after the scene (fx::drawLensFlares). Null turns them off.
+    static void setLensFlareTarget(const Mat44* viewProj, float aspect, std::vector<fx::LensFlareQuad>* out);
+
 private:
     struct Light {
         Vec3 position; // model space
@@ -103,6 +118,11 @@ private:
     };
     void drawPart(std::string_view part, asset::Lod lod, const Mat34& transform, const MeshDrawOptions& options,
                   bool live = true);
+    void drawCar(const VehiclePose& pose, asset::Lod lod);
+    void drawTraffic(const VehiclePose& pose, asset::Lod lod);
+    void drawReflection(const Mat34& body);
+    // The world matrix wheel `i` (0-5) is drawn with, if the car has it.
+    std::optional<Mat34> wheelMatrix(const VehiclePose& pose, std::size_t i) const;
     void drawShadow(const VehiclePose& pose);
     void drawGlows(const VehiclePose& pose, const Mat34& camera);
     void addLightGlow(fx::ParticleRenderer& cards, const Vec3& position, const Vec3& direction, const Vec3& color,
@@ -126,9 +146,11 @@ private:
     std::vector<Light> m_sirens;
     std::optional<Vec3> m_fenderOffset; // fndr0 pivot relative to wheel 0
     fx::ParticleRenderer m_cards;
+    std::optional<fx::LensFlare> m_flare; // vehSiren's ltLensFlare(20)
     std::unique_ptr<TexelDamage> m_texelDamage;
     std::set<std::string> m_detached;
     bool m_wreckEjected = false;
+    bool m_traffic = false;
 };
 
 } // namespace mm2::game

@@ -42,13 +42,20 @@ TEST(RenderRules, LightDirectionsAndQuality) {
     // Quality 3: all lights, the file's ambient.
     EXPECT_NEAR(env.frame.ambient.x, 0x28 / 255.0f, 1e-5f);
     EXPECT_FLOAT_EQ(env.frame.lights[2].color.x, 0.25f);
-    // Quality 1: the key light only; ambient 66% of the way to white.
+    // Quality 1: the key light only; ambient 66% of the way to white from
+    // the ambient the table held before the file loaded (the constructor's
+    // 0x10 for the first city of a session).
     EnvironmentOptions low;
     low.lightQuality = 1;
     const auto dim = makeEnvironment(c, TimeOfDay::Noon, Weather::Clear, low);
     EXPECT_FLOAT_EQ(dim.frame.lights[1].color.x, 0.0f);
     EXPECT_FLOAT_EQ(dim.frame.lights[0].color.x, 1.0f);
-    EXPECT_NEAR(dim.frame.ambient.x, (0x28 + ((255 - 0x28) * 168 >> 8)) / 255.0f, 1e-5f);
+    EXPECT_NEAR(dim.frame.ambient.x, (0x10 + ((255 - 0x10) * 168 >> 8)) / 255.0f, 1e-5f);
+    // Loaded again, the city's own ambient is the one before.
+    auto again = c;
+    again.ambientBeforeLoad[static_cast<std::size_t>(city::lightingIndex(1, 0))] = 0xFF284050u;
+    const auto dim2 = makeEnvironment(again, TimeOfDay::Noon, Weather::Clear, low);
+    EXPECT_NEAR(dim2.frame.ambient.x, (0x28 + ((255 - 0x28) * 168 >> 8)) / 255.0f, 1e-5f);
 }
 
 TEST(RenderRules, FogIsClampedByTheFarClip) {

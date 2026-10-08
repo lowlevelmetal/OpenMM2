@@ -9,6 +9,7 @@
 #include "phys/vehicle/Stuck.h"
 #include "phys/vehicle/Transmission.h"
 #include "phys/vehicle/TuneParams.h"
+#include "phys/vehicle/VehicleBody.h"
 #include "phys/vehicle/VehicleGeometry.h"
 #include "phys/vehicle/Wheel.h"
 
@@ -201,6 +202,9 @@ public:
     // CarSimOptions::polygonalBound).
     void setPolygonalBound(bool polygonal);
     const Bound* bound() const { return m_bound.get(); }
+    // phBound::SetElasticity on the car's bound (mmGame::SendChatMessage's
+    // "/blubber" sets 4 on the player's).
+    void setBoundElasticity(float elasticity);
     // Half the size of the collision bound's box (model space), for the AI.
     Vec3 halfExtents() const;
 
@@ -210,7 +214,7 @@ public:
     // ImpactHandler: vehCarDamage::Impact.
     void onImpact(Collider& self, const Impact& impact, const Vec3& impulse) override;
 
-    Body body;
+    VehicleBody body;
     CarSimParams params;
     Options options;
     Vec3 centerOfGravity; // vehCarSim CenterOfGravity

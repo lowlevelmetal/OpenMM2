@@ -67,11 +67,8 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     InertialCS& ics = body.ics;
     ics.setMass(p.inertiaBox.x, p.inertiaBox.y, p.inertiaBox.z, p.mass);
     ics.gravity = {0.0f, -kVehicleGravity, 0.0f};
-    ics.limitAngVelocity = true;
     ics.setMaxAngVelocity(kMaxAngVelocity);
     ics.state = InertialCS::Off;
-    ics.elasticity = p.boundElasticity;
-    ics.friction = p.boundFriction;
 
     // The collision bound (vehCarModel::InitBound) in model space, whose
     // origin sits at CenterOfGravity in the body's frame.
@@ -234,6 +231,11 @@ Vec3 CarSim::halfExtents() const {
     return (hi - lo) * 0.5f;
 }
 
+void CarSim::setBoundElasticity(float elasticity) {
+    if (m_bound)
+        m_bound->setElasticity(elasticity);
+}
+
 void CarSim::setPolygonalBound(bool polygonal) {
     options.polygonalBound = polygonal;
     buildBound();
@@ -378,6 +380,7 @@ WheelEnv CarSim::makeEnv(float dt, const World& world) {
     env.hasCar = true;
     env.carFrictionHandling = params.carFrictionHandling;
     env.randomSeed = world.randomSeed();
+    env.self = &body;
     return env;
 }
 

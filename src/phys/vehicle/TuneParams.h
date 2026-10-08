@@ -173,6 +173,13 @@ struct TrailerJointParams {
     float freeRoll = 0.1f;   // |roll| (rad) above which the roll torque would act
 };
 
+// The records vehCarSim::FileIO registers, with the nested vehAero, vehEngine,
+// vehTransmission, vehDrivetrain, vehWheel and vehAxle FileIO records. Parse
+// .vehCarSim files with data::parseDat(text, carSimSchema()) to read exactly
+// what MM2's datParser::Read reads (unknown names skip the rest of their line
+// or the block after them).
+const data::DatSchema& carSimSchema();
+
 // Loaders take the top-level block ("vehCarSim { ... }"). Fields the Angel
 // classes do not know (MM1-era leftovers such as RedistHeight) are skipped,
 // as the original parser does; their names are appended to `ignored`.

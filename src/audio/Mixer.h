@@ -38,6 +38,10 @@ struct VoiceParams {
     // (audObject::SetVolume).
     float volume = 1.0f;
     bool angel = false;
+    // With `angel`: the volume already includes the master and is used as
+    // is. An echo duplicate's volume is master * volume * attenuation,
+    // worked out when EchoEffect queues it (EchoEffect::QueueVolume).
+    bool masterApplied = false;
     float pan = 0.0f;    // -1 (left) .. 1 (right); ignored for 3D voices
     float pitch = 1.0f;  // playback-rate multiplier
     bool loop = false;
@@ -75,9 +79,25 @@ public:
     int sampleRate() const { return m_rate; }
 
     VoiceHandle play(std::shared_ptr<const SoundBuffer> sound, const VoiceParams& params);
+    // Frees any voice, effect voices included.
     void stop(VoiceHandle voice);
+    // audManager::StopAllSounds: frees every voice and stops (without
+    // freeing) every effect voice (audControl::StopPCEchoBuffers).
     void stopAll();
     bool isPlaying(VoiceHandle voice) const;
+
+    // Effect voices: the duplicate buffers EchoEffect plays a sound's echo on
+    // (EffectBase::CreateDSoundBuffer). They live outside the kMaxVoices
+    // limit and are never stolen (audManager does not manage them), and like
+    // a DirectSound buffer they keep their position while stopped: play
+    // resumes there. A non-looping one that reaches the end stops at 0
+    // (inferred from DirectSound). Created stopped; freed with stop().
+    VoiceHandle createEffectVoice(std::shared_ptr<const SoundBuffer> sound, const VoiceParams& params);
+    void playEffect(VoiceHandle voice, bool loop); // IDirectSoundBuffer::Play
+    void haltEffect(VoiceHandle voice);            // IDirectSoundBuffer::Stop
+    // Play position in source frames (GetCurrentPosition / SetCurrentPosition).
+    std::uint64_t position(VoiceHandle voice) const;
+    void setPosition(VoiceHandle voice, std::uint64_t frame);
 
     void setVolume(VoiceHandle voice, float volume);
     void setPitch(VoiceHandle voice, float pitch);
@@ -93,6 +113,9 @@ public:
     // that master as an Angel volume (DMusicWaveBuffer::SetVolume).
     void setBusVolume(Bus bus, float volume);
     float busVolume(Bus bus) const;
+    // ageMasterVolume of the bus slider (AudManagerBase::GetMasterSFXVolume
+    // for the wave buses).
+    float busMaster(Bus bus) const;
     // STEREO FX (AudManagerBase::SetStereoFlag): with mono every voice plays
     // centred. MM2 skips its SetPan calls while IsStereo is false; its sounds
     // start centred, so the result is the same.
@@ -107,6 +130,7 @@ public:
     void setRolloffFactor(float f);
     void pauseAll(bool paused); // e.g. while the game is paused or minimized
 
+    // Voices currently sounding (effect voices only while playing).
     int activeVoices() const;
 
     // Adds a streamed source on `bus` (e.g. Bus::Music). Returns an id for
@@ -128,16 +152,20 @@ private:
         std::uint32_t generation = 0;
         std::uint64_t serial = 0; // start order, for stealing
         bool active = false;
+        bool effect = false; // an effect voice (index >= m_maxVoices)
+        bool halted = false; // an effect voice that is stopped
     };
 
     Voice* lookup(VoiceHandle h);
     const Voice* lookup(VoiceHandle h) const;
     void computeTargets(const Voice& v, float& gl, float& gr, double& rate) const;
     std::size_t pickSlot();
+    VoiceHandle claim(std::size_t slot, std::shared_ptr<const SoundBuffer> sound, const VoiceParams& params);
 
     mutable std::mutex m_mutex;
     int m_rate;
-    std::vector<Voice> m_voices;
+    std::size_t m_maxVoices;
+    std::vector<Voice> m_voices; // managed voices, then effect voices
     struct Stream {
         int id;
         std::shared_ptr<StreamSource> source;

@@ -6,6 +6,7 @@
 // see docs/frontend.md. MM2 keeps these settings per driver (<driver>.cfg,
 // mmPlayerConfig); OpenMM2 keeps them in openmm2.ini so that they apply
 // before a driver is chosen.
+#include "app/Controls.h"
 #include "app/frontend/Frontend.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
@@ -679,64 +680,15 @@ private:
 // --- Customize controls ----------------------------------------------------------------------
 
 // MM2's 34 action slots in list order with their keyboard defaults
-// (mmInput::SetDefaultConfig, device 1). Bindings are stored as
-// [Controls] Bind.<string id> = <key name>.
-struct ActionSlot {
-    std::uint32_t stringId;
-    platform::Key key;
-    bool keyboard; // listed for the keyboard (Steering and Camera Pan are not)
-};
-
+// (mmInput::SetDefaultConfig, device 1) are app::controls' table, which the
+// race reads too. Bindings are stored as [Controls] Bind.<string id> =
+// <key name>.
+using ActionSlot = controls::ActionInfo;
+using controls::bindKey;
+using controls::kUnbound;
 using platform::Key;
-constexpr std::array<ActionSlot, 34> kActions = {{
-    {296, Key::Tab, true},       // Map Toggle
-    {298, Key::Q, true},         // Full Screen Map
-    {299, Key::E, true},         // Map Zoom
-    {300, Key::F, true},         // Rotating Map
-    {297, Key::H, true},         // HUD Toggle
-    {282, Key::Unknown, false},  // Steering (an axis)
-    {283, Key::Left, true},      // Steer Left
-    {284, Key::Right, true},     // Steer Right
-    {280, Key::Up, true},        // Throttle
-    {281, Key::Down, true},      // Brakes
-    {307, Key::Space, true},     // Handbrake
-    {276, Key::C, true},         // Change Camera
-    {277, Key::V, true},         // Thrill Cam
-    {279, Key::Return, true},    // Horn
-    {286, Key::Kp4, true},       // Look Left
-    {285, Key::Kp6, true},       // Look Right
-    {287, Key::Kp2, true},       // Look Back
-    {288, Key::Kp8, true},       // Look Forward
-    {289, Key::W, true},         // Wide Angle
-    {290, Key::D, true},         // Dashboard On/Off
-    {278, Key::T, true},         // Transmission
-    {291, Key::A, true},         // Shift Up
-    {292, Key::Z, true},         // Shift Down
-    {293, Key::R, true},         // Reverse
-    {294, Key::S, true},         // Next Checkpoint
-    {295, Key::X, true},         // Prev. Checkpoint
-    {301, Key::Num2, true},      // Toggle CD Player
-    {302, Key::Num3, true},      // Start/Stop CD
-    {304, Key::Num4, true},      // Prev. CD Track
-    {303, Key::Num5, true},      // Next CD Track
-    {305, Key::Backspace, true}, // Rear View Mirror
-    {306, Key::Unknown, false},  // Camera Pan (the joystick's POV)
-    {308, Key::I, true},         // Opponent Position
-    {309, Key::Y, true},         // Enter Chat Msg
-}};
 
-constexpr const char* kUnbound = "Undefined";
-
-std::string bindKey(std::uint32_t id) { return std::format("Bind.{}", id); }
-
-Key binding(Context& ctx, const ActionSlot& a) {
-    const std::string name = ctx.settings.ini.getString("Controls", bindKey(a.stringId));
-    if (name.empty())
-        return a.key;
-    if (name == kUnbound)
-        return Key::Unknown;
-    return platform::keyFromName(name);
-}
+Key binding(Context& ctx, const ActionSlot& a) { return controls::boundKey(ctx.settings.ini, a); }
 
 // The action list (MM2's "CW Array", UICWArray): two columns, the action in
 // white and its key, red while it is focused or waiting for a key; 20 px
@@ -749,7 +701,7 @@ public:
 
     BindingList(Frontend& fe, Box b) : m_fe(fe) {
         box = {b.x, b.y, b.w, kRowH * kRows};
-        for (const auto& a : kActions)
+        for (const auto& a : controls::actions())
             if (a.keyboard)
                 m_actions.push_back(&a);
     }

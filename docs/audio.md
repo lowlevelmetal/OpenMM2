@@ -101,7 +101,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | `tireWobble`, `wheelRadius` | (damage - MedDamage) / (MaxDamage - MedDamage); rear left wheel radius |
 | `groundBelow` | player only: distance to the first surface 3 to 33 m below, for the airborne flag |
 | `transform`, `velocity` | positioned cars |
-| `inTunnel` | the listener's tunnel echo state (the app does not detect tunnels yet) |
+| `inTunnel` | the tunnel flag (audio flag 0x80): the race sets it with the player's car in a room flagged underground; a car with an `Object3DManager` also follows the manager's echo flag (`setTunnel`) |
 
 ## Cars
 
@@ -169,7 +169,11 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Type 0 positional loop; 1 one-shot every [low, high] s at a random volume (0.75–1 × table) and random pan, not attenuated (volume and pan from the same draw, so they move together); 2 positional one-shot every [low, high] s; 3 positional on request. One-shot timers start at 0 (the first plays at once); low = high uses that value | MM2 (`UpdateSoundData`, `UpdateLoop`, `UpdateOneShot`, `PendOneShot`, `PlayOneShot`) |
 | "min/max speed" filter the attached object's speed (0 for the container's sets) | MM2 (`Aud3DAmbientObject::Update`) |
 | The container (and the DirectMusic ambient segment) is only loaded when the "Ambient" option is on, which the audio options make exclusive with music; OpenMM2 plays both | MM2 (`mmPlayer::Init`, `AudioOptions::ToggleMusic` / `ToggleAmbient`); deliberate difference |
-| `playAt` / `setLoop` for bridges, subway, ferry and pedestrians approximate `mmBridgeAudio`, `aiSubwayAudio`, `aiCableCarAudio`, `aiPedAudio`, which are each a full ambient object with a slot (their owners are not wired up yet) | **open** |
+| Every set is an `AmbientObject` (`Aud3DAmbientObject`), also used on its own by the world's moving things: samples play only while active (the file's "active" column, then `activate` / `deactivate`; deactivating a loop stops it, a one-shot plays out) | MM2 (`ActivateSound`, `DeactivateSound`, `UpdateSoundData`) |
+| Drawbridges (`BridgeAudio`, "drawbridge": the moving loop and the bell): both samples on when the span starts to move, off when it stops, speed 0 | MM2 (`mmBridgeAudio`, `gizBridge::Update`) |
+| Trains (`SubwayAudio`, "subwaycar", heard only underground): from 1 m/s the running loop, below it sample 1 ("NOTHING"), the switch deactivating the other | MM2 (`aiSubwayAudio::Update`, `aiSubway`, `gizTrain`) |
+| Cable cars (`CableCarAudio`, 0..100 m, priority 8): stopped below 0.001 m/s; starting when the speed crosses 0.1 m/s (CABLECARSTART, and the CABLECARGOBELL bell once, without pan or doppler); running (the CABLECAR loop) once the start sound ends; stopping when it drops to 0.5 m/s (the loop stops, CABLECARSTOP plays); all at 0.98 × attenuation. STREETCABLE is assigned but never played | MM2 (`aiCableCarAudio`, `aiCableCarAudioData::UpdateState`, `UpdatePlay`) |
+| The bridges, trains, cable cars and ferries themselves are not simulated in OpenMM2 yet: these objects are their owners' hooks | **missing owners** |
 | `mmAmbientAudio` (a "walla" loop) is never constructed in MM2 | MM2 (no caller of the constructor); not ported |
 
 ## Rain
@@ -194,6 +198,16 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Cops & Robbers: `bullshit.csv` in SF, `cnrlondon.csv` elsewhere; an event draws one of its rows, cuts the line playing and starts after 0.01 s; a fourth "num used" column smaller than the row's range picks a random window of that many lines. The London rows' names end in a space ("AL1\AL1ROBROB "), which MM2 keeps, so those files are never found and London's Cops & Robbers commentary is silent | MM2 (`mmSpeechContainer::InitCNR`, `mmCNRSpeech::LoadGroup`, `SetReadState`, `Play`); the missing files **inferred** from `AudStream::PlayOnce`'s path |
 | Crash Course: `ccl<lesson>` in London, `ccs<lesson>` elsewhere; the intro after 1.5 s and checkpoint 0's location line after 1.51 s; results at once; lesson 4 adds the checkpoint location lines (`cc_cpoint_waveinfo`, `cc_cpoint_indexinfo`: a fixed line number per checkpoint) | MM2 (`mmSpeechContainer::InitCC`, `mmCCSpeech`) |
 
+## Tunnel echo
+
+| Behaviour | Evidence |
+|---|---|
+| With the player's car in a room flagged underground the 3D manager's echo goes on with a 0.5 s delay (`Object3DManager::setTunnel`, the race's hook) | MM2 (`mmPlayer::Update`, `Aud3DObjectManager::EchoOn / EchoOff`) |
+| Every sound object turns its samples' echo on and off at the start of its update: car engines, surfaces and skids, sirens, the semi's beeper and air brake, the clutch, ambient traffic engines and horns, ambient sets, pedestrian voices. The player's horn echoes 0.05 s behind at 0.997 of its rate; everything else at the manager's delay. Losing the sound slot turns the echo off | MM2 (`vehCarAudio::UpdateAudio / EchoOn`, `vehPoliceCarAudio`, `vehSemiCarAudio`, `aiAmbientVehicleAudio`, `Aud3DAmbientObject`, `AudCreatureContainer`) |
+| The echo is a duplicate of the sample (an effect voice, outside the 32-voice limit) that replays the sample's play, stop, volume and frequency changes once they are as old as the delay, at 0.96 of the volume (DirectSound units: volume × 0.96 × 10000 - 10000); only the oldest of several changes that come due together applies. A play also moves the duplicate to where the sample is at that moment. Its pan follows at once, mirrored and reduced to a quarter | MM2 (`EchoEffect`, `AudSoundBase`, `audFX::EnablePCEcho`) |
+| The music has no echo: `MMDMusicManager::EchoOn` is never called. The city's ambience segment stops underground and starts again outside | MM2 (`MMDMusicManager::UpdateAmbientSFX`) |
+| When the SOUND FX slider moves MM2 sets every echo to its sound's volume × master at once; OpenMM2's echoes take the new volume with their next queued change | deviation |
+
 ## Creature voices
 
 | Behaviour | Evidence |
@@ -201,15 +215,23 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Lines are said only when the AI reports a near miss (an ambient car honking at the player, a pedestrian diving); each eligible block queues one of its lines half of the time, avoiding the line any creature said last (that shared "last line" starts at 0); a queued line plays within 50 m, or is dropped after 5 s | MM2 (`AudCreature::PlayAvoidance`, `AudCreatureAvoid::QueuePlay`, `Update`, `Play`) |
 | A block is eligible unless its speed was in range for less than "min time in range" while out of it for more than "max time out of range"; the speed is the player's | MM2 (`AudCreatureAvoid::IsEligible`, `InSpeedRange`; `aiMap` passes the player's speed) |
 | Impact lines: a hit at least "min impact force", the line after its delay, at most once a minute across all creatures (the clock starts at 0 when the game starts and is never reset) | MM2 (`AudCreatureImpact::QueuePlay`, `Update`, `UpdateStatics`; a constant 60 s) |
+| A voice belongs to a container holding a 3D-manager slot; before a line plays the container asks for its slot again (within its range), and a line waits while it has none. Losing the slot drops queued lines; lines being said play out | MM2 (`AudCreatureAvoid::Play`, `Aud3DObject::UpdateNonVirtual`, `UnAssignSounds`) |
+
+## Pedestrian voices
+
+| Behaviour | Evidence |
+|---|---|
+| When the game starts each sex gets one voice file for the whole session: N = RandomizeNumber(1, n + 0.25) truncated, n from `aud/creaturedata/numfemalepedvoicefiles.csv` / `nummalepedvoicefiles.csv` (3 each: files 1 and 2 are four times as likely as 3); women speak `default_fpedvoice<N>`, men `default_mpedvoice<N>` (screams) | MM2 (`mmGame::Init`, `aiPedAudio::LoadNumFemaleChoices`, `LoadFemaleVoices`, `AudCreatureContainer::LoadNumFileChoices`) |
+| A pedestrian is a woman when its model name contains FEMALE, WOMAN, GIRL or Hooker (any case; the search does not back up after a mismatch) | MM2 (`aiPedestrian_IsWoman`) |
+| A pedestrian that dodges the player asks for a sound slot (within 40 m, priority 8) and queues a scream half of the time; once the scream is over it gives the slot back; past 40 m it loses it. Each voice file has one voice per slot, shared by every pedestrian of that sex, updated every frame with the player's speed | MM2 (`aiPedestrian::Init / Update / Wander / Avoid`, `AudCreatureContainer::PlayAvoidanceReaction`, `Update`, `UpdateAudio`, `UpdateStatics`) |
+| Hook: `PedestrianAudio::update` takes each pedestrian's id, model, position and the `scream` flag `ai::Pedestrians` sets on a dodge; the race feeds it every frame | OpenMM2 |
 
 ## Not implemented
 
-* The tunnel echo (`Aud3DObjectManager::EchoOn(0.5)`: every positioned sound
-  plays a delayed copy at 0.96 volume, the horn 0.05 s late at 0.997 pitch;
-  `MMDMusicManager::EchoOn` for the music) and EAX. The tunnel flag itself
-  (camera in a room flagged underground; surface tunnel entry, rain shelter,
-  ambience areas, the music's ambience pause) is an input the app does not
-  set yet.
+* EAX.
+* Ambient traffic sounds in the race: `AmbientCarAudio` is ported but no
+  traffic car creates one, and the drivers' voices (an `AudCreature` per
+  ambient car) are not wired.
 * `vehNitroCarAudio` (only used if vehtypes.csv says "Always nitro").
 * The old "Volume Divisor" engine table layout (`ParseCSVBufferOld`); no car
   table MM2 loads uses it.

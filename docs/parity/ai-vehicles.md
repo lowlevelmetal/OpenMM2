@@ -8,8 +8,8 @@ Scope: `src/ai/Course.*`, `Driving.*` (with `DrivingRoute.cpp` and
 `VehicleData.*`, `src/game/TrafficBodies.*` (all class P).
 
 Summary (after the second pass): 170 rows (a row may cover several helpers
-of one MM2 function); verified 73, fixed 63, open 3, inferred 2, deviation 3,
-openmm2 26. The Missing table lists 10 MM2 functions or groups, 4 of them
+of one MM2 function); verified 71, fixed 67, open 1, inferred 2, deviation 3,
+openmm2 26 (after merging integration and applying its physics API). The Missing table lists 10 MM2 functions or groups, 4 of them
 now ported. In the opponent sweep (`OPENMM2_AI_SWEEP=1`) 516 of 517
 opponents finish (517 after the first pass, 516 before the audit). The one
 that does not, in sf race11 p, is wrecked by landing impacts: every racer
@@ -129,7 +129,7 @@ rather than on every row:
 | `kFinishRadius` auto-finish | none | openmm2 | Marks a racer finished within 10 m of the end of its course on the last leg, or of its destination past the last waypoint of the last lap, for tools/tests; changes no driving. |
 | Opponent recovery (reset after 10 s without progress or 15 m below the line) | none | deviation | Not in MM2. Kept for a car stranded where MM2's would not be (physics differences); it does not trigger while the car progresses. The route is registered again where the car is put, from the waypoint and lap it had reached (`resumeRoute`). |
 | `speedLimit` hook | none | openmm2 | Scripted test cars only. |
-| DeclareMover LOD (opponents beyond 200 m of a player declared differently), `Opponent::mover`, `nearestPlayer2`, `MoverDeclaration` | `aiRouteRacer::Update` | open | Second pass: the declaration is worked out every frame (within 200 m of any player, 3D: (3, 0x1b); else (2, 0x13) with the race game's switch set, (2, 0x1b) without; `kRaceGameMovers`, inferred from the setup function that sets it) but not applied on this branch: the physics manager's `Body::declare` is on integration (phys-core). |
+| DeclareMover LOD (opponents beyond 200 m of a player declared differently), `Opponent::mover`, `nearestPlayer2`, `MoverDeclaration` | `aiRouteRacer::Update` | fixed | Second pass: within 200 m of any player (3D): (3, 0x1b); else (2, 0x13) with the race game's switch set, (2, 0x1b) without (`kRaceGameMovers`, inferred from the setup function that sets it). RaceScreen declares the racer's body with it every frame after the drivers (`Body::declare`). |
 
 ## Police (`ai/Police`, aiPoliceOfficer / aiPoliceForce / aiMap::CalcRoute)
 
@@ -156,8 +156,8 @@ rather than on every row:
 | `PoliceCar::apprehend` | `aiPoliceOfficer::ApprehendPerpetrator` | verified | One frand drawn on entry, Block chosen; Push and Barricade never chosen in this build. |
 | `PoliceCar::block` | `aiPoliceOfficer::Block` | fixed | Suspect's bound box (back max z, left -min x) and the cop's RSideDistance (were half sizes). The "more than 20 m behind on a road" case reads the suspect's component id where its type was meant and asks the road numbered by the type, with a three-way on-road comparison (aiPath::IsPosOnRoad, second pass: was the geometric stand-in); ported as coded. 12 m ahead, +25 m/s from behind, mirror within 3 m (XZ), back to block when the suspect gets ahead: verified. |
 | `PoliceCar::update` | `aiPoliceOfficer::Update` | fixed | The pursuit state keeps 5 (not pursued), which apprehends. Follow overrides, chase distance (XZ), wreck, x 1.03 boost on the throttle value under 50 m/s, mirror on state 1 / sub-state 7, fall below -200: verified. Second pass: the suspect's component from MapComponent with its last room. Inactive sessions: openmm2. |
-| room flag 4 drop-out | `aiPoliceOfficer::Update`, `cityLevel::Load` | fixed | Second pass. A cop whose car is in a room with the game's room flag 0x04 (lvlRoomInfo "water of death", not the PSDL's flag byte) has its suspect escape (PerpEscapes) and is out of action until reset. `PoliceSquad::setRoomFlags` takes the game's room flags; this branch feeds them from `city::waterRooms` (the deep-water texture rule of cityLevel::Load); integration's `CityData::levelRoomFlags` (ai-ambient-city) also has the rooms city/<map>.water lists and replaces it at the reconcile. |
-| DeclareMover LOD (cops beyond 250 m not simulated), `PoliceCar::mover` | `aiPoliceOfficer::Update` | open | Second pass: worked out every frame (within 200 m of a player (2, 0x1b); within 250 m (2, 0x13) with the switch set; beyond, or with no player, not declared), not applied on this branch (as above). |
+| room flag 4 drop-out | `aiPoliceOfficer::Update`, `cityLevel::Load` | fixed | Second pass. A cop whose car is in a room with the game's room flag 0x04 (lvlRoomInfo "water of death": a deep-water texture room or one city/<map>.water lists; not the PSDL's flag byte) has its suspect escape (PerpEscapes) and is out of action until reset. `PoliceSquad::setRoomFlags` takes `CityData::levelRoomFlags`. |
+| DeclareMover LOD (cops beyond 250 m not simulated), `PoliceCar::mover` | `aiPoliceOfficer::Update` | fixed | Second pass: within 200 m of a player (2, 0x1b); within 250 m (2, 0x13) with the switch set; beyond, or with no player, not declared (RaceScreen clears `Body::declared`: the car neither updates nor collides). |
 | `PoliceSquad::add`, `update`, `reset`, `anySiren` | aiMap's officer loop | openmm2 | Container. |
 | `PoliceSquad::countForDensity` | `aiMap::Init` | verified | trunc(count x clamp(density, 0, 1)). |
 
@@ -228,7 +228,7 @@ rather than on every row:
 | `publish` | none | openmm2 | |
 | `setMap`, `updateObstacleMap`, `roadVehicles`, `intersectionVehicles`, `currentRoadIdx` | `aiVehicleSpline::UpdateObstacleMap`, `CurrentRoadIdx`, aiPath / aiIntersection vehicle lists | fixed | New (second pass). After each update a car is listed in its intersection's list or its road's section list by side (CoreMapComponent with its rail road preferred), as the drivers' IsTargetBlocked and the accident checks read them; CurrentRoadIdx answers 0 off the window, as coded. |
 | `PlayerCar::at` | none | openmm2 | Tool helper. |
-| Physics mover declarations while avoiding / regaining / colliding | `aiGoalAvoidPlayer::Update`, `aiGoalRegainRail::Update`, `aiGoalCollision::Update` (DeclareMover) | open | The physics manager's mover levels are not modelled (phys-core). |
+| Physics mover declarations while avoiding / regaining / colliding | `aiGoalAvoidPlayer::Update`, `aiGoalRegainRail::Update`, `aiGoalCollision::Update` (DeclareMover) | open | The rail instance (no body) declared as a mover: phys::World takes only Body movers. |
 
 ## Road network (`ai/RoadNetwork`)
 
@@ -245,10 +245,10 @@ rather than on every row:
 | --- | --- | --- | --- |
 | `loadVehicleData` | `aiVehicleData::FileIO`, `aiVehicleManager::AddVehicleDataEntry` | verified | Same fields; wheel pivots WHL0.. and radius from WHL0's box. Defaults for absent fields are OpenMM2's (MM2 leaves them unset: inferred). MaxAng is stored but read by neither MM2's AI (Attach builds the inertia from Mass and Size only) nor OpenMM2, so va_garbagetruck's "1.#QNAN0", which datParser's atof reads as 1, changes nothing. No other AI vehicle, .aimap or race CSV number differs between a whole-token parse and atof. |
 | `VehicleControl.h` (`VehicleControls`, `VehicleState`, `ControlledVehicle`) | none | openmm2 | An unused earlier interface; nothing includes it. |
-| `Wheel::init`, `reset`, `update` | `vehWheelCheap::Init`, `Reset`, `Update` | verified | Preload -0.25 x weight, 3 m/s rate clamp, bottomed out under 0.1, grip 0.4 x load x WeatherFriction / RubberSpring. The visual wheel matrix is not kept (rendering). |
+| `Wheel::init`, `reset`, `update` | `vehWheelCheap::Init`, `Reset`, `Update` | fixed | Preload -0.25 x weight, 3 m/s rate clamp, bottomed out under 0.1, grip 0.4 x load x WeatherFriction / RubberSpring: verified. The ground probe is dgPhysManager::Collide with the wheels' mask (`World::wheelProbe`, the car itself left out; was the probe soup). The visual wheel matrix is not kept (rendering). |
 | `RailCar::*` | `aiVehicleInstance::GetBound`, `GetMatrix`, `GetPosition`, `GetEntity`, `AttachEntity` | verified | Radius: inferred (sphere round the box). |
 | `Active::attach`, `onImpact`, `beforeIntegrate`, `afterIntegrate` | `aiVehicleActive::Attach`, `Impact`, `Update` | verified | Sleep 0.01 / 0.01, gravity -19.6. |
-| `TrafficBodies::attach`, `release`, `detach`, `drop`, `beforeStep`, `afterStep` | `aiVehicleManager::Attach`, `Detach`, `Update`, `aiVehicleActive::Detach`, `PostUpdate` | verified | Upright probe +0.5 / -3 m along up, normal . up >= 0.9; y -100; room 0. |
+| `TrafficBodies::attach`, `release`, `detach`, `drop`, `beforeStep`, `afterStep` | `aiVehicleManager::Attach`, `Detach`, `Update`, `aiVehicleActive::Detach`, `PostUpdate` | fixed | Upright probe +0.5 / -3 m along up (now `World::wheelProbe` without the car itself), normal . up >= 0.9; y -100; room 0: verified. aiVehicleManager::Update declares every remaining active (2, 0x1b) each frame (`Body::declare`). |
 | `boundFor` | `AddVehicleDataEntry` | verified | Box of Size at CG with lvlMaterial defaults (SetFricElas never called). |
 | `toLocal`, `signOf`, `deflect`, `keepIntegrating`, `railCar`, `findRailCar`, `instancesIn`, `transformOf`, ctor/dtor | none | openmm2 | Glue. |
 
@@ -260,7 +260,7 @@ rather than on every row:
 | `aiVehiclePhysics::CalcCurrent/NextMaxWidthAdjustment`, `CalcCurrent/NextRdOffset` | Lateral offsets used by CalcRoadTarget / CalcTurnIntersection | fixed (second pass) |
 | `aiVehiclePhysics::LocateWayPtFromInt`, `LocateWayPtFromRoad`, `PlanRoute`, `DestMapComponent`, `CurrentRoadIdx` | Waypoint progress, the road window shift, and the destination's component | fixed (second pass); LocateWayPtFromInt has no caller in build 3393 |
 | `aiVehiclePhysics::StopRoadTraffic`, `aiMap::StopRoadTraffic`, `aiIntersection::StopSources` | Racers and police hold the controlled roads of the intersections ahead of them while the ambient traffic updates, racers their first waypoint at the start | fixed (second pass; RaceScreen calls aiMap::StopRoadTraffic round the drivers) |
-| `dgPhysManager::DeclareMover` levels for AI cars | Distance-based simulation level of opponents (200 m), police (200/250 m, none beyond), attached ambient cars (aiVehicleManager::Update: (2, 0x1b)) and ambient instances off their rails (aiGoalAvoidPlayer / aiGoalRegainRail (2, 0x0a), aiGoalCollision (2, 0x08)) | open: the racers' and police levels are worked out (`mover()`); applying them and the ambient ones needs integration's `Body::declare` / Instance movers (phys-core) |
+| `dgPhysManager::DeclareMover` levels for AI cars | Distance-based simulation level of opponents (200 m), police (200/250 m, none beyond), attached ambient cars (aiVehicleManager::Update: (2, 0x1b)) and ambient instances off their rails (aiGoalAvoidPlayer / aiGoalRegainRail (2, 0x0a), aiGoalCollision (2, 0x08)) | fixed for the racers, police and attached cars; open for the rail instances, which need phys::World to take Instance movers without a Body |
 | `aiRouteRacer::Finished` | The game's finish-line test for opponents | session area |
 | `aiPoliceOfficer::Push`, `Barricade` | Apprehend behaviours | never chosen in this build (ApprehendPerpetrator always sets Block) |
 | `aiGoalAvoidPlayer` road re-mapping via `aiPath::DetermineRoadPosInfo` | The avoiding car's road position from its room's component | inferred (lane projection; DetermineRoadPosInfo is now ported for the regain and could serve here) |
@@ -272,13 +272,18 @@ rather than on every row:
 - `src/app/RaceScreen.cpp` (session): tracked cars from `ai::trackedCar` /
   `ai::trackedAmbient` (first pass); second pass: the player's road tracked
   (`MapView::trackPlayer`), racers described to the other drivers,
-  aiMap::StopRoadTraffic round the drivers, the opponents and police built
-  on `World::map()`, the police room flags, the ambient cars' audio.
+  aiMap::StopRoadTraffic round the drivers (after the ambient update, before
+  the lights), the opponents and police built on `World::map()`, their mover
+  declarations, the police room flags (`CityData::levelRoomFlags`), the
+  ambient cars' audio and voices (the voice following the car audio's slot),
+  the traffic and pedestrian ground probe through `World::wheelProbe`.
 - `src/city` (second pass): `<city>_sup.bai` shortcut roads
   (`parseShortcutBai`, `addShortcuts`, sides without sidewalks in the
-  parser), `city::waterRooms` (to be replaced by integration's
-  `CityData::levelRoomFlags`); `src/game/CityLevel.h` exposes its texture
-  material table.
+  parser).
+- `src/game/TrafficBodies` (this area): cheap wheels and Detach probe with
+  `World::wheelProbe`; actives declared (2, 0x1b).
+- `src/audio/game/CarAudio.h` (audio): `AmbientCarAudio::attenuation`,
+  `pan`, `distance2` for the driver's voice.
 - `src/phys/vehicle/CarSim` (vehicle): `setDrivable` / `preUpdate`.
 - `src/ai/Pedestrians`, `World` (ai-ambient-city): the accident query on the
   obstacle lists, the pedestrians stepping over shortcut roads, World owning
@@ -286,14 +291,11 @@ rather than on every row:
 - `tests/game/test_opponent_race.cpp`: the races registered and described as
   RaceScreen does; the chase suspect and the wall test drive registered
   routes.
-- For phys-core: the AI mover declarations (`Body::declare`) at the levels
-  above; `World::wheelProbe` for TrafficBodies' cheap wheels and Detach
-  (integration API, not on this branch); entity-less movers.
+- For phys-core: entity-less movers (the ambient rail instances).
 - For session: `aiRouteRacer::Finished` is the opponents' finish test;
   opponents keep driving after it.
 - For audio: police siren / explosion calls in PerpEscapes and StartSiren;
   officer +0x968a (aiVehiclePhysics +0x9686) is the driver's wrecked flag
   (`PhysicsDriver::wrecked`).
 - For ai-ambient-city: the PlayerCar position the traffic reads should be
-  the player's ICS position (aiVehiclePlayer::Position) for parity; the
-  traffic's ground probes should use `World::wheelProbe`.
+  the player's ICS position (aiVehiclePlayer::Position) for parity.

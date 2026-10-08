@@ -1,140 +1,105 @@
+// Vector3 / Matrix34 routines of the Angel engine as midtown2.exe build 3393
+// compiles them (MM2Recomp), with the original's summation order. Comments
+// name the MM2 member each function reproduces.
+
 #include "phys/AgeMath.h"
 
-#include <algorithm>
-#include <bit>
 #include <cmath>
-#include <cstdint>
-
-// Ported from Open1560 (https://github.com/0x1F9F1/Open1560), GPL-3.0:
-// code/midtown/game.asm, Midtown Madness 1 beta build 1560.
 
 namespace mm2::phys::age {
 namespace {
 
-// byte_65A1F8: invsqrtf_fast seed table, indexed by bits 16..23 of the input.
-constexpr std::uint8_t kInvSqrtSeed[256] = {
-    0x6A, 0x68, 0x67, 0x66, 0x64, 0x63, 0x62, 0x60, 0x5F, 0x5E, 0x5C, 0x5B, 0x5A, 0x59, 0x57, 0x56,
-    0x55, 0x54, 0x53, 0x52, 0x50, 0x4F, 0x4E, 0x4D, 0x4C, 0x4B, 0x4A, 0x49, 0x48, 0x47, 0x46, 0x45,
-    0x44, 0x43, 0x42, 0x41, 0x40, 0x3F, 0x3E, 0x3D, 0x3C, 0x3B, 0x3A, 0x39, 0x38, 0x37, 0x36, 0x35,
-    0x34, 0x34, 0x33, 0x32, 0x31, 0x30, 0x2F, 0x2F, 0x2E, 0x2D, 0x2C, 0x2B, 0x2A, 0x2A, 0x29, 0x28,
-    0x27, 0x27, 0x26, 0x25, 0x24, 0x24, 0x23, 0x22, 0x21, 0x21, 0x20, 0x1F, 0x1F, 0x1E, 0x1D, 0x1C,
-    0x1C, 0x1B, 0x1A, 0x1A, 0x19, 0x18, 0x18, 0x17, 0x16, 0x16, 0x15, 0x15, 0x14, 0x13, 0x13, 0x12,
-    0x11, 0x11, 0x10, 0x10, 0x0F, 0x0E, 0x0E, 0x0D, 0x0D, 0x0C, 0x0C, 0x0B, 0x0A, 0x0A, 0x09, 0x09,
-    0x08, 0x08, 0x07, 0x07, 0x06, 0x05, 0x05, 0x04, 0x04, 0x03, 0x03, 0x02, 0x02, 0x01, 0x01, 0x00,
-    0xFF, 0xFE, 0xFC, 0xFA, 0xF8, 0xF6, 0xF4, 0xF2, 0xF0, 0xEF, 0xED, 0xEB, 0xE9, 0xE8, 0xE6, 0xE4,
-    0xE2, 0xE1, 0xDF, 0xDE, 0xDC, 0xDA, 0xD9, 0xD7, 0xD6, 0xD4, 0xD3, 0xD1, 0xD0, 0xCE, 0xCD, 0xCB,
-    0xCA, 0xC8, 0xC7, 0xC5, 0xC4, 0xC3, 0xC1, 0xC0, 0xBF, 0xBD, 0xBC, 0xBB, 0xB9, 0xB8, 0xB7, 0xB6,
-    0xB4, 0xB3, 0xB2, 0xB1, 0xB0, 0xAE, 0xAD, 0xAC, 0xAB, 0xAA, 0xA8, 0xA7, 0xA6, 0xA5, 0xA4, 0xA3,
-    0xA2, 0xA1, 0xA0, 0x9F, 0x9E, 0x9C, 0x9B, 0x9A, 0x99, 0x98, 0x97, 0x96, 0x95, 0x94, 0x93, 0x92,
-    0x91, 0x90, 0x8F, 0x8F, 0x8E, 0x8D, 0x8C, 0x8B, 0x8A, 0x89, 0x88, 0x87, 0x86, 0x85, 0x85, 0x84,
-    0x83, 0x82, 0x81, 0x80, 0x7F, 0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x7A, 0x7A, 0x79, 0x78, 0x77, 0x76,
-    0x76, 0x75, 0x74, 0x73, 0x73, 0x72, 0x71, 0x70, 0x70, 0x6F, 0x6E, 0x6D, 0x6D, 0x6C, 0x6B, 0x6A};
+// Matrix34::MakeRotateX / MakeRotateY / MakeRotateZ (cos and sin rounded
+// from the FPU's wide result).
+Mat34 makeRotateX(float angle) {
+    const float c = static_cast<float>(std::cos(static_cast<double>(angle)));
+    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    return {{1.0f, 0.0f, 0.0f}, {0.0f, c, s}, {0.0f, -s, c}, {}};
+}
+
+Mat34 makeRotateY(float angle) {
+    const float c = static_cast<float>(std::cos(static_cast<double>(angle)));
+    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    return {{c, 0.0f, -s}, {0.0f, 1.0f, 0.0f}, {s, 0.0f, c}, {}};
+}
+
+Mat34 makeRotateZ(float angle) {
+    const float c = static_cast<float>(std::cos(static_cast<double>(angle)));
+    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    return {{c, s, 0.0f}, {-s, c, 0.0f}, {0.0f, 0.0f, 1.0f}, {}};
+}
 
 } // namespace
-
-float invSqrtFast(float x) {
-    const std::uint32_t bits = std::bit_cast<std::uint32_t>(x);
-    const float half = x * 0.5f;
-    std::uint32_t seed = (0x5F000000u - (((bits >> 23) & 0xFFu) << 22)) & 0xFF800000u;
-    seed |= static_cast<std::uint32_t>(kInvSqrtSeed[(bits >> 16) & 0xFFu]) << 15;
-    float r = x == 0.0f ? 0.0f : std::bit_cast<float>(seed);
-    // Two Newton steps, in the original's operation order.
-    r = (1.5f - half * (r * r)) * r;
-    r = r * (1.5f - (half * r) * r);
-    return r;
-}
-
-Mat34 arbitraryRotation(const Vec3& axisIn, float angle) {
-    Vec3 k = axisIn;
-    const float len2 = (k.y * k.y + k.z * k.z) + k.x * k.x;
-    Mat34 r;
-    if (len2 < 1e-11f)
-        return r;
-    if (len2 > 1.0000010f || len2 < 0.99999f) {
-        const float inv = 1.0f / std::sqrt(len2);
-        k = {k.x * inv, k.y * inv, k.z * inv};
-    }
-    const float c = std::cos(angle);
-    const float s = std::sin(angle);
-    const float omc = 1.0f - c;
-    const float x = k.x, y = k.y, z = k.z;
-    const float omcY = omc * y;
-    const float omcZ = omc * z;
-    const float xy = x * omcY;
-    const float xz = x * omcZ;
-    const float yz = y * omcZ;
-    r.m0 = {(omc * x) * x + c, xy + z * s, xz - y * s};
-    r.m1 = {xy - z * s, y * omcY + c, x * s + yz};
-    r.m2 = {xz + y * s, yz - x * s, z * omcZ + c};
-    return r;
-}
-
-void rotate(Mat34& m, const Vec3& axis, float angle) {
-    if (angle == 0.0f)
-        return;
-    const auto rowsXY = [&](float c, float s) {
-        // Z axis: x' = c*x - s*y, y' = s*x + c*y.
-        for (Vec3* r : {&m.m0, &m.m1, &m.m2}) {
-            const float x = r->x, y = r->y;
-            r->x = x * c - s * y;
-            r->y = s * x + c * y;
-        }
-    };
-    if (axis.z == 0.0f && axis.y == 0.0f) {
-        if (axis.x == 0.0f)
-            return;
-        const float c = std::cos(angle);
-        float s = std::sin(angle);
-        if (axis.x < 0.0f)
-            s = -s;
-        // X axis: y' = c*y - s*z, z' = c*z + s*y.
-        for (Vec3* r : {&m.m0, &m.m1, &m.m2}) {
-            const float y = r->y, z = r->z;
-            r->y = c * y - s * z;
-            r->z = c * z + y * s;
-        }
-        return;
-    }
-    if (axis.z == 0.0f && axis.x == 0.0f) {
-        const float c = std::cos(angle);
-        float s = std::sin(angle);
-        if (axis.y < 0.0f)
-            s = -s;
-        // Y axis: x' = s*z + c*x, z' = c*z - s*x.
-        for (Vec3* r : {&m.m0, &m.m1, &m.m2}) {
-            const float x = r->x, z = r->z;
-            r->x = s * z + x * c;
-            r->z = c * z - x * s;
-        }
-        return;
-    }
-    if (axis.x == 0.0f && axis.y == 0.0f) {
-        const float c = std::cos(angle);
-        float s = std::sin(angle);
-        if (axis.z < 0.0f)
-            s = -s;
-        rowsXY(c, s);
-        return;
-    }
-    const Mat34 r = arbitraryRotation(axis, angle);
-    m.m0 = r.transformDir(m.m0);
-    m.m1 = r.transformDir(m.m1);
-    m.m2 = r.transformDir(m.m2);
-}
-
-void rotateAbs(Mat34& m, const Vec3& axis, float angle) {
-    const Vec3 m3 = m.m3;
-    m = Mat34::identity();
-    if (angle != 0.0f)
-        rotate(m, axis, angle);
-    m.m3 = m3;
-}
 
 float mag(const Vec3& v) {
     return std::sqrt(mag2(v));
 }
+
 float invMag(const Vec3& v) {
-    return 1.0f / std::sqrt(mag2(v));
+    const float m2 = mag2(v);
+    return m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2);
+}
+
+Vec3 dot3x3(const Vec3& v, const Mat34& m) {
+    return {(m.m2.x * v.z + m.m1.x * v.y) + m.m0.x * v.x, (m.m2.y * v.z + m.m0.y * v.x) + m.m1.y * v.y,
+            (m.m2.z * v.z + m.m0.z * v.x) + m.m1.z * v.y};
+}
+
+Vec3 dot3x3Transpose(const Vec3& v, const Mat34& m) {
+    return {(m.m0.z * v.z + m.m0.y * v.y) + m.m0.x * v.x, (m.m1.z * v.z + m.m1.x * v.x) + m.m1.y * v.y,
+            (m.m2.z * v.z + m.m2.x * v.x) + m.m2.y * v.y};
+}
+
+Mat34 makeRotateUnitAxis(const Vec3& n, float angle) {
+    // The diagonal adds the cosine as fcos left it (wider than a float); the
+    // products before it round to float.
+    const double c = std::cos(static_cast<double>(angle));
+    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    const float omc = static_cast<float>(1.0 - c);
+    const auto diagonal = [&](float k) {
+        const float p = (k * k) * omc;
+        return static_cast<float>(static_cast<double>(p) + c);
+    };
+    Mat34 r;
+    r.m0.x = diagonal(n.x);
+    r.m1.y = diagonal(n.y);
+    r.m2.z = diagonal(n.z);
+    r.m0.y = (n.y * n.x) * omc + s * n.z;
+    r.m1.x = (n.y * n.x) * omc - s * n.z;
+    r.m0.z = (n.z * n.x) * omc - s * n.y;
+    r.m2.x = (n.z * n.x) * omc + s * n.y;
+    r.m1.z = (n.z * n.y) * omc + s * n.x;
+    r.m2.y = (n.z * n.y) * omc - s * n.x;
+    r.m3 = {};
+    return r;
+}
+
+Mat34 makeRotate(const Vec3& axis, float angle) {
+    if (angle == 0.0f)
+        return Mat34::identity();
+    if (axis.x == 0.0f) {
+        if (axis.y == 0.0f)
+            return makeRotateZ(0.0f < axis.z ? angle : -angle);
+        if (axis.z == 0.0f)
+            return makeRotateY(0.0f < axis.y ? angle : -angle);
+    } else if (axis.y == 0.0f && axis.z == 0.0f) {
+        return makeRotateX(0.0f < axis.x ? angle : -angle);
+    }
+    const float len2 = (axis.z * axis.z + axis.y * axis.y) + axis.x * axis.x;
+    const float inv = len2 == 0.0f ? 0.0f : 1.0f / std::sqrt(len2);
+    return makeRotateUnitAxis({inv * axis.x, inv * axis.y, inv * axis.z}, angle);
+}
+
+void rotate(Mat34& m, const Vec3& axis, float angle) {
+    dot3x3InPlace(m, makeRotate(axis, angle));
+}
+
+void rotateUnitAxis(Mat34& m, const Vec3& axis, float angle) {
+    dot3x3InPlace(m, makeRotateUnitAxis(axis, angle));
+}
+
+Mat34 arbitraryRotation(const Vec3& axis, float angle) {
+    return makeRotate(axis, angle);
 }
 
 Mat34 transpose(const Mat34& m) {
@@ -147,11 +112,10 @@ Mat34 transpose(const Mat34& m) {
 }
 
 Mat34 inverse(const Mat34& a) {
-    // ?Inverse@Matrix34@@QBE?AV1@XZ, cofactors in the original's order.
+    const float c00 = a.m1.y * a.m2.z - a.m2.y * a.m1.z;
     const float c10 = a.m1.x * a.m2.z - a.m2.x * a.m1.z;
-    const float c00 = a.m2.z * a.m1.y - a.m1.z * a.m2.y;
-    const float c20 = a.m1.x * a.m2.y - a.m2.x * a.m1.y;
-    const float det = (a.m0.x * c00 - c10 * a.m0.y) + c20 * a.m0.z;
+    const float c20 = a.m2.y * a.m1.x - a.m2.x * a.m1.y;
+    const float det = (c00 * a.m0.x - c10 * a.m0.y) + c20 * a.m0.z;
     if (det == 0.0f)
         return a;
     const float inv = 1.0f / det;
@@ -159,25 +123,76 @@ Mat34 inverse(const Mat34& a) {
     r.m0.x = inv * c00;
     r.m1.x = -(inv * c10);
     r.m2.x = inv * c20;
-    r.m3.x = -(((r.m0.x * a.m3.x) + r.m1.x * a.m3.y) + r.m2.x * a.m3.z);
-    r.m0.y = -((a.m2.z * a.m0.y - a.m2.y * a.m0.z) * inv);
+    r.m3.x = -((r.m0.x * a.m3.x + r.m2.x * a.m3.z) + r.m1.x * a.m3.y);
+    r.m0.y = -((a.m0.y * a.m2.z - a.m2.y * a.m0.z) * inv);
     r.m1.y = (a.m0.x * a.m2.z - a.m2.x * a.m0.z) * inv;
-    r.m2.y = -((a.m0.x * a.m2.y - a.m2.x * a.m0.y) * inv);
-    r.m3.y = -(((r.m0.y * a.m3.x) + r.m1.y * a.m3.y) + r.m2.y * a.m3.z);
+    r.m2.y = -((a.m2.y * a.m0.x - a.m2.x * a.m0.y) * inv);
+    r.m3.y = -((r.m0.y * a.m3.x + r.m2.y * a.m3.z) + r.m1.y * a.m3.y);
+    r.m0.z = (a.m0.y * a.m1.z - a.m0.z * a.m1.y) * inv;
     r.m1.z = -((a.m0.x * a.m1.z - a.m1.x * a.m0.z) * inv);
-    r.m0.z = (a.m1.z * a.m0.y - a.m1.y * a.m0.z) * inv;
-    r.m2.z = (a.m0.x * a.m1.y - a.m1.x * a.m0.y) * inv;
-    r.m3.z = -(((r.m0.z * a.m3.x) + r.m1.z * a.m3.y) + r.m2.z * a.m3.z);
+    r.m2.z = (a.m1.y * a.m0.x - a.m1.x * a.m0.y) * inv;
+    r.m3.z = -((r.m0.z * a.m3.x + r.m2.z * a.m3.z) + r.m1.z * a.m3.y);
     return r;
 }
 
 Mat34 dot3x3(const Mat34& a, const Mat34& b, const Vec3& keepM3) {
     Mat34 r;
-    r.m0 = b.transformDir(a.m0);
-    r.m1 = b.transformDir(a.m1);
-    r.m2 = b.transformDir(a.m2);
+    r.m0 = {(a.m0.x * b.m0.x + a.m0.y * b.m1.x) + a.m0.z * b.m2.x,
+            (a.m0.y * b.m1.y + a.m0.z * b.m2.y) + a.m0.x * b.m0.y,
+            (a.m0.y * b.m1.z + a.m0.z * b.m2.z) + a.m0.x * b.m0.z};
+    r.m1 = {(a.m1.x * b.m0.x + a.m1.y * b.m1.x) + a.m1.z * b.m2.x,
+            (a.m1.y * b.m1.y + a.m1.z * b.m2.y) + a.m1.x * b.m0.y,
+            (a.m1.y * b.m1.z + a.m1.z * b.m2.z) + a.m1.x * b.m0.z};
+    r.m2 = {(a.m2.x * b.m0.x + a.m2.z * b.m2.x) + a.m2.y * b.m1.x,
+            (a.m2.y * b.m1.y + a.m2.z * b.m2.y) + a.m2.x * b.m0.y,
+            (a.m2.y * b.m1.z + a.m2.z * b.m2.z) + a.m2.x * b.m0.z};
     r.m3 = keepM3;
     return r;
+}
+
+void dot3x3InPlace(Mat34& a, const Mat34& b) {
+    const Vec3 r0{(a.m0.x * b.m0.x + a.m0.y * b.m1.x) + a.m0.z * b.m2.x,
+                  (a.m0.y * b.m1.y + a.m0.z * b.m2.y) + a.m0.x * b.m0.y,
+                  (a.m0.y * b.m1.z + a.m0.z * b.m2.z) + a.m0.x * b.m0.z};
+    const Vec3 r1{(a.m1.y * b.m1.x + a.m1.z * b.m2.x) + a.m1.x * b.m0.x,
+                  (a.m1.y * b.m1.y + a.m1.z * b.m2.y) + a.m1.x * b.m0.y,
+                  (a.m1.x * b.m0.z + a.m1.y * b.m1.z) + a.m1.z * b.m2.z};
+    const Vec3 r2{(a.m2.x * b.m0.x + a.m2.y * b.m1.x) + a.m2.z * b.m2.x,
+                  (a.m2.x * b.m0.y + a.m2.y * b.m1.y) + a.m2.z * b.m2.y,
+                  (a.m2.y * b.m1.z + a.m2.z * b.m2.z) + a.m2.x * b.m0.z};
+    a.m0 = r0;
+    a.m1 = r1;
+    a.m2 = r2;
+}
+
+Mat34 dot3x3Transpose(const Mat34& a, const Mat34& b) {
+    Mat34 r;
+    r.m0 = {(a.m0.x * b.m0.x + a.m0.y * b.m0.y) + a.m0.z * b.m0.z,
+            (a.m0.y * b.m1.y + a.m0.z * b.m1.z) + a.m0.x * b.m1.x,
+            (a.m0.y * b.m2.y + a.m0.z * b.m2.z) + a.m0.x * b.m2.x};
+    r.m1 = {(a.m1.x * b.m0.x + a.m1.y * b.m0.y) + a.m1.z * b.m0.z,
+            (a.m1.y * b.m1.y + a.m1.z * b.m1.z) + a.m1.x * b.m1.x,
+            (a.m1.y * b.m2.y + a.m1.z * b.m2.z) + a.m1.x * b.m2.x};
+    r.m2 = {(a.m2.x * b.m0.x + a.m2.z * b.m0.z) + a.m2.y * b.m0.y,
+            (a.m2.y * b.m1.y + a.m2.z * b.m1.z) + a.m2.x * b.m1.x,
+            (a.m2.y * b.m2.y + a.m2.z * b.m2.z) + a.m2.x * b.m2.x};
+    r.m3 = {};
+    return r;
+}
+
+void dot3x3TransposeInPlace(Mat34& a, const Mat34& b) {
+    const Vec3 r0{(a.m0.x * b.m0.x + a.m0.y * b.m0.y) + a.m0.z * b.m0.z,
+                  (a.m0.x * b.m1.x + a.m0.z * b.m1.z) + a.m0.y * b.m1.y,
+                  (a.m0.y * b.m2.y + a.m0.z * b.m2.z) + a.m0.x * b.m2.x};
+    const Vec3 r1{(a.m1.y * b.m0.y + a.m1.z * b.m0.z) + a.m1.x * b.m0.x,
+                  (a.m1.x * b.m1.x + a.m1.z * b.m1.z) + a.m1.y * b.m1.y,
+                  (a.m1.y * b.m2.y + a.m1.z * b.m2.z) + a.m1.x * b.m2.x};
+    const Vec3 r2{(a.m2.x * b.m0.x + a.m2.y * b.m0.y) + a.m2.z * b.m0.z,
+                  (a.m2.x * b.m1.x + a.m2.z * b.m1.z) + a.m2.y * b.m1.y,
+                  (a.m2.y * b.m2.y + a.m2.z * b.m2.z) + a.m2.x * b.m2.x};
+    a.m0 = r0;
+    a.m1 = r1;
+    a.m2 = r2;
 }
 
 Mat34 dot(const Mat34& a, const Mat34& b) {
@@ -193,49 +208,186 @@ Mat34 crossProdMatrix(const Vec3& v) {
     return r;
 }
 
+void dot3x3CrossProdMtx(Mat34& m, const Vec3& r) {
+    for (Vec3* row : {&m.m0, &m.m1, &m.m2}) {
+        const Vec3 a = *row;
+        *row = {a.y * r.z - r.y * a.z, r.x * a.z - a.x * r.z, r.y * a.x - a.y * r.x};
+    }
+}
+
+void dot3x3CrossProdTranspose(Mat34& m, const Vec3& r) {
+    for (Vec3* row : {&m.m0, &m.m1, &m.m2}) {
+        const Vec3 a = *row;
+        *row = {a.z * r.y - r.z * a.y, r.z * a.x - a.z * r.x, r.x * a.y - a.x * r.y};
+    }
+}
+
 Mat34 add3x3(const Mat34& a, const Mat34& b) {
     Mat34 r;
-    r.m0 = {a.m0.x + b.m0.x, a.m0.y + b.m0.y, a.m0.z + b.m0.z};
-    r.m1 = {a.m1.x + b.m1.x, a.m1.y + b.m1.y, a.m1.z + b.m1.z};
-    r.m2 = {a.m2.x + b.m2.x, a.m2.y + b.m2.y, a.m2.z + b.m2.z};
-    r.m3 = b.m3;
+    r.m0 = {b.m0.x + a.m0.x, b.m0.y + a.m0.y, b.m0.z + a.m0.z};
+    r.m1 = {b.m1.x + a.m1.x, b.m1.y + a.m1.y, b.m1.z + a.m1.z};
+    r.m2 = {b.m2.x + a.m2.x, b.m2.y + a.m2.y, b.m2.z + a.m2.z};
+    r.m3 = a.m3;
     return r;
 }
 
-Vec3 solveSVD(const Mat34& b, const Vec3& rhs) {
-    float a[3][4] = {{b.m0.x, b.m1.x, b.m2.x, rhs.x}, {b.m0.y, b.m1.y, b.m2.y, rhs.y}, {b.m0.z, b.m1.z, b.m2.z, rhs.z}};
-    float scale = 0.0f;
-    for (auto& row : a)
-        for (int c = 0; c < 3; ++c)
-            scale = std::max(scale, std::abs(row[c]));
-    const float eps = scale * 1e-6f;
-    int pivotCol[3] = {-1, -1, -1};
-    bool used[3] = {};
-    for (int col = 0; col < 3; ++col) {
-        int best = -1;
-        float bestAbs = eps;
-        for (int r = 0; r < 3; ++r)
-            if (!used[r] && std::abs(a[r][col]) > bestAbs) {
-                best = r;
-                bestAbs = std::abs(a[r][col]);
-            }
-        if (best < 0)
-            continue;
-        used[best] = true;
-        pivotCol[col] = best;
-        for (int r = 0; r < 3; ++r) {
-            if (r == best)
+void scale3x3(Mat34& m, float s) {
+    for (Vec3* row : {&m.m0, &m.m1, &m.m2})
+        *row = {s * row->x, s * row->y, s * row->z};
+}
+
+void addScaled3x3(Mat34& m, const Mat34& b, float s) {
+    m.m0 = {s * b.m0.x + m.m0.x, s * b.m0.y + m.m0.y, s * b.m0.z + m.m0.z};
+    m.m1 = {s * b.m1.x + m.m1.x, s * b.m1.y + m.m1.y, s * b.m1.z + m.m1.z};
+    m.m2 = {s * b.m2.x + m.m2.x, s * b.m2.y + m.m2.y, s * b.m2.z + m.m2.z};
+}
+
+Vec3 solveSVD(const Mat34& mat, const Vec3& b) {
+    // Matrix34::SolveSVD. Elements m[row][column] of the 3x3 part.
+    const float m[3][3] = {{mat.m0.x, mat.m0.y, mat.m0.z}, {mat.m1.x, mat.m1.y, mat.m1.z},
+                           {mat.m2.x, mat.m2.y, mat.m2.z}};
+    // The element of largest magnitude (row-major; a tie keeps the first)
+    // and its row and column, 1-based as in the original.
+    float largest = 0.0f;
+    int row = 1;
+    int col = 1;
+    for (int i = 0; i < 3; ++i) {
+        for (int j = 0; j < 3; ++j) {
+            const float v = m[i][j];
+            if (largest < v) {
+                largest = v;
+            } else if (largest < -v) {
+                largest = -v;
+            } else {
                 continue;
-            const float f = a[r][col] / a[best][col];
-            for (int c = col; c < 4; ++c)
-                a[r][c] -= f * a[best][c];
+            }
+            row = i + 1;
+            col = j + 1;
         }
     }
-    float x[3] = {};
-    for (int col = 0; col < 3; ++col)
-        if (pivotCol[col] >= 0)
-            x[col] = a[pivotCol[col]][3] / a[pivotCol[col]][col];
-    return {x[0], x[1], x[2]};
+    if (largest == 0.0f)
+        return {};
+    const float tol = largest * 0.0001f;
+
+    // The cofactor matrix, row by row.
+    const float cof[3][3] = {
+        {m[2][2] * m[1][1] - m[2][1] * m[1][2], -(m[2][2] * m[1][0] - m[2][0] * m[1][2]),
+         m[2][1] * m[1][0] - m[2][0] * m[1][1]},
+        {-(m[2][2] * m[0][1] - m[0][2] * m[2][1]), m[2][2] * m[0][0] - m[2][0] * m[0][2],
+         -(m[2][1] * m[0][0] - m[2][0] * m[0][1])},
+        {m[1][2] * m[0][1] - m[1][1] * m[0][2], -(m[1][2] * m[0][0] - m[0][2] * m[1][0]),
+         m[1][1] * m[0][0] - m[1][0] * m[0][1]}};
+    // The largest magnitude of each cofactor row and where it lies, then the
+    // row with the largest of those.
+    float rowMax[3];
+    int rowArg[3];
+    for (int i = 0; i < 3; ++i) {
+        float best = 0.0f;
+        if (0.0f < cof[i][0])
+            best = cof[i][0];
+        else if (0.0f < -cof[i][0])
+            best = -cof[i][0];
+        int arg = 1;
+        for (int j = 1; j < 3; ++j) {
+            if (best < cof[i][j]) {
+                best = cof[i][j];
+                arg = j + 1;
+            } else if (best < -cof[i][j]) {
+                best = -cof[i][j];
+                arg = j + 1;
+            }
+        }
+        rowMax[i] = best;
+        rowArg[i] = arg;
+    }
+    int k = 1;
+    float maxCof = rowMax[0];
+    if (maxCof < rowMax[1]) {
+        k = 2;
+        maxCof = rowMax[1];
+    }
+    if (maxCof < rowMax[2]) {
+        k = 3;
+        maxCof = rowMax[2];
+    }
+
+    // Full rank: x = b * M^-1 through the cofactors. The original's rank
+    // test checks rows 0 and 2 when the largest element is in row 3.
+    const float det = (cof[0][2] * m[0][2] + cof[0][1] * m[0][1]) + cof[0][0] * m[0][0];
+    const float absDet = std::fabs(det);
+    if (tol * tol < absDet && maxCof * tol < absDet) {
+        bool fullRank = false;
+        if (row == 1)
+            fullRank = tol < rowMax[1] && tol < rowMax[2];
+        else if (row == 2 || row == 3)
+            fullRank = tol < rowMax[0] && tol < rowMax[2];
+        if (fullRank) {
+            const float inv = 1.0f / det;
+            return {((cof[0][2] * b.z + cof[0][1] * b.y) + cof[0][0] * b.x) * inv,
+                    ((cof[1][2] * b.z + cof[1][1] * b.y) + cof[1][0] * b.x) * inv,
+                    ((cof[2][2] * b.z + cof[2][1] * b.y) + cof[2][0] * b.x) * inv};
+        }
+    }
+
+    const auto column = [&](int j) { return Vec3{m[0][j], m[1][j], m[2][j]}; };
+    if (tol < maxCof) {
+        // Rank 2: cofactor row k is the near-null direction n. b loses its
+        // part along n; the two rows of M other than k give a 2x2 system in
+        // the two components other than n's largest one, whose solution
+        // (with a 0 in component k) loses its part along the cross product
+        // of the matching columns.
+        const Vec3 n{cof[k - 1][0], cof[k - 1][1], cof[k - 1][2]};
+        const int arg = rowArg[k - 1];
+        const Vec3 p = k == 1 ? Vec3{m[1][0], m[1][1], m[1][2]} : Vec3{m[0][0], m[0][1], m[0][2]};
+        const Vec3 q = k == 3 ? Vec3{m[1][0], m[1][1], m[1][2]} : Vec3{m[2][0], m[2][1], m[2][2]};
+        const float d = (n.x * b.x + n.z * b.z) + n.y * b.y;
+        const float invN = 1.0f / ((n.x * n.x + n.z * n.z) + n.y * n.y);
+        const Vec3 rb{b.x - (n.x * d) * invN, b.y - (n.y * d) * invN, b.z - (n.z * d) * invN};
+        float p1, p2, q1, q2, r1, r2;
+        Vec3 c1, c2;
+        if (arg == 1) {
+            p1 = p.y, p2 = p.z, q1 = q.y, q2 = q.z, r1 = rb.y, r2 = rb.z;
+            c1 = column(1);
+            c2 = column(2);
+        } else if (arg == 2) {
+            p1 = p.x, p2 = p.z, q1 = q.x, q2 = q.z, r1 = rb.x, r2 = rb.z;
+            c1 = column(0);
+            c2 = column(2);
+        } else {
+            p1 = p.x, p2 = p.y, q1 = q.x, q2 = q.y, r1 = rb.x, r2 = rb.y;
+            c1 = column(0);
+            c2 = column(1);
+        }
+        const float invDet = 1.0f / (q2 * p1 - q1 * p2);
+        const float u1 = (q2 * r1 - q1 * r2) * invDet;
+        const float u2 = (p1 * r2 - p2 * r1) * invDet;
+        const Vec3 x = k == 1 ? Vec3{0.0f, u1, u2} : (k == 2 ? Vec3{u1, 0.0f, u2} : Vec3{u1, u2, 0.0f});
+        const Vec3 c{c1.y * c2.z - c1.z * c2.y, c1.z * c2.x - c2.z * c1.x, c2.y * c1.x - c1.y * c2.x};
+        const float xc = (x.z * c.z + x.y * c.y) + x.x * c.x;
+        const float invC = 1.0f / ((c.z * c.z + c.y * c.y) + c.x * c.x);
+        return {x.x - (c.x * xc) * invC, x.y - (c.y * xc) * invC, x.z - (c.z * xc) * invC};
+    }
+
+    // Rank 1: b projected on the row of the largest element, mapped back
+    // through its column.
+    const Vec3 r = row == 1 ? Vec3{m[0][0], m[0][1], m[0][2]}
+                            : (row == 2 ? Vec3{m[1][0], m[1][1], m[1][2]} : Vec3{m[2][0], m[2][1], m[2][2]});
+    const float d = (r.z * b.z + r.y * b.y) + r.x * b.x;
+    const float invR = 1.0f / ((r.y * r.y + r.z * r.z) + r.x * r.x);
+    float s;
+    Vec3 c;
+    if (col == 1) {
+        s = invR * (r.x * d);
+        c = column(0);
+    } else if (col == 2) {
+        s = (r.y * d) * invR;
+        c = column(1);
+    } else {
+        s = (d * r.z) * invR;
+        c = column(2);
+    }
+    const float invCol = 1.0f / ((c.y * c.y + c.z * c.z) + c.x * c.x);
+    return {(c.x * s) * invCol, (c.y * s) * invCol, (s * c.z) * invCol};
 }
 
 } // namespace mm2::phys::age

@@ -34,6 +34,15 @@ struct RaceDefinition {
     std::string crashEventsPro; // race/<dir>/crashNdata_p.csv
 };
 
+// cityTimeWeatherLighting's constructor: ambient 0xFF101010.
+inline constexpr std::uint32_t kDefaultLightingAmbient = 0xFF101010u;
+constexpr std::array<std::uint32_t, kTimesOfDay * kWeathers> defaultAmbients() {
+    std::array<std::uint32_t, kTimesOfDay * kWeathers> a{};
+    for (auto& v : a)
+        v = kDefaultLightingAmbient;
+    return a;
+}
+
 struct CityData {
     CityInfo info;
     Psdl psdl;
@@ -42,6 +51,10 @@ struct CityData {
     std::optional<RoomPvs> pvs;        // city/<map>.cpvs
     std::optional<AiMap> aiMap;        // city/<map>.bai
     std::array<std::optional<LightingDef>, kTimesOfDay * kWeathers> lighting;
+    // The ambient each lighting table held before this city's .ltNN files
+    // loaded (see loadCity): what MM2 derives the lower light qualities'
+    // ambient levels from.
+    std::array<std::uint32_t, kTimesOfDay * kWeathers> ambientBeforeLoad = defaultAmbients();
     std::vector<FogDef> fog;
     std::optional<SkyDef> sky;
     std::optional<WaterDef> water;
@@ -50,6 +63,8 @@ struct CityData {
     std::optional<std::vector<std::uint32_t>> roomColors; // city/<map>.lmap
     std::vector<PhysMaterial> materials;                  // city/materials.mtl
     std::vector<TextureMaterial> textureMaterials;        // city/materials.csv
+    // The game's own room flags (lvlRoomInfo, see RoomInfo.h), by room id.
+    std::vector<std::uint16_t> levelRoomFlags;
     std::optional<AiMapConfig> cruise, cruisePro;         // race/<dir>/roam.aimap(_p)
     std::vector<PathSet> cityPathSets;                    // race/<dir>/<map>_*.pathset (bridges, ferries...)
     std::vector<std::string> cityPathSetNames;

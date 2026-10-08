@@ -1,5 +1,6 @@
 #pragma once
 
+#include "phys/Level.h"
 #include "phys/PolygonSoup.h"
 #include "phys/vehicle/TuneParams.h"
 #include "phys/vehicle/VehicleGeometry.h"
@@ -29,6 +30,10 @@ struct WheelEnv {
     // State of the game's random generator (World::randomSeed); null uses a
     // private stream.
     std::uint32_t* randomSeed = nullptr;
+    // The instance the probes never hit: the car's own (vehWheel passes its
+    // vehCarSim's instance; a trailer's wheels have no vehCarSim and pass
+    // none).
+    const Instance* self = nullptr;
 };
 
 // vehWheel (Midtown Madness 2), verified against the build 3393 code:
@@ -131,6 +136,8 @@ public:
     Mat34 matrix; // the wheel in world space (steered, displaced, spun)
     bool hit = false;
     RayHit intersection;
+    // The probe's lvlSegmentInfo (rooms and cached polygon, vehWheel::Init).
+    ProbeCache probeCache;
     Mat34 contactFrame; // rows right, ground normal, back; m3 the contact point
     Vec3 position;      // contact point
     const Material* material = nullptr;

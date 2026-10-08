@@ -33,6 +33,12 @@ std::optional<asset::BoundGeometry> loadBoundFile(const vfs::Vfs& vfs, std::stri
 phys::GeometryData toGeometryData(const asset::BoundGeometry& bound,
                                   const std::function<const phys::Material*(const asset::BoundMaterial&)>& material = {});
 
+// cityLevel::GetTouchedNeighbors: the rooms across `room`'s perimeter edges
+// that the sphere reaches in the ground plane (instance rooms whatever the
+// sphere), each once, at most `max`; returns how many it wrote to `out`.
+int cityTouchedNeighbors(const city::Psdl& psdl, int* out, int max, int room, const Vec3& centre,
+                         float radius);
+
 // Things that list instances in rooms besides the city's static objects:
 // the props (BangerSet) and the traffic cars on their rails (TrafficBodies).
 class InstanceSource {
@@ -73,8 +79,6 @@ public:
     phys::MaterialTable takeMaterials() { return m_materials; }
     // The probe geometry (wheels, line of sight, spawning).
     phys::PolygonSoup takeProbeSoup() { return std::move(m_soup); }
-    // lvlSDL's texture -> material table (city::sdlTextureMaterials).
-    const std::vector<std::uint8_t>& textureMaterials() const { return m_textureMaterials; }
 
     void addSource(const InstanceSource* source) { m_sources.push_back(source); }
     void removeSource(const InstanceSource* source);
@@ -82,6 +86,10 @@ public:
     // phys::Level.
     int findRoom(const Vec3& position, int hint) const override;
     int touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const override;
+    int neighbors(int* out, int max, int room) const override;
+    int roomFlags(int room) const override;
+    int roomInfoFlags(int room) const override;
+    void collectProbe(int room, const Vec3& centre, float radius, phys::LevelBound& out) const override;
     void collect(const int* rooms, int count, const Vec3& centre, float radius,
                  phys::LevelBound& out) const override;
     void instances(int room, std::vector<phys::Instance*>& out) const override;

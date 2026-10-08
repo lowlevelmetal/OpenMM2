@@ -23,11 +23,17 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
         // is how MM2 draws pre-lit parts (gfxForceLVERTEX: shadows, light
         // glows), whose materials are black.
         Vec4 diffuse = mat && options.lighting ? mat->diffuse : Vec4{1, 1, 1, 1};
-        // At night untextured materials are halved too (modShader::Load).
-        if (!tex && textures.night())
+        // At night materials that name no texture are halved too
+        // (modShader::Load; a named texture that fails to load is not). The
+        // material only counts when lit.
+        if (options.lighting && mat && mat->texture.empty() && textures.night())
             diffuse = {diffuse.x * 0.5f, diffuse.y * 0.5f, diffuse.z * 0.5f, diffuse.w};
         call.constants.color = {diffuse.x * options.tint.x, diffuse.y * options.tint.y, diffuse.z * options.tint.z,
                                 diffuse.w * options.tint.w};
+        // modShader's material emissive colour (the compact form's third
+        // colour) is added to the lit colour.
+        if (mat && options.lighting)
+            call.constants.emissive = mat->emissive;
         std::uint32_t flags = render::DrawFlag::VertexColor;
         if (options.fog)
             flags |= render::DrawFlag::Fog;
@@ -37,10 +43,11 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
             flags |= render::DrawFlag::Texture0;
             call.textures[0] = {tex->handle, tex->sampler};
         }
-        const bool translucent = (tex && tex->translucent) || call.constants.color.w < 0.999f;
+        // modStatic::Draw: a material whose diffuse alpha is not 1 or whose
+        // texture format has alpha switches alpha blending on, and the render
+        // state ties ALPHATESTENABLE to it.
+        const bool translucent = (tex && tex->alphaFormat) || call.constants.color.w < 0.999f;
         if (translucent) {
-            // Translucent materials blend and alpha test together (the
-            // render state ties ALPHABLENDENABLE and ALPHATESTENABLE).
             flags |= render::DrawFlag::AlphaTest;
             call.constants.alphaRef = options.alphaRef;
             call.state.blend = render::BlendMode::Alpha;

@@ -29,8 +29,12 @@ public:
 class Collider {
 public:
     // phCollider::Init variants: a bound at `matrix` driven by `ics` (null
-    // for static or kinematic colliders).
+    // for kinematic colliders), then phColliderBase::Reset.
     void init(const Bound* b, const Mat34* m, InertialCS* inertia);
+    // phCollider::Init(bound, matrix): a collider without a body (the level's
+    // and the static instances' temporary ones), which counts as not moving
+    // at all (maxMoved 0, barelyMoved set).
+    void initStatic(const Bound* b, const Mat34* m);
     // phColliderBase::Reset / phCollider::Reset: last matrix = current.
     void reset();
     // phColliderBase::UpdateMtx (dgPhysManager, after each sample's
@@ -38,7 +42,8 @@ public:
     // and which collider pushed hardest.
     void updateMtx();
     // phColliderBase::CalcMaxMoved: an upper bound on how far any point of
-    // the bound moves in a sample; sets barelyMoved.
+    // the bound moves in a sample; sets barelyMoved. MM2 calls it only when a
+    // traffic car leaves its rail (aiVehicleActive::Attach).
     void calcMaxMoved(float dt);
     // phColliderBase::CopyLastMatrix: the matrix at the start of the sample,
     // advanced by the ICS's last push when `pusher` pushed hardest last time.

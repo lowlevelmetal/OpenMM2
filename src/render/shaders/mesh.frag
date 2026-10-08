@@ -15,6 +15,7 @@ DRAW_BLOCK {
     vec4 color;
     float alphaRef;
     uint flags;
+    vec4 emissive; // lit draws: the material's emissive colour
 } draw;
 
 const uint kTexture0 = 1u;

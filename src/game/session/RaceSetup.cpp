@@ -1,5 +1,6 @@
 #include "game/session/RaceSetup.h"
 
+#include "city/RoomInfo.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "game/session/Gate.h"
@@ -83,8 +84,9 @@ std::vector<Checkpoint> buildCheckpoints(const std::vector<city::Waypoint>& poin
             setHeading(out[i - 1], headingTowards(out[i - 1].position, out[i].position));
     if (loop && n > 1 && out[n - 1].headingDeg == 0.0f)
         setHeading(out[n - 1], headingTowards(out[n - 1].position, out[0].position));
+    // Which stand is the "pt_finish" depends on the waypoint type
+    // (mmWaypoints::LoadCSV): the caller marks it.
     out.front().start = true;
-    out.back().finish = n > 1;
     return out;
 }
 
@@ -106,13 +108,15 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
     if (!city.aiMap || city.aiMap->intersections.size() < 2)
         return std::nullopt;
     const auto& xs = city.aiMap->intersections;
+    // The level's room flags (lvlRoomInfo, not the PSDL's): mmSingleRoam asks
+    // for no subterranean or covered rooms (0x0A), and RespawnXYZ never takes
+    // water-of-death or terrain-instance rooms (0x24).
+    const auto& levelFlags = city.levelRoomFlags;
+    constexpr std::uint16_t kRejected = city::LevelRoomFlag::Subterranean | city::LevelRoomFlag::Covered |
+                                        city::LevelRoomFlag::WaterOfDeath | city::LevelRoomFlag::TerrainInstance;
     auto acceptable = [&](const city::AiIntersection& x) {
-        if (x.room < city.psdl.rooms.size()) {
-            const std::uint8_t flags = city.psdl.rooms[x.room].flags;
-            if (flags & (city::RoomFlag::Subterranean | city::RoomFlag::Road | city::RoomFlag::Standard |
-                         city::RoomFlag::SpecialBound))
-                return false;
-        }
+        if (x.room < levelFlags.size() && (levelFlags[x.room] & kRejected))
+            return false;
         for (const auto pathId : x.paths) {
             if (pathId >= city.aiMap->paths.size())
                 continue;
@@ -133,6 +137,54 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
         if (acceptable(xs[i]))
             return xs[i].center + Vec3{0.0f, 2.0f, 0.0f};
     return std::nullopt;
+}
+
+Vec3 multiplayerGridOffset(int slot, bool longVehicle) {
+    static constexpr std::array<Vec3, 8> kShort{{{2.25f, 0, 6}, {-2.25f, 0, 6}, {4.5f, 0, 0}, {0, 0, 0},
+                                                  {-4.5f, 0, 0}, {4.5f, 0, -6}, {0, 0, -6}, {-4.5f, 0, -6}}};
+    static constexpr std::array<Vec3, 8> kLong{{{2.75f, 0, 16}, {-2.75f, 0, 16}, {5.5f, 0, 16}, {0, 0, 16},
+                                                 {2.75f, 0, 34}, {-2.75f, 0, 34}, {0, 0, 34}, {5.5f, 0, 34}}};
+    if (slot < 0 || slot > 7)
+        return {};
+    return (longVehicle ? kLong : kShort)[static_cast<std::size_t>(slot)];
+}
+
+void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race) {
+    if (cfg.mode == GameMode::Cruise) {
+        // RaceMenuBase::SetStateRace for cruise.
+        cfg.timeOfDay = TimeOfDay::Noon;
+        cfg.weather = Weather::Clear;
+        cfg.pedestrianDensity = 0.25f;
+        cfg.trafficDensity = 0.5f;
+        cfg.copDensity = 1.0f;
+        return;
+    }
+    if (!race || !race->settings)
+        return;
+    const auto& s = cfg.difficulty == Difficulty::Professional ? race->settings->professional
+                                                               : race->settings->amateur;
+    cfg.timeOfDay = static_cast<TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
+    cfg.weather = static_cast<Weather>(std::clamp(s.weather, 0, 3));
+    cfg.pedestrianDensity = std::clamp(s.pedDensity, 0.0f, 1.0f);
+    if (cfg.mode == GameMode::CrashCourse) {
+        // Lessons: the lesson table's time, weather and pedestrians, no
+        // traffic, all cops (mmInterface::Update, Crash Course GO).
+        cfg.trafficDensity = 0.0f;
+        cfg.copDensity = 1.0f;
+        cfg.opponents = 0;
+        return;
+    }
+    cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
+    // MM2 keeps the race's cop count in the cop density; OpenMM2's densities
+    // are 0..1, so the count is clamped (the slider shows full either way).
+    cfg.copDensity = std::clamp(static_cast<float>(s.cops), 0.0f, 1.0f);
+    if (cfg.mode == GameMode::Checkpoint) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = 1;
+    } else if (cfg.mode == GameMode::Circuit) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = std::max(1, s.numLaps);
+    }
 }
 
 std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
@@ -164,12 +216,13 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             return std::nullopt;
         }
         s.checkpoints = std::move(*cps);
-        if (circuit) {
-            // The start line is also the finish line of every lap
-            // (mmWaypoints::LoadCSV makes waypoint 0 the "pt_finish").
-            s.checkpoints.back().finish = false;
+        // mmWaypoints::LoadCSV: circuits (type 1) make waypoint 0, the start
+        // and finish of every lap, the "pt_finish"; checkpoint races (type 2)
+        // the last waypoint; Blitz (type 3) uses "pt_check" for every one.
+        if (circuit)
             s.checkpoints.front().finish = true;
-        }
+        else if (config.mode == GameMode::Checkpoint)
+            s.checkpoints.back().finish = true;
     }
 
     // Time limit: single player Blitz only (mmSingleBlitz::InitHUD); the
@@ -215,7 +268,9 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
                 le.minimumSpeedMph = e.extra[0];
             if (le.type == LessonType::MinimumSpeed && le.minimumSpeedMph < 1.0f)
                 le.minimumSpeedMph = 50.0f; // mmSingleStunt::InitHUD
-            le.singleCheckpoint = e.extra.size() > 1 && (static_cast<int>(e.extra[1]) & 1) != 0;
+            // mmSingleStunt::InitNewEvent passes "chkflags != 0" to
+            // mmWaypoints::ReInit as the show-only-the-next flag.
+            le.singleCheckpoint = e.extra.size() > 1 && static_cast<int>(e.extra[1]) != 0;
             le.opponents = e.extra.size() > 2 ? static_cast<int>(e.extra[2]) : 0;
             auto cps = loadCheckpoints(vfs, dir + str::lower(e.file) + ".csv", false);
             if (!cps) {
@@ -235,7 +290,9 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     if (s.aiMap && s.race && (racing || config.mode == GameMode::CrashCourse)) {
         const std::string& any = !s.race->aiMap.empty() ? s.race->aiMap : s.race->waypoints;
         const std::string dir = any.substr(0, any.rfind('/') + 1);
-        const int wanted = !racing ? 64 : (config.opponents >= 0 ? config.opponents : s.settings.opponents);
+        // aiMap::Init loads min(table count, OpponentDensity) racers; the
+        // crash course sets OpponentDensity to 8 (CrashCourse::SetEnvironment).
+        const int wanted = !racing ? 8 : (config.opponents >= 0 ? config.opponents : s.settings.opponents);
         for (const auto& o : s.aiMap->opponents) {
             if (static_cast<int>(s.opponents.size()) >= wanted)
                 break;

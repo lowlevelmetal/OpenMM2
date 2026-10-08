@@ -4,6 +4,7 @@
 #include "audio/Music.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "game/session/RaceSetup.h"
 #include "render/Projection.h"
 
 #include <SDL3/SDL.h>
@@ -186,46 +187,16 @@ void Frontend::configFromProfile() {
 }
 
 void Frontend::applyRaceDefaults(game::RaceConfig& cfg) const {
-    using game::GameMode;
-    if (cfg.mode == GameMode::Cruise) {
-        // RaceMenuBase::SetStateRace for cruise.
-        cfg.timeOfDay = game::TimeOfDay::Noon;
-        cfg.weather = game::Weather::Clear;
-        cfg.pedestrianDensity = 0.25f;
-        cfg.trafficDensity = 0.5f;
-        cfg.copDensity = 1.0f;
-        return;
+    // Shared with the race, which tests a finish against them
+    // (game::session::applyRaceTableDefaults).
+    const city::RaceDefinition* def = nullptr;
+    if (cfg.mode != game::GameMode::Cruise) {
+        const auto list = racesFor(cfg.mode, cfg.city);
+        if (cfg.raceIndex < 0 || cfg.raceIndex >= static_cast<int>(list.size()))
+            return;
+        def = list[static_cast<std::size_t>(cfg.raceIndex)];
     }
-    const auto list = racesFor(cfg.mode, cfg.city);
-    if (cfg.raceIndex < 0 || cfg.raceIndex >= static_cast<int>(list.size()))
-        return;
-    const auto* def = list[static_cast<std::size_t>(cfg.raceIndex)];
-    if (!def->settings)
-        return;
-    const auto& s = cfg.difficulty == game::Difficulty::Professional ? def->settings->professional
-                                                                       : def->settings->amateur;
-    cfg.timeOfDay = static_cast<game::TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
-    cfg.weather = static_cast<game::Weather>(std::clamp(s.weather, 0, 3));
-    cfg.pedestrianDensity = std::clamp(s.pedDensity, 0.0f, 1.0f);
-    if (cfg.mode == GameMode::CrashCourse) {
-        // Lessons: the lesson table's time, weather and pedestrians, no
-        // traffic, all cops (mmInterface::Update, Crash Course GO).
-        cfg.trafficDensity = 0.0f;
-        cfg.copDensity = 1.0f;
-        cfg.opponents = 0;
-        return;
-    }
-    cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
-    // MM2 keeps the race's cop count in the cop density; OpenMM2's densities
-    // are 0..1, so the count is clamped (the slider shows full either way).
-    cfg.copDensity = std::clamp(static_cast<float>(s.cops), 0.0f, 1.0f);
-    if (cfg.mode == GameMode::Checkpoint) {
-        cfg.opponents = std::max(0, s.opponents);
-        cfg.laps = 1;
-    } else if (cfg.mode == GameMode::Circuit) {
-        cfg.opponents = std::max(0, s.opponents);
-        cfg.laps = std::max(1, s.numLaps);
-    }
+    game::session::applyRaceTableDefaults(cfg, def);
 }
 
 std::string Frontend::raceName(const game::RaceConfig& cfg) const {
@@ -243,7 +214,8 @@ std::string Frontend::raceName(const game::RaceConfig& cfg) const {
 }
 
 std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& result) {
-    if (!profile)
+    // The modes' RegisterFinish do nothing while bCheating is set.
+    if (!profile || result.cheated)
         return std::nullopt;
     game::RaceConfig defaults = result.config;
     applyRaceDefaults(defaults);
@@ -652,8 +624,9 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             using game::GameMode;
             using CR = game::CopsAndRobbersMode;
             c.mode = rest == "blitz" ? GameMode::Blitz : rest == "circuit" ? GameMode::Circuit
-                   : rest == "race" ? GameMode::Checkpoint : rest.starts_with("cr") ? GameMode::CopsAndRobbers
-                                                                                    : GameMode::Cruise;
+                   : rest == "race" ? GameMode::Checkpoint
+                   : rest == "cr" || rest == "crteams" || rest == "crffa" ? GameMode::CopsAndRobbers
+                                                                         : GameMode::Cruise;
             c.copsAndRobbers = rest == "crteams" ? CR::RobberTeams : rest == "crffa" ? CR::FreeForAll : CR::CopsVsRobbers;
             c.raceIndex = c.mode == GameMode::Cruise || c.mode == GameMode::CopsAndRobbers ? -1 : 0;
             if (c.mode == GameMode::CopsAndRobbers)

@@ -14,7 +14,7 @@
 //   s->start();
 //   every frame:
 //     s->update(dt, playerState, opponentStates, policeStates);
-//     if (s->playerHeld()) brake fully, ignore throttle;
+//     s->playerHold(): undrivable (brakes, neutral) or braked after the finish;
 //     if (!s->racersReleased() || !s->opponentActive(i)) hold AI car i;
 //     for (auto e : s->takeEvents()) ... (Respawn, Restart, DamageReset, damage limits, audio)
 //     if (s->finished()) show results with s->result();
@@ -44,6 +44,13 @@ enum class Phase : std::uint8_t {
     Done,      // show the results
 };
 
+// What the game does to the player's car.
+enum class PlayerHold : std::uint8_t {
+    None,        // it drives
+    Undrivable,  // vehCar::SetDrivable(0, 1): brakes on, gearbox in neutral, the throttle revs
+    FinishBrake, // mmPlayer +0x2258: the race is over, brakes on with the wheel turned full left
+};
+
 struct SessionOptions {
     float scoringBias = 1.0f; // tune/<car>.info ScoringBias (race score multiplier)
     bool skipCountdown = false;
@@ -51,7 +58,16 @@ struct SessionOptions {
     // Line of sight between two points for mmSingleStunt::CheckCopPursuit
     // (the original probes the level); unset = always clear.
     std::function<bool(const Vec3& from, const Vec3& to)> lineOfSight;
+    // The local player's network name: multiplayer races show it over
+    // "finished in" (mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame).
+    std::string playerName;
 };
+
+// The game's cheat flag (bCheating): mmGame::SendChatMessage's "/blubber"
+// sets it, and only mmStatePack::SetDefaults (the game's start) clears it.
+// While it is set no finish is registered (the modes' RegisterFinish).
+bool cheating();
+void setCheating(bool on);
 
 class Session {
 public:
@@ -69,8 +85,21 @@ public:
     const std::vector<PoliceSetup>& police() const { return m_setup.police; }
 
     void start();
+    // Whether the pre-race camera is still blending to the game camera
+    // (mmPlayer +0xE5A). Circuit and checkpoint races start their countdown
+    // only once it has finished (mmSingleCircuit / mmSingleRace::UpdateGame
+    // state 0). Set before update().
+    void setPreRaceCamera(bool active) { m_preRaceCamera = active; }
+    // Multiplayer races: whether the host's start message has arrived (the
+    // countdown of mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame
+    // waits for it in state 0; OpenMM2 sends a shared start time instead and
+    // signals 2.5 s before it). Single player ignores it.
+    void setStartSignal(bool received) { m_startSignal = received || !multiplayer(); }
     // `opponents` in the order of opponents(); `police` in the order of
     // police() (crash course chasers, cop chase lessons).
+    //
+    // Expects the cars' physics matrices (vehCarSim's phInertialCS, i.e. at
+    // the centre of gravity): every rule of the original tests those.
     void update(float dt, const PlayerState& player, std::span<const OpponentState> opponents = {},
                 std::span<const OpponentState> police = {});
     // The whole race starts over (mmGame::Reset, e.g. the pause menu's
@@ -79,8 +108,16 @@ public:
 
     Phase phase() const { return m_phase; }
     bool finished() const { return m_phase == Phase::Done; }
-    // The player's car must stay braked (countdown, wreck penalties).
-    bool playerHeld() const;
+    // What the game does to the player's car: undrivable before "Go!", during
+    // wreck penalties and after some endings (a wreck, any multiplayer
+    // finish), braked by mmPlayer +0x2258 after the others.
+    PlayerHold playerHold() const;
+    bool playerHeld() const { return playerHold() == PlayerHold::Undrivable; }
+    // A single-player race or Blitz lost to a wreck ("damaged out"): the
+    // music stops at once and the engine falls silent
+    // (vehCarAudioContainer::SilenceEngine), as after the water in a race.
+    bool damagedOut() const { return m_damagedOut; }
+    bool engineSilenced() const { return m_engineSilenced; }
     // AI racers may drive (mmGameSingle::EnableRacers at "Go!").
     bool racersReleased() const { return m_released; }
     // Opponents taking part (all in races; the current crash course event's
@@ -101,6 +138,8 @@ public:
     // Checkpoint races: the player picks another target checkpoint
     // (mmWaypoints::GetNextWaypoint / GetLastWaypoint).
     void cycleTarget(bool forward);
+    // mmHUD::SetMessage for rules run beside the session (mmMultiCR).
+    void showMessage(std::string text, float seconds, bool top) { setMessage(std::move(text), seconds, top); }
     std::optional<Vec3> arrowTarget() const;
     // Progress shown on the HUD ("Check: n/N", "Lap: n/N", "Place: n/N").
     int checkpointsCleared() const;
@@ -121,6 +160,9 @@ public:
     // Crash course.
     int lessonEvent() const { return m_lessonEvent; }
     const LessonEvent* currentLesson() const;
+    // mmSingleStunt::UpdateEvade turns the overhead map on (mmViewMgr map
+    // toggle) while its first countdown line shows, if it is off.
+    bool wantsMap() const;
     int vehicleHits() const { return m_vehicleHits; }
     int objectHits() const { return m_objectHits; }
 
@@ -169,15 +211,25 @@ private:
     void setMessage(std::uint32_t id, std::string_view fallback, float seconds, bool top);
     void setMessage2(std::string text);
     void push(EventType t, int index = -1, float value = 0.0f) { m_events.push_back({t, index, value}); }
+    // AudSoundBase::PlayOnce / PlayLoop on the mode's sound (`mode` 0 once, 1 loop).
+    void sound(GameSound s, float mode = 0.0f) { push(EventType::Sound, static_cast<int>(s), mode); }
+    void speech(SpeechCue c, float value = 0.0f) { push(EventType::Speech, static_cast<int>(c), value); }
+    void stopTimerWarning();
+    bool lastEvent() const { return m_lessonEvent == static_cast<int>(m_setup.lessonEvents.size()) - 1; }
 
     void resetRace();
     void beginEvent(int index);
     void resetWaypoints();
     void updateCountdown(float dt);
+    void enableLessonOpponents();
     void go();
+    void updateRules(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
+                     std::span<const OpponentState> police);
+    void tickMessage(float dt);
     void updateWaypoints(const PlayerState& player);
     void displayCleared(int index);
     void closestTarget(const Vec3& pos);
+    void cycleCurrent(bool forward);
     void setTarget(int index);
     void updateOpponents(std::span<const OpponentState> opponents);
     void updateRank(const PlayerState& player, std::span<const OpponentState> opponents);
@@ -193,10 +245,12 @@ private:
     void updateLesson(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
                       std::span<const OpponentState> police);
     bool copPursuit(const PlayerState& player, std::span<const OpponentState> police) const;
-    void lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay);
-    void lessonFailed(float delay = 5.0f);
+    // `latch`: the event sets the original's "race over" flag (+0x7c) before
+    // moving on to the next event, so it stays set for the rest of the lesson.
+    void lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay, bool latch);
+    void lessonFailed(float delay = 5.0f, PlayerHold hold = PlayerHold::FinishBrake, bool registerFinish = true);
     void playerFinished();
-    void endRace(bool finished, bool won, float delay);
+    void endRace(bool finished, bool won, float delay, PlayerHold hold = PlayerHold::FinishBrake);
     int lessonOpponentOffset() const;
     WaypointRule rule() const;
     // mmPlayer::IsMaxDamaged, except in the frame a repair is on its way
@@ -219,11 +273,18 @@ private:
     Phase m_phase = Phase::Countdown;
     Stage m_stage = Stage::Intro;
     bool m_skipToGo = false; // later crash course events start at once
+    bool m_preRaceCamera = false;
+    bool m_startSignal = true;
     float m_wait = 0.0f;
     bool m_started = false;
     bool m_released = false;
-    float m_raceTime = 0.0f;
+    float m_raceTime = 0.0f; // mmHUD's race timer (+0xA54), stopped at the player's finish
     bool m_raceClock = false;
+    // mmHUD's other timer (+0xA24), started and stopped with the race timer
+    // by StartTimers / StopTimers but not at the player's finish: the
+    // opponents' finish times.
+    float m_hudTime = 0.0f;
+    bool m_hudClock = false;
     float m_lapStart = 0.0f, m_lastLap = 0.0f, m_bestLap = 0.0f;
     std::vector<float> m_lapTimes;
 
@@ -234,6 +295,7 @@ private:
     bool m_timeUp = false;
     float m_warnAcc = 1.0f;
     bool m_warnBeeped = false, m_warnLoop = false;
+    bool m_warnActive = false; // the warning sound was started (+0x76E8)
 
     // Penalties: a wrecked car held, then repaired.
     float m_penaltyLeft = 0.0f;
@@ -249,6 +311,8 @@ private:
     // Result.
     bool m_resultFinished = false;
     bool m_resultWon = false;
+    PlayerHold m_endHold = PlayerHold::None; // set by endRace
+    bool m_damagedOut = false, m_engineSilenced = false;
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;

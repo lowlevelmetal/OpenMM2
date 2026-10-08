@@ -106,6 +106,7 @@ public:
         bool everHit = false; // one of the ring of hit instances rather than a placed prop
         int active = -1; // index into the active pool
         int room = 0;
+        int roomHint = 0; // with room 0: where FindRoomId starts (an xref's parent room)
     };
     // The placed props (in add() order) and the hit instances (created as
     // the ring first hands them out).
@@ -118,6 +119,9 @@ public:
     const phys::Bound* bound(const BangerData& data) const;
     std::size_t skipped() const { return m_skipped; } // props without banger data
     int activeCount() const { return m_attached; }
+    // dgBangerDataManager's age mode: actives declared by age rather than by
+    // CollisionType. mmGame::Init turns it off; kept for completeness.
+    void setAgeMode(bool on) { m_ageMode = on; }
     int hitCount() const;
 
     // vehBreakableMgr::Eject: a car part flies off as a knocked-over banger.
@@ -131,6 +135,7 @@ public:
 
 private:
     struct Active;
+    struct ActiveBody;
     class Prop;
     struct DataBounds;
 
@@ -149,6 +154,7 @@ private:
     void activeAttach(Active& a, std::size_t i);
     void activeDetach(Active& a);
     void detachMe(Active& a);
+    void worldDetach(Active& a);
     void newMover(Active& a);
     void declare(Active& a, float dt);
     void directUpdate(Active& a, float dt);
@@ -173,6 +179,7 @@ private:
     std::vector<std::size_t> m_ring; // dgBangerManager's hit instances by slot
     int m_ringNext = 0;
     std::size_t m_skipped = 0;
+    bool m_ageMode = false; // dgBangerDataManager +0x2a8a8 (cleared by mmGame::Init)
     fx::FixedTicker m_ticker;
     fx::Rand m_glowRand{1};
     fx::Rand m_ejectRand{0xE7EC7u};

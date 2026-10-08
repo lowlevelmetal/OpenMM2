@@ -1,6 +1,7 @@
 add_library(mm2_city STATIC
     Psdl.cpp
     SdlCollect.cpp
+    SdlDraw.cpp
     CityMesh.cpp
     Inst.cpp
     Pvs.cpp
@@ -9,6 +10,7 @@ add_library(mm2_city STATIC
     Race.cpp
     Environment.cpp
     CityData.cpp
-    RoomLocator.cpp)
+    RoomLocator.cpp
+    RoomInfo.cpp)
 target_link_libraries(mm2_city PUBLIC OpenMM2::data OpenMM2::vfs OpenMM2::core)
 add_library(OpenMM2::city ALIAS mm2_city)

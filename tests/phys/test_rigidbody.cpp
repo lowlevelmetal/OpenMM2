@@ -11,14 +11,6 @@
 using namespace mm2;
 using namespace mm2::phys;
 
-TEST(AgeMath, InvSqrtFastIsAccurate) {
-    for (float x : {1e-6f, 0.01f, 0.5f, 1.0f, 2.0f, 3.14159f, 100.0f, 12345.678f, 1e6f}) {
-        const float expected = 1.0f / std::sqrt(x);
-        EXPECT_NEAR(age::invSqrtFast(x), expected, expected * 2e-6f) << x;
-    }
-    EXPECT_EQ(age::invSqrtFast(0.0f), 0.0f);
-}
-
 TEST(AgeMath, AxisRotationsMatchArbitraryPath) {
     const float angle = 0.7f;
     for (const Vec3& axis : {Vec3{1, 0, 0}, Vec3{0, 1, 0}, Vec3{0, 0, 1}, Vec3{-1, 0, 0}, Vec3{0, -1, 0}}) {
@@ -123,15 +115,6 @@ TEST(InertialCS, PushesDoNotStack) {
     EXPECT_NEAR(ics.linearPush.y, 0.15f, 1e-6f);
     ics.applyPush({0.2f, 0, 0}); // perpendicular: added fully
     EXPECT_NEAR(ics.linearPush.x, 0.2f, 1e-6f);
-}
-
-TEST(InertialCS, SleepsWhenStill) {
-    InertialCS ics;
-    ics.state = InertialCS::Awake;
-    ics.gravity = {};
-    for (int i = 0; i < 100; ++i)
-        ics.update(0.02f, 50.0f);
-    EXPECT_EQ(ics.state, InertialCS::Asleep);
 }
 
 TEST(Material, ParsesMtlBlocks) {

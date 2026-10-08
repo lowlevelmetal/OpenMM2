@@ -37,12 +37,13 @@ std::optional<std::string> readText(const vfs::FileSystem& fs, const std::string
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
-std::optional<data::DatFile> readDat(const vfs::FileSystem& fs, const std::string& path) {
+std::optional<data::DatFile> readDat(const vfs::FileSystem& fs, const std::string& path,
+                                     const data::DatSchema* schema = nullptr) {
     auto text = readText(fs, path);
     if (!text)
         return std::nullopt;
     std::string err;
-    auto dat = data::parseDat(*text, &err);
+    auto dat = schema ? data::parseDat(*text, *schema, &err) : data::parseDat(*text, &err);
     if (!dat)
         std::println(stderr, "warning: {}: {}", path, err);
     return dat;
@@ -100,7 +101,7 @@ struct LoadedCar {
 
 std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& car) {
     LoadedCar out;
-    auto sim = readDat(fs, "tune/vehicle/" + car + ".vehcarsim");
+    auto sim = readDat(fs, "tune/vehicle/" + car + ".vehcarsim", &carSimSchema());
     if (!sim || !sim->top() || !loadCarSimParams(*sim->top(), out.params)) {
         std::println(stderr, "error: cannot load tune/vehicle/{}.vehCarSim", car);
         return std::nullopt;
@@ -152,7 +153,8 @@ std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& c
 }
 
 // A 100 km square of flat road (for the wheels; the bodies collide with
-// nothing).
+// nothing) of the material manager's built-in "default" material (entry 0,
+// lvlMaterialDefault: friction 1), not materials.mtl's "_default" block.
 std::unique_ptr<World> makeTestWorld(const vfs::FileSystem& fs) {
     MaterialTable materials;
     if (auto mtl = readText(fs, "city/materials.mtl"))
@@ -163,7 +165,7 @@ std::unique_ptr<World> makeTestWorld(const vfs::FileSystem& fs) {
     const float s = 50000.0f;
     ground.vertices = {{-s, 0, -s}, {-s, 0, s}, {s, 0, s}, {s, 0, -s}};
     ground.polys.push_back({{0, 1, 2, 3}, 4, 0});
-    ground.materialNames = {"_default"};
+    ground.materialNames = {"default"};
     PolygonSoup soup;
     soup.add(ground, Mat34::identity(), world->materials());
     soup.finalize(4096.0f);

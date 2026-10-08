@@ -15,6 +15,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <tuple>
 
 using namespace mm2;
 using namespace mm2::game::bangers;
@@ -255,4 +256,126 @@ TEST(ParityBangers, PropTablesReadLikeParCsvFile) {
     EXPECT_EQ(defs[0].maxUse, 12);            // atoi stops at the '.'
     ASSERT_EQ(defs[0].files.size(), 3u);      // a, "", c; none after the final comma
     EXPECT_EQ(defs[0].files[1], "");
+}
+
+// lvlLevel::LoadInstances places each record's PKG xrefs as unhit bangers:
+// full matrix (xref times record), the record's variant, its room as the
+// hint; an xref without banger data (cl10's trees) is not placed.
+TEST(ParityBangersRetail, PkgXrefsBecomeBangers) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& v = *test::gameData();
+    // The xref reader agrees with the full PKG parser on every retail model
+    // that has an xrefs chunk (33 of them).
+    int withXrefs = 0;
+    for (const auto& e : v.listFiles()) {
+        if (!e.path.starts_with("geometry/") || !e.path.ends_with(".pkg") || asset::isKnownBrokenRetailAsset(e.path))
+            continue;
+        const std::string model = e.path.substr(9, e.path.size() - 13);
+        const auto xrefs = pkgXrefs(v, model);
+        if (xrefs.empty())
+            continue;
+        ++withXrefs;
+        const auto bytes = v.readAll(e.path);
+        ASSERT_TRUE(bytes);
+        const auto pkg = asset::parsePkg(*bytes);
+        ASSERT_TRUE(pkg) << model;
+        ASSERT_EQ(pkg->xrefs.size(), xrefs.size()) << model;
+        for (std::size_t i = 0; i < xrefs.size(); ++i) {
+            EXPECT_EQ(pkg->xrefs[i].name, xrefs[i].name);
+            EXPECT_EQ(pkg->xrefs[i].transform.m3.y, xrefs[i].transform.m3.y);
+        }
+    }
+    EXPECT_EQ(withXrefs, 33);
+
+    BangerDataLibrary lib(v);
+    auto city = city::loadCity(v, "london");
+    ASSERT_TRUE(city);
+    const city::Instance* parliament = nullptr;
+    for (const auto& inst : city->instances)
+        if (inst.name == "wl_parliment_l")
+            parliament = &inst;
+    ASSERT_TRUE(parliament);
+    const auto xrefs = pkgXrefs(v, "wl_parliment_l");
+    ASSERT_EQ(xrefs.size(), 2u);
+    const auto placed = placeXrefs(*parliament, xrefs, lib);
+    ASSERT_EQ(placed.size(), 2u);
+    for (std::size_t i = 0; i < placed.size(); ++i) {
+        EXPECT_EQ(placed[i].model, "sp_light_red_f");
+        EXPECT_TRUE(placed[i].fullMatrix);
+        EXPECT_EQ(placed[i].room, 0);
+        EXPECT_EQ(placed[i].roomHint, parliament->room);
+        const Vec3 expect = parliament->transform.transform(xrefs[i].transform.m3);
+        EXPECT_NEAR((placed[i].transform.m3 - expect).mag(), 0.0f, 1e-3f);
+    }
+    // The trees cl10 references have no banger data.
+    city::Instance tree;
+    tree.name = "cl10";
+    EXPECT_TRUE(placeXrefs(tree, pkgXrefs(v, "cl10"), lib).empty());
+}
+
+namespace {
+
+// Three rooms along x (1: x < 100, 2: 100..200, 3: beyond), each next to the
+// following one.
+class StripRooms final : public phys::Level {
+public:
+    int findRoom(const Vec3& p, int) const override { return p.x < 100.0f ? 1 : (p.x < 200.0f ? 2 : 3); }
+    int touchedNeighbors(int*, int, int, const Vec3&, float) const override { return 0; }
+    int neighbors(int* out, int max, int room) const override {
+        int n = 0;
+        if (room > 1 && n < max)
+            out[n++] = room - 1;
+        if (room < 3 && n < max)
+            out[n++] = room + 1;
+        return n;
+    }
+    void collect(const int*, int, const Vec3&, float, phys::LevelBound& out) const override { out.clear(); }
+    void instances(int, std::vector<phys::Instance*>&) const override {}
+};
+
+} // namespace
+
+// dgBangerActiveManager::Update declares a knocked-over prop by its
+// CollisionType: 0x10 as a type-1 mover (all collisions), so
+// dgPhysManager::Update detaches it outside the player's rooms
+// (dgHitBangerInstance::Detach: it leaves its room and disappears); 0x40 as
+// a type-2 mover, which is never detached.
+TEST(ParityBangers, KnockedOverPropsAreDetachedOutsideTheActiveRooms) {
+    TempData t;
+    {
+        std::ofstream f(t.dir / "tune" / "banger" / "sp_held.dgbangerdata");
+        f << "type: a\ndgBangerData {\n  Size 0.4 2 0.4\n  Mass 20\n  CollisionPrim 1\n  CollisionType 64\n}\n";
+    }
+    vfs::Vfs files; // sees the file written after TempData mounted its folder
+    files.mount(std::make_shared<vfs::DirectoryFs>(t.dir));
+    BangerDataLibrary lib(files);
+    for (const auto& [model, x, gone] : {std::tuple{"sp_lamp", 250.0f, true}, std::tuple{"sp_lamp", 150.0f, false},
+                                         std::tuple{"sp_held", 250.0f, false}}) {
+        StripRooms level;
+        phys::World world;
+        world.setLevel(&level);
+        phys::Body player;
+        player.place(Mat34::translation({0.0f, 10.0f, 0.0f}));
+        player.declare(4, 0x1b);
+        world.add(&player);
+        BangerSet set(lib);
+        set.setWorld(&world);
+        const BangerData* d = lib.find(model);
+        ASSERT_TRUE(d);
+        set.ejectPart(*d, model, "", 0, Mat34::translation({x, 10.0f, 0.0f}), 0.0f);
+        ASSERT_EQ(set.activeCount(), 1);
+        set.update(1.0f / 60.0f); // declares the active for the next frame
+        world.advanceFixed(1.0f / 60.0f);
+        const auto& inst = set.instances().back();
+        if (gone) {
+            EXPECT_EQ(inst.state, BangerSet::State::Gone) << model << " at " << x;
+            EXPECT_EQ(inst.room, 0);
+            EXPECT_EQ(set.activeCount(), 0);
+        } else {
+            EXPECT_EQ(inst.state, BangerSet::State::Active) << model << " at " << x;
+            EXPECT_EQ(set.activeCount(), 1);
+        }
+        set.setWorld(nullptr);
+        world.remove(&player);
+    }
 }

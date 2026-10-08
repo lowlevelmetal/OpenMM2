@@ -151,7 +151,8 @@ struct TrafficBodies::Wheel {
     // axis and adds the spring's and the tyre's forces at the contact. (The
     // wheel's drawing matrix, offset by the compression and deflections, is
     // not kept: the renderer draws traffic wheels from the AI.)
-    void update(const phys::GroundQuery& ground, float seconds, float invSeconds, float weatherFriction) {
+    void update(const phys::GroundQuery& ground, const phys::Instance* self, float seconds, float invSeconds,
+                float weatherFriction) {
         phys::InertialCS& body = *ics;
         const Mat34& m = body.matrix;
         const Vec3 p{((m.m2.x * pivot.z + m.m0.x * pivot.x) + m.m1.x * pivot.y) + m.m3.x,
@@ -163,7 +164,8 @@ struct TrafficBodies::Wheel {
         const Vec3 bottom = p - travel;
         const Vec3 span = top - bottom;
         phys::RayHit hit;
-        contact = ground.probe(top, bottom, hit);
+        // dgPhysManager::Collide with the wheels' mask, the car itself left out.
+        contact = ground.wheelProbe(top, bottom, hit, self, nullptr);
         const Vec3& n = hit.normal;
         if (!contact || (n.x * n.x + n.y * n.y) + n.z * n.z == 0.0f) {
             compression = -limit;
@@ -290,10 +292,10 @@ public:
         sleep.update(phys::sampleTime().invSeconds);
         keepIntegrating(b.ics);
     }
-    void afterIntegrate(phys::Body&, float, const phys::World& world) override {
+    void afterIntegrate(phys::Body& b, float, const phys::World& world) override {
         const phys::SampleTime& t = phys::sampleTime();
         for (Wheel& w : wheels)
-            w.update(world, t.seconds, t.invSeconds, m_owner.m_weatherFriction);
+            w.update(world, &b, t.seconds, t.invSeconds, m_owner.m_weatherFriction);
     }
 
     // aiVehicleActive::Impact (the collider's impact callback).
@@ -486,7 +488,7 @@ void TrafficBodies::detach(Active& active) {
     const Vec3 to{m.m3.x - m.m1.x * kUprightProbeDown, m.m3.y - m.m1.y * kUprightProbeDown,
                   m.m3.z - m.m1.z * kUprightProbeDown};
     phys::RayHit hit;
-    if (!m_world.probe(from, to, hit))
+    if (!m_world.wheelProbe(from, to, hit, &active.body, nullptr))
         upright = false;
     else if (static_cast<double>((hit.normal.y * m.m1.y + hit.normal.z * m.m1.z) + hit.normal.x * m.m1.x) <
              kUprightCosine)
@@ -544,7 +546,8 @@ void TrafficBodies::beforeStep() {
 
     // aiVehicleManager::Update: actives asleep, below y = -100 or out of
     // every room stop being declared movers (PostUpdate has handed the
-    // first two back already).
+    // first two back already); the others are declared again as plain
+    // movers colliding with everything (2, 0x1b).
     for (int i = 0; i < m_count; ++i) {
         Active& a = *m_order[static_cast<std::size_t>(i)];
         if (a.sleep.state != phys::Sleep::Asleep && !(a.body.ics.matrix.m3.y < kFallOutY) && a.body.room != 0)
@@ -553,6 +556,8 @@ void TrafficBodies::beforeStep() {
         release(a);
         --i;
     }
+    for (int i = 0; i < m_count; ++i)
+        m_order[static_cast<std::size_t>(i)]->body.declare(2, 0x1b);
 
     // The rail cars follow the AI.
     const phys::Level* level = m_world.level();

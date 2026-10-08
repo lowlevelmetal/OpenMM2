@@ -133,7 +133,11 @@ void SkidRenderer::draw(render::Device& device, TextureLibrary& textures, const 
     call.state.depthBias = true;
     call.depthBias = 2.0f; // positive pulls towards the viewer (render::DrawCall)
     call.depthBiasSlope = 1.0f;
-    call.state.cull = render::CullMode::None;
+    // vehCar::DrawTracks leaves the default culling on: a strip faces up
+    // when the wheel laid it rolling forward (the pairs run left to right
+    // along the axle), so tracks laid in reverse face down and are culled.
+    call.state.cull = render::CullMode::Back;
+    call.state.frontFace = render::FrontFace::CounterClockwise;
     device.draw(call);
 }
 

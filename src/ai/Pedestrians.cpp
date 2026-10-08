@@ -604,6 +604,7 @@ void Pedestrians::steer(Ped& p, const Vec3& target) {
 void Pedestrians::reset(int idx, int path, int side) {
     Ped& p = m_peds[static_cast<std::size_t>(idx)];
     const Walk& w = walk(path, side);
+    p.placed = true; // AudCreatureContainer::Reset
     p.active = true;
     p.lost = false;
     p.path = p.prevPath = path;
@@ -717,6 +718,162 @@ void Pedestrians::adjust(const std::vector<std::uint16_t>& from, const std::vect
 
 void Pedestrians::populateAll() {
     m_populateAll = true;
+}
+
+// --- Props ----------------------------------------------------------------------
+
+void Pedestrians::setObstacles(std::vector<PedObstacle> props, ObstacleStanding standing) {
+    m_obstacles = std::move(props);
+    m_standing = std::move(standing);
+    m_sectionObstacles.clear();
+    m_nodeObstacles.clear();
+    const city::AiMap* map = m_net.source();
+    if (!map)
+        return;
+    // A room's instance list (lvlRoomInfo +4) holds its movable instances
+    // newest first (lvlLevel::MoveToRoom), so the props of a room are walked
+    // in the reverse of their placing order.
+    std::map<int, std::vector<int>> byRoom;
+    for (int i = static_cast<int>(m_obstacles.size()) - 1; i >= 0; --i)
+        byRoom[m_obstacles[static_cast<std::size_t>(i)].room].push_back(i);
+    auto inRoom = [&](int room) -> const std::vector<int>* {
+        const auto it = byRoom.find(room);
+        return it != byRoom.end() ? &it->second : nullptr;
+    };
+    // aiIntersection::AddBangersToObsMap: the props in the intersection's
+    // room that nothing breaks loose (a break threshold above 7.5e7), each
+    // added to the front of the list.
+    m_nodeObstacles.resize(map->intersections.size());
+    for (std::size_t n = 0; n < map->intersections.size(); ++n)
+        if (const auto* list = inRoom(map->intersections[n].room))
+            for (const int i : *list)
+                if (7.5e+07f < m_obstacles[static_cast<std::size_t>(i)].impulseLimit2)
+                    m_nodeObstacles[n].insert(m_nodeObstacles[n].begin(), i);
+    // aiPath::AddBangersToObsMap: for each section, the props in the road's
+    // rooms that are not drivable and lie along it (measured from the
+    // section's centre point back along its z axis, within the centre line
+    // length to the point before), listed for the side of the centre line
+    // they are on (the x axis side: -1).
+    m_sectionObstacles.resize(map->paths.size());
+    for (std::size_t k = 0; k < map->paths.size(); ++k) {
+        const city::AiPath& path = map->paths[k];
+        const int n = static_cast<int>(path.center.size());
+        if (n < 2 || path.xAxis.size() < path.center.size() || path.zAxis.size() < path.center.size())
+            continue; // OpenMM2 guard: every retail road has its frames
+        auto cum = [&](int i) {
+            if (i == 0)
+                return std::bit_cast<float>(path.unknown); // the first centre length
+            const auto j = static_cast<std::size_t>(i - 1);
+            return j < path.centerLengths.size() ? path.centerLengths[j] : 0.0f;
+        };
+        auto& sections = m_sectionObstacles[k];
+        sections.resize(static_cast<std::size_t>(n));
+        for (int idx = 1; idx < n; ++idx) {
+            const auto s = static_cast<std::size_t>(idx);
+            const Vec3& c = path.center[s];
+            const Vec3& z = path.zAxis[s];
+            const Vec3& x = path.xAxis[s];
+            for (const auto room : path.rooms) {
+                const auto* list = inRoom(room);
+                if (!list)
+                    continue;
+                for (const int i : *list) {
+                    const PedObstacle& o = m_obstacles[static_cast<std::size_t>(i)];
+                    const float dz = o.position.z - c.z;
+                    const float dx = o.position.x - c.x;
+                    const float along = dx * z.x + dz * z.z;
+                    if (!(0.0f < along) || !(along < cum(idx) - cum(idx - 1)) || o.drivable)
+                        continue;
+                    const int side = -x.z * dz + -x.x * dx < 0.0f ? -1 : 1;
+                    auto& out = sections[s][side == 1 ? 0 : 1];
+                    out.insert(out.begin(), i);
+                }
+            }
+        }
+    }
+}
+
+// aiBanger::IsBlockingTarget: how far ahead along the way from `from` to `to`
+// the prop's ground origin lies when it is in the way: ahead, nearer than
+// `to` plus `reach`, within the prop's radius (at most 2 m) + half `width`
+// + 1 m to either side and less than 0.7 rad off the line; -1 when not.
+float Pedestrians::isBlockingTarget(const PedObstacle& o, const Vec3& from, const Vec3& to, float reach,
+                                    float width) const {
+    Vec3 d{to.x - from.x, to.y - from.y, to.z - from.z};
+    const float len2 = d.x * d.x + d.y * d.y + d.z * d.z;
+    const float inv = len2 == 0.0f ? 0.0f : 1.0f / std::sqrt(len2);
+    d = {d.x * inv, d.y * inv, d.z * inv}; // Vector3::Scale
+    const float nx = -d.z, nz = d.x;
+    const float fx = from.x - to.x, fz = from.z - to.z;
+    const float span = std::sqrt(fx * fx + fz * fz);
+    const float ox = o.origin.x - from.x, oz = o.origin.z - from.z;
+    const float lateral = ox * nx + nz * oz;
+    const float along = ox * d.x + oz * d.z;
+    const float r = (std::min(o.yRadius, 2.0f) + width * 0.5f) + 1.0f; // aiBanger::Radius
+    const float angle = std::atan2(lateral, along);
+    if (-r < lateral && lateral < r && 0.0f < along && along < span + reach && -0.7f < angle && angle < 0.7f)
+        return along;
+    return -1.0f;
+}
+
+// aiPedestrian::DetectBangerCollision: the first prop on the list of the
+// section the pedestrian walks (on a corner, the intersection it is heading
+// for) that blocks its way to its target point, else the first on the next
+// section's list (past the road's end, the intersection's).
+bool Pedestrians::detectBangerCollision(const Ped& p, int& obstacle, float& along) const {
+    if (p.path < 0 || static_cast<std::size_t>(p.path) >= m_sectionObstacles.size())
+        return false;
+    const auto& sections = m_sectionObstacles[static_cast<std::size_t>(p.path)];
+    const int n = sections.empty() ? 0 : static_cast<int>(sections.size());
+    auto test = [&](const std::vector<int>& list) {
+        for (const int i : list) {
+            const PedObstacle& o = m_obstacles[static_cast<std::size_t>(i)];
+            const float a = isBlockingTarget(o, p.position, p.target, 0.0f, 0.5f);
+            if (0.0f < a) {
+                along = a;
+                obstacle = i;
+                return true;
+            }
+        }
+        return false;
+    };
+    static const std::vector<int> kNone;
+    auto nodeList = [&]() -> const std::vector<int>& {
+        const int node = m_net.paths()[static_cast<std::size_t>(p.path)].intersection[p.dir == 1 ? 0 : 1];
+        if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+            return kNone; // OpenMM2 guard: every retail road end has an intersection
+        return m_nodeObstacles[static_cast<std::size_t>(node)];
+    };
+    auto sectionList = [&](int idx) -> const std::vector<int>& {
+        return sections[static_cast<std::size_t>(idx)][p.side == 1 ? 0 : 1];
+    };
+    int idx = p.idx;
+    if (idx == 0 || idx == n) {
+        if (test(nodeList()))
+            return true;
+    } else if (idx > 0 && idx < n && test(sectionList(idx))) {
+        return true;
+    }
+    idx = p.dir == 1 ? idx + 1 : idx - 1;
+    if (idx != 0 && idx != n) {
+        if (idx < 1 || n <= idx)
+            return false;
+        return test(sectionList(idx));
+    }
+    return test(nodeList());
+}
+
+// aiPedestrian::AvoidBanger: step round the prop's centre at its radius
+// + 1 m (YRadius while it stands, else the model's radius); a standing
+// pedestrian walks on.
+void Pedestrians::avoidBanger(Ped& p, int obstacle) {
+    const PedObstacle& o = m_obstacles[static_cast<std::size_t>(obstacle)];
+    const bool standing = !m_standing || m_standing(static_cast<std::size_t>(obstacle));
+    const float radius = (standing ? o.yRadius : o.modelRadius) + 1.0f;
+    avoidObstacle(p, o.position, radius);
+    const Seqs& s = seqs(p);
+    if (p.seq == s.stand)
+        queueSeq(p, s.standWalk);
 }
 
 // --- Reactions -------------------------------------------------------------------
@@ -900,21 +1057,28 @@ void Pedestrians::wander(Ped& p, const PlayerCar& c) {
     // update).
     if (c.valid && sq(c.transform.m3.z - p.position.z) + sq(c.transform.m3.x - p.position.x) < 36.0f)
         playerCollision(p, c, ahead);
-    // MM2 checks the props here too (DetectBangerCollision); OpenMM2 has no
-    // obstacle map of them yet.
-    if (ahead < kNoHit) {
+    float prop = kNoHit;
+    int obstacle = -1;
+    detectBangerCollision(p, obstacle, prop);
+    if (kNoHit <= prop || ahead <= prop) {
+        // (MM2's branch for both beyond 9999 m, AvoidPedCollision, is
+        // never taken: both start at 9999.)
+        if (prop <= ahead || kNoHit <= ahead) {
+            if (p.seq == s.stand)
+                queueSeq(p, s.standWalk);
+            solveTargetPoint(p, static_cast<float>(p.dir) * kPedLookAhead + p.dist);
+            steer(p, p.target);
+            solveRoadSegment(p, p.dist);
+            return;
+        }
         // aiPedestrian::AvoidPlayer: round the car at its radius + 1 m.
         avoidObstacle(p, c.transform.m3, c.radius + 1.0f);
         if (p.seq == s.stand)
             queueSeq(p, s.standWalk);
-        calcCurve(p, p.idx - 1, p.idx, p.lateral);
-        return;
+    } else {
+        avoidBanger(p, obstacle);
     }
-    if (p.seq == s.stand)
-        queueSeq(p, s.standWalk);
-    solveTargetPoint(p, static_cast<float>(p.dir) * kPedLookAhead + p.dist);
-    steer(p, p.target);
-    solveRoadSegment(p, p.dist);
+    calcCurve(p, p.idx - 1, p.idx, p.lateral);
 }
 
 void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
@@ -1336,6 +1500,8 @@ void Pedestrians::step(float dt, const PlayerCar& player, int room) {
             return kNone;
         return map->roomPathsIn[static_cast<std::size_t>(r)];
     };
+    for (Ped& p : m_peds)
+        p.placed = false;
     if (!m_started) {
         // aiMap::Reset: the player's first room.
         m_started = true;
@@ -1376,6 +1542,7 @@ void Pedestrians::publish() {
         out.animFile = p.seq->animFile;
         out.frame = static_cast<float>(p.frame);
         out.scream = p.scream;
+        out.placed = p.placed;
         out.crossing = p.cross != 0;
         m_public.push_back(std::move(out));
     }

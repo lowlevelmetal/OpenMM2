@@ -2211,7 +2211,7 @@ void VulkanDevice::draw(const DrawCall& call) {
     if (!m_frameSetBound)
         setFrameConstants(FrameConstants{});
 
-    const VkPipeline p = pipeline(call.state, m_pass);
+    const VkPipeline p = pipeline(effectiveState(call.state), m_pass);
     if (!p)
         return;
     if (p != m_boundPipeline) {

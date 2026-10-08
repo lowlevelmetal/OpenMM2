@@ -29,8 +29,9 @@ struct alignas(16) GpuDrawConstants {
     float alphaRef;
     std::uint32_t flags;
     float pad[2];
+    float emissive[4];
 };
-static_assert(sizeof(GpuDrawConstants) == 96);
+static_assert(sizeof(GpuDrawConstants) == 112);
 
 // Matrices are stored row-major exactly as Mat44 holds them. GLSL reads them
 // column-major, i.e. transposed, so `M * v` in a shader equals the engine's
@@ -79,6 +80,10 @@ inline GpuDrawConstants toGpu(const DrawConstants& dc) {
     g.color[3] = dc.color.w;
     g.alphaRef = dc.alphaRef;
     g.flags = dc.flags;
+    g.emissive[0] = dc.emissive.x;
+    g.emissive[1] = dc.emissive.y;
+    g.emissive[2] = dc.emissive.z;
+    g.emissive[3] = dc.emissive.w;
     return g;
 }
 

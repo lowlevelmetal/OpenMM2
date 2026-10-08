@@ -53,19 +53,30 @@ other frame rates.)
 
 ## Rigid body (phInertialCS) — MM2
 
+* Every physics entity's update first adds its weight, Mass * -19.6 on y
+  (`dgPhysEntity::Update`).
 * Momentum p += impulse + dt * F; v = p / m. Angular momentum likewise; the
-  angular velocity is found about each body axis and, with
-  `limitAngVelocity`, each component is limited on its own (cars: 4 pi rad/s,
-  `vehCarSim::Init`), the momentum then recomputed from the limited velocity.
+  angular velocity is found about each body axis and each component is
+  limited on its own, the momentum then recomputed from the limited
+  velocity. The limit is phInertialCS's constructor's 5 rad/s per axis for
+  every body (props, traffic off its rail, trailers); `vehCarSim::Init`
+  raises the car body's to 4 pi.
 * Speed limit 500 m/s. Position += push + dt * v; the accumulated turn
-  (rotational push + dt * w) rotates the matrix about its axis.
+  (rotational push + dt * w) rotates the matrix about its axis
+  (`Matrix34::RotateUnitAxis`). Nothing re-orthonormalises the matrix.
 * **Implicit contacts.** `applyContactForce(F, point, K)` adds a force and its
   stiffness d(force)/d(velocity) (K = c n n^T for a wheel, c = damping +
   dt * spring). A body with such contacts integrates linearly implicitly: the
   linear step through M = (I + dt/m sum K)^-1 and the angular one by solving
   B dw = rhs with B = world inertia + dt sum (X K X^T) - dt^2/m (X K) M
-  (X K)^T (`Matrix34::SolveSVD`; OpenMM2 uses Gaussian elimination, which
-  gives the same result for the non-singular matrices that occur).
+  (X K)^T and rhs = -(dt/m) P M (X K)^T + angular impulse + dt * torque
+  (P = linear impulse + dt * F) with `Matrix34::SolveSVD`, a cofactor solve
+  with rank-2 and rank-1 fallbacks. The linear velocity then changes by
+  (dt dw (X K) + P) / m * M: the opposite sign, for the dw term, to the one
+  the angular solve assumes. Both are as in MM2.
+* The Vector3 / Matrix34 helpers sum their terms in the order the original's
+  compiled code does (`phys/AgeMath`, `core/Math`), so a port of a call
+  rounds as the original did.
 * `filteredVelocity` (GetLocalFilteredVelocity2): a point's velocity with the
   part along the last sample's push removed, used by the wheels.
 * Pushes (`applyPush`, CalcNetPush) and turns (`applyTurn`) only add the part
@@ -74,11 +85,12 @@ other frame rates.)
   `GetLocalAcceleration`, `GetForce`/`GetTorque` (the accumulated force plus
   the accumulated impulse over the sample; the `ApplyContactForce` part is
   not included) serve the joints.
-* Kept from MM1's asInertialCS: the sleep test and constraints. MM2 moved
-  sleeping to `phSleep` (`phys/Sleep`), which traffic cars off their rail
-  and knocked-over props use: still for 15 updates (speed with the pushes
-  and spin below their thresholds, or jittering) puts the body to sleep.
-  OpenMM2 re-orthonormalises the matrix when it drifts.
+* Sleeping is `phSleep`'s (`phys/Sleep`; MM1's asInertialCS sleep test and
+  constraints are gone), which traffic cars off their rail and knocked-over
+  props use: still for 15 updates (speed with the pushes and spin below
+  their thresholds, or jittering) freezes the body and makes it inactive.
+  An inactive body does not integrate, but a push still moves it
+  (`MoveICS`) and its push bookkeeping runs on.
 
 ## Car (vehCarSim) — MM2
 
@@ -129,6 +141,35 @@ CenterOfGravity field; without a car, mass * 19.6 / 4):
 
 Suspension (`ComputeDwtdw`, `CalcSuspensionForce`): a probe from
 SuspensionLimit + 0.3 above the centre to SuspensionExtent + Radius below it.
+The probe is `dgPhysManager::Collide` with the wheels' instance mask 0x20,
+never hitting the car's own instance (a trailer's wheels pass none), as
+`World::wheelProbe`:
+
+- the rooms of the segment's ends are looked up from the ones the wheel's
+  segment info had;
+- `lvlSDL::CollideProbe`: when neither end is in an instance room (flag
+  0x80), the polygon the wheel's last probe ended on (a cached copy,
+  `sdlPolyCached`) answers alone if the segment still crosses it. Otherwise
+  `sdlPage16::CollideSegment` collects (`sdlPage16::Collect`, in batches of
+  256, with the probed room marked so a SpecialBound room's road surfaces
+  become triangles with raised sidewalks) the polygons of the start room,
+  the end room, and the instance rooms across the start room's perimeter
+  (at most 10), within a sphere about the segment's midpoint of 0.51 times
+  its length, and keeps the nearest crossing either way
+  (`phPolygon::TestSegmentUndirected`; at equal distance the later polygon).
+  Each room with a hit caches its last kept polygon; each room without one
+  makes the cache stale;
+- `dgPhysManager::CollideProbe`: the instances with flag 0x20 in the start
+  and end rooms (and in the room a warp room, flag 0x40, leads to: rooms
+  411, 412, 423 and 625 lead to 102, 122, 96 and 1) whose sphere reaches the
+  segment's are probed in their own frame (the bound's `TestProbe`), a
+  nearer hit replacing the level's. The city's collidable instances carry
+  0x20 except the terrain-bound ones whose record has flag 0x400
+  (`lvlLevel::LoadInstances`); props and cars do not.
+
+The material is the polygon's (the level's material byte, or the bound's),
+looked up by name in the World's table. A hit on the cached polygon keeps
+the material of the probe before (the wheel's intersection is not refreshed).
 The travel (compression positive) is limited to -Extent; the force is
 (rate * damping + travel * spring) * (1 + progression * travel) + L, rate
 limited to ±10 m/s; a lifting wheel relaxes without pulling. The contact
@@ -488,8 +529,9 @@ steady circle vpsemi's trailer then lags (its body velocity reads 10 m/s at
 Impacts see the inverse mass matrix through the joint while it holds
 (`phColliderJointed::GetInvMassMatrix`), and the tractor and its trailer do
 not collide with each other (`dgPhysManager::Update`). The
-Ctrl+B debug key that breaks the joint (`dgTrailerJoint::Update`) is not
-ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
+Ctrl+B debug key breaks every holding joint in the frame it goes down
+(`dgTrailerJoint::Update` checks it first and then does nothing else that
+sample). TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
 nor drawn: `vehTrailerInstance::Init` loads only TWHL0–3 (drawing them at
 their offset from TWHL2/3 is mm2hook's addition). A car's own WHL4/WHL5
 (`vehCarModel::Draw`) are drawn with the WHL2/WHL3 matrices moved back along
@@ -534,15 +576,32 @@ narrow phase and the impact response are ports of the `phBound` family,
   touches (`cityLevel::GetTouchedNeighbors`), at most 256, culled by the
   sphere (`src/city/SdlCollect`, docs/formats/psdl.md). Their materials come
   from `city/materials.csv` (texture → material name) resolved in the
-  material manager (`lvlLevelBound::GetMaterial`: 0 is the default,
-  `_default` of `city/materials.mtl`).
+  material manager (`lvlLevelBound::GetMaterial`: 0 is the manager's
+  built-in default, an `lvlMaterial` as its constructor leaves it:
+  elasticity 0.5, friction 1, width 1, no particles; the `_default` block of
+  `city/materials.mtl` is an entry of its own). The wheels get the built-in
+  default for every polygon whose texture maps to `none`.
 * **Objects** (`lvlInstance` in the rooms' lists): the city's collidable
   instances (`.inst` flag 0x2000: their `bound/<name>_bound.bnd` geometry,
-  scaled by the matrix's row lengths, listed in every room their sphere
-  touches (`lvlMultiRoomInstance`); flag 0x100: a terrain bound of their own
-  space, `.bbnd` + `.ter`), unhit and resting props, traffic cars on their
-  rails. Instances with neither flag are drawn only (building walls are the
-  PSDL's facade bounds).
+  scaled by the matrix's row lengths; `lvlMultiRoomInstance::Create` puts a
+  stand-in in every neighbour of their room that their sphere reaches
+  across its perimeter, but not in the room itself, and moves the object to
+  room 0, so one reaching no neighbour is never collided; flag 0x100: a
+  terrain bound of their own space, `.bbnd` + `.ter` (version 1.1, with the
+  geometry's polygon count, else "Malformed terrain" and no bound), or the
+  `.bnd` without a `.ter`, in their own room only), unhit and resting props,
+  traffic cars on their rails. Instances with neither flag are drawn only
+  (building walls are the PSDL's facade bounds). An object's sphere is its
+  position and its model's radius (`lvlInstance::GetRadius`, the geometry
+  set's), which a terrain-local bound raises to its box's farther corner.
+  A car's sphere is centred one up axis above its centre of mass
+  (`vehCarModel::GetPosition`), a trailer's on its centre of mass
+  (`vehTrailerInstance::GetPosition`); their radii are the "body" and
+  "trailer" geometries', which their bounds do not raise. The car's room
+  follows the same point (`vehCar::Update`).
+  Materials a text bound file adds are `lvlMaterial`s: the file's
+  elasticity, friction, effect and sound, drag 0, width 1, height 0, depth 0
+  and no particles.
 
 ### A sample (`dgPhysManager::Update`)
 
@@ -690,7 +749,8 @@ game's impact callback (the hit counts).
 ## simcar results
 
 `mm2tool simcars <game> 60`: full throttle from rest on flat asphalt
-(`_default` material), automatic gearbox, fixed 1/60 s step, retail geometry
+(the material manager's built-in `default` material, friction 1),
+automatic gearbox, fixed 1/60 s step, retail geometry
 (wheel pivots from `.mtx`, body box from the bound). The `.info` Top Speed is
 the menu's statistic, not a measurement. vpsemi and vpcentury tow their
 trailers. vpcop is the police car's own tune (as the AI drives it); the
@@ -698,26 +758,35 @@ player's vpcop drives as vpmustang99.
 
 | car | drive | mass | hp | High (mph) | 0-60 (s) | 1/4 mile (s) | top (mph) | .info Top Speed |
 |---|---|---|---|---|---|---|---|---|
-| vp4x4 | 4WD | 2500 | 550 | 85 | 4.00 | 12.48 | 104.5 | 57 |
-| vpauditt | RWD | 1300 | 551 | 120 | 4.17 | 12.28 | 146.5 | 182 |
-| vpbug | FWD | 1000 | 260 | 90 | 7.10 | 15.55 | 115.9 | 91 |
+| vp4x4 | 4WD | 2500 | 550 | 85 | 4.00 | 12.47 | 104.6 | 57 |
+| vpauditt | RWD | 1300 | 551 | 120 | 4.15 | 12.27 | 146.5 | 182 |
+| vpbug | FWD | 1000 | 260 | 90 | 7.08 | 15.55 | 115.9 | 91 |
 | vpbullet | RWD | 1300 | 550 | 110 | 4.23 | 12.40 | 133.1 | 137 |
-| vpbus | RWD | 5000 | 450 | 83 | 13.48 | 19.52 | 103.5 | 60 |
-| vpcab | RWD | 1000 | 300 | 95 | 6.75 | 15.03 | 126.7 | 103 |
-| vpcaddie | RWD | 1300 | 550 | 110 | 4.40 | 12.62 | 133.0 | 136 |
-| vpcentury | RWD | 3500 | 750 | 75 | 10.98 | 18.20 | 112.4 | 91 |
-| vpcoop | FWD | 800 | 250 | 80 | 9.28 | 17.27 | 104.3 | 60 |
-| vpcoop2k | FWD | 800 | 300 | 108 | 7.93 | 16.05 | 131.9 | 115 |
-| vpcop | RWD | 1300 | 750 | 140 | 2.93 | 10.68 | 164.9 | 160 |
-| vpdb7 | FWD | 1573 | 550 | 150 | 4.58 | 12.70 | 177.3 | 206 |
-| vpddbus | RWD | 4915 | 456 | 65 | 9.87 | 17.38 | 99.4 | 25 |
-| vpdune | FWD | 1000 | 400 | 106 | 4.45 | 12.73 | 136.7 | 170 |
-| vpford | RWD | 2500 | 550 | 85 | 6.42 | 14.88 | 104.1 | 58 |
-| vpmustang99 | RWD | 1300 | 500 | 115 | 5.45 | 13.62 | 135.3 | 160 |
-| vppanoz | FWD | 1300 | 650 | 151 | 4.37 | 12.40 | 177.2 | 216 |
-| vppanozgt | RWD | 1200 | 902 | 180 | 2.67 | 10.28 | 275.0 | 240 |
-| vpsemi | RWD | 3500 | 896 | 85 | 11.60 | 18.68 | 106.8 | 69 |
-| vpvwcup | FWD | 1000 | 550 | 122 | 3.78 | 11.97 | 155.7 | 194 |
+| vpbus | RWD | 5000 | 450 | 83 | 13.47 | 19.52 | 103.6 | 60 |
+| vpcab | RWD | 1000 | 300 | 95 | 6.75 | 15.02 | 126.7 | 103 |
+| vpcaddie | RWD | 1300 | 550 | 110 | 4.38 | 12.60 | 133.0 | 136 |
+| vpcentury | RWD | 3500 | 750 | 75 | 10.97 | 18.20 | 112.5 | 91 |
+| vpcoop | FWD | 800 | 250 | 80 | 9.27 | 17.27 | 104.3 | 60 |
+| vpcoop2k | FWD | 800 | 300 | 108 | 7.92 | 16.05 | 132.0 | 115 |
+| vpcop | RWD | 1300 | 750 | 140 | 2.92 | 10.67 | 164.9 | 160 |
+| vpdb7 | FWD | 1573 | 550 | 150 | 4.58 | 12.68 | 177.3 | 206 |
+| vpddbus | RWD | 4915 | 456 | 65 | 9.87 | 17.37 | 99.5 | 25 |
+| vpdune | FWD | 1000 | 400 | 106 | 4.43 | 12.73 | 136.8 | 170 |
+| vpford | RWD | 2500 | 550 | 85 | 6.40 | 14.87 | 104.1 | 58 |
+| vpmustang99 | RWD | 1300 | 500 | 115 | 5.43 | 13.60 | 135.3 | 160 |
+| vppanoz | FWD | 1300 | 650 | 151 | 4.35 | 12.38 | 177.2 | 216 |
+| vppanozgt | RWD | 1200 | 902 | 180 | 2.60 | 10.22 | 275.1 | 240 |
+| vpsemi | RWD | 3500 | 896 | 85 | 11.47 | 18.55 | 107.0 | 69 |
+| vpvwcup | FWD | 1000 | 550 | 122 | 3.78 | 11.97 | 155.9 | 194 |
+
+With the wheel centred the cars do not all run exactly straight, because
+their pivots are not mirrored. vpbug's right wheels sit 3.9 cm further out
+than its left ones, and vpsemi's hitch is 7.4 cm left of the tractor's
+centreline. The drive and the trailer's drag therefore turn them slowly:
+over a minute at full throttle, vpbug turns about 3 degrees and the vpsemi
+rig about 40 degrees, both to the left. OpenMM2 did this before the parity
+audit too. That MM2 does the same is inferred (same data, same forces),
+not observed.
 
 Top speeds are set by power against drag, or by MaxRPM in top gear: High is
 the top gear's speed at OptRPM. (Before the MM2 port, OpenMM2 took Low/High
@@ -730,18 +799,32 @@ as speeds at MaxRPM and capped every car at High.)
   (`phCollision::TestBoundForce`) are not ported; no race object uses them
   (inferred). The trailer's bound materials resolve to the bound default
   (MM2 looks their names up in the city's material manager). A body outside
-  every room keeps its last room (MM2 moves it to room 0). MM2's cap of 32
-  movers and its freezing of type-1 movers (props) outside the rooms the
-  cars are in (`dgPhysManager::Update`) are not modelled. Wheel probes
-  still use OpenMM2's probe geometry (the render mesh of the PSDL) rather
-  than `lvlSDL::CollideProbe` over `sdlPage16::Collect`'s polygons.
+  every room keeps its last room (MM2 moves it to room 0). `phys::World`
+  models dgPhysManager's mover table (`Body::declare(type, flags)`: at most
+  32 movers a frame, the rooms around type-3 and type-4 movers active,
+  type-1 movers outside them left out and detached, the flags' update and
+  collision bits). The props declare their actives by CollisionType
+  (bangers.md), so knocked-over props are culled as in MM2; the other
+  owners do not declare theirs yet: their bodies are type-2 movers with all
+  flags, so the
+  rooms around opponents within 200 m of a player (type 3 in MM2) do not
+  keep props alive, and police beyond 250 m (not declared in MM2) are
+  still simulated. (MM2's opponents beyond 200 m and police between 200 and
+  250 m drop flag 0x8, which changes nothing while 0x2 and 0x10 are set.)
+  Movers without a body (traffic on its rail while it avoids, regains its
+  rail or collides) are not supported.
+- Ground probes other than the wheels of physics cars and trailers (cheap
+  traffic wheels, the AI, spawning, line of sight) still use OpenMM2's
+  probe geometry (the PSDL's render mesh plus the instances' bounds);
+  `World::wheelProbe` is MM2's.
 - Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
   (MM2's values make vpcentury's trailer ride on its bump stops, see
   "Trailers"); the trailer's impact parameters are inferred.
 - The per-axis angular velocity limits of non-car bodies other than
   trailers and `vehSuspension` (the visual shocks) are not ported.
-- `dgPhysManager::CollideTerrain` asks each mover `RequiresTerrainCollision`
-  (`CarSim` and `Trailer` port it) before colliding its body with the room's
-  terrain; the World does not ask yet, so an upright car on its wheels still
-  collides its body with the terrain.
+- `dgPhysManager::CollideTerrain` would ask each mover
+  `RequiresTerrainCollision` (`CarSim` and `Trailer` port it) before
+  colliding its body with the room's terrain, but that branch is gated by a
+  global `mmGame::Init` sets to 0, so MM2 never asks in a race and neither
+  does the World.
 
