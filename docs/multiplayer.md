@@ -333,17 +333,18 @@ from the car, 0 for a police car (flag 0x08) and 1 for any other
 | Screen | Background | Notes |
 |---|---|---|
 | Sessions | `sess_bk` | providers: only TCP/IP is available (Internet/LAN over OpenMM2's UDP protocol); net name; HOST, JOIN; LAN session list (refreshed every second, also queries 127.0.0.1) |
-| Host options | `host_dlg` | password (optional), max players 2-8 |
-| Enter an address | `tcp_dlg` | IP, `ip:port` or host name; blank = search the LAN again |
-| Password | `pass_dlg` | asked before joining a listed session that has one |
-| Lobby | `lobbh_bk` / `lobbj_bk` | host settings summary, players (car, team, ready), YOU, team lamps for team games, chat line ("Type message here. Press ENTER to send."), chat log, port forwarding status (host); host: HOST SETTINGS, SELECT VEHICLE, EJECT PLAYER, GO DRIVE (when everyone else is ready); joiner: SELECT VEHICLE, READY |
+| Host options | `host_dlg` | password (optional), max players 2-8 (a roller), Cancel / DONE (`Dialog_Host`) |
+| Enter an address | `tcp_dlg` | IP, `ip:port` or host name; blank = search the LAN again; Enter is DONE (`Dialog_TCPIP`) |
+| Password | `pass_dlg` | asked before joining a listed session that has one, and when a session joined by address wants one; a wrong password shows `badp_dlg` and asks again (`Dialog_Password`, `mmInterface::Update`) |
+| Lobby | `lobbh_bk` / `lobbj_bk` | `NetArena`: host settings (mode, race, weather, time, laps or gold weight, limit), the race map and the city's name, players (car, team, ready), YOU, team lamps for team games, chat line ("Type message here. Press ENTER to send."), the last three chat lines (" Name> text") of this visit, port forwarding status (host, where a race without a map would show it); host: EJECT PLAYER, HOST SETTINGS, SELECT VEHICLE in the row above GO DRIVE (which starts once everyone else is ready); joiner: SELECT VEHICLE, READY. A joiner's READY is cleared when the host changes the settings and when the joiner opens SELECT VEHICLE. BACK and Escape leave the session at once. |
 | Host settings | `host_bk` | game type lamps, race name + laps panels (`host_rnm`, `host_lap`) or the Cops & Robbers panel (`host_cr`: game types, limits, gold mass), location, time of day, weather (adds Snowing), pedestrian density |
 | Eject | `ejct_dlg` | pick a player to remove |
 
 Positions of the provider/race/Cops & Robbers/team lamps, the HOST/JOIN and
 bottom-right arrow buttons and the three host panels were found by matching
-the sprites against the backgrounds (see `docs/frontend.md`); the small lobby
-buttons, the eject list and the text inside boxes are **inferred**. All races
+the sprites against the backgrounds (see `docs/frontend.md`); the lobby's
+widgets and the network dialogs follow tune/widget.csv (menus 12, 14, 25,
+36); the eject list and the players' rows are **inferred**. All races
 are selectable in multiplayer (**inferred**: joiners' progress cannot gate the
 host's choice).
 

@@ -109,33 +109,12 @@ std::string colorName(Frontend& fe, const std::string& car, int color) {
     return std::to_string(color + 1);
 }
 
-const char* crModeName(game::CopsAndRobbersMode m) {
-    switch (m) {
-    case game::CopsAndRobbersMode::FreeForAll: return "Free-For-All";
-    case game::CopsAndRobbersMode::CopsVsRobbers: return "Cops vs. Robbers";
-    case game::CopsAndRobbersMode::RobberTeams: return "Robber Teams";
-    }
-    return "";
-}
-
 // The Cops & Robbers limits and gold masses HostRaceMenu::InitCRWidgets
 // offers, with its strings (510-513, 514-517, 506-508).
 constexpr int kTimeLimits[] = {5, 10, 20, 30};
 constexpr int kPointLimits[] = {100, 250, 500, 1000};
 const char* const kGoldMass[] = {"Weightless", "Quarter Ton", "Half Ton"};
 constexpr std::uint32_t kTimeLimitStrings = 510, kPointLimitStrings = 514, kGoldMassStrings = 506;
-
-std::string raceTitle(Frontend& fe, const game::RaceConfig& c) {
-    std::string title = modeDisplayName(fe, c.mode);
-    if (c.mode == GameMode::CopsAndRobbers)
-        return std::format("{} ({})", title, crModeName(c.copsAndRobbers));
-    if (c.raceIndex >= 0) {
-        const auto races = fe.racesFor(c.mode, c.city);
-        if (c.raceIndex < static_cast<int>(races.size()))
-            title += " - " + races[static_cast<std::size_t>(c.raceIndex)]->name;
-    }
-    return title;
-}
 
 // Joins `address` (maybe asking for a password first) and shows progress.
 void joinSession(Frontend& fe, const net::Address& address, bool needsPassword, const std::string& password);
@@ -568,64 +547,82 @@ private:
 
 class LobbyPage final : public Page {
 public:
+    // NetArena (menu 12), widgets in its creation order at their
+    // tune/widget.csv places: 0 the chat entry, 1 the roster (drawn), 2
+    // SELECT VEHICLE, 3 HOST SETTINGS (host only), 4 / 5 the team buttons, 6
+    // GO / READY, 7 the race map, 8 EJECT (host only).
     explicit LobbyPage(Frontend& fe) {
         menuId = menu_id::kNetArena;
         NetGame& net = *fe.ctx.netGame;
         const bool host = net.isHost();
         menu.background = host ? "jpg/lobbh_bk.jpg" : "jpg/lobbj_bk.jpg";
-        menu.defaultHelp = host ? "jpg/lobb_srv.jpg" : "jpg/mn_mp.jpg";
+        constexpr int id = menu_id::kNetArena;
+        const auto& l = fe.layout;
+        // NetArena::ResetGameChat: entering the lobby (after hosting,
+        // joining or a race) starts an empty chat log.
+        m_chatStart = net.chat().size();
 
-        // Left panel buttons (positions inferred: the sprites do not match the
-        // background, so they were drawn over the blue panel).
-        auto center = [](float w) { return 148.0f - w * 0.5f; };
-        float y = 206;
-        if (host) {
-            auto& settings = menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_hst.tga", 4}, center(113), y,
-                                                        [&fe] { fe.push(makeHostSettingsPage(fe)); });
-            settings.help = "jpg/lobb_set.jpg";
-            y += 44;
-        }
-        m_vehicle = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_veh.tga", 4}, center(120), y, [&fe] {
-            // The garage as the lobby's sub-menu: no GO DRIVE, PREV brings
-            // the car back (VehiclePage, Frontend::applyLobbyCar).
-            fe.push(makeVehiclePage(fe));
-        });
-        y += 44;
-        if (host) {
-            menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_ejt.tga", 4}, center(116), y,
-                                       [&fe] { fe.push(makeEjectDialog(fe)); });
-        }
-
-        // Team choice for team games (YOUR TEAM:).
-        m_team0 = &menu.add<ui::LampItem>(SpriteSheet{"texture/lobb_cop.tga", 5}, 474, 207,
-                                          [&fe] { return fe.ctx.netGame && fe.ctx.netGame->localCar().team == 0; },
-                                          [&fe] { setTeam(fe, 0); });
-        m_team1 = &menu.add<ui::LampItem>(SpriteSheet{"texture/lobb_rob.tga", 5}, 474, 238,
-                                          [&fe] { return fe.ctx.netGame && fe.ctx.netGame->localCar().team == 1; },
-                                          [&fe] { setTeam(fe, 1); });
-
-        menu.add<ChatEntry>(Box{272, 273, 359, 23}, [&fe](const std::string& text) {
+        menu.add<ChatEntry>(l.widget(id, 0, {274, 274, 355, 20}), [&fe](const std::string& text) {
             if (fe.ctx.netGame)
                 fe.ctx.netGame->sendChat(text);
         });
-
-        auto& back = addBack(fe, *this);
-        back.onClick = [&fe] { confirmLeave(fe); };
-        menu.onBack = [&fe] { confirmLeave(fe); };
+        const Vec2 veh = l.position(id, 2, {508, 380});
+        m_vehicle = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_veh.tga", 4}, veh.x, veh.y, [&fe] {
+            // mmInterface::Switch(8) from the lobby: a joiner's ready is
+            // cleared (NetArena::SetMyStatus(0)). The garage is the lobby's
+            // sub-menu: no GO DRIVE, PREV brings the car back (VehiclePage,
+            // Frontend::applyLobbyCar).
+            if (fe.ctx.netGame && !fe.ctx.netGame->isHost())
+                fe.ctx.netGame->setReady(false);
+            fe.push(makeVehiclePage(fe));
+        });
         if (host) {
-            m_go = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_srt.tga", 5}, kNext.x, kNext.y, [&fe] {
-                if (fe.ctx.netGame)
-                    fe.ctx.netGame->startRace();
+            const Vec2 p = l.position(id, 3, {395, 380});
+            menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_hst.tga", 4}, p.x, p.y,
+                                       [&fe] { fe.push(makeHostSettingsPage(fe)); });
+        }
+
+        // Team choice for team games (YOUR TEAM:): MM2's lobb_red (team 1)
+        // and lobb_blu (team 0), whose pictures SetTeamWidgets swaps.
+        const Vec2 t1 = l.position(id, 4, {474, 238}), t0 = l.position(id, 5, {474, 207});
+        m_team1 = &menu.add<ui::LampItem>(SpriteSheet{"texture/lobb_rob.tga", 5}, t1.x, t1.y,
+                                          [&fe] { return fe.ctx.netGame && fe.ctx.netGame->localCar().team == 1; },
+                                          [&fe] { setTeam(fe, 1); });
+        m_team0 = &menu.add<ui::LampItem>(SpriteSheet{"texture/lobb_cop.tga", 5}, t0.x, t0.y,
+                                          [&fe] { return fe.ctx.netGame && fe.ctx.netGame->localCar().team == 0; },
+                                          [&fe] { setTeam(fe, 0); });
+
+        const Vec2 go = l.position(id, 6, kNext);
+        if (host) {
+            // NetArena::EnablePlayButton never greys the host's GO; it
+            // starts the race only when everyone is ready
+            // (mmInterface::MultiAllReady).
+            m_go = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_srt.tga", 5}, go.x, go.y, [&fe] {
+                NetGame* n = fe.ctx.netGame.get();
+                if (n && n->everyoneReady() && n->phase() == NetGame::Phase::Lobby)
+                    n->startRace();
             });
-            m_go->help = "jpg/lobb_srv.jpg";
-            menu.focus(m_go);
         } else {
-            m_go = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_nr.tga", 5}, kNext.x, kNext.y, [&fe] {
+            m_go = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_nr.tga", 5}, go.x, go.y, [&fe] {
                 if (fe.ctx.netGame)
                     fe.ctx.netGame->setReady(!fe.ctx.netGame->localReady());
             });
-            menu.focus(m_go);
         }
+        // NetArena::LoadRaceMap: the race's map, hidden when the race has none.
+        m_map = &menu.add<ui::Picture>(l.widget(id, 7, {22, 194, 242, 184}), [this] { return m_mapPath; });
+        m_map->focusStop = true;
+        if (host) {
+            const Vec2 p = l.position(id, 8, {279, 380});
+            menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_ejt.tga", 4}, p.x, p.y,
+                                       [&fe] { fe.push(makeEjectDialog(fe)); });
+        }
+
+        // BACK / Escape: straight back to the sessions (mmInterface::Update,
+        // the lobby's back state: Switch(10), which leaves the session).
+        auto& back = addBack(fe, *this);
+        back.onClick = [&fe] { leave(fe); };
+        menu.onBack = [&fe] { leave(fe); };
+        menu.focus(m_go);
         addNavStrip(fe, *this);
     }
 
@@ -644,6 +641,14 @@ public:
             return;
         }
         const game::RaceConfig cfg = net.raceConfig();
+        // mmInterface::MessageCallback, the host's new session data: a
+        // joiner's ready is cleared (NetArena::SetMyStatus(0)) so that the
+        // new settings are confirmed again.
+        const std::string settings = settingsKey(cfg, net.goldMass());
+        if (!m_settingsKey.empty() && settings != m_settingsKey && !net.isHost())
+            net.setReady(false);
+        m_settingsKey = settings;
+
         const bool cr = cfg.mode == GameMode::CopsAndRobbers;
         const bool teams = cr && cfg.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
         const bool robberTeams = cfg.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
@@ -659,51 +664,39 @@ public:
             if (car.team != team)
                 setTeam(fe, team);
         }
-        if (net.isHost()) {
-            m_go->enabled = net.everyoneReady() && net.phase() == NetGame::Phase::Lobby;
-        } else {
+        if (!net.isHost())
             m_go->sheet.path = net.localReady() ? "texture/lobb_rdy.tga" : "texture/lobb_nr.tga";
-        }
+        m_mapPath = mapPicture(fe, cfg);
+        m_map->visible = !m_mapPath.empty();
     }
 
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
         if (!fe.ctx.netGame)
             return;
         NetGame& net = *fe.ctx.netGame;
+        const auto& s = fe.ctx.game->strings;
         const auto small = ui::style::smallFont();
+        const auto font = ui::style::valueFont(); // GetFont(16): string 560
         const float lh = f.text.lineHeight(f.overlay, small);
+        const float step = f.text.lineHeight(f.overlay, font);
         const game::RaceConfig cfg = net.raceConfig();
-        const auto& s = net.settings();
 
-        // HOST SETTINGS panel.
+        // HOST SETTINGS (NetArena::PostHostSettings): six white lines in a
+        // text node at 36,66, 223 wide, from 0.01 of the screen in, one text
+        // line apart: the mode, the race (GetRaceName), the weather, the
+        // time, laps (circuit) or gold weight (Cops & Robbers), and the
+        // Cops & Robbers limit. The city's name goes in the box under the
+        // race map (36,396, 226 x 34).
         {
-            Vec4 clip{35, 65, 227, 120};
+            const Vec4 clip{36, 66, 223, 120};
             f.overlay.setClip(&clip);
-            float y = 68;
-            auto line = [&](const std::string& text, std::uint32_t color = ui::style::kValueText) {
-                f.text.draw(f.overlay, small, text, 40, y, color);
-                y += lh;
-            };
-            line(s.name, ui::style::kHelpText);
-            line(std::format("Locale: {}", cityName(fe, cfg.city))); // string 87
-            line(std::format("Event: {}", raceTitle(fe, cfg)));      // string 88
-            if (cfg.mode == GameMode::Circuit)
-                line(std::format("Laps: {}", cfg.laps));
-            if (cfg.mode == GameMode::CopsAndRobbers) {
-                std::string limit = "Limit: None";
-                if (cfg.timeLimitMinutes > 0)
-                    limit = std::format("Limit: {} minutes", static_cast<int>(cfg.timeLimitMinutes));
-                else if (cfg.pointLimit > 0)
-                    limit = std::format("Limit: {} points", cfg.pointLimit);
-                line(std::format("{}   Gold: {}", limit, kGoldMass[net.goldMass()]));
+            float y = 66;
+            for (const auto& line : hostSettingsLines(fe, s, cfg, net.goldMass())) {
+                f.text.draw(f.overlay, font, line, 36 + 6.4f, y, ui::style::kRecordText);
+                y += step;
             }
-            line(std::format("Time: {}   Weather: {}", timeOfDayName(cfg.timeOfDay), weatherName(cfg.weather)));
-            line(std::format("Traffic {}  Peds {}  Cops {} %", static_cast<int>(cfg.trafficDensity * 100 + 0.5f),
-                             static_cast<int>(cfg.pedestrianDensity * 100 + 0.5f),
-                             static_cast<int>(cfg.copDensity * 100 + 0.5f)));
-            line(std::format("Players: {}/{}{}", net.players().size(), net.maxPlayers(),
-                             net.hasPassword() ? "   Password" : ""));
             f.overlay.setClip(nullptr);
+            f.text.draw(f.overlay, font, cityName(fe, cfg.city), 36, 396 + (34 - step) * 0.5f, ui::style::kRecordText);
         }
 
         // PLAYERS panel: name, car, ready.
@@ -748,37 +741,25 @@ public:
         if (m_team0->visible)
             ui::drawImage(f.overlay, f.textures.get("jpg/lobb_tem.jpg"), 474, 191);
 
-        // Chat log: newest lines at the bottom.
+        // Chat log (NetArena::AddGameChatLine, PostChatMessages): the last
+        // three lines of this visit, " Name> text", unwrapped, in a text node
+        // at 274,300, 355 x 66.
         {
-            Vec4 clip{272, 303, 359, 70};
+            const Vec4 clip{274, 300, 355, 66};
             f.overlay.setClip(&clip);
-            std::vector<std::pair<std::string, std::uint32_t>> lines;
-            for (const auto& c : net.chat()) {
-                const std::string text = c.system ? c.text : std::format("{}: {}", c.name, c.text);
-                const std::uint32_t color = c.system ? ui::style::kHelpText : ui::style::kValueText;
-                // Wrap by hand so the newest lines can be bottom-aligned.
-                std::string current;
-                for (auto word : str::split(text, ' ')) {
-                    const std::string candidate = current.empty() ? std::string(word) : current + " " + std::string(word);
-                    if (!current.empty() && f.text.measure(f.overlay, small, candidate) > 345) {
-                        lines.emplace_back(current, color);
-                        current = std::string(word);
-                    } else {
-                        current = candidate;
-                    }
-                }
-                lines.emplace_back(current, color);
+            const auto& chat = net.chat();
+            const std::size_t from = std::min(chat.size(), std::max(m_chatStart, chat.size() > 3 ? chat.size() - 3 : 0));
+            float y = 300;
+            for (std::size_t i = from; i < chat.size(); ++i, y += step) {
+                const auto& c = chat[i];
+                const std::string text = c.system ? " " + c.text : std::format(" {}> {}", c.name, c.text);
+                f.text.draw(f.overlay, font, text, 274, y, ui::style::kValueText);
             }
-            const int fit = std::max(1, static_cast<int>(66 / lh));
-            const std::size_t first = lines.size() > static_cast<std::size_t>(fit) ? lines.size() - fit : 0;
-            float y = 305;
-            for (std::size_t i = first; i < lines.size(); ++i, y += lh)
-                f.text.draw(f.overlay, small, lines[i].first, 278, y, lines[i].second);
             f.overlay.setClip(nullptr);
         }
 
-        // Status under the buttons: port forwarding for the host, waiting
-        // message for joiners.
+        // OpenMM2's status where the race map goes when there is none: port
+        // forwarding for the host, the waiting message for joiners.
         std::string status;
         if (net.isHost())
             status = net.portMappingStatus();
@@ -786,7 +767,7 @@ public:
             status = "waiting for host to start..."; // string 432
         if (net.phase() == NetGame::Phase::Countdown)
             status = "Starting...";
-        if (!status.empty())
+        if (!status.empty() && m_mapPath.empty())
             f.text.drawWrapped(f.overlay, small, status, 42, 336, 214, ui::style::kValueText);
     }
 
@@ -799,21 +780,106 @@ private:
         fe.ctx.netGame->setLocalCar(car);
     }
 
-    static void confirmLeave(Frontend& fe) {
-        const bool host = fe.ctx.netGame && fe.ctx.netGame->isHost();
-        fe.question(host ? "End Session?" : "Quit to Lobby?", [&fe] { // strings 481, 479
-            if (fe.ctx.netGame) {
-                fe.ctx.netGame->leave();
-                fe.ctx.netGame->startLanScan();
+    static void leave(Frontend& fe) {
+        if (fe.ctx.netGame) {
+            fe.ctx.netGame->leave();
+            fe.ctx.netGame->startLanScan();
+        }
+        fe.pop();
+    }
+
+    // What the joiners' ready depends on: the host's race settings.
+    static std::string settingsKey(const game::RaceConfig& c, int goldMass) {
+        return std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", c.city, static_cast<int>(c.mode), c.raceIndex,
+                           c.laps, static_cast<int>(c.timeOfDay), static_cast<int>(c.weather),
+                           static_cast<int>(c.copsAndRobbers), c.timeLimitMinutes, c.pointLimit, goldMass,
+                           c.trafficDensity, c.pedestrianDensity, c.copDensity);
+    }
+
+    // NetArena::LoadRaceMap: "<city>_map" + dgGameModeNames[mode] with the
+    // race (roam, race%d, multicop, circuit%d, blitz%d); hidden when absent.
+    static std::string mapPicture(Frontend& fe, const game::RaceConfig& c) {
+        const int ci = fe.cityIndex(c.city);
+        if (ci < 0)
+            return {};
+        std::string name;
+        switch (c.mode) {
+        case GameMode::Cruise: name = "roam"; break;
+        case GameMode::Checkpoint: name = std::format("race{}", c.raceIndex); break;
+        case GameMode::CopsAndRobbers: name = "multicop"; break;
+        case GameMode::Circuit: name = std::format("circuit{}", c.raceIndex); break;
+        case GameMode::Blitz: name = std::format("blitz{}", c.raceIndex); break;
+        default: return {};
+        }
+        const std::string path =
+            std::format("jpg/{}_map{}.jpg", str::lower(fe.cities[static_cast<std::size_t>(ci)].raceDir), name);
+        return fe.ctx.game->vfs.exists(path) ? path : std::string();
+    }
+
+    // NetArena::PostHostSettings' six lines.
+    static std::vector<std::string> hostSettingsLines(Frontend& fe, const game::Strings& s, const game::RaceConfig& c,
+                                                      int goldMass) {
+        std::vector<std::string> lines(6, " ");
+        // 0: the mode from the race-type list (585-589); a blank for cruise.
+        switch (c.mode) {
+        case GameMode::Blitz: lines[0] = s.get(585, "Blitz"); break;
+        case GameMode::Circuit: lines[0] = s.get(586, "Circuit"); break;
+        case GameMode::Checkpoint: lines[0] = s.get(587, "Checkpoint"); break;
+        case GameMode::CopsAndRobbers: lines[0] = s.get(589, "Cops & Robbers"); break;
+        default: break;
+        }
+        // 1: NetArena::GetRaceName: 399 Cruise, 400-402 the Cops & Robbers
+        // type, else the race's name ("Open" past the list).
+        if (c.mode == GameMode::Cruise) {
+            lines[1] = s.get(399, "Cruise");
+        } else if (c.mode == GameMode::CopsAndRobbers) {
+            switch (c.copsAndRobbers) {
+            case game::CopsAndRobbersMode::FreeForAll: lines[1] = s.get(400, "C&R Free-For-All"); break;
+            case game::CopsAndRobbersMode::CopsVsRobbers: lines[1] = s.get(401, "C&R Cops & Robbers"); break;
+            case game::CopsAndRobbersMode::RobberTeams: lines[1] = s.get(402, "C&R Robber Teams"); break;
             }
-            fe.pop();
-        });
+        } else {
+            const auto races = fe.racesFor(c.mode, c.city);
+            lines[1] = c.raceIndex >= 0 && c.raceIndex < static_cast<int>(races.size())
+                           ? races[static_cast<std::size_t>(c.raceIndex)]->name
+                           : std::string("Open");
+        }
+        // 2: the weather (408, 624 without a prefix, 409, 410; OpenMM2's
+        // snow 411); 3: the time (412-415).
+        switch (c.weather) {
+        case game::Weather::Clear: lines[2] = s.get(408, "Weather: Clear"); break;
+        case game::Weather::Cloudy: lines[2] = s.get(624, "Cloudy"); break;
+        case game::Weather::Fog: lines[2] = s.get(409, "Weather: Foggy"); break;
+        case game::Weather::Rain: lines[2] = s.get(410, "Weather: Raining"); break;
+        case game::Weather::Snow: lines[2] = s.get(411, "Weather: Snowing"); break;
+        }
+        lines[3] = s.get(412 + static_cast<std::uint32_t>(std::clamp(static_cast<int>(c.timeOfDay), 0, 3)));
+        // 4: "Laps: %d" (418) for circuits; for Cops & Robbers "Gold Weight:
+        // " (423) and None / Quarter Ton / Half Ton (420-422); 5: "Limit: "
+        // (427) and "%d Points" (424), "%d minutes" (425) or None (426).
+        if (c.mode == GameMode::Circuit) {
+            lines[4] = std::format("{}: {}", s.get(418, "Laps"), c.laps);
+        } else if (c.mode == GameMode::CopsAndRobbers) {
+            lines[4] = std::format("{}: {}", s.get(423, "Gold Weight"),
+                                   s.get(420 + static_cast<std::uint32_t>(std::clamp(goldMass, 0, 2))));
+            std::string limit = s.get(426, "None");
+            if (c.pointLimit > 0)
+                limit = std::format("{} {}", c.pointLimit, s.get(424, "Points"));
+            else if (c.timeLimitMinutes > 0)
+                limit = std::format("{} {}", static_cast<int>(c.timeLimitMinutes), s.get(425, "minutes"));
+            lines[5] = std::format("{}: {}", s.get(427, "Limit"), limit);
+        }
+        return lines;
     }
 
     ui::SpriteButton* m_vehicle = nullptr;
     ui::SpriteButton* m_go = nullptr;
     ui::LampItem* m_team0 = nullptr;
     ui::LampItem* m_team1 = nullptr;
+    ui::Picture* m_map = nullptr;
+    std::string m_mapPath;
+    std::string m_settingsKey;
+    std::size_t m_chatStart = 0;
 };
 
 // --- Host settings (host_bk) -----------------------------------------------------------------
