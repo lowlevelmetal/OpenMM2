@@ -47,6 +47,13 @@ The simulation runs on a fixed time step; rendering interpolates between the
 last two simulation states so any refresh rate works. Multiplayer exchanges
 simulation state at a fixed rate independent of the frame rate.
 
+Each frame's time step is the real time since the previous frame, held to
+0.0001–0.1 s as MM2's `datTimeManager::Update` does, so a long hitch slows
+the game down instead of producing one huge step. While another application
+is active the game stands still and is silent, as the original's main loop
+blocked in `gfxPipeline::Manage`; OpenMM2 keeps running in multiplayer and in
+automation runs.
+
 ## Accuracy
 
 Behaviour is reproduced from evidence, in this order: MM2's own code (the

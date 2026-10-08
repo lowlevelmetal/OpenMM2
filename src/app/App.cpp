@@ -58,6 +58,20 @@ void setupImGui(Context& ctx) {
     ctx.imgui = std::make_unique<render::ImGuiRenderer>(ctx.device());
 }
 
+// gfxPipeline::gfxWindowProc and gfxPipeline::Manage: while another
+// application is active the original's main loop blocks in GetMessage, so the
+// whole game (simulation, menus, the intro movie) stands still until it is
+// activated again, and its DirectSound buffers, created without global focus,
+// fall silent. OpenMM2 does the same, except in multiplayer (MM2 left the
+// network session when a race lost focus, mmGameMulti's lost-focus callback;
+// OpenMM2 keeps the player connected and running so the other players are not
+// stalled) and in automation runs (--frames, OPENMM2_FRONTEND_SCRIPT), which
+// may not have focus. The first-run setup screen (no game data yet) is
+// OpenMM2's own and keeps running.
+bool freezesWhenInactive(const Context& ctx) {
+    return ctx.game && !ctx.commandLine.frames && !ctx.netGame && !std::getenv("OPENMM2_FRONTEND_SCRIPT");
+}
+
 // Mounts the configured game source if it is usable.
 void tryMountConfiguredSource(Context& ctx) {
     const CommandLine& cl = ctx.commandLine;
@@ -136,8 +150,11 @@ int run(const CommandLine& cl) {
             config.vehicle = v;
         screen = makeRaceScreen(ctx, config);
     } else if (ctx.game) {
-        // The original played its logo movie (GAME/LOGOS.AVI) on every start;
-        // any key skips it.
+        // The original played its logo movie (LOGOS.AVI in the game folder)
+        // on every start unless started with -nomovie (OpenMM2: --skip-intro
+        // or [Game] SkipIntro). It did not play it in a window (only when
+        // inWindow was false); OpenMM2 draws the movie itself and plays it in
+        // every window mode.
         const bool intro = !cl.skipIntro && !ctx.settings.ini.getBool("Game", "SkipIntro", false) && !cl.frames;
         screen = intro ? makeIntroScreen(ctx) : makeFrontendScreen(ctx);
     } else {
@@ -148,6 +165,10 @@ int run(const CommandLine& cl) {
     platform::FrameLimiter limiter;
     limiter.setTargetFps(ctx.display.frameCap);
     int frame = 0;
+    // gfxPipeline's "inactive" event flag: set when another application is
+    // activated, cleared when the game is activated again (initially active).
+    bool active = true;
+    bool audioPaused = false;
     while (!ctx.quit) {
         ctx.input.beginFrame();
         const auto ev = platform::pollEvents(&ctx.input, [](const SDL_Event& e) { platform::imgui::processEvent(e); });
@@ -155,6 +176,19 @@ int run(const CommandLine& cl) {
             ctx.quit = true;
         if (ev.resized)
             ctx.device().notifyResized();
+        if (ev.focusLost || ev.focusGained)
+            active = ctx.window().focused();
+        const bool frozen = !active && !ctx.quit && freezesWhenInactive(ctx);
+        if (frozen != audioPaused) {
+            ctx.audioDevice.setPaused(frozen);
+            audioPaused = frozen;
+        }
+        if (frozen) {
+            // No tick: the first frame after reactivation measures the whole
+            // pause, which the clock holds to MM2's 0.1 s limit.
+            platform::waitForEvents(0.25);
+            continue;
+        }
         const double dt = clock.tick();
 
         render::Device& dev = ctx.device();
