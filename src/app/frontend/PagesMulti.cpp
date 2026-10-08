@@ -977,7 +977,16 @@ public:
         // 6-8: race name (host_rnm panel) and its clamping arrows.
         m_raceName = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 6, {404, 64, 205, 24}), [this, &fe] { return raceNames(fe); },
-            [this] { return std::max(0, m_cfg.raceIndex); }, [this](int i) { m_cfg.raceIndex = i; });
+            [this] { return std::max(0, m_cfg.raceIndex); },
+            [this, &fe](int i) {
+                m_cfg.raceIndex = i;
+                applyDefaults(fe);
+            });
+        // CitySetupCB gives the host menu the driver's checkpoint progress
+        // mask (HostRaceMenu +0xA8, everything open for other cities or
+        // without a driver); RaceMenuBase::IncRaceName / DecRaceName step
+        // only onto open races.
+        m_raceName->optionEnabled = [this, &fe](int i) { return raceOpen(fe, i); };
         m_raceArrows = arrows(fe, 7, {609, 60}, {609, 78}, *m_raceName);
 
         // 9: LAPS (host_lap panel), a roller like the race menu's.
@@ -1075,8 +1084,12 @@ public:
             },
             [this, &fe] { return fe.cityIndex(m_cfg.city); },
             [this, &fe](int i) {
+                // RaceMenuBase::CityChange -> GameCallback: the first race
+                // and its defaults.
                 m_cfg.city = fe.cities[static_cast<std::size_t>(i)].mapName;
+                m_cfg.raceIndex = 0;
                 clampRace(fe);
+                applyDefaults(fe);
             });
         arrows(fe, 23, {607, 271}, {607, 289}, city);
         auto& time = menu.add<ui::ValueBox>(
@@ -1189,20 +1202,48 @@ private:
         return names;
     }
 
+    // Only the checkpoint races follow the host's progress (the mask
+    // CitySetupCB writes); the other types are all open.
+    bool raceOpen(Frontend& fe, int i) const {
+        return m_cfg.mode != GameMode::Checkpoint ||
+               fe.progress.raceOpen(fe.profile ? &*fe.profile : nullptr, m_cfg.city, game::modeKey(m_cfg.mode), i);
+    }
+
+    // A race out of range or not open moves to the first open one.
     void clampRace(Frontend& fe) {
         if (m_cfg.mode == GameMode::Cruise || m_cfg.mode == GameMode::CopsAndRobbers) {
             m_cfg.raceIndex = -1;
             return;
         }
-        // Every race is open in multiplayer (inferred: the joiners' progress
-        // could not gate the host's choice).
         const int n = static_cast<int>(fe.racesFor(m_cfg.mode, m_cfg.city).size());
         m_cfg.raceIndex = std::clamp(m_cfg.raceIndex, 0, std::max(0, n - 1));
+        if (raceOpen(fe, m_cfg.raceIndex))
+            return;
+        for (int i = 0; i < n; ++i)
+            if (raceOpen(fe, i)) {
+                m_cfg.raceIndex = i;
+                return;
+            }
     }
 
+    // RaceMenuBase::SetStateRace: the race table's time of day, weather,
+    // pedestrian density and laps (cruise: noon, clear, 0.25), which the
+    // host can then change. The host menu has no traffic, cops or
+    // opponents.
+    void applyDefaults(Frontend& fe) {
+        fe.applyRaceDefaults(m_cfg);
+        m_cfg.trafficDensity = 0.0f;
+        m_cfg.copDensity = 0.0f;
+        m_cfg.opponents = 0;
+    }
+
+    // RaceMenuBase::GameCallback: the race type's first race and its
+    // defaults.
     void selectMode(Frontend& fe, GameMode m) {
         m_cfg.mode = m;
+        m_cfg.raceIndex = 0;
         clampRace(fe);
+        applyDefaults(fe);
         if (m == GameMode::Circuit && m_cfg.laps <= 0)
             m_cfg.laps = 3;
     }

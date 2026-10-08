@@ -197,20 +197,25 @@ public:
     void onEnter(Frontend& fe) override {
         refresh(fe);
         m_lastFocus = menu.focused();
-        m_showHelp = false;
+        m_help.clear();
     }
 
     void update(Frontend& fe, double) override {
         refresh(fe);
-        // The help label shows the mode's picture while a lamp has the focus
-        // and after a mode or city change; it is hidden on entry and whenever
-        // the focus moves elsewhere (RaceMenuBase::FocusDescription, PreSetup).
+        // RaceMenuBase::FocusDescription, which only the lamps call
+        // (UIBMButton::Switch): a lamp that loses the focus hides the help
+        // picture, a lamp that takes it shows its own mode's picture; after
+        // a mode or city change (ChangeLocalVals) the current mode's picture
+        // stays until a lamp loses the focus. PreSetup hides it on entry.
         const ui::Widget* focused = menu.focused();
         if (focused != m_lastFocus) {
+            if (lampIndex(m_lastFocus) >= 0)
+                m_help.clear();
+            if (const int i = lampIndex(focused); i >= 0)
+                m_help = modeHelp(m_modes[static_cast<std::size_t>(i)]);
             m_lastFocus = focused;
-            m_showHelp = std::ranges::find(m_lamps, focused) != std::end(m_lamps);
         }
-        menu.defaultHelp = m_showHelp ? modeHelp(fe.config.mode) : "";
+        menu.defaultHelp = m_help;
     }
 
     void drawBelow(Frontend& fe, ui::UiFrame& f) override {
@@ -251,7 +256,7 @@ private:
         fe.config.raceIndex = m == GameMode::Cruise ? -1 : 0;
         validateRace(fe);
         fe.applyRaceDefaults(fe.config);
-        m_showHelp = true;
+        m_help = modeHelp(fe.config.mode);
     }
 
     // RaceMenuBase::CityChange: a mode the city has no races for falls back to
@@ -263,7 +268,7 @@ private:
         fe.config.raceIndex = fe.config.mode == GameMode::Cruise ? -1 : 0;
         validateRace(fe);
         fe.applyRaceDefaults(fe.config);
-        m_showHelp = true;
+        m_help = modeHelp(fe.config.mode);
     }
 
     // Visibility and the environment lock (RaceMenuBase::SetRW): outside
@@ -320,8 +325,15 @@ private:
     Arrows m_weatherArrows;
     ui::Slider* m_sliders[3] = {};
     std::string m_mapPath;
+    int lampIndex(const ui::Widget* w) const {
+        for (std::size_t i = 0; i < std::size(m_lamps); ++i)
+            if (m_lamps[i] == w)
+                return static_cast<int>(i);
+        return -1;
+    }
+
     const ui::Widget* m_lastFocus = nullptr;
-    bool m_showHelp = false;
+    std::string m_help; // the help label's picture (FocusDescription / ChangeLocalVals)
 };
 
 // --- Vehicle (Garage Menu, menu 8) ---------------------------------------------------------

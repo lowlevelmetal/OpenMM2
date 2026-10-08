@@ -158,7 +158,7 @@ struct NetGame::Impl {
     RaceConfig hostConfig;
     std::string sessionName;
     int maxPlayers = 8;
-    int goldMass = 1;
+    int goldMass = 0; // HostRaceMenu's GOLD MASS index starts at 0, Weightless
     bool joining = false;
 };
 
@@ -429,7 +429,7 @@ int NetGame::maxPlayers() const { return settings().maxPlayers; }
 
 bool NetGame::hasPassword() const { return settings().hasPassword; }
 
-int NetGame::goldMass() const { return std::clamp(extraInt(settings(), "goldMass", 1), 0, kGoldMassChoices - 1); }
+int NetGame::goldMass() const { return std::clamp(extraInt(settings(), "goldMass", 0), 0, kGoldMassChoices - 1); }
 
 std::uint16_t NetGame::pingMs(std::uint8_t playerId) const {
     const net::PlayerInfo* p = player(playerId);

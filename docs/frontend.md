@@ -241,8 +241,10 @@ Positions come from `tune/widget.csv` by the widget's creation index in MM2's me
 * Outside cruise the time, weather and densities are read-only until the
   race has been passed (`RaceMenuBase::SetRW`): no time/weather arrows,
   `slider_roactl` bars. A circuit's traffic always stays read-only.
-* The help picture shows the current mode only while a lamp is focused or
-  right after a mode or city change.
+* The help picture belongs to the lamps (`RaceMenuBase::FocusDescription`):
+  a focused lamp shows its own mode's picture and hides it when it loses
+  the focus; after a mode or city change the current mode's picture stays
+  until a lamp loses the focus. Nothing shows on entry.
 
 **Garage** (menu 8, `veh_bk.jpg`, `Vehicle` / `VehicleSelectBase`):
 
@@ -574,7 +576,11 @@ defaults), `vehicle:<name>`, `go` (start the race), `result:<position>`,
   follow `HostRaceMenu` (menu 11, `host_bk`): DONE first, the five race
   types, race name, a LAPS roller, the Cops & Robbers type and limit, LIMIT
   VALUE (its own index for time and for points, both starting at the first
-  value), GOLD MASS, locale, time and weather (no snow) with clamping arrows,
-  and the pedestrian slider, placed by tune/widget.csv. DONE and Escape both
+  value), GOLD MASS (starting at Weightless), locale, time and weather (no
+  snow) with clamping arrows, and the pedestrian slider, placed by
+  tune/widget.csv. A race type, race or city change goes to the type's
+  first open race and applies the race table's time, weather, pedestrians
+  and laps (`RaceMenuBase::GameCallback`, `SetStateRace`); checkpoint races
+  follow the host's own progress (`CitySetupCB`). DONE and Escape both
   apply the settings; there is no CANCEL.
 * The in-race loading bar of MM2's level loading screen.
