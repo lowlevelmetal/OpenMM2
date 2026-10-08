@@ -192,13 +192,14 @@ public:
         const bool pro = p.difficulty == game::Difficulty::Professional;
         put(0, s.get(635, "RANKING:"));
         put(1, pro ? s.get(81, "Professional") : s.get(82, "Amateur"));
+        // A driver who has not raced yet shows "---" for both.
         game::RaceConfig last;
         last.mode = p.mode;
         last.city = p.city;
         last.raceIndex = p.raceIndex;
         put(2, s.get(636, "LAST RACE:"));
-        put(3, fe.raceName(last));
-        const auto* v = fe.ctx.game->catalog.vehicle(p.vehicle);
+        put(3, p.hasLastRace() ? fe.raceName(last) : s.get(64, "---"));
+        const auto* v = p.hasLastRace() ? fe.ctx.game->catalog.vehicle(p.vehicle) : nullptr;
         put(4, s.get(637, "LAST VEHICLE:"));
         put(5, v ? v->description : s.get(64, "---"));
         put(6, s.get(638, "CONTROLLER:"));

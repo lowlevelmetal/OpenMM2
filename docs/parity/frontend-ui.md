@@ -2,8 +2,8 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
-Summary: 148 functions; verified 79, fixed 36, deviation 11, inferred 3,
-open 3, openmm2 16.
+Summary: 148 functions; verified 79, fixed 37, deviation 11, inferred 3,
+open 2, openmm2 16.
 
 Scope: the menus (`src/app/frontend/*`), the widgets and layout
 (`src/ui/*`) and how `src/app/Settings.*` maps onto MM2's player
@@ -115,7 +115,7 @@ the race loop to session (see "For other areas" at the end).
 | `controllerName` | `MenuManager::GetControllerName` | fixed | read `[Controls] Device`, which nothing writes; now the Control page's `[Controls] Controller`. |
 | Escape | `mmInterface::Update` main menu back, `MenuManager::PlaySound` | fixed | played "Selectionmade"; MM2's Escape sound is popup-only. |
 | `askDelete` | `mmInterface::PlayerRemove` | verified | the deleted driver is the current one; the first in the directory is loaded. |
-| LAST RACE / LAST VEHICLE of a new driver | `PlayerFillStats` | open | MM2 shows "---" (string 64) for both until the driver has raced. The profile state for it (`Profile::hasLastRace`) is camera-props' and not on this branch; once merged the panel shows "---" while it is false. |
+| LAST RACE / LAST VEHICLE of a new driver | `PlayerFillStats` | fixed | MM2 shows "---" (string 64) for both until the driver has raced; the panel showed the default race's name. It now shows "---" while `Profile::hasLastRace()` is false (wired after the camera-props merge). |
 | `NewDriverDialog` (widgets) | `Dialog_NewPlayer::Dialog_NewPlayer`, `PreSetup` | verified | name field (18 chars) first, amateur/pro radio (amateur on entry), DONE and CANCEL; Enter in the field creates. |
 | `NewDriverDialog::create` | `mmInterface::PlayerCreateCB`, `PlayerCreate` | fixed | names of spaces were ignored and new drivers got the first car; MM2 ignores only an empty name and the new driver has cruise in vpbug. The dialog passes the name as typed; on this branch `ProfileStore::create` still trims it (camera-props keeps names as typed on its branch). |
 | `RecordDialog` | `Dialog_DriverRec::Dialog_DriverRec`, `Dialog_HallOfFame::Dialog_HallOfFame`, `PreSetup` | verified | list (widget 0) then the check boxes in tune/widget.csv order (driver record: blitz, circuit, checkpoint, sf, london, DONE; race records: amateur times, pro times, pro points, blitz, circuit, checkpoint, sf, london, DONE); both open on blitz in San Francisco, the race records on amateur times. |
@@ -234,9 +234,9 @@ the race loop to session (see "For other areas" at the end).
   loop's call. The race must still read `[Controls]` (controller type,
   DeadZone 0..0.33 default 0.1 → `mmJoystick::SetDeadZone`, sensitivity,
   force feedback, Bind.*) and `[Graphics]`.
-- camera-props (done on its branch, not merged here): names kept as typed,
-  `Profile::hasLastRace`. Frontend follow-up after the merge: the main
-  menu's LAST RACE and LAST VEHICLE show "---" while `!hasLastRace()`.
+- camera-props (merged): names kept as typed, `Profile::hasLastRace`; the
+  main menu's LAST RACE and LAST VEHICLE now show "---" while
+  `!hasLastRace()`.
   `HallEntry::passed` should not be drawn: the race records load a
   "passed" picture for every row (`mmCompRaceRecord::Init`) but
   `mmCompRaceRecord::Update` never declares it, so `Cull` never draws it.
