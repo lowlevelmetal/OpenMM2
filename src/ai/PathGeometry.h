@@ -44,6 +44,26 @@ float pathCenterDist(const city::AiPath& path, int i);
 // aiPath::CenterLength: the centre distance from vertex `a` to vertex `b`.
 float pathCenterLength(const city::AiPath& path, int a, int b);
 
+// aiPath::RoadVertice(pos, side): the next vertex ahead of `pos` along the
+// road, counted in the direction of `side` (1: the vertex index; else from
+// the other end); n (or 0 for the other side) when `pos` is past the road's
+// end.
+int pathRoadVertice(const city::AiPath& path, const Vec3& pos, int side);
+// aiPath::RoadVertice(pos, side, start): the first vertex from `start` (in
+// the side's numbering) more than 4 m ahead of `pos`, else the above.
+int pathRoadVertice(const city::AiPath& path, const Vec3& pos, int side, int start);
+// aiPath::Direction: whether a car with matrix `m` faces the way of the
+// vertex index.
+bool pathDirection(const city::AiPath& path, const Mat34& m);
+// aiPath::Index(pos): the first vertex `pos` is behind (n - 1 when it is
+// more than the half width off the road there, or behind none).
+int pathIndex(const city::AiPath& path, const Vec3& pos);
+// aiPath::IsPosOnRoad: 1 on the road, 2 on the sidewalk, 3 off it, with the
+// lateral offset from the centre line (positive toward the second side) in
+// `lat`. The limits are the second side's (its params[2n - 1] and
+// params[2n + 1], n its lanes), less `margin`, on both sides.
+int pathIsPosOnRoad(const city::AiPath& path, const Vec3& pos, float margin, float* lat = nullptr);
+
 // aiPath::InitRoadTurns: the road's sharp turns. A turn is a vertex whose
 // next section turns more than 0.7 rad; a section shorter than 10 m (but the
 // last two) is merged with the following one, the turn then starting at the

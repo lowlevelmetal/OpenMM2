@@ -4,21 +4,29 @@
 // aiVehiclePhysics, ported from MM2 build 3393 (function names from its
 // linker map; see docs/ai.md for what is verified and what is inferred):
 //
-//   DriveRoute / Forward / Backup / FinishedBackingUp / Stop / Mirror
-//                        the per-frame state machine and control laws
-//   CalcRoute / EnumRoutes / CalcRoadTarget / IsTargetBlocked /
-//   CalcObstacleAvoidPoints / EnumTargets / ContinueCheck / DetermineBestRoute
+//   DriveRoute / Forward / Backup / FinishedBackingUp / Shortcut / Stop /
+//   Mirror               the per-frame state machine and control laws
+//                        (Driving.cpp)
+//   RegisterRoute / PlanRoute / LocateWayPtFromRoad / SolveRoadTargetPoint /
+//   SolveShortcutTargetPoint
+//                        the waypoint intersections and the window of three
+//                        aiPath roads round the car (DrivingRoute.cpp)
+//   CalcRoute / EnumRoutes / IsTargetBlocked / CalcObstacleAvoidPoints /
+//   EnumTargets / ContinueCheck / DetermineBestRoute
 //                        the route planner: a chain of target points down the
-//                        road, branching round obstacles, the straightest
-//                        route chosen
+//                        window's roads, branching round obstacles (the
+//                        traffic's per-section obstacle lists), the
+//                        straightest route chosen (DrivingRoute.cpp)
+//   CalcRoadTarget / CalcDestinationTarget / InitRoadTurns / CalcRoadTurns /
+//   CalcTurnIntersection / InSharpTurn / CalcSharpTurnTarget / SaveTurnTarget
+//                        the next target down a road and the turn circles of
+//                        the window's junctions and the roads' sharp turns
+//                        (DrivingTargets.cpp)
 //   CalcSpeed / CalcRoadSpeed
-//                        braking for the bends ahead and at the destination
+//                        braking for the turns ahead and at the destination
 //   aiStuck              turning a car that is stuck in place
 //
-// MM2 plans on its aiPath road segments; OpenMM2 plans on an ai::Course (the
-// same roads joined into one driving line with the curbs along it), so the
-// road-window bookkeeping of the original (three aiPath pointers, vertex
-// indices, sharp-turn circles) is replaced by arc lengths on the course.
+// The roads, intersections and rooms come from an ai::MapView (aiMap).
 //
 // The drivers write a phys::CarSim's inputs directly (as MM2 wrote
 // vehCarSim Steering / Brakes / HandBrake / Engine Throttle) and select
@@ -33,6 +41,7 @@
 #include "ai/Course.h"
 #include "core/Math.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <span>
@@ -47,6 +56,8 @@ struct CarImpact;
 } // namespace mm2::phys
 
 namespace mm2::ai {
+
+class PhysicsDriver;
 
 // A car the AI should know about this frame: the player, opponents, police
 // and ambient traffic. The game fills one list per frame and passes it to
@@ -81,6 +92,15 @@ struct TrackedCar {
     bool isPolice = false;
     bool suspect = false;     // police may pursue it (player, racers)
     bool reversing = false;   // in reverse gear (aiPoliceOfficer::Update looks at the player's)
+    // Where the car is on the AI's roads, for aiObstacle::CurrentRoadIdx:
+    // a racer asks its driver (aiVehiclePhysics), an ambient car the traffic
+    // (aiVehicleSpline), a player carries the road and raw vertex it was last
+    // found on (aiVehiclePlayer, see MapView::trackPlayer).
+    const PhysicsDriver* racer = nullptr;
+    int racerIndex = -1; // aiRouteRacer index (IsTargetBlocked skips its own)
+    int ambient = -1;    // Traffic car index
+    int playerRoad = -1;
+    int playerVert = 0;
 
     // MM2 obstacle classes (aiVehiclePhysics::IsTargetBlocked).
     bool isOpponent() const { return suspect && !isPlayer && !isPolice; }
@@ -187,45 +207,49 @@ private:
     Vec3 m_lastPos;
 };
 
-// One target point of a planned route (aiRouteNode).
+// One target point of a route (aiRouteNode, 0x24 bytes). Node 0 is the car.
 struct RouteNode {
-    Vec3 pos;                 // target point
-    float s = 0.0f;           // course arc length (unwrapped, from the car's)
-    float dist = 0.0f;        // path length from the car
-    float angle = 0.0f;       // accumulated turning from the car's heading
-    int obstacle = -1;        // TrackedCar id this point avoids, -1 = none
-    bool offRoad = false;     // on the sidewalk (IsPosOnRoad 2)
-    bool noWayAround = false; // blocked, with no gap found (CalcObstacleAvoidPoints state 3)
-    bool destination = false; // the destination itself (SetTargetPtToDestination: dist 9999)
+    int obstacle = -1;     // +0x00 TrackedCar id of the obstacle this point avoids, -1 = none
+    Vec3 pos;              // +0x04 the target (1 m above the road)
+    float turnSum = 0.0f;  // +0x10 turning from the car's heading to here (rad), the route's cost
+    float dist = 0.0f;     // +0x14 XZ path length from the car (9999: the destination)
+    int road = 0;          // +0x18 window slot (0..2) of the road it lies on
+    int vert = 0;          // +0x1a its vertex, counted in the direction of travel
+    int kind = 0;          // +0x1c 0 road target, 1 turn target, 2 avoid point, 3 no way round
+    int turnCode = 0;      // +0x1e 0/1 junction turn w, s + 2 sharp turn s (also the road slot)
+    int blockKind = 0;     // +0x20 what blocked it: 0 player, 1 traffic, 2 racer, 5 prop
+    int surface = 0;       // +0x22 1 road, 2 sidewalk
 };
 
-struct PlannedRoute {
-    std::vector<RouteNode> nodes; // [0] = the car
-    bool offRoad = false;
-    bool blocked = false;
+// aiVehiclePhysics::RegisterRoute's arguments: the waypoint intersections,
+// the laps and the destination.
+struct RouteRegistration {
+    std::vector<int> wayPoints; // intersection ids
+    int laps = 0;               // -1: endless
+    Vec3 destination;
+    Vec3 destinationHeading;    // the way the car should face there (unit, XZ; zero = any)
 };
 
-// What a driver needs to know about its place on the course this frame.
+// What the game tells a driver each frame.
 struct DriveContext {
-    const Course* course = nullptr;
-    float s = 0.0f;                   // the car's arc length on the course
-    float lateral = 0.0f;             // its offset from the line (+ right)
-    float remaining = 1e9f;           // course distance left to the destination (1e9: not on the final leg)
-    Vec3 destination;                 // RegisterRoute's destination
-    Vec3 destinationHeading;          // and the heading wanted there (zero = any)
-    bool finalApproach = false;       // past the last waypoint: plan to the destination
-    bool repairWhenWrecked = false;   // aiVehiclePhysics::Init's repair flag (circuits)
-    bool touchingPlayer = false;      // collided with the player since the last frame
-    int waypointsPassed = 0;          // aiVehiclePhysics 0x967a (other racers are avoided after 3)
-    bool noSidewalk = false;          // never over the sidewalk round an obstacle (goesOverSidewalks)
+    bool repairWhenWrecked = false; // aiVehiclePhysics::Init's repair flag (circuits)
+    bool touchingPlayer = false;    // collided with the player since the last frame
 };
 
-// aiVehiclePhysics: one AI car's controller.
+class MapView;
+
+// aiVehiclePhysics: one AI car's controller and route planner.
 class PhysicsDriver {
 public:
     enum class State : std::uint8_t { Forward, Backup, Shortcut, Stop };
+    static constexpr int kMaxNodes = 40;  // aiRouteNode m_Nodes[40]
+    static constexpr int kMaxRoutes = 25; // m_Routes[25][40]
 
-    PhysicsDriver(phys::CarSim& car, int selfId);
+    // `aiId` is the aiVehicle id (the racer's or the officer's index), which
+    // IsTargetBlocked compares with the racers' indices; `vehicle` the car's
+    // base name (aiVehiclePhysics::Init's type table).
+    PhysicsDriver(phys::CarSim& car, int selfId, const MapView* map = nullptr, int aiId = 0,
+                  std::string_view vehicle = {});
 
     // aiVehiclePhysics::Reset: forward, nothing planned.
     void reset();
@@ -235,59 +259,128 @@ public:
 
     RouteParams params;
 
-    // aiVehiclePhysics::DriveRoute: one frame along `ctx.course`.
+    // aiVehiclePhysics::RegisterRoute: the route, the destination and the
+    // window of roads round the car; the state Forward, or Shortcut when the
+    // car is on no road or intersection (a car backing up keeps backing up).
+    void registerRoute(const RouteRegistration& route);
+    // OpenMM2 recovery (not in MM2): after a registerRoute where the car was
+    // put back on its route, carry on from waypoint `wayPtIdx` of lap `lap`.
+    void resumeRoute(int wayPtIdx, int lap);
+    int numWayPoints() const { return static_cast<int>(m_wayPts.size()); }
+    int numLaps() const { return m_numLaps; }
+    // aiVehiclePhysics::DriveRoute: one frame.
     void driveRoute(float dt, std::span<const TrackedCar> cars, const DriveContext& ctx);
     // aiVehiclePhysics::Mirror: match `target`'s heading at its speed - 3 m/s.
     void mirror(float dt, const TrackedCar& target);
+    // aiVehiclePhysics::StopRoadTraffic: every road of the window tells the
+    // intersection it drives into to hold (or release) its controlled roads.
+    template <typename StopSources> void stopRoadTraffic(bool stop, StopSources&& stopSources) const {
+        for (int w = 0; w < 3; ++w) {
+            const int node = windowIntersectionAhead(w);
+            if (node >= 0)
+                stopSources(node, stop);
+        }
+    }
+    // aiVehiclePhysics::CurrentRoadIdx: the slot of this car's road in another
+    // car's window (and the vertex there), or -1.
+    int currentRoadIdx(const int roads[3], const bool dirs[3], int* vert) const;
 
-    const PlannedRoute& route() const { return m_best; }
     Vec3 target() const { return m_target; }
     int backups() const { return m_backups; }
     float throttle() const { return m_throttle; }
+    float brake() const { return m_brake; }
+    float steering() const { return m_steering; }
     // aiVehiclePhysics::LSideDistance / RSideDistance.
     float leftSide() const { return m_leftSide; }
     float rightSide() const { return m_rightSide; }
-    float brake() const { return m_brake; }
-    float steering() const { return m_steering; }
     phys::CarSim& car() { return m_car; }
+    const phys::CarSim& car() const { return m_car; }
+    int aiId() const { return m_aiId; }
 
-    // aiVehiclePhysics::CalcRoute and its helpers on a course (public for
-    // tests): the routes found from the car, and the chosen one.
-    void planRoutes(std::span<const TrackedCar> cars, const DriveContext& ctx);
-    const std::vector<PlannedRoute>& routes() const { return m_routes; }
+    // The planner's state, for tests and diagnostics.
+    int windowRoad(int slot) const { return m_roads[slot]; }
+    bool windowForward(int slot) const { return m_roadDir[slot]; }
+    int wayPointIndex() const { return m_wayPtIdx; }
+    int lap() const { return m_curLap; }
+    int numRoutes() const { return m_numRoutes; }
+    int bestRoute() const { return m_bestRoute; }
+    std::span<const RouteNode> route(int r) const {
+        return {m_routes[static_cast<std::size_t>(r)].data(),
+                static_cast<std::size_t>(m_routeNodeCount[static_cast<std::size_t>(r)])};
+    }
+    // The best route's nodes (empty when none).
+    std::span<const RouteNode> bestNodes() const {
+        return m_bestRoute < 0 ? std::span<const RouteNode>{} : route(m_bestRoute);
+    }
 
 private:
+    // State machine (Driving.cpp).
     void initForward();
     void forward(float dt, std::span<const TrackedCar> cars, const DriveContext& ctx);
     void initBackup();
-    void backup(float dt, const DriveContext& ctx);
-    void finishedBackingUp(const DriveContext& ctx);
+    void backup(float dt);
+    void finishedBackingUp();
     void initShortcut();
-    void shortcut(float dt, const DriveContext& ctx);
-    void stop(const DriveContext& ctx);
-    void calcSpeed(float dt, const DriveContext& ctx);
-    void calcRoadSpeed(float dt, const DriveContext& ctx);
+    void shortcut(float dt, std::span<const TrackedCar> cars);
+    void stop();
+    void calcSpeed(float dt);
+    void calcRoadSpeed(float dt);
+    float checkDistance(int turn) const;
     void applyBrake(float brake, float dt);
-    // Writes the throttle, brakes and steering to the car (MM2 leaves its
-    // handbrake alone everywhere but in Forward).
     void apply();
-    // aiStuck and vehStuck in Forward and Shortcut; true when they took the
-    // controls this frame.
     bool handleStuck(float dt);
-    // Forward and Shortcut first: a car the game has made undrivable only
-    // revs (true: nothing else this frame).
     bool undrivable();
 
-    void enumRoutes(std::vector<RouteNode>& nodes, std::span<const TrackedCar> cars, const DriveContext& ctx,
-                    int depth);
-    void finishRoute(const std::vector<RouteNode>& nodes);
-    RouteNode roadTarget(const RouteNode& from, const RouteNode* before, const DriveContext& ctx) const;
-    const TrackedCar* blocking(const Vec3& from, const Vec3& to, std::span<const TrackedCar> cars,
-                               const DriveContext& ctx, float* along) const;
-    int roadState(const Vec3& p, const DriveContext& ctx, float hint) const;
+    // Waypoints and the road window (DrivingRoute.cpp).
+    void destMapComponent(const Vec3& pos, int& id, int& type) const;
+    int planRoute();
+    int locateWayPtFromRoad(int road);
+    void solveRoadTargetPoint(std::span<const TrackedCar> cars);
+    void solveShortcutTargetPoint();
+    int windowIntersectionAhead(int slot) const;
+
+    // The planner (DrivingRoute.cpp).
+    void calcRoute(std::span<const TrackedCar> cars);
+    void determineBestRoute();
+    void enumRoutes(int i);
+    int calcObstacleAvoidPoints(const TrackedCar& obstacle, int i, bool allowSidewalk, Vec3* pts, int* obs,
+                                int* surface, int* kind);
+    void enumTargets(const Vec3& pt, const TrackedCar& obstacle, int i, int roadSlot, int roadVert, int side,
+                     bool allowSidewalk, int depth, Vec3* pts, int* obs, int* surface, int* kind, int* count);
+    const TrackedCar* isTargetBlocked(const Vec3& from, const Vec3& to, int startVert, int startSlot,
+                                      int endVert, int endSlot, float extra, int* kind);
+    void saveTarget(int i, const Vec3& pt, const TrackedCar& obstacle, int surface, int blockKind, int kind);
+    void continueCheck(int i);
+    void setTargetPtToDestination(int i);
+    void nodeTurnAndDistance(int i);
+    int obstacleRoadIdx(const TrackedCar& o, int* vert) const;
+    const TrackedCar* trackedById(int id) const;
+    const TrackedCar* ambientObstacle(int index) const;
+
+    // Targets and turns (DrivingTargets.cpp).
+    void calcRoadTarget(int i, Vec3& from);
+    void calcDestinationTarget(int i, Vec3& from);
+    void initRoadTurns();
+    void calcRoadTurns();
+    float calcTurnIntersection(int w);
+    float calcCurrentMaxWidthAdjustment(int w) const;
+    float calcCurrentRdOffset(int w) const;
+    float calcNextMaxWidthAdjustment(int w) const;
+    float calcNextRdOffset(int w) const;
+    float laneTrafficIntrusion(int road, bool rightList, int bucket, const Vec3& base,
+                               const Vec3& side) const;
+    int inSharpTurn(int i);
+    int calcSharpTurnTarget(int& i, int turnNode);
+    void saveTurnTarget(int i, bool calcAngle);
+
+    const city::AiPath* road(int slot) const;
+    const PathInfo* roadInfo(int slot) const;
 
     phys::CarSim& m_car;
     int m_selfId = -1;
+    const MapView* m_map = nullptr;
+    int m_aiId = 0;
+    int m_vehicleType = -1; // aiVehiclePhysics +0x968a
     // aiVehiclePhysics::Init: the car's bumper and side distances from the
     // box of its collision bound (model space): FrontBumperDistance -min z,
     // BackBumperDistance max z, LSideDistance -min x, RSideDistance max x.
@@ -309,30 +402,56 @@ private:
     bool m_wrecked = false;
     float m_wreckTime = 0.0f;
 
-    std::vector<PlannedRoute> m_routes;
-    PlannedRoute m_best;
+    // The cars of this frame (for the obstacle lookups).
+    std::span<const TrackedCar> m_cars;
+
+    // Waypoints (RegisterRoute).
+    std::vector<int> m_wayPts; // +0x9674
+    int m_wayPtIdx = 1;        // +0x967a
+    int m_curLap = 1;          // +0x9682
+    int m_numLaps = 0;         // +0x9684
+    int m_numWayPtRoads = 0;   // +0x968e
+    int m_curRoom = 0;         // +0x967c
+    int m_curCompType = 3;     // +0x967e
+    int m_curCompId = 1;       // +0x9680
+    Vec3 m_dest;               // +0x9648
+    Vec3 m_destHeading;        // +0x9654
+    int m_destCompType = 0;    // +0x9660
+    int m_destCompId = 0;      // +0x9662
+    bool m_toDestination = false; // +0x9664
+    float m_roadOffset = 0.0f; // +0x9738
+
+    // The road window: the road the car is on and the next two (path ids,
+    // -1 none) and their directions (true: with the vertex index).
+    int m_roads[3] = {-1, -1, -1}; // +0x26c
+    bool m_roadDir[3] = {};        // +0x268
+    int m_turnsRoad = -1;          // +0x278
+
+    // The window's junction turns (road w into road w + 1).
+    float m_turnAngle[2] = {};  // +0x96a0
+    float m_turnDir[2] = {};    // +0x96a8
+    Vec3 m_turnRef;             // +0x96b0
+    Vec3 m_turnRefStart;        // +0x96bc
+    Vec3 m_turnCorner[2];       // +0x96c8
+    Vec3 m_turnCenter[2];       // +0x96e0
+    Vec3 m_turnStartDir[2];     // +0x96f8
+    Vec3 m_turnEndDir[2];       // +0x9710
+    float m_turnSetback[2] = {}; // +0x9728
+    float m_turnRadius[2] = {};  // +0x9730
+
+    // The working route and the candidates.
+    std::array<RouteNode, kMaxNodes> m_nodes{};                                 // +0x2d4
+    std::array<std::array<RouteNode, kMaxNodes>, kMaxRoutes> m_routes{};         // +0x874
+    std::array<int, kMaxRoutes> m_routeBlocked{};                                // +0x9518
+    std::array<int, kMaxRoutes> m_routeOnSidewalk{};                             // +0x957c
+    std::array<int, kMaxRoutes> m_routeNodeCount{};                              // +0x95e0
+    int m_numRoutes = 0;                                                         // +0x9644
+    int m_bestRoute = -1;                                                        // +0x9514
+    // m_Routes[-1] is m_Nodes in MM2 (best route -1 reads the working route).
+    const std::array<RouteNode, kMaxNodes>& routeOrWorking(int r) const {
+        return r < 0 ? m_nodes : m_routes[static_cast<std::size_t>(r)];
+    }
 };
-
-// aiVehiclePhysics::CalcRoadTarget on a course: the next route point from
-// `from` (`before` the point before it, or null when `from` is the car,
-// facing `carForward`), for a car `side` m from its centre to its side.
-RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float side,
-                       const RouteParams& params, const DriveContext& ctx);
-// The same with the car's own left and right side distances (MM2 moves the
-// left curb in by LSideDistance + 1 m and the right one by RSideDistance + 1 m).
-RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float leftSide,
-                       float rightSide, const RouteParams& params, const DriveContext& ctx);
-
-// aiVehiclePhysics::CalcRoadSpeed for the bends of a course ahead of `s`:
-// the brake fraction the worst of them demands, and its corner speed in
-// `vmax`. A bend of deflection d (|d| > 0.7 rad) with room R between the car
-// and its inside curb has the radius r = R / (1 - sin((3.14 - |d|) / 2)) and
-// the corner speed sqrt(23.76 r) * cornerSpeedFactor (halved when the road
-// after it is an alley); the brake is (speed - vmax) / (23.76 t) with t the
-// time to the turn-in point r cos h before the bend.
-// Turns already entered (past the turn-in point) are not braked for.
-float turnBrake(const Course& course, float s, float side, float speed, float cornerSpeedFactor,
-                float lookAhead, float* vmax = nullptr);
 
 // Rotates a car about the vertical axis through its centre of gravity.
 void yawInPlace(phys::CarSim& car, float angle);

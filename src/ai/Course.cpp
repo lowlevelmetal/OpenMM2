@@ -771,6 +771,14 @@ int Course::lanesAt(float s) const {
 }
 
 float Course::locate(const Vec3& p, float hint, float window, float* lateral, float* distance) const {
+    if (!std::isfinite(p.x) || !std::isfinite(p.z) || !std::isfinite(hint)) {
+        // A car the physics lost: nowhere on the course.
+        if (lateral)
+            *lateral = 0.0f;
+        if (distance)
+            *distance = std::numeric_limits<float>::max();
+        return std::isfinite(hint) ? wrap(hint) : 0.0f;
+    }
     const auto& pts = m_line.points;
     const auto& d = m_line.distances;
     const float len = m_line.length;

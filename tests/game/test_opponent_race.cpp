@@ -12,8 +12,10 @@
 //                               damage taken
 // e.g. OPENMM2_AI_TRAILS=local/out/ai2 test_game --gtest_filter='OpponentRace.*:PoliceChase.*'
 #include "TestData.h"
+#include "ai/MapView.h"
 #include "ai/Opponent.h"
 #include "ai/Police.h"
+#include "ai/Traffic.h"
 #include "ai/World.h"
 #include "asset/Image.h"
 #include "city/CityData.h"
@@ -258,6 +260,13 @@ struct RaceRun {
     float time = 0.0f;
 };
 
+// aiMap::StopRoadTraffic, as RaceScreen calls it round the racers' update.
+void stopRoadTraffic(const RaceRun& run, ai::World& ai, bool stop) {
+    auto stopSources = [&ai](int node, bool s) { ai.traffic().stopSources(node, s); };
+    for (const auto& r : run.racers)
+        r.driver->driver().stopRoadTraffic(stop, stopSources);
+}
+
 void printCourse(const AiRacer& r, const std::string& file) {
     const ai::Course& c = r.driver->course();
     std::printf("car %d %s: start s %.1f of %.1f, finish %.1f, intersections", r.id, file.c_str(), c.startDistance(),
@@ -300,7 +309,6 @@ void printStuck(AiRacer& r, float time, const Vec3& pos) {
 // would: hold during a 1 s countdown, then AI, then the physics step.
 RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSetup& setup, float maxSeconds) {
     RaceRun run;
-    const ai::RoadNetwork& net = cw.ai->network();
     int id = 1;
     for (const auto& o : setup.opponents) {
         AiRacer r;
@@ -309,8 +317,8 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
             continue;
         r.id = id++;
         std::string error;
-        r.driver = ai::Opponent::create(net, r.vehicle->sim(), o.path, o.params, setup.laps, r.id, &error,
-                                        cw.world.get(), o.vehicle);
+        r.driver = ai::Opponent::create(cw.ai->map(), r.vehicle->sim(), o.path, o.params, setup.laps, r.id,
+                                        r.id - 1, &error, cw.world.get(), o.vehicle);
         EXPECT_TRUE(r.driver) << o.pathFile << ": " << error;
         if (!r.driver)
             continue;
@@ -330,14 +338,17 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
             // so other racers, not ambient traffic, to the planner).
             ai::TrackedCar t = track(*r.vehicle, r.id);
             t.suspect = true;
+            r.driver->describe(t);
             cars.push_back(t);
             bodies.push_back(&r.vehicle->sim().body);
         }
         addAmbient(cars, *cw.ai);
+        stopRoadTraffic(run, *cw.ai, false);
         for (auto& r : run.racers) {
             r.driver->setHeld(run.time < 1.0f);
             r.driver->update(kDt, cars);
         }
+        stopRoadTraffic(run, *cw.ai, true);
         cw.step(bodies, run.racers.front().vehicle->sim().body.ics.matrix.m3);
         run.time += kDt;
         if (debugLevel() == 2 && frame % 15 == 0)
@@ -556,6 +567,30 @@ TEST(OpponentRace, RecoversWhenFacingAWall) {
         }
     }
     ASSERT_GT(wallDist, 0.0f) << "no wall beside the circuit";
+    // The route from the road the car is put on: the course's intersections
+    // round the loop from that leg's start, back to it.
+    ai::RouteRegistration route = ai::Opponent::routeFromPath(cw->ai->map(), o.path, 1);
+    {
+        const auto& legs = course->legs();
+        float lineLateral = 0.0f;
+        const float at = course->locate(facing.m3, &lineLateral);
+        std::size_t k = 0;
+        for (std::size_t i = 0; i < legs.size(); ++i)
+            if (legs[i].start <= at && at <= legs[i].end)
+                k = i;
+        route.wayPoints.clear();
+        for (std::size_t i = 0; i < legs.size(); ++i) {
+            const ai::CourseLeg& leg = legs[(k + i) % legs.size()];
+            if (route.wayPoints.empty())
+                route.wayPoints.push_back(leg.from);
+            if (route.wayPoints.back() != leg.to)
+                route.wayPoints.push_back(leg.to);
+        }
+        if (!route.wayPoints.empty() && route.wayPoints.back() != route.wayPoints.front())
+            route.wayPoints.push_back(route.wayPoints.front());
+        if (const ai::Intersection* end = cw->ai->map().intersection(route.wayPoints.front()))
+            route.destination = end->centre;
+    }
 
     AiRacer r;
     r.vehicle = spawnCar(vfs, *cw->world, o.vehicle, facing);
@@ -563,7 +598,8 @@ TEST(OpponentRace, RecoversWhenFacingAWall) {
     r.id = 1;
     ai::OpponentSettings settings = ai::OpponentSettings::fromData(o.params, 1);
     settings.world = cw->world.get();
-    r.driver = std::make_unique<ai::Opponent>(r.vehicle->sim(), std::move(*course), settings, r.id);
+    r.driver = std::make_unique<ai::Opponent>(r.vehicle->sim(), std::move(*course), settings, r.id,
+                                              &cw->ai->map(), route, 0, o.vehicle);
 
     RaceRun run;
     run.racers.push_back(std::move(r));
@@ -686,11 +722,21 @@ ChaseResult runChase(const char* plotName, const ChaseOptions& opt) {
     ss.speedLimit = opt.speed;
     ss.world = cw->world.get();
     ss.resetAfterSeconds = 0.0f;
-    ai::Opponent driver(suspect->sim(), std::move(*course), ss, 2);
+    // The suspect's route as a racer's: from the intersection behind it on
+    // its road, through `near`, to `farEnd`.
+    const Vec3 goal = net.intersections()[static_cast<std::size_t>(farEnd)].centre;
+    ai::RouteRegistration suspectRoute{route, 1, goal, {}};
+    if (const ai::RoadSpot spot = ai::locateOnRoads(net, suspectStart); spot.path >= 0) {
+        const ai::PathInfo& info = net.paths()[static_cast<std::size_t>(spot.path)];
+        const int behind = info.intersection[0] == near ? info.intersection[1] : info.intersection[0];
+        if (behind >= 0 && behind != near && (info.intersection[0] == near || info.intersection[1] == near))
+            suspectRoute.wayPoints.insert(suspectRoute.wayPoints.begin(), behind);
+    }
+    ai::Opponent driver(suspect->sim(), std::move(*course), ss, 2, &cw->ai->map(), suspectRoute, 0, "vpbug");
 
-    ai::PoliceSquad police(net);
+    ai::PoliceSquad police(cw->ai->map());
     ai::PoliceSettings ps = ai::PoliceSettings::fromData(post->params, opt.chaseDistance);
-    police.add(cop->sim(), post->spawn, 1, ps);
+    police.add(cop->sim(), post->spawn, 1, ps, post->vehicle);
     ai::PoliceCar& officer = *police.cars().front();
 
     std::vector<Vec3> copTrail, suspectTrail;
@@ -709,9 +755,22 @@ ChaseResult runChase(const char* plotName, const ChaseOptions& opt) {
         const std::vector<ai::TrackedCar> cars{cc, sc};
         if (opt.jumpAhead > 0.0f && result.chased && t > result.chaseStarted + 3.0f && t < result.chaseStarted + 3.0f + kDt) {
             const ai::Course& c = driver.course();
-            ai::placeOnCourse(suspect->sim(), c, driver.courseDistance() + opt.jumpAhead, 0.0f, {}, 2, {},
-                              cw->world.get());
+            const float s = driver.courseDistance() + opt.jumpAhead;
+            ai::placeOnCourse(suspect->sim(), c, s, 0.0f, {}, 2, {}, cw->world.get());
+            // On from where it now is: the course's intersections from the
+            // start of the leg it is on.
+            ai::RouteRegistration on = driver.route();
+            on.wayPoints.clear();
+            for (const ai::CourseLeg& leg : c.legs()) {
+                if (leg.end < s)
+                    continue;
+                if (on.wayPoints.empty())
+                    on.wayPoints.push_back(leg.from);
+                if (on.wayPoints.back() != leg.to)
+                    on.wayPoints.push_back(leg.to);
+            }
             driver.reset();
+            driver.setRoute(on);
         }
         driver.setHeld(opt.parked);
         driver.update(kDt, cars);

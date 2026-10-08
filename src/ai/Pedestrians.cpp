@@ -537,7 +537,7 @@ int Pedestrians::pickNextRoad(Ped& p) {
     if (m_lights && m_lights->hasLights(node) && m_lights->cycleAt(node) != LightCycle::Rotate)
         choice = m_rng.irand() % 3;
     // aiPedestrian::UpcomingAccident: a car out of normal driving there.
-    if (m_accident && m_accident(node, -1))
+    if (m_accident && m_accident(node, -1, 0))
         choice = 0;
     p.crossChoice = choice;
     int next = p.path;
@@ -1099,7 +1099,7 @@ void Pedestrians::crossTargets(const Ped& p, Vec3& nearSide, Vec3& farSide) cons
 // aiPedestrian::Accident: a car out of normal driving in the intersection
 // being crossed or near this road's end.
 bool Pedestrians::accident(const Ped& p) const {
-    return m_accident && m_accident(crossedNode(p), p.path);
+    return m_accident && m_accident(crossedNode(p), p.path, p.dir);
 }
 
 // Back to the sidewalk it came from, turned round (PreCrossStreet,

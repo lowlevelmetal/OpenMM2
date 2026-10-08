@@ -155,6 +155,16 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     }
     world->m_traffic = std::make_unique<Traffic>(*world->m_network, world->m_lights, std::move(data), traffic,
                                                  settings.seed);
+    // The drivers' map: the rooms' components by the level's room lookup
+    // (a city without PSDL rooms keeps MapView's own), and the traffic's
+    // obstacle lists.
+    world->m_map = std::make_unique<MapView>(*world->m_network);
+    if (!city.psdl.rooms.empty()) {
+        const city::RoomLocator* rooms = world->m_rooms.get();
+        world->m_map->setRoomFinder([rooms](const Vec3& p, int hint) { return rooms->find(p, hint); });
+    }
+    world->m_map->setTraffic(world->m_traffic.get());
+    world->m_traffic->setMap(world->m_map.get());
 
     // aiMap::Init: trunc([Ped Pool] x density) pedestrians of the race's
     // (else the city's) good- or bad-weather types.
@@ -175,7 +185,7 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     world->m_peds->setLights(&world->m_lights);
     Traffic* ambient = world->m_traffic.get();
     world->m_peds->setAccidentQuery(
-        [ambient](int node, int path) { return ambient->accidentAt(node, path); });
+        [ambient](int node, int path, int dir) { return ambient->accidentAt(node, path, dir); });
 
     // Traffic light poles (aiTrafficLightSet::SetFourWay,
     // aiTrafficLightInstance::Init): the city's single-head model for

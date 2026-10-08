@@ -2,6 +2,7 @@
 // and docs/ai.md for what is ported and what is inferred.
 #include "ai/Police.h"
 
+#include "ai/MapView.h"
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
 
@@ -30,6 +31,8 @@ float xzDist(const Vec3& a, const Vec3& b) {
 }
 
 constexpr float kApprehendRange = 25.0f; // aiPoliceForce::State's apprehend range
+// lvlRoomInfo's "water of death" room flag (city::LevelRoomFlag::WaterOfDeath).
+constexpr std::uint16_t kWaterOfDeathRoom = 0x04;
 
 } // namespace
 
@@ -161,20 +164,29 @@ PoliceSettings PoliceSettings::fromData(std::span<const float> params, std::opti
 
 // --- aiPoliceOfficer -------------------------------------------------------------
 
-PoliceCar::PoliceCar(const RoadNetwork& net, phys::CarSim& car, const Mat34& post, int selfId,
-                     const PoliceSettings& settings)
-    : m_net(net), m_car(car), m_post(post), m_selfId(selfId), m_settings(settings), m_driver(car, selfId),
+PoliceCar::PoliceCar(const MapView& map, phys::CarSim& car, const Mat34& post, int selfId,
+                     const PoliceSettings& settings, int index, std::string_view vehicle)
+    : m_map(map), m_net(map.net()), m_car(car), m_post(post), m_selfId(selfId), m_settings(settings),
+      m_driver(car, selfId, &map, index, vehicle),
       m_random(settings.seed + static_cast<std::uint64_t>(selfId) * 7919u) {
     m_prevCallback = car.onImpactCallback;
     car.onImpactCallback = [this](const phys::CarImpact& impact) { onImpact(impact); };
     // aiPoliceOfficer::Init: vehStuck's TimeThresh 0.75 s.
     configureAiVehStuck(car, 0.75f);
-    m_destination = post.m3;
     m_pursuit = 0;
     m_lastPursuit = -1;
     m_apprehend = 3;
-    setRouteParams(0.0f, 5.0f, 2.0f);
+    routeToPost();
+}
+
+void PoliceCar::routeToPost() {
+    // aiPoliceOfficer::Reset: Stop, then RegisterRoute to the post with no
+    // waypoints (destination speed 0, 5 m short, corner factor 2), which
+    // sets Forward (Shortcut off the roads): the cop holds itself braked
+    // short of its post while it watches.
     m_driver.setState(PhysicsDriver::State::Stop);
+    setRouteParams(0.0f, 5.0f, 2.0f);
+    m_driver.registerRoute({{}, 0, m_post.m3, {}});
 }
 
 PoliceCar::~PoliceCar() {
@@ -196,12 +208,7 @@ void PoliceCar::reset() {
     m_siren = false;
     m_mode = Mode::Parked;
     m_reason = Reason::None;
-    m_route.reset();
-    m_routeIds.clear();
-    m_destination = m_post.m3;
-    m_destinationHeading = {};
-    setRouteParams(0.0f, 5.0f, 2.0f);
-    m_driver.setState(PhysicsDriver::State::Stop);
+    routeToPost();
 }
 
 void PoliceCar::onImpact(const phys::CarImpact& impact) {
@@ -269,7 +276,7 @@ void PoliceCar::acquire(const TrackedCar& c, Reason why) {
     m_reason = why;
     m_driver.setState(PhysicsDriver::State::Forward);
     m_pursuit = PoliceForce::kFollow;
-    m_perpComponent = mapComponent(m_net, c.position, -1, m_perpComponentType);
+    m_perpRoom = m_map.mapComponent(c.position, m_perpComponent, m_perpComponentType, 0);
     follow(c, xzDist(m_car.body.ics.matrix.m3, c.position));
 }
 
@@ -304,64 +311,17 @@ void PoliceCar::setRouteParams(float destinationSpeed, float stopShort, float co
 }
 
 void PoliceCar::routeTo(const Vec3& goal, const Vec3& heading) {
-    // aiMap::CalcRoute + aiVehiclePhysics::RegisterRoute: the waypoint
-    // intersections from the cop to `goal`, recomputed every frame as MM2
-    // does; the course along them is rebuilt when they change, or every
-    // second / when the goal has moved 15 m (OpenMM2: the course carries the
-    // goal's road as its last leg).
-    m_destination = goal;
-    m_destinationHeading = heading;
-    const Vec3 pos = m_car.body.ics.matrix.m3;
-    std::vector<int> ids = calcRoute(m_net, pos, goal);
-    const bool stale =
-        !m_route || ids != m_routeIds || m_routeAge > 1.0f || xzDist(goal, m_routeGoal) > 15.0f;
-    if (stale) {
-        m_route.reset();
-        if (ids.empty())
-            m_route = Course::alongRoad(m_net, pos, goal);
-        else
-            m_route = Course::build(m_net, ids, pos, goal, false);
-        m_routeIds = std::move(ids);
-        m_routeGoal = goal;
-        m_routeAge = 0.0f;
-        m_lastLeg = 0.0f;
-        if (m_route) {
-            m_s = m_route->locate(pos, m_route->startDistance(), 40.0f, &m_lateral);
-            const float finish = m_route->finishDistance();
-            m_lastLeg = finish;
-            for (const CourseLeg& leg : m_route->legs())
-                if (leg.end <= finish)
-                    m_lastLeg = std::min(m_lastLeg, finish - leg.end);
-        }
-    }
-    // RegisterRoute: Shortcut when the cop is on no road or intersection,
-    // else Forward.
-    int type = 0;
-    mapComponent(m_net, pos, -1, type);
-    m_driver.setState(type == 0 ? PhysicsDriver::State::Shortcut : PhysicsDriver::State::Forward);
-}
-
-DriveContext PoliceCar::context() {
-    DriveContext ctx;
-    ctx.destination = m_destination;
-    ctx.destinationHeading = m_destinationHeading;
-    if (m_route) {
-        const Vec3 pos = m_car.body.ics.matrix.m3;
-        m_s = m_route->locate(pos, m_s, 30.0f + m_car.speed() * 0.1f, &m_lateral);
-        ctx.course = &*m_route;
-        ctx.s = m_s;
-        ctx.lateral = m_lateral;
-        ctx.remaining = std::max(m_route->finishDistance() - m_s, 0.0f);
-        ctx.finalApproach = ctx.remaining <= m_lastLeg + 0.5f;
-    } else {
-        ctx.finalApproach = true;
-        ctx.remaining = xzDist(m_car.body.ics.matrix.m3, m_destination);
-    }
-    // RegisterRoute restarts the waypoint count with every new route, which
-    // FollowPerpetrator and Block register every frame: a cop never gets
-    // past its first waypoint, so it never steers round racers.
-    ctx.waypointsPassed = 1;
-    return ctx;
+    // aiMap::CalcRoute + aiVehiclePhysics::RegisterRoute, every frame: the
+    // waypoint intersections from the cop to `goal`, no laps; RegisterRoute
+    // starts the route afresh (waypoint 1, Forward, or Shortcut off the
+    // roads), so a cop never gets past its first waypoint and never steers
+    // round racers.
+    RouteRegistration route;
+    route.wayPoints = calcRoute(m_net, m_car.body.ics.matrix.m3, goal);
+    route.laps = 0;
+    route.destination = goal;
+    route.destinationHeading = heading;
+    m_driver.registerRoute(route);
 }
 
 void PoliceCar::follow(const TrackedCar& perp, float dist) {
@@ -456,15 +416,15 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
     // (lvlInstance flag 0x8000, cleared each frame).
     const bool touching = m_touchingPlayer || m_car.body.hitByPlayer;
     m_touchingPlayer = false;
-    m_routeAge += dt;
     auto& ics = m_car.body.ics;
+    DriveContext ctx;
+    ctx.touchingPlayer = touching;
 
     if (!active) {
         // OpenMM2: sessions in which the police are held.
         if (m_pursuit != 0 && m_pursuit != kOutOfAction)
             escape(force);
         m_driver.setState(PhysicsDriver::State::Stop);
-        DriveContext ctx = context();
         m_driver.driveRoute(dt, cars, ctx);
         m_mode = m_pursuit == kOutOfAction ? Mode::Disabled : Mode::Parked;
         return;
@@ -480,7 +440,9 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
             if (!perp) {
                 escape(force);
             } else {
-                m_perpComponent = mapComponent(m_net, perp->position, m_perpComponent, m_perpComponentType);
+                // aiMap::MapComponent of the suspect, from the room it was in.
+                m_perpRoom =
+                    m_map.mapComponent(perp->position, m_perpComponent, m_perpComponentType, m_perpRoom);
                 const Vec3 pos = ics.matrix.m3;
                 const float dist = xzDist(pos, perp->position);
                 int st = force.state(m_selfId, perp->id, cars, dist);
@@ -514,15 +476,13 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
         // A cop in a room with lvlRoomInfo flag 4 (deep water) drops out:
         // PerpEscapes, then out of action until it is reset.
         const int room = m_car.body.room;
-        if (m_waterRooms && room > 0 && static_cast<std::size_t>(room) < m_waterRooms->size() &&
-            (*m_waterRooms)[static_cast<std::size_t>(room)] != 0) {
+        if (m_roomFlags && room > 0 && static_cast<std::size_t>(room) < m_roomFlags->size() &&
+            ((*m_roomFlags)[static_cast<std::size_t>(room)] & kWaterOfDeathRoom) != 0) {
             escape(force);
             m_pursuit = kOutOfAction;
         }
     }
 
-    DriveContext ctx = context();
-    ctx.touchingPlayer = touching;
     if (m_pursuit == PoliceForce::kApprehend && m_apprehend == kMirror && perp)
         m_driver.mirror(dt, *perp);
     else
@@ -546,15 +506,17 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
 
 // --- squad ---------------------------------------------------------------------
 
-PoliceSquad::PoliceSquad(const RoadNetwork& net) : m_net(net) {}
+PoliceSquad::PoliceSquad(const MapView& map) : m_map(map) {}
 
-PoliceCar& PoliceSquad::add(phys::CarSim& car, const Mat34& post, int selfId, const PoliceSettings& settings) {
-    m_cars.push_back(std::make_unique<PoliceCar>(m_net, car, post, selfId, settings));
-    m_cars.back()->setWaterRooms(&m_waterRooms);
+PoliceCar& PoliceSquad::add(phys::CarSim& car, const Mat34& post, int selfId, const PoliceSettings& settings,
+                            std::string_view vehicle) {
+    m_cars.push_back(std::make_unique<PoliceCar>(m_map, car, post, selfId, settings,
+                                                 static_cast<int>(m_cars.size()), vehicle));
+    m_cars.back()->setRoomFlags(&m_roomFlags);
     return *m_cars.back();
 }
 
-void PoliceSquad::setWaterRooms(std::vector<std::uint8_t> rooms) { m_waterRooms = std::move(rooms); }
+void PoliceSquad::setRoomFlags(std::vector<std::uint16_t> flags) { m_roomFlags = std::move(flags); }
 
 void PoliceSquad::update(float dt, std::span<const TrackedCar> cars, const phys::GroundQuery* los, bool active) {
     for (auto& c : m_cars)

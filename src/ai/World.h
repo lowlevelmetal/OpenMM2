@@ -75,6 +75,9 @@ public:
     }
 
     const RoadNetwork& network() const { return *m_network; }
+    // The AI drivers' view of the map (rooms, components, obstacle lists).
+    MapView& map() { return *m_map; }
+    const MapView& map() const { return *m_map; }
     TrafficLights& lights() { return m_lights; }
     Traffic& traffic() { return *m_traffic; }
     Pedestrians& pedestrians() { return *m_peds; }
@@ -96,6 +99,7 @@ private:
     std::unique_ptr<city::RoomLocator> m_rooms;
     TrafficLights m_lights;
     std::unique_ptr<Traffic> m_traffic;
+    std::unique_ptr<MapView> m_map;
     std::unique_ptr<Pedestrians> m_peds;
     std::vector<Signal> m_signals;
     float m_accumulator = 0.0f;

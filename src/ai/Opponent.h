@@ -2,12 +2,16 @@
 
 // Race opponent driving a physics car (phys::CarSim with its vehicle's own
 // tune: MM2 builds AI cars with vehCar::Init(<car>) like the player's) along
-// its .opp driving line: MM2's aiRouteRacer, an
-// aiVehiclePhysics (ai::PhysicsDriver) given its route once
-// (aiRouteRacer::DriveRoute -> RegisterRoute):
-//   * the .opp rows between the first (the grid place and heading) and the
-//     last (the destination) are the waypoint intersections; circuits drive
-//     them `laps` times;
+// its .opp route: MM2's aiRouteRacer, an aiVehiclePhysics
+// (ai::PhysicsDriver) given its route once (aiRouteRacer::DriveRoute ->
+// RegisterRoute):
+//   * aiRouteRacer::Init reads the .opp rows: the first is the grid place and
+//     heading, the last the destination, and each row between names the
+//     intersection of the PSDL room it lies in (the room's first
+//     intersection component): those are the waypoints. Circuits drive them
+//     `laps` times, other races once;
+//   * on its first frame after Reset the racer registers the route and holds
+//     the ambient traffic at its first waypoint (aiIntersection::StopSources);
 //   * the [Opponent] line of the race's .aimap tunes the driver
 //     (aiRaceData; see OpponentSettings::fromData);
 //   * held at the start it revs in neutral with the brakes on (undrivable);
@@ -15,10 +19,15 @@
 //     car is repaired after 5 s in circuits only.
 // MM2 has no rubber-banding: nothing scales the opponents by race position.
 //
+// OpenMM2 also lays the .opp route out as an ai::Course along the roads, to
+// measure the racer's progress (race positions, laps) and to put a car that
+// has made no progress for a long time back on its route (not in MM2).
+//
 // Per frame, before the physics step:
 //   opponent.setHeld(!session.racersReleased() || !session.opponentActive(i));
 //   opponent.update(dt, cars);
-// and on the session's OpponentFinished event: opponent.finish().
+// A racer that crosses the finish line drives on to its destination (MM2's
+// game only reads aiRouteRacer::Finished); finish() is for tools and tests.
 //
 // First ported from Open1560 (MM1's aiVehicleOpponent). Open1560 - An Open
 // Source Re-Implementation of Midtown Madness 1 Beta, Copyright (C) 2020
@@ -42,6 +51,8 @@ struct Impact;
 
 namespace mm2::ai {
 
+class MapView;
+
 struct OpponentSettings {
     // aiRouteRacer::DriveRoute's RegisterRoute settings, from the race's
     // .aimap [Opponent] line (see fromData).
@@ -51,9 +62,6 @@ struct OpponentSettings {
     // aiVehiclePhysics::Init's repair flag (game mode 3, circuits): a wrecked car
     // is repaired after 5 s; elsewhere it stays wrecked.
     bool repairWhenWrecked = false;
-    // Never takes the sidewalk round an obstacle (vppanozgt; see
-    // goesOverSidewalks).
-    bool noSidewalk = false;
     // OpenMM2: top speed for scripted cars (m/s, 0 = none); not in MM2.
     float speedLimit = 0.0f;
     // OpenMM2 recovery (not in MM2): no progress for this long puts the car
@@ -86,8 +94,13 @@ public:
         Stopped,   // disabled (fell through the world), or braked to a stop
     };
 
-    // `selfId` is the id this car has in the TrackedCar lists.
-    Opponent(phys::CarSim& car, Course course, const OpponentSettings& settings, int selfId = -1);
+    // `selfId` is the id this car has in the TrackedCar lists, `racerIndex`
+    // its aiRouteRacer index (from 0), `vehicle` the car's base name
+    // (aiVehiclePhysics::Init's vehicle type). Without a map the car has no
+    // route to drive.
+    Opponent(phys::CarSim& car, Course course, const OpponentSettings& settings, int selfId = -1,
+             const MapView* map = nullptr, RouteRegistration route = {}, int racerIndex = 0,
+             std::string_view vehicle = {});
     ~Opponent();
     Opponent(const Opponent&) = delete;
     Opponent& operator=(const Opponent&) = delete;
@@ -95,11 +108,19 @@ public:
     // From the session's OpponentSetup: .opp rows and aimap numbers.
     // `world` is OpponentSettings::world; `vehicle` the car's name
     // (aiVehiclePhysics::Init's type, see goesOverSidewalks).
-    static std::unique_ptr<Opponent> create(const RoadNetwork& net, phys::CarSim& car,
+    static std::unique_ptr<Opponent> create(const MapView& map, phys::CarSim& car,
                                             std::span<const city::OpponentPoint> path, std::span<const float> params,
-                                            int laps, int selfId, std::string* error = nullptr,
+                                            int laps, int selfId, int racerIndex,
+                                            std::string* error = nullptr,
                                             const phys::GroundQuery* world = nullptr,
                                             std::string_view vehicle = {});
+    // aiRouteRacer::Init and DriveRoute's RegisterRoute arguments for an .opp
+    // route: the waypoints (the first intersection component of each middle
+    // row's room; OpenMM2 takes the nearest intersection when the room has
+    // none, where MM2 stops with "Point %d is not in a cross road"), the
+    // destination (the last row) and the laps (`laps` in circuits, else 1).
+    static RouteRegistration routeFromPath(const MapView& map, std::span<const city::OpponentPoint> path,
+                                           int laps);
 
     // Call after placing the car on its grid spot (aiRouteRacer::Reset).
     void reset();
@@ -129,19 +150,34 @@ public:
     const Course& course() const { return m_course; }
     const OpponentSettings& settings() const { return m_settings; }
     const PhysicsDriver& driver() const { return m_driver; }
+    const RouteRegistration& route() const { return m_route; }
+    // OpenMM2 (tools, tests): drive `route` instead, registered on the next
+    // update as after Reset.
+    void setRoute(RouteRegistration route) {
+        m_route = std::move(route);
+        m_registered = false;
+    }
+    // This car as an obstacle for the other drivers (aiObstacle::CurrentRoadIdx
+    // asks its driver; IsTargetBlocked compares the racers' indices).
+    void describe(TrackedCar& car) const {
+        car.racer = &m_driver;
+        car.racerIndex = m_driver.aiId();
+    }
     int resets() const { return m_resets; }
     int backups() const { return m_driver.backups(); }
 
 private:
     void trackProgress(float dt);
     float remainingDistance() const;
-    int waypointsPassed() const;
 
     phys::CarSim& m_car;
     Course m_course;
     OpponentSettings m_settings;
     int m_selfId = -1;
+    const MapView* m_map = nullptr;
+    RouteRegistration m_route;
     PhysicsDriver m_driver;
+    bool m_registered = false; // aiRouteRacer 0x9784 == 0x9782: the route is registered
     std::function<void(const phys::CarImpact&)> m_prevCallback;
 
     Mode m_mode = Mode::Held;
@@ -155,7 +191,6 @@ private:
     float m_lateral = 0.0f;  // current offset from the line (+ right)
     float m_progress = 0.0f; // unwrapped, from the start
     float m_lastLeg = 0.0f;  // course distance from the last waypoint to the destination
-    std::vector<float> m_waypointProgress; // progress at each waypoint of the first lap
     float m_bestProgress = 0.0f;
     float m_noProgressTime = 0.0f;
     int m_resets = 0;

@@ -1,5 +1,6 @@
 #include "ai/PathGeometry.h"
 
+#include <algorithm>
 #include <bit>
 #include <cmath>
 
@@ -42,11 +43,132 @@ float pathCenterDist(const city::AiPath& path, int i) {
     if (i <= 0)
         return std::bit_cast<float>(path.unknown);
     const auto k = static_cast<std::size_t>(i - 1);
+    if (path.centerLengths.empty())
+        return 0.0f; // hand-built maps without the lengths
     return k < path.centerLengths.size() ? path.centerLengths[k] : path.centerLengths.back();
 }
 
 float pathCenterLength(const city::AiPath& path, int a, int b) {
     return pathCenterDist(path, b) - pathCenterDist(path, a);
+}
+
+int pathRoadVertice(const city::AiPath& p, const Vec3& pos, int side) {
+    const int n = static_cast<int>(p.center.size());
+    int result = n;
+    float best = 9999.0f;
+    float prev = 0.0f;
+    for (int j = 0; j < n; ++j) {
+        const auto k = static_cast<std::size_t>(j);
+        const float rx = pos.x - p.center[k].x;
+        const float rz = pos.z - p.center[k].z;
+        const float along = rx * p.zAxis[k].x + rz * p.zAxis[k].z;
+        if (-0.1f < along && (along < (pathCenterLength(p, 0, j) - prev) + 2.0f || j == 0)) {
+            const float lat = std::abs(rx * p.xAxis[k].x + rz * p.xAxis[k].z);
+            if (lat < best) {
+                result = j;
+                best = lat;
+                if (lat < p.halfWidth + 4.0f)
+                    break;
+            }
+        }
+        // (MM2 keeps the length up to the vertex before this one, so the
+        // window above spans the two sections before the vertex.)
+        if (j != 0)
+            prev = pathCenterLength(p, 0, j - 1);
+    }
+    if (p.halfWidth + 4.0f < best) {
+        const auto k = static_cast<std::size_t>(n - 1);
+        const float rx = pos.x - p.center[k].x;
+        const float rz = pos.z - p.center[k].z;
+        const float along = rx * p.zAxis[k].x + rz * p.zAxis[k].z;
+        if (along < 0.0f && std::abs(rx * p.xAxis[k].x + rz * p.xAxis[k].z) < best)
+            result = n;
+    }
+    return side == 1 ? result : n - result;
+}
+
+int pathRoadVertice(const city::AiPath& p, const Vec3& pos, int side, int start) {
+    const int n = static_cast<int>(p.center.size());
+    for (int v = start; v < n; ++v) {
+        float along;
+        if (side == 1) {
+            const auto k = static_cast<std::size_t>(v);
+            along = (pos.x - p.center[k].x) * p.zAxis[k].x + (pos.z - p.center[k].z) * p.zAxis[k].z;
+        } else {
+            const auto k = static_cast<std::size_t>(n - v - 1);
+            along = -p.zAxis[k].x * (pos.x - p.center[k].x) + -p.zAxis[k].z * (pos.z - p.center[k].z);
+        }
+        if (4.0f < along)
+            return v;
+    }
+    return pathRoadVertice(p, pos, side);
+}
+
+bool pathDirection(const city::AiPath& p, const Mat34& m) {
+    // MM2 reads the frame at the returned vertex even when it is one past the
+    // last (out of bounds); OpenMM2 uses the last.
+    const int n = static_cast<int>(p.center.size());
+    const int v = std::min(pathRoadVertice(p, m.m3, 1, 1), n - 1);
+    const Vec3& z = p.zAxis[static_cast<std::size_t>(v)];
+    return !(m.m2.z * z.z + m.m2.x * z.x < 0.0f);
+}
+
+int pathIndex(const city::AiPath& p, const Vec3& pos) {
+    const int n = static_cast<int>(p.center.size());
+    for (int j = 1; j < n; ++j) {
+        const auto k = static_cast<std::size_t>(j);
+        const Vec3 d = pos - p.center[k];
+        const float along = (d.z * p.zAxis[k].z + d.y * p.zAxis[k].y) + d.x * p.zAxis[k].x;
+        if (along > 0.0f) {
+            const float lat = std::abs((d.z * p.xAxis[k].z + d.y * p.xAxis[k].y) + d.x * p.xAxis[k].x);
+            return lat < p.halfWidth ? j : n - 1;
+        }
+    }
+    return n - 1;
+}
+
+int pathIsPosOnRoad(const city::AiPath& p, const Vec3& pos, float margin, float* lat) {
+    // The second side's road and sidewalk limits, used for both sides. (A
+    // second side without lanes would read the word before its params in
+    // MM2; OpenMM2 gives it no road part.)
+    const int lanes = p.right.numLanes;
+    const float road = lanes > 0 ? p.right.params[static_cast<std::size_t>(2 * lanes - 1)] : 0.0f;
+    const float walk = p.right.params[static_cast<std::size_t>(std::min(2 * lanes + 1, 9))];
+    const float inner = road - margin;
+    const float outer = walk - margin;
+    const std::vector<Vec3>& edge = pathBoundary(p.right, 1);
+    const int n = static_cast<int>(p.center.size());
+    const Vec3& y = p.yAxis.front();
+    float l = 0.0f;
+    bool found = false;
+    for (int j = 0; j < n && !found; ++j) {
+        const auto k = static_cast<std::size_t>(j);
+        // The section's own direction from its outer edge and the road's
+        // first up axis (MM2 always takes vertex 0's).
+        Vec3 e = (k < edge.size() ? edge[k] : p.center[k]) - p.center[k];
+        const float l2 = (e.z * e.z + e.y * e.y) + e.x * e.x;
+        const float inv = l2 == 0.0f ? 0.0f : 1.0f / std::sqrt(l2);
+        e = e * inv;
+        const float cx = e.y * y.z - e.z * y.y;
+        const float cz = e.x * y.y - e.y * y.x;
+        const Vec3 rel = pos - p.center[k];
+        if (rel.z * cz + rel.x * cx > 0.0f) {
+            l = (rel.z * p.xAxis[k].z + rel.x * p.xAxis[k].x) * -1.0f;
+            found = true;
+        }
+    }
+    if (!found) {
+        const auto k = static_cast<std::size_t>(n - 1);
+        const Vec3 rel = pos - p.center[k];
+        l = (rel.z * p.xAxis[k].z + rel.x * p.xAxis[k].x) * -1.0f;
+    }
+    if (lat)
+        *lat = l;
+    if (l < inner && -inner < l)
+        return 1;
+    if (l >= outer || l <= -outer)
+        return 3;
+    return 2;
 }
 
 std::vector<SharpTurn> initRoadTurns(const city::AiPath& p) {

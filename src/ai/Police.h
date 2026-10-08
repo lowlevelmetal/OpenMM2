@@ -11,13 +11,17 @@
 //     pursued; the pursuer nearest the suspect, within 25 m, apprehends it
 //     (aiPoliceForce::State), the others follow;
 //   * following drives the road route to the suspect, aiming 5 m short of
-//     it at its speed + (distance - 12.5 m) (FollowPerpetrator);
+//     it at its speed + (distance - 12.5 m) (FollowPerpetrator): every frame
+//     aiMap::CalcRoute finds the waypoint intersections to the suspect and
+//     aiVehiclePhysics::RegisterRoute starts the route afresh;
 //     apprehending gets 12 m ahead of the suspect (or beside its tail when
 //     behind it) and then holds its heading 3 m/s slower to block it
 //     (Block / aiVehiclePhysics::Mirror);
 //   * the suspect escapes beyond [CopChaseDistance] (250 m unless the race's
 //     .aimap says otherwise); the cop then stops where it is and watches
-//     again. A wrecked cop is out of action;
+//     again. A wrecked cop, or one in a deep-water room, is out of action;
+//   * at its post (aiPoliceOfficer::Reset) the cop's route is the post itself,
+//     5 m short, which it holds braked;
 //   * with the throttle full and under 50 m/s a cop's momentum grows 3 % a
 //     frame.
 //
@@ -39,6 +43,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 
 namespace mm2::phys {
@@ -48,6 +53,8 @@ struct Impact;
 } // namespace mm2::phys
 
 namespace mm2::ai {
+
+class MapView;
 
 // aiPoliceForce: pursuers per suspect. Cars are identified by TrackedCar ids.
 class PoliceForce {
@@ -100,8 +107,10 @@ public:
         Disabled, // wrecked: out of action
     };
 
-    PoliceCar(const RoadNetwork& net, phys::CarSim& car, const Mat34& post, int selfId,
-              const PoliceSettings& settings = {});
+    // `index` is the officer's index (its aiVehicle id), `vehicle` the car's
+    // base name (aiVehiclePhysics::Init's vehicle type).
+    PoliceCar(const MapView& map, phys::CarSim& car, const Mat34& post, int selfId,
+              const PoliceSettings& settings = {}, int index = 0, std::string_view vehicle = {});
     ~PoliceCar();
     PoliceCar(const PoliceCar&) = delete;
     PoliceCar& operator=(const PoliceCar&) = delete;
@@ -129,10 +138,10 @@ public:
     enum class Reason : std::uint8_t { None, PlayerInView, OpponentInView };
     Reason lastReason() const { return m_reason; }
 
-    // Rooms with lvlRoomInfo flag 4 (city::waterRooms), indexed by room id;
-    // a cop whose car is in one drops out (aiPoliceOfficer::Update). Null or
-    // empty: no such rooms. Not owned.
-    void setWaterRooms(const std::vector<std::uint8_t>* rooms) { m_waterRooms = rooms; }
+    // The game's room flags (lvlRoomInfo, by room id); a cop whose car is in
+    // a room with the "water of death" flag (0x04) drops out
+    // (aiPoliceOfficer::Update). Null or empty: no such rooms. Not owned.
+    void setRoomFlags(const std::vector<std::uint16_t>* flags) { m_roomFlags = flags; }
 
 private:
     static constexpr int kBlock = 6, kMirror = 7; // aiPoliceOfficer 0x977e
@@ -146,9 +155,10 @@ private:
     void block(const TrackedCar& perp);
     void escape(PoliceForce& force);
     void routeTo(const Vec3& goal, const Vec3& heading);
+    void routeToPost();
     void setRouteParams(float destinationSpeed, float stopShort, float cornerSpeedFactor);
-    DriveContext context();
 
+    const MapView& m_map;
     const RoadNetwork& m_net;
     phys::CarSim& m_car;
     Mat34 m_post;
@@ -160,7 +170,7 @@ private:
 
     Mode m_mode = Mode::Parked;
     Reason m_reason = Reason::None;
-    const std::vector<std::uint8_t>* m_waterRooms = nullptr;
+    const std::vector<std::uint16_t>* m_roomFlags = nullptr;
     int m_pursuit = 0;     // 0 watching, 1 apprehend, 2 follow, 5 not pursued (as 1), 12 out of action
     int m_lastPursuit = -1;
     int m_apprehend = 3;
@@ -169,30 +179,19 @@ private:
     int m_lastPerp = -1;          // aiPoliceOfficer 0x9774: the last suspect, kept over escapes and resets
     int m_perpComponent = -1;     // aiMap::MapComponent of the suspect: id (0x97a4)
     int m_perpComponentType = 0;  // and type (0x97a2)
+    int m_perpRoom = 0;           // the room it was found in
     std::vector<int> m_ignored; // opponents that lost the dice roll (until reset)
     const phys::Body* m_playerBody = nullptr;
     bool m_touchingPlayer = false;
-
-    // The route to the current goal: aiMap::CalcRoute's waypoints every frame,
-    // the course along them rebuilt when they change, every second or when
-    // the goal moves 15 m.
-    std::optional<Course> m_route;
-    std::vector<int> m_routeIds;
-    Vec3 m_routeGoal;
-    float m_routeAge = 0.0f;
-    float m_lastLeg = 0.0f;
-    float m_s = 0.0f;
-    float m_lateral = 0.0f;
-    Vec3 m_destination;
-    Vec3 m_destinationHeading;
 };
 
 // The city's police: the force and its cars.
 class PoliceSquad {
 public:
-    explicit PoliceSquad(const RoadNetwork& net);
+    explicit PoliceSquad(const MapView& map);
 
-    PoliceCar& add(phys::CarSim& car, const Mat34& post, int selfId, const PoliceSettings& settings = {});
+    PoliceCar& add(phys::CarSim& car, const Mat34& post, int selfId, const PoliceSettings& settings = {},
+                   std::string_view vehicle = {});
     void update(float dt, std::span<const TrackedCar> cars, const phys::GroundQuery* los, bool active);
     void reset();
 
@@ -200,8 +199,8 @@ public:
     const std::vector<std::unique_ptr<PoliceCar>>& cars() const { return m_cars; }
     PoliceForce& force() { return m_force; }
     bool anySiren() const;
-    // Rooms with lvlRoomInfo flag 4 (city::waterRooms), for every cop.
-    void setWaterRooms(std::vector<std::uint8_t> rooms);
+    // The game's room flags (lvlRoomInfo), for every cop.
+    void setRoomFlags(std::vector<std::uint16_t> flags);
 
     // aiMap::Init: of `count` [Police] entries the first
     // trunc(count * clamp(density, 0, 1)) are placed. Cruise passes the
@@ -209,10 +208,10 @@ public:
     static std::size_t countForDensity(std::size_t count, float density);
 
 private:
-    const RoadNetwork& m_net;
+    const MapView& m_map;
     PoliceForce m_force;
     std::vector<std::unique_ptr<PoliceCar>> m_cars;
-    std::vector<std::uint8_t> m_waterRooms;
+    std::vector<std::uint16_t> m_roomFlags;
 };
 
 } // namespace mm2::ai

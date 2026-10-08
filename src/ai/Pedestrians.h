@@ -70,7 +70,7 @@ class Pedestrians {
 public:
     using Probe = std::function<bool(const Vec3& from, const Vec3& to, Vec3& hit)>;
     // Whether a vehicle out of normal driving is at `intersection` or on `path`.
-    using AccidentQuery = std::function<bool(int intersection, int path)>;
+    using AccidentQuery = std::function<bool(int intersection, int path, int dir)>;
 
     Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types, const PedSettings& settings,
                 std::uint64_t seed);

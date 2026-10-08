@@ -1,17 +1,23 @@
 // Parity checks for the AI vehicles against MM2's code (build 3393, see
-// docs/parity/ai-vehicles.md): aiPoliceForce's bookkeeping, aiMap::CalcRoute
-// and the obstacle geometry of aiVehicle, on synthetic data.
+// docs/parity/ai-vehicles.md): aiPoliceForce's bookkeeping, aiMap::CalcRoute,
+// the obstacle geometry of aiVehicle and aiVehiclePhysics' route planner, on
+// synthetic data.
 #include "TestData.h"
 #include "ai/Course.h"
 #include "ai/Driving.h"
+#include "ai/MapView.h"
+#include "ai/Opponent.h"
 #include "ai/Police.h"
 #include "ai/Traffic.h"
 #include "ai/World.h"
 #include "city/CityData.h"
+#include "phys/Bound.h"
+#include "phys/vehicle/CarSim.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 
 using namespace mm2;
@@ -258,4 +264,167 @@ TEST(ParityAiRoads, RetailSharpTurns) {
         EXPECT_EQ(turns, total) << name;
         EXPECT_EQ(merged, total) << name;
     }
+}
+
+namespace {
+
+// The square block with the right side's lateral layout of a one-lane road
+// (lane to the curb at 5 m, sidewalk to 8 m), which aiPath::IsPosOnRoad
+// reads.
+city::AiMap plannerBlock() {
+    city::AiMap map = squareBlock();
+    for (city::AiPath& p : map.paths)
+        for (city::AiRoadSide* s : {&p.left, &p.right})
+            s->params = {-8.0f, 5.0f, 5.0f, 8.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    return map;
+}
+
+// A car's frame facing -Z at (x, 0, z).
+Mat34 facingNorth(float x, float z) {
+    Mat34 m = Mat34::identity();
+    m.m3 = {x, 0.0f, z};
+    return m;
+}
+
+// A physics car with a 2 m x 4.6 m collision box (the driver's bumper and
+// side distances, aiVehiclePhysics::Init), not simulated.
+struct PlannerCar {
+    phys::Bound bound{phys::BoundType::Box};
+    phys::CarSim sim;
+    PlannerCar(float x, float z) {
+        bound.boxMin = {-1.0f, 0.0f, -2.3f};
+        bound.boxMax = {1.0f, 1.4f, 2.3f};
+        sim.body.collisionBound = &bound;
+        sim.body.ics.matrix = facingNorth(x, z);
+    }
+};
+
+} // namespace
+
+// aiVehiclePhysics::RegisterRoute: a car on a road takes the window of the
+// roads between its first waypoints (driven with or against their vertex
+// order) and drives Forward towards waypoint 1; a car on no road or
+// intersection drives Shortcut towards waypoint 0.
+TEST(ParityAiPlanner, RegisterRouteOpensTheWindow) {
+    const city::AiMap map = plannerBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    PlannerCar car(2.0f, -40.0f);
+    phys::CarSim& sim = car.sim;
+    ai::PhysicsDriver driver(sim, 1, &view, 0, "vppanoz");
+    driver.registerRoute({{0, 1, 2, 3, 0}, 1, {0, 0, -45}, {}});
+    EXPECT_EQ(driver.state(), ai::PhysicsDriver::State::Forward);
+    EXPECT_EQ(driver.wayPointIndex(), 1);
+    EXPECT_EQ(driver.windowRoad(0), 0);
+    EXPECT_TRUE(driver.windowForward(0)); // corner 0 is road 0's end 1 (its vertex 0)
+    EXPECT_EQ(driver.windowRoad(1), 1);
+    EXPECT_TRUE(driver.windowForward(1));
+    EXPECT_EQ(driver.windowRoad(2), 2);
+    // aiVehiclePhysics::StopRoadTraffic: the intersections the window's
+    // roads drive into.
+    std::vector<int> held;
+    driver.stopRoadTraffic(true, [&](int node, bool stop) {
+        if (stop)
+            held.push_back(node);
+    });
+    EXPECT_EQ(held, (std::vector<int>{1, 2, 3}));
+
+    // Inside the block, on no road: Shortcut for waypoint 0.
+    sim.body.ics.matrix = facingNorth(100.0f, -100.0f);
+    driver.registerRoute({{0, 1, 2, 3, 0}, 1, {0, 0, -45}, {}});
+    EXPECT_EQ(driver.state(), ai::PhysicsDriver::State::Shortcut);
+    EXPECT_EQ(driver.wayPointIndex(), 0);
+}
+
+// aiRouteRacer::Init: each .opp row between the grid place and the
+// destination names the first intersection of its room; circuits are
+// driven the race's laps, other races once.
+TEST(ParityAiPlanner, OppRowsBecomeWaypointIntersections) {
+    const city::AiMap map = plannerBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    std::vector<city::OpponentPoint> rows(7);
+    const Vec3 at[] = {{2, 0, -40},  {1, 0, -1}, {1, 0, -199}, {199, 0, -199},
+                       {199, 0, -1}, {1, 0, -1}, {2, 0, -45}};
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        rows[i].position = at[i];
+    const ai::RouteRegistration circuit = ai::Opponent::routeFromPath(view, rows, 3);
+    EXPECT_EQ(circuit.wayPoints, (std::vector<int>{0, 1, 2, 3, 0}));
+    EXPECT_EQ(circuit.laps, 3);
+    EXPECT_FLOAT_EQ(circuit.destination.z, -45.0f);
+    EXPECT_EQ(ai::Opponent::routeFromPath(view, rows, 0).laps, 1);
+}
+
+// aiVehiclePhysics::Shortcut / SolveShortcutTargetPoint: off the roads the
+// car aims at the next waypoint intersection's centre (1 m up); inside it
+// the window is rebuilt from the waypoints after it and the car drives on
+// Forward.
+TEST(ParityAiPlanner, ShortcutAimsAtTheWaypointIntersection) {
+    const city::AiMap map = plannerBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    PlannerCar car(100.0f, -100.0f);
+    phys::CarSim& sim = car.sim;
+    ai::PhysicsDriver driver(sim, 1, &view, 0, "vppanoz");
+    driver.registerRoute({{0, 1, 2, 3, 0}, 1, {0, 0, -45}, {}});
+    ASSERT_EQ(driver.state(), ai::PhysicsDriver::State::Shortcut);
+    driver.driveRoute(1.0f / 30.0f, {}, {});
+    EXPECT_FLOAT_EQ(driver.target().x, 0.0f);
+    EXPECT_FLOAT_EQ(driver.target().y, 1.0f);
+    EXPECT_FLOAT_EQ(driver.target().z, 0.0f);
+    // In corner 0: on along roads 0, 1 and 2, heading for waypoint 1.
+    sim.body.ics.matrix = facingNorth(1.0f, -1.0f);
+    driver.driveRoute(1.0f / 30.0f, {}, {});
+    EXPECT_EQ(driver.state(), ai::PhysicsDriver::State::Forward);
+    EXPECT_EQ(driver.wayPointIndex(), 1);
+    EXPECT_EQ(driver.windowRoad(0), 0);
+    EXPECT_EQ(driver.windowRoad(1), 1);
+    EXPECT_EQ(driver.windowRoad(2), 2);
+}
+
+// aiVehiclePhysics::CalcRoute on a clear road 80 m before a right turn: the
+// junction turn's circle (CalcRoadTurns / CalcTurnIntersection) has its
+// corner where the two roads' right curbs, moved in by the car's right side
+// (1 m), cross: (4, -196). The car's room is its distance across the road
+// from the corner (2 m) + 1 m for being beyond the set-back, so the radius
+// is 3 / (1 - sin((3.14 - pi/2) / 2)) = 10.22 m and the set-back 7.23 m.
+// CalcRoadTarget's first target is that corner, which lies in the circle,
+// so CalcSharpTurnTarget aims at the arc's start instead, then steps round
+// the arc (SaveTurnTarget) onto road 1, whose own turn circle (sized from
+// where the car is now: the least room, the car's width) gives the next
+// target. The car aims at the first.
+TEST(ParityAiPlanner, RoadTargetsFollowTheTurnCircles) {
+    const city::AiMap map = plannerBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    PlannerCar car(2.0f, -120.0f);
+    ai::PhysicsDriver driver(car.sim, 1, &view, 0, "vppanoz");
+    driver.params.lookAhead = 150.0f;
+    driver.registerRoute({{0, 1, 2, 3, 0}, 1, {0, 0, -45}, {}});
+    driver.driveRoute(1.0f / 30.0f, {}, {});
+    const auto nodes = driver.bestNodes();
+    ASSERT_EQ(nodes.size(), 5u);
+    const float r = 3.0f / (1.0f - std::sin((3.14f - kHalfPi) * 0.5f));
+    const float setback = std::cos((3.14f - kHalfPi) * 0.5f) * r;
+    const Vec3 centre{4.0f + (r - 3.0f), 0.0f, -196.0f + setback};
+    // The arc's start, on road 0, 1 m up.
+    EXPECT_NEAR(nodes[1].pos.x, centre.x - r, 0.01f);
+    EXPECT_NEAR(nodes[1].pos.z, centre.z, 0.01f);
+    EXPECT_FLOAT_EQ(nodes[1].pos.y, 1.0f);
+    EXPECT_EQ(nodes[1].road, 0);
+    // Round the arc (turn targets) onto road 1.
+    for (std::size_t i = 2; i <= 3; ++i) {
+        EXPECT_EQ(nodes[i].kind, 1);
+        EXPECT_NEAR(Vec2(nodes[i].pos.x - centre.x, nodes[i].pos.z - centre.z).mag(), r, 0.02f);
+        EXPECT_EQ(nodes[i].road, 1);
+    }
+    EXPECT_NEAR(nodes[3].pos.z, centre.z - r, 0.01f);
+    // The next turn's arc start, on road 1: radius 2 / (1 - sin) round the
+    // corner (196, -196).
+    const float r2 = 2.0f / (1.0f - std::sin((3.14f - kHalfPi) * 0.5f));
+    EXPECT_NEAR(nodes[4].pos.x, 196.0f - std::cos((3.14f - kHalfPi) * 0.5f) * r2, 0.01f);
+    EXPECT_NEAR(nodes[4].pos.z, -196.0f - 2.0f, 0.01f);
+    EXPECT_EQ(nodes[4].road, 1);
+    EXPECT_FLOAT_EQ(driver.target().x, nodes[1].pos.x);
+    EXPECT_FLOAT_EQ(driver.target().z, nodes[1].pos.z);
 }

@@ -128,6 +128,13 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
     m_queues.resize(m_net.lanes().size());
     m_pathActive.assign(m_net.paths().size(), 0);
     m_stopWaiting.resize(m_net.intersections().size());
+    m_nodeObstacles.resize(m_net.intersections().size());
+    m_roadObstacles.resize(m_net.paths().size());
+    if (const city::AiMap* src = m_net.source()) {
+        for (std::size_t p = 0; p < m_roadObstacles.size() && p < src->paths.size(); ++p)
+            for (auto& side : m_roadObstacles[p])
+                side.resize(src->paths[p].center.size());
+    }
     m_alwaysStop.assign(m_net.paths().size(), 0);
     m_stopAllowed.resize(m_net.intersections().size());
 }
@@ -456,6 +463,20 @@ void Traffic::returnToPool(int car) {
             std::erase(m_stopAllowed[static_cast<std::size_t>(node)], car);
         }
     }
+    // Out of the obstacle map: MM2 unlinks it from an intersection list and
+    // leaves a road list entry behind (ClearAmbients wipes its own road's);
+    // OpenMM2 unlinks both.
+    if (c.mapType == kIntersectionComponent &&
+        c.mapId >= 0 && static_cast<std::size_t>(c.mapId) < m_nodeObstacles.size()) {
+        auto& list = m_nodeObstacles[static_cast<std::size_t>(c.mapId)];
+        if (auto it = std::find(list.begin(), list.end(), car); it != list.end())
+            list.erase(it);
+    } else if (c.mapType == kRoadComponent) {
+        if (auto* list = obstacleList(c.mapId, c.mapSide, c.mapVert))
+            if (auto it = std::find(list->begin(), list->end(), car); it != list->end())
+                list->erase(it);
+    }
+    c.mapType = c.mapId = c.mapVert = -1;
     c.active = false;
     c.physical = false;
     c.speed = 0.0f;
@@ -464,8 +485,12 @@ void Traffic::returnToPool(int car) {
 }
 
 void Traffic::clearPath(int path) {
-    // ClearAmbients: lanes of direction +1 first, then -1; a car returns to
-    // the pool from the list of the lane it is drawn on.
+    // ClearAmbients: the road's section obstacle lists emptied
+    // (aiPath::ResetObstacles); then lanes of direction +1 first, then -1; a
+    // car returns to the pool from the list of the lane it is drawn on.
+    for (auto& side : m_roadObstacles[static_cast<std::size_t>(path)])
+        for (auto& list : side)
+            list.clear();
     for (int dir : {1, -1}) {
         const auto& lanes = m_net.paths()[static_cast<std::size_t>(path)].lanesOf(dir);
         for (std::size_t l = 0; l < lanes.size(); ++l) {
@@ -499,6 +524,8 @@ bool Traffic::placeCar(int slot, int path, int dir, int lane, float dist) {
     m_pool.pop_back();
     // aiVehicleAmbient::Reset.
     c.active = true;
+    c.mapId = c.mapType = c.mapVert = -1;
+    c.mapRoom = 0;
     c.physical = false;
     c.goal = AmbientGoal::RandomDrive;
     c.goalTicks = 0;
@@ -843,15 +870,22 @@ bool Traffic::okayToEnter(int idx, float dist) {
 // ahead or on the next road. MM2 finds them through its obstacle map; here a
 // car counts where its rail registers it (inferred equivalent).
 bool Traffic::upcomingAccident(const Car& c) const {
-    const int node = arrivalIntersection(m_net, c.path, c.dir);
-    for (const Car& o : m_cars) {
-        if (!o.active || o.goal == AmbientGoal::RandomDrive)
-            continue;
-        if (o.rail == Rail::Turn) {
-            if (arrivalIntersection(m_net, o.path, o.dir) == node)
-                return true;
-        } else if (o.path == c.nextPath) {
+    auto inAccident = [&](int o) {
+        return o >= 0 && static_cast<std::size_t>(o) < m_cars.size() &&
+               m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
+    };
+    for (int o : intersectionVehicles(arrivalIntersection(m_net, c.path, c.dir)))
+        if (inAccident(o))
             return true;
+    if (c.nextPath >= 0 && static_cast<std::size_t>(c.nextPath) < m_roadObstacles.size()) {
+        const auto& lists = m_roadObstacles[static_cast<std::size_t>(c.nextPath)];
+        for (std::size_t v = 0; v < lists[1].size(); ++v) {
+            for (int o : lists[1][v])
+                if (inAccident(o))
+                    return true;
+            for (int o : lists[0][v])
+                if (inAccident(o))
+                    return true;
         }
     }
     return false;
@@ -1753,13 +1787,25 @@ void Traffic::release(int carId) {
         returnToPool(carId);
 }
 
-bool Traffic::accidentAt(int intersection, int path) const {
-    for (const Car& o : m_cars) {
-        if (!o.active || o.goal == AmbientGoal::RandomDrive)
-            continue;
-        if (o.rail == Rail::Turn ? arrivalIntersection(m_net, o.path, o.dir) == intersection : o.path == path)
+bool Traffic::accidentAt(int intersection, int path, int dir) const {
+    auto inAccident = [&](int o) {
+        return o >= 0 && static_cast<std::size_t>(o) < m_cars.size() &&
+               m_cars[static_cast<std::size_t>(o)].goal != AmbientGoal::RandomDrive;
+    };
+    for (int o : intersectionVehicles(intersection))
+        if (inAccident(o))
             return true;
-    }
+    if (path < 0 || static_cast<std::size_t>(path) >= m_roadObstacles.size())
+        return false;
+    const auto& lists = m_roadObstacles[static_cast<std::size_t>(path)];
+    const int n = static_cast<int>(lists[1].size());
+    const int k = dir == 1 ? 1 : n - 1;
+    for (int o : roadVehicles(path, 1, k))
+        if (inAccident(o))
+            return true;
+    for (int o : roadVehicles(path, -1, k))
+        if (inAccident(o))
+            return true;
     return false;
 }
 
@@ -1878,6 +1924,146 @@ void Traffic::updateCar(int idx, float dt, const PlayerCar& player) {
     c.tireRotation += dt * c.speed;
     if (c.tireRotation > kTireRotationWrap)
         c.tireRotation -= kTireRotationWrap;
+    updateObstacleMap(idx);
+}
+
+std::vector<int>* Traffic::obstacleList(int path, int side, int bucket) {
+    if (path < 0 || static_cast<std::size_t>(path) >= m_roadObstacles.size())
+        return nullptr;
+    auto& lists = m_roadObstacles[static_cast<std::size_t>(path)][side == 1 ? 1 : 0];
+    if (bucket < 0 || static_cast<std::size_t>(bucket) >= lists.size())
+        return nullptr;
+    return &lists[static_cast<std::size_t>(bucket)];
+}
+
+std::span<const int> Traffic::roadVehicles(int path, int side, int bucket) const {
+    if (path < 0 || static_cast<std::size_t>(path) >= m_roadObstacles.size())
+        return {};
+    const auto& lists = m_roadObstacles[static_cast<std::size_t>(path)][side == 1 ? 1 : 0];
+    if (bucket < 0 || static_cast<std::size_t>(bucket) >= lists.size())
+        return {};
+    return lists[static_cast<std::size_t>(bucket)];
+}
+
+std::span<const int> Traffic::intersectionVehicles(int node) const {
+    if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+        return {};
+    return m_nodeObstacles[static_cast<std::size_t>(node)];
+}
+
+void Traffic::updateObstacleMap(int idx) {
+    // aiVehicleSpline::UpdateObstacleMap: the car's component by its AI
+    // matrix (aiMap::CoreMapComponent, its rail's road preferred); on a road,
+    // the section ahead of it on the side of its rail there; re-listed when
+    // that changes. Moves from one intersection straight into another are
+    // not followed, and leaving every component takes the car off the road
+    // list of its rail's side (which misses if it was listed on the other),
+    // as coded.
+    Car& c = m_cars[static_cast<std::size_t>(idx)];
+    if (!m_map || !c.active)
+        return;
+    int id = c.mapId;
+    int type = kNoComponent;
+    c.mapRoom = m_map->coreMapComponent(c.transform.m3, id, type, c.mapRoom, c.path);
+    auto unlink = [&](int path, int side, int bucket) {
+        if (auto* list = obstacleList(path, side, bucket))
+            if (auto it = std::find(list->begin(), list->end(), idx); it != list->end())
+                list->erase(it);
+    };
+    auto unlinkNode = [&](int node) {
+        if (node < 0 || static_cast<std::size_t>(node) >= m_nodeObstacles.size())
+            return;
+        auto& list = m_nodeObstacles[static_cast<std::size_t>(node)];
+        if (auto it = std::find(list.begin(), list.end(), idx); it != list.end())
+            list.erase(it);
+    };
+    if (type == kRoadComponent) {
+        const city::AiPath* p = m_map->path(id);
+        if (!p)
+            return;
+        const int side = id == c.path ? c.dir : c.nextDir;
+        const int n = static_cast<int>(p->center.size());
+        const int v = std::clamp(pathRoadVertice(*p, c.transform.m3, side), 1, n - 1);
+        if (c.mapType == kRoadComponent && c.mapId == id && c.mapVert == v && c.mapSide == side)
+            return;
+        if (c.mapType == kIntersectionComponent)
+            unlinkNode(c.mapId);
+        else if (c.mapType == kRoadComponent)
+            unlink(c.mapId, c.mapSide, c.mapVert);
+        c.mapType = kRoadComponent;
+        c.mapId = id;
+        c.mapVert = v;
+        c.mapSide = side;
+        if (auto* list = obstacleList(id, side, v))
+            list->insert(list->begin(), idx);
+    } else if (type == kIntersectionComponent) {
+        if (c.mapType == kIntersectionComponent)
+            return;
+        if (c.mapType == kRoadComponent)
+            unlink(c.mapId, c.mapSide, c.mapVert);
+        c.mapType = kIntersectionComponent;
+        c.mapId = id;
+        c.mapVert = -1;
+        c.mapSide = 0;
+        if (id >= 0 && static_cast<std::size_t>(id) < m_nodeObstacles.size()) {
+            auto& list = m_nodeObstacles[static_cast<std::size_t>(id)];
+            list.insert(list.begin(), idx);
+        }
+    } else {
+        if (c.mapType == kNoComponent)
+            return;
+        if (c.mapType == kIntersectionComponent)
+            unlinkNode(c.mapId);
+        else if (c.mapType == kRoadComponent)
+            unlink(c.mapId, c.dir, c.mapVert);
+        c.mapType = kNoComponent;
+        c.mapVert = -1;
+    }
+}
+
+int Traffic::currentRoadIdx(int car, const int roads[3], const bool dirs[3], int* vert) const {
+    // aiVehicleSpline::CurrentRoadIdx.
+    const Car& c = m_cars[static_cast<std::size_t>(car)];
+    const city::AiMap* src = m_net.source();
+    if (!src || c.path < 0 || static_cast<std::size_t>(c.path) >= src->paths.size()) {
+        *vert = 0;
+        return 0;
+    }
+    const int n = static_cast<int>(src->paths[static_cast<std::size_t>(c.path)].center.size());
+    const int v = c.section;
+    for (int i = 0; i < 3; ++i) {
+        if (roads[i] != c.path)
+            continue;
+        if (v != n) {
+            const bool same = dirs[i] == (c.dir == 1);
+            *vert = same ? v : n - v;
+            return i;
+        }
+        // On the turn through its arrival intersection.
+        if (!dirs[i]) {
+            *vert = 0;
+            return i;
+        }
+        if (i < 2 && roads[i + 1] >= 0) {
+            *vert = 0;
+            return i + 1;
+        }
+        *vert = v - 1;
+        return i;
+    }
+    const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
+    const int carArrival = info.intersection[c.dir == 1 ? 0 : 1];
+    for (int i = 0; i < 3; ++i) {
+        if (roads[i] < 0 || static_cast<std::size_t>(roads[i]) >= m_net.paths().size())
+            continue;
+        const PathInfo& w = m_net.paths()[static_cast<std::size_t>(roads[i])];
+        if (carArrival == w.intersection[dirs[i] ? 0 : 1]) {
+            *vert = 0;
+            return i + 1;
+        }
+    }
+    *vert = 0;
+    return 0;
 }
 
 void Traffic::publish() {

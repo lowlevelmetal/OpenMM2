@@ -1,5 +1,6 @@
 // Parity tests for the AI drivers on physics cars (ai-vehicles audit).
 #include "TestData.h"
+#include "ai/MapView.h"
 #include "ai/Police.h"
 #include "ai/RoadNetwork.h"
 #include "game/PlayerVehicle.h"
@@ -22,11 +23,13 @@ TEST(ParityPoliceRooms, ACopInAWaterRoomDropsOut) {
     cop->reset(post);
 
     const ai::RoadNetwork net;
-    ai::PoliceSquad police(net);
+    const ai::MapView map(net);
+    ai::PoliceSquad police(map);
     ai::PoliceCar& officer = police.add(cop->sim(), post, 100);
-    std::vector<std::uint8_t> water(10, 0);
-    water[7] = 1;
-    police.setWaterRooms(water);
+    std::vector<std::uint16_t> flags(10, 0);
+    flags[6] = 0x01 | 0x02 | 0x08; // other lvlRoomInfo flags
+    flags[7] = 0x04;               // water of death
+    police.setRoomFlags(flags);
 
     const std::vector<ai::TrackedCar> cars{ai::trackedCar(cop->sim(), 100, false)};
     cop->sim().body.room = 6;

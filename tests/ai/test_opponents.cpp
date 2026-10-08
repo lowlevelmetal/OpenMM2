@@ -1,6 +1,6 @@
 // Racer and police AI logic on a synthetic road network (no game data):
-// driving lines from .opp rows, MM2 aiVehiclePhysics turn braking and road
-// targets, obstacle geometry, aiRaceData settings, aiPoliceForce.
+// driving lines from .opp rows, obstacle geometry, aiRaceData settings,
+// aiPoliceForce. (The route planner's tests are in test_parity_ai_vehicles.)
 #include "ai/Course.h"
 #include "ai/Driving.h"
 #include "ai/Opponent.h"
@@ -138,82 +138,6 @@ TEST(AiCourse, RoutesAroundGapsAndAvoidedRoads) {
     EXPECT_TRUE(ai::locateOnRoads(net, {2, 0, -100}).onRoad);
     EXPECT_TRUE(ai::locateOnRoads(net, {1, 0, -1}).onRoad);
     EXPECT_FALSE(ai::locateOnRoads(net, {50, 0, -100}).onRoad);
-}
-
-TEST(AiDriving, TurnBrakeFollowsCalcRoadSpeed) {
-    const auto map = squareBlock();
-    const auto net = ai::RoadNetwork::build(map, {});
-    const auto course = ai::Course::fromOpponentPath(net, circuitRows(), true);
-    ASSERT_TRUE(course);
-    ASSERT_EQ(course->turns().size(), 4u);
-    const ai::CourseTurn turn = course->turns()[1];
-    // r = W / (1 - sin((3.14 - d) / 2)), vmax = sqrt(23.76 r) * factor.
-    const float h = (3.14f - kHalfPi) * 0.5f;
-    const float r = 5.0f / (1.0f - std::sin(h));
-    const float vmax = std::sqrt(23.76f * r);
-    float limit = 0.0f;
-    const float far = ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 1.0f, 200.0f, &limit);
-    EXPECT_NEAR(limit, vmax, 0.05f);
-    const float entry = 100.0f - r * std::cos(h);
-    EXPECT_NEAR(far, (30.0f - vmax) / (23.76f * entry / 30.0f), 0.01f);
-    EXPECT_LT(far, 0.7f); // far off: throttle on
-    EXPECT_GT(ai::turnBrake(*course, turn.s - 20.0f, 0.0f, 30.0f, 1.0f, 200.0f), 0.7f);
-    // Slow enough: no braking. On the inside of a right turn the arc is tighter.
-    EXPECT_EQ(ai::turnBrake(*course, turn.s - 20.0f, 0.0f, vmax - 1.0f, 1.0f, 200.0f), 0.0f);
-    float inside = 0.0f;
-    ai::turnBrake(*course, turn.s - 100.0f, 3.0f, 30.0f, 1.0f, 200.0f, &inside);
-    EXPECT_LT(inside, vmax);
-    // The race's corner speed factor scales the corner speed; a turn beyond
-    // the look-ahead (plus its set-back) is not braked for yet.
-    float faster = 0.0f;
-    ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 2.0f, 200.0f, &faster);
-    EXPECT_NEAR(faster, 2.0f * vmax, 0.1f);
-    EXPECT_EQ(ai::turnBrake(*course, turn.s - 100.0f, 0.0f, 30.0f, 1.0f, 50.0f), 0.0f);
-}
-
-// aiVehiclePhysics::CalcRoadTarget: the target is the farthest point of the
-// road visible between the curbs (moved in by the car's side + 1 m).
-TEST(AiDriving, RoadTargetIsTheInsideOfTheNextBend) {
-    const auto map = squareBlock();
-    const auto net = ai::RoadNetwork::build(map, {});
-    const auto course = ai::Course::fromOpponentPath(net, circuitRows(), true);
-    ASSERT_TRUE(course);
-    ai::RouteParams params;
-    params.lookAhead = 150.0f;
-    ai::DriveContext ctx;
-    ctx.course = &*course;
-    ai::RouteNode from;
-    from.pos = {0, 1, -120};
-    ctx.s = course->locate(from.pos, &ctx.lateral);
-    const Vec3 north{0, 0, -1};
-    // 65 m before the right turn at c1: the curb point 2 m in from the inside
-    // corner of the road (its last section, x = 5 - 2).
-    ai::RouteNode t = ai::courseTarget(from, nullptr, north, 1.0f, params, ctx);
-    EXPECT_NEAR(t.pos.x, 3.0f, 1e-3f);
-    EXPECT_NEAR(t.pos.z, -185.0f, 1e-3f);
-    EXPECT_NEAR(t.pos.y, 1.0f, 1e-3f); // MM2 keeps route points 1 m up
-    EXPECT_NEAR(t.dist, std::sqrt(9.0f + 65.0f * 65.0f), 1e-2f);
-    EXPECT_NEAR(t.s, 65.0f, 0.5f);
-    // From there, the inside corner of the next road's first section, 45
-    // degrees to the right, then down that road.
-    const ai::RouteNode t2 = ai::courseTarget(t, &from, north, 1.0f, params, ctx);
-    EXPECT_NEAR(t2.pos.x, 15.0f, 1e-3f);
-    EXPECT_NEAR(t2.pos.z, -197.0f, 1e-3f);
-    EXPECT_NEAR(t2.angle, kHalfPi * 0.5f, 1e-3f); // turning summed from the car's heading
-    const ai::RouteNode t3 = ai::courseTarget(t2, &t, north, 1.0f, params, ctx);
-    EXPECT_GT(t3.pos.x, 90.0f);
-    EXPECT_NEAR(t3.pos.z, -197.0f, 1e-3f);
-    EXPECT_NEAR(t3.angle, kHalfPi, 1e-3f);
-
-    // On a straight the walk stops at the look-ahead, keeping the car's place
-    // across the road.
-    params.lookAhead = 30.0f;
-    from.pos = {2, 1, -40};
-    ctx.s = course->locate(from.pos, &ctx.lateral);
-    t = ai::courseTarget(from, nullptr, north, 1.0f, params, ctx);
-    EXPECT_NEAR(t.pos.x, 2.0f, 1e-3f);
-    EXPECT_NEAR(t.pos.z, -100.0f, 1e-3f);
-    EXPECT_NEAR(t.angle, 0.0f, 1e-3f);
 }
 
 // aiVehicle::IsBlockingTarget / PreAvoid.

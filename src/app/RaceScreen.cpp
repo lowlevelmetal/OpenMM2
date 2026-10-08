@@ -566,8 +566,9 @@ private:
             };
             if (m_ai) {
                 std::string error;
-                opp.driver = ai::Opponent::create(m_ai->network(), opp.sim->sim(), s.path, s.params, m_session->laps(),
-                                                  1 + static_cast<int>(i), &error, m_world.get(), s.vehicle);
+                opp.driver = ai::Opponent::create(m_ai->map(), opp.sim->sim(), s.path, s.params,
+                                                  m_session->laps(), 1 + static_cast<int>(i),
+                                                  static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
                     opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
                 else
@@ -597,9 +598,15 @@ private:
         std::optional<float> chaseDistance;
         if (m_session->setup().aiMap)
             chaseDistance = m_session->setup().aiMap->copChaseDistance;
-        m_police = std::make_unique<ai::PoliceSquad>(m_ai->network());
-        if (m_cityLevel)
-            m_police->setWaterRooms(city::waterRooms(m_city->psdl, m_cityLevel->textureMaterials()));
+        m_police = std::make_unique<ai::PoliceSquad>(m_ai->map());
+        if (m_cityLevel) {
+            // lvlRoomInfo's water-of-death flag (0x04) on the rooms cityLevel::Load
+            // gives it for their deep-water texture.
+            std::vector<std::uint16_t> flags;
+            for (std::uint8_t w : city::waterRooms(m_city->psdl, m_cityLevel->textureMaterials()))
+                flags.push_back(w ? 0x04 : 0);
+            m_police->setRoomFlags(std::move(flags));
+        }
         for (std::size_t i = 0; i < count; ++i) {
             const auto& p = posts[i];
             Cop cop;
@@ -610,7 +617,8 @@ private:
                 continue;
             ai::PoliceSettings settings = ai::PoliceSettings::fromData(p.params, chaseDistance);
             settings.seed += i;
-            cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings);
+            cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings,
+                                        p.vehicle);
             // vpcop paint job 0 is the California livery (vpcop_ca_*), 1 the
             // London one (vpcop_ln_*); picked by city (inferred).
             const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
@@ -636,6 +644,20 @@ private:
         return ai::trackedCar(sim, id, player);
     }
 
+    // aiMap::StopRoadTraffic: every racer's and cop's road window holds (or
+    // lets go) the controlled roads of the intersections it drives into.
+    void stopRoadTraffic(bool stop) {
+        if (!m_ai)
+            return;
+        ai::Traffic& traffic = m_ai->traffic();
+        auto stopSources = [&traffic](int node, bool s) { traffic.stopSources(node, s); };
+        for (const auto& o : m_opponents)
+            if (o.driver)
+                o.driver->driver().stopRoadTraffic(stop, stopSources);
+        for (const auto& c : m_cops)
+            c.driver->driver().stopRoadTraffic(stop, stopSources);
+    }
+
     // Opponent and police AI: reads every car, writes the AI cars' inputs.
     void updateAiDrivers(float dt) {
         if (!m_player || (m_opponents.empty() && m_cops.empty()))
@@ -648,10 +670,16 @@ private:
         const int impacts = m_vehicleImpacts + m_objectImpacts;
         player.collided = impacts != m_lastImpacts;
         m_lastImpacts = impacts;
+        // aiVehiclePlayer::Update: the road the player is on, for the
+        // drivers' obstacle checks.
+        if (m_ai)
+            m_ai->map().trackPlayer(player);
         cars.push_back(player);
         for (const auto& o : m_opponents) {
             ai::TrackedCar t = trackedCar(o.sim->sim(), 1 + static_cast<int>(o.sessionIndex));
             t.suspect = true;
+            if (o.driver)
+                o.driver->describe(t);
             cars.push_back(t);
         }
         for (const auto& c : m_cops) {
@@ -663,6 +691,10 @@ private:
             for (const ai::AmbientCar& c : m_ai->cars())
                 cars.push_back(ai::trackedAmbient(c, 10000 + c.id));
         }
+        // aiMap::Update: the physics cars let the intersections ahead of them
+        // go (aiMap::StopRoadTraffic(false)), drive, and hold them again
+        // (StopRoadTraffic(true)) while the ambient traffic updates.
+        stopRoadTraffic(false);
         for (auto& o : m_opponents) {
             if (!o.driver) {
                 o.sim->sim().setInputs(0.0f, 1.0f, 0.0f, 1.0f);
@@ -674,6 +706,7 @@ private:
         }
         if (m_police)
             m_police->update(dt, cars, m_world.get(), !m_session || m_session->policeActive());
+        stopRoadTraffic(true);
         // Development aid: OPENMM2_DEBUG_AI logs the AI cars once a second.
         if (std::getenv("OPENMM2_DEBUG_AI") && std::floor(m_time) != std::floor(m_time - dt)) {
             const Vec3 p = m_player->sim().modelMatrix().m3;

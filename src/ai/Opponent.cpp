@@ -3,6 +3,8 @@
 // what is inferred.
 #include "ai/Opponent.h"
 
+#include "ai/MapView.h"
+#include "ai/Traffic.h"
 #include "phys/vehicle/CarSim.h"
 
 #include <algorithm>
@@ -52,26 +54,24 @@ OpponentSettings OpponentSettings::fromData(std::span<const float> params, int l
     return s;
 }
 
-Opponent::Opponent(phys::CarSim& car, Course course, const OpponentSettings& settings, int selfId)
-    : m_car(car), m_course(std::move(course)), m_settings(settings), m_selfId(selfId), m_driver(car, selfId) {
+Opponent::Opponent(phys::CarSim& car, Course course, const OpponentSettings& settings, int selfId,
+                   const MapView* map, RouteRegistration route, int racerIndex, std::string_view vehicle)
+    : m_car(car), m_course(std::move(course)), m_settings(settings), m_selfId(selfId), m_map(map),
+      m_route(std::move(route)), m_driver(car, selfId, map, racerIndex, vehicle) {
     m_prevCallback = car.onImpactCallback;
     car.onImpactCallback = [this](const phys::CarImpact& impact) { onImpact(impact); };
     configureAiVehStuck(car, 0.5f);
     m_driver.params = m_settings.route;
 
-    // The waypoints: where each leg of the course ends, as progress from the
-    // start, and the way from the last waypoint to the destination.
+    // The course's last leg: from its last waypoint to the end.
     const float start = m_course.startDistance();
     const float finish = m_course.finishDistance();
     m_lastLeg = m_course.loop() ? m_course.length() : std::max(0.0f, finish - start);
     for (const CourseLeg& leg : m_course.legs()) {
-        const float wp = m_course.loop() ? wrapAhead(m_course, start, leg.end) : leg.end - start;
-        m_waypointProgress.push_back(wp);
         const float toFinish = m_course.loop() ? wrapAhead(m_course, leg.end, finish) : finish - leg.end;
         if (toFinish >= 0.0f)
             m_lastLeg = std::min(m_lastLeg, toFinish);
     }
-    std::sort(m_waypointProgress.begin(), m_waypointProgress.end());
     reset();
 }
 
@@ -80,17 +80,45 @@ Opponent::~Opponent() {
     m_car.params.carFrictionHandling = 1.0f;
 }
 
-std::unique_ptr<Opponent> Opponent::create(const RoadNetwork& net, phys::CarSim& car,
+std::unique_ptr<Opponent> Opponent::create(const MapView& map, phys::CarSim& car,
                                            std::span<const city::OpponentPoint> path, std::span<const float> params,
-                                           int laps, int selfId, std::string* error,
+                                           int laps, int selfId, int racerIndex, std::string* error,
                                            const phys::GroundQuery* world, std::string_view vehicle) {
-    auto course = Course::fromOpponentPath(net, path, laps > 0, error);
+    auto course = Course::fromOpponentPath(map.net(), path, laps > 0, error);
     if (!course)
         return nullptr;
     OpponentSettings s = OpponentSettings::fromData(params, laps);
     s.world = world;
-    s.noSidewalk = !goesOverSidewalks(vehicle);
-    return std::make_unique<Opponent>(car, std::move(*course), s, selfId);
+    return std::make_unique<Opponent>(car, std::move(*course), s, selfId, &map,
+                                      routeFromPath(map, path, laps), racerIndex, vehicle);
+}
+
+RouteRegistration Opponent::routeFromPath(const MapView& map, std::span<const city::OpponentPoint> path,
+                                          int laps) {
+    // aiRouteRacer::Init: the rows between the first (the grid place) and
+    // the last (the destination) are waypoints, each the first intersection
+    // listed for the room its point lies in (lvlLevel::FindRoomId).
+    RouteRegistration r;
+    // aiRouteRacer::DriveRoute: the race's laps in circuits (game mode 3),
+    // else 1; no heading wanted at the destination.
+    r.laps = laps > 0 ? laps : 1;
+    if (path.empty())
+        return r;
+    r.destination = path.back().position;
+    for (std::size_t i = 1; i + 1 < path.size(); ++i) {
+        const Vec3& p = path[i].position;
+        int node = -1;
+        for (const RoomComponent& c : map.components(map.findRoom(p, 0))) {
+            if (c.type == kIntersectionComponent) {
+                node = c.id;
+                break;
+            }
+        }
+        if (node < 0)
+            node = nearestIntersection(map.net(), p); // OpenMM2: MM2 stops the game here
+        r.wayPoints.push_back(node);
+    }
+    return r;
 }
 
 void Opponent::reset() {
@@ -99,6 +127,7 @@ void Opponent::reset() {
     m_finished = false;
     m_disabled = false;
     m_touchingPlayer = false;
+    m_registered = false; // DriveRoute registers the route again
     m_driver.reset();
     m_driver.params = m_settings.route;
     if (m_car.trans.getCurrentGear() == -1)
@@ -151,19 +180,6 @@ float Opponent::remainingDistance() const {
     return m_course.raceDistance(m_settings.laps) - m_progress;
 }
 
-int Opponent::waypointsPassed() const {
-    // aiVehiclePhysics 0x967a: the waypoint the car is heading for, from 1
-    // on its start road; PlanRoute sets it back to 1 on every new lap.
-    float lapProgress = m_progress;
-    if (m_course.loop() && m_course.length() > 0.0f)
-        lapProgress -= m_course.length() * std::floor(m_progress / m_course.length());
-    int passed = 1;
-    for (float wp : m_waypointProgress)
-        if (wp <= lapProgress)
-            ++passed;
-    return passed;
-}
-
 void Opponent::trackProgress(float dt) {
     const Vec3 pos = m_car.body.ics.matrix.m3;
     const float window = 30.0f + m_car.speed() * dt * 2.0f;
@@ -189,6 +205,16 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     // (lvlInstance flag 0x8000, cleared each frame).
     const bool touching = m_touchingPlayer || m_car.body.hitByPlayer;
     m_touchingPlayer = false;
+
+    if (!m_registered && !m_disabled && m_map) {
+        // aiRouteRacer::DriveRoute, the first frame after Reset (held at the
+        // start or not): RegisterRoute, then the ambient traffic is held at
+        // the first waypoint (aiIntersection::StopSources).
+        m_driver.registerRoute(m_route);
+        if (Traffic* traffic = m_map->traffic(); traffic && !m_route.wayPoints.empty())
+            traffic->stopSources(m_route.wayPoints.front(), true);
+    }
+    m_registered = true;
 
     if (m_held && !m_finished) {
         // mmGameSingle::DisableRacers makes the car undrivable
@@ -250,7 +276,15 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
                           m_settings.world);
             m_s = m_course.wrap(m_s + ahead);
             m_progress += ahead;
+            // The route registered again where the car now is, from the
+            // waypoint and lap it had reached.
+            const int wayPt = m_driver.wayPointIndex();
+            const int lap = m_driver.lap();
             m_driver.reset();
+            if (m_map) {
+                m_driver.registerRoute(m_route);
+                m_driver.resumeRoute(wayPt, lap);
+            }
             m_noProgressTime = 0.0f;
             m_bestProgress = m_progress;
             ++m_resets;
@@ -260,20 +294,12 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
 
     const float remaining = remainingDistance();
     DriveContext ctx;
-    ctx.course = &m_course;
-    ctx.s = m_s;
-    ctx.lateral = m_lateral;
-    ctx.remaining = remaining;
-    ctx.destination = m_course.finishPoint();
-    // Past the last waypoint of the last lap (or told the race is over):
-    // plan to the destination.
-    ctx.finalApproach = m_finished || remaining <= m_lastLeg + 0.5f;
     ctx.repairWhenWrecked = m_settings.repairWhenWrecked;
     ctx.touchingPlayer = touching;
-    ctx.waypointsPassed = waypointsPassed();
-    ctx.noSidewalk = m_settings.noSidewalk;
 
-    if (!m_finished && ctx.finalApproach && remaining <= kFinishRadius)
+    // OpenMM2: the race is over for a car that comes within kFinishRadius of
+    // the end of its course on its last leg.
+    if (!m_finished && remaining <= m_lastLeg + 0.5f && remaining <= kFinishRadius)
         finish();
     // The race being over changes nothing in MM2 (aiRouteRacer::Finished is
     // only asked by the game): the car drives on to its destination, where

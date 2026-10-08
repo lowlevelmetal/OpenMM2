@@ -20,12 +20,14 @@
 // each intersection. docs/ai.md lists what is verified and what is inferred.
 
 #include "ai/AmbientRoute.h"
+#include "ai/MapView.h"
 #include "ai/PlayerCar.h"
 #include "ai/Random.h"
 #include "ai/RoadNetwork.h"
 #include "ai/TrafficLights.h"
 #include "ai/VehicleData.h"
 
+#include <array>
 #include <cmath>
 #include <functional>
 #include <span>
@@ -127,9 +129,27 @@ public:
     void setPhysicalTransform(int carId, const Mat34& transform);
     // Returns a car to the pool (recycled by the game).
     void release(int carId);
-    // A car out of normal driving (InAccident: any goal but driving its
-    // rail) in `intersection` or on road `path` (-1: ignored).
-    bool accidentAt(int intersection, int path) const;
+    // The pedestrians' accident queries (aiPedestrian::UpcomingAccident and
+    // Accident): a car out of normal driving (InAccident: any goal but
+    // driving its rail) in the obstacle list of `intersection`, or, for a
+    // road (`path` >= 0), in its two section lists at index 1 (`dir` 1) or
+    // n - 1 (as coded: the lists are counted each in its own direction, so
+    // this reads both ends of the road).
+    bool accidentAt(int intersection, int path, int dir) const;
+
+    // MM2's obstacle map: every ambient car is listed, by
+    // aiVehicleSpline::UpdateObstacleMap after each update, either in the
+    // vehicle list of the intersection it is in or in a per-section list of
+    // the road it is on, by side (1: driving with the vertex index) and
+    // section (counted in that side's direction, 1 .. n - 1). The entries
+    // are car indices. `map` gives the rooms' components.
+    void setMap(const MapView* map) { m_map = map; }
+    std::span<const int> roadVehicles(int path, int side, int bucket) const;
+    std::span<const int> intersectionVehicles(int node) const;
+    // aiVehicleSpline::CurrentRoadIdx: the slot of car `car`'s road in another
+    // car's window of three roads (and the section there); 0 when it is on
+    // none of them (it never answers "none").
+    int currentRoadIdx(int car, const int roads[3], const bool dirs[3], int* vert) const;
 
     // aiIntersection::StopSources: every road of `intersection` whose end
     // there has a stop sign or a traffic light is told to always stop
@@ -178,6 +198,9 @@ private:
         bool active = false;
         bool wreck = false;
         int regainAttempts = 1; // +0xea
+        // aiVehicleSpline::UpdateObstacleMap's state (+0xdc id, +0xde type,
+        // +0xe0 room hint, +0xe2 section, +0xe4 side).
+        int mapId = -1, mapType = -1, mapRoom = 0, mapVert = -1, mapSide = 0;
         Vec3 regainStart;
 
         // Rail (aiRailSet).
@@ -297,6 +320,13 @@ private:
     std::vector<int> m_pool; // free cars, last = next to use (aiMap +0x44)
     std::vector<AmbientCar> m_public;
     std::vector<int> m_avoidEvents;
+    // The obstacle map: per path, the side -1 and side 1 lists by section;
+    // per intersection one list (most recent first, as MM2 pushes them).
+    std::vector<std::array<std::vector<std::vector<int>>, 2>> m_roadObstacles;
+    std::vector<std::vector<int>> m_nodeObstacles;
+    const MapView* m_map = nullptr;
+    void updateObstacleMap(int idx);
+    std::vector<int>* obstacleList(int path, int side, int bucket);
     std::vector<std::vector<int>> m_queues;      // per network lane
     std::vector<std::uint8_t> m_pathActive;      // aiPath AddAmbPlayer mask
     std::vector<int> m_activePaths;              // aiMap +0x17c, most recent first

@@ -3,6 +3,8 @@
 // what is ported and what is inferred.
 #include "ai/Driving.h"
 
+#include "ai/MapView.h"
+#include "ai/PathGeometry.h"
 #include "ai/Traffic.h"
 #include "phys/AgeMath.h"
 #include "phys/Bound.h"
@@ -68,25 +70,6 @@ Vec3 unit3(const Vec3& v) {
     return m2 > 0.0f ? v * (1.0f / std::sqrt(m2)) : v;
 }
 
-// The course distance from arc length `from` forward to `to` (loops wrap).
-float aheadOf(const Course& c, float from, float to) {
-    float d = to - from;
-    if (c.loop()) {
-        const float len = c.length();
-        d = std::fmod(d, len);
-        if (d < 0.0f)
-            d += len;
-    }
-    return d;
-}
-
-constexpr float kRouteHeight = 1.0f;  // MM2 keeps every target point 1 m up
-constexpr int kMaxRouteNodes = 40;    // aiVehiclePhysics: 40 aiRouteNodes per route
-constexpr int kMaxRoutes = 25;        // and 25 routes
-constexpr int kMaxRoutesToExtend = 10; // ContinueCheck stops branching after ten
-constexpr int kMaxAvoidDepth = 10;     // EnumTargets' recursion limit
-constexpr float kDestinationNode = 9999.0f; // SetTargetPtToDestination's distance marker
-
 // vehStuck states (vehStuck::Update): 1 watching after an impact, 2 stuck
 // with the throttle pegged.
 constexpr int kVehStuckIdle = 0;
@@ -137,6 +120,7 @@ TrackedCar trackedCar(const phys::CarSim& car, int id, bool player) {
 TrackedCar trackedAmbient(const AmbientCar& car, int id) {
     TrackedCar t;
     t.id = id;
+    t.ambient = car.id;
     t.position = car.transform.m3;
     t.forward = -car.transform.m2;
     t.right = car.transform.m0;
@@ -292,7 +276,21 @@ static bool aiWrecked(const phys::CarSim& car) {
     return car.damage.enabled && car.damage.maxDamage() < car.damage.currentDamage;
 }
 
-PhysicsDriver::PhysicsDriver(phys::CarSim& car, int selfId) : m_car(car), m_selfId(selfId) {
+// aiVehiclePhysics::Init's type table: vppanoz 0, vpford 1, vpmustang99 2,
+// vppanozgt 3, vpsemi 4, vpcaddie 5, vpbug 6, vppolice 7, vpbullet 8, vpbus
+// 9, anything else -1 (an exact, case-sensitive compare).
+static int vehicleTypeOf(std::string_view vehicle) {
+    static constexpr std::string_view kTypes[] = {"vppanoz",  "vpford", "vpmustang99", "vppanozgt", "vpsemi",
+                                                  "vpcaddie", "vpbug",  "vppolice",    "vpbullet",  "vpbus"};
+    for (std::size_t i = 0; i < std::size(kTypes); ++i)
+        if (vehicle == kTypes[i])
+            return static_cast<int>(i);
+    return -1;
+}
+
+PhysicsDriver::PhysicsDriver(phys::CarSim& car, int selfId, const MapView* map, int aiId,
+                             std::string_view vehicle)
+    : m_car(car), m_selfId(selfId), m_map(map), m_aiId(aiId), m_vehicleType(vehicleTypeOf(vehicle)) {
     // aiVehiclePhysics::Init: the bumper and side distances from the box of
     // the car's bound (model space).
     if (const phys::Bound* b = car.body.collisionBound) {
@@ -310,18 +308,29 @@ PhysicsDriver::PhysicsDriver(phys::CarSim& car, int selfId) : m_car(car), m_self
 
 void PhysicsDriver::reset() {
     // aiVehiclePhysics::Reset (which also resets the car through
-    // vehCar::Reset; OpenMM2's callers place the car themselves).
-    m_state = State::Forward;
+    // vehCar::Reset; OpenMM2's callers place the car themselves). The
+    // waypoint count goes back to 1 (MM2 keeps the list itself).
     m_lastState = State::Stop; // none: the next state runs its Init
+    m_state = State::Forward;
+    m_wrecked = false;
+    m_wreckTime = 0.0f;
+    m_toDestination = false;
+    m_wayPtIdx = 1;
+    m_curLap = 1;
+    m_curCompId = 1;
+    if (m_wayPts.size() > 1)
+        m_wayPts.resize(1);
+    m_curCompType = kIntersectionComponent;
+    m_bestRoute = -1;
     m_throttle = m_brake = m_steering = 0.0f;
+    m_roads[0] = m_roads[1] = m_roads[2] = -1;
+    m_nodes.fill(RouteNode{});
+    for (auto& r : m_routes)
+        r.fill(RouteNode{});
+    m_stuck.reset();
     m_target = m_car.body.ics.matrix.m3;
     m_backupFrames = 0;
     m_backupTime = 0.0f;
-    m_wrecked = false;
-    m_wreckTime = 0.0f;
-    m_stuck.reset();
-    m_routes.clear();
-    m_best = {};
 }
 
 void PhysicsDriver::apply() {
@@ -338,6 +347,7 @@ void PhysicsDriver::applyBrake(float brake, float dt) {
 
 void PhysicsDriver::driveRoute(float dt, std::span<const TrackedCar> cars, const DriveContext& ctx) {
     // aiVehiclePhysics::DriveRoute.
+    m_cars = cars;
     m_car.engine.maxThrottle = params.maxThrottle;
     auto& ics = m_car.body.ics;
     if (aiWrecked(m_car)) {
@@ -359,10 +369,6 @@ void PhysicsDriver::driveRoute(float dt, std::span<const TrackedCar> cars, const
         ics.linearMomentum = ics.linearMomentum * perFrame(0.95f, dt);
         return;
     }
-    // aiVehiclePhysics::RegisterRoute puts a car that is on no road into
-    // Shortcut (OpenMM2: a driver given no course).
-    if (!ctx.course && m_state == State::Forward)
-        m_state = State::Shortcut;
     switch (m_state) {
     case State::Forward:
         if (m_lastState != State::Forward) {
@@ -376,17 +382,17 @@ void PhysicsDriver::driveRoute(float dt, std::span<const TrackedCar> cars, const
             initBackup();
             m_lastState = State::Backup;
         }
-        backup(dt, ctx);
+        backup(dt);
         break;
     case State::Shortcut:
         if (m_lastState != State::Shortcut) {
             initShortcut();
             m_lastState = State::Shortcut;
         }
-        shortcut(dt, ctx);
+        shortcut(dt, cars);
         break;
     case State::Stop:
-        stop(ctx);
+        stop();
         break;
     }
 }
@@ -401,8 +407,11 @@ void PhysicsDriver::initForward() {
     m_stuck.clearState();
     m_car.stuck.reset();
     m_target = m_car.body.ics.matrix.m3;
-    m_routes.clear();
-    m_best = {};
+    m_numRoutes = 0;
+    m_bestRoute = -1;
+    m_routeBlocked.fill(0);
+    m_routeOnSidewalk.fill(0);
+    m_routeNodeCount.fill(0);
     if (m_car.trans.currentGear == phys::Transmission::kReverse)
         m_car.trans.currentGear = phys::Transmission::kFirst;
 }
@@ -410,10 +419,13 @@ void PhysicsDriver::initForward() {
 void PhysicsDriver::initShortcut() {
     // aiVehiclePhysics::InitShortcut: as InitForward, without touching the
     // inputs or the target.
-    m_routes.clear();
-    m_best = {};
+    m_numRoutes = 0;
+    m_bestRoute = -1;
     m_stuck.clearState();
     m_car.stuck.reset();
+    m_routeBlocked.fill(0);
+    m_routeOnSidewalk.fill(0);
+    m_routeNodeCount.fill(0);
     if (m_car.trans.currentGear == phys::Transmission::kReverse)
         m_car.trans.currentGear = phys::Transmission::kFirst;
 }
@@ -423,8 +435,10 @@ bool PhysicsDriver::handleStuck(float dt) {
     auto& ics = m_car.body.ics;
     m_stuck.update(m_car, dt);
     if (m_car.stuck.state == kVehStuckPegged) {
-        // the car's own vehStuck found it stuck: back up, both momenta
-        // cleared (after PlanRoute's waypoint bookkeeping);
+        // the car's own vehStuck found it stuck: PlanRoute's waypoint
+        // bookkeeping, then back up with both momenta cleared;
+        if (m_map)
+            planRoute();
         m_state = State::Backup;
         ics.linearMomentum = {};
         ics.angularMomentum = {};
@@ -459,17 +473,26 @@ void PhysicsDriver::forward(float dt, std::span<const TrackedCar> cars, const Dr
         return;
     if (handleStuck(dt))
         return;
-    if (!ctx.course) {
-        m_state = State::Shortcut;
+    if (!m_map)
         return;
+    // Where the car is: the room's components, the road from the last
+    // waypoint to the next (or the destination's road) preferred.
+    const int n = static_cast<int>(m_wayPts.size());
+    int hint = -1;
+    if (m_wayPtIdx < n) {
+        const int prevWp = m_wayPtIdx == 0 ? m_wayPts[static_cast<std::size_t>(n - 1)]
+                                           : m_wayPts[static_cast<std::size_t>(m_wayPtIdx - 1)];
+        bool dir = false;
+        hint = m_map->roadBetween(prevWp, m_wayPts[static_cast<std::size_t>(m_wayPtIdx)], &dir);
+    } else if (m_destCompType == kRoadComponent || m_destCompType == kShortcutComponent) {
+        hint = m_destCompId;
     }
+    m_curRoom = m_map->mapComponent(ics.matrix.m3, m_curCompId, m_curCompType, m_curRoom, hint);
 
     // SolveRoadTargetPoint: plan, aim at the first point of the best route,
     // and set the speed for it.
-    planRoutes(cars, ctx);
-    if (m_best.nodes.size() > 1)
-        m_target = m_best.nodes[1].pos;
-    calcSpeed(dt, ctx);
+    solveRoadTargetPoint(cars);
+    calcSpeed(dt);
 
     const Vec3 pos = ics.matrix.m3;
     const Vec3 fwd = -ics.matrix.m2;
@@ -477,11 +500,11 @@ void PhysicsDriver::forward(float dt, std::span<const TrackedCar> cars, const Dr
     // Past the destination (within 25 m, behind the car) while heading the
     // way wanted there: brake, steering away from the target (police chasing
     // a car: do not turn round on it).
-    const bool atDestination = m_best.nodes.size() > 1 && m_best.nodes[1].destination;
-    const float dx = pos.x - ctx.destination.x, dz = pos.z - ctx.destination.z;
-    const Vec3& h = ctx.destinationHeading;
+    const bool atDestination = routeOrWorking(m_bestRoute)[1].dist == 9999.0f;
+    const float dx = pos.x - m_dest.x, dz = pos.z - m_dest.z;
+    const Vec3& h = m_destHeading;
     if (atDestination && dx * dx + dz * dz < 625.0f && fwd.x * h.x + fwd.z * h.z > 0.0f &&
-        (ctx.destination.x - pos.x) * fwd.x + (ctx.destination.z - pos.z) * fwd.z < 0.0f) {
+        (m_dest.x - pos.x) * fwd.x + (m_dest.z - pos.z) * fwd.z < 0.0f) {
         m_brake = 1.0f;
         m_throttle = 0.0f;
         aim = pos - (m_target - pos);
@@ -497,16 +520,15 @@ void PhysicsDriver::forward(float dt, std::span<const TrackedCar> cars, const Dr
 
 void PhysicsDriver::initBackup() {
     // aiVehiclePhysics::InitBackup: back away from the first point of the
-    // route planned last; into reverse.
+    // route planned last (no route: the working route's); into reverse.
     m_backupFrames = 0;
     m_backupTime = 0.0f;
-    if (m_best.nodes.size() > 1)
-        m_target = m_best.nodes[1].pos;
+    m_target = routeOrWorking(m_bestRoute)[1].pos;
     if (m_car.trans.currentGear != phys::Transmission::kReverse)
         m_car.trans.setReverse();
 }
 
-void PhysicsDriver::backup(float dt, const DriveContext& ctx) {
+void PhysicsDriver::backup(float dt) {
     // aiVehiclePhysics::Backup: reverse with opposite lock until the car
     // points within 0.1 rad of the target (then it is turned onto it about
     // its own up axis), for at most 65 frames (66 / 30 s at OpenMM2's frame
@@ -517,12 +539,12 @@ void PhysicsDriver::backup(float dt, const DriveContext& ctx) {
     if (angle <= 0.1f && angle >= -0.1f) {
         m_car.steering = 0.0f;
         phys::age::rotate(ics.matrix, ics.matrix.m1, angle);
-        finishedBackingUp(ctx);
+        finishedBackingUp();
         return;
     }
     m_car.steering = clampf(angle * -2.857143f, -1.0f, 1.0f);
     if (m_backupTime > 65.5f / 30.0f) {
-        finishedBackingUp(ctx);
+        finishedBackingUp();
         return;
     }
     m_car.engine.throttle = 0.85f;
@@ -531,11 +553,11 @@ void PhysicsDriver::backup(float dt, const DriveContext& ctx) {
     ++m_backupFrames;
 }
 
-void PhysicsDriver::finishedBackingUp(const DriveContext& ctx) {
+void PhysicsDriver::finishedBackingUp() {
     // aiVehiclePhysics::FinishedBackingUp: forward again (Shortcut without a
     // road), vehStuck reset, both momenta quartered, throttle off and brakes
     // on (the car's inputs).
-    m_state = ctx.course ? State::Forward : State::Shortcut;
+    m_state = road(0) ? State::Forward : State::Shortcut;
     m_car.stuck.reset();
     auto& ics = m_car.body.ics;
     ics.linearMomentum = ics.linearMomentum * 0.25f;
@@ -544,47 +566,33 @@ void PhysicsDriver::finishedBackingUp(const DriveContext& ctx) {
     m_car.brakes = 1.0f;
 }
 
-void PhysicsDriver::shortcut(float dt, const DriveContext& ctx) {
+void PhysicsDriver::shortcut(float dt, std::span<const TrackedCar> cars) {
     // aiVehiclePhysics::Shortcut / SolveShortcutTargetPoint: straight for the
-    // next waypoint (here the course ahead), or the destination less the
-    // stop distance; 1 m up; steering gain 1.33, at most 0.75.
+    // next waypoint intersection, or the destination less the stop distance;
+    // 1 m up; steering gain 1.33, at most 0.75.
+    m_cars = cars;
     auto& ics = m_car.body.ics;
     if (undrivable())
         return;
     if (handleStuck(dt))
         return;
-    Vec3 aim = ctx.destination;
-    if (ctx.course && !ctx.finalApproach) {
-        // The next intersection of the course (inferred stand-in for the next
-        // waypoint's centre).
-        float best = ctx.course->length();
-        for (const CourseLeg& leg : ctx.course->legs()) {
-            const float ahead = aheadOf(*ctx.course, ctx.s, leg.end);
-            if (ahead > 5.0f && ahead < best)
-                best = ahead;
-        }
-        aim = ctx.course->pointAt(ctx.s + std::min(best, ctx.remaining));
-    } else if (params.stopShort > 0.0f) {
-        const Vec3 pos = ics.matrix.m3;
-        const float d = xzDist(pos, ctx.destination);
-        aim = d >= params.stopShort ? pos + (ctx.destination - pos) * ((d - params.stopShort) / d) : pos;
+    if (m_map) {
+        m_curRoom = m_map->mapComponent(ics.matrix.m3, m_curCompId, m_curCompType, m_curRoom);
+        solveShortcutTargetPoint();
     }
-    m_target = aim + Vec3{0.0f, kRouteHeight, 0.0f};
-    m_routes.clear();
-    m_best = {};
-    calcSpeed(dt, ctx);
+    calcSpeed(dt);
     m_steering = clampf(headingError(ics.matrix, m_target) * 1.33f, -0.75f, 0.75f);
     apply();
 }
 
-void PhysicsDriver::stop(const DriveContext& ctx) {
+void PhysicsDriver::stop() {
     // aiVehiclePhysics::Stop: brakes on, steering for the destination.
-    m_target = ctx.destination;
+    m_target = m_dest;
     m_steering = clampf(headingError(m_car.body.ics.matrix, m_target) * 1.33f, -1.0f, 1.0f);
     m_throttle = 0.0f;
     m_brake = 1.0f;
-    m_routes.clear();
-    m_best = {};
+    m_routeNodeCount[0] = 0;
+    m_numRoutes = 0;
     apply();
 }
 
@@ -616,13 +624,18 @@ void PhysicsDriver::mirror(float dt, const TrackedCar& target) {
 
 // --- speed ---------------------------------------------------------------------
 
-void PhysicsDriver::calcSpeed(float dt, const DriveContext& ctx) {
+void PhysicsDriver::calcSpeed(float dt) {
     // aiVehiclePhysics::CalcSpeed: the bend at the first route point, from
     // the angle between the way to it and the way on from it. Its corner
     // speed takes the radius of a curve 10 m from the bend:
     // v = sqrt(tan((3.14 - a) / 2) * 10 * 1.2 * 19.8) * cornerSpeedFactor.
-    const auto& n = m_best.nodes;
-    if (n.size() > 2) {
+    // (With no best route MM2 reads the count of route -1, which is the
+    // last route's sidewalk flag, and the working route's nodes.)
+    const int count =
+        m_bestRoute < 0 ? m_routeOnSidewalk[kMaxRoutes - 1]
+                        : m_routeNodeCount[static_cast<std::size_t>(m_bestRoute)];
+    if (count > 2) {
+        const auto& n = routeOrWorking(m_bestRoute);
         const float a = vectorAngle(n[1].pos - n[0].pos, n[2].pos - n[1].pos);
         if (a > kSharpTurn) {
             const float speed = m_car.speed();
@@ -638,513 +651,132 @@ void PhysicsDriver::calcSpeed(float dt, const DriveContext& ctx) {
             }
         }
     }
-    calcRoadSpeed(dt, ctx);
+    calcRoadSpeed(dt);
 }
 
-void PhysicsDriver::calcRoadSpeed(float dt, const DriveContext& ctx) {
+float PhysicsDriver::checkDistance(int turn) const {
+    // aiVehiclePhysics::CheckDistance: within the turn's setback plus the
+    // look-ahead (squared).
+    const float d = m_turnSetback[turn] + params.lookAhead;
+    return d * d;
+}
+
+void PhysicsDriver::calcRoadSpeed(float dt) {
     // aiVehiclePhysics::CalcRoadSpeed.
     m_brake = 0.0f;
     m_throttle = m_car.engine.maxThrottle;
     const Vec3 pos = m_car.body.ics.matrix.m3;
     const float speed = m_car.speed();
-    const float dx = pos.x - ctx.destination.x, dz = pos.z - ctx.destination.z;
+    const float dx = pos.x - m_dest.x, dz = pos.z - m_dest.z;
     const float d2 = dx * dx + dz * dz;
-    if (d2 >= 5000.0f || !ctx.finalApproach) {
-        // The bends of the road ahead.
-        if (ctx.course) {
-            const float brake = turnBrake(*ctx.course, ctx.s, ctx.lateral, speed, params.cornerSpeedFactor,
-                                          std::min(params.lookAhead, ctx.remaining + 10.0f));
-            if (params.brakeThreshold < brake)
+    const int n = static_cast<int>(m_wayPts.size());
+    if (d2 < 5000.0f && m_wayPtIdx >= n && m_curLap >= m_numLaps) {
+        // Arriving: brake to the destination speed at the destination (less
+        // the stop distance); stop dead within 2.5 m of it.
+        const float d = std::sqrt(d2) - params.stopShort;
+        float brake = 0.0f;
+        if (params.destinationSpeed < speed)
+            brake = (speed - params.destinationSpeed) / ((d / speed) * kAiGripFactor * 19.8f);
+        if (d * 0.014 < brake)
+            applyBrake(brake, dt);
+        if (d < 2.5f && params.destinationSpeed <= 0.0f) {
+            m_throttle = 0.0f;
+            m_brake = 1.0f;
+        }
+        return;
+    }
+    if (!m_map)
+        return;
+    const auto& best = routeOrWorking(m_bestRoute);
+    const RouteNode& n0 = best[0];
+    // The sharp turns of the window's roads, from the slot the route starts
+    // in (MM2 reads it from node 0's turn code, which CalcRoute zeroes).
+    for (int w = n0.turnCode; w < 3; ++w) {
+        const city::AiPath* p = road(w);
+        const PathInfo* info = roadInfo(w);
+        if (!p || !info)
+            continue;
+        const bool rd = w <= 2 ? m_roadDir[w] : false;
+        const auto& turns = info->sharpTurns;
+        for (int t = 0; t < static_cast<int>(turns.size()); ++t) {
+            const int vi = sharpTurnVertIndex(*p, turns, t, true);
+            const SharpTurn& st = sharpTurn(turns, t, rd);
+            const float v = std::sqrt(st.radius * kAiGripFactor * 19.8f) * params.cornerSpeedFactor;
+            const float ix = n0.pos.x - st.point.x, iz = n0.pos.z - st.point.z;
+            const int verts = static_cast<int>(p->center.size());
+            float dist;
+            if (rd) {
+                const Vec3& z = p->zAxis[static_cast<std::size_t>(std::clamp(vi, 0, verts - 1))];
+                dist = (ix * z.x + iz * z.z) - st.setback;
+            } else {
+                int k = 1;
+                if (vi + 2 < verts) {
+                    const Vec3 seg =
+                        p->center[static_cast<std::size_t>(vi + 1)] - p->center[static_cast<std::size_t>(vi)];
+                    const Vec3& x = p->xAxis[static_cast<std::size_t>(vi)];
+                    const Vec3& z = p->zAxis[static_cast<std::size_t>(vi)];
+                    const float a = std::atan2(-x.z * seg.z + -x.x * seg.x, -z.z * seg.z + -z.x * seg.x);
+                    if (sharpTurn(turns, t, false).angle != a)
+                        k = 2;
+                }
+                const Vec3& z = p->zAxis[static_cast<std::size_t>(std::clamp(vi + k, 0, verts - 1))];
+                dist = (-z.z * iz + -z.x * ix) - st.setback;
+            }
+            float brake = 0.0f;
+            if (v < speed)
+                brake = (speed - v) / ((dist / speed) * kAiGripFactor * 19.8f);
+            if (params.brakeThreshold < brake) {
                 applyBrake(brake, dt);
-        }
-        return;
-    }
-    // Arriving: brake to the destination speed at the destination (less the
-    // stop distance); stop dead within 2.5 m of it.
-    const float d = std::sqrt(d2) - params.stopShort;
-    float brake = 0.0f;
-    if (params.destinationSpeed < speed)
-        brake = (speed - params.destinationSpeed) / ((d / speed) * kAiGrip);
-    if (d * 0.014f < brake)
-        applyBrake(brake, dt);
-    if (d < 2.5f && params.destinationSpeed <= 0.0f) {
-        m_throttle = 0.0f;
-        m_brake = 1.0f;
-    }
-}
-
-float turnBrake(const Course& course, float s, float side, float speed, float cornerSpeedFactor,
-                float lookAhead, float* vmax) {
-    float worst = 0.0f;
-    float limit = std::numeric_limits<float>::max();
-    const float len = course.length();
-    for (const CourseTurn& t : course.turns()) {
-        if (std::abs(t.deflection) <= kSharpTurn)
-            continue;
-        float d = t.s - s;
-        if (course.loop()) {
-            d = std::fmod(d, len);
-            if (d < -0.5f * len)
-                d += len;
-            else if (d > 0.5f * len)
-                d -= len;
-        }
-        const float sign = t.deflection >= 0.0f ? 1.0f : -1.0f;
-        // aiPath::CalcRoadTurns keeps the room between 3 m and twice the
-        // road's half width (IsPosOnRoad's road limit) less 1.5 m.
-        float road = 0.0f, sidewalk = 0.0f;
-        course.onRoadLimits(t.s, road, sidewalk);
-        float R = t.halfWidth - sign * side;
-        if (R < 3.0f)
-            R = 3.0f;
-        else if (R > road + road - 1.5f)
-            R = road + road - 1.5f;
-        const float h = (3.14f - std::min(std::abs(t.deflection), 3.14f)) * 0.5f;
-        const float r = R / std::max(1.0f - std::sin(h), 1e-3f);
-        const float setback = r * std::cos(h);
-        // aiVehiclePhysics::CheckDistance: turns within the set-back plus the
-        // look-ahead (and the one just entered).
-        if (d < -15.0f || d - setback > lookAhead)
-            continue;
-        float v = std::sqrt(r * kAiGrip) * cornerSpeedFactor;
-        // A turn into an alley (path flag 0x2) at half speed.
-        if (t.intoAlley)
-            v *= 0.5f;
-        limit = std::min(limit, v);
-        if (speed <= v)
-            continue;
-        // The time to the turn-in point; once past it the turn is not braked
-        // for (MM2's brake comes out negative there).
-        const float entry = d - setback;
-        if (entry <= 0.0f)
-            continue;
-        const float b = (speed - v) / ((entry / speed) * kAiGrip);
-        worst = std::max(worst, b);
-    }
-    if (vmax)
-        *vmax = limit;
-    return worst;
-}
-
-// --- route planning --------------------------------------------------------------
-
-void PhysicsDriver::planRoutes(std::span<const TrackedCar> cars, const DriveContext& ctx) {
-    // aiVehiclePhysics::CalcRoute.
-    m_routes.clear();
-    m_best = {};
-    if (!ctx.course)
-        return;
-    const Mat34& m = m_car.body.ics.matrix;
-    RouteNode car;
-    car.pos = m.m3 + Vec3{0.0f, kRouteHeight, 0.0f};
-    car.s = 0.0f;
-    std::vector<RouteNode> nodes{car};
-    enumRoutes(nodes, cars, ctx, 1);
-
-    // DetermineBestRoute: the route that turns least; first among those over
-    // the sidewalk if preferred, then among those with a way round every
-    // obstacle, then of all.
-    auto pick = [&](auto&& accept) {
-        int best = -1;
-        float least = 99999.0f;
-        for (std::size_t i = 0; i < m_routes.size(); ++i) {
-            const auto& r = m_routes[i];
-            if (!accept(r) || r.nodes.empty())
-                continue;
-            if (r.nodes.back().angle < least) {
-                least = r.nodes.back().angle;
-                best = static_cast<int>(i);
+                goto junctions;
             }
         }
-        return best;
-    };
-    int best = -1;
-    if (params.preferSidewalk)
-        best = pick([](const PlannedRoute& r) { return r.offRoad; });
-    if (best < 0)
-        best = pick([](const PlannedRoute& r) { return !r.blocked; });
-    if (best < 0)
-        best = pick([](const PlannedRoute&) { return true; });
-    if (best >= 0)
-        m_best = m_routes[static_cast<std::size_t>(best)];
-}
-
-void PhysicsDriver::finishRoute(const std::vector<RouteNode>& nodes) {
-    if (static_cast<int>(m_routes.size()) >= kMaxRoutes)
-        return;
-    PlannedRoute r;
-    r.nodes = nodes;
-    for (const RouteNode& n : nodes) {
-        r.offRoad = r.offRoad || n.offRoad;
-        r.blocked = r.blocked || n.noWayAround;
     }
-    m_routes.push_back(std::move(r));
-}
-
-int PhysicsDriver::roadState(const Vec3& p, const DriveContext& ctx, float hint) const {
-    // aiPath::IsPosOnRoad with the car's side distance as the margin: 1 on
-    // the road, 2 on the sidewalk, 3 beyond (Course::onRoadLimits). MM2 asks
-    // the road the obstacle is on; OpenMM2 the course's road at the point.
-    const Course& c = *ctx.course;
-    float lateral = 0.0f;
-    const float s = c.locate(p, hint, 60.0f, &lateral);
-    float road, sidewalk;
-    c.onRoadLimits(s, road, sidewalk);
-    const float side = m_rightSide; // IsPosOnRoad margin: RSideDistance
-    const float a = std::abs(lateral);
-    if (a < road - side)
-        return 1;
-    if (a < sidewalk - side)
-        return 2;
-    return 3;
-}
-
-RouteNode PhysicsDriver::roadTarget(const RouteNode& from, const RouteNode* before,
-                                    const DriveContext& ctx) const {
-    return courseTarget(from, before, -m_car.body.ics.matrix.m2, m_leftSide, m_rightSide, params, ctx);
-}
-
-RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float side,
-                       const RouteParams& params, const DriveContext& ctx) {
-    return courseTarget(from, before, carForward, side, side, params, ctx);
-}
-
-RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float leftSide,
-                       float rightSide, const RouteParams& params, const DriveContext& ctx) {
-    // aiVehiclePhysics::CalcRoadTarget (with CalcDestinationTarget and
-    // SetTargetPtToDestination): the farthest point down the road that the
-    // car can reach in a straight line from `from` without crossing a curb
-    // (each curb moved in by the car's side distance + 1 m). Walking the
-    // road's vertices, the window of directions between the left and the
-    // right curb points narrows; when the next curb point falls outside it,
-    // the road bends, and the target is the curb point that set that side of
-    // the window (the inside of the bend). Otherwise the walk ends at the
-    // look-ahead distance, the target there keeps the car's place across the
-    // road (inside the window), or at the destination when that comes first.
-    const Course& c = *ctx.course;
-    const float insetL = leftSide + 1.0f, insetR = rightSide + 1.0f;
-    const float fromAbs = ctx.s + from.s;
-    const float budget = params.lookAhead - from.dist;
-    const float toDestination = ctx.remaining - from.s;
-
-    RouteNode out;
-    out.dist = from.dist;
-    out.angle = from.angle;
-    auto finish = [&](const Vec3& p, float ahead, bool destination) {
-        out.pos = p;
-        out.pos.y = p.y + kRouteHeight;
-        out.s = from.s + ahead;
-        out.destination = destination;
-        const Vec3 way = out.pos - from.pos;
-        out.dist = destination ? kDestinationNode : from.dist + xzDist(from.pos, out.pos);
-        if (before)
-            out.angle = from.angle + vectorAngle(from.pos - before->pos, way);
-        else
-            out.angle = vectorAngle(carForward, way);
-        return out;
-    };
-    // The destination, less the stop distance along the way to it.
-    auto destinationPoint = [&] {
-        Vec3 d = ctx.destination;
-        if (params.stopShort > 0.0f) {
-            const float len = xzDist(from.pos, d);
-            d = len >= params.stopShort ? from.pos + (d - from.pos) * ((len - params.stopShort) / len)
-                                        : from.pos;
-        }
-        return d;
-    };
-    if (ctx.finalApproach && toDestination <= 0.0f)
-        return finish(destinationPoint(), 0.0f, true);
-
-    // The first vertex ahead of the origin in its own section's frame
-    // (aiPath::RoadVertice: no more than 0.1 m behind the origin), so that
-    // a car level with the inside of a bend looks past it.
-    std::size_t i = c.vertexAfter(fromAbs - 5.0f);
-    for (std::size_t steps = 0; steps < c.vertexCount(); ++steps) {
-        const Vec3 r = c.vertexRight(i);
-        const Vec3 d{r.z, 0.0f, -r.x}; // forward of the section
-        const Vec3 rel = c.vertex(i) - from.pos;
-        if (rel.x * d.x + rel.z * d.z > 0.1f || c.nextVertex(i) == i)
-            break;
-        i = c.nextVertex(i);
-    }
-    float ahead = c.vertexDistance(i) - fromAbs;
-    if (c.loop()) {
-        const float len = c.length();
-        ahead = std::fmod(ahead, len);
-        if (ahead < -0.5f * len)
-            ahead += len;
-        else if (ahead >= 0.5f * len)
-            ahead -= len;
-    }
-    if (!c.loop() && c.vertexDistance(i) <= fromAbs && c.nextVertex(i) == i) {
-        // At the end of the line.
-        if (ctx.finalApproach)
-            return finish(destinationPoint(), 0.0f, true);
-        return finish(c.pointAt(fromAbs + 1.0f), 1.0f, false);
-    }
-    // Directions are measured in the frame of that first section.
-    const Vec3 right = c.vertexRight(i);
-    const Vec3 fwd{right.z, 0.0f, -right.x};
-    auto angleOf = [&](const Vec3& p) {
-        const Vec3 rel = p - from.pos;
-        return std::atan2(rel.x * right.x + rel.z * right.z, std::max(rel.x * fwd.x + rel.z * fwd.z, 1.0f));
-    };
-    // The origin's place across the road (aiVehiclePhysics 0x9738 for the
-    // car), and which half of a divided road it keeps to.
-    // Measured across the first section ahead, as MM2 measures it across
-    // the road's vertex.
-    const Vec3 firstAcross = c.vertexRight(i);
-    const Vec3 relFirst = from.pos - c.vertex(i);
-    const float lateral0 = relFirst.x * firstAcross.x + relFirst.z * firstAcross.z;
-    struct Cross {
-        Vec3 left, right, centre, across;
-        float lo, hi;
-    };
-    auto crossAt = [&](std::size_t k) {
-        const CoursePoint& info = c.vertexInfo(k);
-        Cross x;
-        x.centre = c.vertex(k);
-        x.across = c.vertexRight(k);
-        x.lo = -(info.left - insetL);
-        x.hi = info.right - insetR;
-        if ((info.flags & 0x1) != 0) {
-            // aiPath flag 0x1: the centre line is a curb too.
-            if (lateral0 >= 0.0f)
-                x.lo = std::max(x.lo, insetL);
-            else
-                x.hi = std::min(x.hi, -insetR);
-        }
-        if (x.lo > x.hi)
-            x.lo = x.hi = 0.5f * (x.lo + x.hi);
-        x.left = x.centre + x.across * x.lo;
-        x.right = x.centre + x.across * x.hi;
-        return x;
-    };
-    // A point of cross-section `x` in the window's direction nearest the
-    // origin's place across the road.
-    auto inWindow = [&](const Cross& x, float lo, float hi) {
-        const Vec3 want = x.centre + x.across * clampf(lateral0, x.lo, x.hi);
-        const float a = clampf(angleOf(want), lo, hi);
-        if (a == angleOf(want))
-            return want;
-        // Where the ray from the origin at angle `a` crosses the section.
-        const Vec3 dir = fwd * std::cos(a) + right * std::sin(a);
-        const Vec3 seg = x.right - x.left;
-        const float den = dir.x * seg.z - dir.z * seg.x;
-        if (std::abs(den) < 1e-6f)
-            return want;
-        const Vec3 rel = x.left - from.pos;
-        const float u = clampf((dir.z * rel.x - dir.x * rel.z) / den, 0.0f, 1.0f);
-        return x.left + seg * u;
-    };
-
-    if (ctx.finalApproach && ahead >= toDestination)
-        return finish(destinationPoint(), toDestination, true);
-    const Cross first = crossAt(i);
-    float maxL = angleOf(first.left), minR = angleOf(first.right);
-    Cross atL = first, atR = first;
-    float aheadL = ahead, aheadR = ahead;
-    if (maxL > minR) {
-        // The section is not ahead of the origin (a hairpin): its point at
-        // the origin's place across the road.
-        return finish(first.centre + first.across * clampf(lateral0, first.lo, first.hi), ahead, false);
-    }
-    if (xzDist(from.pos, first.centre) >= budget)
-        return finish(inWindow(first, maxL, minR), ahead, false);
-    const std::size_t n = c.vertexCount();
-    for (std::size_t steps = 0; steps < n; ++steps) {
-        const std::size_t j = c.nextVertex(i);
-        if (j == i)
-            break;
-        const float next = ahead + aheadOf(c, c.vertexDistance(i), c.vertexDistance(j));
-        if (ctx.finalApproach && next >= toDestination) {
-            // The destination lies before the next vertex.
-            const Vec3 d = destinationPoint();
-            const float a = angleOf(d);
-            if (a < maxL)
-                return finish(atL.left, aheadL, false);
-            if (a > minR)
-                return finish(atR.right, aheadR, false);
-            return finish(d, toDestination, true);
-        }
-        i = j;
-        ahead = next;
-        const Cross x = crossAt(i);
-        const float aL = angleOf(x.left), aR = angleOf(x.right);
-        if (aL > minR)
-            return finish(atR.right, aheadR, false); // bends right round atR
-        if (aR < maxL)
-            return finish(atL.left, aheadL, false); // bends left round atL
-        if (aL > maxL - 0.001f) {
-            maxL = aL;
-            atL = x;
-            aheadL = ahead;
-        }
-        if (aR < minR + 0.001f) {
-            minR = aR;
-            atR = x;
-            aheadR = ahead;
-        }
-        if (xzDist(from.pos, x.centre) >= budget)
-            return finish(inWindow(x, maxL, minR), ahead, false);
-        if (!c.loop() && c.nextVertex(i) == i)
-            return finish(inWindow(x, maxL, minR), ahead, false);
-    }
-    return finish(c.pointAt(fromAbs + std::max(budget, 1.0f)), std::max(budget, 1.0f), false);
-}
-
-const TrackedCar* PhysicsDriver::blocking(const Vec3& from, const Vec3& to, std::span<const TrackedCar> cars,
-                                          const DriveContext& ctx, float* along) const {
-    // aiVehiclePhysics::IsTargetBlocked: the nearest vehicle in the way, of
-    // the kinds this route avoids (ambient traffic, players, other racers
-    // once past the third waypoint). Police cars are no obstacle in MM2.
-    const float myLength = m_frontBumper + m_backBumper;
-    const float myWidth = m_leftSide + m_rightSide;
-    const TrackedCar* best = nullptr;
-    float nearest = 99999.0f;
-    for (const TrackedCar& c : cars) {
-        if (c.id == m_selfId || c.isPolice)
-            continue;
-        if (c.isAmbient() && !params.avoidTraffic)
-            continue;
-        if (c.isPlayer && !params.avoidPlayers)
-            continue;
-        if (c.isOpponent() && (!params.avoidOpponents || ctx.waypointsPassed < 3))
-            continue;
-        if (std::abs(c.position.y - from.y + kRouteHeight) > 6.0f)
-            continue;
-        // A quick reject before the corner tests.
-        const float reach = xzDist(from, to) + 2.0f * myLength + std::max(c.front(), c.back()) + 2.0f;
-        if (xzDist(c.position, from) > reach)
-            continue;
-        const float d = blockingDistance(c, from, to, 2.0f * myLength, myWidth);
-        if (d > -1.0f && d < nearest) {
-            nearest = d;
-            best = &c;
-        }
-    }
-    if (along)
-        *along = nearest;
-    return best;
-}
-
-void PhysicsDriver::enumRoutes(std::vector<RouteNode>& nodes, std::span<const TrackedCar> cars,
-                               const DriveContext& ctx, int depth) {
-    // aiVehiclePhysics::EnumRoutes.
-    if (depth >= kMaxRouteNodes)
-        return;
-    const RouteNode from = nodes.back();
-    const RouteNode* before = nodes.size() > 1 ? &nodes[nodes.size() - 2] : nullptr;
-    const RouteNode target = roadTarget(from, before, ctx);
-
-    auto continueCheck = [&](const RouteNode& node) {
-        // aiVehiclePhysics::ContinueCheck: carry on until the look-ahead is
-        // covered (ten routes at most branch further), then keep the route.
-        nodes.push_back(node);
-        const bool more = node.dist < params.lookAhead && !node.destination &&
-                          (ctx.course->loop() || ctx.s + node.s < ctx.course->length() - 0.5f);
-        if (more && static_cast<int>(m_routes.size()) < kMaxRoutesToExtend)
-            enumRoutes(nodes, cars, ctx, depth + 1);
-        else
-            finishRoute(nodes);
-        nodes.pop_back();
-    };
-
-    const TrackedCar* obstacle = blocking(from.pos, target.pos, cars, ctx, nullptr);
-    if (!obstacle || xzDist(from.pos, obstacle->position) >= params.lookAhead) {
-        continueCheck(target);
-        return;
-    }
-
-    // CalcObstacleAvoidPoints / EnumTargets: pass the obstacle on the left
-    // and on the right (each corner RSideDistance + 2 m clear), each a
-    // route of its own, as long as the point is on the road (or on the
-    // sidewalk, except for vppanozgt) and the way to it is clear; a way blocked
-    // by a further vehicle goes round that one on the same side.
-    Vec3 roadDir;
-    ctx.course->pointAt(ctx.s + from.s, &roadDir);
-    roadDir = flatUnit(roadDir);
-    const Vec3 lookDir = before ? flatUnit(from.pos - before->pos) : flatUnit(-m_car.body.ics.matrix.m2);
-    const float clearance = m_rightSide + 2.0f; // RSideDistance + 2 m on both sides
-    const Vec3 carPos = m_car.body.ics.matrix.m3;
-    std::vector<RouteNode> found;
-    auto accept = [&](const Vec3& p, const TrackedCar& by, int onRoad) {
-        // aiVehiclePhysics::SaveTarget: 1 m above the point; the path length
-        // in XZ; the turning from the way to the previous point (for the
-        // first point, from the car's heading to the way from its centre).
-        RouteNode node;
-        node.pos = p;
-        node.pos.y = p.y + kRouteHeight;
-        const float onCourse = ctx.course->locate(p, ctx.s + from.s + 5.0f, 40.0f);
-        node.s = from.s + aheadOf(*ctx.course, ctx.s + from.s, onCourse);
-        node.dist = from.dist + xzDist(from.pos, node.pos);
-        node.angle = before ? from.angle + vectorAngle(from.pos - before->pos, node.pos - from.pos)
-                            : vectorAngle(-m_car.body.ics.matrix.m2, node.pos - carPos);
-        node.obstacle = by.id;
-        node.offRoad = onRoad == 2;
-        found.push_back(node);
-    };
-    auto withinRoad = [&](const Vec3& p) {
-        const Vec3 rel = p - from.pos;
-        const float a =
-            std::atan2(rel.x * -roadDir.z + rel.z * roadDir.x, rel.x * roadDir.x + rel.z * roadDir.z);
-        return a > -1.57f && a < 1.57f;
-    };
-    // EnumTargets.
-    auto xz2 = [](const Vec3& a, const Vec3& b) {
-        const float dx = a.x - b.x, dz = a.z - b.z;
-        return dx * dx + dz * dz;
-    };
-    auto tryPoint = [&](auto&& self, const Vec3& p, const TrackedCar& by, int sideSign, int level) -> void {
-        if (++level == kMaxAvoidDepth)
-            return;
-        const int onRoad = roadState(p, ctx, ctx.s + from.s);
-        if (onRoad != 1 && (ctx.noSidewalk || onRoad != 2))
-            return;
-        // The way to the point is clear, or only another racer is in it
-        // (even `by` itself blocks again: then the point is not taken).
-        const TrackedCar* next = blocking(from.pos, p, cars, ctx, nullptr);
-        if (!next || next->isOpponent()) {
-            accept(p, by, onRoad);
+junctions:
+    // The window's junction turns: the first while the car is within its
+    // setback plus the look-ahead of its corner, else the second.
+    {
+        const city::AiPath* r0 = road(0);
+        const float a0 = m_turnAngle[0];
+        const float cx0 = pos.x - m_turnCorner[0].x, cz0 = pos.z - m_turnCorner[0].z;
+        if (r0 && (a0 < -0.7f || 0.7f < a0) && cz0 * cz0 + cx0 * cx0 < checkDistance(0)) {
+            float v = std::sqrt(kAiGripFactor * m_turnRadius[0] * 19.8f) * params.cornerSpeedFactor;
+            if (const PathInfo* r1 = roadInfo(1); r1 && (r1->flags & 2))
+                v *= 0.5f;
+            float brake = 0.0f;
+            if (v < speed) {
+                const int last = static_cast<int>(r0->center.size()) - 1;
+                const float ix = n0.pos.x - m_turnCorner[0].x, iz = n0.pos.z - m_turnCorner[0].z;
+                float dist;
+                if (!m_roadDir[0]) {
+                    const Vec3& z = r0->zAxis.front();
+                    dist = (-z.x * ix + -z.z * iz) - m_turnSetback[0];
+                } else {
+                    const Vec3& z = r0->zAxis[static_cast<std::size_t>(last)];
+                    dist = (ix * z.x + iz * z.z) - m_turnSetback[0];
+                }
+                brake = (speed - v) / ((dist / speed) * kAiGripFactor * 19.8f);
+            }
+            if (params.brakeThreshold < brake && m_brake < brake)
+                applyBrake(brake, dt);
             return;
         }
-        Vec3 l, r;
-        avoidPoints(*next, from.pos, lookDir, clearance, l, r);
-        // A separate vehicle in the way (more than 15 m from `by`) nearer the
-        // car: the gap between the two is taken too, passing `next` on the
-        // other side, when that point is ahead along the road, `next` lies
-        // within the look-ahead and is ambient traffic.
-        if (xz2(by.position, next->position) > 225.0f &&
-            xz2(next->position, carPos) < xz2(by.position, carPos)) {
-            const Vec3& gap = sideSign < 0 ? r : l;
-            if (withinRoad(gap) && xz2(from.pos, next->position) < params.lookAhead * params.lookAhead &&
-                next->isAmbient())
-                accept(gap, *next, onRoad);
+        const float a1 = m_turnAngle[1];
+        const float cx1 = pos.x - m_turnCorner[1].x, cz1 = pos.z - m_turnCorner[1].z;
+        if (road(1) && (a1 < -0.7f || 0.7f < a1) && cz1 * cz1 + cx1 * cx1 < checkDistance(1)) {
+            float v = std::sqrt(kAiGripFactor * m_turnRadius[1] * 19.8f) * params.cornerSpeedFactor;
+            if (const PathInfo* r2 = roadInfo(2); r2 && (r2->flags & 2))
+                v *= 0.5f;
+            float brake = 0.0f;
+            if (v < speed) {
+                const float ex = n0.pos.x - m_turnCorner[1].x, ez = n0.pos.z - m_turnCorner[1].z;
+                const float dist = std::sqrt(ez * ez + ex * ex) - m_turnSetback[1];
+                brake = (speed - v) / ((dist / speed) * kAiGripFactor * 19.8f);
+            }
+            if (params.brakeThreshold < brake && m_brake < brake)
+                applyBrake(brake, dt);
         }
-        const Vec3& q = sideSign < 0 ? l : r;
-        if (withinRoad(q))
-            self(self, q, *next, sideSign, level);
-    };
-    Vec3 left, right;
-    avoidPoints(*obstacle, from.pos, lookDir, clearance, left, right);
-    if (withinRoad(left))
-        tryPoint(tryPoint, left, *obstacle, -1, 0);
-    if (withinRoad(right))
-        tryPoint(tryPoint, right, *obstacle, 1, 0);
-    if (found.empty()) {
-        // No way round: keep the target, marked (state 3).
-        RouteNode blockedNode = target;
-        blockedNode.obstacle = obstacle->id;
-        blockedNode.noWayAround = true;
-        continueCheck(blockedNode);
-        return;
     }
-    for (const RouteNode& node : found)
-        continueCheck(node);
 }
-
-// --- misc -------------------------------------------------------------------------
 
 void yawInPlace(phys::CarSim& car, float angle) {
     phys::age::rotate(car.body.ics.matrix, {0.0f, 1.0f, 0.0f}, angle);
