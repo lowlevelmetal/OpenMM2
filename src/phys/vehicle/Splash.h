@@ -23,6 +23,8 @@ public:
     void reset();
     // vehSplash::Activate: the car is in a water room below its level.
     void activate(float waterLevel);
+    // vehCar::Reset: clears the active flag only (the buoyancy stays).
+    void deactivate() { m_active = false; }
     bool active() const { return m_active; }
     // vehSplash::Update: forces for the next sample.
     void update(InertialCS& ics, float dt);

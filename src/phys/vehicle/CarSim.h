@@ -55,7 +55,8 @@ struct CarImpact {
 // the list (12 entries) until RelaxTime (0.2 s) passes without such a
 // re-trigger, its weaker impacts adding damage silently. CurrentDamage falls
 // by RegenerateRate per second; damage is the 0..1 fraction between
-// MedDamage and MaxDamage and the car is wrecked at MaxDamage.
+// MedDamage and MaxDamage and the car is wrecked at MaxDamage. (MM2 has no
+// global damage scale; Midtown Madness 1's GlobalDamageScale is gone.)
 struct CarDamage {
     // ?RelaxTime@vehCarDamage@@2MA and the impact list's size.
     static constexpr float kRelaxTime = 0.2f;
@@ -71,15 +72,14 @@ struct CarDamage {
 
     CarDamageParams params;
     float currentDamage = 0.0f;
-    float damage = 0.0f;      // 0..1
-    float globalScale = 1.0f; // ?GlobalDamageScale@@3MA
+    float damage = 0.0f; // 0..1
     // vehCarDamage's enable flag: impacts are recorded (the game turns it on for a
     // race unless damage is off).
     bool enabled = true;
     std::array<ImpactInfo, kMaxImpacts> impacts{};
 
-    float maxScaled() const { return params.maxDamage * globalScale; }
-    float medScaled() const { return params.medDamage * globalScale; }
+    float maxDamage() const { return params.maxDamage; }
+    float medDamage() const { return params.medDamage; }
     // vehCarDamage::ClearDamage (and Reset).
     void reset();
     // vehCarDamage::AddDamage.
@@ -87,7 +87,11 @@ struct CarDamage {
     // vehCarDamage::Update's bookkeeping: regeneration, the damage fraction
     // and the impact timers (per sample).
     void update(float dt);
-    bool wrecked() const { return enabled && maxScaled() <= currentDamage; }
+    // vehCarDamage::Update's test (it ejects the car's one-shot parts from
+    // then on): damage enabled and MaxDamage reached.
+    bool wrecked() const { return enabled && params.maxDamage <= currentDamage; }
+    // mmPlayer::IsMaxDamaged: strictly past MaxDamage.
+    bool maxDamaged() const { return params.maxDamage < currentDamage; }
 };
 
 // vehAxle: anti-roll coupling between an axle's wheels (TorqueCoef,
@@ -97,8 +101,11 @@ struct Axle {
     float stiffness = 0.0f; // TorqueCoef * Izz
     float damping = 0.0f;   // 2 sqrt(stiffness * Izz) * DampCoef
     float roll = 0.0f;      // visual roll of the wheels (rad)
-    Mat34 matrix;           // pivot (model space)
-    float rollFactor = 1.0f; // 1 / lateral offset of the left wheel (1 without a pivot)
+    // The "axle0/1" pivot (model space; identity without one). vehAxle::Update
+    // writes the roll into its m0.y and the mean travel into its m2.y.
+    Mat34 matrix;
+    float rollFactor = 1.0f;  // 1 / the left wheel's offset along the pivot's X (1 without a pivot)
+    float pitchFactor = 1.0f; // 1 / its offset along the pivot's Z
 };
 
 struct CarSimOptions {
@@ -143,8 +150,13 @@ public:
     void setDamageParams(const CarDamageParams& p) { damage.params = p; }
 
     // Places the car's model origin at `model` and resets all state
-    // (vehCarSim::Reset).
+    // (vehCarSim::Reset and vehCar::Reset; OpenMM2's placement).
     void reset(const Mat34& model);
+    // MM2's placement (vehCarSim::SetResetPos, ResetRotation, then the same
+    // resets): the body goes to `position` + CenterOfGravity, turned by
+    // `rotation` about Y, so the model origin lands at position +
+    // CenterOfGravity + R * CenterOfGravity.
+    void resetAt(const Vec3& position, float rotation);
 
     // Inputs (vehCarSim brake/handbrake/steering, vehEngine throttle).
     void setInputs(float throttle, float brakes, float steering, float handBrake);
@@ -156,6 +168,19 @@ public:
 
     // vehCarSim::OnGround: number of wheels touching the ground.
     int wheelsOnGround() const;
+    // vehCarSim::BottomedOut: number of wheels that bottomed out this sample.
+    int bottomedOut() const;
+    // vehCar::RequiresTerrainCollision, which dgPhysManager::CollideTerrain
+    // asks before colliding the body with the room's terrain: not while the
+    // car stands upright (up.y > 0.5) with the mean of its wheels' probe
+    // normals within sqrt(0.1) of its up axis and no wheel bottomed out.
+    bool requiresTerrainCollision() const;
+    // mmPlayer::UpdateRegen (Cops and Robbers, mmPlayer::EnableRegen; once a
+    // frame, only with damage enabled): above 5 m/s the damage heals by
+    // MaxDamage / 2000 a frame; once that empties it, mmPlayer::ResetDamage
+    // clears it. Returns true then (the caller also clears the model's
+    // visual damage, as ResetDamage does).
+    bool regenerate();
     bool onGround() const { return wheelsOnGround() > 0; }
     // vehCarSim::GetSSSFactor.
     float sssFactor(float speed) const;
@@ -208,9 +233,14 @@ public:
     // mmPlayer +0x2258: the player has finished the race (brakes on, wheel
     // turned full left from then on). Set by the game.
     bool raceFinished = false;
+    // vehCar's drivable flag (vehCar +0xe8 bit 2, vehCar::SetDrivable): the
+    // game clears it while a car is held before the start. vehCar::Update
+    // then runs neither vehStuck nor vehSplash.
+    bool drivable = true;
 
 private:
     WheelEnv makeEnv(float dt, const World& world);
+    void resetBody(const Mat34& bodyMatrix);
     void updateAxles();
     Drivetrain& primary() { return drivetrains[2]; }
     void buildBound();

@@ -148,8 +148,10 @@ public:
             ai::PlayerCar pc;
             pc.transform = sim.body.ics.matrix;
             pc.velocity = sim.body.ics.frameVelocity;
-            pc.width = sim.halfExtents().x * 2.0f;
-            pc.length = sim.halfExtents().z * 2.0f;
+            // aiVehiclePlayer's side and bumper distances: half vehCarSim's
+            // Size (its InertiaBox).
+            pc.width = sim.params.inertiaBox.x;
+            pc.length = sim.params.inertiaBox.z;
             pc.radius = sim.halfExtents().mag();
             pc.steering = sim.steering;
             pc.reversing = sim.trans.getCurrentGear() < 0;
@@ -402,7 +404,11 @@ private:
         m_world->setLevel(m_cityLevel.get());
 
         std::string error;
-        m_player = game::SimVehicle::load(ctx.game->vfs, m_result.config.vehicle, &error);
+        // mmPlayer::Init: no trailer in multiplayer cruise or Cops and Robbers.
+        const auto mode = m_result.config.mode;
+        const bool withTrailer =
+            !(multiplayer(ctx) && (mode == game::GameMode::Cruise || mode == game::GameMode::CopsAndRobbers));
+        m_player = game::SimVehicle::loadPlayer(ctx.game->vfs, m_result.config.vehicle, &error, withTrailer);
         if (!m_player) {
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
             return;
@@ -1081,8 +1087,8 @@ private:
             wi.brakeCoef = w.params.brakeCoef;
         }
         // vehSurfaceAudio::UpdateTireWobble: damage past MedDamage.
-        const float damageRange = sim.damage.maxScaled() - sim.damage.medScaled();
-        in.tireWobble = damageRange > 0.0f ? (sim.damage.currentDamage - sim.damage.medScaled()) / damageRange : 0.0f;
+        const float damageRange = sim.damage.maxDamage() - sim.damage.medDamage();
+        in.tireWobble = damageRange > 0.0f ? (sim.damage.currentDamage - sim.damage.medDamage()) / damageRange : 0.0f;
         in.wheelRadius = sim.wheels[2].radius;
         in.wrecked = sim.damage.wrecked();
         in.velocity = sim.body.ics.frameVelocity;
@@ -1213,11 +1219,10 @@ private:
             steerTarget = f(2);
             pedals.handbrake = f(3);
         }
-        // Keyboard steering ramps like a wheel being turned; the rates are
-        // inferred (the original's steering sensitivity option scales them).
-        const float rate = (std::abs(steerTarget) < std::abs(m_steer) || steerTarget * m_steer < 0) ? 6.0f : 3.0f;
-        m_steer += clampf(steerTarget - m_steer, -rate * dt, rate * dt);
-        pedals.steering = m_steer;
+        // mmInput::FilterDiscreteSteering / FilterGamepadSteering, with the
+        // speed-sensitive rates and curve mmPlayer::Update sets.
+        pedals.steering = m_steering.filter(steerTarget, dt);
+        m_steering.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during false-start
         // penalties), and until the shared start time in multiplayer.
         // mmPlayer +0x2258: once the race is over the car brakes with the
@@ -1230,9 +1235,8 @@ private:
             m_player->drive(pedals);
         } else if ((m_session && m_session->playerHeld()) ||
                    (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
-            pedals.accelerator = 0.0f;
+            m_player->hold(pedals); // vehCar::SetDrivable(0, 1)
             pedals.brake = 1.0f;
-            m_player->hold(pedals.steering);
         } else {
             m_player->drive(pedals);
         }
@@ -1424,7 +1428,7 @@ private:
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
-    float m_steer = 0.0f;
+    phys::SteeringFilter m_steering;
     game::PlayerCameras m_cams;
     std::unique_ptr<ai::World> m_ai;
 

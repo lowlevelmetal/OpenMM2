@@ -1,6 +1,7 @@
 #include "game/PlayerVehicle.h"
 
 #include "asset/Bound.h"
+#include "asset/Mtx.h"
 #include "core/Log.h"
 #include "game/CityLevel.h"
 #include "core/StringUtil.h"
@@ -23,10 +24,43 @@ std::optional<data::DatFile> readDat(const vfs::Vfs& vfs, const std::string& pat
     return f;
 }
 
+// GetPivot(<model>, <part>): the 12 floats of geometry/<model>_<part>.mtx as
+// a matrix (rows min, max, centre, origin).
+std::optional<Mat34> readPivot(const vfs::Vfs& vfs, const std::string& model, std::string_view part) {
+    auto bytes = vfs.readAll(std::format("geometry/{}_{}.mtx", model, part));
+    if (!bytes)
+        return std::nullopt;
+    auto mtx = asset::parseMtx(*bytes);
+    if (!mtx)
+        return std::nullopt;
+    Mat34 m;
+    m.m0 = mtx->min;
+    m.m1 = mtx->max;
+    m.m2 = mtx->center;
+    m.m3 = mtx->origin;
+    return m;
+}
+
+// The pivots vehCarSim::Init reads for `model`: the wheels (vehWheel::Init:
+// centre, radius and width from <model>_whl0..3), the engine and the axles.
+void readSimPivots(const vfs::Vfs& vfs, const std::string& model, phys::VehicleGeometry& geom) {
+    for (int i = 0; i < 4; ++i)
+        if (auto m = readPivot(vfs, model, std::format("whl{}", i)))
+            geom.wheels[static_cast<std::size_t>(i)] = phys::VehicleGeometry::wheelFromPivot(*m);
+    geom.enginePivot = readPivot(vfs, model, "engine");
+    geom.axlePivots[0] = readPivot(vfs, model, "axle0");
+    geom.axlePivots[1] = readPivot(vfs, model, "axle1");
+}
+
 } // namespace
 
+std::unique_ptr<SimVehicle> SimVehicle::loadPlayer(const vfs::Vfs& vfs, std::string_view baseName,
+                                                   std::string* error, bool trailer) {
+    return load(vfs, baseName, error, {}, true, trailer);
+}
+
 std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_view baseIn, std::string* error,
-                                             std::string_view tuneSuffix) {
+                                             std::string_view tuneSuffix, bool player, bool trailer) {
     const std::string base = str::lower(baseIn);
     auto v = std::make_unique<SimVehicle>();
     auto read = [&](std::string_view path) { return vfs.readAll(path); };
@@ -51,13 +85,10 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
 
     // Geometry: wheels from the model's pivots, body box from its bound.
     phys::VehicleGeometry geom = phys::VehicleGeometry::placeholder();
-    for (const auto& w : v->m_model.wheels) {
-        phys::WheelGeometry wg{w.position, w.radius, w.width, true};
-        if (w.index >= 0 && w.index < 4)
-            geom.wheels[static_cast<std::size_t>(w.index)] = wg;
-        else if (w.index < 6)
-            geom.extraWheels[static_cast<std::size_t>(w.index - 4)] = wg;
-    }
+    for (const auto& w : v->m_model.wheels)
+        if (w.index >= 4 && w.index < 6)
+            geom.extraWheels[static_cast<std::size_t>(w.index - 4)] = {w.position, w.radius, w.width, true};
+    readSimPivots(vfs, base, geom);
     // vehCarModel::InitBound: bound/<car>_bound.bnd (phBoundGeometry::Load
     // reads the text file; every retail car has one).
     std::optional<asset::BoundGeometry> bound = loadBoundFile(vfs, base, false);
@@ -72,14 +103,32 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
         log::warn("vehicle: {} has no collision bound; using the body mesh box", base);
     }
 
+    // mmPlayer::Init: the player's vpcop runs vehCarSim::Init again with
+    // "vpmustang99" (unless the -tune_car option is given), so its physics
+    // are the Mustang's: tune, wheel, engine and axle pivots. The body,
+    // bound, damage, gyro and stuck stay the police car's, and so does the
+    // splash box vehCar::Init built from its InertiaBox before.
+    const phys::CarSimParams copParams = params;
+    if (player && base == "vpcop") {
+        if (auto f = readDat(vfs, "tune/vehicle/vpmustang99.vehcarsim"); f && f->top()) {
+            params = phys::CarSimParams{};
+            phys::loadCarSimParams(*f->top(), params);
+            readSimPivots(vfs, "vpmustang99", geom);
+        }
+    }
+
     v->m_sim.init(params, geom);
+    {
+        const Vec3 half = copParams.inertiaBox * 0.5f;
+        v->m_sim.splash.init(copParams.centerOfGravity - half, half + copParams.centerOfGravity);
+    }
 
     // Semi trailer: vehTrailer + dgTrailerJoint tunes, <base>_trailer model.
     // vehCar::Init builds one only for a car with a trailer_hitch pivot.
     auto trailerTune = readDat(vfs, "tune/vehicle/" + base + ".vehtrailer");
     auto jointTune = readDat(vfs, "tune/vehicle/" + base + ".dgtrailerjoint");
     const asset::Mtx* carHitch = v->m_model.pivot("trailer_hitch");
-    if (carHitch && trailerTune && trailerTune->top() && jointTune && jointTune->top()) {
+    if (trailer && carHitch && trailerTune && trailerTune->top() && jointTune && jointTune->top()) {
         phys::TrailerParams tp;
         phys::TrailerJointParams jp;
         auto trailerModel = asset::loadVehicleModel(base + "_trailer", read, nullptr);
@@ -161,12 +210,27 @@ VehiclePose SimVehicle::trailerPose() const {
     return pose;
 }
 
-void SimVehicle::hold(float steering) {
-    if (m_controls.swapThrottle || reversing()) {
-        m_controls.reset();
+void SimVehicle::hold(const phys::PedalInput& in) {
+    // vehCar::SetDrivable(0, 1): not drivable, and vehCar::PreUpdate then
+    // puts the brake on and the gearbox in neutral every frame. The pedals
+    // are not swapped while held (OpenMM2: the automatic reverse cannot
+    // engage on the start line).
+    m_held = true;
+    m_sim.drivable = false;
+    m_controls.reset();
+    m_sim.trans.setNeutral();
+    m_sim.setInputs(in.accelerator, 1.0f, in.steering, in.handbrake);
+}
+
+void SimVehicle::drive(const phys::PedalInput& in) {
+    if (m_held) {
+        // vehCar::SetDrivable(1, ...): drivable again, and
+        // vehTransmission::SetForward takes it out of neutral.
+        m_held = false;
+        m_sim.drivable = true;
         m_sim.trans.setDrive();
     }
-    m_sim.setInputs(0.0f, 1.0f, steering, 1.0f);
+    m_controls.apply(m_sim, in);
 }
 
 bool SimVehicle::reversing() const { return m_sim.trans.getCurrentGear() < 0; }
@@ -178,17 +242,20 @@ VehiclePose SimVehicle::pose() const {
         pose.wheelWorld[static_cast<std::size_t>(i)] = m_sim.wheelMatrix(i);
         pose.wheelValid[static_cast<std::size_t>(i)] = m_model.wheel(i) != nullptr;
     }
-    // Extra rear wheels follow the rear axle's wheels at their own pivots.
-    for (const auto& w : m_model.wheels) {
-        if (w.index < 4 || w.index > 5)
+    // vehCarModel::Draw: a WHL4 / WHL5 mesh (a second back axle) is drawn
+    // with the WHL2 / WHL3 matrix moved back along the car's Z axis by
+    // (0.2 + 2) times that wheel's radius (vehCarModel +0x2c holds the 0.2),
+    // not at its own pivot.
+    for (int i = 4; i < 6; ++i) {
+        if (!m_model.pkg.findBest(std::format("WHL{}", i)))
             continue;
-        const int follow = w.index - 2; // WHL4 follows WHL2, WHL5 follows WHL3
-        const auto* lead = m_model.wheel(follow);
+        const int follow = i - 2;
         Mat34 m = m_sim.wheelMatrix(follow);
-        if (lead)
-            m.m3 += pose.body.transformDir(w.position - lead->position);
-        pose.wheelWorld[static_cast<std::size_t>(w.index)] = m;
-        pose.wheelValid[static_cast<std::size_t>(w.index)] = true;
+        const float k = (0.2f + 2.0f) * m_sim.wheels[static_cast<std::size_t>(follow)].radius;
+        const Vec3& back = pose.body.m2;
+        m.m3 = {m.m3.x + back.x * k, m.m3.y + back.y * k, m.m3.z + back.z * k};
+        pose.wheelWorld[static_cast<std::size_t>(i)] = m;
+        pose.wheelValid[static_cast<std::size_t>(i)] = true;
     }
     pose.hasWheelWorld = true;
     // vehCarModel::DrawGlow: brake input not zero; reverse gear.

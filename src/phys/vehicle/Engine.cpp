@@ -4,6 +4,7 @@
 
 #include "phys/vehicle/Engine.h"
 
+#include "phys/AgeMath.h"
 #include "phys/InertialCS.h"
 #include "phys/vehicle/Drivetrain.h"
 #include "phys/vehicle/Transmission.h"
@@ -54,9 +55,11 @@ float Engine::calcTorqueAtFullThrottle(float w) const {
     const float o = optRotationSpeed;
     if (w <= o)
         return (kPhi * o - w) * (kInvPhi * o + w) * torqueCoef;
-    if (w <= maxRotationSpeed)
-        return (maxRotationSpeed - w) * (kPhi * o - w) * (kInvPhi * o + w) * ((w + maxRotationSpeed) - (o + o)) *
-               torqueCoef * taperCoef;
+    if (w <= maxRotationSpeed) {
+        // Multiplied in vehEngine::CalcTorqueAtFullThrottle's order.
+        const float taper = (w + maxRotationSpeed) - (o + o);
+        return (((taper * (kInvPhi * o + w)) * (kPhi * o - w)) * (maxRotationSpeed - w)) * torqueCoef * taperCoef;
+    }
     return 0.0f;
 }
 
@@ -115,18 +118,26 @@ void Engine::update(float dt, Transmission& trans, Drivetrain& primary, Inertial
     if (trans.currentGear == Transmission::kNeutral) {
         const float t = (torque / calcTorqueAtFullThrottle(optRotationSpeed)) * angInertia;
         Vec3 axis;
+        // The frame the torque is given in: the body's, or the engine pivot
+        // rocked by 0.05 t about its own Z axis and carried into the world
+        // (vehEngine::Update keeps that matrix for drawing too).
         Mat34 frame = ics.matrix;
         if (pivot) {
             const float k = -(t * angInertia);
             axis = {k * pivot->m2.x, k * pivot->m2.y, k * pivot->m2.z};
-            frame = Mat34::mul(*pivot, ics.matrix);
+            Mat34 rocked = *pivot;
+            age::rotate(rocked, pivot->m2, t * 0.05f); // Matrix34::Rotate
+            frame = Mat34::mul(rocked, ics.matrix);
         } else if (drivetrainType == 1) {
             axis = {t * angInertia, 0.0f, 0.0f};
         } else {
             axis = {0.0f, 0.0f, -(t * angInertia)};
         }
-        const Vec3 local{axis.x * ics.inertia.x, axis.y * ics.inertia.y, axis.z * ics.inertia.z};
-        ics.applyTorque(frame.transformDir(local));
+        const Vec3 l{axis.x * ics.inertia.x, axis.y * ics.inertia.y, axis.z * ics.inertia.z};
+        // Summed in vehEngine::Update's order.
+        ics.applyTorque({(l.z * frame.m2.x + l.y * frame.m1.x) + l.x * frame.m0.x,
+                         (l.z * frame.m2.y + l.y * frame.m1.y) + l.x * frame.m0.y,
+                         (l.z * frame.m2.z + l.y * frame.m1.z) + l.x * frame.m0.z});
     }
 }
 

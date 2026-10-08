@@ -42,7 +42,7 @@ void CarDamage::update(float dt) {
     currentDamage = currentDamage - dt * params.regenerateRate;
     if (currentDamage < 0.0f)
         currentDamage = 0.0f;
-    const float med = medScaled(), max = maxScaled();
+    const float med = params.medDamage, max = params.maxDamage;
     float f = (currentDamage - med) / (max - med);
     damage = f < 0.0f ? 0.0f : (1.0f < f ? 1.0f : f);
     for (ImpactInfo& e : impacts) {
@@ -88,9 +88,16 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     body.collider.handler = this;
     buildBound();
 
-    // Wheels (vehWheel::Init; the right wheels copy the left ones' tune).
-    for (std::size_t i = 0; i < 4; ++i)
-        wheels[i].init(i < 2 ? p.wheelFront : p.wheelBack, g.wheels[i], p.mass, true, centerOfGravity.z);
+    // Wheels (vehWheel::Init): the tune file's WheelFront / WheelBack are
+    // the left wheels'; the right ones start from the constructor's values
+    // and take the left ones' by vehWheel::CopyVars (all but HandbrakeCoef
+    // and WobbleLimit).
+    wheels[0].init(p.wheelFront, g.wheels[0], p.mass, true, centerOfGravity.z);
+    wheels[1].init(WheelParams{}, g.wheels[1], p.mass, true, centerOfGravity.z);
+    wheels[2].init(p.wheelBack, g.wheels[2], p.mass, true, centerOfGravity.z);
+    wheels[3].init(WheelParams{}, g.wheels[3], p.mass, true, centerOfGravity.z);
+    wheels[1].copyVars(wheels[0]);
+    wheels[3].copyVars(wheels[2]);
 
     engine.configure(p.engine);
     engine.pivot = g.enginePivot;
@@ -142,10 +149,19 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
         axle.stiffness = axle.params.torqueCoef * ics.inertia.z;
         const float d = std::sqrt(axle.stiffness * ics.inertia.z) * axle.params.dampCoef;
         axle.damping = d + d;
+        // vehAxle::Init: with an "axle0/1" pivot, the left wheel's offset
+        // from it along the pivot's Z and X axes scales the visual pitch and
+        // roll. (MM2 divides unguarded; a zero offset keeps the factor 1.)
         axle.matrix = g.axlePivots[a].value_or(Mat34::identity());
+        axle.pitchFactor = 1.0f;
         axle.rollFactor = 1.0f;
         if (g.axlePivots[a]) {
-            const float across = (wheels[a * 2].center - axle.matrix.m3).dot(axle.matrix.m0);
+            const Mat34& m = axle.matrix;
+            const Vec3 off = wheels[a * 2].center - m.m3;
+            const float along = (off.z * m.m2.z + off.y * m.m2.y) + off.x * m.m2.x;
+            if (along != 0.0f)
+                axle.pitchFactor = 1.0f / along;
+            const float across = (off.z * m.m0.z + off.y * m.m0.y) + off.x * m.m0.x;
             if (across != 0.0f)
                 axle.rollFactor = 1.0f / across;
         }
@@ -159,10 +175,25 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
 }
 
 void CarSim::reset(const Mat34& model) {
+    Mat34 m = model;
+    m.m3 = model.m3 - model.transformDir(centerOfGravity);
+    resetBody(m);
+}
+
+void CarSim::resetAt(const Vec3& position, float rotation) {
+    // vehCarSim::SetResetPos adds CenterOfGravity to the position;
+    // vehCarSim::Reset turns the reset body about Y (Matrix34::Rotate).
+    const Vec3& cg = centerOfGravity;
+    Mat34 m = Mat34::identity();
+    age::rotate(m, {0.0f, 1.0f, 0.0f}, rotation);
+    m.m3 = {cg.x + position.x, cg.y + position.y, cg.z + position.z};
+    resetBody(m);
+}
+
+void CarSim::resetBody(const Mat34& bodyMatrix) {
     InertialCS& ics = body.ics;
     ics.zero();
-    ics.matrix = model;
-    ics.matrix.m3 = model.m3 - model.transformDir(centerOfGravity);
+    ics.matrix = bodyMatrix;
 
     engine.reset();
     trans.reset();
@@ -174,7 +205,10 @@ void CarSim::reset(const Mat34& model) {
         w.matrix = Mat34::mul(Mat34::translation(w.center), world);
     }
     stuck.reset();
-    splash.reset();
+    // vehCar::Reset only clears the splash's active flag: a car reset after
+    // sinking keeps its lowered buoyancy (vehSplash::Reset runs once, from
+    // its constructor).
+    splash.deactivate();
     damage.reset();
     raceFinished = false;
     steering = 0.0f;
@@ -182,9 +216,11 @@ void CarSim::reset(const Mat34& model) {
     handBrake = 0.0f;
     m_speed = 0.0f;
     m_speedMph = 0.0f;
-    // vehCarSim::RestoreImpactParams.
-    ics.elasticity = params.boundElasticity;
-    ics.friction = params.boundFriction;
+    // vehCarSim::RestoreImpactParams: the bound's friction and elasticity.
+    if (m_bound) {
+        m_bound->setElasticity(params.boundElasticity);
+        m_bound->setFriction(params.boundFriction);
+    }
     // vehCar::Reset resets the collider: the next sweep starts here.
     body.syncBoundMatrix();
     body.collider.reset();
@@ -243,9 +279,13 @@ void CarSim::setInputs(float throttle, float brakeInput, float steer, float hand
 }
 
 Mat34 CarSim::modelMatrix() const {
-    // vehCarSim::SetWorldMatrix.
+    // vehCarSim::SetWorldMatrix: the body matrix moved by R * CenterOfGravity
+    // (summed in its order).
     Mat34 m = body.ics.matrix;
-    m.m3 = m.m3 + m.transformDir(centerOfGravity);
+    const Vec3& cg = centerOfGravity;
+    m.m3 = {((m.m1.x * cg.y + m.m2.x * cg.z) + cg.x * m.m0.x) + m.m3.x,
+            ((m.m1.y * cg.y + m.m0.y * cg.x) + m.m2.y * cg.z) + m.m3.y,
+            ((m.m1.z * cg.y + m.m0.z * cg.x) + m.m2.z * cg.z) + m.m3.z};
     return m;
 }
 
@@ -255,6 +295,41 @@ Mat34 CarSim::wheelMatrix(int i) const {
 
 int CarSim::wheelsOnGround() const {
     return static_cast<int>(std::ranges::count_if(wheels, [](const Wheel& w) { return w.onGround; }));
+}
+
+int CarSim::bottomedOut() const {
+    return static_cast<int>(std::ranges::count_if(wheels, [](const Wheel& w) { return w.bottomedOut; }));
+}
+
+bool CarSim::requiresTerrainCollision() const {
+    const Mat34& m = body.ics.matrix;
+    if (!(0.5f < m.m1.y))
+        return true;
+    // The probe normals (front pair, back pair, then both), less the up axis.
+    const Vec3& fl = wheels[0].intersection.normal;
+    const Vec3& fr = wheels[1].intersection.normal;
+    const Vec3& bl = wheels[2].intersection.normal;
+    const Vec3& br = wheels[3].intersection.normal;
+    const Vec3 f{(fl.x + fr.x) * 0.5f, (fl.y + fr.y) * 0.5f, (fl.z + fr.z) * 0.5f};
+    const Vec3 b{(bl.x + br.x) * 0.5f, (bl.y + br.y) * 0.5f, (bl.z + br.z) * 0.5f};
+    const Vec3 d{(f.x + b.x) * 0.5f - m.m1.x, (b.y + f.y) * 0.5f - m.m1.y, (b.z + f.z) * 0.5f - m.m1.z};
+    return !((d.z * d.z + d.y * d.y) + d.x * d.x < 0.1f && bottomedOut() == 0);
+}
+
+bool CarSim::regenerate() {
+    const Vec3& v = body.ics.linearVelocity;
+    if (!((v.y * v.y + v.z * v.z) + v.x * v.x > 25.0f))
+        return false;
+    const float current = damage.currentDamage;
+    if (current < 0.01f)
+        return false;
+    const float heal = damage.params.maxDamage * -0.0005f;
+    damage.addDamage(heal);
+    if (heal + current <= 0.0f) {
+        damage.reset(); // mmPlayer::ResetDamage -> vehCarDamage::ClearDamage
+        return true;
+    }
+    return false;
 }
 
 float CarSim::sssFactor(float speed) const {
@@ -291,7 +366,7 @@ void CarSim::beforeIntegrate(Body& b, float, const World&) {
             brakes = 1.0f;
             steering = -1.0f;
         }
-        if (damage.wrecked()) {
+        if (damage.enabled && damage.maxDamaged()) {
             engine.throttle = 0.0f;
             steering = 0.0f;
             brakes = 0.0f;
@@ -303,7 +378,7 @@ void CarSim::beforeIntegrate(Body& b, float, const World&) {
     // vehCarSim::Update: forward speed, then the wheel inputs.
     const Vec3& v = ics.linearVelocity;
     const Vec3& z = ics.matrix.m2;
-    m_speed = std::abs(z.x * v.x + z.y * v.y + z.z * v.z);
+    m_speed = std::abs((z.z * v.z + z.y * v.y) + z.x * v.x);
     m_speedMph = m_speed * kMetersPerSecondToMph;
     const float steer = sssFactor(m_speed) * steering;
     const float front = handBrake < 0.0f ? -handBrake : 0.0f;
@@ -352,14 +427,26 @@ void CarSim::afterIntegrate(Body& b, float dt, const World& world) {
     si.steering = steering;
     si.gear = trans.currentGear;
     si.wheelsOnGround = wheelsOnGround();
-    if (stuck.update(ics, dt, si)) {
+    if (drivable && stuck.update(ics, dt, si)) {
         engine.throttle = 0.0f;
         brakes = 1.0f;
     }
     if (m_waterLevel && modelMatrix().m3.y < *m_waterLevel)
         splash.activate(*m_waterLevel);
-    splash.update(ics, dt);
+    if (drivable)
+        splash.update(ics, dt);
     damage.update(dt);
+    // vehCarDamage::Update (bWobble, on): damaged wheels wobble, less as the
+    // front-left wheel spins faster; the front-left and back-right ones one
+    // way, the other two the other way.
+    float spin = std::abs(wheels[0].rotationSpeed) * dt;
+    spin = (spin + spin) * 0.31830987f;
+    spin = spin < 0.0f ? 0.0f : (1.0f < spin ? 1.0f : spin);
+    const float wobble = (1.0f - spin) * damage.damage;
+    wheels[0].wobble = wobble * -0.15f;
+    wheels[2].wobble = wobble * 0.35f;
+    wheels[1].wobble = wobble * 0.35f;
+    wheels[3].wobble = wobble * -0.15f;
 }
 
 void CarSim::updateAxles() {
@@ -375,6 +462,10 @@ void CarSim::updateAxles() {
         const float dr = r.suspension - r.visualDispVert();
         const float diff = dl - dr;
         axle.roll = diff * axle.rollFactor * 0.5f;
+        // The axle's own matrix takes the roll and the mean travel (its m0.y
+        // and m2.y), tilting the axis the wheels are rolled about.
+        axle.matrix.m2.y = (dr + dl) * axle.pitchFactor * 0.5f;
+        axle.matrix.m0.y = axle.roll;
         if (options.axleCoupling && axle.stiffness != 0.0f) {
             const float t =
                 -(diff * axle.stiffness + (l.suspensionVelocity - r.suspensionVelocity) * axle.damping);
@@ -384,12 +475,7 @@ void CarSim::updateAxles() {
         const bool camber = 0.0f <= l.params.camberLimit && 0.0f <= r.params.camberLimit;
         for (Wheel* w : {&l, &r}) {
             const float angle = camber ? w->camber : axle.roll;
-            if (angle != 0.0f) {
-                const Mat34 rot = age::arbitraryRotation(axleWorld.m2, angle);
-                w->matrix.m0 = rot.transformDir(w->matrix.m0);
-                w->matrix.m1 = rot.transformDir(w->matrix.m1);
-                w->matrix.m2 = rot.transformDir(w->matrix.m2);
-            }
+            age::rotate(w->matrix, axleWorld.m2, angle); // Matrix34::Rotate
         }
     }
 }
@@ -410,7 +496,7 @@ void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Colli
         share = other->ics->mass;
         share = share / (body.ics.mass + share);
     }
-    const float j2 = impulse.z * impulse.z + impulse.y * impulse.y + impulse.x * impulse.x;
+    const float j2 = (impulse.x * impulse.x + impulse.y * impulse.y) + impulse.z * impulse.z;
     const float value = std::sqrt(j2) * 1.0f * share;
     for (CarDamage::ImpactInfo& e : damage.impacts) {
         if (e.other != other)
@@ -436,9 +522,13 @@ void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Colli
         if (e.other)
             continue;
         e.other = other;
-        // The point in the car's model space (the world matrix's inverse).
-        const Mat34 inverse = modelMatrix().fastInverse();
-        e.localPosition = inverse.transform(impact.position);
+        // The point in the car's model space (the world matrix's inverse,
+        // applied in InsertImpact's order).
+        const Mat34 inv = modelMatrix().fastInverse();
+        const Vec3& p = impact.position;
+        e.localPosition = {((inv.m2.x * p.z + inv.m1.x * p.y) + inv.m0.x * p.x) + inv.m3.x,
+                           ((inv.m2.y * p.z + inv.m1.y * p.y) + inv.m0.y * p.x) + inv.m3.y,
+                           ((inv.m2.z * p.z + inv.m1.z * p.y) + inv.m0.z * p.x) + inv.m3.z};
         e.position = impact.position;
         e.normal = impact.normal;
         e.impulse = impulse;

@@ -19,9 +19,17 @@ namespace mm2::game {
 // Semis (vehTrailer data present) also get their trailer.
 class SimVehicle {
 public:
-    // `tuneSuffix` selects e.g. the opponent tune ("_opp") when present.
+    // `tuneSuffix` selects a tune variant (e.g. "_opp") when present. MM2
+    // itself never loads one (OpenMM2 option, unused by the game).
     static std::unique_ptr<SimVehicle> load(const vfs::Vfs& vfs, std::string_view baseName, std::string* error,
-                                            std::string_view tuneSuffix = {});
+                                            std::string_view tuneSuffix = {}, bool player = false,
+                                            bool trailer = true);
+    // The local player's car (mmPlayer::Init): as load(), with the
+    // player-only rules (the police car simulated as vpmustang99). `trailer`
+    // is vehCar::Init's trailer flag: mmPlayer::Init clears it in
+    // multiplayer cruise and Cops and Robbers.
+    static std::unique_ptr<SimVehicle> loadPlayer(const vfs::Vfs& vfs, std::string_view baseName,
+                                                  std::string* error, bool trailer = true);
 
     const asset::VehicleModel& model() const { return m_model; }
     phys::CarSim& sim() { return m_sim; }
@@ -32,11 +40,14 @@ public:
     // Places the car's model origin at `model` and resets its state.
     void reset(const Mat34& model);
 
-    // Applies pedal input through the original's automatic-reverse logic.
-    void drive(const phys::PedalInput& input) { m_controls.apply(m_sim, input); }
-    // Held on the start line: full brakes in drive, without the automatic
-    // reverse (which would back the car away while the brake is held).
-    void hold(float steering);
+    // Applies pedal input through the original's automatic-reverse logic
+    // (mmGame::UpdateSteeringBrakes). After hold() it first makes the car
+    // drivable again in first gear (vehCar::SetDrivable(1, ...)).
+    void drive(const phys::PedalInput& input);
+    // Held on the start line (vehCar::SetDrivable(0, 1) and
+    // vehCar::PreUpdate): full brakes and neutral, so the throttle revs the
+    // engine freely; the steering and handbrake stay the player's.
+    void hold(const phys::PedalInput& input);
     bool reversing() const;
 
     // Pose for rendering (body and wheel matrices from the simulation).
@@ -50,6 +61,7 @@ private:
     asset::VehicleModel m_model;
     phys::CarSim m_sim;
     phys::ArcadeControls m_controls;
+    bool m_held = false;
     std::unique_ptr<phys::Trailer> m_trailer;
     std::unique_ptr<asset::VehicleModel> m_trailerModel;
 };

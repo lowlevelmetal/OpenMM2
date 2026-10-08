@@ -47,8 +47,11 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     // Init places the trailer from the tractor's model matrix; reset() (as
     // vehCar::Reset does) places it from the tractor's InertialCS.
     const Mat34 model = tractor.modelMatrix();
+    const Vec3& o = originOffset;
     ics.matrix = model;
-    ics.matrix.m3 = model.transform(originOffset);
+    ics.matrix.m3 = {((model.m2.x * o.z + model.m1.x * o.y) + model.m0.x * o.x) + model.m3.x,
+                     ((model.m2.y * o.z + model.m0.y * o.x) + model.m1.y * o.y) + model.m3.y,
+                     ((model.m2.z * o.z + model.m0.z * o.x) + model.m1.z * o.y) + model.m3.z};
 
     // The collider's bound: the trailer instance's geometry bound
     // (bound/<car>_trailer_bound.bnd through lvlInstance::GetBound, with the
@@ -77,15 +80,20 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     body.resetCollider();
 
     // Wheels: vehWheel::Init without a vehCarSim (the body frame, a static
-    // load of Mass * 19.6 / 4); TWHL1 copies TWHL0's tune, TWHL3 TWHL2's.
+    // load of Mass * 19.6 / 4). The file's WheelFront / WheelBack are
+    // TWHL0's and TWHL2's; TWHL1 and TWHL3 take them by vehWheel::CopyVars,
+    // which keeps their own (constructor) HandbrakeCoef and WobbleLimit.
     // Each wheel has its own free drivetrain (vehDrivetrain::Init with the
     // tractor's vehCarSim, whose Mass sets the wheel inertia).
     for (std::size_t i = 0; i < 4; ++i) {
-        wheels[i].init(i < 2 ? p.wheelFront : p.wheelBack, g.wheels[i], p.mass, false, 0.0f);
+        const WheelParams wp = i == 0 ? p.wheelFront : (i == 2 ? p.wheelBack : WheelParams{});
+        wheels[i].init(wp, g.wheels[i], p.mass, false, 0.0f);
         drivetrains[i] = Drivetrain{};
         drivetrains[i].configure(p.drivetrain);
         drivetrains[i].addWheel(&wheels[i]);
     }
+    wheels[1].copyVars(wheels[0]);
+    wheels[3].copyVars(wheels[2]);
 
     // The joint at the two hitches, attached to both bodies' colliders.
     joint.init(j, &tractor.body.ics, &ics, carHitchOffset, trailerHitchOffset);
@@ -160,9 +168,9 @@ void Trailer::reset() {
     const Mat34& t = m_tractor->body.ics.matrix;
     ics.matrix = t;
     const Vec3& o = originOffset;
-    ics.matrix.m3 = {((o.x * t.m0.x + t.m2.x * o.z) + t.m1.x * o.y) + t.m3.x,
-                     ((t.m2.y * o.z + t.m0.y * o.x) + t.m1.y * o.y) + t.m3.y,
-                     ((t.m2.z * o.z + t.m0.z * o.x) + t.m1.z * o.y) + t.m3.z};
+    ics.matrix.m3 = {((t.m1.x * o.y + t.m2.x * o.z) + o.x * t.m0.x) + t.m3.x,
+                     ((t.m1.y * o.y + t.m0.y * o.x) + t.m2.y * o.z) + t.m3.y,
+                     ((t.m1.z * o.y + t.m0.z * o.x) + t.m2.z * o.z) + t.m3.z};
     joint.reset();
     for (Drivetrain& d : drivetrains)
         d.reset();
@@ -189,6 +197,20 @@ int Trailer::bottomedOut() const {
         if (w.bottomedOut)
             ++n;
     return n;
+}
+
+bool Trailer::requiresTerrainCollision() const {
+    const Mat34& m = body.ics.matrix;
+    if (!(0.5f < m.m1.y))
+        return true;
+    const Vec3& w0 = wheels[0].intersection.normal;
+    const Vec3& w1 = wheels[1].intersection.normal;
+    const Vec3& w2 = wheels[2].intersection.normal;
+    const Vec3& w3 = wheels[3].intersection.normal;
+    const Vec3 f{(w0.x + w1.x) * 0.5f, (w0.y + w1.y) * 0.5f, (w0.z + w1.z) * 0.5f};
+    const Vec3 b{(w2.x + w3.x) * 0.5f, (w2.y + w3.y) * 0.5f, (w2.z + w3.z) * 0.5f};
+    const Vec3 d{(f.x + b.x) * 0.5f - m.m1.x, (b.y + f.y) * 0.5f - m.m1.y, (b.z + f.z) * 0.5f - m.m1.z};
+    return !((d.z * d.z + d.y * d.y) + d.x * d.x < 0.1f && bottomedOut() == 0);
 }
 
 void Trailer::setCarHitchOffset() {

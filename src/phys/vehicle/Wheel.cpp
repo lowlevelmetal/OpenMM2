@@ -7,6 +7,7 @@
 #include "phys/vehicle/Wheel.h"
 
 #include "phys/AgeMath.h"
+#include "phys/Impact.h"
 #include "phys/InertialCS.h"
 #include "phys/World.h"
 
@@ -39,14 +40,6 @@ void makeRotateY(Mat34& m, float a) {
     m.m2 = {s, 0.0f, c};
 }
 
-// Matrix34::Rotate about a world-space axis (this = this * R).
-void rotateAbout(Mat34& m, const Vec3& axis, float angle) {
-    const Mat34 r = age::arbitraryRotation(axis, angle);
-    m.m0 = r.transformDir(m.m0);
-    m.m1 = r.transformDir(m.m1);
-    m.m2 = r.transformDir(m.m2);
-}
-
 } // namespace
 
 float physFrand(std::uint32_t& seed) {
@@ -71,7 +64,15 @@ void Wheel::init(const WheelParams& p, const WheelGeometry& g, float m, bool wit
 }
 
 void Wheel::copyVars(const Wheel& o) {
+    // vehWheel::CopyVars copies every tune field but HandbrakeCoef and
+    // WobbleLimit: the right wheels keep the constructor's 1 and 0 whatever
+    // the tune file says (only WheelFront / WheelBack are loaded, into the
+    // left wheels).
+    const float handbrakeCoef = params.handbrakeCoef;
+    const float wobbleLimit = params.wobbleLimit;
     params = o.params;
+    params.handbrakeCoef = handbrakeCoef;
+    params.wobbleLimit = wobbleLimit;
     computeConstants();
 }
 
@@ -226,13 +227,7 @@ void Wheel::calcSuspensionForce(float disp, bool contact, float cosNormal, const
         // Bottomed out: stop the closing velocity at the contact
         // (phImpact::CalcCollisionNoFriction) and push the overlap out.
         const Vec3& n = contactFrame.m1;
-        float j = 0.0f;
-        if (normalVelocity < 0.0f) {
-            Mat34 c;
-            env.ics->calcCMatrix(c, intersection.position);
-            const Vec3 cn = c.transformDir(n);
-            j = -(normalVelocity / cn.dot(n));
-        }
+        const float j = calcCollisionNoFriction(*env.ics, n, normalVelocity, intersection.position);
         impulseForce = env.invDt * j * 0.25f;
         bottomStiffness = -(impulseForce / normalVelocity);
         const float over = (suspension - params.suspensionLimit) * cosNormal;
@@ -264,10 +259,6 @@ float Wheel::bumpDisplacement(float speed, float dt, std::uint32_t* seed) {
     return speed < 1.0f ? b * speed : b;
 }
 
-void Wheel::noContact() {
-    hit = false;
-}
-
 float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     // The steered wheel pivots about its inner edge.
     Mat34 m;
@@ -295,17 +286,26 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     bool wall = false;
     RayHit isect;
     if (env.ground && env.ground->probe(top, bottom, isect)) {
+        // dgPhysManager::Collide fills the wheel's lvlIntersection whenever
+        // it hits, even when the checks below reject the contact
+        // (vehCar::RequiresTerrainCollision reads its normal).
+        intersection = isect;
         material = &env.ground->material(isect.material);
         // OpenMM2: deep water (materials.mtl depth >= 1, e.g. deepwater 100)
-        // carries no wheel (inferred; see docs/physics.md).
+        // carries no wheel. vehWheel has no such test: it takes whatever
+        // dgPhysManager::Collide hits. OpenMM2's probe soup is the PSDL
+        // render mesh, not MM2's collision polygons, and how MM2's probe
+        // lets a car sink into deep water is not settled, so this stands in
+        // (inferred; see docs/physics.md).
         hit = material->depth < 1.0f;
     }
     if (hit) {
         const Vec3& n = isect.normal;
-        upDotN = up.x * n.x + up.y * n.y + up.z * n.z;
+        // (Summed in vehWheel::ComputeDwtdw's order, as are the products below.)
+        upDotN = (n.z * up.z + n.y * up.y) + up.x * n.x;
         const Vec3& r0 = matrix.m0;
         Vec3 back{n.z * r0.y - n.y * r0.z, r0.z * n.x - r0.x * n.z, r0.x * n.y - r0.y * n.x};
-        const float b2 = back.z * back.z + back.y * back.y + back.x * back.x;
+        const float b2 = (back.x * back.x + back.y * back.y) + back.z * back.z;
         if (upDotN < 0.02f || b2 < 0.02f) {
             hit = false;
         } else {
@@ -317,7 +317,6 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
             contactFrame.m0 = {back.z * n.y - n.z * back.y, back.x * n.z - back.z * n.x,
                                back.y * n.x - back.x * n.y};
             wall = !(0.001f <= std::abs(n.y));
-            intersection = isect;
         }
     }
     if (!hit) {
@@ -330,9 +329,9 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
 
     const Vec3 v = env.ics->filteredVelocity(intersection.position, env.invDt);
     const Mat34& cf = contactFrame;
-    latVelocity = v.x * cf.m0.x + v.y * cf.m0.y + v.z * cf.m0.z;
-    fwdVelocity = -cf.m2.x * v.x + -cf.m2.y * v.y + -cf.m2.z * v.z;
-    normalVelocity = v.x * cf.m1.x + v.y * cf.m1.y + v.z * cf.m1.z;
+    latVelocity = (v.z * cf.m0.z + v.y * cf.m0.y) + v.x * cf.m0.x;
+    fwdVelocity = (-cf.m2.z * v.z + -cf.m2.y * v.y) + -cf.m2.x * v.x;
+    normalVelocity = (v.z * cf.m1.z + v.y * cf.m1.y) + v.x * cf.m1.x;
     slipVelocity = (flags & kFixed) ? fwdVelocity : rotationSpeed * radius + fwdVelocity;
 
     // Surface: bumps, drag, friction, sinking into soft ground while skidding.
@@ -585,7 +584,8 @@ void Wheel::update(const WheelEnv& env) {
 
         // Friction circle.
         const float f2 = tireGripLong * tireGripLong + tireGripLat * tireGripLat;
-        const float limit2 = mu * currentLoad * mu * currentLoad;
+        const float muLoad = mu * currentLoad;
+        const float limit2 = muLoad * muLoad;
         if (limit2 < f2) {
             if ((!gripLong && opt < std::abs(longSlipPercent)) || (!gripLat && opt < std::abs(latSlipPercent))) {
                 // Sliding: the force opposes the slip velocity.
@@ -614,13 +614,15 @@ void Wheel::update(const WheelEnv& env) {
             -(std::abs(latVelocity) * params.tireDragCoefLat * currentLoad * latVelocity * drag);
         const float dragLong = -((depth + 1.0f) * -(std::abs(fwdVelocity) * params.tireDragCoefLong *
                                                     currentLoad * drag * fwdVelocity));
+        // Summed in vehWheel::Update's order: suspension, tyre lateral and
+        // longitudinal force, then the two drags.
         const float back = -tireGripLong;
-        const Vec3 force{dragLong * cf.m2.x + dragLat * cf.m0.x + back * cf.m2.x + tireGripLat * cf.m0.x +
-                             suspensionForce * cf.m1.x,
-                         dragLong * cf.m2.y + dragLat * cf.m0.y + back * cf.m2.y + tireGripLat * cf.m0.y +
-                             suspensionForce * cf.m1.y,
-                         dragLong * cf.m2.z + dragLat * cf.m0.z + back * cf.m2.z + tireGripLat * cf.m0.z +
-                             suspensionForce * cf.m1.z};
+        const Vec3 force{(((suspensionForce * cf.m1.x + tireGripLat * cf.m0.x) + back * cf.m2.x) + dragLat * cf.m0.x) +
+                             dragLong * cf.m2.x,
+                         (((suspensionForce * cf.m1.y + tireGripLat * cf.m0.y) + back * cf.m2.y) + dragLat * cf.m0.y) +
+                             dragLong * cf.m2.y,
+                         (((suspensionForce * cf.m1.z + tireGripLat * cf.m0.z) + back * cf.m2.z) + dragLat * cf.m0.z) +
+                             dragLong * cf.m2.z};
         ics.applyForce(force, intersection.position);
     }
 
@@ -631,9 +633,14 @@ void Wheel::update(const WheelEnv& env) {
     rotation = dt * rotationSpeed + rotation;
     const float d = suspension - visualDispVert();
     matrix.m3 = {d * matrix.m1.x + matrix.m3.x, d * matrix.m1.y + matrix.m3.y, d * matrix.m1.z + matrix.m3.z};
-    rotateAbout(matrix, matrix.m0, rotation);
-    if (wobble != 0.0f)
-        rotateAbout(matrix, matrix.m2, wobble);
+    // Matrix34::Rotate about the wheel's own axle, then (with damage) about
+    // its forward axis by the wobble.
+    const Vec3 axle = matrix.m0;
+    age::rotate(matrix, axle, rotation);
+    if (wobble != 0.0f) {
+        const Vec3 forward = matrix.m2;
+        age::rotate(matrix, forward, wobble);
+    }
 }
 
 float Wheel::visualDispVert() const {
