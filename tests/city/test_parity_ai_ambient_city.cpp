@@ -10,6 +10,7 @@
 #include "city/Race.h"
 #include "city/Reader.h"
 #include "city/RoomInfo.h"
+#include "city/RoomLocator.h"
 
 #include <gtest/gtest.h>
 
@@ -187,4 +188,23 @@ TEST(ParityCityRooms, RetailLevelRoomFlags) {
         std::printf("%s: %d water-of-death rooms, %d terrain-instance rooms, %d covered rooms\n", name, water,
                     terrain, covered);
     }
+}
+
+// cityLevel::FindRoomId: the hint room, then its neighbours, then the grid;
+// a position off every room is in room 0 whatever the hint.
+TEST(ParityCityRooms, FindRoomIdGivesZeroOffEveryRoom) {
+    using namespace city;
+    Psdl psdl;
+    psdl.vertices = {{0, 0, 0}, {10, 0, 0}, {20, 0, 0}, {20, 0, 10}, {10, 0, 10}, {0, 0, 10}};
+    psdl.rooms.resize(3);
+    psdl.rooms[1].flags = RoomFlag::Road;
+    psdl.rooms[1].perimeter = {{0, 0}, {1, 2}, {4, 0}, {5, 0}};
+    psdl.rooms[2].flags = RoomFlag::Road;
+    psdl.rooms[2].perimeter = {{1, 0}, {2, 0}, {3, 0}, {4, 1}};
+    const RoomLocator locator(psdl, "london");
+    EXPECT_EQ(locator.find({5, 0, 5}, 0), 1);
+    EXPECT_EQ(locator.find({15, 0, 5}, 1), 2);
+    EXPECT_EQ(locator.find({5, 0, 5}, 2), 1);
+    EXPECT_EQ(locator.find({50, 0, 50}, 1), 0);
+    EXPECT_EQ(locator.find({-5, 0, 5}, 2), 0);
 }

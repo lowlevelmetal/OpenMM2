@@ -426,12 +426,10 @@ void CityLevel::removeSource(const InstanceSource* source) {
 }
 
 int CityLevel::findRoom(const Vec3& position, int hint) const {
-    // cityLevel::FindRoomId tries the room it was in, its neighbours, then
-    // the whole city (FullProbe). OpenMM2's RoomLocator answers the last;
-    // off every room the body keeps its last room (OpenMM2: MM2 moves it
-    // to room 0, where it collides with nothing).
-    const int room = m_locator.find(position, hint);
-    return room != 0 ? room : hint;
+    // cityLevel::FindRoomId (RoomLocator): the hint room, its neighbours,
+    // then the whole city (FullProbe); 0 off every room, where a body
+    // collides with no level geometry.
+    return m_locator.find(position, hint);
 }
 
 int CityLevel::neighbors(int* out, int max, int room) const {
