@@ -142,6 +142,9 @@ public:
             return;
         }
         updatePlayer(ctx, static_cast<float>(dt));
+        // aiMap::Update: the ambient traffic and the pedestrians first, then
+        // the racers and the police, before the physics step.
+        updateAmbient(ctx, static_cast<float>(dt));
         updateAiDrivers(static_cast<float>(dt));
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
@@ -164,23 +167,6 @@ public:
             m_bangers->update(static_cast<float>(dt));
         if (m_trafficBodies)
             m_trafficBodies->afterStep();
-        if (m_ai && m_player) {
-            const auto& sim = m_player->sim();
-            ai::PlayerCar pc;
-            pc.transform = sim.body.ics.matrix;
-            pc.velocity = sim.body.ics.frameVelocity;
-            pc.width = sim.halfExtents().x * 2.0f;
-            pc.length = sim.halfExtents().z * 2.0f;
-            pc.radius = sim.halfExtents().mag();
-            pc.steering = sim.steering;
-            pc.reversing = sim.trans.getCurrentGear() < 0;
-            pc.horn = hornDown(ctx);
-            std::vector<Vec3> racers;
-            for (const auto& o : m_opponents)
-                racers.push_back(o.sim->sim().body.ics.matrix.m3);
-            m_ai->setOpponents(racers);
-            m_ai->update(static_cast<float>(dt), pc);
-        }
         if (m_player) {
             m_pose = m_player->pose();
             m_trailerPose = m_player->trailerPose();
@@ -451,6 +437,7 @@ private:
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
+        m_playerRadius = bodyRadius(m_player->model());
         // mmGame::Init: vehTransmission::Automatic with the player's
         // transmission choice; the AUTO REVERSE option (mmInput +0x18C).
         m_player->sim().trans.automatic(m_result.config.automatic);
@@ -677,6 +664,46 @@ private:
         t.halfLength = sim.halfExtents().z;
         t.body = &sim.body;
         return t;
+    }
+
+    // The ambient traffic, pedestrians and traffic lights (ai::World; the
+    // lights run with them, where aiMap::Update runs its light sets after the
+    // racers and the police).
+    void updateAmbient(Context& ctx, float dt) {
+        if (!m_ai || !m_player)
+            return;
+        const auto& sim = m_player->sim();
+        ai::PlayerCar pc;
+        pc.transform = sim.body.ics.matrix;
+        pc.velocity = sim.body.ics.frameVelocity;
+        pc.width = sim.halfExtents().x * 2.0f;
+        pc.length = sim.halfExtents().z * 2.0f;
+        // lvlInstance::GetRadius: the car's geometry radius.
+        pc.radius = m_playerRadius > 0.0f ? m_playerRadius : sim.halfExtents().mag();
+        pc.steering = sim.steering;
+        pc.reversing = sim.trans.getCurrentGear() < 0;
+        pc.horn = hornDown(ctx);
+        std::vector<Vec3> racers;
+        for (const auto& o : m_opponents)
+            racers.push_back(o.sim->sim().body.ics.matrix.m3);
+        m_ai->setOpponents(racers);
+        m_ai->update(dt, pc);
+    }
+
+    // lvlInstance::GetRadius for a car: modGetStatic's radius (the largest
+    // vertex distance from the model origin) over its body's LODs, the
+    // instance's first geometry.
+    static float bodyRadius(const asset::VehicleModel& model) {
+        float r2 = 0.0f;
+        for (const auto& mesh : model.pkg.meshes) {
+            if (mesh.part != "BODY")
+                continue;
+            for (const auto& section : mesh.sections)
+                for (const auto& packet : section.packets)
+                    for (const auto& v : packet.vertices)
+                        r2 = std::max(r2, v.position.dot(v.position));
+        }
+        return std::sqrt(r2);
     }
 
     // Opponent and police AI: reads every car, writes the AI cars' inputs.
@@ -1895,6 +1922,7 @@ private:
     audio::game::RainAudio m_rain;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
+    float m_playerRadius = 0.0f; // the player's car's geometry radius (lvlInstance::GetRadius)
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;
     std::map<std::string, audio::game::SoundSlot> m_gameSounds; // the session's sounds by name
