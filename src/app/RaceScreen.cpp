@@ -771,12 +771,15 @@ private:
     void updateAiAudio(float dt) {
         const Mat34& listener = m_camera.transform;
         auto feed = [&](audio::game::OpponentCarAudio& audio, const phys::CarSim& sim, bool siren,
-                        std::vector<audio::game::ImpactInput>& impacts) {
+                        bool pursuingPlayer, std::vector<audio::game::ImpactInput>& impacts) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = sim.engine.throttle;
             in.brake = sim.brakes;
             in.transform = sim.modelMatrix();
             in.siren = siren;
+            // aiPoliceOfficer::StartSiren(IsPlayer): only a chase of the
+            // player counts for the cop chase music.
+            in.sirenPursuingPlayer = pursuingPlayer;
             // vehCarDamage::ApplyImpact's AudImpact::Play for this car.
             in.impacts = std::move(impacts);
             impacts.clear();
@@ -784,10 +787,10 @@ private:
         };
         for (auto& o : m_opponents)
             if (o.audio)
-                feed(*o.audio, o.sim->sim(), false, *o.impacts);
+                feed(*o.audio, o.sim->sim(), false, false, *o.impacts);
         for (auto& c : m_cops)
             if (c.audio)
-                feed(*c.audio, c.sim->sim(), c.driver->siren(), *c.impacts);
+                feed(*c.audio, c.sim->sim(), c.driver->siren(), c.driver->target() == 0, *c.impacts);
     }
 
     game::session::PlayerState playerState() const {
@@ -922,6 +925,11 @@ private:
                 playGameSound(ctx, static_cast<game::session::GameSound>(e.index), e.value);
             } else if (e.type == EventType::Speech) {
                 announce(static_cast<game::session::SpeechCue>(e.index), e.value);
+            } else if (e.type == EventType::CheckpointCleared) {
+                // mmWaypoints::DisplayHUDMessage: the crash course's location
+                // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
+                if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
+                    m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
@@ -934,7 +942,12 @@ private:
             if (phase != Phase::Countdown)
                 director.raceStarted();
             if (phase == Phase::PostRace && !m_musicFinished) {
-                director.finish(); // the race modes stop the music at the finish
+                // The race modes stop the music at the finish (StopSegment(0)),
+                // a wreck with an ending on the next beat (StopSegment(1)).
+                if (m_session->damagedOut())
+                    director.damagedOut();
+                else
+                    director.finish();
                 m_musicFinished = true;
             }
             if (phase == Phase::Done && !m_musicResults) {
@@ -1436,6 +1449,9 @@ private:
             m_tunnel = room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size() &&
                        (m_city->psdl.rooms[static_cast<std::size_t>(room)].flags & city::RoomFlag::Subterranean);
         }
+        // Aud3DObjectManager::EchoOn(0.5) / EchoOff: every positioned sound's
+        // echo follows the same flag.
+        m_audioSlots.setTunnel(m_tunnel);
         if (m_carAudioOk) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = m_lastPedals.accelerator;
