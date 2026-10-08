@@ -150,8 +150,13 @@ public:
     void setDamageParams(const CarDamageParams& p) { damage.params = p; }
 
     // Places the car's model origin at `model` and resets all state
-    // (vehCarSim::Reset).
+    // (vehCarSim::Reset and vehCar::Reset; OpenMM2's placement).
     void reset(const Mat34& model);
+    // MM2's placement (vehCarSim::SetResetPos, ResetRotation, then the same
+    // resets): the body goes to `position` + CenterOfGravity, turned by
+    // `rotation` about Y, so the model origin lands at position +
+    // CenterOfGravity + R * CenterOfGravity.
+    void resetAt(const Vec3& position, float rotation);
 
     // Inputs (vehCarSim brake/handbrake/steering, vehEngine throttle).
     void setInputs(float throttle, float brakes, float steering, float handBrake);
@@ -163,6 +168,19 @@ public:
 
     // vehCarSim::OnGround: number of wheels touching the ground.
     int wheelsOnGround() const;
+    // vehCarSim::BottomedOut: number of wheels that bottomed out this sample.
+    int bottomedOut() const;
+    // vehCar::RequiresTerrainCollision, which dgPhysManager::CollideTerrain
+    // asks before colliding the body with the room's terrain: not while the
+    // car stands upright (up.y > 0.5) with the mean of its wheels' probe
+    // normals within sqrt(0.1) of its up axis and no wheel bottomed out.
+    bool requiresTerrainCollision() const;
+    // mmPlayer::UpdateRegen (Cops and Robbers, mmPlayer::EnableRegen; once a
+    // frame, only with damage enabled): above 5 m/s the damage heals by
+    // MaxDamage / 2000 a frame; once that empties it, mmPlayer::ResetDamage
+    // clears it. Returns true then (the caller also clears the model's
+    // visual damage, as ResetDamage does).
+    bool regenerate();
     bool onGround() const { return wheelsOnGround() > 0; }
     // vehCarSim::GetSSSFactor.
     float sssFactor(float speed) const;
@@ -222,6 +240,7 @@ public:
 
 private:
     WheelEnv makeEnv(float dt, const World& world);
+    void resetBody(const Mat34& bodyMatrix);
     void updateAxles();
     Drivetrain& primary() { return drivetrains[2]; }
     void buildBound();

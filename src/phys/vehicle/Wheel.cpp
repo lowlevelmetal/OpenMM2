@@ -290,6 +290,10 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     bool wall = false;
     RayHit isect;
     if (env.ground && env.ground->probe(top, bottom, isect)) {
+        // dgPhysManager::Collide fills the wheel's lvlIntersection whenever
+        // it hits, even when the checks below reject the contact
+        // (vehCar::RequiresTerrainCollision reads its normal).
+        intersection = isect;
         material = &env.ground->material(isect.material);
         // OpenMM2: deep water (materials.mtl depth >= 1, e.g. deepwater 100)
         // carries no wheel (inferred; see docs/physics.md).
@@ -313,7 +317,6 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
             contactFrame.m0 = {back.z * n.y - n.z * back.y, back.x * n.z - back.z * n.x,
                                back.y * n.x - back.x * n.y};
             wall = !(0.001f <= std::abs(n.y));
-            intersection = isect;
         }
     }
     if (!hit) {

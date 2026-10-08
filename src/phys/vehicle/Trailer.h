@@ -76,6 +76,9 @@ public:
     // vehTrailer::BottomedOut: the number of wheels that bottomed out this
     // sample.
     int bottomedOut() const;
+    // vehTrailer::RequiresTerrainCollision: as the car's (CarSim), with the
+    // trailer's body and wheels.
+    bool requiresTerrainCollision() const;
     // vehTrailer::SetCarHitchOffset / SetTrailerHitchOffset: copy the
     // trailer's hitch offsets into the joint (tuning callbacks).
     void setCarHitchOffset();

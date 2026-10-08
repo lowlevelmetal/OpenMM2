@@ -175,10 +175,25 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
 }
 
 void CarSim::reset(const Mat34& model) {
+    Mat34 m = model;
+    m.m3 = model.m3 - model.transformDir(centerOfGravity);
+    resetBody(m);
+}
+
+void CarSim::resetAt(const Vec3& position, float rotation) {
+    // vehCarSim::SetResetPos adds CenterOfGravity to the position;
+    // vehCarSim::Reset turns the reset body about Y (Matrix34::Rotate).
+    const Vec3& cg = centerOfGravity;
+    Mat34 m = Mat34::identity();
+    age::rotate(m, {0.0f, 1.0f, 0.0f}, rotation);
+    m.m3 = {cg.x + position.x, cg.y + position.y, cg.z + position.z};
+    resetBody(m);
+}
+
+void CarSim::resetBody(const Mat34& bodyMatrix) {
     InertialCS& ics = body.ics;
     ics.zero();
-    ics.matrix = model;
-    ics.matrix.m3 = model.m3 - model.transformDir(centerOfGravity);
+    ics.matrix = bodyMatrix;
 
     engine.reset();
     trans.reset();
@@ -190,7 +205,10 @@ void CarSim::reset(const Mat34& model) {
         w.matrix = Mat34::mul(Mat34::translation(w.center), world);
     }
     stuck.reset();
-    splash.reset();
+    // vehCar::Reset only clears the splash's active flag: a car reset after
+    // sinking keeps its lowered buoyancy (vehSplash::Reset runs once, from
+    // its constructor).
+    splash.deactivate();
     damage.reset();
     raceFinished = false;
     steering = 0.0f;
@@ -277,6 +295,41 @@ Mat34 CarSim::wheelMatrix(int i) const {
 
 int CarSim::wheelsOnGround() const {
     return static_cast<int>(std::ranges::count_if(wheels, [](const Wheel& w) { return w.onGround; }));
+}
+
+int CarSim::bottomedOut() const {
+    return static_cast<int>(std::ranges::count_if(wheels, [](const Wheel& w) { return w.bottomedOut; }));
+}
+
+bool CarSim::requiresTerrainCollision() const {
+    const Mat34& m = body.ics.matrix;
+    if (!(0.5f < m.m1.y))
+        return true;
+    // The probe normals (front pair, back pair, then both), less the up axis.
+    const Vec3& fl = wheels[0].intersection.normal;
+    const Vec3& fr = wheels[1].intersection.normal;
+    const Vec3& bl = wheels[2].intersection.normal;
+    const Vec3& br = wheels[3].intersection.normal;
+    const Vec3 f{(fl.x + fr.x) * 0.5f, (fl.y + fr.y) * 0.5f, (fl.z + fr.z) * 0.5f};
+    const Vec3 b{(bl.x + br.x) * 0.5f, (bl.y + br.y) * 0.5f, (bl.z + br.z) * 0.5f};
+    const Vec3 d{(f.x + b.x) * 0.5f - m.m1.x, (b.y + f.y) * 0.5f - m.m1.y, (b.z + f.z) * 0.5f - m.m1.z};
+    return !((d.z * d.z + d.y * d.y) + d.x * d.x < 0.1f && bottomedOut() == 0);
+}
+
+bool CarSim::regenerate() {
+    const Vec3& v = body.ics.linearVelocity;
+    if (!((v.y * v.y + v.z * v.z) + v.x * v.x > 25.0f))
+        return false;
+    const float current = damage.currentDamage;
+    if (current < 0.01f)
+        return false;
+    const float heal = damage.params.maxDamage * -0.0005f;
+    damage.addDamage(heal);
+    if (heal + current <= 0.0f) {
+        damage.reset(); // mmPlayer::ResetDamage -> vehCarDamage::ClearDamage
+        return true;
+    }
+    return false;
 }
 
 float CarSim::sssFactor(float speed) const {

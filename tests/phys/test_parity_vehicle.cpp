@@ -133,6 +133,54 @@ TEST(VehicleParity, HeldCarRunsNoSplash) {
     EXPECT_GT(free.car->modelMatrix().m3.y, y0 + 0.5f);
 }
 
+// vehCarSim::SetResetPos + Reset: the body at the position plus
+// CenterOfGravity, so the model origin is offset by CG + R * CG.
+TEST(VehicleParity, ResetAtPlacesTheBodyAtPositionPlusCenterOfGravity) {
+    CarSimParams p;
+    p.centerOfGravity = {0.0f, -0.1f, 0.15f};
+    CarSim car;
+    car.init(p, VehicleGeometry::placeholder());
+    const Vec3 pos{10.0f, 2.0f, -5.0f};
+    car.resetAt(pos, 0.0f);
+    EXPECT_NEAR((car.body.ics.matrix.m3 - (pos + p.centerOfGravity)).mag(), 0.0f, 1e-5f);
+    EXPECT_NEAR((car.modelMatrix().m3 - (pos + p.centerOfGravity * 2.0f)).mag(), 0.0f, 1e-5f);
+    car.resetAt(pos, 3.1415927f);
+    // Turned around, R * CG cancels the horizontal part of CG.
+    EXPECT_NEAR(car.modelMatrix().m3.z, pos.z, 1e-5f);
+    EXPECT_NEAR(car.modelMatrix().m3.y, pos.y - 0.2f, 1e-5f);
+    EXPECT_NEAR(car.modelMatrix().m2.z, -1.0f, 1e-5f);
+}
+
+// vehCar::RequiresTerrainCollision: a car resting level on its wheels needs
+// no terrain collision for its body.
+TEST(VehicleParity, UprightCarOnItsWheelsSkipsTerrainCollision) {
+    Rig r;
+    r.run(60);
+    EXPECT_EQ(r.car->wheelsOnGround(), 4);
+    EXPECT_FALSE(r.car->requiresTerrainCollision());
+    Mat34 tilted = Mat34::rotationZ(1.2f);
+    tilted.m3 = {0.0f, 3.0f, 0.0f};
+    r.car->reset(tilted);
+    EXPECT_TRUE(r.car->requiresTerrainCollision());
+}
+
+// mmPlayer::UpdateRegen: above 5 m/s the damage heals by MaxDamage / 2000 a
+// frame and is cleared once that empties it.
+TEST(VehicleParity, RegenerationHealsWhileMoving) {
+    CarSim car;
+    car.init(CarSimParams{}, VehicleGeometry::placeholder());
+    CarDamage& d = car.damage;
+    d.currentDamage = d.params.maxDamage * 0.001f;
+    car.body.ics.linearVelocity = {0.0f, 0.0f, 4.0f};
+    EXPECT_FALSE(car.regenerate());
+    EXPECT_FLOAT_EQ(d.currentDamage, d.params.maxDamage * 0.001f);
+    car.body.ics.linearVelocity = {0.0f, 0.0f, 6.0f};
+    EXPECT_FALSE(car.regenerate());
+    EXPECT_FLOAT_EQ(d.currentDamage, d.params.maxDamage * 0.001f + d.params.maxDamage * -0.0005f);
+    EXPECT_TRUE(car.regenerate());
+    EXPECT_FLOAT_EQ(d.currentDamage, 0.0f);
+}
+
 // mmInput::FilterDiscreteSteering with mmPlayer::Update's defaults: at a
 // standstill the speed blend is SpeedBaseLow / (Hi - Low) = 5 / 95; the
 // first step from the centre uses DeltaIn (the signs differ), later ones

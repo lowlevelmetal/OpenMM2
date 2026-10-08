@@ -199,6 +199,20 @@ int Trailer::bottomedOut() const {
     return n;
 }
 
+bool Trailer::requiresTerrainCollision() const {
+    const Mat34& m = body.ics.matrix;
+    if (!(0.5f < m.m1.y))
+        return true;
+    const Vec3& w0 = wheels[0].intersection.normal;
+    const Vec3& w1 = wheels[1].intersection.normal;
+    const Vec3& w2 = wheels[2].intersection.normal;
+    const Vec3& w3 = wheels[3].intersection.normal;
+    const Vec3 f{(w0.x + w1.x) * 0.5f, (w0.y + w1.y) * 0.5f, (w0.z + w1.z) * 0.5f};
+    const Vec3 b{(w2.x + w3.x) * 0.5f, (w2.y + w3.y) * 0.5f, (w2.z + w3.z) * 0.5f};
+    const Vec3 d{(f.x + b.x) * 0.5f - m.m1.x, (b.y + f.y) * 0.5f - m.m1.y, (b.z + f.z) * 0.5f - m.m1.z};
+    return !((d.z * d.z + d.y * d.y) + d.x * d.x < 0.1f && bottomedOut() == 0);
+}
+
 void Trailer::setCarHitchOffset() {
     joint.offset1 = carHitchOffset;
 }
