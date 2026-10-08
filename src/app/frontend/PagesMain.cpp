@@ -463,15 +463,6 @@ public:
     }
 };
 
-// MM2 `Dialog_HallOfFame` (mmInterface::HOFFillRecords): the five best
-// times (amateur or pro) or scores (pro) of each race of the mode in the
-// city, from the race records shared by all drivers, five rows per race
-// whether or not they are filled. The list is a UICompositeScroll at 0.0578,
-// 0.177 of the 540x460 dialog, 0.9 of it wide (486 px), 11 rows of 18 px
-// with a scroll bar: rows from (81,91). mmCompRaceRecord::
-// SetSubwidgetGeometry puts the race at 4 px, the driver a quarter of the
-// width further, the time or score 0.2857 further and the vehicle 0.1923
-// less 26 px further. The scroll arrows' positions are inferred.
 // Dialog_HallOfFame's list (UICompositeScroll, 11 rows of 18 px from
 // 81,91) with its VSWidget at 546,91, 198 px high (the list's right edge
 // less 0.0329 of the screen): one focus stop, whose focus lights the bar.
@@ -552,6 +543,15 @@ private:
     bool m_dragging = false;
 };
 
+// MM2 `Dialog_HallOfFame` (mmInterface::HOFFillRecords): the five best
+// times (amateur or pro) or scores (pro) of each race of the mode in the
+// city, from the race records shared by all drivers, five rows per race
+// whether or not they are filled. The list is a UICompositeScroll at 0.0578,
+// 0.177 of the 540x460 dialog, 0.9 of it wide (486 px), 11 rows of 18 px
+// with a scroll bar (RecordList): rows from (81,91). mmCompRaceRecord::
+// SetSubwidgetGeometry puts the race at 4 px, the driver a quarter of the
+// width further, the time or score 0.2857 further and the vehicle 0.1923
+// less 26 px further.
 class RaceRecordsDialog final : public RecordDialog {
 public:
     explicit RaceRecordsDialog(Frontend& fe) : RecordDialog(fe, "jpg/hoff_dlg.jpg", menu_id::kHallOfFame, true) {
