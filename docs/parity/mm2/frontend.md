@@ -33,6 +33,7 @@ docs/frontend.md and docs/multiplayer.md describe the result for players.
 - The option pages' strip OPTIONS, Customize opening on DEFAULTS, the refused-key OK button, no steering bar on the control page (4c0d84d).
 - Widget sounds, exclusive-lamp clicks, drop arrows, pressed arrows, popup key sounds, F4 in the popup and the restarted Switch sound (1ffb905, 357fcb4, ba296e0).
 - The race menu's lamp help, and the host's race defaults, checkpoint locks and gold mass (2a46a62).
+- Menus' focus and help on entry, after dialogs and in the popups; a click needs the press and the release on the same widget; the sessions screen's blinking search label (c162521, 5c1cd3c).
 - The results' Exit, Next Race details, BeginPhase's 10 % loading step and San Francisco as the first city (36faf55).
 - The Hall of Fame's "passed" flag (4199e54).
 
@@ -66,12 +67,12 @@ callbacks (`onClick`, `onBack`).
 | `MenuManager::GetFont` (with its table 0x4e4d3d) | ported | `ui/Widgets.cpp` `style::valueFont`, `smallFont`, `popupFont`, `popupButtonFont`, `popupSmallFont`, `popupTitleFont` | sizes 12/14/20/24/32/48/64 to their slots, anything else the 16 slot (strings 560 / 568). |
 | `MenuManager::GetFGColor` (with 0x4e4f10) | ported | `ui/Widgets.h` `style::kValueText`, `kValueTextFocus`, `kRecordText`, `kPopupText`, `kPopupFocus`, `kPopupDisabled` | frontend: 0 and 4 yellow, 1 grey 0.1, 2 white, 3 and anything else red; popup: 0/1 white, 5 grey 0.35, else (0.933, 1, 0.129). Verified again from the asm. |
 | `MenuManager::CheckBG`, `MenuManager::SetBackgroundImage`, `MenuManager::SetDefaultBackgroundImage` | ported | `Frontend::drawPage`, `ui::Menu::draw` (`Menu::background`) | the entered menu's background as the camera underlay; a menu without one gets the default; when nothing loads (and not in popup mode) "bgframe". OpenMM2 draws nothing for a missing picture (every page sets one; only visible with broken data). |
-| `MenuManager::EnablePU` | ported | `app/RaceScreen.cpp` `openPopup`, `buildPopup`; `Menu::popupSounds` | enable the current popup menu, clear all highlights, size the card, show it, mark the popup open. OpenMM2 highlights the initial widget (finding A1.3). |
+| `MenuManager::EnablePU` | ported | `app/RaceScreen.cpp` `openPopup`, `buildPopup`; `Menu::popupSounds` | enable the current popup menu, clear all highlights, size the card, show it, mark the popup open. OpenMM2 too: `Menu::unlight`, `Menu::park` (finding A1.3). |
 | `MenuManager::AdjustPopupCard` | ported | `PopupOptions.cpp` `popup::cardFor`, `drawCard`; `RaceScreen.cpp` `drawPopup` | card = the menu's dimensions (`UIMenu::GetDimensions`). |
 | `MenuManager::DisablePU` | ported | `RaceScreen.cpp` `closePopup` | hide card, popup closed, disable the menu. |
 | `MenuManager::TogglePU` | not needed | — | unreachable (no callers). |
 | `MenuManager::OpenDialog` | ported | `Frontend::push` (dialog pages), `Frontend::drawPage` / `Menu::drawContent(active = false)` | closes an open dialog first, remembers the focused menu, enables the dialog and clears the page's action, tooltips and highlights. OpenMM2's flows close a dialog before opening the next (e.g. `NewDriverDialog::create`). |
-| `MenuManager::CloseDialog` | ported | `Frontend::pop` | disables the dialog and gives the focus back to the menu that had it, without re-highlighting anything. OpenMM2 resets the page's focus to its initial widget and highlights it (finding A1.2). |
+| `MenuManager::CloseDialog` | ported | `Frontend::pop` | disables the dialog and gives the focus back to the menu that had it, without re-highlighting anything. OpenMM2 too (`Menu::unlight`; finding A1.2). |
 | `MenuManager::Enable`, `MenuManager::Disable` | ported | `Frontend::push`/`pop`/`replace`, `Menu::resetFocus`, `Page::onEnter` | `Enable` sets the current menu id; in popup mode only while the popup is open (then also `AdjustPopupCard`); `CheckBG`. |
 | `MenuManager::EnableNavBar`, `MenuManager::DisableNavBar` | ported | `addNavStrip` (pages with/without the strip) | show the nav bar (and PREV via `TurnOnPrev`) / hide it. |
 | `MenuManager::PlaySound` | ported | `ui::Menu::update` (Moveselector), `TextButton::activate`, `TextToggle::activate`, `Roller::adjust`, `Slider::adjust`/`mouse` (Switch); `PopupSounds::play` | 0 Moveselector and 1 Selectionmade only while the popup is open (stop, play once at 0.75); 2 Switch always (stop, rewind, play once at 0.85). OpenMM2 plays them the same way since findings A1.6 and A1.7 (`Frontend::playSound` restarts Switch). |
@@ -110,9 +111,9 @@ input), `app/frontend` `Page` (background, dialog origin, help pictures), `ui::M
 | `UIMenu::~UIMenu`, ``UIMenu::`scalar_deleting_destructor'`` | not needed | — | destructors. |
 | `UIMenu::AssignName` | ported | `PopupOptions.cpp` `popup::drawTitle` (page titles), `RaceScreen.cpp` `drawPopup` | the name `PUMenuBase::CreateTitle` prints; nav bar name string 604. |
 | `UIMenu::AssignBackground` | ported | `ui::Menu::background` (each page's `menu.background`) | set in `mmInterface::mmInterface` per menu. |
-| `UIMenu::Enable` | ported | `ui::Menu::resetFocus` (from `Frontend::push`/`pop`), `Page::onEnter`, `RaceScreen::buildPopup` | active, state 2, keyboard position = initial widget, which is updated and highlighted, but only outside popup mode; then the menu's `PreSetup`. Two differences: the help picture (finding A1.1) and the popup's initial highlight (finding A1.3). |
+| `UIMenu::Enable` | ported | `ui::Menu::resetFocus` (from `Frontend::push`/`pop`), `Page::onEnter`, `RaceScreen::buildPopup` | active, state 2, keyboard position = initial widget, which is updated and highlighted, but only outside popup mode; then the menu's `PreSetup`. The help picture (finding A1.1) and the popup's initial highlight (finding A1.3) follow it. |
 | `UIMenu::Disable` | ported | `Frontend::pop`/`replace` | inactive, state 3, hidden, then `PostSetup`. |
-| `UIMenu::PreSetup` | ported | `Page::onEnter`, page constructors | base: turns the description label off. Every menu's own `PreSetup` (`MainMenu`, `OptionsMenu`, `AudioOptions`, `GraphicsOptions`, `ControlSetup`, `VehicleSelectBase`, `CrashCourse`; `RaceMenuBase` via `FocusDescription(0, 0)`) does the same after `Enable` lit the initial widget, so a menu opens without a help picture. OpenMM2 shows the initial widget's picture at once (finding A1.1). |
+| `UIMenu::PreSetup` | ported | `Page::onEnter`, page constructors | base: turns the description label off. Every menu's own `PreSetup` (`MainMenu`, `OptionsMenu`, `AudioOptions`, `GraphicsOptions`, `ControlSetup`, `VehicleSelectBase`, `CrashCourse`; `RaceMenuBase` via `FocusDescription(0, 0)`) does the same after `Enable` lit the initial widget, so a menu opens without a help picture. OpenMM2 too for those five menus (`Page::helpOffOnEntry`, `Menu::hideHelpUntilFocusMoves`; finding A1.1). |
 | `UIMenu::PostSetup` | not needed | — | empty in the base class (overrides belong to their menus). |
 | `UIMenu::Update` | ported | `ui::Menu::drawContent` | updates (draws) the visible child widgets. |
 | `UIMenu::SetAction`, `UIMenu::ClearAction`, `UIMenu::BackUp`, `UIMenu::GetWidgetID`, `UIMenu::SetBstate` | replaced | widget callbacks (`SpriteButton::onClick`, `TextButton::onClick`), `ui::Menu::onBack`, `ui::Menu::setFocus` | the action/back state and the acted widget id that `mmInterface::Update` / `mmPopup::Update` poll; OpenMM2 calls the page's code directly. `SetBstate` clamps the keyboard position to the widgets. |
@@ -389,7 +390,7 @@ text in `RaceScreen.cpp`.
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
 | `UILabel::UILabel`, `UILabel::Init`, `UILabel::SetText` | ported | `ui/Widgets.cpp` `TextBox`; `app/frontend/PagesOptions.cpp` `AboutPage::AboutPage`; `PopupOptions.cpp` `popup::drawTitle` | Font GetFont(n), colour 0 (yellow in the menus, white in popups), effects from the flags; Init also measures "Just the Height" once for the global label height. |
-| `UILabel::Update`, `UILabel::SwitchState` | ported | `app/frontend/PagesMulti.cpp` session page `drawAbove` | The blink only exists for NetSelectMenu's string 657 (flags 1): dark grey (0.1) / yellow, 0.75 s each, in the help-picture spot. OpenMM2's replacement lobby draws the same text steadily in its own grey inside the session box (finding A2.8). |
+| `UILabel::Update`, `UILabel::SwitchState` | ported | `app/frontend/PagesMulti.cpp` session page `drawAbove` | The blink only exists for NetSelectMenu's string 657 (flags 1): dark grey (0.1) / yellow, 0.75 s each, in the help-picture spot. OpenMM2's session page blinks it the same way while its search has found nothing (finding A2.8). |
 | `UILabel::Switch`, `UILabel::Action` | ported | `TextBox::focusable` (false) | Both do nothing. |
 | `UILabel::SetBlink` | not needed | - | No callers. |
 | `UILabel::~UILabel`, ``UILabel::`scalar_deleting_destructor'`` | not needed | - | Memory. |
@@ -720,7 +721,7 @@ keyboard-only bindings).
 | --- | --- | --- | --- |
 | `UICWArray::UICWArray`, `UICWArray::Init` (with its unwind piece at 0x5ac9f5) | ported | `BindingList::BindingList`, `CustomizePage::CustomizePage` | 15 rows verified by the first audit; OpenMM2 makes the list keyboard-focusable and uses 20 px rows (finding A2.17); the page opens on DEFAULTS as MM2's does. |
 | `UICWArray::Redraw`, `UICWArray::Update` | ported | `BindingList::draw`, `BindingList::listActions` (`controls::slotListed`), `CaptureReader::poll` (`m_waitRelease`) | Lists the bindable slots from the scroll offset; re-lists when the input device changes; refreshes the captured row; while capturing, checks the capture only once the mouse button that started it is up (+0xac), as `CaptureReader` does. |
-| `UICWArray::SetVScrollVals`, `UICWArray::SetVScrollPos`, `UICWArray::VScrollCB`, `UICWArray::Reset` | ported | `BindingList::m_scroll`, `scrollArrow` | Thumb = rows / count; the bar disappears when everything fits; `BindingList::placeBar` keeps the bar on the selection's first row (finding A2.16). |
+| `UICWArray::SetVScrollVals`, `UICWArray::SetVScrollPos`, `UICWArray::VScrollCB`, `UICWArray::Reset` | ported | `BindingList::placeBar`, `barMouse`, `m_scroll` | Thumb = rows / count; the bar disappears when everything fits; `BindingList::placeBar` keeps the bar on the selection's first row (finding A2.16). |
 | `UICWArray::Action` | ported | `BindingList::mouse`, `BindingList::modalInput` | The VSWidget first (arrows, trough, drag with capture). A press on a row (left of the scroll bar) while not capturing starts a capture of that row (EnterCapture) and waits for the button's release. Keys (only once the mouse has focused the list): Enter calls ControlCustom::BadAssignCB with the last capture result (an MM2 quirk that can open a bad-assignment dialog), Left/Right scroll (twice per press, as in UICompositeScroll). OpenMM2: Up/Down select a row, Enter or a click starts the capture, the wheel scrolls (finding A2.17). |
 | `UICWArray::CaptureAction` | ported | `BindingList::modalInput` | A release ends a scroll-bar drag; other events drive the VSWidget. |
 | `UICWArray::EnterCapture`, `UICWArray::CheckCapture`, `UICWArray::ResetCapture`, `UICWArray::ForceCapture` | ported | `BindingList::startCapture`, `BindingList::capture` (`Rebinder::capture`, `forceAssign`); `CustomizePage` `onRefused`/`onDuplicate` | mmInput::CaptureState(1) captures any device; Escape (0x10001) cancels; F1-F10 refused (callback, xasn_dlg); mmInput::BuildCaptureIO: 1 accepted, 2 duplicate / 0 invalid go to ControlCustom::BadAssignCB (ctrl_dlg; OK = ForceCapture with mmInput::ForceAssignment, CANCEL = ResetCapture). Same in OpenMM2. |
@@ -742,7 +743,7 @@ OpenMM2: `BindingList::draw`.
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `UIControlWidget::UIControlWidget`, `UIControlWidget::Init`, `UIControlWidget::SetPosition`, `UIControlWidget::TurnOn`, `UIControlWidget::TurnOff` | ported | `BindingList::draw` | The binding is centred in the right half; OpenMM2 draws it left-aligned at x + 125 (finding A2.18). |
+| `UIControlWidget::UIControlWidget`, `UIControlWidget::Init`, `UIControlWidget::SetPosition`, `UIControlWidget::TurnOn`, `UIControlWidget::TurnOff` | ported | `BindingList::draw` | The binding is centred in the right half, as OpenMM2 draws it now (finding A2.18). |
 | `UIControlWidget::Update`, `UIControlWidget::UpdateField` | ported | `BindingList::draw` (`binding()` each frame) | |
 | `UIControlWidget::EnableField`, `UIControlWidget::DisableField` | ported | `BindingList::draw` (`kValueTextFocus` while capturing) | Red while capturing, with the binding half as the capture hot spot; DisableField flushes the event queue. OpenMM2 also shows the selected row's key red while the list has the focus (no such state in MM2: finding A2.17). |
 | `UIControlWidget::Action`, `UIControlWidget::Switch` | not needed | - | Never called: the rows are not menu widgets (Action would call a null callback; Switch would colour the binding). |
@@ -1666,12 +1667,12 @@ UDP/ENet LAN discovery: `PagesMulti.cpp` `SessionsPage`.
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `NetSelectMenu::NetSelectMenu` | ported | `PagesMulti.cpp` `SessionsPage::SessionsPage` | lamps, name box, HOST, JOIN at the csv places; list box differs (finding D.16). |
+| `NetSelectMenu::NetSelectMenu` | ported | `PagesMulti.cpp` `SessionsPage::SessionsPage` | lamps, name box, HOST, JOIN and the session box at the csv places; OpenMM2's list rows are its own (finding D.16). |
 | `NetSelectMenu::FocusDescription` | ported | `ui::LampItem::help` (mpst_* at `helpPos` 40,396) | the five provider pictures match; MM2 shows no picture for HOST / JOIN (finding D.16). |
 | `NetSelectMenu::HostCB`, `NetSelectMenu::JoinCB`, `NetSelectMenu::GetHostJoin` | ported | `SessionsPage` HOST / JOIN buttons | HOST opens Host Options (dialog 36); JOIN joins the selected session or asks for an address. |
 | `NetSelectMenu::JoinCallback` | ported | `SessionsPage` `m_list->onDoubleClick` | picking a session joins it (`mmInterface::NetJoinCB` → `JoinLAN`). |
 | `NetSelectMenu::SetNetname`, `NetSelectMenu::NetNameCB` (+ piece 0x505024) | ported | `SessionsPage` name `TextEntry::onCommit` | commits to the driver (`mmInterface::NetNameCB`: `mmPlayerData::SetNetName`, main menu). 12 characters (finding D.15). |
-| `NetSelectMenu::EnableSearchLabel` | ported | `SessionsPage::drawAbove` | "Looking for games..." (657); position and timing differ (finding D.16). |
+| `NetSelectMenu::EnableSearchLabel` | ported | `SessionsPage::drawAbove` | "Looking for games..." (657) blinking at 40,396 while nothing is found (OpenMM2 searches all the time; finding D.16). |
 | `NetSelectMenu::PreSetup` | replaced | `SessionsPage` lamps (`available` flags) | MM2 kills/unkills IPX, TCP/IP, modem by `asNetwork::GetNetworkCaps` on first entry; OpenMM2 offers TCP/IP only. |
 | `NetSelectMenu::SetIPXButton`, `NetSelectMenu::SetModemButton`, `NetSelectMenu::SetSerialButton`, `NetSelectMenu::SetTCPNetButton` | replaced | `SessionsPage` lamps | provider availability. |
 | `NetSelectMenu::ProtocolBack`, `NetSelectMenu::ClearProtocol` | replaced | — | DirectPlay provider state; OpenMM2 has none. |
@@ -2117,7 +2118,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
 
 ### Menu framework (A1)
 
-- **A1.1. Open.** **Help picture on entering a menu** (`UIMenu::Enable`, `UIMenu::PreSetup`). MM2: `Enable` lights the initial
+- **A1.1. Fixed in c162521.** **Help picture on entering a menu** (`UIMenu::Enable`, `UIMenu::PreSetup`). MM2: `Enable` lights the initial
    widget (its `Switch(1)` callback turns the description label on) and only then calls the menu's `PreSetup`
    (vtable +0x34, the last call in the asm), and `MainMenu::PreSetup`, `OptionsMenu::PreSetup`,
    `AudioOptions::PreSetup`, `GraphicsOptions::PreSetup` and `ControlSetup::PreSetup` (like the base
@@ -2129,14 +2130,14 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
    further.) OpenMM2: `ui::Menu::drawContent` (`ui/Widgets.cpp`) shows the focused widget's `help` picture from
    the first frame (`DriverPage` `jpg/mn_*.jpg`, `OptionsPage` `opt_tabt.jpg`, `GraphicsPage` `gfx_tres.jpg`, ...).
    Visible on every entry of those five menus. Read from the call order; worth confirming in the game.
-- **A1.2. Open.** **Closing a dialog** (`MenuManager::CloseDialog`, `MenuManager::OpenDialog`). MM2: `OpenDialog` unlights the
+- **A1.2. Fixed in c162521.** **Closing a dialog** (`MenuManager::CloseDialog`, `MenuManager::OpenDialog`). MM2: `OpenDialog` unlights the
    page's widgets (`UIMenu::ClearWidgets`) and `CloseDialog` only disables the dialog and hands the focus back; the
    page keeps its keyboard position (the widget that opened the dialog, e.g. STATS) with nothing lit, and the next
    Down/Up moves on from there (`mmInterface::Update` cases 0x13/0x14 and the others just call `CloseDialog`).
    OpenMM2: `Frontend::pop` (`app/frontend/FrontendScreen.cpp`) calls `Menu::resetFocus` (`ui/Widgets.cpp`),
    which moves the focus to the page's initial widget and lights it (with its help picture). Visible after every
    dialog that returns to the same page (STATS, RACE RECORDS, CREATE/DELETE cancelled, quit cancelled, notices).
-- **A1.3. Open.** **In-race popup: nothing lit on entry** (`MenuManager::EnablePU`, `UIMenu::Enable`, `MenuManager::Switch`). MM2:
+- **A1.3. Fixed in c162521.** **In-race popup: nothing lit on entry** (`MenuManager::EnablePU`, `UIMenu::Enable`, `MenuManager::Switch`). MM2:
    in popup mode `UIMenu::Enable` skips lighting the initial widget and `EnablePU` / `Switch` then unlight
    everything, so every popup page opens with no highlight and the keyboard position on the menu's widget 0 (the
    constructors' `SetBstate(0)`). On PUMain that is Resume Driving (only the highlight differs); on the titled pages
@@ -2154,7 +2155,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
    (read-only excluded) and keeps the last match; hovering a read-only widget is "empty space" (highlight off, focus
    stays on the old widget). Small: only the keyboard continuation after hovering a read-only widget differs; no
    retail overlap of two enabled widgets was found, so the first/last rule does not show.
-- **A1.5. Open.** **A click needs the press and the release on the same widget** (`sfPointer::Update`, `UIMenu::CheckMouseHits`,
+- **A1.5. Fixed in 5c1cd3c.** **A click needs the press and the release on the same widget** (`sfPointer::Update`, `UIMenu::CheckMouseHits`,
    `MenuManager::RegisterWidgetFocus`). MM2 remembers the widget hit by the press; on the release, a hit on any other
    widget is cancelled (its pending flag cleared), so dragging from one button to another, or from empty space onto a
    button, does nothing; a press outside a capturing widget (open drop-down) ends the capture and unlights
@@ -2188,7 +2189,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
 
 ### Widgets (A2)
 
-- **A2.1. Open (same as A1.5).** **Mouse press vs release, and the release rule** (`UIBMButton::Action`,
+- **A2.1. Partly fixed in 5c1cd3c (the release must be on the pressed widget); the buttons' callbacks still run on the release, not the press.** **Mouse press vs release, and the release rule** (`UIBMButton::Action`,
    `UIButton::Action`, `UIToggleButton2::Action`, with sfPointer::Update and
    UIMenu::CheckMouseHits). MM2 runs a widget's own datCallback on the mouse
    *press* (kind 0): the roller arrows (MainMenu::DecPlayer/IncPlayer,
@@ -2257,7 +2258,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
    continue from it. OpenMM2 treats them as empty space
    (`ui/Widgets.cpp`: only `focusable()` widgets are hovered), hiding the
    highlight and the help picture.
-- **A2.8. Open.** **"Looking for games..." does not blink** (`UILabel::Update`,
+- **A2.8. Fixed in c162521.** **"Looking for games..." does not blink** (`UILabel::Update`,
    `UILabel::SwitchState`). NetSelectMenu's label (string 657, flags 1) blinks
    between colour 1 (0.1 grey) and colour 4 (yellow) every 0.75 s at
    (0.0625, 0.825) = (40, 396), the help-picture spot. OpenMM2's replacement
@@ -2341,7 +2342,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
     capturing). Its rows are 20 px (); MM2's are MenuManager +0xe8, the
     measured height of GetFont(16) text ("Arial Bold, 16, 16": about 16 px,
     inferred, not measured), which would make the list visibly shorter.
-- **A2.18. Open.** **Binding column alignment** (`UIControlWidget::Init`). The binding is
+- **A2.18. Fixed in c162521.** **Binding column alignment** (`UIControlWidget::Init`). The binding is
     centred (effects 3) in the right half of the row; OpenMM2 draws it
     left-aligned from x + 125 (`app/frontend/PagesOptions.cpp`).
 
@@ -2555,7 +2556,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
     `NetGame.cpp`), 24 chars, fresh each time. Small.
 - **D.15. Fixed in c7c3f26.** **Net name length** (`NetSelectMenu::NetSelectMenu`): MM2's NET NAME field takes 12 characters; OpenMM2 24
     (`PagesMulti.cpp`, `net::kMaxNameLength`). Small.
-- **D.16. Open.** **Sessions screen extras** (`NetSelectMenu::EnableSearchLabel`, `FocusDescription`, `SetSession`). MM2 shows
+- **D.16. Fixed in c162521 (OpenMM2's list rows are its own).** **Sessions screen extras** (`NetSelectMenu::EnableSearchLabel`, `FocusDescription`, `SetSession`). MM2 shows
     "Looking for games..." in the description box (40,396) only while enumerating; OpenMM2 draws it inside the list at
     (306,256) whenever the list is empty (`PagesMulti.cpp`). List box (289,243,329x131) vs
     `Box{298,246,306,163}` (`PagesMulti.cpp`). HOST/JOIN/default help pictures `lobb_srv.jpg` / `mn_mp.jpg`
@@ -2624,14 +2625,12 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
 
 What is left, and what it needs:
 
-- Press and release on the same widget (A1.5, A2.1): `ui::Menu` remembering the widget the press hit and acting only on a release over it, with the buttons' own callbacks (roller arrows, popup OK / Cancel, toggles) running on the press.
+- Button callbacks on the press (A2.1): MM2 runs a button's own callback (roller arrows, popup OK / Cancel, toggles) when the mouse goes down and the menu's action on the release; OpenMM2's buttons have one action, on the release. Needs the two split per button.
 - Space on bitmap buttons (A2.2): the button's sound and callback without the menu's action.
 - Read-only widgets taking the mouse focus (A1.4, A2.7, B.11): the hit test on enabled widgets, read-only ones included, without lighting them; About would then open on its credits spot.
-- Focus on entry and after dialogs (A1.1, A1.2, A1.3): the help picture off until the focus moves on the five menus whose PreSetup hides it; `Frontend::pop` keeping the keyboard position unlit after a dialog; popup pages opening with nothing lit and the keyboard position on widget 0 (the title on the titled pages).
 - Text cut at its box (A1.9).
-- The sessions screen (A2.8, D.16): "Looking for games..." in the description box at (40,396) while enumerating, blinking every 0.75 s; MM2's list box size; no `lobb_srv` / `lobb_set` help pictures.
 - The text field's white outline in the menus (A2.15): to be checked against the original game first.
-- The customize list (A2.17, A2.18): no keyboard stop, red only while capturing, rows about 16 px, the bindings centred in the right half.
+- The customize list (A2.17): MM2 gives it no keyboard stop (the mouse only), red only while capturing, rows about 16 px; OpenMM2 keeps Up / Down selection for keyboard players, which the maintainer may want to keep.
 - The crash course's environment carried into cruise (B.7, C.2): `fe.config` would have to keep the last lesson's settings.
 - Cops vs. Robbers in the lobby's garage (D.18): keep SELECT VEHICLE and lock every car but the team's.
 - `mmCompRoster::SetError`: a per-player "race locale installed" flag in the session.
