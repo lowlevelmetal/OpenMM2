@@ -317,6 +317,7 @@ public:
         if (m_hud && m_session && m_player) {
             // The arrow, icons, stands and dash are drawn in the 3D view.
             m_hud->setViewProjection(frame.view * frame.proj);
+            m_hud->setDashFrame(frame, Mat44::perspective(proj.fovY, proj.aspect, 0.01f, m_camera.farPlane, true));
             m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
         }
         if (letterbox) {

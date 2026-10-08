@@ -557,8 +557,16 @@ void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerSt
         drawCrGoldIcon(camera);
     // The dash view is a child of mmHUD's container node: mmHUD::Disable
     // hides it with the rest.
-    if (m_options.dashboard && m_options.visible)
+    if (m_options.dashboard && m_options.visible) {
+        if (m_dashFrameValid) {
+            render::FrameConstants near = m_sceneFrame;
+            near.proj = m_dashProj;
+            m_device.setFrameConstants(near);
+        }
         drawDash(camera, player, steering);
+        if (m_dashFrameValid)
+            m_device.setFrameConstants(m_sceneFrame);
+    }
 }
 
 void Hud::drawCrObjects(const Camera& camera) {

@@ -296,6 +296,14 @@ public:
         m_viewProj = viewProj;
         m_viewProjValid = true;
     }
+    // The scene's frame constants and the same projection with a 0.01 m
+    // near plane, which mmDashView::Cull sets while it draws the dash
+    // (gfxViewport::Perspective); drawWorld restores the frame after.
+    void setDashFrame(const render::FrameConstants& frame, const Mat44& nearProj) {
+        m_sceneFrame = frame;
+        m_dashProj = nearProj;
+        m_dashFrameValid = true;
+    }
 
     // The in-race view keys the HUD handles itself, as mmViewMgr::SetViewSetting
     // does (the map's mode is changed by PlayerCameras::setViewSetting).
@@ -360,6 +368,9 @@ private:
     std::optional<MapMode> m_mapModeApplied; // snaps zoom and icon size on change
     Mat44 m_viewProj;
     bool m_viewProjValid = false;
+    render::FrameConstants m_sceneFrame;
+    Mat44 m_dashProj;
+    bool m_dashFrameValid = false;
     std::vector<MapBlip> m_labelBlips; // the network players' labels (drawIcons -> drawIconLabels)
     Vec3 m_labelEye;
     int m_arrowPaint = 0;                    // mmArrow colour state
