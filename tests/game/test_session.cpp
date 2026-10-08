@@ -850,6 +850,8 @@ TEST(CopsAndRobbers, TimeWarningsAndFreeForAllLimit) {
     f.update(0.1f, cars, {});
     cars[0].position = f.set().hideout;
     f.update(0.1f, cars, {});
+    EXPECT_FALSE(f.over()); // UpdateLimit runs before the frame's UpdateHideout
+    f.update(0.1f, cars, {});
     EXPECT_TRUE(f.over()); // 125 points for one player
 }
 

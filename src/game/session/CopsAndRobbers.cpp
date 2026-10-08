@@ -181,9 +181,43 @@ void CopsAndRobbers::update(float dt, const std::vector<Car>& cars, const std::v
     for (auto& [cid, t] : m_lockout)
         t -= dt;
 
-    // Time limit, with "N minutes remaining" as each mark is passed.
+    // mmMultiCR::ImpactCallback runs during the physics step, before the
+    // frame's UpdateGame: a hard enough hit from another car knocks the
+    // gold loose; the carrier cannot take it back for 2 s (state 7).
+    bool droppedByImpact = false;
+    if (const Car* c = m_carrier >= 0 ? find(m_carrier) : nullptr) {
+        for (const auto& im : impacts) {
+            const int other = im.a == m_carrier ? im.b : (im.b == m_carrier ? im.a : -1);
+            if (other < 0 || im.impulse < kStealImpulse || !find(other))
+                continue;
+            lock(c->id, kDropLockout);
+            drop(c->id, c->position, false);
+            droppedByImpact = true;
+            break;
+        }
+    }
+
+    // UpdateGame state 4: wrecked cars sit out 5 s (state 6); a wrecked
+    // carrier drops the gold where it is.
+    for (const auto& c : cars)
+        if (c.wrecked)
+            lock(c.id, kWreckPenalty);
+
+    // Then UpdateLimit (the time running out, the point limit, checked
+    // before this frame's deliveries) and UpdateTimeWarning ("N minutes
+    // remaining" as each mark is passed).
     if (m_settings.timeLimitSeconds > 0.0f) {
         m_timeLeft = std::max(0.0f, m_timeLeft - dt);
+        if (m_timeLeft < 0.1f) {
+            m_over = true;
+            m_events.push_back({EventType::TimeUp});
+            return;
+        }
+    }
+    checkLimits();
+    if (m_over)
+        return;
+    if (m_settings.timeLimitSeconds > 0.0f) {
         for (int minutes : kWarningMinutes) {
             const float mark = static_cast<float>(minutes) * 60.0f;
             if (m_timeLeft < mark && mark < m_lastWarning) {
@@ -191,21 +225,18 @@ void CopsAndRobbers::update(float dt, const std::vector<Car>& cars, const std::v
                 m_events.push_back({EventType::TimeWarning, -1, minutes});
             }
         }
-        if (m_timeLeft < 0.1f) {
-            m_over = true;
-            m_events.push_back({EventType::TimeUp});
-            return;
-        }
     }
 
-    // Wrecked cars sit out 5 s (state 6); a wrecked carrier drops the gold.
-    for (const auto& c : cars)
-        if (c.wrecked)
-            lock(c.id, kWreckPenalty);
-
+    // UpdateGold, then UpdateBank / UpdateHideout.
     if (m_carrier < 0) {
-        // mmMultiCR::UpdateGold: within 5 m of the gold picks it up.
+        // mmMultiCR::UpdateGold: within 5 m of the gold picks it up. Each
+        // machine tests only its own car and the others learn of a drop from
+        // the carrier's SendGoldDrop message, so nobody takes the gold in the
+        // frame it was knocked loose (inferred from that message round trip;
+        // this all-in-one simulation has no latency of its own).
         for (const auto& c : cars) {
+            if (droppedByImpact)
+                break;
             if (c.wrecked || locked(c.id))
                 continue;
             if (c.position.dist2(m_goldPos) < kGoldRadius * kGoldRadius) {
@@ -222,25 +253,15 @@ void CopsAndRobbers::update(float dt, const std::vector<Car>& cars, const std::v
     } else if (c->wrecked) {
         drop(c->id, c->position, false);
     } else {
-        m_goldPos = c->position;
-        // mmMultiCR::ImpactCallback: a hard enough hit from another car
-        // knocks the gold loose; the carrier cannot take it back for 2 s.
-        for (const auto& im : impacts) {
-            const int other = im.a == m_carrier ? im.b : (im.b == m_carrier ? im.a : -1);
-            if (other < 0 || im.impulse < kStealImpulse || !find(other))
-                continue;
-            lock(c->id, kDropLockout);
-            drop(c->id, c->position, false);
-            break;
-        }
+        // UpdateGold: the carried gold rides 2 m above the carrier.
+        m_goldPos = c->position + Vec3{0.0f, 2.0f, 0.0f};
         // mmMultiCR::UpdateBank / UpdateHideout: delivered within 12 m.
-        if (m_carrier >= 0 && c->position.dist2(deliveryTarget(teamOf(c->id))) < kBaseRadius * kBaseRadius) {
+        if (c->position.dist2(deliveryTarget(teamOf(c->id))) < kBaseRadius * kBaseRadius) {
             score(c->id, kDeliveryPoints);
             m_events.push_back({EventType::GoldDelivered, c->id, kDeliveryPoints});
             newSet();
         }
     }
-    checkLimits();
 }
 
 std::vector<CopsAndRobbers::Event> CopsAndRobbers::takeEvents() {
