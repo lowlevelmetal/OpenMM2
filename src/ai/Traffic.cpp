@@ -128,6 +128,7 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
     m_queues.resize(m_net.lanes().size());
     m_pathActive.assign(m_net.paths().size(), 0);
     m_stopWaiting.resize(m_net.intersections().size());
+    m_alwaysStop.assign(m_net.paths().size(), 0);
     m_stopAllowed.resize(m_net.intersections().size());
 }
 
@@ -810,6 +811,10 @@ bool Traffic::okayToEnter(int idx, float dist) {
     Car& c = m_cars[static_cast<std::size_t>(idx)];
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
     const int end = c.dir == 1 ? 0 : 1;
+    // A road told to always stop (aiPath::AllwaysStop, set round the racers):
+    // never enter.
+    if (m_alwaysStop[static_cast<std::size_t>(c.path)])
+        return false;
     switch (info.rule[end]) {
     case EntryRule::Uncontrolled:
         resetReactTicks(idx);
@@ -1756,6 +1761,26 @@ bool Traffic::accidentAt(int intersection, int path) const {
             return true;
     }
     return false;
+}
+
+void Traffic::stopSources(int intersection, bool stop) {
+    if (intersection < 0 || static_cast<std::size_t>(intersection) >= m_net.intersections().size())
+        return;
+    for (int p : m_net.intersections()[static_cast<std::size_t>(intersection)].paths) {
+        if (p < 0 || static_cast<std::size_t>(p) >= m_net.paths().size())
+            continue;
+        const PathInfo& info = m_net.paths()[static_cast<std::size_t>(p)];
+        // The road's control at its end here: end 0's when its end-0
+        // intersection is this one, else end 1's (a loop road: end 0).
+        const EntryRule rule = info.intersection[0] == intersection ? info.rule[0] : info.rule[1];
+        if (rule == EntryRule::StopSign || rule == EntryRule::TrafficLight)
+            m_alwaysStop[static_cast<std::size_t>(p)] = stop ? 1 : 0;
+    }
+}
+
+bool Traffic::alwaysStop(int path) const {
+    return path >= 0 && static_cast<std::size_t>(path) < m_alwaysStop.size() &&
+           m_alwaysStop[static_cast<std::size_t>(path)] != 0;
 }
 
 // --- Update ------------------------------------------------------------------

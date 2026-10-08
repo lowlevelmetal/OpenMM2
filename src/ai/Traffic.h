@@ -131,6 +131,16 @@ public:
     // rail) in `intersection` or on road `path` (-1: ignored).
     bool accidentAt(int intersection, int path) const;
 
+    // aiIntersection::StopSources: every road of `intersection` whose end
+    // there has a stop sign or a traffic light is told to always stop
+    // (aiPath::AllwaysStop, aiPath +0x162) or let go again: its ambient cars
+    // do not enter an intersection while it is set (OkayToEnterIntersection).
+    // The racers set it on the intersections ahead of them while the ambient
+    // traffic updates (aiMap::StopRoadTraffic) and on their first waypoint
+    // when they start.
+    void stopSources(int intersection, bool stop);
+    bool alwaysStop(int path) const;
+
     // Diagnostics for tests and tools.
     struct DebugCar {
         int lane = -1;     // network lane id of the logical lane
@@ -291,6 +301,7 @@ private:
     std::vector<std::uint8_t> m_pathActive;      // aiPath AddAmbPlayer mask
     std::vector<int> m_activePaths;              // aiMap +0x17c, most recent first
     std::vector<std::vector<int>> m_stopWaiting; // per intersection (aiIntersection +0x8)
+    std::vector<std::uint8_t> m_alwaysStop;      // per path (aiPath +0x162)
     std::vector<std::vector<int>> m_stopAllowed; // per intersection (aiIntersection +0xc)
     std::vector<Vec3> m_opponents;
     ImpactHandler m_onImpact;

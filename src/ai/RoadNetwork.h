@@ -17,6 +17,7 @@
 // order, and vice versa, so traffic keeps to the left and lane 0 is still the
 // leftmost lane. One-way roads (no lanes on the first side) are unchanged.
 
+#include "ai/PathGeometry.h"
 #include "city/AiMap.h"
 #include "city/Race.h"
 #include "core/Math.h"
@@ -124,6 +125,10 @@ struct PathInfo {
     Vec3 centreStart, centreEnd;
     Aabb bounds;
     std::vector<Vec3> xAxis; // per section, to the left of direction +1
+    // aiPath's sharp-turn records (InitRoadTurns at load). aiPath::CalcRoadTurns
+    // rewrites their circles for whichever AI car asks, so they are shared,
+    // mutable state as in MM2.
+    mutable std::vector<SharpTurn> sharpTurns;
 
     bool freeway() const { return (flags & 0x4) != 0; }
     // Lanes of direction `dir` (+1 uses the second side).

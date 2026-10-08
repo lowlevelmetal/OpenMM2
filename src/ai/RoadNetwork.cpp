@@ -82,6 +82,7 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
         info.flags = src.flags;
         info.halfWidth = src.halfWidth;
         info.xAxis = src.xAxis;
+        info.sharpTurns = initRoadTurns(src);
         info.centreLength = src.centerLengths.empty() ? 0.0f : src.centerLengths.back();
         // Speed limits (aiMap::Init): an [Exceptions] entry sets the road's
         // limit to its own value, zero included; otherwise freeways get the

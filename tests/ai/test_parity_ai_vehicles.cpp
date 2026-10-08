@@ -1,15 +1,18 @@
 // Parity checks for the AI vehicles against MM2's code (build 3393, see
 // docs/parity/ai-vehicles.md): aiPoliceForce's bookkeeping, aiMap::CalcRoute
 // and the obstacle geometry of aiVehicle, on synthetic data.
+#include "TestData.h"
 #include "ai/Course.h"
 #include "ai/Driving.h"
 #include "ai/Police.h"
 #include "ai/Traffic.h"
 #include "ai/World.h"
+#include "city/CityData.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <utility>
 
 using namespace mm2;
 
@@ -204,4 +207,55 @@ TEST(ParityAiTraffic, ACarThatStartsAvoidingThePlayerIsReportedOnce) {
     ASSERT_FALSE(events.empty());
     EXPECT_EQ(events.front(), car.id);
     EXPECT_EQ(std::count(events.begin(), events.end(), car.id), 1);
+}
+
+// aiIntersection::StopSources marks every road whose end at the
+// intersection has a stop sign or a light (aiPath::AllwaysStop); their
+// ambient cars then never enter (OkayToEnterIntersection).
+TEST(ParityAiTraffic, StopSourcesHoldsTheControlledRoads) {
+    city::AiMap map = squareBlock();
+    map.paths[0].ends[0].vehicleRule = 0; // road 0 arriving at corner 1: stop sign
+    // road 1 leaves corner 1 (its end 1 there) uncontrolled
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    ai::TrafficLights lights;
+    lights.build(net);
+    ai::TrafficSettings settings;
+    settings.density = 1.0f;
+    ai::VehicleData sedan;
+    sedan.model = "test";
+    sedan.size = {2.0f, 1.5f, 4.5f};
+    ai::Traffic traffic(net, lights, {sedan}, settings, 3);
+    traffic.stopSources(1, true);
+    EXPECT_TRUE(traffic.alwaysStop(0));
+    EXPECT_FALSE(traffic.alwaysStop(1));
+    EXPECT_FALSE(traffic.alwaysStop(2));
+    traffic.stopSources(1, false);
+    EXPECT_FALSE(traffic.alwaysStop(0));
+}
+
+// aiPath::InitRoadTurns on the retail roads: London has 55 sharp turns,
+// San Francisco 9, every one of two sections (a short section taken with
+// the next); none is a single vertex.
+TEST(ParityAiRoads, RetailSharpTurns) {
+    MM2_REQUIRE_GAME_DATA();
+    for (const auto& [name, total] : {std::pair{"london", 55}, std::pair{"sf", 9}}) {
+        const auto city = city::loadCity(*test::gameData(), name);
+        ASSERT_TRUE(city && city->aiMap) << name;
+        int turns = 0, merged = 0;
+        for (const city::AiPath& p : city->aiMap->paths) {
+            for (const ai::SharpTurn& t : ai::initRoadTurns(p)) {
+                ++turns;
+                // A turn of two sections has a corner found by crossing the
+                // two curb lines; a single one is 1 m off the curb.
+                const auto& curb = ai::pathBoundary(t.dir < 0.0f ? p.left : p.right, 0);
+                const Vec3 single = t.dir < 0.0f ? curb[static_cast<std::size_t>(t.vertex)] -
+                                                       p.xAxis[static_cast<std::size_t>(t.vertex)]
+                                                 : p.xAxis[static_cast<std::size_t>(t.vertex)] +
+                                                       curb[static_cast<std::size_t>(t.vertex)];
+                merged += t.point.x != single.x || t.point.z != single.z;
+            }
+        }
+        EXPECT_EQ(turns, total) << name;
+        EXPECT_EQ(merged, total) << name;
+    }
 }
