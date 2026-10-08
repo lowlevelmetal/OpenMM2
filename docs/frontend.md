@@ -71,8 +71,9 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
   reading is **inferred**). Read-only sliders (the garage's statistics) use
   `slider_roactl` and have no arrows.
 * **Text fields** (`UITextField`): editing while focused, the first key
-  replaces the text, Enter commits, no caret; drawn as " text" in a white
-  frame, red on black while focused.
+  replaces the text, Enter commits, no caret; drawn as " text", red on an
+  opaque black card while editing and yellow otherwise, with no frame (the
+  frame is painted on the background).
 * **Focus** (`UIMenu::Increment/Decrement`, `MenuManager::ScanGlobalKeys`):
   Down/Tab and Up step through the widgets in creation order, skipping
   disabled and read-only ones; past the last page widget focus moves to the
@@ -110,7 +111,7 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
 
 | Background | Screen (menu id) | Notes |
 |---|---|---|
-| `splash.jpg` | loading | MM2's loading bar (`ProgressRect`): a flat `#0D2CBA` bar at 349,448, 10 px tall, 225 px at 100 %; MM2 steps it while the frontend loads and then shows the main menu by itself. OpenMM2 has already loaded and shows one step per frame (pacing **inferred**). `pbar_act`/`pbar_inact` are unused. |
+| `splash.jpg` | loading | MM2's loading bar (`ProgressRect`): a flat `#0D2CBA` bar at 349,448, 10 px tall, percent × 640 / 284 whole pixels wide (225 at 100 %); MM2 reports 20, 30, 35, 40, 50, 55 ... 95, 97, 99 and 100 % while the frontend loads and then shows the main menu by itself. OpenMM2 has already loaded and shows one step per frame (pacing **inferred**). `pbar_act`/`pbar_inact` are unused. |
 | `main_bk.jpg` | main menu (1) | see below |
 | `newp_dlg.jpg` | Create a New Driver (17) | name (72,89, 18 characters), Amateur / Professional (`checkbox.tga`), DONE right, CANCEL left |
 | `drec_dlg.jpg` | Driver Record (19) | see below |
@@ -152,17 +153,24 @@ tell apart yet. Only an empty name is ignored. The first start creates
 
 **Driver Record** (`Dialog_DriverRec`, `mmInterface::PlayerFillRecords`,
 `mmCompDRecord`): every race of the chosen mode in the chosen city, 12 rows
-of 18 px from 81,87 in white: a `lock.tga` icon (open, locked, passed),
-RACE (cut to 15 characters + "..." when wider than 132 px), TIME (best,
-`M:SS:hh`), VEHICLE (the car of the best time) and, for professionals,
-POINTS. Mode and city boxes at 40 / 360, 323 + 25 n; it opens on Blitz in
-San Francisco.
+of 18 px from 81,87 in white, no scroll bar: a `lock.tga` icon (open,
+locked, passed) at the row's left edge 3 px up, RACE at 18, TIME (best,
+`M:SS:hh`, "  ---  " if none) at 162, VEHICLE (the car of the best time;
+"----" for an undriven race, "---" for a driven one without a car) and, for
+professionals, POINTS. Mode and city boxes at 40 / 360, 323 + 25 n; it
+opens on Blitz in San Francisco.
+
+Text wider than its column (132.48 px for the race, 96 px for the car) is
+cut to N + 1 characters and "..." (`AddDriverRecord`, `AddRaceRecord`), N
+being the number in strings 664-668.
 
 **Race Records** (`Dialog_HallOfFame`, `HOFFillRecords`): the race records
 shared by all drivers, per table (Amateur Times, Pro Times, Pro Points),
-mode and city: the five best entries of every race with RACE, DRIVER,
-TIME/SCORE and VEHICLE. The column positions and the scroll arrows are
-**inferred**.
+mode and city: five rows for every race, filled or not (an empty one has no
+driver, "  ---  " and "---"), with RACE, DRIVER, TIME or SCORE (title 350 or
+349) and VEHICLE. 11 rows of 18 px from 81,91 with a scroll bar; the columns
+split a 486 px row at 4, 125.5, 264.4 and 331.8 px. The scroll arrows'
+positions are **inferred**; MM2 never draws a passed mark here.
 
 **Results** (`PUResults::Init640`). MM2 shows them in the game, over the
 paused scene, five seconds after the finish; OpenMM2 shows the same layout
@@ -231,9 +239,10 @@ Positions come from `tune/widget.csv` by the widget's creation index in MM2's me
 * The help box always shows `ShowCarDesc`'s picture: `<car>_lck<n>[_p]`
   for a locked paint job, `<car>_lck[_p]` for a locked car, else
   `<car>_ulck`. It shows `veh_tsc` while VEHICLE SHOWCASE is focused.
-* Entering with a locked car moves to the last unlocked car picked, else the
-  first unlocked one. Picking a car and entering the garage play
-  `<car>_select`.
+* Entering with a locked car or paint job moves to the last unlocked car
+  picked (with its remembered paint), else the first unlocked one, except
+  when coming back from the showcase. Picking a car and entering the garage
+  play `<car>_select` unless it is still playing.
 * MM2 draws the car in 3D (viewport 32,55 608×192, field of view 0.6 rad,
   camera 0.18 rad above at the car's UIDist, turning 1 rad/s). OpenMM2
   shows the car's showcase photo there instead (**not implemented**).
@@ -438,6 +447,12 @@ defaults), `vehicle:<name>`, `go` (start the race), `result:<position>`,
 * Options per driver (`mmPlayerConfig`), mouse/joystick bindings, MM2's
   log-200 volume curve; the race does not read `[Graphics]` and `[Controls]`
   yet.
-* MM2's own multiplayer menus (`NetSelectMenu`, `HostRaceMenu`,
-  `NetArena`); OpenMM2 has its own screens over UDP.
+* MM2's own multiplayer menus (`NetSelectMenu`, `NetArena`); OpenMM2 has
+  its own session and lobby screens over UDP. The host's race settings
+  follow `HostRaceMenu` (menu 11, `host_bk`): DONE first, the five race
+  types, race name, a LAPS roller, the Cops & Robbers type and limit, LIMIT
+  VALUE (its own index for time and for points, both starting at the first
+  value), GOLD MASS, locale, time and weather (no snow) with clamping arrows,
+  and the pedestrian slider, placed by tune/widget.csv. DONE and Escape both
+  apply the settings; there is no CANCEL.
 * The in-race loading bar of MM2's level loading screen.

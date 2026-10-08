@@ -653,12 +653,14 @@ void ListBox::mouse(UiFrame& f, bool hovered) {
 TextEntry::TextEntry(Box b, std::string* v, std::size_t maxLen) : value(v), maxLength(maxLen) { box = b; }
 
 void TextEntry::draw(UiFrame& f, bool focused) {
+    // UITextField::ToggleField: an opaque black card behind red text while
+    // editing, nothing behind yellow text otherwise (the frame around the
+    // field is painted on the backgrounds).
     const FontSpec font = style::valueFont();
     const float lh = f.text.lineHeight(f.overlay, font);
     const bool active = focused && m_editing;
     if (active)
         f.overlay.rect(box.x, box.y, box.w, box.h, rgba(0, 0, 0));
-    outline(f.overlay, box, rgba(255, 255, 255));
     const Vec4 clip{box.x, box.y, box.w, box.h};
     f.overlay.setClip(&clip);
     f.text.draw(f.overlay, font, " " + *value, box.x, box.y + (box.h - lh) * 0.5f,

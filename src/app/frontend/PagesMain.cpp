@@ -14,13 +14,26 @@ using ui::Box;
 using ui::SpriteSheet;
 using game::GameMode;
 
-// Shortens text that does not fit a column (mmCompDRecord): the first `keep`
-// characters and "..." when it is wider than `width`.
-std::string fit(ui::UiFrame& f, const ui::FontSpec& font, std::string text, float width, std::size_t keep) {
-    if (f.text.measure(f.overlay, font, text) > width && text.size() > keep)
-        text = text.substr(0, keep) + "...";
-    return text;
+// Shortens text that is wider than its column (Dialog_DriverRec::
+// AddDriverRecord, Dialog_HallOfFame::AddRaceRecord): it keeps N + 1
+// characters, N read from the string table (`lengthString`, a number; a
+// missing string counts as 0), and gets "...". The widths are screen
+// fractions in MM2: 0.207 (132.48 px) or 0.15 (96 px).
+std::string fit(Frontend& fe, ui::UiFrame& f, const ui::FontSpec& font, std::string text, float width,
+                std::uint32_t lengthString) {
+    if (!(f.text.measure(f.overlay, font, text) > width))
+        return text;
+    const auto n = str::parseInt(fe.ctx.game->strings.get(lengthString, ""));
+    const std::size_t keep = static_cast<std::size_t>(std::max<long long>(0, n.value_or(0))) + 1;
+    // Whole UTF-8 characters (MM2 counts a double-byte character as one).
+    std::size_t pos = 0;
+    for (std::size_t chars = 0; pos < text.size() && chars < keep; ++chars)
+        ui::nextCodepoint(text, pos);
+    return text.substr(0, pos) + "...";
 }
+
+constexpr float kWideColumn = 0.207f * 640.0f;  // 132.48 px
+constexpr float kNarrowColumn = 0.15f * 640.0f; // 96 px
 
 // The controller named on the main menu (mmInterface::PlayerFillStats ->
 // MenuManager::GetControllerName, strings 580-584: Mouse, Keyboard,
@@ -34,11 +47,13 @@ std::string controllerName(Frontend& fe) {
 
 // --- Loading screen ------------------------------------------------------------------------
 
-// splash.jpg with MM2's loading bar (ProgressRect / ProgressCB): a flat
-// #0D2CBA bar at (349,448), 10 px tall, 225 px at 100 %. MM2 steps it while
-// the frontend loads (mmInterface::mmInterface) and then shows the main
-// menu straight away; OpenMM2 has already loaded, so it shows one step per
-// frame (pacing inferred).
+// splash.jpg with MM2's loading bar (ProgressCB -> ProgressRect): a flat
+// #0D2CBA bar at (349,448), 10 px tall and percent * 640 / 284 px wide in
+// whole pixels (225 px at 100 %). mmInterface::mmInterface reports 20, 30,
+// 35, 40, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 97, 99 and 100 % while the
+// frontend loads (lvlProgress::UpdateTask; BeginTask's 0 draws nothing) and
+// then shows the main menu. OpenMM2 has already loaded, so it shows one step
+// per frame (pacing inferred).
 class LoadingPage final : public Page {
 public:
     explicit LoadingPage(Frontend&) { menu.background = "jpg/splash.jpg"; }
@@ -49,14 +64,16 @@ public:
     }
 
     void drawAbove(Frontend&, ui::UiFrame& f) override {
-        const int percent = kSteps[static_cast<std::size_t>(std::min<int>(m_step, kSteps.size() - 1))];
-        f.overlay.rect(349, 448, static_cast<float>(percent) * 640.0f / 284.0f, 10, render::packColor(13, 44, 186));
+        if (m_step < 0 || m_step >= static_cast<int>(kSteps.size()))
+            return;
+        const int width = kSteps[static_cast<std::size_t>(m_step)] * 640 / 284;
+        f.overlay.rect(349, 448, static_cast<float>(width), 10, render::packColor(13, 44, 186));
     }
 
 private:
-    static constexpr std::array<int, 19> kSteps = {10, 20, 30, 35, 40, 50, 55, 60, 65, 70,
-                                                   75, 80, 85, 90, 95, 97, 99, 100, 100};
-    int m_step = 0;
+    static constexpr std::array<int, 17> kSteps = {20, 30, 35, 40, 50, 55, 60, 65, 70,
+                                                   75, 80, 85, 90, 95, 97, 99, 100};
+    int m_step = -1;
 };
 
 // --- Main menu (main_bk) -----------------------------------------------------------------
@@ -373,8 +390,13 @@ protected:
 
 // MM2 `Dialog_DriverRec` (mmInterface::PlayerFillRecords, mmCompDRecord):
 // every race of the mode in the city with a lock or tick, the best time,
-// the car that set it and, for professionals, the best score; 12 rows of
-// 18 px from (81,87), white text.
+// the car that set it and, for professionals, the best score. The list is a
+// UICompositeScroll at 0.0578, 0.1674 of the 540x460 dialog, 0.8 of it wide
+// (432 px), 12 rows of 0.03746 of the screen (18 px), no scroll bar: rows
+// from (81,87). mmCompDRecord::SetSubwidgetGeometry and SetBltXY put the lock
+// at the row's left edge 3 px up, the race at 18 px, the time a third of the
+// width further, then the vehicle (a quarter further for professionals, a
+// third less 26 px for amateurs) and the points (a quarter); white text.
 class DriverStatsDialog final : public RecordDialog {
 public:
     explicit DriverStatsDialog(Frontend& fe) : RecordDialog(fe, "jpg/drec_dlg.jpg", menu_id::kDriverRecord, false) {}
@@ -395,17 +417,25 @@ public:
             f.text.draw(f.overlay, font, s.get(344, "POINTS"), x + 378, 72, white);
         const auto races = fe.racesFor(m_mode, m_city);
         const std::string mode = game::modeKey(m_mode);
-        float y = 87;
-        for (std::size_t i = 0; i < races.size() && i < 12; ++i, y += 18) {
+        const float top = 10.0f + 0.1674f * 460.0f, rowH = 0.0374583f * 480.0f;
+        for (std::size_t i = 0; i < races.size() && i < 12; ++i) {
+            const float y = top + rowH * static_cast<float>(i);
             const int index = static_cast<int>(i);
             const auto* rec = fe.profile->record(m_city, mode, index);
-            // lock.tga: 0 open, 1 locked (only checkpoint races lock), 2 passed.
+            // lock.tga frames (mmInterface::PlayerFillRecords, mmCompDRecord::
+            // Cull): open, locked (only checkpoint races lock), passed.
             const int status = rec && rec->passed ? 2 : (fe.progress.raceOpen(&*fe.profile, m_city, mode, index) ? 0 : 1);
-            ui::drawSpriteFrame(f, {"texture/lock.tga", 3, true}, status, x + 2, y);
-            f.text.draw(f.overlay, font, fit(f, font, races[i]->name, 132, 15), x + 18, y, white);
+            ui::drawSpriteFrame(f, {"texture/lock.tga", 3, true}, status, x, y - 3);
+            f.text.draw(f.overlay, font, fit(fe, f, font, races[i]->name, kWideColumn, 664), x + 18, y,
+                        white);
             f.text.draw(f.overlay, font, rec ? formatTime(rec->time) : "  ---  ", x + 162, y, white);
-            const auto* v = rec ? fe.ctx.game->catalog.vehicle(rec->vehicle) : nullptr;
-            f.text.draw(f.overlay, font, v ? fit(f, font, v->description, 96, 10) : "----", vehicleX, y, white);
+            // Not driven: "----"; driven without a car name: string 64 "---".
+            std::string car = "----";
+            if (rec) {
+                const auto* v = fe.ctx.game->catalog.vehicle(rec->vehicle);
+                car = v ? fit(fe, f, font, v->description, kNarrowColumn, 665) : s.get(64, "---");
+            }
+            f.text.draw(f.overlay, font, car, vehicleX, y, white);
             if (pro)
                 f.text.draw(f.overlay, font, std::format("{:4}", rec ? rec->score : 0), x + 378, y, white);
         }
@@ -414,8 +444,13 @@ public:
 
 // MM2 `Dialog_HallOfFame` (mmInterface::HOFFillRecords): the five best
 // times (amateur or pro) or scores (pro) of each race of the mode in the
-// city, from the race records shared by all drivers; 11 rows of 18 px with
-// scroll arrows. The column positions are inferred.
+// city, from the race records shared by all drivers, five rows per race
+// whether or not they are filled. The list is a UICompositeScroll at 0.0578,
+// 0.177 of the 540x460 dialog, 0.9 of it wide (486 px), 11 rows of 18 px
+// with a scroll bar: rows from (81,91). mmCompRaceRecord::
+// SetSubwidgetGeometry puts the race at 4 px, the driver a quarter of the
+// width further, the time or score 0.2857 further and the vehicle 0.1923
+// less 26 px further. The scroll arrows' positions are inferred.
 class RaceRecordsDialog final : public RecordDialog {
 public:
     explicit RaceRecordsDialog(Frontend& fe) : RecordDialog(fe, "jpg/hoff_dlg.jpg", menu_id::kHallOfFame, true) {
@@ -436,12 +471,16 @@ public:
         const auto& s = fe.ctx.game->strings;
         const auto font = ui::style::valueFont();
         const auto white = ui::style::kRecordText;
-        constexpr float x = 81;
+        constexpr float x = 81, w = 0.9f * 540.0f;
+        constexpr float driverX = x + 4 + 0.25f * w, valueX = driverX + 0.2857143f * w,
+                        vehicleX = valueX + 0.1923077f * w - 26;
         const bool points = m_table == Table::ProPoints;
-        f.text.draw(f.overlay, font, s.get(351, "RACE"), x + 2, 72, white);
-        f.text.draw(f.overlay, font, s.get(353, "DRIVER"), x + 150, 72, white);
-        f.text.draw(f.overlay, font, points ? s.get(349, "SCORE") : s.get(354, "TIME"), x + 262, 72, white);
-        f.text.draw(f.overlay, font, s.get(355, "VEHICLE"), x + 340, 72, white);
+        // Titles (Dialog_HallOfFame::InitRaceRecord); the third follows the
+        // table (SetSortState: 349 SCORE for pro points, else 350 TIME).
+        f.text.draw(f.overlay, font, s.get(351, "RACE"), x + 4, 72, white);
+        f.text.draw(f.overlay, font, s.get(353, "DRIVER"), driverX, 72, white);
+        f.text.draw(f.overlay, font, points ? s.get(349, "SCORE") : s.get(350, "TIME"), valueX, 72, white);
+        f.text.draw(f.overlay, font, s.get(355, "VEHICLE"), vehicleX, 72, white);
         struct Row {
             std::string race, driver, value, vehicle;
         };
@@ -450,24 +489,33 @@ public:
         const auto races = fe.racesFor(m_mode, m_city);
         for (std::size_t i = 0; i < races.size(); ++i) {
             const auto* t = fe.hallOfFame.table(difficulty, m_city, game::modeKey(m_mode), static_cast<int>(i));
-            if (!t)
-                continue;
-            for (const auto& e : points ? t->byScore : t->byTime) {
-                if (points ? e.score <= 0 : e.time <= 0.0f)
-                    continue;
-                const auto* v = fe.ctx.game->catalog.vehicle(e.vehicle);
-                rows.push_back({races[i]->name, e.driver, points ? std::to_string(e.score) : formatTime(e.time),
-                                v ? v->description : e.vehicle});
+            for (std::size_t k = 0; k < 5; ++k) {
+                // An empty slot: no driver, "  ---  " (GetTimeString /
+                // GetScoreString) and string 64 "---" for the car.
+                Row r{races[i]->name, "", "  ---  ", s.get(64, "---")};
+                const auto* list = t ? (points ? &t->byScore : &t->byTime) : nullptr;
+                if (list && k < list->size()) {
+                    const auto& e = (*list)[k];
+                    r.driver = e.driver;
+                    if (points ? e.score > 0 : e.time > 0.0f)
+                        r.value = points ? std::to_string(e.score) : formatTime(e.time);
+                    if (!e.vehicle.empty()) {
+                        const auto* v = fe.ctx.game->catalog.vehicle(e.vehicle);
+                        r.vehicle = v ? v->description : e.vehicle;
+                    }
+                }
+                rows.push_back(std::move(r));
             }
         }
         m_scroll = std::clamp(m_scroll, 0, std::max(0, static_cast<int>(rows.size()) - 11));
-        float y = 88;
-        for (int i = m_scroll; i < static_cast<int>(rows.size()) && i < m_scroll + 11; ++i, y += 18) {
+        const float top = 10.0f + 0.177f * 460.0f, rowH = 0.0375f * 480.0f;
+        for (int i = m_scroll; i < static_cast<int>(rows.size()) && i < m_scroll + 11; ++i) {
             const Row& r = rows[static_cast<std::size_t>(i)];
-            f.text.draw(f.overlay, font, fit(f, font, r.race, 140, 15), x + 2, y, white);
-            f.text.draw(f.overlay, font, fit(f, font, r.driver, 104, 10), x + 150, y, white);
-            f.text.draw(f.overlay, font, r.value, x + 262, y, white);
-            f.text.draw(f.overlay, font, fit(f, font, r.vehicle, 96, 10), x + 340, y, white);
+            const float y = top + rowH * static_cast<float>(i - m_scroll);
+            f.text.draw(f.overlay, font, fit(fe, f, font, r.race, kNarrowColumn, 666), x + 4, y, white);
+            f.text.draw(f.overlay, font, fit(fe, f, font, r.driver, kWideColumn, 668), driverX, y, white);
+            f.text.draw(f.overlay, font, r.value, valueX, y, white);
+            f.text.draw(f.overlay, font, fit(fe, f, font, r.vehicle, kWideColumn, 667), vehicleX, y, white);
         }
     }
 };
