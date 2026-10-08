@@ -338,7 +338,8 @@ public:
             // The arrow, icons, stands and dash are drawn in the 3D view.
             m_hud->setViewProjection(frame.view * frame.proj);
             m_hud->setDashFrame(frame, Mat44::perspective(proj.fovY, proj.aspect, 0.01f, m_camera.farPlane, true));
-            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
+            // mmDashView::Cull turns the wheel by mmPlayer +0x2264 (SetSteering).
+            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_steerApplied, blips);
         }
         if (letterbox) {
             dev.setScissor(nullptr);
