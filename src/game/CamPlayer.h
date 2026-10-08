@@ -60,6 +60,19 @@ public:
     // flag 0x02 or 0x08 (mmPlayer::Update).
     void setVehicleFlags(int flags) { m_vehicleFlags = flags; }
 
+    // The view settings MM2 keeps per driver: the selected camera, wide
+    // angle and dashboard (globals that mmPlayer::Init and Reset read;
+    // mmPlayerConfig::SetViewSettings restores them from the driver's
+    // config when a race is set up, GetViewSettings saves them when the
+    // game ends). Set before reset(); read after the race.
+    struct ViewSettings {
+        int camera = 0; // index into near, pov (hood), far
+        bool wideAngle = false;
+        bool dashboard = false;
+    };
+    ViewSettings viewSettings() const { return {m_savedIndex, m_wide, m_dashActive}; }
+    void setViewSettings(const ViewSettings& settings);
+
     // (Not named near()/far(): those are macros in <windows.h>.)
     TrackCamera& nearCam() { return m_near; }
     TrackCamera& farCam() { return m_far; }

@@ -181,3 +181,40 @@ TEST(ParityCameraProps, MultiplayerFinishCamera) {
         EXPECT_FALSE(cams.postRace());
     }
 }
+
+// mmPlayerConfig::SetViewSettings: the driver's camera, wide angle and
+// dashboard carry over to the next race (mmPlayer::Reset).
+TEST(ParityCameraProps, ViewSettingsCarryOver) {
+    const CameraTarget t = carAt({}, 0.0f, true);
+    {
+        PlayerCameras cams;
+        cams.setViewSettings({2, false, false});
+        cams.reset(t);
+        EXPECT_EQ(cams.view(), PlayerCameras::View::Far);
+        EXPECT_EQ(cams.viewManager().current(), &cams.farCam());
+        cams.toggleCamera(); // far -> near
+        EXPECT_EQ(cams.viewSettings().camera, 0);
+    }
+    {
+        PlayerCameras cams;
+        cams.setViewSettings({0, false, true});
+        cams.reset(t);
+        EXPECT_EQ(cams.viewManager().current(), &cams.dashCam());
+        EXPECT_EQ(cams.display(), CarDisplay::Dash);
+        const auto s = cams.viewSettings();
+        EXPECT_EQ(s.camera, 1); // the dashboard comes back on the hood index
+        EXPECT_TRUE(s.dashboard);
+    }
+    {
+        PlayerCameras cams;
+        cams.setViewSettings({1, true, false});
+        cams.reset(t);
+        EXPECT_EQ(cams.viewManager().current(), &cams.povCam());
+        EXPECT_TRUE(cams.wideAngle());
+        EXPECT_TRUE(cams.viewManager().wideAngle()); // letterboxed
+        // mmPlayer::Reset sets 70 degrees, but camViewCS::Reset (at its end
+        // and again on the first update) sets the camera's own FOV: MM2
+        // only shows 70 degrees again after a view setting changes.
+        EXPECT_FLOAT_EQ(cams.viewManager().perspective().fov, cams.povCam().base().cameraFov);
+    }
+}

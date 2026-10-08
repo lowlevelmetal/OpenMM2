@@ -320,6 +320,17 @@ void PlayerCameras::startPreRace() {
     m_preRace = true;
 }
 
+void PlayerCameras::setViewSettings(const ViewSettings& settings) {
+    // mmPlayerConfig::SetViewSettings: mmPlayer::Reset starts on this camera
+    // (the dashboard on the hood index), Init and Reset apply the wide angle.
+    // (An index out of range, which MM2 never stores, starts on the near
+    // camera.)
+    m_savedIndex = settings.camera >= 0 && settings.camera < 3 ? settings.camera : 0;
+    m_camIndex = m_savedIndex;
+    m_wide = settings.wideAngle;
+    m_dashActive = settings.dashboard;
+}
+
 void PlayerCameras::startPostRace() { m_postPending = true; }
 
 void PlayerCameras::startMultiplayerPostRace(const Vec3& finish, float azimuth) {

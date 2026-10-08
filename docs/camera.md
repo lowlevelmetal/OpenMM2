@@ -180,6 +180,12 @@ camera's `Offset.z` by 0.7352941.
   `mmPlayer` resets the view on the first update after every reset, so
   after a reset MM2 shows the letterboxed view at the camera's FOV until a
   view setting changes. PlayerCameras keeps this.
+* **View settings** (`mmPlayerConfig::GetViewSettings` /
+  `SetViewSettings`): the selected camera, the wide angle and the
+  dashboard are globals that `mmPlayer::Init` and `Reset` read. They are
+  saved in the driver's config when the game ends and restored when the
+  next race is set up, so the view carries over from race to race
+  (`PlayerCameras::viewSettings` / `setViewSettings`, before `reset`).
 
 The meaning of the room flags is **inferred**: mm2hook calls 0x02
 "Subterranean" (MM2 also turns on the tunnel echo with it) and 0x08 "Road",
@@ -220,6 +226,7 @@ in the original.
 | `camViewCS::SetCam`, `NewCam`, `Update`, `Reset` | ported (the player's view: `camViewCS+0x48` set, so SetCam leaves the perspective) |
 | `camTransitionCS::Update`, `NewTransition`, `NextTransition`, `StartTransition`, `StartNextTransition`, `ReverseTransition` | ported |
 | `mmPlayer::Init`, `Reset`, `Update`, `SetCamera`, `GetCamera`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `SetPreRaceCam`, `SetPostRaceCam`, `SetMPPostCam` (camera parts) | ported |
+| `mmPlayerConfig::GetViewSettings`, `SetViewSettings` (camera part) | `PlayerCameras::viewSettings` / `setViewSettings` |
 | `mmViewMgr::SetViewSetting` 0, 5, 6, `mmGame::UpdateGameInput` (CamPan), `mmInput::GetCamPan` | ported |
 | `Matrix34::LookAt`, `GetEulers("zxy")`, `FromEulersZXY`, `MakeRotate*`, `Dot`, `Dot3x3`, `Rotate`, `RotateFull`, `PolarView`, `Vector3::Approach`, `Angle`, `InvMag` | ported with the original association of every sum |
 | `camPolarCS` | ported (`PolarCamera`), used for the multiplayer finish line; the two cheat "XCams" (`SetViewSetting(2)` with the camera cheat) are not ported |
@@ -303,4 +310,4 @@ see `docs/parity/camera-props.md`): the chase camera keeping its offset over
 a car spinning in the air by angular momentum (and not by angular
 velocity); the _ind camera under geometry in flag 0x20 rooms; the polar
 camera's defaults, keys and limits; the multiplayer finish camera in open
-and covered rooms.
+and covered rooms; the view settings carried into the next race.
