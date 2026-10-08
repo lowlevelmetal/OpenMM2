@@ -62,6 +62,7 @@ struct RaceStanding {
     float timeSeconds = 0.0f;
     std::string name;  // multiplayer: the player's name (mmGameMulti::UpdateResults)
     bool dnf = false;  // multiplayer: did not finish (PUResults::AddLoser)
+    int points = -1;   // Cops and Robbers: points shown instead of a time (mmMultiCR::FillResults)
 };
 
 // Outcome of a session, shown by the results screens and recorded in the

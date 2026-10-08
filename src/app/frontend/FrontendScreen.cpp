@@ -854,11 +854,16 @@ public:
                 m_fe.selectProfile(all.back().name);
         }
         if (result && result->config.multiplayer && ctx.netGame && ctx.netGame->inSession()) {
-            // Back from a multiplayer race: the lobby, over the sessions list.
+            // Back from a multiplayer race: the lobby, over the sessions list,
+            // and a race or Cops and Robbers game that ended shows its
+            // results first (mmGameMulti::UpdateResults, mmMultiCR::
+            // FillResults; MM2 shows them over the race).
             m_fe.config = result->config;
             m_fe.push(frontend::makeDriverPage(m_fe));
             m_fe.push(frontend::makeSessionsPage(m_fe));
             m_fe.push(frontend::makeLobbyPage(m_fe));
+            if (result->ended && result->config.mode != game::GameMode::Cruise && !result->standings.empty())
+                m_fe.push(frontend::makeResultsPage(m_fe, *result, {}));
         } else if (result && result->config.multiplayer) {
             // The session ended during a multiplayer race: the sessions list.
             m_fe.push(frontend::makeDriverPage(m_fe));

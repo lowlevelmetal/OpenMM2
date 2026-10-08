@@ -2,6 +2,7 @@
 // against MM2's own code (MM2Recomp, midtown2.exe build 3393); see
 // docs/parity/mm2/frontend.md.
 #include "app/frontend/PopupOptions.h"
+#include "app/frontend/Results.h"
 #include "app/frontend/Showroom.h"
 
 #include <gtest/gtest.h>
@@ -134,4 +135,34 @@ TEST(MM2FrontendParity, ShowroomCamera) {
     EXPECT_FLOAT_EQ(Showroom::easeDistance(10.0f, 6.0f, 0.1f), 7.9f);
     EXPECT_FLOAT_EQ(Showroom::easeDistance(7.0f, 6.0f, 0.1f), 6.0f);
     EXPECT_FLOAT_EQ(Showroom::easeDistance(5.0f, 6.0f, 0.02f), 5.42f);
+}
+
+// mmMultiCR::FillResults: the winning team first (team 0 on a tie), then
+// the players by points from row 3, the local player ahead of those it ties
+// with, the others in their order on a tie.
+TEST(MM2FrontendParity, CopsAndRobbersResultRows) {
+    auto string = [](std::uint32_t id, const char*) { return std::to_string(id); };
+    const std::vector<CrResultPlayer> players = {
+        {"A", 2, false}, {"Me", 3, true}, {"B", 3, false}, {"C", 5, false}, {"D", 2, false}};
+    const auto rows = crResultRows(game::CopsAndRobbersMode::CopsVsRobbers, 4, 9, players, string);
+    ASSERT_EQ(rows.size(), 7u);
+    EXPECT_EQ(rows[0].name, "126"); // ROBBERS, the winners
+    EXPECT_EQ(rows[0].points, 9);
+    EXPECT_EQ(rows[1].name, "127"); // COPS
+    EXPECT_EQ(rows[1].points, 4);
+    const char* order[] = {"C", "Me", "B", "A", "D"};
+    for (int i = 0; i < 5; ++i) {
+        EXPECT_EQ(rows[2 + i].name, order[i]);
+        EXPECT_EQ(rows[2 + i].place, 3 + i);
+    }
+    // A tie keeps team 0 (cops or blue) first; Free-For-All starts at row 1.
+    const auto tie = crResultRows(game::CopsAndRobbersMode::RobberTeams, 5, 5, {}, string);
+    ASSERT_EQ(tie.size(), 2u);
+    EXPECT_EQ(tie[0].name, "124"); // BLUE
+    EXPECT_EQ(tie[1].name, "125"); // RED
+    const auto ffa = crResultRows(game::CopsAndRobbersMode::FreeForAll, 0, 0, {{"Me", 1, true}, {"X", 1, false}}, string);
+    ASSERT_EQ(ffa.size(), 2u);
+    EXPECT_EQ(ffa[0].name, "Me");
+    EXPECT_EQ(ffa[0].place, 1);
+    EXPECT_EQ(ffa[1].place, 2);
 }

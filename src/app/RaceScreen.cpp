@@ -4,6 +4,7 @@
 #include "app/GameInput.h"
 #include "app/Screens.h"
 #include "app/frontend/PopupOptions.h"
+#include "app/frontend/Results.h"
 #include "city/CityData.h"
 #include "city/RoomInfo.h"
 #include "core/Log.h"
@@ -2091,6 +2092,14 @@ private:
                 m_crFinished = true;
                 game::RaceResult r = m_session->result();
                 r.ended = true;
+                std::vector<frontend::CrResultPlayer> players;
+                for (const auto& p : ctx.netGame->players())
+                    players.push_back({p.name, m_cr->playerScore(p.id), p.id == m_crSelf});
+                const auto& strings = ctx.game->strings;
+                r.standings = frontend::crResultRows(
+                    m_result.config.copsAndRobbers, m_cr->score(game::session::CrTeam::Cop),
+                    m_cr->score(game::session::CrTeam::Robber), players,
+                    [&strings](std::uint32_t id, const char* fallback) { return strings.get(id, fallback); });
                 leaveRace(ctx, r);
                 return;
             }

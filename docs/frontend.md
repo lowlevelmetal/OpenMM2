@@ -197,6 +197,17 @@ same paint job. Race Menu / Back to School return to the race menu or the
 Crash Course page (`mmInterface::ShowMain`); Exit to Windows ends the game
 at once, without `quit_dlg`.
 
+After a network race or Cops and Robbers game that ended, the results
+come up over the lobby (MM2 shows them over the race). Races list every
+player by time, those who did not finish last with DNF and no place
+(`mmGameMulti::UpdateResults`, `PUResults::AddLoser`). Cops and Robbers
+lists the winning team and the other one with their points in the team
+games (COPS / ROBBERS, BLUE / RED; team 0 first on a tie), then the
+players by points, the local player ahead of those it ties with
+(`mmMultiCR::FillResults`). Restart and Next are off, Show Roster (494)
+appears between Next and Race Menu, and both lead back to the lobby, whose
+player list is the roster.
+
 ### Race setup, garage, showcase and Crash Course
 
 Positions come from `tune/widget.csv` by the widget's creation index in MM2's menus.
