@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+
 using namespace mm2;
 using namespace mm2::app::controls;
 using platform::Key;
@@ -57,4 +59,36 @@ TEST(ParityControls, MapToggleCyclesLikeGetNextMapMode) {
     EXPECT_EQ(nextMapMode(MapMode::Small, MapMode::Off), MapMode::Split);
     EXPECT_EQ(nextMapMode(MapMode::Split, MapMode::Off), MapMode::Off);
     EXPECT_EQ(nextMapMode(MapMode::FullScreen, MapMode::Split), MapMode::Split);
+}
+
+// mmPlayer::FilterSteering with mmPlayer's constructor values, blended by
+// speed in mmPlayer::Update (f = clamp(speed, 5, 100) / 95).
+TEST(ParityControls, AnalogSteeringFollowsFilterSteering) {
+    AnalogSteering s;
+    s.setSpeed(0.0f, 1.0f); // f = 5 / 95
+    const float f = 5.0f / 95.0f;
+    // The mouse: sign x |x|^(1.5 + 2.5 f).
+    const float mouseExp = (4.0f - 1.5f) * f + 1.5f;
+    EXPECT_NEAR(s.filter(Controller::Mouse, -0.5f, 0.016f), -std::pow(0.5f, mouseExp), 1e-5f);
+    // The joystick: v = x / sens (sens = 0.5 + 0.6 f, below 1), then
+    // pow(|v| sens, 1 + 2 f) / sens.
+    const float sens = (1.1f - 0.5f) * f + 0.5f;
+    const float exponent = (3.0f - 1.0f) * f + 1.0f;
+    const float v = 0.25f / sens;
+    EXPECT_NEAR(s.filter(Controller::Joystick, 0.25f, 0.016f), std::pow(v * sens, exponent) / sens, 1e-5f);
+    // Full lock: v is clamped to 1 first.
+    EXPECT_NEAR(s.filter(Controller::Wheel, 1.0f, 0.016f), std::pow(sens, exponent) / sens, 1e-5f);
+    // The keyboard and the gamepad pass through (mmInput filters them).
+    EXPECT_FLOAT_EQ(s.filter(Controller::Keyboard, 0.3f, 0.016f), 0.3f);
+    // mmInput::PollContinuous: the cursor across the window over the mouse
+    // sensitivity.
+    const float mouseSens = (1.8f - 0.6f) * f + 0.6f;
+    EXPECT_NEAR(s.mouseAxis(960.0f, 1280.0f), 0.5f / mouseSens, 1e-5f);
+}
+
+TEST(ParityControls, ControllerOptionIsRead) {
+    IniFile ini;
+    EXPECT_EQ(Options::load(ini).controller, Controller::Keyboard);
+    ini.setInt("Controls", "Controller", 4);
+    EXPECT_EQ(Options::load(ini).controller, Controller::Wheel);
 }

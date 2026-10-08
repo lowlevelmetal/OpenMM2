@@ -1686,38 +1686,13 @@ private:
     void updatePlayer(Context& ctx, float dt) {
         if (!m_player)
             return;
-        auto& in = ctx.input;
-        using controls::Action;
         phys::PedalInput pedals;
-        // mmInput::GetSteering, keyboard: Steer Left wins over Steer Right,
-        // through mmInput::FilterDiscreteSteering.
         float keyTarget = 0.0f;
-        std::optional<float> analog;
-        if (!m_flyCamera && m_popup == Popup::None) {
-            // mmInput::GetThrottleVal / GetBrakesVal / GetHandBrake: a bound
-            // key gives 1.
-            pedals.accelerator = m_bindings.down(in, Action::Throttle) ? 1.0f : 0.0f;
-            pedals.brake = m_bindings.down(in, Action::Brakes) ? 1.0f : 0.0f;
-            pedals.handbrake = m_bindings.down(in, Action::Handbrake) ? 1.0f : 0.0f;
-            if (m_bindings.down(in, Action::SteerLeft))
-                keyTarget = -1.0f;
-            else if (m_bindings.down(in, Action::SteerRight))
-                keyTarget = 1.0f;
-            // Game controllers (an OpenMM2 extra beside the keyboard): the
-            // stick through the CONTROLLER DEAD ZONE option, as
-            // mmJoystick::SetDeadZone sets it on DirectInput.
-            for (const auto& pad : in.gamepads()) {
-                using platform::GamepadAxis;
-                const auto axis = [&](GamepadAxis a) { return pad.axes[static_cast<std::size_t>(a)]; };
-                pedals.accelerator = std::max(pedals.accelerator, axis(GamepadAxis::RightTrigger));
-                pedals.brake = std::max(pedals.brake, axis(GamepadAxis::LeftTrigger));
-                const float x = controls::applyDeadZone(axis(GamepadAxis::LeftX), m_controlOptions.deadZone);
-                if (x != 0.0f)
-                    analog = x;
-                if (pad.buttons.test(static_cast<std::size_t>(platform::GamepadButton::South)))
-                    pedals.handbrake = 1.0f;
-            }
-        }
+        std::optional<float> analog;      // through FilterGamepadSteering
+        std::optional<float> deviceAxis;  // through mmPlayer::FilterSteering
+        const controls::Controller controller = m_controlOptions.controller;
+        if (!m_flyCamera && m_popup == Popup::None)
+            readController(ctx, controller, pedals, keyTarget, analog, deviceAxis);
         // Development aid: constant pedal input "accel,brake,steer,handbrake"
         // (the steering as an analog device's).
         if (const char* dbg = std::getenv("OPENMM2_DEBUG_INPUT")) {
@@ -1730,10 +1705,17 @@ private:
             analog = f(2);
             pedals.handbrake = f(3);
         }
-        // mmInput::FilterDiscreteSteering / FilterGamepadSteering, with the
-        // speed-sensitive rates and curve mmPlayer::Update sets.
-        pedals.steering = m_steering.filter(analog ? clampf(*analog, -1.0f, 1.0f) : keyTarget, dt);
+        // mmInput::GetSteering: the keyboard and the gamepad through
+        // FilterDiscreteSteering / FilterGamepadSteering, the mouse, joystick
+        // and wheel axes through mmPlayer::FilterSteering, with the
+        // speed-sensitive parameters mmPlayer::Update sets (from the last
+        // frame's speed).
+        if (deviceAxis && !analog)
+            pedals.steering = m_analogSteering.filter(controller, *deviceAxis, dt);
+        else
+            pedals.steering = m_steering.filter(analog ? clampf(*analog, -1.0f, 1.0f) : keyTarget, dt);
         m_steering.setSpeed(m_player->sim().speed());
+        m_analogSteering.setSpeed(m_player->sim().speed(), m_controlOptions.sensitivity);
         // Countdown: the car is held until "Go!" (and during wreck
         // penalties, and after a wreck or a multiplayer finish), and until
         // the shared start time in multiplayer.
@@ -1758,6 +1740,101 @@ private:
         // catches only cities whose geometry lies far below that.
         if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
             m_player->reset(m_spawn);
+    }
+
+    // The driving inputs of the chosen controller (mmInput::SetDefaultConfig's
+    // binding set for it; GetThrottleVal / GetBrakesVal / GetHandBrake /
+    // GetSteering). The joystick's X and Y (and the wheel's) go through the
+    // CONTROLLER DEAD ZONE as mmJoystick::SetDeadZone sets it on DirectInput.
+    void readController(Context& ctx, controls::Controller controller, phys::PedalInput& pedals, float& keyTarget,
+                        std::optional<float>& analog, std::optional<float>& deviceAxis) {
+        using controls::Action;
+        using controls::Controller;
+        auto& in = ctx.input;
+        const float deadZone = m_controlOptions.deadZone;
+        auto keyHandbrake = [&] { return m_bindings.down(in, Action::Handbrake) ? 1.0f : 0.0f; };
+        switch (controller) {
+        case Controller::Keyboard:
+        default:
+            // A bound key gives 1; Steer Left wins over Steer Right.
+            pedals.accelerator = m_bindings.down(in, Action::Throttle) ? 1.0f : 0.0f;
+            pedals.brake = m_bindings.down(in, Action::Brakes) ? 1.0f : 0.0f;
+            pedals.handbrake = keyHandbrake();
+            if (m_bindings.down(in, Action::SteerLeft))
+                keyTarget = -1.0f;
+            else if (m_bindings.down(in, Action::SteerRight))
+                keyTarget = 1.0f;
+            // OpenMM2 extra: a connected gamepad drives beside the keyboard
+            // (triggers, left stick, South for the handbrake).
+            for (const auto& pad : in.gamepads()) {
+                using platform::GamepadAxis;
+                const auto axis = [&](GamepadAxis a) { return pad.axes[static_cast<std::size_t>(a)]; };
+                pedals.accelerator = std::max(pedals.accelerator, axis(GamepadAxis::RightTrigger));
+                pedals.brake = std::max(pedals.brake, axis(GamepadAxis::LeftTrigger));
+                const float x = controls::applyDeadZone(axis(GamepadAxis::LeftX), deadZone);
+                if (x != 0.0f)
+                    analog = x;
+                if (pad.buttons.test(static_cast<std::size_t>(platform::GamepadButton::South)))
+                    pedals.handbrake = 1.0f;
+            }
+            return;
+        case Controller::Mouse: {
+            // The cursor's place across the window steers; buttons 1 and 2
+            // (left, right) are throttle and brakes; the handbrake stays a key.
+            const auto size = ctx.window().size();
+            deviceAxis = m_analogSteering.mouseAxis(in.mousePosition().x, static_cast<float>(size.width));
+            pedals.accelerator = in.mouseDown(platform::MouseButton::Left) ? 1.0f : 0.0f;
+            pedals.brake = in.mouseDown(platform::MouseButton::Right) ? 1.0f : 0.0f;
+            pedals.handbrake = keyHandbrake();
+            return;
+        }
+        case Controller::GamePad:
+            // The stick through FilterGamepadSteering; buttons 0 and 1
+            // throttle and brakes, button 3 the handbrake (South, East and
+            // North on an SDL gamepad, inferred from DirectInput's order).
+            for (const auto& pad : in.gamepads()) {
+                using platform::GamepadAxis;
+                using platform::GamepadButton;
+                const auto button = [&](GamepadButton b) { return pad.buttons.test(static_cast<std::size_t>(b)); };
+                analog = controls::applyDeadZone(pad.axes[static_cast<std::size_t>(GamepadAxis::LeftX)], deadZone);
+                pedals.accelerator = button(GamepadButton::South) ? 1.0f : 0.0f;
+                pedals.brake = button(GamepadButton::East) ? 1.0f : 0.0f;
+                pedals.handbrake = button(GamepadButton::North) ? 1.0f : 0.0f;
+                return;
+            }
+            pedals.handbrake = keyHandbrake();
+            return;
+        case Controller::Joystick:
+        case Controller::Wheel: {
+            // X steers; Y forward is the throttle and back the brakes
+            // (mmJoystick::GetAxis codes 0x13 / 0x14). The wheel's handbrake
+            // is button 0, the joystick's button 5 (when it has one; else
+            // the key).
+            float x = 0.0f, y = 0.0f;
+            bool handbrake = false;
+            if (!in.joysticks().empty()) {
+                const auto& j = in.joysticks().front();
+                x = j.axes.size() > 0 ? j.axes[0] : 0.0f;
+                y = j.axes.size() > 1 ? j.axes[1] : 0.0f;
+                const std::size_t b = controller == Controller::Wheel ? 0 : 5;
+                handbrake = b < j.buttons.size() ? j.buttons[b] : keyHandbrake() != 0.0f;
+            } else if (!in.gamepads().empty()) {
+                // A pad SDL recognises as a gamepad: its left stick (OpenMM2).
+                using platform::GamepadAxis;
+                const auto& pad = in.gamepads().front();
+                x = pad.axes[static_cast<std::size_t>(GamepadAxis::LeftX)];
+                y = pad.axes[static_cast<std::size_t>(GamepadAxis::LeftY)];
+                handbrake = keyHandbrake() != 0.0f;
+            }
+            x = controls::applyDeadZone(x, deadZone);
+            y = controls::applyDeadZone(y, deadZone);
+            deviceAxis = x;
+            pedals.accelerator = y < 0.0f ? -y : 0.0f;
+            pedals.brake = y > 0.0f ? y : 0.0f;
+            pedals.handbrake = handbrake ? 1.0f : 0.0f;
+            return;
+        }
+        }
     }
 
     // The horn key (mmGame::UpdateHorn), not in the free camera.
@@ -2131,6 +2208,7 @@ private:
     game::RearViewMirror m_mirror;       // mmMirror: on / off and its camera (drawn by the renderer)
     std::optional<game::Profile> m_profile; // the driver, for the view settings and rewards
     std::string m_chatText;                  // PUChat's text field
+    controls::AnalogSteering m_analogSteering; // mmPlayer::FilterSteering
     std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
     bool m_textInput = false;                // SDL text input on for the chat line
     std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)
