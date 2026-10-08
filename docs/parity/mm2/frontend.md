@@ -2,7 +2,7 @@
 
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
-Summary: 1309 reachable functions in 102 classes; ported 722 (of which newly ported 69), replaced 163, not needed 404, open 20.
+Summary: 1309 reachable functions in 102 classes; ported 738 (of which newly ported 85), replaced 163, not needed 404, open 4.
 
 Scope: the menus (MenuManager, UIMenu and every UI* widget, the main,
 race, garage, options and multiplayer menus with their dialogs and
@@ -24,6 +24,7 @@ docs/frontend.md and docs/multiplayer.md describe the result for players.
 - The in-race OPTIONS pages (PUOptions, PUAudioOptions, PUControl, PUGraphics) with MM2's layout, ranges, callbacks and Cancel (5eff552).
 - The key map on F1 (PUKey, 21f0e34), the host's quit menu (PUQuit, 10b5e4e) and the roster on F6 with booting (PURoster, d83bb67).
 - The garage's turning 3D car: MM2's camera, light, reflection and render states (VehicleSelectBase, mmVehicleForm, asViewCS, asDofCS; 4dd4114, bfeadf5).
+- MM2's scroll bar (VSWidget) on the race records and the customize list, with the record list's keys and drag (e1292b1).
 - Network results over the lobby, with the Cops and Robbers team rows (3f1de68).
 - The lobby as NetArena lays it out: the button row, race map, city name, host settings text, ready resets, roster icons and chat (33a72e8, cecdcfa, 41cf9c5).
 - The password prompt for address joins and MM2's dialog layouts (0ebdad4); booting by picking a name (c7c3f26); the host options' last values (cecdcfa).
@@ -640,14 +641,15 @@ focused, 2 focused and pressed; frame 3 is never used), 2 px gaps; N = (bar
 height - 2 x arrow height) / segment height, 2..200; the thumb spans
 max(1, whole part of N x visible/total - 1) segments; the data is the first
 visible row. Arrows and the press/drag handling exist only when enabled (all
-three users enable it). OpenMM2 has no VSWidget: `RaceRecordsDialog` has two
-separate arrow SpriteButtons, `BindingList` and `ListBox` draw arrows only.
+three users enable it). OpenMM2: `ui::ScrollBar` (newly ported), used by the race
+records' `RecordList` and the customize list's `BindingList`; `ListBox` (OpenMM2's
+session list) draws none.
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `VSWidget::VSWidget`, `VSWidget::Init`, `VSWidget::LoadBitmap`, `VSWidget::CalcTroughRatio`, `VSWidget::SetStep`, `VSWidget::SetTrough`, `VSWidget::SetHotSpots` | open | `app/frontend/PagesMain.cpp` `RaceRecordsDialog::RaceRecordsDialog` (two arrows at inferred positions), `PagesOptions.cpp` `BindingList::draw` (arrows only) | The trough and the thumb are never drawn in OpenMM2, and the arrow positions are guesses (finding A2.16). |
-| `VSWidget::Cull`, `VSWidget::Update`, `VSWidget::Switch` | open | as above | Focused band and arrow frames follow the owning list's focus; frame 3 never shows (OpenMM2 draws it for "nothing more to scroll"). |
-| `VSWidget::Action`, `VSWidget::EvalMouseXY` | open | `RaceRecordsDialog` arrows (`SpriteButton`), `BindingList::mouse`/`modalInput` (`scrollArrow`) | Mouse press or drag (kind 0 or 2): up arrow Dec, down arrow Inc, trough moves the thumb step by step to the pointer (dragging captures the mouse through the owner); "Switch" (MenuManager::PlaySound(2)) on the press only; other mouse events clear the pressed arrows. Keys: Left Dec, Right Inc with "Switch". OpenMM2's arrows act once on the release and there is no trough to click or drag. |
+| `VSWidget::VSWidget`, `VSWidget::Init`, `VSWidget::LoadBitmap`, `VSWidget::CalcTroughRatio`, `VSWidget::SetStep`, `VSWidget::SetTrough`, `VSWidget::SetHotSpots` | ported (new) | `ui/Widgets.cpp` `ScrollBar::place`, `setRatio`, `metrics` | Segment = scroll_act's width and half height, arrow = scroll_darr's width and quarter height, the arrows centred over the trough, 2 px gaps; segments = (height - 2 arrows) / segment, 2..200; the thumb's extra segments = whole part of segments x ratio - 1, at least 1, at most segments - 1; the hot spots leave out the gaps (finding A2.16). |
+| `VSWidget::Cull`, `VSWidget::Update`, `VSWidget::Switch` | ported (new) | `ScrollBar::draw` | Focused band and arrow frames (0 unfocused, 1 focused, 2 focused and pressed) follow the owning list's focus; frame 3 never shows. |
+| `VSWidget::Action`, `VSWidget::EvalMouseXY` | ported (new) | `ScrollBar::mouse`, `release`; `RecordList::adjust`, `BindingList::barMouse` | Mouse press or drag (kind 0 or 2): up arrow Dec, down arrow Inc, trough moves the thumb step by step to the pointer (dragging captures the mouse through the owner); "Switch" (MenuManager::PlaySound(2)) on the press only; other mouse events clear the pressed arrows. Keys: Left Dec, Right Inc with "Switch". |
 | `VSWidget::Inc`, `VSWidget::Dec`, `VSWidget::SyncData` | ported | `RaceRecordsDialog` `m_scroll` clamp; `BindingList::m_scroll` | One row per step, clamped, callback to the owner. |
 | `VSWidget::~VSWidget`, ``VSWidget::`scalar_deleting_destructor'`` | not needed | - | Memory. |
 
@@ -671,10 +673,10 @@ arrow buttons, mouse wheel).
 | `UICompositeScroll::UICompositeScroll`, `UICompositeScroll::Init` (with its unwind piece at 0x5ac735), `UICompositeScroll::InitVScroll` | ported | `app/frontend/PagesMain.cpp` `DriverStatsDialog`, `RaceRecordsDialog` | Geometry verified by the first audit (rows from (81,87)/(81,91), 18 px); the scroll bar part is finding A2.16. The list's own Card2D is never added to the scene (not drawn). |
 | `UICompositeScroll::AddComponent`, `UICompositeScroll::RemoveAllComponentChildren`, `UICompositeScroll::Clear`, `UICompositeScroll::Reset`, `UICompositeScroll::GetSelectedCount`, `UICompositeScroll::Redraw`, `UICompositeScroll::Update` | ported | `DriverStatsDialog::drawAbove`, `RaceRecordsDialog::drawAbove` (rows rebuilt every frame) | Rows from the scroll position, components without content skipped, unused rows blanked. |
 | `UICompositeScroll::VScrollCB`, `UICompositeScroll::SetVScrollVals`, `UICompositeScroll::SetVScrollPos`, `UICompositeScroll::SetPosition` | ported | `RaceRecordsDialog::drawAbove` (`m_scroll` clamped to rows - 11) | Top row = the scroll bar's value, clamped to count - rows; the thumb size is rows / count. |
-| `UICompositeScroll::Action` (with its split piece at 0x4ebcde, the key jump table) | open | `RaceRecordsDialog` arrow buttons, `update` (wheel) | Only with a scroll bar (the driver record list ignores all input). The VSWidget gets the event first (arrows, trough, drag with mouse capture and MenuManager::PlaySound(1)); then a press on a row (left 0.9 of the width) plays "Switch" and calls the (null) callback; keys without a selection: Left/Right scroll one row (after VSWidget::Action already stepped once, so two rows per key press: read from the code, not observed), Page Up/Page Down one page. OpenMM2: arrow buttons that are separate focus stops, acting on the release, no keys, plus the wheel (OpenMM2's). finding A2.16. |
-| `UICompositeScroll::CaptureAction` | open | - | While dragging the scroll bar every mouse event goes to the VSWidget; the release ends the capture. |
-| `UICompositeScroll::Switch` | open | - | Lights the scroll bar's focused band while the list has the focus. |
-| `UICompositeScroll::GetHit` | open | - | Row under the pointer (in reachable lists only used for the click sound). |
+| `UICompositeScroll::Action` (with its split piece at 0x4ebcde, the key jump table) | ported (new) | `RecordList::adjust`, `page`, `mouse` | Only with a scroll bar (the driver record list ignores all input). The VSWidget gets the event first (arrows, trough, drag with mouse capture and MenuManager::PlaySound(1)); then a press on a row (left 0.9 of the width) plays "Switch" and calls the (null) callback; keys without a selection: Left/Right scroll one row (after VSWidget::Action already stepped once, so two rows per key press: read from the code, not observed), Page Up/Page Down one page. OpenMM2 does the same, plus the wheel (OpenMM2's); finding A2.16. |
+| `UICompositeScroll::CaptureAction` | ported (new) | `RecordList::modalInput` | While dragging the scroll bar every mouse event goes to the VSWidget; the release ends the capture. |
+| `UICompositeScroll::Switch` | ported (new) | `RecordList::draw` | Lights the scroll bar's focused band while the list has the focus. |
+| `UICompositeScroll::GetHit` | ported (new) | `RecordList::mouse` | Row under the pointer (in reachable lists only used for the click sound). |
 | `UICompositeScroll::SetHighlight`, `UICompositeScroll::SetHighlightComp` | not needed | - | Act only with a selection pointer; no reachable list has one. |
 | `UICompositeScroll::AddTitle`, `UICompositeScroll::GetHeight` | not needed | - | No callers (reachable 0). |
 | `UICompositeScroll::~UICompositeScroll`, ``UICompositeScroll::`scalar_deleting_destructor'`` | not needed | - | Memory. |
@@ -718,7 +720,7 @@ keyboard-only bindings).
 | --- | --- | --- | --- |
 | `UICWArray::UICWArray`, `UICWArray::Init` (with its unwind piece at 0x5ac9f5) | ported | `BindingList::BindingList`, `CustomizePage::CustomizePage` | 15 rows verified by the first audit; OpenMM2 makes the list keyboard-focusable and uses 20 px rows (finding A2.17); the page opens on DEFAULTS as MM2's does. |
 | `UICWArray::Redraw`, `UICWArray::Update` | ported | `BindingList::draw`, `BindingList::listActions` (`controls::slotListed`), `CaptureReader::poll` (`m_waitRelease`) | Lists the bindable slots from the scroll offset; re-lists when the input device changes; refreshes the captured row; while capturing, checks the capture only once the mouse button that started it is up (+0xac), as `CaptureReader` does. |
-| `UICWArray::SetVScrollVals`, `UICWArray::SetVScrollPos`, `UICWArray::VScrollCB`, `UICWArray::Reset` | ported | `BindingList::m_scroll`, `scrollArrow` | Thumb = rows / count; the bar disappears when everything fits (OpenMM2 always draws the two arrows, frame 3 at an end); no trough or thumb in OpenMM2 (finding A2.16). |
+| `UICWArray::SetVScrollVals`, `UICWArray::SetVScrollPos`, `UICWArray::VScrollCB`, `UICWArray::Reset` | ported | `BindingList::m_scroll`, `scrollArrow` | Thumb = rows / count; the bar disappears when everything fits; `BindingList::placeBar` keeps the bar on the selection's first row (finding A2.16). |
 | `UICWArray::Action` | ported | `BindingList::mouse`, `BindingList::modalInput` | The VSWidget first (arrows, trough, drag with capture). A press on a row (left of the scroll bar) while not capturing starts a capture of that row (EnterCapture) and waits for the button's release. Keys (only once the mouse has focused the list): Enter calls ControlCustom::BadAssignCB with the last capture result (an MM2 quirk that can open a bad-assignment dialog), Left/Right scroll (twice per press, as in UICompositeScroll). OpenMM2: Up/Down select a row, Enter or a click starts the capture, the wheel scrolls (finding A2.17). |
 | `UICWArray::CaptureAction` | ported | `BindingList::modalInput` | A release ends a scroll-bar drag; other events drive the VSWidget. |
 | `UICWArray::EnterCapture`, `UICWArray::CheckCapture`, `UICWArray::ResetCapture`, `UICWArray::ForceCapture` | ported | `BindingList::startCapture`, `BindingList::capture` (`Rebinder::capture`, `forceAssign`); `CustomizePage` `onRefused`/`onDuplicate` | mmInput::CaptureState(1) captures any device; Escape (0x10001) cancels; F1-F10 refused (callback, xasn_dlg); mmInput::BuildCaptureIO: 1 accepted, 2 duplicate / 0 invalid go to ControlCustom::BadAssignCB (ctrl_dlg; OK = ForceCapture with mmInput::ForceAssignment, CANCEL = ResetCapture). Same in OpenMM2. |
@@ -2313,7 +2315,7 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
     which removed the frame from `TextEntry::draw` as not MM2's ("the frame is
     painted on the backgrounds"); unless a screenshot shows it hidden by the
     painted frame, restore it for every TextEntry.
-- **A2.16. Open.** **No VSWidget scroll bar** (VSWidget, `UICompositeScroll::Action`,
+- **A2.16. Fixed in e1292b1.** **No VSWidget scroll bar** (VSWidget, `UICompositeScroll::Action`,
     `UICWArray::SetVScrollVals`). The race records list (Dialog_HallOfFame) has
     a scroll bar at x 546 px (the list's right edge less 0.0329 of the
     screen), from y 91, 198 px tall: scroll_uarr, a trough of scroll_inact
@@ -2622,7 +2624,6 @@ state now. "Fixed" names the commit; line numbers in the text are from the audit
 
 What is left, and what it needs:
 
-- VSWidget and UICompositeScroll's scroll handling (A2.16, the open rows above): a `ui::ScrollBar` with VSWidget's arrows, trough and draggable thumb, for the race records (one focus stop taking Left, Right, Page Up and Page Down) and the customize list.
 - Press and release on the same widget (A1.5, A2.1): `ui::Menu` remembering the widget the press hit and acting only on a release over it, with the buttons' own callbacks (roller arrows, popup OK / Cancel, toggles) running on the press.
 - Space on bitmap buttons (A2.2): the button's sound and callback without the menu's action.
 - Read-only widgets taking the mouse focus (A1.4, A2.7, B.11): the hit test on enabled widgets, read-only ones included, without lighting them; About would then open on its credits spot.
