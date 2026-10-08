@@ -572,6 +572,7 @@ private:
     bool m_highlight = true; // false after the mouse left every widget
     bool m_parked = false;
     bool m_helpHidden = false;
+    const Widget* m_pressed = nullptr; // the widget the mouse press hit (sfPointer)
 };
 
 } // namespace mm2::ui

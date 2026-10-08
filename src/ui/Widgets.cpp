@@ -1135,8 +1135,23 @@ void Menu::update(UiFrame& f) {
             m_highlight = false;
         }
     }
-    if (cur)
-        cur->mouse(f, cur == hovered);
+    // sfPointer::Update: a release counts only over the widget that took the
+    // press; released anywhere else (or after a press on nothing) it does
+    // nothing, so dragging onto a button does not click it.
+    if (nav.mousePressed)
+        m_pressed = hovered;
+    if (cur) {
+        if (nav.mouseReleased && hovered != m_pressed) {
+            NavInput unreleased = nav;
+            unreleased.mouseReleased = false;
+            UiFrame g{f.overlay, f.textures, f.text, unreleased, f.time, f.sound};
+            cur->mouse(g, cur == hovered);
+        } else {
+            cur->mouse(f, cur == hovered);
+        }
+    }
+    if (nav.mouseReleased)
+        m_pressed = nullptr;
     if (cur && cur->modal())
         return;
 

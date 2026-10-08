@@ -159,7 +159,8 @@ TEST(FrontendParity, EscapeOnTheStripBacksThePageUp) {
 }
 
 // UIBMButton::Action plays the button's sound on the press; the menu acts on
-// a release over the button (UIMenu::CheckMouseHits), wherever the press was.
+// a release over the button (UIMenu::CheckMouseHits), but only over the one
+// that took the press (sfPointer::Update clears any other release hit).
 TEST(FrontendParity, SpriteButtonSoundOnPressActionOnRelease) {
     Fixture fx;
     ui::Menu m;
@@ -179,13 +180,17 @@ TEST(FrontendParity, SpriteButtonSoundOnPressActionOnRelease) {
     m.update(f);
     EXPECT_EQ(clicks, 1);
     EXPECT_EQ(fx.sounds.size(), 1u);
-    // A release over the button after a press elsewhere acts too.
+    // A release over the button after a press elsewhere does nothing.
+    fx.nav = {};
+    fx.nav.mouse = {300, 300};
+    fx.nav.mouseMoved = fx.nav.mousePressed = fx.nav.mouseDown = true;
+    m.update(f);
     fx.nav = {};
     fx.nav.mouse = {110, 110};
     fx.nav.mouseMoved = true;
     fx.nav.mouseReleased = true;
     m.update(f);
-    EXPECT_EQ(clicks, 2);
+    EXPECT_EQ(clicks, 1);
 }
 
 // A shown UIIcon (the race map) is a focus stop without a highlight; a

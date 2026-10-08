@@ -44,8 +44,9 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
 * **Sprite buttons** (`UIBMButton`): frames normal, highlight, pressed,
   disabled; the pressed frame shows only while the mouse button is held on
   the button. Its sound plays when the mouse button goes down on it, and it
-  acts when the mouse button is released over it, wherever the press began
-  (`UIMenu::CheckMouseHits`), or on Enter. 5-frame
+  acts when the mouse button is released over it after the press went down
+  on it (`sfPointer::Update` drops a release over any other widget,
+  `UIMenu::CheckMouseHits`), or on Enter. 5-frame
   sheets are toggles: off, off+highlight, on, on+highlight, disabled; they
   flip on the press, Enter or Space. A click on an exclusive lamp that is
   already on (the race and host mode lamps, the Cops & Robbers lamps) only
