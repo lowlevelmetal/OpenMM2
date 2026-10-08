@@ -52,6 +52,7 @@ ModeText modeText(GameMode m, bool multi) {
         case GameMode::Blitz: t = {89, 90, 91, 92, 94, 0, 0, 0, 93}; break;          // mmMultiBlitz
         case GameMode::Circuit: t = {101, 102, 103, 104, 108, 0, 0, 0, 105}; break;  // mmMultiCircuit
         case GameMode::Checkpoint: t = {144, 145, 146, 147, 0, 0, 0, 0, 148}; break; // mmMultiRace
+        case GameMode::CopsAndRobbers: t.go = 113; t.wreck = 114; break;              // mmMultiCR
         default: break;
         }
         return t;
@@ -242,7 +243,7 @@ void Session::beginEvent(int index) {
     m_wp.singleVisible = lesson && lesson->singleCheckpoint;
     resetWaypoints();
 
-    m_phase = mode() == GameMode::Cruise ? Phase::Racing : Phase::Countdown;
+    m_phase = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers ? Phase::Racing : Phase::Countdown;
     m_stage = Stage::Intro;
     m_wait = 0.0f;
     m_skipToGo = index > 0;
@@ -303,6 +304,16 @@ void Session::start() {
             setMessage(modeText(mode(), true).go, "Go!", kStep, false);
             sound(GameSound::StartRaceHigh); // mmMultiRoam::UpdateGame state 1
         }
+        m_released = true;
+        return;
+    }
+    if (mode() == GameMode::CopsAndRobbers) {
+        // mmMultiCR::UpdateGame state 2: no countdown, "Go!" for 2 s at the
+        // top with its first sound ("Startracehigh"); the rules are
+        // CopsAndRobbers'.
+        m_phase = Phase::Racing;
+        setMessage(modeText(mode(), multiplayer()).go, "Go!", 2.0f, true);
+        sound(GameSound::StartRaceHigh);
         m_released = true;
         return;
     }
