@@ -609,15 +609,17 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
     } else if (cmd == "go") {
         fe.startRace();
     } else if (cmd == "mp") {
-        // Multiplayer automation: mp:host, mp:join:<address>, mp:chat:<text>,
+        // Multiplayer automation: mp:host[:<password>], mp:join:<address>[|<password>], mp:chat:<text>,
         // mp:ready, mp:start, mp:team:<0|1>, mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>.
         const auto sub = arg.substr(0, arg.find(':'));
         const auto rest = arg.find(':') == std::string::npos ? std::string() : arg.substr(arg.find(':') + 1);
         if (sub == "host") {
-            if (frontendHostSession(fe))
+            if (frontendHostSession(fe, rest))
                 fe.push(makeLobbyPage(fe));
         } else if (sub == "join") {
-            frontendJoinSession(fe, rest, {});
+            // mp:join:<address>[|<password>]
+            const auto bar = rest.find('|');
+            frontendJoinSession(fe, rest.substr(0, bar), bar == std::string::npos ? "" : rest.substr(bar + 1));
         } else if (fe.ctx.netGame && sub == "chat") {
             fe.ctx.netGame->sendChat(rest);
         } else if (fe.ctx.netGame && sub == "ready") {

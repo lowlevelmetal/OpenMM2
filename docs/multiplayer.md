@@ -399,7 +399,8 @@ off the lobby says which UDP port must be opened by hand.
 
 ### Automation
 
-`OPENMM2_FRONTEND_SCRIPT` has multiplayer commands: `mp:host`, `mp:join:<address>`,
+`OPENMM2_FRONTEND_SCRIPT` has multiplayer commands: `mp:host[:<password>]`,
+`mp:join:<address>[|<password>]`,
 `mp:chat:<text>`, `mp:ready`, `mp:start`, `mp:team:<0|1>`,
 `mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>`, and the pages
 `hostoptions`, `address`, `hostsettings`, `eject`. Example: one process hosts

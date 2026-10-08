@@ -221,6 +221,7 @@ bool NetGame::join(const net::Address& address, const std::string& password, con
                    std::string* error) {
     leave();
     m_closed = false;
+    m_joinFailure = net::DisconnectReason::None;
     m_car = car;
     net::JoinParams params;
     params.host = address;
@@ -278,6 +279,7 @@ void NetGame::handleEvents() {
                 } else if constexpr (std::is_same_v<T, net::ev::JoinFailed>) {
                     m_impl->joining = false;
                     m_closed = true;
+                    m_joinFailure = ev.reason;
                     m_notices.push_back(reasonText(ev.reason, ev.message));
                 } else if constexpr (std::is_same_v<T, net::ev::Disconnected>) {
                     m_closed = true;

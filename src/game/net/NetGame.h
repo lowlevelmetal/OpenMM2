@@ -139,6 +139,9 @@ public:
     bool isHost() const;
     // Notices for the user ("The Host has quit", "has been ejected", join errors).
     std::optional<std::string> takeNotice();
+    // Why the last join failed (None while joining or after a successful
+    // join): the lobby asks for a password on BadPassword.
+    net::DisconnectReason joinFailure() const { return m_joinFailure; }
 
     // --- LAN browser ------------------------------------------------------------------
     bool startLanScan(std::string* error = nullptr);
@@ -232,6 +235,7 @@ private:
     bool m_returnPending = false;
     bool m_raceStarted = false;
     bool m_closed = false;
+    net::DisconnectReason m_joinFailure = net::DisconnectReason::None;
 };
 
 } // namespace mm2::game

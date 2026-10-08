@@ -34,6 +34,30 @@ using namespace layout;
 // serial_dlg,36,120,75,400,330").
 constexpr Vec2 kDialogOrigin{120, 75};
 
+// The menu ids of MM2's network dialogs (tune/widget.csv).
+constexpr int kAddressDialog = 14;  // Dialog_TCPIP, "Enter an Address"
+constexpr int kBadPassDialog = 24;  // badpass_dlg
+constexpr int kPasswordDialog = 25; // Dialog_Password, "Enter a valid password"
+constexpr int kHostDialog = 36;     // Dialog_Host, "Host Options"
+
+// PUMenuBase::PUMenuBase centres a dialog on its picture's size.
+Vec2 centredOrigin(Frontend& fe, const char* picture, Vec2 fallback) {
+    const ui::UiTexture& t = fe.textures.get(picture);
+    return ui::dialogOrigin(t ? Vec2{static_cast<float>(t.width), static_cast<float>(t.height)} : fallback);
+}
+
+// The dialogs' Cancel (dlg_can, left) and DONE (dlg_done, right) at their
+// tune/widget.csv places (code: 0.05 and 0.55 of the card, 0.6 down).
+void addCancelDone(Frontend& fe, Page& page, int id, int cancelIndex, Vec2 cancelCode, int doneIndex, Vec2 doneCode,
+                   std::function<void()> cancel, std::function<void()> done) {
+    const Vec2 c = fe.layout.position(id, cancelIndex, cancelCode, page.origin);
+    const Vec2 d = fe.layout.position(id, doneIndex, doneCode, page.origin);
+    page.menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_can.tga", 4}, c.x, c.y, std::move(cancel)).sound =
+        "Selectionmade";
+    page.menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_done.tga", 4}, d.x, d.y, std::move(done)).sound =
+        "Selectionmade";
+}
+
 std::string netName(Frontend& fe) {
     if (fe.profile)
         return fe.profile->netName.empty() ? fe.profile->name : fe.profile->netName;
@@ -120,7 +144,8 @@ void joinSession(Frontend& fe, const net::Address& address, bool needsPassword, 
 
 class ConnectingDialog final : public Page {
 public:
-    ConnectingDialog(Frontend& fe, std::string target) : m_target(std::move(target)) {
+    ConnectingDialog(Frontend& fe, net::Address address, std::string password)
+        : m_address(address), m_password(std::move(password)), m_target(address.toString()) {
         dialog = true;
         dialogPicture = "jpg/msg_dlg.jpg";
         origin = {120, 202}; // tune/menu.csv: "Retrieving Game Settings...,...,120,202,400,76"
@@ -145,6 +170,8 @@ public:
     }
 
 private:
+    net::Address m_address;
+    std::string m_password;
     std::string m_target;
 };
 
@@ -285,15 +312,18 @@ private:
 
 class HostOptionsDialog final : public Page {
 public:
+    // Dialog_Host (menu 36): the password field, the Max Players roller,
+    // Cancel and DONE, at their tune/widget.csv places on the centred card.
     explicit HostOptionsDialog(Frontend& fe) {
         dialog = true;
         dialogPicture = "jpg/host_dlg.jpg";
-        origin = kDialogOrigin;
-        const float ox = origin.x, oy = origin.y;
-        auto& pw = menu.add<ui::TextEntry>(Box{ox + 73, oy + 90, 201, 23}, &m_password, 24);
+        menuId = kHostDialog;
+        origin = centredOrigin(fe, "jpg/host_dlg.jpg", {400, 330});
+        const auto& l = fe.layout;
+        auto& pw = menu.add<ui::TextEntry>(l.widget(kHostDialog, 0, {72, 91, 203, 22}, origin), &m_password, 24);
         pw.onCommit = [] {};
-        menu.add<ui::ValueBox>(
-            Box{ox + 236, oy + 162, 38, 23},
+        menu.add<ui::Roller>(
+            l.widget(kHostDialog, 1, {248, 156, 60, 32}, origin),
             [] {
                 std::vector<std::string> v;
                 for (int i = 2; i <= 8; ++i)
@@ -301,11 +331,10 @@ public:
                 return v;
             },
             [this] { return m_maxPlayers - 2; }, [this](int i) { m_maxPlayers = i + 2; });
-        auto& ok = menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_ok.tga", 4}, ox + 60, oy + 280,
-                                              [this, &fe] { host(fe); });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_can.tga", 4}, ox + 240, oy + 280, [&fe] { fe.pop(); });
+        addCancelDone(fe, *this, kHostDialog, 2, {18, 276}, 3, {280, 276}, [&fe] { fe.pop(); },
+                      [this, &fe] { host(fe); });
         menu.onBack = [&fe] { fe.pop(); };
-        menu.focus(&ok);
+        menu.setInitialFocus(&pw);
     }
 
     void drawAbove(Frontend&, ui::UiFrame& f) override {
@@ -350,17 +379,20 @@ private:
 
 class AddressDialog final : public Page {
 public:
+    // Dialog_TCPIP (menu 14): the address field, Cancel and DONE; Enter in
+    // the field is DONE (Dialog_TCPIP::IPAddressCallback).
     explicit AddressDialog(Frontend& fe) {
         dialog = true;
         dialogPicture = "jpg/tcp_dlg.jpg";
-        origin = kDialogOrigin;
-        const float ox = origin.x, oy = origin.y;
-        auto& entry = menu.add<ui::TextEntry>(Box{ox + 73, oy + 90, 201, 23}, &m_address, 64);
-        entry.onCommit = [] {};
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_ok.tga", 4}, ox + 60, oy + 280, [this, &fe] { go(fe); });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_can.tga", 4}, ox + 240, oy + 280, [&fe] { fe.pop(); });
+        menuId = kAddressDialog;
+        origin = centredOrigin(fe, "jpg/tcp_dlg.jpg", {300, 225});
+        auto& entry =
+            menu.add<ui::TextEntry>(fe.layout.widget(kAddressDialog, 0, {72, 90, 203, 22}, origin), &m_address, 64);
+        entry.onCommit = [this, &fe] { go(fe); };
+        addCancelDone(fe, *this, kAddressDialog, 1, {18, 276}, 2, {280, 276}, [&fe] { fe.pop(); },
+                      [this, &fe] { go(fe); });
         menu.onBack = [&fe] { fe.pop(); };
-        menu.focus(&entry);
+        menu.setInitialFocus(&entry);
         entry.beginEdit();
     }
 
@@ -396,22 +428,26 @@ private:
 
 class PasswordDialog final : public Page {
 public:
+    // Dialog_Password (menu 25): the password field, Cancel and DONE; Enter
+    // in the field is DONE (Dialog_Password::PasswordCallback), which joins
+    // with the password (mmInterface::JoinPasswordSession).
     PasswordDialog(Frontend& fe, net::Address address) : m_address(address) {
         dialog = true;
         dialogPicture = "jpg/pass_dlg.jpg";
-        origin = kDialogOrigin;
-        const float ox = origin.x, oy = origin.y;
-        auto& entry = menu.add<ui::TextEntry>(Box{ox + 73, oy + 90, 201, 23}, &m_password, 24);
-        entry.onCommit = [] {};
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_ok.tga", 4}, ox + 60, oy + 280, [this, &fe] {
+        menuId = kPasswordDialog;
+        origin = centredOrigin(fe, "jpg/pass_dlg.jpg", {400, 330});
+        auto& entry =
+            menu.add<ui::TextEntry>(fe.layout.widget(kPasswordDialog, 0, {72, 91, 203, 22}, origin), &m_password, 24);
+        auto join = [this, &fe] {
             const auto target = m_address;
             const auto password = m_password;
             fe.pop();
             joinSession(fe, target, false, password);
-        });
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/dlg_can.tga", 4}, ox + 240, oy + 280, [&fe] { fe.pop(); });
+        };
+        entry.onCommit = join;
+        addCancelDone(fe, *this, kPasswordDialog, 1, {18, 276}, 2, {280, 276}, [&fe] { fe.pop(); }, join);
         menu.onBack = [&fe] { fe.pop(); };
-        menu.focus(&entry);
+        menu.setInitialFocus(&entry);
         entry.beginEdit();
     }
 
@@ -433,7 +469,7 @@ void joinSession(Frontend& fe, const net::Address& address, bool needsPassword, 
         fe.message(error.empty() ? "Cannot connect." : error);
         return;
     }
-    fe.push(std::make_unique<ConnectingDialog>(fe, address.toString()));
+    fe.push(std::make_unique<ConnectingDialog>(fe, address, password));
 }
 
 void ConnectingDialog::update(Frontend& fe, double) {
@@ -449,8 +485,21 @@ void ConnectingDialog::update(Frontend& fe, double) {
     case NetGame::Phase::Closed:
     case NetGame::Phase::Idle: {
         const auto notice = net.takeNotice();
-        fe.pop();
+        const net::Address address = m_address;
+        const std::string password = m_password;
+        fe.pop(); // `this` is gone from here on
         net.startLanScan();
+        if (net.joinFailure() == net::DisconnectReason::BadPassword) {
+            // mmInterface::Update: the host wants a password (JoinSession's
+            // result 2) opens Dialog_Password; a wrong one shows badpass_dlg
+            // first and then asks again.
+            if (password.empty())
+                fe.push(std::make_unique<PasswordDialog>(fe, address));
+            else
+                fe.notice("jpg/badp_dlg.jpg", kBadPassDialog,
+                          [&fe, address] { fe.push(std::make_unique<PasswordDialog>(fe, address)); });
+            break;
+        }
         fe.message(notice.value_or("Cannot connect to the session."));
         break;
     }
@@ -1139,7 +1188,7 @@ std::unique_ptr<Page> makeLobbyPage(Frontend& fe) { return std::make_unique<Lobb
 std::unique_ptr<Page> makeHostSettingsPage(Frontend& fe) { return std::make_unique<HostSettingsPage>(fe); }
 std::unique_ptr<Page> makeEjectDialog(Frontend& fe) { return std::make_unique<EjectDialog>(fe); }
 
-bool frontendHostSession(Frontend& fe) {
+bool frontendHostSession(Frontend& fe, const std::string& password) {
     NetGame& net = ensureNetGame(fe);
     game::RaceConfig cfg = fe.config;
     cfg.multiplayer = true;
@@ -1149,7 +1198,9 @@ bool frontendHostSession(Frontend& fe) {
         cfg.laps = 3;
     net.stopLanScan();
     std::string error;
-    if (!net.host(cfg, {}, netCar(fe), &error)) {
+    game::NetHostOptions opts;
+    opts.password = password;
+    if (!net.host(cfg, opts, netCar(fe), &error)) {
         log::warn("multiplayer: cannot host: {}", error);
         return false;
     }
