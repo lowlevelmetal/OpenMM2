@@ -380,8 +380,11 @@ public:
         dialogPicture = "jpg/tcp_dlg.jpg";
         menuId = kAddressDialog;
         origin = centredOrigin(fe, "jpg/tcp_dlg.jpg", {300, 225});
+        // Dialog_TCPIP::SetIPAddress: the driver's last address. The field
+        // takes the 40 characters mmPlayerData stores (inferred).
+        m_address = fe.tcpAddress;
         auto& entry =
-            menu.add<ui::TextEntry>(fe.layout.widget(kAddressDialog, 0, {72, 90, 203, 22}, origin), &m_address, 64);
+            menu.add<ui::TextEntry>(fe.layout.widget(kAddressDialog, 0, {72, 90, 203, 22}, origin), &m_address, 40);
         entry.onCommit = [this, &fe] { go(fe); };
         addCancelDone(fe, *this, kAddressDialog, 1, {18, 276}, 2, {280, 276}, [&fe] { fe.pop(); },
                       [this, &fe] { go(fe); });
@@ -399,6 +402,7 @@ public:
 private:
     void go(Frontend& fe) {
         const std::string text(str::trim(m_address));
+        fe.tcpAddress = text;
         if (text.empty()) {
             // "Leave blank to search for available sessions."
             ensureNetGame(fe).startLanScan();

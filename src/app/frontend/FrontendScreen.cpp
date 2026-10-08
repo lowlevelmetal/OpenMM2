@@ -186,6 +186,7 @@ void Frontend::configFromProfile() {
     config.vehicle = p.selectedVehicle(); // PlayerSetState: vpbug before the first race
     config.vehicleColor = p.vehicleColor;
     config.automatic = p.automatic;
+    tcpAddress = p.address;
     config.difficulty = p.difficulty;
     // A city the game no longer has keeps the current one
     // (Dialog_City2::SetCurrentCity).
@@ -290,6 +291,7 @@ void Frontend::saveNetEvent() {
     p.city = cfg.city;
     p.mode = cfg.mode;
     p.raceIndex = cfg.raceIndex;
+    p.address = tcpAddress;
     saveProfile();
 }
 
@@ -324,6 +326,7 @@ void Frontend::startRace() {
         p.city = config.city;
         p.mode = config.mode;
         p.raceIndex = config.raceIndex;
+        p.address = tcpAddress;
         config.difficulty = p.difficulty;
         saveProfile();
     }

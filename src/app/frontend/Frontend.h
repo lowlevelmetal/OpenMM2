@@ -69,6 +69,9 @@ public:
     std::vector<city::CityInfo> cities;
     std::vector<std::vector<city::RaceDefinition>> races; // per city, parallel to `cities`
     game::RaceConfig config;                                // being assembled by the menus
+    // Dialog_TCPIP's address field: the driver's last one on selection
+    // (mmInterface::PlayerSetState), saved with the event (BeDone).
+    std::string tcpAddress;
     double time = 0.0;
 
     // Page stack.

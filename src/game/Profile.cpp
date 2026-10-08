@@ -110,6 +110,7 @@ bool Profile::load(const std::filesystem::path& path) {
     if (name.empty())
         return false;
     netName = ini.getString("Driver", "NetName", name);
+    address = ini.getString("Driver", "Address");
     order = static_cast<int>(ini.getInt("Driver", "Order", 0));
 
     vehicle = ini.getString("Prefs", "Vehicle", vehicle);
@@ -171,6 +172,8 @@ bool Profile::save() const {
     ini.parse("; OpenMM2 driver profile\n");
     ini.set("Driver", "Name", quotedValue(name));
     ini.set("Driver", "NetName", quotedValue(netName));
+    if (!address.empty())
+        ini.set("Driver", "Address", quotedValue(address));
     ini.setInt("Driver", "Order", order);
     ini.set("Prefs", "Vehicle", vehicle);
     ini.setInt("Prefs", "Color", vehicleColor);

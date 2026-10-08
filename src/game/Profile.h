@@ -11,17 +11,16 @@
 // OpenMM2 keeps the same information in its own INI files:
 //
 //   <userDataDir>/players/<file>.ini
-//   [Driver]   Name, NetName
+//   [Driver]   Name, NetName, Address
 //   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race,
 //              Camera, WideAngle, Dashboard, Mirror
 //   [Races]    <city>.<mode>.<index> = <time>,<vehicle>,<score>,<passed>
 //
 // mode is one of blitz, circuit, race (checkpoint), crash. Files written by
 // earlier OpenMM2 versions ([Races] keyed by difficulty, [Crash]) are read
-// and converted. Not kept (yet): the last TCP/IP address (mmPlayerData
-// +0x100), the HUD and mirror bytes of the view settings, and the other
-// per-driver options of mmPlayerConfig (controls, audio, graphics), which
-// OpenMM2 keeps for all drivers in its settings.
+// and converted. Not kept: the HUD and mirror bytes of the view settings,
+// and the other per-driver options of mmPlayerConfig (controls, audio,
+// graphics), which OpenMM2 keeps for all drivers in its settings.
 
 #include "game/RaceConfig.h"
 #include "vfs/Vfs.h"
@@ -49,6 +48,10 @@ struct Profile {
     std::string name;
     std::filesystem::path file; // where it is stored (set by ProfileStore)
     std::string netName;
+    // mmPlayerData +0x100: the TCP/IP address last typed, which
+    // mmInterface::PlayerSetState puts back into the address dialog
+    // (Dialog_TCPIP::SetIPAddress) and BeDone saves.
+    std::string address;
     int order = 0; // creation sequence: MM2 lists drivers in the order they were created
 
     // Last choices in the menus: MM2's last car, paint job, event and city,
