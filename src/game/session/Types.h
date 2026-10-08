@@ -93,6 +93,10 @@ enum class EventType : std::uint8_t {
     SessionOver,         // results can be shown
     Sound,               // index = GameSound; value: 0 play once, 1 loop, -1 stop
     Speech,              // index = SpeechCue, value = its argument (the announcer)
+    // Multiplayer: the player finished in `value` seconds, or did not finish
+    // (value = Session::kNetDnf): tell the other players
+    // (mmGameMulti::SendFinishReq / SendFinishAck).
+    NetFinished,
 };
 
 // What the modes ask of the announcer (mmRaceSpeech, mmCCSpeech).

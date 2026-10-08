@@ -66,6 +66,23 @@ ModeText modeText(GameMode m, bool multi) {
     return t;
 }
 
+// The multiplayer races' finish lines (mmMultiRace / Circuit / Blitz::
+// GameMessage, UpdateGame): another player "finished in" (the host's line on
+// 0x206, a client's on 0x1f7) and the finish timeout's "Race over".
+struct NetText {
+    std::uint32_t otherFinished = 0, raceOver = 0;
+    float timeout = 0.0f; // the timeout armed at the first finish (0: none)
+};
+
+NetText netText(GameMode m, bool host) {
+    switch (m) {
+    case GameMode::Checkpoint: return {host ? 152u : 150u, host ? 143u : 153u, 60.0f};
+    case GameMode::Circuit: return {host ? 110u : 107u, host ? 100u : 111u, 120.0f};
+    case GameMode::Blitz: return {host ? 99u : 96u, 0, 0.0f};
+    default: return {};
+    }
+}
+
 // mmSingleStunt::Update* countdown strings: the messages of states 1 and 2
 // and "Go".
 struct LessonText {
@@ -220,6 +237,9 @@ void Session::resetRace() {
     m_endHold = PlayerHold::None;
     m_damagedOut = m_engineSilenced = false; // the modes' Reset: SilenceEngine(0)
     m_postRaceCam = m_musicStop = false;
+    m_netResults.clear(); // mmGameMulti::Reset: the results table
+    m_netTimeoutOn = m_netTimedOut = false;
+    m_netRacerCount = 1;
     // DisableRacers: the player takes no damage before "Go!".
     m_playerDamage = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers;
     m_resultFinished = m_resultWon = false;
@@ -950,6 +970,90 @@ void Session::deactivateFinish() {
         m_wp.visible.back() = 0;
 }
 
+bool Session::netWaitsForAll() const {
+    // mmMultiRace / mmMultiCircuit stay in state 4 until every player is
+    // counted (0x211) or the timeout runs out ("wait for all finishers", on
+    // by default); Blitz ends with its clock.
+    return multiplayer() && (mode() == GameMode::Checkpoint || mode() == GameMode::Circuit);
+}
+
+void Session::addNetResult(std::string name, float time, bool self) {
+    // mmGameMulti::SortResults: a player is listed once, by time (a later
+    // equal time goes after; kNetDnf sorts last).
+    for (const auto& r : m_netResults)
+        if (r.self == self && r.name == name)
+            return;
+    auto at = std::find_if(m_netResults.begin(), m_netResults.end(), [&](const NetResult& r) { return r.time > time; });
+    m_netResults.insert(at, NetResult{std::move(name), time, self});
+    // SetTimeoutOn: the first finish (fewer than 2 counted) arms the
+    // finish timeout of a race (60 s) or circuit (120 s).
+    const NetText nt = netText(mode(), m_options.netHost);
+    if (netWaitsForAll() && nt.timeout > 0.0f && m_netResults.size() < 2 && m_phase != Phase::Done) {
+        m_netTimeoutOn = true;
+        m_netTimeout = nt.timeout;
+    }
+}
+
+void Session::remoteFinished(const std::string& name, float seconds) {
+    if (!multiplayer() || m_phase == Phase::Done)
+        return;
+    const NetText nt = netText(mode(), m_options.netHost);
+    // GameMessage 0x206 (host) / 0x1f7 (client): Messagenote and the line,
+    // unless the player did not finish.
+    sound(GameSound::MessageNote);
+    if (seconds < kNetDnf) {
+        setMessage(name, 5.0f, false);
+        setMessage2(std::format("{} {}", str(nt.otherFinished, "finished in"), formatTime(seconds)));
+    }
+    addNetResult(name, seconds, false);
+}
+
+void Session::updateNetRace(float dt, const PlayerState& player) {
+    // mmGameMulti::UpdateScore: the place among the other players, while
+    // the player's waypoints are not done ("Place: n/N").
+    const int n = static_cast<int>(m_checkpoints.size());
+    if (!m_wp.finished && n >= 2) {
+        const Vec3 target = m_checkpoints[static_cast<std::size_t>(std::clamp(m_wp.current, 0, n - 1))].position;
+        const float mine = dist2(player.transform.m3, target);
+        int place = 1, racers = 1;
+        for (const auto& r : m_netRacers) {
+            if (!r.present) {
+                // A slot without a car counts only once finished.
+                if (r.finished) {
+                    ++racers;
+                    ++place;
+                }
+                continue;
+            }
+            ++racers;
+            if (m_wp.count < r.waypoints || r.finished)
+                ++place;
+            else if (m_wp.count == r.waypoints && dist2(r.position, target) < mine)
+                ++place;
+        }
+        m_rank = place;
+        m_netRacerCount = racers;
+    }
+    if (!m_netTimeoutOn)
+        return;
+    // The finish timeout (the host's in MM2; here every machine runs it from
+    // the first finish it hears of).
+    m_netTimeout -= dt;
+    if (m_netTimeout > 0.0f)
+        return;
+    m_netTimeoutOn = false;
+    m_netTimedOut = true;
+    if (m_phase == Phase::Racing) {
+        // Not finished: braked, "Race over" at the bottom for 5 s, the race
+        // timer stopped, and a did-not-finish to the others.
+        const NetText nt = netText(mode(), m_options.netHost);
+        setMessage(nt.raceOver, "Race over", 5.0f, false);
+        push(EventType::NetFinished, -1, kNetDnf);
+        addNetResult(m_options.playerName, kNetDnf, true);
+        endRace(false, false, 3.0f, PlayerHold::Undrivable);
+    }
+}
+
 void Session::playerFinished() {
     const int place = ++m_finishers;
     m_resultPosition = place;
@@ -993,6 +1097,9 @@ void Session::updateRace(float dt, const PlayerState& player) {
             // The player's name, and "finished in M:SS:HH" under it.
             setMessage(m_options.playerName, 5.0f, false);
             setMessage2(std::format("{} {}", str(mt.finishedIn, "finished in"), formatTime(m_raceTime)));
+            // SendFinishReq / SendFinishAck, SortResults, SetTimeoutOn.
+            push(EventType::NetFinished, -1, m_raceTime);
+            addNetResult(m_options.playerName, m_raceTime, true);
             // Blitz shows the results when the clock would have run out;
             // the others 3 s after the finish.
             const float wait = mode() == GameMode::Blitz ? m_clock : 3.0f;
@@ -1483,16 +1590,24 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
             return;
         updateWaypoints(player);
         updateRank(player, opponents);
+        if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
+            updateNetRace(dt, player);
         return;
-    case Phase::PostRace:
+    case Phase::PostRace: {
         updateClock(dt);
         updateOpponents(opponents);
+        if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
+            updateNetRace(dt, player);
         m_postWait -= dt;
-        if (m_postWait <= 0.0f) {
+        // A multiplayer race or circuit waits (braked) until everyone is
+        // counted or the finish timeout has run out (0x211, state 5).
+        const bool counted = m_netResults.size() >= m_netRacers.size() + 1 || m_netTimedOut;
+        if (m_postWait <= 0.0f && (!netWaitsForAll() || counted)) {
             m_phase = Phase::Done;
             push(EventType::SessionOver);
         }
         return;
+    }
     case Phase::Done: return;
     case Phase::Racing: break;
     }
@@ -1506,7 +1621,9 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
     if (m_phase == Phase::Racing) {
         updateOpponents(opponents);
         updateRank(player, opponents);
-        if (updateHazards(dt, player))
+        if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
+            updateNetRace(dt, player);
+        if (m_phase == Phase::Racing && updateHazards(dt, player))
             return;
     } else if (m_phase == Phase::PostRace) {
         // The race just ended: UpdateOpponentStatus still ends this
@@ -1599,6 +1716,19 @@ RaceResult Session::result() const {
         const int points = place >= 1 && place <= 3 ? kPlacePoints[place] : 0;
         const int difficulty = static_cast<int>(m_setup.settings.difficulty);
         r.score = static_cast<int>(m_options.scoringBias) * points * difficulty;
+    }
+    // Multiplayer (mmGameMulti::UpdateResults): the players by time, the
+    // did-not-finish ones last as losers; the player's place is its row.
+    if (raced && multiplayer()) {
+        int place = 0;
+        for (const auto& nr : m_netResults) {
+            ++place;
+            RaceStanding st{nr.self ? -1 : -2, place, nr.time, nr.name, nr.time >= kNetDnf};
+            if (nr.self && r.finished && !st.dnf)
+                r.position = place;
+            r.standings.push_back(std::move(st));
+        }
+        return r;
     }
     // The results list (PUResults::AddName): everyone who finished, by place.
     if (raced) {

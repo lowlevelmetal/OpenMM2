@@ -284,6 +284,81 @@ TEST(GameFlowParity, PlayerDamageIsOffUntilGoAndInJumpLessons) {
     EXPECT_TRUE(cruise->playerDamageEnabled());
 }
 
+// mmGameMulti::Init: no racers nor police in multiplayer; the race modes
+// load no AI map at all.
+TEST(GameFlowParity, MultiplayerHasNoRacersOrPolice) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    for (const GameMode mode : {GameMode::Checkpoint, GameMode::Circuit, GameMode::Cruise}) {
+        auto s = flowSession(mode, mode == GameMode::Cruise ? -1 : 0, true);
+        ASSERT_TRUE(s);
+        EXPECT_TRUE(s->opponents().empty());
+        EXPECT_TRUE(s->police().empty());
+    }
+}
+
+// mmGameMulti::UpdateScore, mmMultiRace::GameMessage / SetTimeoutOn and
+// UpdateResults: the place among the other players, their finish line, the
+// 60 s finish timeout from the first finish ("Race over" and a did-not-
+// finish), and the results by time with the losers last.
+TEST(GameFlowParity, MultiplayerRaceStandingsTimeoutAndResults) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    auto s = flowSession(GameMode::Checkpoint, 0, true);
+    ASSERT_TRUE(s);
+    s->setStartSignal(true);
+    FlowRun run(*s);
+    ASSERT_EQ(s->phase(), Phase::Racing);
+    Session::NetRacer ahead;
+    ahead.name = "Ahead";
+    ahead.waypoints = 3;
+    ahead.position = s->playerSpawn().m3;
+    Session::NetRacer behind = ahead;
+    behind.name = "Behind";
+    behind.waypoints = 1;
+    behind.position = s->playerSpawn().m3 + Vec3{0.0f, 0.0f, 500.0f};
+    s->setNetRacers({ahead, behind});
+    run.tick();
+    EXPECT_EQ(s->position(), 2);
+    EXPECT_EQ(s->racerCount(), 3);
+
+    // The leader finishes: its line, and the 60 s timeout starts.
+    s->remoteFinished("Ahead", 95.0f);
+    EXPECT_EQ(s->message().text, "Ahead");
+    ahead.finished = true;
+    s->setNetRacers({ahead, behind});
+    std::vector<Event> events;
+    for (int i = 0; i < 59 * 30; ++i) {
+        s->update(1.0f / 30.0f, run.player, run.opponents);
+        for (const auto& e : s->takeEvents())
+            events.push_back(e);
+    }
+    EXPECT_EQ(s->phase(), Phase::Racing);
+    for (int i = 0; i < 2 * 30 && s->phase() == Phase::Racing; ++i) {
+        s->update(1.0f / 30.0f, run.player, run.opponents);
+        for (const auto& e : s->takeEvents())
+            events.push_back(e);
+    }
+    ASSERT_EQ(s->phase(), Phase::PostRace);
+    EXPECT_EQ(s->playerHold(), PlayerHold::Undrivable);
+    EXPECT_TRUE(std::ranges::any_of(events, [](const Event& e) {
+        return e.type == EventType::NetFinished && e.value >= Session::kNetDnf;
+    }));
+    // Timed out: the results follow without waiting for the third player.
+    for (int i = 0; i < 4 * 30 && s->phase() != Phase::Done; ++i)
+        run.tick();
+    EXPECT_EQ(s->phase(), Phase::Done);
+    const auto r = s->result();
+    ASSERT_EQ(r.standings.size(), 2u);
+    EXPECT_EQ(r.standings[0].name, "Ahead");
+    EXPECT_FALSE(r.standings[0].dnf);
+    EXPECT_EQ(r.standings[1].opponent, -1);
+    EXPECT_TRUE(r.standings[1].dnf);
+    EXPECT_EQ(r.position, 0);
+}
+
 // mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand
 // hidden; the race-over flag is set (Escape then shows the results).
 TEST(GameFlowParity, JumpLessonTimeUpHidesTheFinishWithoutTheCamera) {

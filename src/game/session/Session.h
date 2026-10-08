@@ -61,6 +61,9 @@ struct SessionOptions {
     // The local player's network name: multiplayer races show it over
     // "finished in" (mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame).
     std::string playerName;
+    // Multiplayer: this machine hosts the session (the modes' host and client
+    // lines differ: e.g. "finished in" 152 / 150).
+    bool netHost = false;
 };
 
 // The game's cheat flag (bCheating): mmGame::SendChatMessage's "/blubber"
@@ -164,7 +167,7 @@ public:
     int lap() const; // current lap, 1-based (circuit)
     int laps() const { return m_setup.laps; }
     int position() const { return m_rank; }
-    int racerCount() const { return static_cast<int>(m_opponents.size()) + 1; }
+    int racerCount() const { return multiplayer() ? m_netRacerCount : static_cast<int>(m_opponents.size()) + 1; }
 
     float raceTime() const { return m_raceTime; }
     // Seconds left on the count-down clock (Blitz, timed lessons); < 0 = none.
@@ -189,6 +192,26 @@ public:
     const HudMessage& message2() const { return m_message2; }
     std::vector<Event> takeEvents();
     MusicHint musicHint() const;
+
+    // --- Multiplayer races (mmGameMulti, mmMultiRace / Circuit / Blitz) ---
+    // A time that means "did not finish" (mmGameMulti::UpdateResults'
+    // AddLoser): 24 hours.
+    static constexpr float kNetDnf = 86400.0f;
+    // The other players as mmGameMulti::UpdateScore sees them, every frame.
+    struct NetRacer {
+        std::string name;
+        int waypoints = 1; // waypoints passed (mmPlayer +0x2254, the start included)
+        Vec3 position;     // the car's (inertial) position
+        bool present = true; // its car is in the race (mmNetObject +0x118 / +0x11c)
+        bool finished = false;
+    };
+    void setNetRacers(std::vector<NetRacer> racers) { m_netRacers = std::move(racers); }
+    // Another player's finish (or kNetDnf) arrived (mmMulti*::GameMessage
+    // 0x206 / 0x1f7): Messagenote, "<name>" / "finished in M:SS:HH", the
+    // results list, and the finish timeout of a race or circuit.
+    void remoteFinished(const std::string& name, float seconds);
+    // Waypoints passed, the start included (sent to the other players).
+    int waypointsPassed() const { return m_wp.count; }
 
     // Where to put the player after Respawn.
     Mat34 respawnTransform() const { return m_respawn; }
@@ -340,6 +363,22 @@ private:
     bool m_damagedOut = false, m_engineSilenced = false;
     bool m_postRaceCam = false, m_musicStop = false;
     bool m_playerDamage = true;
+
+    // Multiplayer races.
+    struct NetResult {
+        std::string name;
+        float time = 0.0f;
+        bool self = false;
+    };
+    std::vector<NetRacer> m_netRacers;
+    std::vector<NetResult> m_netResults; // mmGameMulti::SortResults' table, by time
+    int m_netRacerCount = 1;
+    bool m_netTimeoutOn = false;         // SetTimeoutOn / SetTimeoutOff
+    float m_netTimeout = 0.0f;
+    bool m_netTimedOut = false;
+    bool netWaitsForAll() const;
+    void addNetResult(std::string name, float time, bool self);
+    void updateNetRace(float dt, const PlayerState& player);
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;

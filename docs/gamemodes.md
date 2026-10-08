@@ -246,11 +246,31 @@ neither; the multiplayer modes brake with the throttle tapering off and
 then call `SetDrivable(0, 1)` (OpenMM2: undrivable at once). Results
 follow 5 s after the end (`UpdateGame` states 4/5 with a 5 s wait); a lost
 race or lesson opens the in-race main menu without pausing
-(`mmPopup::ProcessEscape(0)`, see below). Multiplayer shows them 3 s
-after the finish (Blitz: when the clock would have run out). The race goes
-on behind the results in MM2 (opponents still finishing are added); OpenMM2
-shows the results as a frontend page, with the opponents that finished by
-then.
+(`mmPopup::ProcessEscape(0)`, see below). The race goes on behind the
+results in MM2 (opponents still finishing are added); OpenMM2 shows the
+results as a frontend page, with the opponents that finished by then.
+
+**Multiplayer finish** (`mmGameMulti`, `mmMultiRace` / `mmMultiCircuit` /
+`mmMultiBlitz::GameMessage`): each finish goes to the other players with
+its time (OpenMM2 broadcasts it as a `RaceFinished` event; MM2's clients
+ask the host, which acknowledges, inferred equivalent), who hear
+Messagenote and see the name over "finished in M:SS:HH" (host 152 / 110 /
+99, client 150 / 107 / 96). The first finish arms a finish timeout (race
+60 s, circuit 120 s; OpenMM2: every machine runs it, MM2: the host): when
+it runs out a player still racing is braked with "Race over" (143 / 100,
+clients 153 / 111) and does not finish (24 h, listed last as DNF). After
+its own finish a race or circuit player waits braked (3 s, then until
+everyone is counted or the timeout has run out); Blitz ends when the clock
+would have run out. The results list the players by time
+(`SortResults` / `UpdateResults`). The standings ("Place: n/N",
+`mmGameMulti::UpdateScore`) count the other players ahead with more
+waypoints passed (their counts travel as `CheckpointReached` events, MM2
+sends them in every position packet), finished, or level and nearer the
+player's target. When the host leaves the race everyone returns to the
+lobby (`BeDone(1)`, Quit2Lobby). A multiplayer race has no traffic,
+pedestrians, police or racers (the race modes load no AI map); multiplayer
+cruise and Cops and Robbers keep only the pedestrians
+(`mmGameMulti::Init` zeroes the traffic, cop and opponent densities).
 
 **Winning** (`mmSingleCircuit::ProgressCheck`, `mmSingleRace::ProgressCheck`):
 places 1-3 for amateurs, 1st for professionals, hard-coded; MM2 does not

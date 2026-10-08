@@ -56,6 +56,7 @@
 #include <cstring>
 #include <map>
 #include <optional>
+#include <set>
 #include <format>
 
 namespace mm2::app {
@@ -685,6 +686,7 @@ private:
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             opts.scoringBias = info->scoringBias;
         opts.playerName = ctx.settings.playerName;
+        opts.netHost = multiplayer(ctx) && ctx.netGame->isHost();
         // mmMultiRoam: RespawnXYZ draws the cruise start from a random stream
         // seeded with the player's id, so every player starts elsewhere.
         if (multiplayer(ctx))
@@ -1224,6 +1226,7 @@ private:
     void updateSession(Context& ctx, float dt) {
         if (!m_session || !m_player)
             return;
+        updateNetRace(ctx);
         m_playerState = playerState();
         auto carState = [](const phys::CarSim& sim) {
             game::session::OpponentState s;
@@ -1347,6 +1350,13 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
+                // mmGameMulti::SendPosition carries the waypoint count
+                // (mmPlayer +0x2254) for the others' standings.
+                if (multiplayer(ctx))
+                    ctx.netGame->sendCheckpoint(m_session->waypointsPassed(),
+                                                static_cast<std::uint32_t>(m_session->raceTime() * 1000.0f));
+            } else if (e.type == EventType::NetFinished && multiplayer(ctx)) {
+                ctx.netGame->sendFinish(static_cast<std::uint32_t>(e.value * 1000.0f), 0);
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
@@ -1861,10 +1871,56 @@ private:
     }
 
     // Back to the menus, the view settings stored before the frontend reads
-    // the driver again.
+    // the driver again. The host of a network game takes everyone back to
+    // the lobby (mmGameMulti::BeDone(1): Quit2Lobby, 0x20c).
     void leaveRace(Context& ctx, const game::RaceResult& result) {
         storeViewSettings();
+        if (multiplayer(ctx) && ctx.netGame->isHost()) {
+            const auto phase = ctx.netGame->phase();
+            if (phase == game::NetGame::Phase::Countdown || phase == game::NetGame::Phase::Racing)
+                ctx.netGame->returnToLobby();
+        }
         ctx.nextScreen = makeFrontendScreen(ctx, result);
+    }
+
+    // The multiplayer races' exchange (mmGameMulti, mmMultiRace / Circuit /
+    // Blitz::GameMessage): the other players' finishes and their waypoint
+    // counts (which MM2 sends in every position packet) for the standings.
+    void updateNetRace(Context& ctx) {
+        const auto mode = m_result.config.mode;
+        if (!multiplayer(ctx) || !m_session ||
+            !(mode == game::GameMode::Blitz || mode == game::GameMode::Circuit || mode == game::GameMode::Checkpoint))
+            return;
+        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+            if (ev.type == net::GameEventType::CheckpointReached) {
+                if (const auto e = ev.as<net::CheckpointEvent>())
+                    m_netWaypoints[ev.from] = e->index;
+            } else if (ev.type == net::GameEventType::RaceFinished) {
+                const auto e = ev.as<net::FinishEvent>();
+                const auto* p = ctx.netGame->player(ev.from);
+                if (!e || !p || m_netFinished.contains(ev.from))
+                    continue;
+                m_netFinished.insert(ev.from);
+                const float seconds = static_cast<float>(e->raceTime) * 0.001f;
+                m_session->remoteFinished(p->name, std::min(seconds, game::session::Session::kNetDnf));
+            }
+        }
+        std::vector<game::session::Session::NetRacer> racers;
+        for (const auto& p : ctx.netGame->players()) {
+            if (p.id == ctx.netGame->localId())
+                continue;
+            game::session::Session::NetRacer r;
+            r.name = p.name;
+            if (const auto it = m_netWaypoints.find(p.id); it != m_netWaypoints.end())
+                r.waypoints = it->second;
+            const auto it = m_remotes.find(p.id);
+            r.present = it != m_remotes.end() && it->second.sim;
+            if (r.present)
+                r.position = it->second.sim->sim().body.ics.matrix.m3;
+            r.finished = m_netFinished.contains(p.id);
+            racers.push_back(std::move(r));
+        }
+        m_session->setNetRacers(std::move(racers));
     }
 
     void buildPopup(Context& ctx) {
@@ -1976,9 +2032,22 @@ private:
     }
 
     void loadAi(Context& ctx) {
+        const auto mode = m_result.config.mode;
+        // mmMultiBlitz / mmMultiCircuit / mmMultiRace::Init clear mmGame +0x277
+        // before mmGameMulti::Init: mmGame::Init then skips aiMap::Init, so a
+        // multiplayer race has no traffic, pedestrians, police, racers or
+        // light sets.
+        if (multiplayer(ctx) &&
+            (mode == game::GameMode::Blitz || mode == game::GameMode::Circuit || mode == game::GameMode::Checkpoint))
+            return;
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // mmGameMulti::Init: no traffic (nor cops, racers or rail cars) in
+        // multiplayer cruise and Cops and Robbers; the pedestrians stay, at
+        // the host's density (the only density the session carries).
+        if (multiplayer(ctx))
+            settings.trafficDensity = 0.0f;
         // mmSingleStunt::LoadEventFile sets the traffic density to the last
         // event's AmbDensity before aiMap::Init reads it.
         if (m_session && !m_session->setup().lessonEvents.empty())
@@ -3126,6 +3195,8 @@ private:
         std::array<float, 6> spin{};
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
+    std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
+    std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;
