@@ -838,14 +838,26 @@ void placeOnCourse(phys::CarSim& car, const Course& course, float s, float side,
         if (score >= 7.0f)
             break;
     }
-    Mat34 m = Mat34::rotationY(-std::atan2(f.x, -f.z));
-    m.m3 = p + r * best;
-    // Rest on the ground below the line point when it can be found.
+    // MM2's placement of a racer: the reset position (mmGame::
+    // CollideAIOpponents: the wheels' probe from 2 m above the point to 10 m
+    // below; on a hit, the hit raised by 0.9 m) and rotation, then
+    // vehCarSim::Reset: the body's centre at that position plus
+    // CenterOfGravity, the identity turned about Y; the model origin one
+    // R * CenterOfGravity on (vehCarSim::SetWorldMatrix).
+    const float rotation = phys::resetRotationOf(Mat34::rotationY(-std::atan2(f.x, -f.z)));
+    Vec3 at = p + r * best;
     if (world) {
         phys::RayHit hit;
-        if (world->probe(m.m3 + Vec3{0, 3, 0}, m.m3 - Vec3{0, 6, 0}, hit))
-            m.m3 = hit.position;
+        if (world->wheelProbe({at.x, at.y + 2.0f, at.z}, {at.x, at.y - 10.0f, at.z}, hit, &car.body, nullptr))
+            at = {hit.position.x, hit.position.y + 0.9f, hit.position.z};
     }
+    const Vec3& cg = car.centerOfGravity;
+    Mat34 m = Mat34::identity();
+    m.m3 = {cg.x + at.x, cg.y + at.y, cg.z + at.z};
+    phys::age::rotate(m, {0.0f, 1.0f, 0.0f}, rotation);
+    m.m3 = {((m.m1.x * cg.y + m.m2.x * cg.z) + cg.x * m.m0.x) + m.m3.x,
+            ((m.m1.y * cg.y + m.m0.y * cg.x) + m.m2.y * cg.z) + m.m3.y,
+            ((m.m1.z * cg.y + m.m0.z * cg.x) + m.m2.z * cg.z) + m.m3.z};
     const float current = car.damage.currentDamage, damage = car.damage.damage;
     if (resetCar)
         resetCar(m);

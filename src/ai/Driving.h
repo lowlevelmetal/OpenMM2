@@ -481,7 +481,11 @@ void yawInPlace(phys::CarSim& car, float angle);
 // Puts a car back on a course at arc length `s`, facing along it, at the
 // place across the road (`side` preferred) farthest from the other cars
 // (OpenMM2 recovery when an AI car has made no progress for a long time, or
-// fell off the world; not in MM2). Keeps the car's damage.
+// fell off the world; not in MM2). Keeps the car's damage. The car lands
+// as MM2 places a racer: vehCarSim::SetResetPos at the road under the
+// place raised by 0.9 m (mmGame::CollideAIOpponents' settling, the wheels'
+// probe from 2 m above to 10 m below), turned about Y (vehCarSim::Reset);
+// the car's own reset position is left alone.
 void placeOnCourse(phys::CarSim& car, const Course& course, float s, float side, std::span<const TrackedCar> others,
                    int selfId, const std::function<void(const Mat34&)>& resetCar = {},
                    const phys::GroundQuery* world = nullptr);
