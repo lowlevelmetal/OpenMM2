@@ -58,6 +58,87 @@ std::shared_ptr<DaveArchive> DaveArchive::open(std::shared_ptr<const RandomAcces
     return ar;
 }
 
+bool DaveArchive::addEntry(Entry entry, std::string* error) {
+    // Directory markers ("anim/CVS/") carry no data.
+    if (entry.name.empty() || entry.name.back() == '/')
+        return true;
+    if (std::uint64_t{entry.dataOffset} + entry.packedSize > m_file->size()) {
+        setError(error, std::format("entry '{}' extends past end of archive", entry.name));
+        return false;
+    }
+    // zipFile::Open looks names up with bsearch over the sorted directory,
+    // ignoring case and treating '\' as '/'; a duplicate name is ambiguous
+    // there and the first one is kept here.
+    const std::string key = str::normalizeVirtualPath(entry.name);
+    if (m_index.try_emplace(key, m_entries.size()).second)
+        m_entries.push_back(std::move(entry));
+    return true;
+}
+
+// zipFile::Init for an ordinary PKZIP file renamed to .ar (how add-on content
+// is often distributed). Only what MM2 supports: no archive comment (the end
+// record must be the last 22 bytes), a single part, stored or deflated
+// entries. Like MM2, the data is taken to start 30 + name length bytes after
+// the local header, so a local header with an extra field is misread.
+bool DaveArchive::loadZip(std::string* error) {
+    const std::uint64_t fileSize = m_file->size();
+    std::array<std::byte, 22> eocd{};
+    if (fileSize < eocd.size() || !m_file->readExact(fileSize - eocd.size(), eocd) ||
+        loadLE<std::uint32_t>(eocd.data()) != 0x06054B50u) {
+        setError(error, "not a DAVE archive, and no zip central directory (zip comments are not supported)");
+        return false;
+    }
+    if (loadLE<std::uint16_t>(eocd.data() + 4) != loadLE<std::uint16_t>(eocd.data() + 6)) {
+        setError(error, "multi-part zip files are not supported");
+        return false;
+    }
+    const std::uint32_t count = loadLE<std::uint16_t>(eocd.data() + 8);
+    const std::uint32_t dirSize = loadLE<std::uint32_t>(eocd.data() + 12);
+    const std::uint32_t dirOffset = loadLE<std::uint32_t>(eocd.data() + 16);
+    if (std::uint64_t{dirOffset} + dirSize > fileSize) {
+        setError(error, "corrupt zip central directory");
+        return false;
+    }
+    std::vector<std::byte> dir(dirSize);
+    if (!m_file->readExact(dirOffset, dir)) {
+        setError(error, "truncated zip central directory");
+        return false;
+    }
+    m_entries.clear();
+    m_index.clear();
+    // MM2 reads headers until the signature stops matching but searches only
+    // the first `count` of them (the end record's count for this disk).
+    std::size_t pos = 0;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (pos + 46 > dir.size() || loadLE<std::uint32_t>(dir.data() + pos) != 0x02014B50u)
+            break;
+        const std::byte* h = dir.data() + pos;
+        const auto method = loadLE<std::uint16_t>(h + 10);
+        if (method != 0 && method != 8) {
+            setError(error, "compression method besides store or deflate encountered");
+            return false;
+        }
+        Entry entry;
+        entry.packedSize = loadLE<std::uint32_t>(h + 20);
+        entry.size = loadLE<std::uint32_t>(h + 24);
+        const std::uint16_t nameLen = loadLE<std::uint16_t>(h + 28);
+        const std::uint16_t extraLen = loadLE<std::uint16_t>(h + 30);
+        const std::uint16_t commentLen = loadLE<std::uint16_t>(h + 32);
+        const std::uint32_t localOffset = loadLE<std::uint32_t>(h + 42);
+        if (pos + 46 + nameLen > dir.size()) {
+            setError(error, "truncated zip central directory");
+            return false;
+        }
+        entry.name.assign(reinterpret_cast<const char*>(h + 46), nameLen);
+        entry.dataOffset = localOffset + 30u + nameLen;
+        if (!addEntry(std::move(entry), error))
+            return false;
+        pos += 46u + nameLen + extraLen + commentLen;
+    }
+    log::debug("dave: '{}' zip archive, {} files", m_label, m_entries.size());
+    return true;
+}
+
 bool DaveArchive::load(std::string* error) {
     std::array<std::byte, 16> header{};
     if (!m_file->readExact(0, header)) {
@@ -65,13 +146,10 @@ bool DaveArchive::load(std::string* error) {
         return false;
     }
     if (std::memcmp(header.data(), "DAVE", 4) != 0) {
-        // "Dave" (lowercase) archives use prefix-compressed names; no retail
-        // MM2 archive uses that variant, so it is not supported yet.
-        if (std::memcmp(header.data(), "Dave", 4) == 0)
-            setError(error, "compressed-name 'Dave' archives are not supported");
-        else
-            setError(error, "not a DAVE archive");
-        return false;
+        // zipFile::Init: anything that is not a DAVE archive is read as a
+        // zip file. ("Dave" archives with prefix-compressed names, from other
+        // Angel games, are not readable by MM2 either.)
+        return loadZip(error);
     }
     const auto count = loadLE<std::uint32_t>(header.data() + 4);
     const auto dirSize = loadLE<std::uint32_t>(header.data() + 8);
@@ -93,7 +171,6 @@ bool DaveArchive::load(std::string* error) {
     m_entries.reserve(count);
     m_index.clear();
     m_index.reserve(count);
-    const std::uint64_t fileSize = m_file->size();
     for (std::uint32_t i = 0; i < count; ++i) {
         const std::byte* e = dir.data() + static_cast<std::size_t>(i) * kEntrySize;
         const auto nameOff = loadLE<std::uint32_t>(e + 0);
@@ -107,16 +184,8 @@ bool DaveArchive::load(std::string* error) {
         }
         const char* nameStart = reinterpret_cast<const char*>(names.data()) + nameOff;
         entry.name.assign(nameStart, strnlen(nameStart, nameSize - nameOff));
-        // Directory markers ("anim/CVS/") carry no data.
-        if (entry.name.empty() || entry.name.back() == '/')
-            continue;
-        if (std::uint64_t{entry.dataOffset} + entry.packedSize > fileSize) {
-            setError(error, std::format("entry '{}' extends past end of archive", entry.name));
+        if (!addEntry(std::move(entry), error))
             return false;
-        }
-        const std::string key = str::normalizeVirtualPath(entry.name);
-        if (m_index.try_emplace(key, m_entries.size()).second)
-            m_entries.push_back(std::move(entry));
     }
     log::debug("dave: '{}' {} files", m_label, m_entries.size());
     return true;
