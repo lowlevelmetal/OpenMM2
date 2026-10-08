@@ -62,6 +62,7 @@
 #include <cstring>
 #include <map>
 #include <optional>
+#include <set>
 #include <format>
 
 namespace mm2::app {
@@ -94,19 +95,25 @@ const char* modePrefix(game::GameMode m) {
 
 class RaceScreen final : public Screen {
 public:
+    // The in-race popup's pages (mmPopup: PUMain, PUChat, and the pages
+    // frontend::PopupOptions builds: OPTIONS, PUQuit, PUKey, PURoster).
+    enum class Popup : std::uint8_t { None, Main, Chat, Options };
     RaceScreen(Context& ctx, const game::RaceConfig& config)
         : m_ui(ctx.device(), ctx.game->vfs), m_text(ctx.device()) {
         m_result.config = config;
-        // Loading screen art: <city>_<mode><n>.jpg, else the generic one.
+        // GetLoadScreenName: <city>_<mode><n>.jpg (cruise "roam" and Cops and
+        // Robbers "multicop" without a number), else the generic one.
         const std::string prefix = modePrefix(config.mode);
         m_loadingImage = "jpg/loading.jpg";
-        if (!prefix.empty() && config.raceIndex >= 0) {
-            const std::string specific = std::format("jpg/{}_{}{}.jpg", config.city, prefix, config.raceIndex);
-            if (ctx.game->vfs.exists(specific))
-                m_loadingImage = specific;
-        } else if (config.mode == game::GameMode::Cruise && ctx.game->vfs.exists("jpg/" + config.city + "_roam.jpg")) {
-            m_loadingImage = "jpg/" + config.city + "_roam.jpg";
-        }
+        std::string specific;
+        if (!prefix.empty() && config.raceIndex >= 0)
+            specific = std::format("jpg/{}_{}{}.jpg", config.city, prefix, config.raceIndex);
+        else if (config.mode == game::GameMode::Cruise)
+            specific = "jpg/" + config.city + "_roam.jpg";
+        else if (config.mode == game::GameMode::CopsAndRobbers)
+            specific = "jpg/" + config.city + "_multicop.jpg";
+        if (!specific.empty() && ctx.game->vfs.exists(specific))
+            m_loadingImage = specific;
     }
 
     ~RaceScreen() override {
@@ -138,17 +145,35 @@ public:
         m_ff.stopAll(); // mmInput::StopAllFF
     }
 
-    bool usesScene() const override { return m_city != nullptr; }
+    // RestoreFocus: when the display surfaces come back after the game lost
+    // them (another application took the full screen), a running
+    // single-player game that is not paused opens the in-race menu, paused
+    // (mmGameManager::ForcePopupUI: ProcessEscape(1)). OpenMM2 does it when
+    // the window is activated again in a full-screen mode (inferred: a
+    // window keeps its surfaces).
+    void activated(Context& ctx) override {
+        if (m_state != State::Running || multiplayer(ctx) || m_paused || m_popup != Popup::None)
+            return;
+        if (ctx.window().mode() == platform::WindowMode::Windowed)
+            return;
+        openPopup(ctx, true);
+    }
+
+    // The loading picture covers the screen until the race is loaded.
+    bool usesScene() const override { return m_city != nullptr && m_state == State::Running; }
 
     void update(Context& ctx, double dt) override {
         m_time += dt;
         m_frameDt = static_cast<float>(dt);
         if (m_state == State::ShowLoading) {
-            m_state = State::Load; // draw the loading screen once before blocking
+            // BeginPhase: the loading picture with the bar at 10 %, drawn
+            // once before the loading blocks.
+            m_state = State::Load;
+            m_loadPercent = 10;
             return;
         }
         if (m_state == State::Load) {
-            load(ctx);
+            loadStep(ctx);
             return;
         }
         // GameLoop: AudManager::Update before the game's update, with the
@@ -167,29 +192,31 @@ public:
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         stepPopupScript(ctx); // OPENMM2_POPUP_SCRIPT automation (its keys reach the popup this frame)
         m_popupGraveyard.clear();
-        // mmGame::Update / UpdatePaused: F1 (mmPopup::ProcessKeymap).
-        if (ctx.input.keyPressed(platform::Key::F1))
+        if (!m_flyCamera && ctx.input.keyPressed(platform::Key::F1)) {
+            // mmPopup::ProcessKeymap (F1, from the game, the paused game and
+            // the menu): PUKey, which F1 closes again.
             processKeymap(ctx);
-        // mmGame::UpdateDebugInput: F6 in a network race shows the roster
-        // when no popup is up (mmPopup::ShowRoster; no pause).
-        if (ctx.input.keyPressed(platform::Key::F6) && multiplayer(ctx) && m_popup == Popup::None) {
-            m_popupPaused = false;
-            showPopupPage(ctx, frontend::PopupPage::Roster);
         }
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
             if (ctx.nextScreen)
                 return;
         } else if (ctx.input.keyPressed(platform::Key::Escape)) {
+            // mmGame::UpdateDebugInput: Escape stops the announcer
+            // (mmSpeechContainer::Stop), then mmPopup::ProcessEscape.
+            m_announcer.stop();
             openPopup(ctx, true);
         } else if (!m_flyCamera && m_gameInput.fired(controls::Action::EnterChat)) {
             openChat(ctx);
+        } else if (!m_flyCamera) {
+            debugKeys(ctx);
         }
         if (m_textInput && m_popup != Popup::Chat) {
             ctx.input.stopTextInput(ctx.window());
             m_textInput = false;
         }
         postIncomingChat(ctx);
+        updateNetPlayers(ctx);
         if (m_hud)
             m_hud->updateChat(static_cast<float>(dt));
         if (multiplayer(ctx)) {
@@ -414,22 +441,37 @@ public:
         for (std::size_t i = 0; i < m_opponents.size(); ++i) {
             MapBlip b{m_opponents[i].sim->sim().body.ics.matrix, MapBlip::Kind::Opponent};
             if (m_session)
-                b.place = m_session->opponentPlace(i);
+                b.place = m_session->opponentPlace(m_opponents[i].sessionIndex);
             blips.push_back(std::move(b));
         }
-        // The network players (mmGameMulti::RegisterMapNetObjects): slot =
-        // player id, coloured by slot, or red / blue by team in Cops and
-        // Robbers team games, the gold carrier marked "$" (place 9,
-        // mmMultiCR::OppStealGold). Their race places (mmGameMulti::
-        // UpdateScore) are not tracked: no numbers.
+        // The network players (mmGameMulti::RegisterMapNetObjects): their
+        // start slot (the place in the host's player list, NetStartArray),
+        // coloured by slot, or red / blue by team in Cops and Robbers team
+        // games, the gold carrier marked "$" (place 9, mmMultiCR::
+        // OppStealGold); in the races their rank (mmGameMulti::UpdateScore;
+        // an icon turned off, place 0, once that player has finished).
         if (multiplayer(ctx)) {
+            const auto& players = ctx.netGame->players();
             for (const auto& rc : ctx.netGame->remoteCars()) {
                 if (!rc.hasState)
                     continue;
+                int slot = 0, other = 0, racer = -1;
+                for (std::size_t k = 0; k < players.size(); ++k) {
+                    if (players[k].id == rc.id) {
+                        slot = static_cast<int>(k);
+                        racer = other;
+                    }
+                    if (players[k].id != ctx.netGame->localId())
+                        ++other;
+                }
                 MapBlip b{rc.transform, MapBlip::Kind::Remote};
-                b.slot = rc.id;
+                b.slot = slot;
                 b.name = rc.name;
-                b.iconColor = game::session::hud::netIconColor(rc.id);
+                b.iconColor = game::session::hud::netIconColor(slot);
+                if (m_session && racer >= 0)
+                    b.place = m_session->netRacerPlace(static_cast<std::size_t>(racer));
+                if (b.place == 0)
+                    continue; // finished: OppIconInfo Enabled 0 (map and icon)
                 if (m_cr) {
                     if (m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll)
                         b.iconColor = m_cr->teamOf(rc.id) == game::session::CrTeam::Robber ? 0xFFEF0000u
@@ -440,9 +482,10 @@ public:
                 blips.push_back(std::move(b));
             }
         }
-        // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
+        // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit:
+        // state 0x977a not 0, which also holds for a wrecked, out-of-action cop).
         for (const auto& c : m_cops)
-            if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
+            if (c.driver->mode() != ai::PoliceCar::Mode::Parked)
                 blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
         return blips;
     }
@@ -555,6 +598,16 @@ public:
             auto& ov = *ctx.overlay;
             ov.begin(ctx.display.uiScale);
             ui::drawImage(ov, m_ui.get(m_loadingImage), 0, 0, 640, 480);
+            // ProgressCB in the race phase: a flat bar at (0.55 W, 0.896 H),
+            // 0.02 H tall, percent x 0.01 x 0.4234375 W long (each value
+            // truncated), in 0xFF0D2CBA as a 16-bit surface keeps it
+            // (ProgressRect; a 32-bit one would get white).
+            if (m_loadPercent > 0) {
+                constexpr float w = 640.0f, h = 480.0f;
+                const float x = std::trunc(w * 0.55f), y = std::trunc(h * 0.896f), bh = std::trunc(h * 0.02f);
+                const float bw = std::trunc(static_cast<float>(m_loadPercent) * 0.01f * (w * 0.4234375f));
+                ov.rect(x, y, bw, bh, render::packColor(8, 44, 184));
+            }
             ov.end();
         }
     }
@@ -562,8 +615,37 @@ public:
 private:
     enum class State { ShowLoading, Load, Running };
 
-    void load(Context& ctx) {
-        const auto t0 = std::chrono::steady_clock::now();
+    // The race loads over several frames so that the loading picture can show
+    // its progress bar between the parts (lvlProgress::UpdateTask ->
+    // ProgressCB): mmGame::Init's 10, cityLevel::Load's steps up to 100,
+    // then aiMap::Init's own run from 10 to 100. The values OpenMM2 shows
+    // after each of its parts are inferred from where MM2's would stand.
+    void loadStep(Context& ctx) {
+        switch (m_loadStep++) {
+        case 0: loadCityPart(ctx); return;
+        case 1: loadLevelPart(ctx); return;
+        case 2:
+            createSession(ctx);
+            loadVehicle(ctx); // places the camera behind the car
+            m_loadPercent = 100;
+            return;
+        case 3:
+            loadAi(ctx);
+            m_loadPercent = 50;
+            return;
+        case 4:
+            loadEffects(ctx);
+            loadPedestrianProps(ctx);
+            spawnOpponents(ctx);
+            spawnPolice(ctx);
+            m_loadPercent = 100;
+            return;
+        default: loadFinish(ctx); return;
+        }
+    }
+
+    void loadCityPart(Context& ctx) {
+        m_loadStart = std::chrono::steady_clock::now();
         std::string error;
         auto city = city::loadCity(ctx.game->vfs, m_result.config.city, &error);
         if (!city) {
@@ -578,6 +660,16 @@ private:
         m_textures = std::make_unique<game::TextureLibrary>(ctx.device(), ctx.game->vfs);
         m_models = std::make_unique<game::ModelLibrary>(ctx.device(), ctx.game->vfs);
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
+        // mmMultiCircuit::Init: the concrete barricades are 26 times as heavy
+        // and as hard to knock loose in a multiplayer circuit.
+        if (multiplayer(ctx) && m_result.config.mode == game::GameMode::Circuit) {
+            m_bangerData->scaleMass("sp_barricadeconcl_f", 26.0f);
+            m_bangerData->scaleMass("sp_barricadeconcr_f", 26.0f);
+        }
+        m_loadPercent = 30;
+    }
+
+    void loadLevelPart(Context& ctx) {
         // cityLevel::Load: gfxTexReduceSize = 32 << the Texture Quality
         // option (gfxTextureQuality) while the city loads, no limit after.
         const int textureQuality =
@@ -619,13 +711,10 @@ private:
         m_ff.configure(m_gameInput.controller(), m_controlOptions);
         m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
         m_ff.start();
-        createSession(ctx);
-        loadVehicle(ctx); // places the camera behind the car
-        loadAi(ctx);
-        loadEffects(ctx);
-        loadPedestrianProps(ctx);
-        spawnOpponents(ctx);
-        spawnPolice(ctx);
+        m_loadPercent = 70;
+    }
+
+    void loadFinish(Context& ctx) {
         // Every vehCar::Init builds a vehSiren, whose constructor sets the
         // light glow scales to 0.2 / 0.6; aiMap::Init ends with
         // aiVehicleManager::Init, which sets 0.2 / 0.95 (network cars set up
@@ -643,6 +732,8 @@ private:
         if (m_session) {
             phys::setElasticityCap(phys::kElasticityCap); // mmGame::Reset
             m_session->start();
+            if (m_player)
+                m_player->sim().damage.enabled = m_session->playerDamageEnabled();
             setupCopsAndRobbers(ctx);
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -651,8 +742,11 @@ private:
         // -nomusic: mmGameMusicData::Load loads neither the song nor the
         // city's ambience segment, so the race plays neither.
         if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic) {
-            // The song is chosen now; MusicDirector starts it 1.25 s in.
-            const bool cruise = m_result.config.mode == game::GameMode::Cruise;
+            // The song is chosen now; MusicDirector starts it 1.25 s in. Cops
+            // and Robbers plays the cruise music too (mmMultiCR's music data
+            // is mmSingleRoamMusicData: "singleroam").
+            const bool cruise = m_result.config.mode == game::GameMode::Cruise ||
+                                m_result.config.mode == game::GameMode::CopsAndRobbers;
             music->startRace(-1, cruise, false);
             music->setAmbience(m_result.config.city);
             m_musicDirector = std::make_unique<audio::MusicDirector>(cruise);
@@ -668,7 +762,7 @@ private:
             }
         }
         m_state = State::Running;
-        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_loadStart).count();
         log::info("race: loaded {} in {:.2f} s", m_result.config.city, seconds);
     }
 
@@ -733,26 +827,30 @@ private:
                                                                 m_result.config.vehicleColor, "TRAILER", "TWHL");
             setupVehicleRenderer(ctx, *m_trailer);
         }
+        // The mode's place for the car (game::session::RaceSetup::playerPlace,
+        // the modes' InitGameObjects / InitNetworkPlayers) and how it settles
+        // (playerDrop): the race modes' InitOtherPlayers settle it 0.9 m above
+        // the road, cruise keeps RespawnXYZ's point, the multiplayer grids go
+        // through mmGame::FindGroundPos first.
         auto [pos, heading] = spawnPoint(ctx);
-        // mmGame::FindGroundPos drops only the multiplayer race grids onto the
-        // road; the single-player starts are placed as the race data gives
-        // them and settled 0.9 m above the road below (InitOtherPlayers).
-        bool findGround = !m_session;
+        auto drop = game::session::StartDrop::FindGround;
         if (m_session) {
-            const Mat34 sp = m_session->playerSpawn();
-            pos = sp.m3;
-            heading = phys::resetRotationOf(sp);
-            // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitMyPlayer: the
-            // player's start slot on the grid behind the start
-            // (mmGameMulti::StartXYZ; the slot is NetStartArray's, here the
-            // player's id, inferred).
+            const auto& setup = m_session->setup();
+            pos = setup.playerPlace.position;
+            heading = setup.playerPlace.angle;
+            drop = setup.playerDrop;
+            // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitNetworkPlayers:
+            // the player's start slot on the grid behind the start
+            // (mmGameMulti::StartXYZ). The slot is NetStartArray's, which
+            // mmInterface::SendStartMsg fills in the order the host
+            // enumerates the players: here the place in the host's player
+            // list (join order, inferred from DirectPlay's enumeration).
             const auto raceMode = m_result.config.mode;
             if (multiplayer(ctx) && (raceMode == game::GameMode::Blitz || raceMode == game::GameMode::Circuit ||
                                      raceMode == game::GameMode::Checkpoint)) {
                 const bool longVehicle = m_player->sim().body.radius() > 6.0f || m_player->trailerModel();
                 pos += Mat34::rotationY(heading).transformDir(
-                    game::session::multiplayerGridOffset(ctx.netGame->localId(), longVehicle));
-                findGround = true;
+                    game::session::multiplayerGridOffset(startSlot(ctx), longVehicle));
             }
         }
         // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading" (dropped onto
@@ -763,23 +861,18 @@ private:
                 auto f = [&](int i) { return static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)); };
                 pos = {f(0), f(1), f(2)};
                 heading = f(3);
-                findGround = true;
+                drop = game::session::StartDrop::FindGround;
             }
         }
-        // mmGame::FindGroundPos: dgPhysManager::Collide with the wheels' probe
-        // mask from 7.5 m above to 15 m below; the point itself on a miss.
-        phys::RayHit hit;
-        if (findGround &&
-            m_world->wheelProbe(pos + Vec3{0, 7.5f, 0}, pos - Vec3{0, 15.0f, 0}, hit, nullptr, nullptr))
-            pos = hit.position;
+        if (drop == game::session::StartDrop::FindGround)
+            pos = game::session::findGroundPos(pos, groundProbe());
         m_player->addTo(*m_world);
-        // The modes' InitGameObjects / InitMyPlayer: vehCarSim::SetResetPos at
-        // the start, the reset rotation, vehCar::Reset.
+        // vehCarSim::SetResetPos at the start, the reset rotation, vehCar::Reset.
         m_player->setResetPos(pos, heading);
         m_player->reset();
-        // mmGame::InitOtherPlayers (every single-player mode but cruise):
-        // the player's start dropped onto the road, 0.9 m up.
-        if (m_session && !multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+        // mmGame::InitOtherPlayers: the player's start dropped onto the road,
+        // 0.9 m up (probed from the body's centre).
+        if (drop == game::session::StartDrop::OnGround)
             m_player->settleOnGround(*m_world, m_player->sim().body.ics.matrix.m3);
         m_pose = m_player->pose();
         std::vector<std::string> missing;
@@ -814,6 +907,7 @@ private:
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             opts.scoringBias = info->scoringBias;
         opts.playerName = ctx.settings.playerName;
+        opts.netHost = multiplayer(ctx) && ctx.netGame->isHost();
         // mmMultiRoam: RespawnXYZ draws the cruise start from a random stream
         // seeded with the player's id, so every player starts elsewhere.
         if (multiplayer(ctx))
@@ -853,6 +947,28 @@ private:
         car->reset();
         return car;
     }
+
+    // NetStartArray::GetIndex for the local player: its place in the host's
+    // player list (mmInterface::SendStartMsg assigns the slots in that order).
+    int startSlot(Context& ctx) const {
+        const auto& players = ctx.netGame->players();
+        for (std::size_t i = 0; i < players.size(); ++i)
+            if (players[i].id == ctx.netGame->localId())
+                return static_cast<int>(i);
+        return 0; // GetIndex's answer for an unknown player
+    }
+
+    // dgPhysManager::Collide with the wheels' mask (0x20): the level and the
+    // objects the wheels collide with.
+    game::session::GroundProbe groundProbe() const {
+        return [this](const Vec3& from, const Vec3& to) -> std::optional<Vec3> {
+            phys::RayHit hit;
+            if (!m_world || !m_world->wheelProbe(from, to, hit, nullptr, nullptr))
+                return std::nullopt;
+            return hit.position;
+        };
+    }
+
 
     // lvlRoomInfo's flags of the room `p` is in (city::LevelRoomFlag), not
     // the PSDL's room flags.
@@ -909,6 +1025,7 @@ private:
             const auto& s = setups[i];
             Opponent opp;
             opp.sessionIndex = i;
+            // aiRouteRacer::Init places the racer on its first .opp row.
             Mat34 spawn = s.spawn;
             // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
             // (the retail *_opp.vehCarSim files are not used by MM2).
@@ -1312,8 +1429,10 @@ private:
         ps.damage01 = sim.damage.damage;
         // mmPlayer::IsMaxDamaged: CurrentDamage strictly past MaxDamage.
         ps.wrecked = sim.damage.maxDamaged();
-        if (const auto level = waterLevelAt(ps.transform.m3))
-            ps.inWater = ps.transform.m3.y < *level;
+        // mmGame::Update reads the vehSplash active flag, which vehCar::Update
+        // latches once the model origin goes under a water room's level and
+        // only vehCar::Reset clears: a car that floats back up stays "in".
+        ps.inWater = sim.splash.active();
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
@@ -1326,6 +1445,7 @@ private:
     void updateSession(Context& ctx, float dt) {
         if (!m_session || !m_player)
             return;
+        updateNetRace(ctx);
         m_playerState = playerState();
         auto carState = [](const phys::CarSim& sim) {
             game::session::OpponentState s;
@@ -1351,7 +1471,9 @@ private:
         std::vector<game::session::OpponentState> cops;
         for (const auto& c : m_cops) {
             auto& st = cops.emplace_back(carState(c.sim->sim()));
-            st.pursuing = c.driver->mode() == ai::PoliceCar::Mode::Chasing && c.driver->target() == 0;
+            // mmSingleStunt::CheckCopPursuit asks aiPoliceOfficer::InPersuit:
+            // any chase (of anyone) and a wrecked, out-of-action cop count.
+            st.pursuing = c.driver->mode() != ai::PoliceCar::Mode::Parked;
         }
         const auto phaseBefore = m_session->phase();
         m_session->setPreRaceCamera(m_cams.preRace());
@@ -1359,12 +1481,15 @@ private:
         // message; OpenMM2 shares the start time instead.
         m_session->setStartSignal(!multiplayer(ctx) || ctx.netGame->secondsToStart() <= 2.5);
         m_session->update(dt, m_playerState, opps, cops);
+        // DisableRacers / EnableRacers: the player's vehCarDamage switch.
+        m_player->sim().damage.enabled = m_session->playerDamageEnabled();
         // mmSingleStunt::UpdateEvade turns the map on during its first line.
         if (m_hud && m_session->wantsMap() && m_cams.mapMode() == game::MapMode::Off)
             m_cams.cycleMap();
-        // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
+        // mmPlayer::SetPostRaceCam / mmGameMulti::SetFinishCam at the endings
+        // that set it (Session::postRaceCamera).
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
-            m_result.config.mode != game::GameMode::Cruise)
+            m_result.config.mode != game::GameMode::Cruise && m_session->postRaceCamera())
             startFinishCamera(ctx);
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
@@ -1388,6 +1513,7 @@ private:
                     m_player->reset();
                 else
                     m_player->respawnAt(m_session->respawnTransform());
+                m_crWaterHandled = m_cr != nullptr; // mmMultiCR::HitWaterHandler drops the gold
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 if (m_vehicle)
@@ -1462,6 +1588,13 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
+                // mmGameMulti::SendPosition carries the waypoint count
+                // (mmPlayer +0x2254) for the others' standings.
+                if (multiplayer(ctx))
+                    ctx.netGame->sendCheckpoint(m_session->waypointsPassed(),
+                                                static_cast<std::uint32_t>(m_session->raceTime() * 1000.0f));
+            } else if (e.type == EventType::NetFinished && multiplayer(ctx)) {
+                ctx.netGame->sendFinish(static_cast<std::uint32_t>(e.value * 1000.0f), 0);
             } else if (e.type == EventType::FinalCheckpoint || e.type == EventType::FinalLap) {
                 // mmWaypoints::Update: the last stretch switches the music to
                 // the cop chase segment; the final checkpoint is announced
@@ -1484,15 +1617,19 @@ private:
             if (phase != Phase::Countdown)
                 director.raceStarted();
             if (phase == Phase::PostRace && !m_musicFinished) {
-                // The race modes stop the music at the finish (StopSegment(0)),
-                // a wreck with an ending on the next beat (StopSegment(1)).
+                // The single-player race modes stop the music at the finish
+                // (StopSegment(0)), a wreck with an ending on the next beat
+                // (StopSegment(1)); the water, a late Blitz, the crash course
+                // and the multiplayer modes leave it playing.
                 if (m_session->damagedOut())
                     director.damagedOut();
-                else
+                else if (m_session->musicStopped())
                     director.finish();
                 m_musicFinished = true;
             }
-            if (phase == Phase::Done && !m_musicResults) {
+            // mmPopup::ShowResults (a finish); a loss opens the main menu,
+            // whose pause music openPopup starts.
+            if (phase == Phase::Done && !m_musicResults && m_session->raceOver()) {
                 director.results();
                 m_musicResults = true;
             }
@@ -1624,12 +1761,13 @@ private:
     }
 
     // mmPopup::ProcessChat ("Enter Chat Msg"): the chat line pops up without
-    // pausing the game.
+    // pausing the game (the pause music plays all the same).
     void openChat(Context& ctx) {
         m_popup = Popup::Chat;
         m_popupPaused = false;
         m_gameInput.flush(); // mmPopup::ProcessChat: mmInput::Flush, StopAllFF
         m_ff.stopAll();
+        popupMusic(ctx, true);
         m_chatText.clear();
         ctx.input.startTextInput(ctx.window());
         m_textInput = true;
@@ -1669,9 +1807,36 @@ private:
             const auto& line = lines[i];
             if (line.system || line.text.starts_with("/wav"))
                 continue;
-            m_hud->postChat(line.from == ctx.netGame->localId() ? line.text : std::format("{}: {}", line.name, line.text));
+            const bool own = line.from == ctx.netGame->localId();
+            m_hud->postChat(own ? line.text : std::format("{}: {}", line.name, line.text));
+            // mmGameMulti::GameMessageCB 0x1f8: another player's line comes
+            // with mmHUD::PlayNetAlert.
+            if (!own)
+                playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
         }
         m_chatSeen = lines.size();
+    }
+
+    // mmMultiRoam / Race / Circuit / Blitz / CR::SystemMessage 0x2d: a
+    // player who leaves while the game runs gets "<name>" / "has left the
+    // game" (38) for 5 s at the bottom with mmHUD::PlayNetAlert.
+    void updateNetPlayers(Context& ctx) {
+        if (!multiplayer(ctx) || !m_session)
+            return;
+        std::map<std::uint8_t, std::string> now;
+        for (const auto& p : ctx.netGame->players())
+            now[p.id] = p.name;
+        if (m_netPlayersKnown && m_session->phase() == game::session::Phase::Racing) {
+            for (const auto& [id, name] : m_netPlayers) {
+                if (now.contains(id))
+                    continue;
+                m_session->showMessage(name, 5.0f, false);
+                m_session->showMessage2(ctx.game->strings.get(38, "has left the game"));
+                playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
+            }
+        }
+        m_netPlayers = std::move(now);
+        m_netPlayersKnown = true;
     }
 
     // --- Cops and Robbers (mmMultiCR) ------------------------------------------------------
@@ -1696,8 +1861,10 @@ private:
             return;
         auto locations = game::session::loadCrLocations(ctx.game->vfs, m_city->info.raceDir);
         if (!locations) {
-            log::warn("race: no Cops and Robbers places for {}", m_city->info.raceDir);
-            return;
+            // mmMultiCR::LoadCSV: with fewer than three rows every place
+            // comes from the AI intersections.
+            log::info("race: no Cops and Robbers places for {}: intersections only", m_city->info.raceDir);
+            locations = game::session::CrLocations{};
         }
         game::session::CrSettings st;
         st.mode = m_result.config.copsAndRobbers;
@@ -1708,24 +1875,50 @@ private:
         // start time seeds them; the host's sets follow by message).
         st.seed = std::max(1u, ctx.netGame->raceStartTime());
         m_crRng = st.seed;
+        // GetRandomPoints' picker: mmGame::RespawnXYZ(false, false, false)
+        // less its 2 m, which still never takes an intersection in a
+        // water-of-death or terrain-instance room (level flags 0x24).
         st.randomIntersection = [this]() -> std::optional<Vec3> {
             if (!m_city->aiMap || m_city->aiMap->intersections.size() < 2)
                 return std::nullopt;
-            m_crRng = m_crRng * 1103515245u + 12345u;
             const auto& xs = m_city->aiMap->intersections;
-            return xs[1 + ((m_crRng >> 16) & 0x7fffu) % (xs.size() - 1)].center;
+            const auto& flags = m_city->levelRoomFlags;
+            constexpr std::uint16_t kRejected = city::LevelRoomFlag::WaterOfDeath | city::LevelRoomFlag::TerrainInstance;
+            for (int attempt = 0; attempt < 1000; ++attempt) {
+                m_crRng = m_crRng * 1103515245u + 12345u;
+                const auto& x = xs[1 + ((m_crRng >> 16) & 0x7fffu) % (xs.size() - 1)];
+                if (x.room >= flags.size() || !(flags[x.room] & kRejected))
+                    return x.center;
+            }
+            return xs[1].center;
         };
-        // mmMultiCR::DropGold: on the AI map's roads and intersections
-        // (aiMap::PositionToAIMapComp), not in deep water; inferred here from
-        // the level's street rooms.
-        st.canDropAt = [this](const Vec3& p) {
-            const int f = levelRoomFlagsAt(p);
-            return (f & city::LevelRoomFlag::OpenRoad) && !(f & city::LevelRoomFlag::WaterOfDeath);
+        // mmMultiCR::DropGold: aiMap::PositionToAIMapComp always answers for
+        // a room, so the gold stays where it fell unless that room is deep
+        // water (level flag 0x04).
+        st.canDropAt = [this](const Vec3& p) { return !(levelRoomFlagsAt(p) & city::LevelRoomFlag::WaterOfDeath); };
+        // mmMultiCR::FindGround: the wheels' probe from 2 m above to 10 m below.
+        st.findGround = [this](const Vec3& p) {
+            phys::RayHit hit;
+            if (m_world && m_world->wheelProbe(p + Vec3{0.0f, 2.0f, 0.0f}, p - Vec3{0.0f, 10.0f, 0.0f}, hit, nullptr,
+                                               nullptr))
+                return hit.position;
+            return p;
+        };
+        auto roomOf = [this](const Vec3& p) { return m_cityRenderer ? m_cityRenderer->roomAt(p) : 0; };
+        st.sameRoom = [roomOf](const Vec3& gold, const Vec3& car) {
+            return roomOf(gold + Vec3{0.0f, 1.5f, 0.0f}) == roomOf(car);
+        };
+        st.baseReachable = [this, roomOf](const Vec3& base, const Vec3& car) {
+            const Vec3 at = base + Vec3{0.0f, 3.75f, 0.0f};
+            constexpr int kCovered = city::LevelRoomFlag::Subterranean | city::LevelRoomFlag::Covered;
+            return (levelRoomFlagsAt(at) & kCovered) != 0 || roomOf(at) == roomOf(car);
         };
         m_cr = std::make_unique<game::session::CopsAndRobbers>(st, *locations);
         m_crSelf = ctx.netGame->localId();
-        for (const auto& p : ctx.netGame->players())
+        for (const auto& p : ctx.netGame->players()) {
             m_cr->addCar(p.id, crTeam(ctx, p.id == m_crSelf ? m_result.config.vehicle : p.car, p.team));
+            m_crPlayers.insert(p.id);
+        }
         m_crMyTeam = m_cr->teamOf(m_crSelf);
         m_regen = true; // mmMultiCR::InitMyPlayer: mmPlayer::EnableRegen(1)
         // mmSpeechContainer::InitCNR loads the Cops and Robbers lines; build
@@ -1774,14 +1967,27 @@ private:
             m_vehicle->resetDamage();
         // mmMultiCR::UpdateGame for the local car, with the others' places.
         std::vector<CopsAndRobbers::Car> cars;
+        // mmMultiCR::HitWaterHandler / DropThruCityHandler drop the gold back
+        // at its place when the water handler fires (5 s in the water, or a
+        // fall out of the city), not when the car touches the water.
         cars.push_back({m_crSelf, m_crMyTeam, m_player->sim().body.ics.matrix.m3, m_playerState.wrecked,
-                        m_playerState.inWater});
+                        std::exchange(m_crWaterHandled, false)});
         for (const auto& rc : ctx.netGame->remoteCars())
             if (rc.hasState)
                 cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
                                 false});
         sendCr(ctx, m_cr->updateNetwork(dt, m_crSelf, host, cars, m_crImpacts));
         m_crImpacts.clear();
+        // mmMultiCR::SystemMessage 0x2d: a player left.
+        {
+            std::set<std::uint8_t> now;
+            for (const auto& p : ctx.netGame->players())
+                now.insert(p.id);
+            for (const auto id : m_crPlayers)
+                if (!now.contains(id))
+                    sendCr(ctx, m_cr->playerLeft(id, host));
+            m_crPlayers = std::move(now);
+        }
         // The others' messages (mmMultiCR::GameMessage).
         for (const auto& ev : ctx.netGame->takeGameEvents()) {
             CopsAndRobbers::Message m;
@@ -1832,11 +2038,15 @@ private:
                 if (me) {
                     fondleMass(-m_cr->carrierExtraMassKg());
                     m_regen = true;
-                    if (!m_playerState.wrecked)
+                    // Only ImpactCallback says so; the wreck and the water
+                    // drop it without a line.
+                    if (e.value == 1)
                         m_session->showMessage(s.get(112, "You dropped the gold!"), 5.0f, false);
                 } else {
+                    // GameMessage 0x259: with mmHUD::PlayNetAlert.
                     m_session->showMessage(std::format("{} {}", name(e.car), s.get(136, "dropped the Gold!")), 5.0f,
                                            false);
+                    playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
                 }
                 break;
             case E::GoldDelivered:
@@ -1849,22 +2059,26 @@ private:
                         m_vehicle->resetDamage();
                     m_session->showMessage(s.get(117, "Gold delivered!"), 5.0f, false);
                 } else {
+                    // GameMessage 600: with mmHUD::PlayNetAlert.
                     m_session->showMessage(std::format("{} {}", name(e.car), s.get(137, "delivered the Gold!")),
                                            5.0f, false);
+                    playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
                 }
                 break;
             case E::TimeWarning: {
                 // UpdateTimeWarning: 20, 15, 10, 5, 1 minutes (138-142).
                 static constexpr std::pair<int, std::uint32_t> kIds[] = {{20, 138}, {15, 139}, {10, 140}, {5, 141}, {1, 142}};
+                // DisplayTimeWarning: 2 s at the bottom.
                 for (const auto& [minutes, id] : kIds)
                     if (minutes == e.value)
-                        m_session->showMessage(s.get(id, ""), 5.0f, false);
+                        m_session->showMessage(s.get(id, ""), 2.0f, false);
                 break;
             }
             case E::TimeUp:
             case E::PointLimit:
-                // UpdateLimit: the message, then 3 s to the results (state 9).
-                m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 5.0f, false);
+                // UpdateLimit: the message for 3 s, then 3 s to the results
+                // (state 9).
+                m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 3.0f, false);
                 m_crEnd = 3.0f;
                 break;
             case E::NewSet: break;
@@ -1886,7 +2100,10 @@ private:
             game::session::CrDisplay d;
             d.enabled = true;
             d.time = static_cast<float>(m_time);
-            if (m_cr->goldActive() || m_cr->goldCarrier() >= 0)
+            // The carrier does not see the gold it carries (StealGold and
+            // 0x25a deactivate the gold's waypoint for it); the others see it
+            // above the carrier.
+            if (m_cr->goldActive() || (m_cr->goldCarrier() >= 0 && m_cr->goldCarrier() != m_crSelf))
                 d.gold = m_cr->goldPosition();
             d.goldOnMap = m_cr->goldPosition(); // mmHudMap::DrawCopsnRobbers
             const bool teams = m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
@@ -1926,8 +2143,8 @@ private:
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
 
-    void openPopup(Context& ctx, bool pause) {
-        m_popup = Popup::Main;
+    void openPopup(Context& ctx, bool pause, Popup page = Popup::Main) {
+        m_popup = page;
         // ProcessEscape: pauses unless the game already is (the full-screen
         // map), and remembers it so closing does not resume it.
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
@@ -1935,11 +2152,44 @@ private:
         m_gameInput.flush();
         if (m_popupPaused)
             m_paused = true;
+        popupMusic(ctx, true);
         buildPopup(ctx);
     }
 
-    void closePopup() {
-        // mmPopup::DisablePU (mmInput::Flush).
+    // mmGame::UpdateDebugInput's other keys (with no popup up): F4 restarts
+    // the race (asRoot::Reset and mmReplayManager's reset; OpenMM2: single
+    // player, as the menu's Restart), F6 opens the roster in a network game
+    // (mmPopup::ShowRoster) and Ctrl+Alt+Shift+F7 the chat line in single
+    // player (where "/blubber" is typed).
+    void debugKeys(Context& ctx) {
+        using platform::Key;
+        const auto& in = ctx.input;
+        if (in.keyPressed(Key::F4) && m_session && !multiplayer(ctx)) {
+            m_resultsShown = false;
+            m_session->restart();
+            return;
+        }
+        if (in.keyPressed(Key::F6) && multiplayer(ctx)) {
+            // ShowRoster: no pause, no pause music.
+            m_popupPaused = false;
+            showPopupPage(ctx, frontend::PopupPage::Roster);
+            return;
+        }
+        const bool ctrl = in.keyDown(Key::LCtrl) || in.keyDown(Key::RCtrl);
+        const bool alt = in.keyDown(Key::LAlt) || in.keyDown(Key::RAlt);
+        const bool shift = in.keyDown(Key::LShift) || in.keyDown(Key::RShift);
+        if (in.keyPressed(Key::F7) && ctrl && alt && shift && !multiplayer(ctx))
+            openChat(ctx);
+    }
+
+    // MenuManager::Switch from one page of the open popup to another.
+    void switchPopup(Context& ctx, Popup page) {
+        m_popup = page;
+        buildPopup(ctx);
+    }
+
+    // mmPopup::DisablePU(returnMusic) (mmInput::Flush).
+    void closePopup(Context& ctx, bool returnMusic) {
         m_popup = Popup::None;
         m_gameInput.flush();
         // Buttons close the popup from inside its update: keep the menu
@@ -1949,6 +2199,53 @@ private:
         if (m_popupPaused)
             m_paused = false;
         m_popupPaused = false;
+        if (returnMusic)
+            popupMusic(ctx, false);
+    }
+
+    // mmPopup::PlayPauseMusic / PlayReturnMusic: the song's pause segment on
+    // the next beat, and back to the segment before it. With CITY SOUNDS the
+    // ambience segment stops (StopSegment(0)) and starts again (PlaySegment).
+    void popupMusic(Context& ctx, bool pause) {
+        auto* music = ctx.music();
+        if (!music)
+            return;
+        if (m_musicDirector) {
+            if (pause)
+                m_musicDirector->pause();
+            else
+                m_musicDirector->resume();
+            for (const auto& c : m_musicDirector->takeCommands())
+                music->setState(c.state, c.timing);
+        }
+        if (!m_ambienceStopped)
+            music->setAmbience(pause ? std::string_view{} : std::string_view(m_result.config.city));
+    }
+
+    // mmPopup::Lock: the single-player race modes (states 4 and 5) and the
+    // crash course lock the main menu once the race is over: "Resume
+    // Driving" is off and Escape does nothing, or shows the results when the
+    // race-over flag (mmGame +0x7c) is set. Cruise and the multiplayer modes
+    // never lock it; a restart unlocks it (mmPopup::Reset).
+    bool popupLocked(Context& ctx) const {
+        if (multiplayer(ctx) || !m_session)
+            return false;
+        const auto phase = m_session->phase();
+        return phase == game::session::Phase::PostRace || phase == game::session::Phase::Done;
+    }
+
+    // mmPlayerConfig::GetViewSettings when the game ends: the driver keeps
+    // the camera, wide angle, dashboard and mirror choices.
+    void storeViewSettings() {
+        if (!m_profile)
+            return;
+        const auto v = m_cams.viewSettings();
+        m_profile->camera = v.camera;
+        m_profile->wideAngle = v.wideAngle;
+        m_profile->dashboard = v.dashboard;
+        m_profile->mirror = m_mirror.enabled();
+        if (!m_profile->save())
+            log::warn("race: cannot save driver '{}'", m_profile->name);
     }
 
     // The quit button: back to the race menu (or the crash course page),
@@ -1959,20 +2256,57 @@ private:
         leaveRace(ctx, r);
     }
 
-    // Back to the menus. mmPlayerConfig::GetViewSettings when the game ends:
-    // the driver keeps the camera, wide angle, dashboard and mirror choices
-    // (stored before the frontend reads the driver again).
+    // Back to the menus, the view settings stored before the frontend reads
+    // the driver again. The host of a network game takes everyone back to
+    // the lobby (mmGameMulti::BeDone(1): Quit2Lobby, 0x20c).
     void leaveRace(Context& ctx, const game::RaceResult& result) {
-        if (m_profile) {
-            const auto v = m_cams.viewSettings();
-            m_profile->camera = v.camera;
-            m_profile->wideAngle = v.wideAngle;
-            m_profile->dashboard = v.dashboard;
-            m_profile->mirror = m_mirror.enabled();
-            if (!m_profile->save())
-                log::warn("race: cannot save driver '{}'", m_profile->name);
+        storeViewSettings();
+        if (multiplayer(ctx) && ctx.netGame->isHost()) {
+            const auto phase = ctx.netGame->phase();
+            if (phase == game::NetGame::Phase::Countdown || phase == game::NetGame::Phase::Racing)
+                ctx.netGame->returnToLobby();
         }
         ctx.nextScreen = makeFrontendScreen(ctx, result);
+    }
+
+    // The multiplayer races' exchange (mmGameMulti, mmMultiRace / Circuit /
+    // Blitz::GameMessage): the other players' finishes and their waypoint
+    // counts (which MM2 sends in every position packet) for the standings.
+    void updateNetRace(Context& ctx) {
+        const auto mode = m_result.config.mode;
+        if (!multiplayer(ctx) || !m_session ||
+            !(mode == game::GameMode::Blitz || mode == game::GameMode::Circuit || mode == game::GameMode::Checkpoint))
+            return;
+        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+            if (ev.type == net::GameEventType::CheckpointReached) {
+                if (const auto e = ev.as<net::CheckpointEvent>())
+                    m_netWaypoints[ev.from] = e->index;
+            } else if (ev.type == net::GameEventType::RaceFinished) {
+                const auto e = ev.as<net::FinishEvent>();
+                const auto* p = ctx.netGame->player(ev.from);
+                if (!e || !p || m_netFinished.contains(ev.from))
+                    continue;
+                m_netFinished.insert(ev.from);
+                const float seconds = static_cast<float>(e->raceTime) * 0.001f;
+                m_session->remoteFinished(p->name, std::min(seconds, game::session::Session::kNetDnf));
+            }
+        }
+        std::vector<game::session::Session::NetRacer> racers;
+        for (const auto& p : ctx.netGame->players()) {
+            if (p.id == ctx.netGame->localId())
+                continue;
+            game::session::Session::NetRacer r;
+            r.name = p.name;
+            if (const auto it = m_netWaypoints.find(p.id); it != m_netWaypoints.end())
+                r.waypoints = it->second;
+            const auto it = m_remotes.find(p.id);
+            r.present = it != m_remotes.end() && it->second.sim;
+            if (r.present)
+                r.position = it->second.sim->sim().body.ics.matrix.m3;
+            r.finished = m_netFinished.contains(p.id);
+            racers.push_back(std::move(r));
+        }
+        m_session->setNetRacers(std::move(racers));
     }
 
     void buildPopup(Context& ctx) {
@@ -2010,23 +2344,29 @@ private:
                 &m_chatText, 40);
             entry.popup = true;
             entry.onCommit = [this, &ctx] {
-                // mmPopup::ChatCB: an empty line just closes it.
+                // mmPopup::ChatCB: an empty line just closes it; either way
+                // DisablePU(0), so the pause music keeps playing (as MM2).
                 const std::string text = m_chatText;
-                closePopup();
+                closePopup(ctx, false);
                 if (!text.empty())
                     sendChatMessage(ctx, text);
             };
             menu.setInitialFocus(&entry);
             entry.beginEdit();
-            menu.onBack = [this] { closePopup(); };
+            menu.onBack = [this, &ctx] { closePopup(ctx, true); };
         } else if (m_popup == Popup::Main) {
             // PUMain: Resume Driving first (AddExit, type 1), then the rows
             // across the card (type 2).
-            auto& resume = button(0.5f, 0.9f, 0.5f, 0.1f, s.get(473, "Resume Driving"), 1, [this] { closePopup(); });
+            const bool locked = popupLocked(ctx);
+            auto& resume = button(0.5f, 0.9f, 0.5f, 0.1f, s.get(473, "Resume Driving"), 1,
+                                  [this, &ctx] { closePopup(ctx, true); });
+            // PUMenuBase::DisableExit while locked.
+            resume.enabled = !locked;
             auto& restart = button(0.0f, 0.125f, 1.0f, 0.1f,
-                                   crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"), 2, [this] {
-                                       // mmReplayManager's reset flag: the race starts over.
-                                       closePopup();
+                                   crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"), 2, [this, &ctx] {
+                                       // mmReplayManager's reset flag: the race starts over
+                                       // (DisablePU(0); mmGame::Reset starts the music again).
+                                       closePopup(ctx, false);
                                        m_resultsShown = false;
                                        if (m_session)
                                            m_session->restart();
@@ -2045,24 +2385,24 @@ private:
                        else
                            quitToMenu(ctx);
                    });
+            // PUMain's exit (id 0xe): the game ends at once (the exit flag and
+            // mmGame::BeDone, which stores the driver's settings). Nothing
+            // switches to PUExit's question (menu 3).
             button(0.0f, 0.5f, 1.0f, 0.1f, s.get(469, "Exit to Windows"), 2, [this, &ctx] {
-                m_popup = Popup::ConfirmExit;
-                buildPopup(ctx);
+                storeViewSettings();
+                ctx.quit = true;
             });
-            menu.setInitialFocus(&resume);
-            menu.onBack = [this] { closePopup(); };
-        } else {
-            // PUExit: Yes and No at 0.2 and 0.6, y 0.7, 0.2 x 0.2, type 0.
-            auto& yes = button(0.2f, 0.7f, 0.2f, 0.2f, s.get(458, "Yes"), 0, [&ctx] { ctx.quit = true; });
-            auto& no = button(0.6f, 0.7f, 0.2f, 0.2f, s.get(459, "No"), 0, [this, &ctx] {
-                m_popup = Popup::Main;
-                buildPopup(ctx);
-            });
-            menu.setInitialFocus(&no);
-            (void)yes;
+            menu.setInitialFocus(locked ? &restart : &resume);
             menu.onBack = [this, &ctx] {
-                m_popup = Popup::Main;
-                buildPopup(ctx);
+                if (!popupLocked(ctx)) {
+                    closePopup(ctx, true);
+                } else if (m_session && m_session->raceOver()) {
+                    // The race is over with a finish: Escape shows the results.
+                    closePopup(ctx, false);
+                    m_resultsShown = true;
+                    m_result = m_session->result();
+                    leaveRace(ctx, m_result);
+                }
             };
         }
     }
@@ -2081,7 +2421,15 @@ private:
         host.graphicsChanged = [this, &ctx] { applyGraphicsOptions(ctx); };
         host.controlsChanged = [this, &ctx] { applyControlOptions(ctx); };
         host.show = [this, &ctx](std::optional<frontend::PopupPage> page) { showPopupPage(ctx, page); };
-        host.close = [this] { closePopup(); };
+        // mmPopup::DisablePU(1): the key map's and the roster's Resume
+        // Driving and Escape, with the return music.
+        host.close = [this, &ctx] { closePopup(ctx, true); };
+        // PUKey: mmIO::GetDescription of the control the race reads for a slot.
+        host.keyText = [this, &ctx](int slot) {
+            const auto& s = ctx.game->strings;
+            auto string = [&s](std::uint32_t id, const char* fallback) { return s.get(id, fallback); };
+            return controls::describe(m_gameInput.binding(static_cast<controls::Action>(slot)), string);
+        };
         // PUQuit: everyone back to the lobby, or the session ended (as
         // host, NetGame::leave ends it for everyone).
         host.quitToLobby = [this, &ctx] {
@@ -2119,7 +2467,7 @@ private:
     // on the key map it closes the popup.
     void processKeymap(Context& ctx) {
         if (m_popup == Popup::Options && m_popupPage == frontend::PopupPage::KeyMap) {
-            closePopup();
+            closePopup(ctx, true);
             return;
         }
         if (m_popup == Popup::None)
@@ -2180,10 +2528,7 @@ private:
                 openPopup(ctx, true);
             using frontend::PopupPage;
             const std::string& p = step.open;
-            if (p == "exit") {
-                m_popup = Popup::ConfirmExit;
-                buildPopup(ctx);
-            } else if (p == "options" || p == "audio" || p == "control" || p == "graphics" || p == "keymap" ||
+            if (p == "options" || p == "audio" || p == "control" || p == "graphics" || p == "keymap" ||
                        p == "quit" || p == "roster") {
                 showPopupPage(ctx, p == "audio"      ? PopupPage::Audio
                                    : p == "control"  ? PopupPage::Control
@@ -2219,29 +2564,34 @@ private:
         const ui::NavInput none;
         ui::UiFrame f{ov, m_ui, m_text, none, m_time};
         // The popup card (MenuManager::AdjustPopupCard, Card2D::Cull). The
-        // chat line has none (its text field draws its own).
+        // chat line has none (its text field draws its own). PUMain has no
+        // title (PUMenuBase::CreateTitle(0) adds none).
         const ui::Box card = frontend::popup::kCard;
         if (m_popup == Popup::Options && m_popupOptions)
             m_popupOptions->draw(m_popupPage, f);
         else if (m_popup != Popup::Chat)
             frontend::popup::drawCard(ov, card);
-        // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none,
-        // and PUExit only names its menu (UIMenu::AssignName); its question
-        // is a label (0, 0.2, 1 x 0.2, GetFont 20) centred both ways.
-        if (m_popup == Popup::ConfirmExit) {
-            const ui::Box q = frontend::popup::at(card, 0.0f, 0.2f, 1.0f, 0.2f);
-            const auto font = ui::style::popupFont();
-            m_text.draw(ov, font, ctx.game->strings.get(457, "Do you want to exit the game?"), q.x + q.w * 0.5f,
-                        q.y + (q.h - m_text.lineHeight(ov, font)) * 0.5f, ui::style::kPopupText, ui::Align::Center);
-        }
         m_popupMenu->drawContent(f);
         ov.end();
     }
 
     void loadAi(Context& ctx) {
+        const auto mode = m_result.config.mode;
+        // mmMultiBlitz / mmMultiCircuit / mmMultiRace::Init clear mmGame +0x277
+        // before mmGameMulti::Init: mmGame::Init then skips aiMap::Init, so a
+        // multiplayer race has no traffic, pedestrians, police, racers or
+        // light sets.
+        if (multiplayer(ctx) &&
+            (mode == game::GameMode::Blitz || mode == game::GameMode::Circuit || mode == game::GameMode::Checkpoint))
+            return;
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // mmGameMulti::Init: no traffic (nor cops, racers or rail cars) in
+        // multiplayer cruise and Cops and Robbers; the pedestrians stay, at
+        // the host's density (the only density the session carries).
+        if (multiplayer(ctx))
+            settings.trafficDensity = 0.0f;
         // mmSingleStunt::LoadEventFile sets the traffic density to the last
         // event's AmbDensity before aiMap::Init reads it.
         if (m_session && !m_session->setup().lessonEvents.empty())
@@ -2574,11 +2924,12 @@ private:
     // sounds), the damage effects, and the game's impact callback
     // (mmPlayer::ImpactCallback), which counts the hits.
     void playerImpact(const phys::CarImpact& impact) {
-        // mmMultiCR::ImpactCallback: a hit from another player's car.
-        if (m_cr && impact.otherBody)
+        // mmMultiCR::ImpactCallback (from vehCarDamage::ApplyImpact's damaging
+        // branch): a hit from another player's car, its summed total.
+        if (m_cr && impact.otherBody && impact.damaging)
             for (const auto& [id, rv] : m_remotes)
                 if (rv.sim && &rv.sim->sim().body == impact.otherBody)
-                    m_crImpacts.push_back({m_crSelf, id, impact.impulse.mag()});
+                    m_crImpacts.push_back({m_crSelf, id, impact.total});
         if (impact.sound)
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
@@ -2853,7 +3204,10 @@ private:
             pedals = {};
             m_player->drive(pedals);
         } else if ((m_session && m_session->playerHeld()) ||
-                   (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
+                   (multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise &&
+                    ctx.netGame->secondsToStart() > 0.0)) {
+            // (mmMultiRoam says "Go!" and lets the car go two updates after
+            // its own load, with no shared start.)
             m_player->hold(pedals); // vehCar::SetDrivable(0, 1)
             pedals.brake = 1.0f;
         } else {
@@ -3210,6 +3564,9 @@ private:
     ui::TextureCache m_ui;
     ui::TextRenderer m_text;
     std::string m_loadingImage;
+    int m_loadStep = 0;    // the next part of the loading (loadStep)
+    int m_loadPercent = 0; // the loading bar's value (ProgressCB)
+    std::chrono::steady_clock::time_point m_loadStart;
     game::RaceResult m_result;
     State m_state = State::ShowLoading;
     double m_time = 0.0;
@@ -3243,9 +3600,8 @@ private:
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.
     bool m_paused = false;
-    // The in-race popup (mmPopup). Options: one of the OPTIONS pages
-    // (m_popupPage, frontend::PopupOptions).
-    enum class Popup : std::uint8_t { None, Main, ConfirmExit, Chat, Options };
+    // The in-race popup (mmPopup). Options: one of the pages
+    // frontend::PopupOptions builds (m_popupPage).
     Popup m_popup = Popup::None;
     frontend::PopupPage m_popupPage = frontend::PopupPage::Options;
     std::unique_ptr<frontend::PopupOptions> m_popupOptions;
@@ -3270,6 +3626,8 @@ private:
     std::uint32_t m_crRng = 1;  // the places' intersection draws
     float m_crEnd = -1.0f;      // UpdateLimit's wait before the results
     bool m_crFinished = false;
+    bool m_crWaterHandled = false;        // the water / fall handler fired this frame
+    std::set<std::uint8_t> m_crPlayers;   // the players last frame (who left)
     bool m_regen = false;       // mmPlayer::EnableRegen
     float m_throttleCap = 1.0f; // mmGame +0x40c
     std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
@@ -3291,7 +3649,7 @@ private:
     std::vector<game::TrafficImpact> m_trafficImpacts;
     struct Opponent {
         std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
-        Mat34 spawn;                  // grid place on the ground (session Restart)
+        Mat34 spawn;                  // its start (the car's reset place keeps the settled one)
         std::unique_ptr<game::SimVehicle> sim;
         std::unique_ptr<game::VehicleRenderer> renderer;
         std::unique_ptr<ai::Opponent> driver;
@@ -3345,6 +3703,10 @@ private:
         std::array<float, 6> spin{};
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
+    std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
+    std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
+    std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
+    bool m_netPlayersKnown = false;
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;

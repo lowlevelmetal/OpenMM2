@@ -505,6 +505,7 @@ void PopupOptions::buildRoster(ui::Menu& menu, const PopupOptionsHost& host) {
 // which closes the popup, as Escape does (mmPopup::Update, menu 11).
 void PopupOptions::buildKeyMap(ui::Menu& menu, const PopupOptionsHost& host) {
     const auto& s = m_ctx.game->strings;
+    m_keyText = host.keyText;
     auto close = host.close;
     auto& resume = addButton(menu, popup::kKeyCard, 0.5f, 0.9f, 0.5f, popup::kButtonHeight,
                              s.get(473, "Resume Driving"), 1, [close] {
@@ -522,9 +523,10 @@ void PopupOptions::buildKeyMap(ui::Menu& menu, const PopupOptionsHost& host) {
 // the actions the controller uses (popup::keyMapSlots) in two columns, the
 // name ("%-23s") at x 0.05 and the binding ("%.23s", mmIO::GetDescription)
 // at 0.25 for the left column, 0.5 and 0.7 for the right one, the rows
-// from y 0.05 every 0.03 of the screen, in GetFont 16. OpenMM2 binds only
-// keys: an action shows its key (or UNDEFINED, string 271), the steering
-// axis of the analog devices the controller's name (inferred).
+// from y 0.05 every 0.03 of the screen, in GetFont 16. The description is
+// the race's (PopupOptionsHost::keyText); without one, an action shows its
+// key (or UNDEFINED, string 271) and the analog steering the controller's
+// name (inferred).
 void PopupOptions::drawKeyMap(ui::UiFrame& f) const {
     const auto& s = m_ctx.game->strings;
     const auto c = controller();
@@ -535,7 +537,9 @@ void PopupOptions::drawKeyMap(ui::UiFrame& f) const {
     for (std::size_t k = 0; k < slots.size(); ++k) {
         const auto& a = actions[static_cast<std::size_t>(slots[k])];
         std::string key;
-        if (!a.keyboard) {
+        if (m_keyText) {
+            key = m_keyText(slots[k]);
+        } else if (!a.keyboard) {
             const std::uint32_t names[] = {580, 581, 582, 583, 584};
             key = s.get(names[static_cast<int>(c)]);
         } else {

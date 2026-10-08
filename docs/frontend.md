@@ -391,8 +391,8 @@ the screen, or 0.9 x 0.8 centred for the control and graphics pages and
 0.9 x 0.9 for the key map. Buttons are 0.1 of the card high in GetFont 24
 (string 570), white, yellow-green when focused, grey when disabled; type 1
 (OK, Cancel, Previous Menu, Resume Driving) outlines its box and centres
-the label, type 2 (rows) centres it, type 0 (PUExit's Yes / No, the results)
-centres it vertically only. Titles use GetFont 32 at the card's top-left;
+the label, type 2 (rows) centres it, type 0 (the results) centres it
+vertically only. Titles use GetFont 32 at the card's top-left;
 slider and drop-down labels GetFont 16, 16 pixels above their control.
 Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch",
 drop-downs "Selectionmade" when opened with Enter, on every key in the open
@@ -402,13 +402,14 @@ typed and on Enter.
 * **PUMain**: Resume Driving (0.5, 0.9), then Restart Race / Restart Lesson
   (read-only in network games), Options, Quit to Race Menu / Back to
   School and Exit to Windows across the card at 0.125, 0.25, 0.375, 0.5.
-  For the host of a network race, Quit opens **PUQuit**: Quit to Lobby
+  Once a single-player race is over (`mmPopup::Lock`) Resume Driving is
+  off and the focus starts on Restart. Exit to Windows ends the game at
+  once (`mmPopup::Update` id 0xe): nothing switches to PUExit's question
+  (menu 3), which build 3393 never shows. For the host of a network race, Quit opens **PUQuit**: Quit to Lobby
   (everyone back to the lobby), End Session and Cancel at 0.35, 0.45,
   0.55. MM2's middle button reads Quit Game and lets the others race on
   under a migrated DirectPlay host (End Session only in Cops and Robbers);
   OpenMM2 has no host migration, so leaving as host ends the session.
-* **PUExit**: the question (string 457) centred in 0..1 x 0.2-0.4, Yes and
-  No at (0.2, 0.7) and (0.6, 0.7), 0.2 x 0.2.
 * **PUOptions** (no title): Audio, Control and Graphics Options at 0.2,
   0.4, 0.6 and Previous Menu. On the three pages Cancel (0, 0.9) and OK
   (0.6, 0.9) return to PUOptions; Escape does nothing there (mmPopup
@@ -448,7 +449,7 @@ OpenMM2 writes the options as the page closes (`openmm2.ini`); MM2 writes
 the driver's configuration when the game ends (`mmGame::BeDone`). The
 results are a frontend page (see Results above).
 `OPENMM2_POPUP_SCRIPT` drives the popup for screenshots:
-`open:<main|options|audio|control|graphics|keymap|quit|roster|exit>`,
+`open:<main|options|audio|control|graphics|keymap|quit|roster>`,
 `nav:<up|down|left|right|accept|back>`, `wait:<frames>`.
 
 ## Drivers and unlocks

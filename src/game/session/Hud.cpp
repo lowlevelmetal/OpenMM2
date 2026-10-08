@@ -225,7 +225,7 @@ Mat34 standMatrix(const Checkpoint& cp) {
     Mat34 m = Mat34::rotationY(-cp.headingDeg * kDegToRad);
     m.m0 *= cp.radius;
     m.m1 *= kHeight;
-    m.m2 *= cp.radius;
+    m.m2 *= cp.standDepth > 0.0f ? cp.standDepth : cp.radius;
     m.m3 = cp.position + Vec3{0.0f, kHeight * 0.5f, 0.0f};
     return m;
 }

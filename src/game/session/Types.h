@@ -48,7 +48,7 @@ struct OpponentState {
     // The AI driver reached the end of its route (aiRouteRacer::Finished);
     // MM2 ranks an opponent as finished from this, not from the gates.
     bool finished = false;
-    // Police: chasing the player (aiPoliceOfficer::InPersuit).
+    // Police: aiPoliceOfficer::InPersuit (any chase, or wrecked out of action).
     bool pursuing = false;
     Vec3 inertiaBox = kDefaultInertiaBox;
 };
@@ -66,6 +66,10 @@ struct Checkpoint {
     // Column 6 of the point list (mmWaypointObject hit flag): crash course
     // any-order events clear this one by distance (RadiusHit) instead of the gate.
     bool hitByRadius = false;
+    // The stand's depth scale (0: the radius). mmWaypoints::InitStatic builds
+    // the crash course's stands 15 deep and mmWaypointObject::SetRadius
+    // changes only their width, so lesson stands stay 15 deep.
+    float standDepth = 0.0f;
 };
 
 // Things that happened during an update, for audio, music, voice and the
@@ -97,6 +101,10 @@ enum class EventType : std::uint8_t {
     SessionOver,         // results can be shown
     Sound,               // index = GameSound; value: 0 play once, 1 loop, -1 stop
     Speech,              // index = SpeechCue, value = its argument (the announcer)
+    // Multiplayer: the player finished in `value` seconds, or did not finish
+    // (value = Session::kNetDnf): tell the other players
+    // (mmGameMulti::SendFinishReq / SendFinishAck).
+    NetFinished,
 };
 
 // What the modes ask of the announcer (mmRaceSpeech, mmCCSpeech).
@@ -120,6 +128,7 @@ enum class GameSound : std::uint8_t {
     TimerWarning,  // "Timerwarning": the last 10 s
     Waypoint,      // "Waypoint": a checkpoint cleared
     LastWaypoint,  // "Lastwaypoint": a circuit lap completed
+    NetAlert,      // "Carhorn1double": mmHUD::PlayNetAlert (multiplayer messages)
 };
 
 inline const char* gameSoundName(GameSound s) {
@@ -133,6 +142,7 @@ inline const char* gameSoundName(GameSound s) {
     case GameSound::TimerWarning: return "Timerwarning";
     case GameSound::Waypoint: return "Waypoint";
     case GameSound::LastWaypoint: return "Lastwaypoint";
+    case GameSound::NetAlert: return "Carhorn1double";
     }
     return "";
 }
@@ -146,6 +156,7 @@ inline float gameSoundVolume(GameSound s, bool crashCourse) {
     case GameSound::DamageLose: return 0.925f;
     case GameSound::Waypoint:
     case GameSound::LastWaypoint: return crashCourse ? 0.91f : 0.95f;
+    case GameSound::NetAlert: return 0.85f; // mmHUD::Init
     default: return 0.9f;
     }
 }

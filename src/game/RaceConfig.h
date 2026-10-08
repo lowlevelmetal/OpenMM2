@@ -60,6 +60,8 @@ struct RaceStanding {
     int opponent = -1; // index of the AI opponent, -1 = the player
     int place = 0;     // 1-based
     float timeSeconds = 0.0f;
+    std::string name;  // multiplayer: the player's name (mmGameMulti::UpdateResults)
+    bool dnf = false;  // multiplayer: did not finish (PUResults::AddLoser)
 };
 
 // Outcome of a session, shown by the results screens and recorded in the

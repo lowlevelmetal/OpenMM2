@@ -129,6 +129,9 @@ struct PopupOptionsHost {
     };
     std::function<std::vector<RosterEntry>()> roster;
     std::function<void(std::uint8_t)> boot;
+    // PUKey: the control the race reads for an action slot
+    // (mmIO::GetDescription).
+    std::function<std::string(int)> keyText;
 };
 
 // The OPTIONS pages of the in-race popup.
@@ -166,6 +169,7 @@ private:
     ui::Slider* m_deadZone = nullptr;
     ui::Slider* m_collision = nullptr;
     ui::Slider* m_roadForce = nullptr;
+    std::function<std::string(int)> m_keyText; // PUKey's descriptions (PopupOptionsHost::keyText)
 };
 
 // MenuManager's popup sounds (MenuManager::InitCommonStuff loads

@@ -183,8 +183,12 @@ int run(const CommandLine& cl) {
             ctx.quit = true;
         if (ev.resized)
             ctx.device().notifyResized();
-        if (ev.focusLost || ev.focusGained)
+        if (ev.focusLost || ev.focusGained) {
+            const bool wasActive = active;
             active = ctx.window().focused();
+            if (active && !wasActive)
+                screen->activated(ctx);
+        }
         const bool frozen = !active && !ctx.quit && freezesWhenInactive(ctx);
         if (frozen != audioPaused) {
             ctx.audioDevice.setPaused(frozen);

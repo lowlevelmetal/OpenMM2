@@ -104,6 +104,20 @@ Mat34 spawnAt(const Checkpoint& cp) {
     return m;
 }
 
+ResetPlace startPlace(const Checkpoint& cp) {
+    return {cp.position, cp.headingDeg * -0.017453292f};
+}
+
+Vec3 findGroundPos(const Vec3& p, const GroundProbe& probe) {
+    if (!probe)
+        return p;
+    const Vec3 from{p.x, p.y + 7.5f, p.z};
+    const Vec3 to{p.x, p.y - 15.0f, p.z};
+    if (auto hit = probe(from, to))
+        return *hit;
+    return p;
+}
+
 std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uint32_t& rng) {
     if (!city.aiMap || city.aiMap->intersections.size() < 2)
         return std::nullopt;
@@ -278,6 +292,8 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
                 return std::nullopt;
             }
             le.checkpoints = std::move(*cps);
+            for (auto& cp : le.checkpoints)
+                cp.standDepth = 15.0f; // mmWaypoints::InitStatic's radius 15
             s.lessonEvents.push_back(std::move(le));
         }
         s.checkpoints = s.lessonEvents.front().checkpoints;
@@ -285,9 +301,11 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
 
     // Opponents: the aimap lists the field; the configuration says how many
     // race. Crash courses load all of theirs; each event's "numopp" says
-    // which take part.
+    // which take part. Multiplayer has neither racers nor police:
+    // mmGameMulti::Init sets the opponent and cop densities to 0 (and the race
+    // modes load no AI map at all).
     const bool racing = config.mode == GameMode::Circuit || config.mode == GameMode::Checkpoint;
-    if (s.aiMap && s.race && (racing || config.mode == GameMode::CrashCourse)) {
+    if (s.aiMap && s.race && !config.multiplayer && (racing || config.mode == GameMode::CrashCourse)) {
         const std::string& any = !s.race->aiMap.empty() ? s.race->aiMap : s.race->waypoints;
         const std::string dir = any.substr(0, any.rfind('/') + 1);
         // aiMap::Init loads min(table count, OpponentDensity) racers; the
@@ -316,7 +334,7 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             s.opponents.push_back(std::move(op));
         }
     }
-    if (s.aiMap) {
+    if (s.aiMap && !config.multiplayer) {
         for (const auto& p : s.aiMap->police) {
             PoliceSetup ps;
             ps.vehicle = str::lower(p.car);
@@ -331,18 +349,35 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     // GetStartAngle). Cruise starts at a random AI intersection facing -Z
     // (mmSingleRoam::InitOtherPlayers -> mmGame::RespawnXYZ); without an AI
     // map, the city's first Blitz start.
+    //
+    // The car is placed there (the modes' InitGameObjects: SetResetPos and
+    // vehCar::Reset); then the race modes' InitOtherPlayers settle it on the
+    // ground (SimVehicle::settleOnGround), while mmSingleRoam::InitOtherPlayers leaves
+    // it at RespawnXYZ's point, 2 m above the intersection.
     std::uint32_t rng = seed;
+    s.playerDrop = StartDrop::OnGround;
     if (!s.checkpoints.empty()) {
         s.playerSpawn = spawnAt(s.checkpoints.front());
+        s.playerPlace = startPlace(s.checkpoints.front());
+        // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitNetworkPlayers:
+        // the grid slot (StartXYZ, added by the race screen) goes through
+        // mmGame::FindGroundPos before the one reset.
+        if (config.multiplayer)
+            s.playerDrop = StartDrop::FindGround;
     } else if (auto p = randomIntersectionStart(city, rng)) {
         s.playerSpawn = Mat34::identity();
         s.playerSpawn.m3 = *p;
+        s.playerPlace = {*p, 0.0f};
+        s.playerDrop = StartDrop::None;
     } else {
+        // OpenMM2's fallback for a city without an AI map (RespawnXYZ would
+        // use (0, 20, 0)): the city's first Blitz start.
         for (const auto& r : city.races) {
             if (r.mode != city::RaceMode::Blitz)
                 continue;
             if (auto cps = loadCheckpoints(vfs, r.waypoints, false)) {
                 s.playerSpawn = spawnAt(cps->front());
+                s.playerPlace = startPlace(cps->front());
                 break;
             }
         }

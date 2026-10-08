@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <random>
 
 namespace mm2::game::session {
@@ -64,6 +65,23 @@ ModeText modeText(GameMode m, bool multi) {
     default: break;
     }
     return t;
+}
+
+// The multiplayer races' finish lines (mmMultiRace / Circuit / Blitz::
+// GameMessage, UpdateGame): another player "finished in" (the host's line on
+// 0x206, a client's on 0x1f7) and the finish timeout's "Race over".
+struct NetText {
+    std::uint32_t otherFinished = 0, raceOver = 0;
+    float timeout = 0.0f; // the timeout armed at the first finish (0: none)
+};
+
+NetText netText(GameMode m, bool host) {
+    switch (m) {
+    case GameMode::Checkpoint: return {host ? 152u : 150u, host ? 143u : 153u, 60.0f};
+    case GameMode::Circuit: return {host ? 110u : 107u, host ? 100u : 111u, 120.0f};
+    case GameMode::Blitz: return {host ? 99u : 96u, 0, 0.0f};
+    default: return {};
+    }
 }
 
 // mmSingleStunt::Update* countdown strings: the messages of states 1 and 2
@@ -219,6 +237,12 @@ void Session::resetRace() {
     m_postWait = 0.0f;
     m_endHold = PlayerHold::None;
     m_damagedOut = m_engineSilenced = false; // the modes' Reset: SilenceEngine(0)
+    m_postRaceCam = m_musicStop = false;
+    m_netResults.clear(); // mmGameMulti::Reset: the results table
+    m_netTimeoutOn = m_netTimedOut = false;
+    m_netRacerCount = 1;
+    // DisableRacers: the player takes no damage before "Go!".
+    m_playerDamage = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers;
     m_resultFinished = m_resultWon = false;
     m_resultPosition = 0;
     m_resultTime = 0.0f;
@@ -246,7 +270,10 @@ void Session::beginEvent(int index) {
     m_phase = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers ? Phase::Racing : Phase::Countdown;
     m_stage = Stage::Intro;
     m_wait = 0.0f;
-    m_skipToGo = index > 0;
+    // A later exam event goes straight to "Go"; UpdateCollide and
+    // UpdateAccel have no such skip and play their countdown again.
+    m_skipToGo = index > 0 && !(lesson && (lesson->type == LessonType::Collide ||
+                                            lesson->type == LessonType::Acceleration));
     m_accelWait = -1.0f;
 
     m_hasClock = false;
@@ -456,9 +483,13 @@ void Session::go() {
         m_clockRunning = m_hasClock;
         // Every Update* but UpdateJump enables the event's cars at "Go"
         // (UpdateJump only for a later event, in state 0; no retail jump
-        // lesson has cars).
-        if (lesson->type != LessonType::Jump)
+        // lesson has cars). EnableRacers also turns the held player's damage
+        // on; UpdateJump only makes the car drivable, so a jump lesson is
+        // driven without damage.
+        if (lesson->type != LessonType::Jump) {
             enableLessonOpponents();
+            m_playerDamage = true;
+        }
         if (lesson->type == LessonType::Destroy && !m_opponents.empty()) {
             const int target = lessonOpponentOffset();
             if (target < static_cast<int>(m_opponents.size()))
@@ -468,6 +499,7 @@ void Session::go() {
         setMessage(modeText(mode(), multiplayer()).go, "Go!", kStep, true);
         m_clockRunning = m_hasClock;
         std::fill(m_oppEnabled.begin(), m_oppEnabled.end(), 1);
+        m_playerDamage = true; // mmGameSingle / mmGameMulti::EnableRacers
     }
     push(EventType::CountdownGo);
     sound(GameSound::StartRaceHigh);
@@ -715,7 +747,9 @@ void Session::updateOpponents(std::span<const OpponentState> opponents) {
             r.place = ++m_finishers;
             r.finishTime = m_hudTime; // mmTimer::GetTime on mmHUD's +0xA24 timer
             push(EventType::OpponentFinished, static_cast<int>(i), static_cast<float>(r.place));
-            if (m_phase == Phase::Racing) {
+            // mmSingleCircuit::UpdateOpponentStatus shows it only in state 3,
+            // not during the wreck penalty (state 6).
+            if (m_phase == Phase::Racing && !(mode() == GameMode::Circuit && m_penaltyLeft > 0.0f)) {
                 // Handle 4 (circuit) / 5 (race): "Messagenote" in both.
                 if (!multiplayer())
                     sound(GameSound::MessageNote);
@@ -821,6 +855,32 @@ void Session::hitWater() {
         }
         return;
     }
+    if (m_phase == Phase::PostRace) {
+        // mmGame::Update checks the water after the ending too, and the
+        // modes' handlers do not look at their state.
+        switch (mode()) {
+        case GameMode::Blitz:
+        case GameMode::Checkpoint:
+            // mmSingleBlitz / mmSingleRace::HitWaterHandler: state 4, 0.5 s.
+            // After a finish (race-over set) state 4 never opens the menu nor
+            // shows the results: they wait for Escape on the locked menu.
+            sound(GameSound::DamageLose);
+            if (mode() == GameMode::Checkpoint)
+                m_engineSilenced = true;
+            m_postWait = m_resultFinished ? std::numeric_limits<float>::infinity() : kWaterLoseDelay;
+            break;
+        case GameMode::Circuit: respawnAtLastCheckpoint(); break;
+        case GameMode::CrashCourse:
+            // mmSingleStunt::HitWaterHandler, unless the race-over flag is set.
+            if (!m_lessonDone) {
+                sound(GameSound::DamageLose);
+                m_postWait = kWaterLoseDelay;
+            }
+            break;
+        default: break;
+        }
+        return;
+    }
     switch (mode()) {
     case GameMode::Cruise:
         // mmSingleRoam::HitWaterHandler resets the game.
@@ -860,8 +920,10 @@ void Session::dropThroughCity() {
 void Session::respawnAtLastCheckpoint() {
     // mmSingleCircuit / mmGameMulti::HitWaterHandler: the last waypoint
     // cleared, facing its heading.
-    if (!m_checkpoints.empty())
-        m_respawn = spawnAt(m_checkpoints[static_cast<std::size_t>(m_wp.lastCleared)]);
+    if (!m_checkpoints.empty()) {
+        const Checkpoint& cp = m_checkpoints[static_cast<std::size_t>(m_wp.lastCleared)];
+        m_respawn = spawnAt(cp);
+    }
     m_waterHandled = false;
     m_waterTimer = 0.0f;
     push(EventType::Respawn);
@@ -955,6 +1017,127 @@ void Session::endRace(bool finished, bool won, float delay, PlayerHold hold) {
     m_resultFinished = finished;
     m_resultWon = won;
     m_resultTime = m_raceTime;
+    // mmPlayer::SetPostRaceCam (mmGameMulti::SetFinishCam): at a finish and
+    // at the single-player wrecks that make the car undrivable; not after the
+    // water, a Blitz run out of time or most failed lessons, which keep the
+    // driving (or water) camera. The lessons that set it anyway say so.
+    m_postRaceCam = finished || (hold == PlayerHold::Undrivable && !multiplayer());
+}
+
+void Session::deactivateFinish() {
+    // mmWaypoints::DeactivateFinish: the last waypoint's stand disappears.
+    if (!m_wp.visible.empty())
+        m_wp.visible.back() = 0;
+}
+
+bool Session::netWaitsForAll() const {
+    // mmMultiRace / mmMultiCircuit stay in state 4 until every player is
+    // counted (0x211) or the timeout runs out ("wait for all finishers", on
+    // by default); Blitz ends with its clock.
+    return multiplayer() && (mode() == GameMode::Checkpoint || mode() == GameMode::Circuit);
+}
+
+void Session::addNetResult(std::string name, float time, bool self) {
+    // mmGameMulti::SortResults: a player is listed once, by time (a later
+    // equal time goes after; kNetDnf sorts last).
+    for (const auto& r : m_netResults)
+        if (r.self == self && r.name == name)
+            return;
+    auto at = std::find_if(m_netResults.begin(), m_netResults.end(), [&](const NetResult& r) { return r.time > time; });
+    m_netResults.insert(at, NetResult{std::move(name), time, self});
+    // SetTimeoutOn: the first finish (fewer than 2 counted) arms the
+    // finish timeout of a race (60 s) or circuit (120 s).
+    const NetText nt = netText(mode(), m_options.netHost);
+    if (netWaitsForAll() && nt.timeout > 0.0f && m_netResults.size() < 2 && m_phase != Phase::Done) {
+        m_netTimeoutOn = true;
+        m_netTimeout = nt.timeout;
+    }
+}
+
+void Session::remoteFinished(const std::string& name, float seconds) {
+    if (!multiplayer() || m_phase == Phase::Done)
+        return;
+    const NetText nt = netText(mode(), m_options.netHost);
+    // GameMessage 0x206 (host) / 0x1f7 (client): Messagenote and the line,
+    // unless the player did not finish.
+    sound(GameSound::MessageNote);
+    if (seconds < kNetDnf) {
+        setMessage(name, 5.0f, false);
+        setMessage2(std::format("{} {}", str(nt.otherFinished, "finished in"), formatTime(seconds)));
+    }
+    addNetResult(name, seconds, false);
+}
+
+void Session::updateNetRace(float dt, const PlayerState& player) {
+    // mmGameMulti::UpdateScore: the place among the other players, while
+    // the player's waypoints are not done ("Place: n/N").
+    const int n = static_cast<int>(m_checkpoints.size());
+    if (!m_wp.finished && n >= 2) {
+        const Vec3 target = m_checkpoints[static_cast<std::size_t>(std::clamp(m_wp.current, 0, n - 1))].position;
+        const float mine = dist2(player.transform.m3, target);
+        int place = 1, racers = 1;
+        for (const auto& r : m_netRacers) {
+            if (!r.present) {
+                // A slot without a car counts only once finished.
+                if (r.finished) {
+                    ++racers;
+                    ++place;
+                }
+                continue;
+            }
+            ++racers;
+            if (m_wp.count < r.waypoints || r.finished)
+                ++place;
+            else if (m_wp.count == r.waypoints && dist2(r.position, target) < mine)
+                ++place;
+        }
+        m_rank = place;
+        m_netRacerCount = racers;
+    }
+    // Each other player's rank over its icon (IconIndex); a finished
+    // player's icon is turned off (0 here), a missing car has none.
+    m_netPlaces.assign(m_netRacers.size(), 0);
+    if (n >= 2) {
+        for (std::size_t i = 0; i < m_netRacers.size(); ++i) {
+            const NetRacer& r = m_netRacers[i];
+            if (!r.present || r.finished)
+                continue;
+            const Vec3 wp = m_checkpoints[static_cast<std::size_t>(r.waypoints % n)].position;
+            const float own = dist2(r.position, wp);
+            int place = 1;
+            for (std::size_t j = 0; j < m_netRacers.size(); ++j) {
+                const NetRacer& o = m_netRacers[j];
+                if (j == i || (!o.present && !o.finished))
+                    continue;
+                if (o.waypoints > r.waypoints || o.finished)
+                    ++place;
+                else if (o.present && o.waypoints == r.waypoints && dist2(o.position, wp) < own)
+                    ++place;
+            }
+            if (m_wp.count > r.waypoints || m_wp.finished ||
+                (m_wp.count == r.waypoints && dist2(player.transform.m3, wp) < own))
+                ++place;
+            m_netPlaces[i] = place;
+        }
+    }
+    if (!m_netTimeoutOn)
+        return;
+    // The finish timeout (the host's in MM2; here every machine runs it from
+    // the first finish it hears of).
+    m_netTimeout -= dt;
+    if (m_netTimeout > 0.0f)
+        return;
+    m_netTimeoutOn = false;
+    m_netTimedOut = true;
+    if (m_phase == Phase::Racing) {
+        // Not finished: braked, "Race over" at the bottom for 5 s, the race
+        // timer stopped, and a did-not-finish to the others.
+        const NetText nt = netText(mode(), m_options.netHost);
+        setMessage(nt.raceOver, "Race over", 5.0f, false);
+        push(EventType::NetFinished, -1, kNetDnf);
+        addNetResult(m_options.playerName, kNetDnf, true);
+        endRace(false, false, 3.0f, PlayerHold::Undrivable);
+    }
 }
 
 void Session::playerFinished() {
@@ -987,6 +1170,10 @@ void Session::updateRace(float dt, const PlayerState& player) {
 
     if (multiplayer()) {
         // mmMultiRoam / Blitz / Circuit / Race: wrecks cost 5 s, never the race.
+        // While the penalty runs (states 6 / 7) the timer warning, the finish
+        // and the clock are not checked (only state 3 checks them).
+        if (penalty)
+            return;
         if (mode() == GameMode::Blitz && m_hasClock && m_clock < kTimerWarning)
             timerWarning(dt);
         wreckPenalty();
@@ -996,6 +1183,9 @@ void Session::updateRace(float dt, const PlayerState& player) {
             // The player's name, and "finished in M:SS:HH" under it.
             setMessage(m_options.playerName, 5.0f, false);
             setMessage2(std::format("{} {}", str(mt.finishedIn, "finished in"), formatTime(m_raceTime)));
+            // SendFinishReq / SendFinishAck, SortResults, SetTimeoutOn.
+            push(EventType::NetFinished, -1, m_raceTime);
+            addNetResult(m_options.playerName, m_raceTime, true);
             // Blitz shows the results when the clock would have run out;
             // the others 3 s after the finish.
             const float wait = mode() == GameMode::Blitz ? m_clock : 3.0f;
@@ -1008,6 +1198,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             m_timeUp = true;
             push(EventType::TimeUp);
             setMessage(mt.timeUp, "Time's up!", 5.0f, false);
+            deactivateFinish();
             endRace(false, false, kPostRace);
         }
         return;
@@ -1029,7 +1220,10 @@ void Session::updateRace(float dt, const PlayerState& player) {
         if (m_wp.finished) {
             stopTimerWarning();
             if (m_timeUp) {
+                // Finished after the time ran out: no post-race camera and
+                // the music goes on.
                 m_wp.stopped = true;
+                deactivateFinish();
                 speech(SpeechCue::ResultsPoor);
                 sound(GameSound::YouLose);
                 setMessage(mt.timeUp, "Time's up!", 5.0f, false);
@@ -1038,6 +1232,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
                 playerFinished();
                 sound(GameSound::EndOfRaceTag);
                 setMessage(mt.won, "You Won!", 5.0f, true);
+                m_musicStop = true; // StopSegment(0)
                 endRace(true, true, kPostRace);
             }
             return;
@@ -1053,6 +1248,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
         if (wrecked(player)) {
             stopTimerWarning();
             m_wp.stopped = true;
+            deactivateFinish();
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
             if (mode() == GameMode::Blitz)
@@ -1072,6 +1268,8 @@ void Session::updateRace(float dt, const PlayerState& player) {
             setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
                        std::format("You finished #{}", m_resultPosition), 5.0f, true);
             // mmSingleCircuit::ProgressCheck: top three, professionals first.
+            m_musicStop = true;     // StopSegment(0)
+            m_playerDamage = false; // the circuit finish: EnableDamage = 0
             endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
         }
         break;
@@ -1083,6 +1281,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             sound(place0 == 0 ? GameSound::EndOfRaceTag : GameSound::YouLose);
             setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
                        std::format("You finished #{}", m_resultPosition), 5.0f, place0 < 8);
+            m_musicStop = true; // StopSegment(0)
             endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
             return;
         }
@@ -1122,7 +1321,9 @@ void Session::lessonFailed(float delay, PlayerHold hold, bool registerFinish) {
     // Several failures can come in one frame (UpdateCorner and UpdateFrogger
     // go on checking after one): report the lesson failed once.
     const bool alreadyFailed = (m_phase == Phase::PostRace || m_phase == Phase::Done) && !m_resultWon;
-    m_lessonDone = true;
+    // The race-over flag (+0x7c) is set only by the endings that set it
+    // themselves (a finish with pursuers, the Clean and Collide time-ups);
+    // the other failures leave it clear, so the water handler still runs.
     m_wp.stopped = true;
     if (!alreadyFailed) {
         push(EventType::LessonFailed, m_lessonEvent);
@@ -1174,7 +1375,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
         return;
     auto pause = [&] {
         push(EventType::Wrecked);
-        startPenalty(kWreckPause);
+        startPenalty(kWreckPause, false); // no SetDrivable in the lessons' state 5
     };
     const bool timeOut = m_hasClock && m_clock <= 0.0f;
     const int targetIndex = lessonOpponentOffset();
@@ -1194,12 +1395,14 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(614, "Time's up!", 5.0f, false);
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         } else if (wrecked(player)) {
             stopTimerWarning();
             sound(GameSound::DamageLose);
             push(EventType::Wrecked);
             setMessage(615, "Game over!", 5.0f, false);
             lessonFailed(5.0f, PlayerHold::Undrivable);
+            deactivateFinish();
         }
         break;
     case LessonType::Collide: // UpdateCollide (no retail lesson; nothing is recorded)
@@ -1211,6 +1414,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             stopTimerWarning();
             push(EventType::TimeUp);
             endRace(false, false, kPostRace);
+            m_postRaceCam = true; // UpdateCollide: SetPostRaceCam at the time-up
         } else if (m_wp.finished) {
             m_lessonDone = true;
             setMessage(215, "Good driving!", kStep, true);
@@ -1250,6 +1454,9 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 setMessage(197, "Lose your pursuers before you finish!", 5.0f, true); // HUDMessage
                 sound(GameSound::YouLose);
                 lessonFailed();
+                m_postRaceCam = true; // set before the pursuit check
+                m_lessonDone = true;   // and the race-over flag (+0x7c)
+                deactivateFinish();
             } else {
                 setMessage(196, "You survived the gauntlet!", 5.0f, true);
                 if (lastEvent())
@@ -1261,6 +1468,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(198, "Time's up!  Drive faster to win!", 5.0f, false);
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         }
         break;
     case LessonType::MinimumSpeed: { // UpdateCorner
@@ -1271,6 +1479,8 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 setMessage(197, "Lose your pursuers before you finish!", 5.0f, true);
                 sound(GameSound::YouLose);
                 lessonFailed();
+                m_postRaceCam = true; // set before the pursuit check
+                m_lessonDone = true;   // and the race-over flag (+0x7c)
             } else {
                 if (lastEvent())
                     sound(GameSound::EndOfRaceTag);
@@ -1284,6 +1494,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish(); // CheckTimeUp's branch only
             break;
         }
         if (!m_reachedMinSpeed) {
@@ -1325,6 +1536,8 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             stopTimerWarning();
             push(EventType::TimeUp);
             lessonFailed();
+            m_postRaceCam = true; // UpdateFrogger: SetPostRaceCam at the time-up
+            m_lessonDone = true;   // and +0x7c
             break;
         }
         bool passed = false;
@@ -1369,6 +1582,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(203, "Put the pedal to the metal!", 5.0f, false);
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         }
         break;
     case LessonType::Course:
@@ -1384,12 +1598,14 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         } else if (wrecked(player)) {
             stopTimerWarning();
             sound(GameSound::DamageLose);
             push(EventType::Wrecked);
             setMessage(245, "Game over!", 5.0f, false);
             lessonFailed(5.0f, PlayerHold::Undrivable);
+            deactivateFinish();
         }
         break;
     case LessonType::Destroy: // UpdateStop
@@ -1465,16 +1681,27 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
             return;
         updateWaypoints(player);
         updateRank(player, opponents);
+        if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
+            updateNetRace(dt, player);
         return;
-    case Phase::PostRace:
+    case Phase::PostRace: {
         updateClock(dt);
         updateOpponents(opponents);
+        if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
+            updateNetRace(dt, player);
+        // mmGame::Update's water and fall checks run in every state.
+        if (updateHazards(dt, player) && m_phase != Phase::PostRace)
+            return; // a fall restarted the race
         m_postWait -= dt;
-        if (m_postWait <= 0.0f) {
+        // A multiplayer race or circuit waits (braked) until everyone is
+        // counted or the finish timeout has run out (0x211, state 5).
+        const bool counted = m_netResults.size() >= m_netRacers.size() + 1 || m_netTimedOut;
+        if (m_postWait <= 0.0f && (!netWaitsForAll() || counted)) {
             m_phase = Phase::Done;
             push(EventType::SessionOver);
         }
         return;
+    }
     case Phase::Done: return;
     case Phase::Racing: break;
     }
@@ -1488,7 +1715,9 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
     if (m_phase == Phase::Racing) {
         updateOpponents(opponents);
         updateRank(player, opponents);
-        if (updateHazards(dt, player))
+        if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
+            updateNetRace(dt, player);
+        if (m_phase == Phase::Racing && updateHazards(dt, player))
             return;
     } else if (m_phase == Phase::PostRace) {
         // The race just ended: UpdateOpponentStatus still ends this
@@ -1535,6 +1764,10 @@ int Session::checkpointsCleared() const {
         // passed; mmWaypoints::Reset shows the first target (1) at the start.
         if (m_wp.count == 1)
             return std::min(1, std::max(0, n - 1));
+        // mmWaypoints::Update skips SetWPCleared on the final crossing (the
+        // waypoints are done): the readout keeps the last checkpoint.
+        if (m_wp.finished)
+            return std::max(0, n - 1);
         return m_wp.current == 0 ? std::max(0, n - 1) : std::max(0, m_wp.current - 1);
     }
     // mmWPHUD counts every change of the cleared mask; a checkpoint race's
@@ -1581,6 +1814,19 @@ RaceResult Session::result() const {
         const int points = place >= 1 && place <= 3 ? kPlacePoints[place] : 0;
         const int difficulty = static_cast<int>(m_setup.settings.difficulty);
         r.score = static_cast<int>(m_options.scoringBias) * points * difficulty;
+    }
+    // Multiplayer (mmGameMulti::UpdateResults): the players by time, the
+    // did-not-finish ones last as losers; the player's place is its row.
+    if (raced && multiplayer()) {
+        int place = 0;
+        for (const auto& nr : m_netResults) {
+            ++place;
+            RaceStanding st{nr.self ? -1 : -2, place, nr.time, nr.name, nr.time >= kNetDnf};
+            if (nr.self && r.finished && !st.dnf)
+                r.position = place;
+            r.standings.push_back(std::move(st));
+        }
+        return r;
     }
     // The results list (PUResults::AddName): everyone who finished, by place.
     if (raced) {

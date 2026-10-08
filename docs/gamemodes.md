@@ -168,12 +168,39 @@ the path flag bits follow mm2hook's naming), facing -Z. In a multiplayer
 race each player takes a slot of `mmGameMulti::StartXYZ`'s grid behind the
 start: 2.25 m either side 6 m back, then 4.5 m to the sides and 6 m ahead,
 or for cars with a trailer or a radius over 6 m 2.75 / 5.5 m to the sides
-16 and 34 m back (the slot is taken as the player's id, inferred).
+16 and 34 m back (the slot is `NetStartArray`'s, which the host fills in
+the order it lists the players: OpenMM2 uses the place in the host's
+player list, inferred from DirectPlay's enumeration).
 Multiplayer cruise draws its intersection with the player's id as the
-seed. Spawn points drop onto the ground with the wheels' probe. Opponents start on the first
+seed. Opponents start on the first
 row of their `.opp` line, turned by its fourth column (degrees × 0.017444445,
 not negated as the player's start angle is; `aiRouteRacer::Init`); the last
 row is where the AI finishes.
+
+How a car is put on its place (`RaceSetup::playerPlace` / `playerDrop`
+say where and how per mode; `SimVehicle::setResetPos`, `reset`,
+`settleOnGround` do it): the modes call `vehCarSim::SetResetPos(p)` with a
+reset angle and `vehCar::Reset`, which puts the body (the centre of
+gravity) at p + CenterOfGravity, unrotated, and turns it about Y. Every
+later reset (a restart) goes back there. The modes then settle it:
+
+| Mode | Player | Racers |
+|---|---|---|
+| Blitz, circuit, checkpoint race, crash course | start waypoint, then `mmGame::InitOtherPlayers`: probe from 2 m above the body to 10 m below it, reset place 0.9 m above the hit | `.opp` row, then `mmGame::CollideAIOpponents`: the same probe from the model origin, and 0.9 m |
+| Cruise (single and multiplayer) | `RespawnXYZ`: 2 m above the intersection centre, angle 0, no probe | — |
+| Multiplayer Blitz, circuit, checkpoint race | grid slot, then `mmGame::FindGroundPos` (probe 7.5 m up to 15 m down, the hit itself) | — |
+| Police | their post and angle (`aiPoliceOfficer::Reset`), no probe | — |
+
+MM2's car models have their origin at the bottom of the car, so a race
+start leaves the car 0.7 m above the road (0.9 m plus twice a typical
+CenterOfGravity y of -0.1) and it drops onto its wheels. The water
+handlers that put the car back on a checkpoint (`mmSingleCircuit` /
+`mmGameMulti::HitWaterHandler`) reset it at that waypoint's place with its
+angle and no probe, and put the start back as the reset place for a
+restart through `SetResetPos`, which adds CenterOfGravity again: each such
+respawn moves the restart place by CenterOfGravity (`SimVehicle::respawnAt`
+keeps MM2's drift).
+A restart also puts every prop back (`lvlLevel::ResetInstances`).
 
 ### Water, falling out of the city, wrecks
 
@@ -223,11 +250,31 @@ neither; the multiplayer modes brake with the throttle tapering off and
 then call `SetDrivable(0, 1)` (OpenMM2: undrivable at once). Results
 follow 5 s after the end (`UpdateGame` states 4/5 with a 5 s wait); a lost
 race or lesson opens the in-race main menu without pausing
-(`mmPopup::ProcessEscape(0)`, see below). Multiplayer shows them 3 s
-after the finish (Blitz: when the clock would have run out). The race goes
-on behind the results in MM2 (opponents still finishing are added); OpenMM2
-shows the results as a frontend page, with the opponents that finished by
-then.
+(`mmPopup::ProcessEscape(0)`, see below). The race goes on behind the
+results in MM2 (opponents still finishing are added); OpenMM2 shows the
+results as a frontend page, with the opponents that finished by then.
+
+**Multiplayer finish** (`mmGameMulti`, `mmMultiRace` / `mmMultiCircuit` /
+`mmMultiBlitz::GameMessage`): each finish goes to the other players with
+its time (OpenMM2 broadcasts it as a `RaceFinished` event; MM2's clients
+ask the host, which acknowledges, inferred equivalent), who hear
+Messagenote and see the name over "finished in M:SS:HH" (host 152 / 110 /
+99, client 150 / 107 / 96). The first finish arms a finish timeout (race
+60 s, circuit 120 s; OpenMM2: every machine runs it, MM2: the host): when
+it runs out a player still racing is braked with "Race over" (143 / 100,
+clients 153 / 111) and does not finish (24 h, listed last as DNF). After
+its own finish a race or circuit player waits braked (3 s, then until
+everyone is counted or the timeout has run out); Blitz ends when the clock
+would have run out. The results list the players by time
+(`SortResults` / `UpdateResults`). The standings ("Place: n/N",
+`mmGameMulti::UpdateScore`) count the other players ahead with more
+waypoints passed (their counts travel as `CheckpointReached` events, MM2
+sends them in every position packet), finished, or level and nearer the
+player's target. When the host leaves the race everyone returns to the
+lobby (`BeDone(1)`, Quit2Lobby). A multiplayer race has no traffic,
+pedestrians, police or racers (the race modes load no AI map); multiplayer
+cruise and Cops and Robbers keep only the pedestrians
+(`mmGameMulti::Init` zeroes the traffic, cop and opponent densities).
 
 **Winning** (`mmSingleCircuit::ProgressCheck`, `mmSingleRace::ProgressCheck`):
 places 1-3 for amateurs, 1st for professionals, hard-coded; MM2 does not
@@ -341,21 +388,30 @@ HUD, car):
   `UpdateHideout`: a delivery's points meet the limit in the next frame.
   Nobody takes the gold in the frame it was knocked loose (each machine
   tests its own car and learns of the drop by message; inferred).
-* **Gold**: picked up within 5 m (+25 points); the carrier gets the gold's
+* **Gold**: picked up within 5 m in the gold's room (+25 points; a host
+  alone in the game cannot take it); the carrier gets the gold's
   mass (0 / 100 / 200 kg for the three gold weight options) and, above
   first gear, a throttle cap of 1 / 0.9 / 0.81 (`FondleCarMass`,
-  `mmGame::UpdateSteeringBrakes`). A hit of impulse 250 or more from
-  another player's car makes the carrier drop it where it is (on a road;
-  elsewhere it returns to the set's place); the carrier cannot take it back
-  for 2 s. A wrecked carrier drops it and sits out 5 s ("Wait...5 second
-  penalty!", 114); water or falling out sends it back to its place.
-* **Delivery**: within 12 m of the team's base, +100 points, the car is
-  repaired, and a new set follows.
+  `mmGame::UpdateSteeringBrakes`). A damaging hit whose summed total
+  reaches 250 from another player's car makes the carrier drop it where it
+  is ("You dropped the gold!"; back at the set's place only from a deep
+  water room) and locks it out for 2 s. A wrecked carrier drops it and sits
+  out 5 s ("Wait...5 second penalty!", 114); the water handler (5 s in the
+  water) or falling out of the city sends it back to its place. Dropped gold
+  lies on the ground under the point (`FindGround`, 2 m up to 10 m down).
+  When the carrier leaves the game the host drops it where it was. The
+  carrier does not see the gold it carries. Places come from the city's
+  `multicopwaypoints.csv` and the AI intersections (never one in a deep
+  water or terrain-instance room); a city with fewer than three rows uses
+  intersections only. Cops and Robbers plays the cruise music.
+* **Delivery**: within 12 m of the team's base, whose room is covered or
+  underground or is the car's room, +100 points, the car is repaired, and a
+  new set follows.
 * **Scores and limits**: team scores are the sum of the members'. Time
-  limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142) and end
-  below 0.1 s; point limits end the game when a player (Free-For-All) or a
-  team reaches them ("Time's up!" 118, "Point limit reached" 119); the
-  results follow 3 s later with the car braked (state 9, +0x2258).
+  limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142, 2 s) and
+  end below 0.1 s; point limits end the game when a player (Free-For-All) or
+  a team reaches them ("Time's up!" 118, "Point limit reached" 119, 3 s);
+  the results follow 3 s later with the car braked (state 9, +0x2258).
 * **Car**: regeneration while not carrying (`mmPlayer::UpdateRegen`); the
   gold's mass and throttle cap while carrying; a repair at a delivery.
   The throttle cap applies in a forward gear in every network game (1
@@ -460,12 +516,29 @@ with the remote inputs), declared as a type-3 mover, built with the
 polygonal bound, towing its trailer except in multiplayer cruise and Cops
 & Robbers.
 
-**Popup** (`mmPopup`, `PUMain`, `PUExit`, neither with a title): Escape
-opens the in-race main menu (pausing a single-player game; the HUD and map are disabled): Restart
-Race / Restart Lesson (read-only in a network game), Options (not ported,
-shown disabled), Quit to Race Menu / Back to School, Exit to Windows (asks
-first) and Resume Driving; Escape resumes. The popup card is (0.2, 0.1,
-0.6, 0.8) of the screen.
+**Popup** (`mmPopup`, `PUMain`, no title): Escape stops the announcer
+and opens the in-race main menu (pausing a single-player game; the HUD and
+map are disabled; the song's pause segment plays and the city ambience
+stops): Restart Race / Restart Lesson (read-only in a network game),
+Options (not ported, shown disabled), Quit to Race Menu / Back to School,
+Exit to Windows (at once: nothing in MM2 opens PUExit's question) and
+Resume Driving; Escape resumes, and Resume and Escape bring the music back
+(`PlayReturnMusic`; Restart restarts it through `mmGame::Reset` instead).
+Once a single-player race or lesson is over (`mmPopup::Lock`, the modes'
+states 4 and 5) Resume is off and Escape does nothing, or shows the
+results when the race ended with a finish (the race-over flag). The chat
+line also starts the pause music; sending a line leaves it playing (MM2's
+`ChatCB` closes with `DisablePU(0)`). The popup card is (0.2, 0.1, 0.6,
+0.8) of the screen.
+
+**Post-race camera and music per ending**: `SetPostRaceCam` (multiplayer
+`SetFinishCam`) at a finish and at the single-player wrecks that make the
+car undrivable, and in the lessons where the Update function sets it (a
+pass; Jump and course wrecks; Evade and Corner pursuit failures; Frogger
+and Collide time-ups); not after the water, a late Blitz finish or the
+other lesson failures. The music stops only in the single-player race
+modes: at a finish (`StopSegment(0)`) and a wreck (`StopSegment(1)`). A
+lost race opens the main menu with its pause music.
 
 **Sounds**: the modes load their 2D sounds in `InitGameObjects`
 (Startracelow, Startracehigh, Endofracetag, Youlose, Damgelose, Messagenote,

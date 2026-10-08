@@ -61,6 +61,9 @@ struct SessionOptions {
     // The local player's network name: multiplayer races show it over
     // "finished in" (mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame).
     std::string playerName;
+    // Multiplayer: this machine hosts the session (the modes' host and client
+    // lines differ: e.g. "finished in" 152 / 150).
+    bool netHost = false;
 };
 
 // The game's cheat flag (bCheating): mmGame::SendChatMessage's "/blubber"
@@ -108,6 +111,11 @@ public:
 
     Phase phase() const { return m_phase; }
     bool finished() const { return m_phase == Phase::Done; }
+    // mmGame's race-over flag (+0x7c): set by a finish (the race modes) or by
+    // most lesson endings, cleared by mmGame::Reset. With the main menu
+    // locked after the race, Escape shows the results only when it is set
+    // (mmPopup::Update).
+    bool raceOver() const { return mode() == GameMode::CrashCourse ? m_lessonDone : m_resultFinished; }
     // What the game does to the player's car: undrivable before "Go!", during
     // wreck penalties and after some endings (a wreck, any multiplayer
     // finish), braked by mmPlayer +0x2258 after the others.
@@ -117,9 +125,21 @@ public:
     // music stops at once and the engine falls silent
     // (vehCarAudioContainer::SilenceEngine), as after the water in a race.
     bool damagedOut() const { return m_damagedOut; }
+    // Whether the ending turned to the post-race camera (mmPlayer::
+    // SetPostRaceCam / mmGameMulti::SetFinishCam).
+    bool postRaceCamera() const { return m_postRaceCam; }
+    // Whether the ending stopped the music (the race modes' StopSegment(0) at
+    // the finish; a wreck's StopSegment(1) is damagedOut()). The crash course
+    // and the multiplayer modes never stop it.
+    bool musicStopped() const { return m_musicStop; }
     bool engineSilenced() const { return m_engineSilenced; }
     // AI racers may drive (mmGameSingle::EnableRacers at "Go!").
     bool racersReleased() const { return m_released; }
+    // The player's vehCarDamage EnableDamage (+0x2D): DisableRacers (the race
+    // modes' and the crash course's Reset) turns it off until EnableRacers at
+    // "Go!", which a Jump lesson never calls; the circuit finish turns it off
+    // again. Cruise and Cops and Robbers keep it on.
+    bool playerDamageEnabled() const { return m_playerDamage; }
     // Opponents taking part (all in races; the current crash course event's
     // "numopp" cars, mmSingleStunt::EnableRacers).
     bool opponentActive(std::size_t index) const;
@@ -140,6 +160,8 @@ public:
     void cycleTarget(bool forward);
     // mmHUD::SetMessage for rules run beside the session (mmMultiCR).
     void showMessage(std::string text, float seconds, bool top) { setMessage(std::move(text), seconds, top); }
+    // mmHUD::SetMessage2: a line under the current message.
+    void showMessage2(std::string text) { setMessage2(std::move(text)); }
     std::optional<Vec3> arrowTarget() const;
     // Progress shown on the HUD ("Check: n/N", "Lap: n/N", "Place: n/N").
     int checkpointsCleared() const;
@@ -154,7 +176,11 @@ public:
     int opponentPlace(std::size_t index) const {
         return index < m_opponentPlaces.size() ? m_opponentPlaces[index] : 10;
     }
-    int racerCount() const { return static_cast<int>(m_opponents.size()) + 1; }
+    // Multiplayer races: another network player's rank over its icon
+    // (mmGameMulti::UpdateScore), in setNetRacers() order; 10 = no number,
+    // 0 = no icon (finished, or no car).
+    int netRacerPlace(std::size_t i) const { return i < m_netPlaces.size() ? m_netPlaces[i] : 10; }
+    int racerCount() const { return multiplayer() ? m_netRacerCount : static_cast<int>(m_opponents.size()) + 1; }
 
     float raceTime() const { return m_raceTime; }
     // Seconds left on the count-down clock (Blitz, timed lessons); < 0 = none.
@@ -179,6 +205,26 @@ public:
     const HudMessage& message2() const { return m_message2; }
     std::vector<Event> takeEvents();
     MusicHint musicHint() const;
+
+    // --- Multiplayer races (mmGameMulti, mmMultiRace / Circuit / Blitz) ---
+    // A time that means "did not finish" (mmGameMulti::UpdateResults'
+    // AddLoser): 24 hours.
+    static constexpr float kNetDnf = 86400.0f;
+    // The other players as mmGameMulti::UpdateScore sees them, every frame.
+    struct NetRacer {
+        std::string name;
+        int waypoints = 1; // waypoints passed (mmPlayer +0x2254, the start included)
+        Vec3 position;     // the car's (inertial) position
+        bool present = true; // its car is in the race (mmNetObject +0x118 / +0x11c)
+        bool finished = false;
+    };
+    void setNetRacers(std::vector<NetRacer> racers) { m_netRacers = std::move(racers); }
+    // Another player's finish (or kNetDnf) arrived (mmMulti*::GameMessage
+    // 0x206 / 0x1f7): Messagenote, "<name>" / "finished in M:SS:HH", the
+    // results list, and the finish timeout of a race or circuit.
+    void remoteFinished(const std::string& name, float seconds);
+    // Waypoints passed, the start included (sent to the other players).
+    int waypointsPassed() const { return m_wp.count; }
 
     // Where to put the player after Respawn.
     Mat34 respawnTransform() const { return m_respawn; }
@@ -222,6 +268,7 @@ private:
     void sound(GameSound s, float mode = 0.0f) { push(EventType::Sound, static_cast<int>(s), mode); }
     void speech(SpeechCue c, float value = 0.0f) { push(EventType::Speech, static_cast<int>(c), value); }
     void stopTimerWarning();
+    void deactivateFinish();
     bool lastEvent() const { return m_lessonEvent == static_cast<int>(m_setup.lessonEvents.size()) - 1; }
 
     void resetRace();
@@ -321,6 +368,25 @@ private:
     bool m_resultWon = false;
     PlayerHold m_endHold = PlayerHold::None; // set by endRace
     bool m_damagedOut = false, m_engineSilenced = false;
+    bool m_postRaceCam = false, m_musicStop = false;
+    bool m_playerDamage = true;
+
+    // Multiplayer races.
+    struct NetResult {
+        std::string name;
+        float time = 0.0f;
+        bool self = false;
+    };
+    std::vector<NetRacer> m_netRacers;
+    std::vector<int> m_netPlaces; // the other players' icons' IconIndex
+    std::vector<NetResult> m_netResults; // mmGameMulti::SortResults' table, by time
+    int m_netRacerCount = 1;
+    bool m_netTimeoutOn = false;         // SetTimeoutOn / SetTimeoutOff
+    float m_netTimeout = 0.0f;
+    bool m_netTimedOut = false;
+    bool netWaitsForAll() const;
+    void addNetResult(std::string name, float time, bool self);
+    void updateNetRace(float dt, const PlayerState& player);
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;

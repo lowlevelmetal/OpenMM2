@@ -94,6 +94,8 @@ public:
     virtual bool usesScene() const { return false; }
     virtual void drawScene(Context&) {}
     virtual void drawOverlay(Context&) {}
+    // The window was activated again after another application had it.
+    virtual void activated(Context&) {}
 };
 
 // Mounts `source` and loads the catalog and strings. Returns null (and sets
