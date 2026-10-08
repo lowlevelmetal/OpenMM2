@@ -91,16 +91,19 @@ public:
     RaceScreen(Context& ctx, const game::RaceConfig& config)
         : m_ui(ctx.device(), ctx.game->vfs), m_text(ctx.device()) {
         m_result.config = config;
-        // Loading screen art: <city>_<mode><n>.jpg, else the generic one.
+        // GetLoadScreenName: <city>_<mode><n>.jpg (cruise "roam" and Cops and
+        // Robbers "multicop" without a number), else the generic one.
         const std::string prefix = modePrefix(config.mode);
         m_loadingImage = "jpg/loading.jpg";
-        if (!prefix.empty() && config.raceIndex >= 0) {
-            const std::string specific = std::format("jpg/{}_{}{}.jpg", config.city, prefix, config.raceIndex);
-            if (ctx.game->vfs.exists(specific))
-                m_loadingImage = specific;
-        } else if (config.mode == game::GameMode::Cruise && ctx.game->vfs.exists("jpg/" + config.city + "_roam.jpg")) {
-            m_loadingImage = "jpg/" + config.city + "_roam.jpg";
-        }
+        std::string specific;
+        if (!prefix.empty() && config.raceIndex >= 0)
+            specific = std::format("jpg/{}_{}{}.jpg", config.city, prefix, config.raceIndex);
+        else if (config.mode == game::GameMode::Cruise)
+            specific = "jpg/" + config.city + "_roam.jpg";
+        else if (config.mode == game::GameMode::CopsAndRobbers)
+            specific = "jpg/" + config.city + "_multicop.jpg";
+        if (!specific.empty() && ctx.game->vfs.exists(specific))
+            m_loadingImage = specific;
     }
 
     ~RaceScreen() override {
@@ -146,6 +149,9 @@ public:
             if (ctx.nextScreen)
                 return;
         } else if (ctx.input.keyPressed(platform::Key::Escape)) {
+            // mmGame::UpdateDebugInput: Escape stops the announcer
+            // (mmSpeechContainer::Stop), then mmPopup::ProcessEscape.
+            m_announcer.stop();
             openPopup(ctx, true);
         } else if (!m_flyCamera && m_bindings.pressed(ctx.input, controls::Action::EnterChat)) {
             openChat(ctx);
@@ -1250,9 +1256,10 @@ private:
         // mmSingleStunt::UpdateEvade turns the map on during its first line.
         if (m_hud && m_session->wantsMap() && m_hud->options().mapMode == game::session::MapMode::Off)
             m_hud->cycleMap();
-        // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
+        // mmPlayer::SetPostRaceCam / mmGameMulti::SetFinishCam at the endings
+        // that set it (Session::postRaceCamera).
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
-            m_result.config.mode != game::GameMode::Cruise)
+            m_result.config.mode != game::GameMode::Cruise && m_session->postRaceCamera())
             startFinishCamera(ctx);
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
@@ -1300,6 +1307,12 @@ private:
                 // lvlLevel::ResetInstances: every prop back in its place.
                 if (m_bangers)
                     m_bangers->reset();
+                // mmGame::Reset: StartMusic again (the music a wreck or the
+                // finish stopped comes back).
+                if (m_musicDirector) {
+                    m_musicDirector->restart();
+                    m_musicFinished = m_musicResults = false;
+                }
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -1341,15 +1354,19 @@ private:
             if (phase != Phase::Countdown)
                 director.raceStarted();
             if (phase == Phase::PostRace && !m_musicFinished) {
-                // The race modes stop the music at the finish (StopSegment(0)),
-                // a wreck with an ending on the next beat (StopSegment(1)).
+                // The single-player race modes stop the music at the finish
+                // (StopSegment(0)), a wreck with an ending on the next beat
+                // (StopSegment(1)); the water, a late Blitz, the crash course
+                // and the multiplayer modes leave it playing.
                 if (m_session->damagedOut())
                     director.damagedOut();
-                else
+                else if (m_session->musicStopped())
                     director.finish();
                 m_musicFinished = true;
             }
-            if (phase == Phase::Done && !m_musicResults) {
+            // mmPopup::ShowResults (a finish); a loss opens the main menu,
+            // whose pause music openPopup starts.
+            if (phase == Phase::Done && !m_musicResults && m_session->raceOver()) {
                 director.results();
                 m_musicResults = true;
             }
@@ -1480,10 +1497,11 @@ private:
     }
 
     // mmPopup::ProcessChat ("Enter Chat Msg"): the chat line pops up without
-    // pausing the game.
+    // pausing the game (the pause music plays all the same).
     void openChat(Context& ctx) {
         m_popup = Popup::Chat;
         m_popupPaused = false;
+        popupMusic(ctx, true);
         m_chatText.clear();
         ctx.input.startTextInput(ctx.window());
         m_textInput = true;
@@ -1766,11 +1784,12 @@ private:
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
         if (m_popupPaused)
             m_paused = true;
+        popupMusic(ctx, true);
         buildPopup(ctx);
     }
 
-    void closePopup() {
-        // mmPopup::DisablePU.
+    // mmPopup::DisablePU(returnMusic).
+    void closePopup(Context& ctx, bool returnMusic) {
         m_popup = Popup::None;
         // Buttons close the popup from inside its update: keep the menu
         // until the next frame.
@@ -1779,6 +1798,53 @@ private:
         if (m_popupPaused)
             m_paused = false;
         m_popupPaused = false;
+        if (returnMusic)
+            popupMusic(ctx, false);
+    }
+
+    // mmPopup::PlayPauseMusic / PlayReturnMusic: the song's pause segment on
+    // the next beat, and back to the segment before it. With CITY SOUNDS the
+    // ambience segment stops (StopSegment(0)) and starts again (PlaySegment).
+    void popupMusic(Context& ctx, bool pause) {
+        auto* music = ctx.music();
+        if (!music)
+            return;
+        if (m_musicDirector) {
+            if (pause)
+                m_musicDirector->pause();
+            else
+                m_musicDirector->resume();
+            for (const auto& c : m_musicDirector->takeCommands())
+                music->setState(c.state, c.timing);
+        }
+        if (!m_ambienceStopped)
+            music->setAmbience(pause ? std::string_view{} : std::string_view(m_result.config.city));
+    }
+
+    // mmPopup::Lock: the single-player race modes (states 4 and 5) and the
+    // crash course lock the main menu once the race is over: "Resume
+    // Driving" is off and Escape does nothing, or shows the results when the
+    // race-over flag (mmGame +0x7c) is set. Cruise and the multiplayer modes
+    // never lock it; a restart unlocks it (mmPopup::Reset).
+    bool popupLocked(Context& ctx) const {
+        if (multiplayer(ctx) || !m_session)
+            return false;
+        const auto phase = m_session->phase();
+        return phase == game::session::Phase::PostRace || phase == game::session::Phase::Done;
+    }
+
+    // mmPlayerConfig::GetViewSettings when the game ends: the driver keeps
+    // the camera, wide angle, dashboard and mirror choices.
+    void storeViewSettings() {
+        if (!m_profile)
+            return;
+        const auto v = m_cams.viewSettings();
+        m_profile->camera = v.camera;
+        m_profile->wideAngle = v.wideAngle;
+        m_profile->dashboard = v.dashboard;
+        m_profile->mirror = m_mirror.enabled();
+        if (!m_profile->save())
+            log::warn("race: cannot save driver '{}'", m_profile->name);
     }
 
     // The quit button: back to the race menu (or the crash course page),
@@ -1789,19 +1855,10 @@ private:
         leaveRace(ctx, r);
     }
 
-    // Back to the menus. mmPlayerConfig::GetViewSettings when the game ends:
-    // the driver keeps the camera, wide angle, dashboard and mirror choices
-    // (stored before the frontend reads the driver again).
+    // Back to the menus, the view settings stored before the frontend reads
+    // the driver again.
     void leaveRace(Context& ctx, const game::RaceResult& result) {
-        if (m_profile) {
-            const auto v = m_cams.viewSettings();
-            m_profile->camera = v.camera;
-            m_profile->wideAngle = v.wideAngle;
-            m_profile->dashboard = v.dashboard;
-            m_profile->mirror = m_mirror.enabled();
-            if (!m_profile->save())
-                log::warn("race: cannot save driver '{}'", m_profile->name);
-        }
+        storeViewSettings();
         ctx.nextScreen = makeFrontendScreen(ctx, result);
     }
 
@@ -1829,21 +1886,24 @@ private:
             auto& entry = menu.add<ui::TextEntry>(
                 ui::Box{0.0f, (0.99f - lineHeight) * 480.0f, 0.75f * 640.0f, lineHeight * 480.0f}, &m_chatText, 40);
             entry.onCommit = [this, &ctx] {
-                // mmPopup::ChatCB: an empty line just closes it.
+                // mmPopup::ChatCB: an empty line just closes it; either way
+                // DisablePU(0), so the pause music keeps playing (as MM2).
                 const std::string text = m_chatText;
-                closePopup();
+                closePopup(ctx, false);
                 if (!text.empty())
                     sendChatMessage(ctx, text);
             };
             menu.setInitialFocus(&entry);
             entry.beginEdit();
-            menu.onBack = [this] { closePopup(); };
+            menu.onBack = [this, &ctx] { closePopup(ctx, true); };
         } else if (m_popup == Popup::Main) {
+            const bool locked = popupLocked(ctx);
             auto& restart = menu.add<ui::TextButton>(
                 at(0.0f, 0.125f, 1.0f), crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"),
-                [this] {
-                    // mmReplayManager's reset flag: the race starts over.
-                    closePopup();
+                [this, &ctx] {
+                    // mmReplayManager's reset flag: the race starts over
+                    // (DisablePU(0); mmGame::Reset starts the music again).
+                    closePopup(ctx, false);
                     m_resultsShown = false;
                     if (m_session)
                         m_session->restart();
@@ -1856,25 +1916,28 @@ private:
             menu.add<ui::TextButton>(at(0.0f, 0.375f, 1.0f),
                                      crash ? s.get(656, "Back to School") : s.get(468, "Quit to Race Menu"),
                                      [this, &ctx] { quitToMenu(ctx); });
+            // PUMain's exit (widget 14): the game ends at once (Shutdown, and
+            // mmGame::BeDone stores the driver's settings); nothing switches
+            // to PUExit's question.
             menu.add<ui::TextButton>(at(0.0f, 0.5f, 1.0f), s.get(469, "Exit to Windows"), [this, &ctx] {
-                m_popup = Popup::ConfirmExit;
-                buildPopup(ctx);
+                storeViewSettings();
+                ctx.quit = true;
             });
             auto& resume = menu.add<ui::TextButton>(at(0.5f, 0.9f, 0.5f), s.get(473, "Resume Driving"),
-                                                    [this] { closePopup(); });
-            menu.setInitialFocus(&resume);
-            menu.onBack = [this] { closePopup(); };
-        } else {
-            auto& yes = menu.add<ui::TextButton>(at(0.2f, 0.7f, 0.2f), s.get(458, "Yes"), [&ctx] { ctx.quit = true; });
-            auto& no = menu.add<ui::TextButton>(at(0.6f, 0.7f, 0.2f), s.get(459, "No"), [this, &ctx] {
-                m_popup = Popup::Main;
-                buildPopup(ctx);
-            });
-            menu.setInitialFocus(&no);
-            (void)yes;
+                                                    [this, &ctx] { closePopup(ctx, true); });
+            // PUMenuBase::DisableExit while locked.
+            resume.enabled = !locked;
+            menu.setInitialFocus(locked ? &restart : &resume);
             menu.onBack = [this, &ctx] {
-                m_popup = Popup::Main;
-                buildPopup(ctx);
+                if (!popupLocked(ctx)) {
+                    closePopup(ctx, true);
+                } else if (m_session && m_session->raceOver()) {
+                    // The race is over with a finish: Escape shows the results.
+                    closePopup(ctx, false);
+                    m_resultsShown = true;
+                    m_result = m_session->result();
+                    leaveRace(ctx, m_result);
+                }
             };
         }
     }
@@ -1902,11 +1965,7 @@ private:
             ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
         const ui::NavInput none;
         ui::UiFrame f{ov, m_ui, m_text, none, m_time};
-        // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none,
-        // and PUExit only names its menu (UIMenu::AssignName).
-        if (m_popup == Popup::ConfirmExit)
-            m_text.draw(ov, ui::style::popupFont(), ctx.game->strings.get(457, "Do you want to exit the game?"),
-                        card.x + card.w * 0.5f, card.y + 0.2f * card.h, ui::style::kPopupText, ui::Align::Center);
+        // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none.
         m_popupMenu->drawContent(f);
         ov.end();
     }
@@ -2488,7 +2547,10 @@ private:
             pedals = {};
             m_player->drive(pedals);
         } else if ((m_session && m_session->playerHeld()) ||
-                   (multiplayer(ctx) && ctx.netGame->secondsToStart() > 0.0)) {
+                   (multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise &&
+                    ctx.netGame->secondsToStart() > 0.0)) {
+            // (mmMultiRoam says "Go!" and lets the car go two updates after
+            // its own load, with no shared start.)
             m_player->hold(pedals); // vehCar::SetDrivable(0, 1)
             pedals.brake = 1.0f;
         } else {
@@ -2957,7 +3019,7 @@ private:
     // single player.
     bool m_paused = false;
     // The in-race popup (mmPopup).
-    enum class Popup : std::uint8_t { None, Main, ConfirmExit, Chat };
+    enum class Popup : std::uint8_t { None, Main, Chat };
     Popup m_popup = Popup::None;
     std::unique_ptr<ui::Menu> m_popupMenu;
     std::vector<std::unique_ptr<ui::Menu>> m_popupGraveyard;

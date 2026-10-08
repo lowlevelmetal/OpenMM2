@@ -187,3 +187,93 @@ TEST(GameFlowParity, CircuitWaterRespawnsAtTheLastCheckpointPlace) {
     EXPECT_EQ(s->respawnPlace()->position.y, expected.position.y);
     EXPECT_FLOAT_EQ(s->respawnPlace()->angle, expected.angle);
 }
+
+namespace {
+
+// Runs a session from "Go!" with the player parked on its start.
+struct FlowRun {
+    Session& s;
+    PlayerState player;
+    std::vector<OpponentState> opponents;
+    explicit FlowRun(Session& session) : s(session) {
+        player.transform = s.playerSpawn();
+        opponents.resize(s.opponents().size());
+        for (std::size_t i = 0; i < opponents.size(); ++i)
+            opponents[i].transform = s.opponents()[i].spawn;
+        s.start();
+        for (int i = 0; i < 900 && s.phase() == Phase::Countdown; ++i)
+            tick();
+    }
+    void tick() {
+        s.update(1.0f / 30.0f, player, opponents);
+        s.takeEvents();
+    }
+    void untilOver(int maxTicks = 3000) {
+        for (int i = 0; i < maxTicks && s.phase() == Phase::Racing; ++i)
+            tick();
+    }
+};
+
+} // namespace
+
+// mmSingleBlitz::UpdateGame's wreck: the post-race camera, the music ended on
+// the beat (StopSegment(1)) and the finish stand hidden (DeactivateFinish).
+TEST(GameFlowParity, BlitzWreckTurnsToThePostRaceCameraAndHidesTheFinish) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    auto s = flowSession(GameMode::Blitz, 0);
+    ASSERT_TRUE(s);
+    FlowRun run(*s);
+    ASSERT_EQ(s->phase(), Phase::Racing);
+    const std::size_t last = s->checkpoints().size() - 1;
+    EXPECT_TRUE(s->checkpointVisible(last));
+    run.player.wrecked = true;
+    run.tick();
+    EXPECT_EQ(s->phase(), Phase::PostRace);
+    EXPECT_TRUE(s->postRaceCamera());
+    EXPECT_TRUE(s->damagedOut());
+    EXPECT_FALSE(s->musicStopped());
+    EXPECT_FALSE(s->checkpointVisible(last));
+    EXPECT_FALSE(s->raceOver());
+}
+
+// mmSingleBlitz / mmSingleRace::HitWaterHandler: the race is lost but the
+// camera and the music stay as they are.
+TEST(GameFlowParity, WaterLossKeepsTheCameraAndTheMusic) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    for (const GameMode mode : {GameMode::Blitz, GameMode::Checkpoint}) {
+        auto s = flowSession(mode, 0);
+        ASSERT_TRUE(s);
+        FlowRun run(*s);
+        run.player.inWater = true;
+        run.untilOver(400);
+        EXPECT_EQ(s->phase(), Phase::PostRace);
+        EXPECT_FALSE(s->postRaceCamera());
+        EXPECT_FALSE(s->damagedOut());
+        EXPECT_FALSE(s->musicStopped());
+        EXPECT_FALSE(s->raceOver());
+    }
+}
+
+// mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand
+// hidden; the race-over flag is set (Escape then shows the results).
+TEST(GameFlowParity, JumpLessonTimeUpHidesTheFinishWithoutTheCamera) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    auto s = flowSession(GameMode::CrashCourse, 0);
+    ASSERT_TRUE(s);
+    ASSERT_TRUE(s->currentLesson());
+    ASSERT_EQ(s->currentLesson()->type, LessonType::Jump);
+    FlowRun run(*s);
+    ASSERT_EQ(s->phase(), Phase::Racing);
+    run.untilOver(static_cast<int>((s->currentLesson()->timeLimit + 2.0f) * 30.0f));
+    ASSERT_EQ(s->phase(), Phase::PostRace);
+    EXPECT_FALSE(s->postRaceCamera());
+    EXPECT_FALSE(s->musicStopped());
+    EXPECT_FALSE(s->checkpointVisible(s->checkpoints().size() - 1));
+    EXPECT_TRUE(s->raceOver());
+}

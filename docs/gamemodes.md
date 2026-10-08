@@ -477,12 +477,29 @@ with the remote inputs), declared as a type-3 mover, built with the
 polygonal bound, towing its trailer except in multiplayer cruise and Cops
 & Robbers.
 
-**Popup** (`mmPopup`, `PUMain`, `PUExit`, neither with a title): Escape
-opens the in-race main menu (pausing a single-player game; the HUD and map are disabled): Restart
-Race / Restart Lesson (read-only in a network game), Options (not ported,
-shown disabled), Quit to Race Menu / Back to School, Exit to Windows (asks
-first) and Resume Driving; Escape resumes. The popup card is (0.2, 0.1,
-0.6, 0.8) of the screen.
+**Popup** (`mmPopup`, `PUMain`, no title): Escape stops the announcer
+and opens the in-race main menu (pausing a single-player game; the HUD and
+map are disabled; the song's pause segment plays and the city ambience
+stops): Restart Race / Restart Lesson (read-only in a network game),
+Options (not ported, shown disabled), Quit to Race Menu / Back to School,
+Exit to Windows (at once: nothing in MM2 opens PUExit's question) and
+Resume Driving; Escape resumes, and Resume and Escape bring the music back
+(`PlayReturnMusic`; Restart restarts it through `mmGame::Reset` instead).
+Once a single-player race or lesson is over (`mmPopup::Lock`, the modes'
+states 4 and 5) Resume is off and Escape does nothing, or shows the
+results when the race ended with a finish (the race-over flag). The chat
+line also starts the pause music; sending a line leaves it playing (MM2's
+`ChatCB` closes with `DisablePU(0)`). The popup card is (0.2, 0.1, 0.6,
+0.8) of the screen.
+
+**Post-race camera and music per ending**: `SetPostRaceCam` (multiplayer
+`SetFinishCam`) at a finish and at the single-player wrecks that make the
+car undrivable, and in the lessons where the Update function sets it (a
+pass; Jump and course wrecks; Evade and Corner pursuit failures; Frogger
+and Collide time-ups); not after the water, a late Blitz finish or the
+other lesson failures. The music stops only in the single-player race
+modes: at a finish (`StopSegment(0)`) and a wreck (`StopSegment(1)`). A
+lost race opens the main menu with its pause music.
 
 **Sounds**: the modes load their 2D sounds in `InitGameObjects`
 (Startracelow, Startracehigh, Endofracetag, Youlose, Damgelose, Messagenote,

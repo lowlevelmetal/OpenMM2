@@ -219,6 +219,7 @@ void Session::resetRace() {
     m_postWait = 0.0f;
     m_endHold = PlayerHold::None;
     m_damagedOut = m_engineSilenced = false; // the modes' Reset: SilenceEngine(0)
+    m_postRaceCam = m_musicStop = false;
     m_resultFinished = m_resultWon = false;
     m_resultPosition = 0;
     m_resultTime = 0.0f;
@@ -929,6 +930,17 @@ void Session::endRace(bool finished, bool won, float delay, PlayerHold hold) {
     m_resultFinished = finished;
     m_resultWon = won;
     m_resultTime = m_raceTime;
+    // mmPlayer::SetPostRaceCam (mmGameMulti::SetFinishCam): at a finish and
+    // at the single-player wrecks that make the car undrivable; not after the
+    // water, a Blitz run out of time or most failed lessons, which keep the
+    // driving (or water) camera. The lessons that set it anyway say so.
+    m_postRaceCam = finished || (hold == PlayerHold::Undrivable && !multiplayer());
+}
+
+void Session::deactivateFinish() {
+    // mmWaypoints::DeactivateFinish: the last waypoint's stand disappears.
+    if (!m_wp.visible.empty())
+        m_wp.visible.back() = 0;
 }
 
 void Session::playerFinished() {
@@ -961,6 +973,10 @@ void Session::updateRace(float dt, const PlayerState& player) {
 
     if (multiplayer()) {
         // mmMultiRoam / Blitz / Circuit / Race: wrecks cost 5 s, never the race.
+        // While the penalty runs (states 6 / 7) the timer warning, the finish
+        // and the clock are not checked (only state 3 checks them).
+        if (penalty)
+            return;
         if (mode() == GameMode::Blitz && m_hasClock && m_clock < kTimerWarning)
             timerWarning(dt);
         wreckPenalty();
@@ -982,6 +998,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             m_timeUp = true;
             push(EventType::TimeUp);
             setMessage(mt.timeUp, "Time's up!", 5.0f, false);
+            deactivateFinish();
             endRace(false, false, kPostRace);
         }
         return;
@@ -1003,7 +1020,10 @@ void Session::updateRace(float dt, const PlayerState& player) {
         if (m_wp.finished) {
             stopTimerWarning();
             if (m_timeUp) {
+                // Finished after the time ran out: no post-race camera and
+                // the music goes on.
                 m_wp.stopped = true;
+                deactivateFinish();
                 speech(SpeechCue::ResultsPoor);
                 sound(GameSound::YouLose);
                 setMessage(mt.timeUp, "Time's up!", 5.0f, false);
@@ -1012,6 +1032,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
                 playerFinished();
                 sound(GameSound::EndOfRaceTag);
                 setMessage(mt.won, "You Won!", 5.0f, true);
+                m_musicStop = true; // StopSegment(0)
                 endRace(true, true, kPostRace);
             }
             return;
@@ -1027,6 +1048,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
         if (wrecked(player)) {
             stopTimerWarning();
             m_wp.stopped = true;
+            deactivateFinish();
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
             if (mode() == GameMode::Blitz)
@@ -1046,6 +1068,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
                        std::format("You finished #{}", m_resultPosition), 5.0f, true);
             // mmSingleCircuit::ProgressCheck: top three, professionals first.
+            m_musicStop = true; // StopSegment(0)
             endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
         }
         break;
@@ -1057,6 +1080,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             sound(place0 == 0 ? GameSound::EndOfRaceTag : GameSound::YouLose);
             setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
                        std::format("You finished #{}", m_resultPosition), 5.0f, place0 < 8);
+            m_musicStop = true; // StopSegment(0)
             endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
             return;
         }
@@ -1148,7 +1172,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
         return;
     auto pause = [&] {
         push(EventType::Wrecked);
-        startPenalty(kWreckPause);
+        startPenalty(kWreckPause, false); // no SetDrivable in the lessons' state 5
     };
     const bool timeOut = m_hasClock && m_clock <= 0.0f;
     const int targetIndex = lessonOpponentOffset();
@@ -1168,12 +1192,14 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(614, "Time's up!", 5.0f, false);
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         } else if (wrecked(player)) {
             stopTimerWarning();
             sound(GameSound::DamageLose);
             push(EventType::Wrecked);
             setMessage(615, "Game over!", 5.0f, false);
             lessonFailed(5.0f, PlayerHold::Undrivable);
+            deactivateFinish();
         }
         break;
     case LessonType::Collide: // UpdateCollide (no retail lesson; nothing is recorded)
@@ -1185,6 +1211,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             stopTimerWarning();
             push(EventType::TimeUp);
             endRace(false, false, kPostRace);
+            m_postRaceCam = true; // UpdateCollide: SetPostRaceCam at the time-up
         } else if (m_wp.finished) {
             m_lessonDone = true;
             setMessage(215, "Good driving!", kStep, true);
@@ -1224,6 +1251,8 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 setMessage(197, "Lose your pursuers before you finish!", 5.0f, true); // HUDMessage
                 sound(GameSound::YouLose);
                 lessonFailed();
+                m_postRaceCam = true; // set before the pursuit check
+                deactivateFinish();
             } else {
                 setMessage(196, "You survived the gauntlet!", 5.0f, true);
                 if (lastEvent())
@@ -1235,6 +1264,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(198, "Time's up!  Drive faster to win!", 5.0f, false);
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         }
         break;
     case LessonType::MinimumSpeed: { // UpdateCorner
@@ -1245,6 +1275,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 setMessage(197, "Lose your pursuers before you finish!", 5.0f, true);
                 sound(GameSound::YouLose);
                 lessonFailed();
+                m_postRaceCam = true; // set before the pursuit check
             } else {
                 if (lastEvent())
                     sound(GameSound::EndOfRaceTag);
@@ -1258,6 +1289,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish(); // CheckTimeUp's branch only
             break;
         }
         if (!m_reachedMinSpeed) {
@@ -1299,6 +1331,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             stopTimerWarning();
             push(EventType::TimeUp);
             lessonFailed();
+            m_postRaceCam = true; // UpdateFrogger: SetPostRaceCam at the time-up
             break;
         }
         bool passed = false;
@@ -1343,6 +1376,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(203, "Put the pedal to the metal!", 5.0f, false);
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         }
         break;
     case LessonType::Course:
@@ -1358,12 +1392,14 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             setMessage(244, "Time's up!", 5.0f, false); // CheckTimeUp
             push(EventType::TimeUp);
             lessonFailed();
+            deactivateFinish();
         } else if (wrecked(player)) {
             stopTimerWarning();
             sound(GameSound::DamageLose);
             push(EventType::Wrecked);
             setMessage(245, "Game over!", 5.0f, false);
             lessonFailed(5.0f, PlayerHold::Undrivable);
+            deactivateFinish();
         }
         break;
     case LessonType::Destroy: // UpdateStop

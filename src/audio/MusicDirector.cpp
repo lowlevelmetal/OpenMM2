@@ -94,6 +94,21 @@ void MusicDirector::matchMusicToPlayerSpeed(float speed, float dt) {
 
 void MusicDirector::pause() { segmentSwitch(MusicState::Paused); }
 
+void MusicDirector::restart() {
+    m_started = false;
+    if (m_seconds < kStartDelay)
+        return; // update() starts it
+    if (!m_cruise)
+        m_blocked = true;
+    // StartMusic plays segment 0 from its start even when it is the current
+    // one (PlaySegment), then MMDMusicManager::Reset.
+    m_previous = m_current;
+    m_current = MusicState::Start;
+    m_commands.push_back({MusicState::Start, MusicTiming::Beat});
+    m_idleTimer = kTimerExpired;
+    m_started = true;
+}
+
 void MusicDirector::resume() {
     // PlayReturnMusic: back to the previous segment (DMusicObject +0x28), from
     // its start; nothing if that is the current one.

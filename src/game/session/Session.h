@@ -108,6 +108,11 @@ public:
 
     Phase phase() const { return m_phase; }
     bool finished() const { return m_phase == Phase::Done; }
+    // mmGame's race-over flag (+0x7c): set by a finish (the race modes) or by
+    // most lesson endings, cleared by mmGame::Reset. With the main menu
+    // locked after the race, Escape shows the results only when it is set
+    // (mmPopup::Update).
+    bool raceOver() const { return mode() == GameMode::CrashCourse ? m_lessonDone : m_resultFinished; }
     // What the game does to the player's car: undrivable before "Go!", during
     // wreck penalties and after some endings (a wreck, any multiplayer
     // finish), braked by mmPlayer +0x2258 after the others.
@@ -117,6 +122,13 @@ public:
     // music stops at once and the engine falls silent
     // (vehCarAudioContainer::SilenceEngine), as after the water in a race.
     bool damagedOut() const { return m_damagedOut; }
+    // Whether the ending turned to the post-race camera (mmPlayer::
+    // SetPostRaceCam / mmGameMulti::SetFinishCam).
+    bool postRaceCamera() const { return m_postRaceCam; }
+    // Whether the ending stopped the music (the race modes' StopSegment(0) at
+    // the finish; a wreck's StopSegment(1) is damagedOut()). The crash course
+    // and the multiplayer modes never stop it.
+    bool musicStopped() const { return m_musicStop; }
     bool engineSilenced() const { return m_engineSilenced; }
     // AI racers may drive (mmGameSingle::EnableRacers at "Go!").
     bool racersReleased() const { return m_released; }
@@ -221,6 +233,7 @@ private:
     void sound(GameSound s, float mode = 0.0f) { push(EventType::Sound, static_cast<int>(s), mode); }
     void speech(SpeechCue c, float value = 0.0f) { push(EventType::Speech, static_cast<int>(c), value); }
     void stopTimerWarning();
+    void deactivateFinish();
     bool lastEvent() const { return m_lessonEvent == static_cast<int>(m_setup.lessonEvents.size()) - 1; }
 
     void resetRace();
@@ -320,6 +333,7 @@ private:
     bool m_resultWon = false;
     PlayerHold m_endHold = PlayerHold::None; // set by endRace
     bool m_damagedOut = false, m_engineSilenced = false;
+    bool m_postRaceCam = false, m_musicStop = false;
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;

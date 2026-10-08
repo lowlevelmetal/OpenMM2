@@ -42,6 +42,11 @@ public:
     // mmPopup::PlayPauseMusic / PlayReturnMusic.
     void pause();
     void resume();
+    // mmGame::Reset (a restart) clears the started flag and calls StartMusic
+    // again: the Start segment once the music has run kStartDelay seconds
+    // (UpdateDMusic retries until then), the idle logic held again in the
+    // race modes and MMDMusicManager::Reset's state.
+    void restart();
     // The race modes stop the music when the player finishes (StopSegment(0),
     // at once); the music logic keeps running, so standing still for 5 s
     // brings in the idle segment.
