@@ -6,6 +6,7 @@
 #include "core/Log.h"
 #include "core/Paths.h"
 #include "core/StringUtil.h"
+#include "game/Catalog.h"
 
 #include <algorithm>
 #include <bit>
@@ -63,6 +64,15 @@ void merge(RaceRecord& r, bool fresh, const RaceRecord& n) {
     }
     r.score = std::max(r.score, n.score);
     r.passed = r.passed || n.passed;
+}
+
+// dgGameModeNames up to the '%' (mmRewardList::Load compares the reward's
+// race type with them, case-insensitively).
+bool isGameModeName(std::string_view type) {
+    for (const std::string_view name : {"roam", "race", "multicop", "circuit", "blitz", "croam", "crash"})
+        if (str::iequals(name, type))
+            return true;
+    return false;
 }
 
 } // namespace
@@ -367,6 +377,7 @@ Progress::Progress(std::vector<CityProgressInfo> cities, std::vector<Reward> rew
     : m_cities(std::move(cities)), m_rewards(std::move(rewards)) {}
 
 Progress Progress::load(const vfs::Vfs& vfs) {
+    const Catalog vehicles = Catalog::load(vfs);
     std::vector<CityProgressInfo> cities;
     std::vector<Reward> rewards;
     for (const auto& info : city::listCities(vfs)) {
@@ -376,10 +387,17 @@ Progress Progress::load(const vfs::Vfs& vfs) {
         c.circuitCount = info.circuitCount;
         c.checkpointCount = info.checkpointCount;
         const std::string dir = "race/" + str::lower(info.raceDir) + "/";
-        // mmRewardList::Load: at most 32 rows; the message ends at the next comma.
+        // mmRewardList::Load: a row is kept only when its race type is one of
+        // dgGameModeNames (up to the '%') and its car is in the vehicle list
+        // (mmVehList::GetVehicleID); at most 32 kept rows; the message ends
+        // at the next comma.
         if (auto bytes = vfs.readAll(std::format("{}{}_rewards.csv", dir, c.name))) {
             int rows = 0;
             for (const auto& r : city::parseRewards(asText(*bytes))) {
+                if (!isGameModeName(r.raceType) || !vehicles.vehicle(r.car)) {
+                    log::warn("progress: {} reward row for {} {} skipped", c.name, r.raceType, r.car);
+                    continue;
+                }
                 if (++rows > 32)
                     break;
                 const std::string message = r.message.substr(0, r.message.find(','));
