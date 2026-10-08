@@ -129,9 +129,31 @@ public:
     // `paint`; `frame` its world placement (the part's pivot); `room` the
     // car's room (-1: found from the world's level). It is given momentum
     // `speed` +- 1 in a random upward direction and an angular impulse of
-    // 1-3 (as momentum, not velocity: see the .cpp).
-    void ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
-                   const Mat34& frame, float speed, int room = -1);
+    // 1-3 (as momentum, not velocity: see the .cpp). Returns the hit
+    // instance it became (vehBreakable +0x44 keeps it for Reset).
+    std::size_t ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
+                          const Mat34& frame, float speed, int room = -1);
+
+    // dgHitBangerInstance::Detach of instance i, as vehBreakableMgr::Reset
+    // calls it for an ejected car part when the car's damage is cleared: its
+    // active (if any) detaches and it leaves its room, so it disappears. MM2
+    // keeps the instance's address, not its prop: when the ring has handed
+    // the slot out again since, whatever prop it now holds disappears (kept).
+    // A placed prop (dgUnhitBangerInstance) keeps lvlInstance's empty Detach.
+    void detachHit(std::size_t i);
+
+    // The debris of instance i's active (dgBangerActive's asParticles) and
+    // the fxpt sheet it draws with (0: none), or nullopt without an active.
+    struct Debris {
+        const fx::ParticleSystem* particles = nullptr;
+        int sheet = 0;
+    };
+    std::optional<Debris> debris(std::size_t i) const;
+
+    // lvlInstance flag 1 of instance i: a placed prop that has not broken
+    // loose (also while an active holds it, before dgUnhitBangerInstance::
+    // Impact clears the flag). dgBangerInstance::DrawGlow tests it.
+    bool standing(std::size_t i) const;
 
 private:
     struct Active;

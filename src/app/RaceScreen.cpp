@@ -2066,9 +2066,14 @@ private:
             const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
             if (!data)
                 return false;
-            r.detach(b.part);
-            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed,
-                                 sim.body.room);
+            // vehBreakableMgr::Reset (the car's damage cleared) takes the
+            // ejected part out of the world again (dgHitBangerInstance::Detach).
+            r.setEjectedPartReset([this](std::size_t i) {
+                if (m_bangers)
+                    m_bangers->detachHit(i);
+            });
+            r.detach(b.part, m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(),
+                                                  Mat34::translation(b.pivot) * body, speed, sim.body.room));
             return true;
         };
         for (const auto& impact : impacts)

@@ -195,7 +195,22 @@ std::vector<VehicleRenderer::Breakable> VehicleRenderer::wreckParts(float mph, f
     return out;
 }
 
+void VehicleRenderer::detach(const std::string& part, std::optional<std::size_t> banger) {
+    m_detached.insert(part);
+    if (banger)
+        m_ejectedBangers.push_back(*banger);
+}
+
 void VehicleRenderer::reattachAll() {
+    // vehBreakableMgr::Reset: each part back on, and the hit banger it became
+    // detached (lvlInstance vtable +0x28, dgHitBangerInstance::Detach). MM2
+    // walks its breakable lists in their order (BREAK parts, then wheels,
+    // hubs, fenders, engine); OpenMM2 detaches in ejection order, which only
+    // changes the order of dgBangerActiveManager's free list.
+    if (m_ejectedPartReset)
+        for (const std::size_t i : m_ejectedBangers)
+            m_ejectedPartReset(i);
+    m_ejectedBangers.clear();
     m_detached.clear();
     m_wreckEjected = false;
 }

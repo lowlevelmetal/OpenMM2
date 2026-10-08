@@ -46,8 +46,20 @@ std::optional<BangerData> parseBangerData(std::string_view name, std::string_vie
         d.billFlags |= BangerData::kTree;
     if (const auto* rule = b.child("BirthRule")) {
         fx::BirthRule r;
-        if (fx::loadBirthRule(*rule, r))
+        if (fx::loadBirthRule(*rule, r)) {
+            // asBirthRule::Load reads only the 24 fields dgBangerData::Save
+            // writes (by position); LifeVar, Damp, DampVar, Height, Intensity
+            // and Color keep the asBirthRule constructor's values. No retail
+            // file has them.
+            const fx::BirthRule defaults;
+            r.lifeVar = defaults.lifeVar;
+            r.damp = defaults.damp;
+            r.dampVar = defaults.dampVar;
+            r.height = defaults.height;
+            r.intensity = defaults.intensity;
+            r.color = defaults.color;
             d.birthRule = r;
+        }
     }
     if (d.mass <= 0.0f)
         d.mass = 1.0f;

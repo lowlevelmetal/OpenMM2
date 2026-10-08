@@ -359,9 +359,10 @@ int BangerSet::findRoom(const Vec3& position, int hint) const {
 }
 
 void BangerSet::moveToRoom(std::size_t i, int room) {
-    // lvlLevel::MoveToRoom: off its room's list and onto the new room's
-    // (room 0: none). OpenMM2 appends to the list (the order of MM2's room
-    // lists is not known).
+    // lvlLevel::MoveToRoom: off its room's list and onto the head of the new
+    // room's (room 0: none), so a room lists its props newest first. (Only
+    // the city's static instances, lvlInstance flag 0x400, go after the
+    // room's last static one instead; no banger has that flag.)
     Prop& p = *m_props[i];
     if (p.listed) {
         std::erase(m_rooms[static_cast<std::size_t>(p.room)], &p);
@@ -372,7 +373,8 @@ void BangerSet::moveToRoom(std::size_t i, int room) {
     if (room > 0) {
         if (m_rooms.size() <= static_cast<std::size_t>(room))
             m_rooms.resize(static_cast<std::size_t>(room) + 1);
-        m_rooms[static_cast<std::size_t>(room)].push_back(&p);
+        auto& list = m_rooms[static_cast<std::size_t>(room)];
+        list.insert(list.begin(), &p);
         p.listed = true;
     }
 }
@@ -633,23 +635,35 @@ void BangerSet::activeAttach(Active& a, std::size_t i) {
     // rule from fxpt<TexNumber>, born in the prop's frame; stationary rules
     // are born at the prop's CG in world space, and only from a prop that
     // was still standing.
-    a.particles.reset();
-    a.texNumber = 0;
-    if (d.texNumber > 0 && d.birthRule) {
-        a.texNumber = d.texNumber;
-        a.rule = *d.birthRule;
-        a.particles.setBirthRule(&a.rule);
-        if (a.rule.birthFlags & fx::BirthRule::kStationary) {
-            a.rule.position = inst.matrix.m3;
-            a.particles.setMatrix(nullptr);
-            if (standing)
-                a.particles.blast(a.rule.initialBlast);
-        } else {
-            a.particleMatrix = inst.matrix;
-            a.particles.setMatrix(&a.particleMatrix);
-            a.particles.blast(a.rule.initialBlast);
-        }
+    a.particles.reset(); // asParticles::Reset: no particles, no birth matrix
+    const int sheet = fx::EffectLibrary::bangerSheetNumber(d.texNumber);
+    if (sheet == 0) {
+        // MM2 stops here: the active keeps the rule and the sheet it last
+        // had (asParticles' rule and texture), so a reused active whose old
+        // rule spews (SpewRate, e.g. a mailbox's letters) goes on spewing
+        // from that rule's own Position with no birth matrix, around the
+        // world origin, for its SpewTimeLimit. Kept.
+        return;
     }
+    a.texNumber = sheet; // asParticles::SetTexture
+    // Every MM2 dgBangerData has a rule (the asBirthRule defaults without one).
+    const fx::BirthRule& rule = d.birthRule ? *d.birthRule : fx::BirthRule{};
+    if (rule.birthFlags & fx::BirthRule::kStationary) {
+        // The prop's CG in world space. MM2 writes it into the data's shared
+        // rule; OpenMM2 into the active's copy (no retail rule is stationary).
+        // A prop no longer standing gets no rule and no blast: the old rule
+        // stays, as above.
+        if (!standing)
+            return;
+        a.rule = rule;
+        a.rule.position = inst.matrix.m3;
+    } else {
+        a.rule = rule;
+        a.particleMatrix = inst.matrix;
+        a.particles.setMatrix(&a.particleMatrix);
+    }
+    a.particles.setBirthRule(&a.rule);
+    a.particles.blast(a.rule.initialBlast);
 }
 
 void BangerSet::activeDetach(Active& a) {
@@ -679,19 +693,33 @@ void BangerSet::detachMe(Active& a) {
 void BangerSet::ActiveBody::detach() { owner->set->worldDetach(*owner); }
 
 void BangerSet::worldDetach(Active& a) {
+    // dgPhysManager::Update detaches a type-1 mover outside the active rooms
+    // through its instance (lvlInstance vtable +0x28).
+    if (a.instance >= 0)
+        detachHit(static_cast<std::size_t>(a.instance));
+}
+
+void BangerSet::detachHit(std::size_t i) {
     // dgHitBangerInstance::Detach: the instance's entity detaches
     // (dgBangerActive::DetachMe) and the instance leaves its room, so the
     // knocked-over prop disappears. A placed prop still standing
     // (dgUnhitBangerInstance) keeps lvlInstance::Detach, which does nothing.
-    if (a.instance < 0)
+    if (i >= m_instances.size() || !m_instances[i].everHit)
         return;
-    const auto i = static_cast<std::size_t>(a.instance);
-    if (!m_instances[i].everHit)
-        return;
-    detachMe(a);
+    if (Active* a = activeOf(i))
+        detachMe(*a);
     if (m_instances[i].room != 0 || m_props[i]->listed)
         moveToRoom(i, 0);
     m_instances[i].state = State::Gone;
+}
+
+bool BangerSet::standing(std::size_t i) const { return i < m_props.size() && m_props[i]->banger; }
+
+std::optional<BangerSet::Debris> BangerSet::debris(std::size_t i) const {
+    if (i >= m_instances.size() || m_instances[i].active < 0)
+        return std::nullopt;
+    const Active& a = *m_active[static_cast<std::size_t>(m_instances[i].active)];
+    return Debris{&a.particles, a.texNumber};
 }
 
 void BangerSet::newMover(Active& a) {
@@ -965,8 +993,8 @@ void BangerSet::update(float dt) {
 
 // --- Car parts -------------------------------------------------------------------------------
 
-void BangerSet::ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
-                          const Mat34& frame, float speed, int room) {
+std::size_t BangerSet::ejectPart(const BangerData& data, const std::string& model, const std::string& mesh,
+                                 int paint, const Mat34& frame, float speed, int room) {
     // vehBreakableMgr::Eject: a hit instance from the ring in the car's room,
     // attached, then pushed off. MM2 writes the random "velocity" into the
     // body's momentum (phInertialCS's) and adds the random spin to its
@@ -987,7 +1015,7 @@ void BangerSet::ejectPart(const BangerData& data, const std::string& model, cons
     m_props[h]->audioId = data.colliderId;
     inst.matrix = frame; // SetMatrix
     if (!attachEntity(h))
-        return;
+        return h;
     Active& a = *activeOf(h);
     phys::InertialCS& ics = a.body.ics;
 
@@ -1025,6 +1053,7 @@ void BangerSet::ejectPart(const BangerData& data, const std::string& model, cons
     ics.matrix = frame;
     a.body.syncBoundMatrix();
     newMover(a);
+    return h;
 }
 
 // --- Drawing ---------------------------------------------------------------------------------
@@ -1034,7 +1063,8 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
     const Mat34& cam = camera.transform;
     std::vector<Vec3> glows;
     std::vector<std::pair<const Instance*, const GpuMesh*>> trees;
-    for (const Instance& inst : m_instances) {
+    for (std::size_t i = 0; i < m_instances.size(); ++i) {
+        const Instance& inst = m_instances[i];
         if (inst.state == State::Gone)
             continue;
         const GpuModel* model = models.get(inst.model);
@@ -1045,8 +1075,10 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
         const auto lod = objectLod(viewDepth(cam, inst.matrix.m3), radius, params.detail, params.detail.noDraw);
         if (!lod || !frustum.intersectsSphere(inst.matrix.m3, radius))
             continue;
-        // Lamp glows of props still standing (dgBangerInstance::DrawGlow).
-        if (params.glows && inst.state == State::Unhit)
+        // Lamp glows of props still standing (dgBangerInstance::DrawGlow:
+        // lvlInstance flag 1, which stays set while an active holds the prop
+        // and only goes when it breaks loose).
+        if (params.glows && standing(i))
             for (const Vec3& g : inst.data->glowOffsets)
                 glows.push_back(inst.matrix.transform(g));
         const std::string part = !inst.mesh.empty() ? inst.mesh
