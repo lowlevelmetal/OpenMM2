@@ -57,3 +57,6 @@ Midtown Madness 1 reimplementation on the same engine), community
 documentation and observation of the original game. Code and docs cite the
 original function each rule comes from; anything inferred is marked as such,
 so it can be checked later.
+
+The per-function audit against MM2's code is recorded in
+[parity/](parity/README.md).
