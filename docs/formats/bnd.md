@@ -80,7 +80,10 @@ polygon[polygonCount]:   u16 index[4], u16 material
 ```
 
 A polygon is a quad exactly when `index[3] != 0`; triangles store 0 there
-(this is also how the game's `phPolygon` tells them apart, per mm2hook).
+(this is also how the game's `phPolygon` tells them apart: `LoadBinary`
+copies the four indices as they are and `CalculateNormal` /
+`ComputeEdgeNormalCross` treat a zero fourth index as a triangle). The
+material is a u16 of which the polygon keeps the low byte.
 
 ## TER (terrain acceleration grid, little-endian)
 
