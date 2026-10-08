@@ -161,9 +161,16 @@ always; races not for the checkpoint that leaves only the finish;
 The player starts on the first waypoint facing its heading
 (`mmWaypoints::GetStart` / `GetStartAngle`); the driving direction of
 heading h is `(sin h, 0, -cos h)`. Cruise starts 2 m above a random AI
-intersection (not the first) that is not in an underground, road or
-building room and joins no freeway or alley (`mmGame::RespawnXYZ`; the path
-flag bits follow mm2hook's naming), facing -Z. Opponents start on the first
+intersection (not the first) whose room's level flags (lvlRoomInfo, not
+the PSDL bytes) mark neither subterranean (0x0A), deep water (0x04) nor a
+landmark (0x20) and that joins no freeway or alley (`mmGame::RespawnXYZ`;
+the path flag bits follow mm2hook's naming), facing -Z. In a multiplayer
+race each player takes a slot of `mmGameMulti::StartXYZ`'s grid behind the
+start: 2.25 m either side 6 m back, then 4.5 m to the sides and 6 m ahead,
+or for cars with a trailer or a radius over 6 m 2.75 / 5.5 m to the sides
+16 and 34 m back (the slot is taken as the player's id, inferred).
+Multiplayer cruise draws its intersection with the player's id as the
+seed. Spawn points drop onto the ground with the wheels' probe. Opponents start on the first
 row of their `.opp` line, turned by its fourth column (degrees × 0.017444445,
 not negated as the player's start angle is; `aiRouteRacer::Init`); the last
 row is where the AI finishes.
@@ -303,9 +310,20 @@ imperial units). Only the last event's pass is recorded
 (`RegisterFinish(1)`); string 610 ("You've passed the final") is not used
 by the game. Falling into the water fails the event 0.5 s later.
 
-### Cops & Robbers (rules only)
+### Cops & Robbers
 
-`mmMultiCR`, in `CopsAndRobbers`:
+`mmMultiCR`, in `CopsAndRobbers` (rules) and the race screen (network,
+HUD, car):
+
+* **Start**: no countdown; "Go!" (113) for 2 s at the top with
+  "Startracehigh". Players start at random intersections drawn from a
+  stream seeded with their id (`mmGame::RespawnXYZ`).
+* **Machines**: each machine runs the rules for its own car and tells the
+  others (`CopsAndRobbers::updateNetwork` / `receive`): a client that
+  reaches free gold asks the host (0x25e) and the gold waits; the host
+  grants it (0x25a); the carrier's machine reports a drop (0x259) and a
+  delivery (600); the host draws the next set and sends its places (0x261).
+  OpenMM2 seeds the first set with the shared start time.
 
 * **Places**: `race/<city>/multicopwaypoints.csv` is a pool of places (at
   least 3; the last row is never picked). Each set, at the start and after
@@ -336,7 +354,22 @@ by the game. Falling into the water fails the event 0.5 s later.
 * **Scores and limits**: team scores are the sum of the members'. Time
   limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142) and end
   below 0.1 s; point limits end the game when a player (Free-For-All) or a
-  team reaches them.
+  team reaches them ("Time's up!" 118, "Point limit reached" 119); the
+  results follow 3 s later with the car braked (state 9, +0x2258).
+* **Car**: regeneration while not carrying (`mmPlayer::UpdateRegen`); the
+  gold's mass and throttle cap while carrying; a repair at a delivery.
+  The throttle cap applies in a forward gear in every network game (1
+  unless carrying).
+* **HUD**: "You have the Gold!" (115 / 134), "<name> has the Gold!" (135),
+  "You dropped the gold!" (112), "<name> dropped the Gold!" (136), "Gold
+  delivered!" (117), "<name> delivered the Gold!" (137). The gold spins at
+  3 rad/s 1.5 m above its place (`mmPowerupInstance`); the bases are
+  billboards 12 x 7.5 x 12 (`mmBillInstance`); the arrow points at the gold,
+  or at the carrier's base. The team totals ("COPS" / "ROBBERS", or "BLUE" /
+  "RED") show in blue and red at the top left (mmCRHUD's corner inferred;
+  its roster of names is not drawn), the time limit's clock top centre.
+  The announcer's Cops & Robbers lines are loaded but build 3393 never
+  plays them.
 
 ## HUD
 
@@ -396,13 +429,33 @@ single-player game), map zoom and orientation (with the map on), HUD toggle,
 change camera, wide angle, dashboard, transmission, shift up / down,
 reverse, next / previous checkpoint (checkpoint races), opponent icons and
 the horn. Steer Left wins over Steer Right; keyboard steering goes through
-`mmInput::FilterDiscreteSteering` (rate 1 per second, squared). A
-controller stick goes through the CONTROLLER DEAD ZONE option (default 0.1,
-rescaled as DirectInput's dead zone does); AUTO REVERSE reaches the pedal
-handling.
+`mmInput::FilterDiscreteSteering`. `[Controls] Controller` picks the
+driving inputs (`mmInput::SetDefaultConfig`): the keyboard (and, as an
+OpenMM2 extra, any gamepad), the mouse (the cursor across the window
+steers, left / right buttons throttle / brakes), a gamepad (stick, buttons
+0 / 1 / 3), or a joystick or wheel (X steers, Y forward / back throttle /
+brakes). The mouse, joystick and wheel steer through
+`mmPlayer::FilterSteering` with the STEERING SENSITIVITY and the
+speed-blended curves of mmPlayer; sticks go through the CONTROLLER DEAD
+ZONE (default 0.1, rescaled as DirectInput's dead zone does); AUTO REVERSE
+reaches the pedal handling.
 
-**Popup** (`mmPopup`, `PUMain`, `PUExit`): Escape opens the in-race main
-menu (pausing a single-player game; the HUD and map are disabled): Restart
+**Chat** ("Enter Chat Msg", `mmPopup::ProcessChat`, `PUChat`): a line of up
+to 40 characters at the bottom left, without pausing. In single player
+"/blubber" is the only command (the cheat: elasticity cap 4 until the next
+`mmGame::Reset`, elasticity 4 on the player's bound, and no finish is
+registered until the game ends). In a network game lines go to the others
+("/rc ..." stays local, "/wav ..." is not shown) and show as "name: text"
+in five chat lines at 0.65 of the screen, hidden 15 s after the last.
+
+**Network cars** (`mmNetObject`): every other player's car is a body of the
+world (kinematic at its interpolated snapshot in OpenMM2; MM2 drives it
+with the remote inputs), declared as a type-3 mover, built with the
+polygonal bound, towing its trailer except in multiplayer cruise and Cops
+& Robbers.
+
+**Popup** (`mmPopup`, `PUMain`, `PUExit`, neither with a title): Escape
+opens the in-race main menu (pausing a single-player game; the HUD and map are disabled): Restart
 Race / Restart Lesson (read-only in a network game), Options (not ported,
 shown disabled), Quit to Race Menu / Back to School, Exit to Windows (asks
 first) and Resume Driving; Escape resumes. The popup card is (0.2, 0.1,
@@ -430,22 +483,29 @@ the player's place (`mmGameSingle::UpdateRewards`) and the lesson's outcome
 (`mmSingleStunt::RegisterFinish`, not after the water). The final lap,
 final checkpoint and race progress lines are never asked for. MM2 plays
 the results only for a registered finish and an unlock line instead when a
-reward unlocks; OpenMM2 decides both in the frontend later, so the results
-line always plays.
+reward unlocks: the race works out the registration and the reward at the
+line (on a copy of the driver; the frontend stores the finish when the race
+is left) and plays the unlock line (`LoadVehicleUnlock`,
+`PlayUnlockVehicle`, or the paint job's) or the results.
+
+**Rain** (`cityLevel::DrawRooms`): none with the camera in a subterranean
+room (level flags 0x0A), nor in a landmark room (0x20) with geometry above
+the camera (a probe from 100 m up).
 
 Not implemented, all verified to exist in MM2:
 
-* **Rear-view mirror** ("Rear View Mirror", off by default; `mmMirror`):
-  a viewport `Size` (0.3 × 0.16 of the screen) at the top right, one pixel
-  from the edges, showing the city from `Position` in car space looking
-  backwards, mirrored left-right, with `Fov` / `Aspect` / `NearClip` /
-  `FarClip` from `tune/<car>.mmmirror`, and the player's car hidden. Needs a
-  second world pass with flipped winding in the race screen.
+* **Rear-view mirror** drawing ("Rear View Mirror", off by default;
+  `mmMirror`): a viewport `Size` (0.3 × 0.16 of the screen) at the top
+  right, one pixel from the edges, showing the city from `Position` in car
+  space looking backwards, mirrored left-right, with `Fov` / `Aspect` /
+  `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
+  hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
+  the renderer draws it.
 * The 3D view moving to the top half (split map) or into the small rectangle
   (full-screen map), `mmHudMap::SetMapMode`.
 * The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`),
-  the CD player display (`mmCDPlayer`), chat lines (`mmHUD::PostChatMessage`)
-  and the Cops & Robbers scores (`mmCRHUD`).
+  the CD player display (`mmCDPlayer`) and the Cops & Robbers roster of
+  names (`mmCRHUD`).
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

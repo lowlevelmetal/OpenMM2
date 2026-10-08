@@ -2,9 +2,13 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
-Summary: 179 entries (a row may group closely related functions); verified
-85, fixed 64, deviation 6, inferred 4, open 1, openmm2 19. Missing: 16 MM2
-features (13 open, 3 deviation).
+Summary: 205 entries (a row may group closely related functions); verified
+89, fixed 86, deviation 6, inferred 4, open 1, openmm2 19. Missing: 17 MM2
+features (11 open, 6 deviation).
+
+A second pass (2026-10-08) wired the race-side items the first pass and
+the other areas left open; its rows are in "Second pass" below, and the
+Missing table is updated.
 
 Scope: the game modes and race rules (`src/game/session/Session`,
 `RaceSetup`, `Gate`, `CopsAndRobbers`, `Types`), the in-race HUD
@@ -248,22 +252,54 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `DiscreteSteering::update` | `mmInput::FilterDiscreteSteering` | fixed | removed at the merge: the vehicle area's `phys::SteeringFilter` ports the same filter with the rates mmPlayer::Update sets by speed, and now filters the keys and the dead-zoned stick |
 | `applyDeadZone` | `mmJoystick::SetDeadZone` (DIPROP_DEADZONE = option × 10000) | inferred | rescaled as DirectInput applies a dead zone (DirectInput is outside midtown2.exe) |
 
+## Second pass (2026-10-08)
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `RaceScreen::loadVehicle` (mover) | `mmGame::Update`'s `dgPhysManager::DeclareMover` | fixed | the player as type 4, 0x1b (its room and the neighbours active, PlayerInst), its trailer as type 2, 0x1b (camera-props also declared the player on integration) |
+| `ai::World::setLightsDeferred`, `updateLights` (ai area) | `aiMap::Update` | fixed | the light sets run after the racers and police; no racer or police driver reads a light, so the order is all that changes |
+| `RaceScreen::buildPopup`, `drawPopup` | `PUMain` (`CreateTitle(0)`), `PUExit` (`AssignName`) | fixed | no title on either popup |
+| `RaceScreen::leaveRace`, `loadProfile` | `mmPlayerConfig::SetViewSettings` / `GetViewSettings` | fixed | the driver's camera, wide angle, dashboard and mirror applied at the start and stored when the race is left |
+| `RaceScreen::startFinishCamera` | `mmGameMulti::SetFinishCam`, `mmPlayer::SetMPPostCam` | fixed | the orbit camera on the finish (last waypoint, a circuit's first) at (heading + 180) x -0.017453292; Blitz the post-race camera |
+| `RaceScreen::updateCarCamera` (orbit keys, probe) | `camPolarCS::Update`, `dgPhysManager::Collide` (0x20) | fixed | Delete / Page Down / End / Home / Page Up / Insert / Shift; the probe is the wheels' (city and flagged instances, not the player's car) |
+| `RaceScreen::updateGameInput` (mirror) | `mmViewMgr::SetViewSetting(9)` (event 0x1E) | fixed | toggles `RearViewMirror` (drawn by the renderer) |
+| `city::levelRoomFlags` (city area) | `cityLevel::Load`, `lvlLevel::LoadInstances` | fixed | lvlRoomInfo's own flags (0x01 open streets, 0x0A subterranean, 0x04 deep water, 0x20 flag-0x100 instance rooms); ai-ambient-city's `CityData::levelRoomFlags` on integration does the same and should replace it |
+| `RaceScreen::cameraTarget` (room flags), `levelFlagsAt` | `mmPlayer::Update` | fixed | the level flags, not the PSDL bytes |
+| `RaceScreen::rainVisible` | `cityLevel::DrawRooms` | fixed | no rain with the camera in a 0x0A room, nor in a 0x20 room under geometry (probe from 100 m up) |
+| `randomIntersectionStart` | `mmGame::RespawnXYZ` | fixed | rejects level flags 0x0A (mmSingleRoam's argument) and 0x24, not PSDL road / building / special-bound rooms |
+| `RaceScreen::updateAudio` (tunnel) | `mmPlayer::Update` (audio flag 0x80) | verified | level flag 0x02 at the car |
+| `RaceScreen::load` (glow scales), remote car setup | `vehSiren::vehSiren`, `aiVehicleManager::Init` | fixed | 0.2 / 0.95 after the AI is set up, 0.2 / 0.6 once a network car is built |
+| engine smoke rule winner | `vehCarDamage::Init` order | verified | the player, then racers, then police, as `mmPlayer::Init` and `aiMap::Init` build them (network cars, which MM2 builds last, have no effects in OpenMM2) |
+| ejected parts | `vehCarModel::EjectOneshot` | verified | 1.3 x the car's speed, at CurrentDamage >= MaxDamage |
+| `announceResults`, `applyRaceTableDefaults` | `mmGameSingle::UpdateRewards`, the modes' `RegisterFinish` | fixed | a registered finish has the announcer name the unlocked car or paint job (LoadVehicleUnlock / PlayUnlockVehicle, LoadTextureUnlock / PlayUnlockTexture), else the results; computed on a copy of the driver (the frontend stores the finish) |
+| `openChat`, `sendChatMessage`, `postIncomingChat`, `Hud::postChat` / `drawChat` | `mmPopup::ProcessChat`, `PUChat`, `mmGame` / `mmGameMulti::SendChatMessage`, `ParseChatMessage`, `mmHUD::PostChatMessage` | fixed | new: the chat line (40 characters, bottom left, no pause), "/blubber" (cheat flag, elasticity cap 4, the player's bound elasticity 4), "/rc" kept local, "/wav" not posted, five chat lines for 15 s; the popup's line height is inferred |
+| `cheating`, `RaceResult::cheated` | `bCheating`, `mmStatePack::SetDefaults` | fixed | no finish registered after the cheat until the game ends |
+| `Session::start` (Cops and Robbers) | `mmMultiCR::UpdateGame` states 0-2 | fixed | no countdown: "Go!" (113) 2 s at the top with "Startracehigh"; wreck line 114 |
+| `controls::Options::controller`, `AnalogSteering`, `readController` | `mmInput::SetDefaultConfig`, `PollContinuous`, `GetThrottleVal` / `GetBrakesVal`, `mmJoystick::GetAxis`, `mmPlayer::FilterSteering`, `mmPlayer::Update` | fixed | the five controllers' driving inputs; the mouse, joystick and wheel steering through FilterSteering with the STEERING SENSITIVITY and the speed blend; the gamepad buttons' mapping to SDL's is inferred; the keyboard keeps OpenMM2's gamepad extra |
+| `updateRemoteCars`, `drawRemoteCars` | `mmNetObject::Init`, `Update` | fixed | network cars as kinematic bodies at their snapshots (deviation: MM2 simulates them with the remote inputs), the polygonal bound, a vpcop on the Mustang's tune, trailers except in multiplayer cruise and Cops and Robbers, type-3 movers |
+| `multiplayerGridOffset`, spawn | `mmGameMulti::StartXYZ`, `mmGame::RespawnXYZ` (seed), `mmGame::FindGroundPos` | fixed | the eight-slot grids (slot = player id, inferred), the cruise start seeded by the player id, spawns dropped with the wheels' probe |
+| `CopsAndRobbers::updateNetwork`, `receive` | `mmMultiCR::UpdateGame`, `UpdateGold`, `UpdateBank`, `UpdateHideout`, `ImpactCallback`, `GameMessage` (0x259, 0x25a, 0x25e, 600, 0x261) | fixed | new: each machine runs its own car, the host grants pickups and draws sets |
+| `setupCopsAndRobbers`, `updateCopsAndRobbers`, `fondleMass`, `crTeam` | `mmMultiCR::Init`, `InitMyPlayer`, `FondleCarMass`, `mmPlayer::UpdateRegen`, `mmGame::UpdateSteeringBrakes` | fixed | new: the mode is played (places, teams, messages, mass, throttle cap in every network game, regeneration, repair at delivery, HUD lines, limits, end after 3 s); the shared first set is seeded by the start time (OpenMM2) |
+| `Hud::drawCrObjects`, `drawCrReadouts`, arrow interest | `mmPowerupInstance::Draw`, `mmBillInstance::Draw`, `mmArrow::SetInterest`, `mmCRHUD::Init` | fixed | new: the spinning gold, the bases' billboards, the team totals ("COPS" / "ROBBERS" or "BLUE" / "RED"); the roster of names and the gold icon are not drawn, and the totals' corner is inferred |
+| Cops and Robbers speech | `mmSpeechContainer::InitCNR` | verified | loaded; nothing in build 3393 calls `mmCNRSpeech::Play` |
+
 ## Missing
 
 | MM2 | What it does | Status |
 | --- | --- | --- |
-| `mmCRHUD`, Cops and Robbers wiring in RaceScreen | the C&R scores, roster and gold display; the race screen does not run `CopsAndRobbers` (regeneration `mmPlayer::UpdateRegen` → `CarSim::regenerate`, the carrier's mass and throttle cap mmGame +0x40c, `mmCNRSpeech`) | open: the mode is not playable; needs the RaceScreen integration and the lobby |
-| `mmGameSingle::UpdateRewards` unlock lines, `RegisterFinish` timing | unlock speech at the finish; registration in the race | open: OpenMM2 registers in the frontend after the race; the announcer always plays the results line (deviation) |
+| `mmCRHUD` roster, gold icon | the player names with their scores and who carries the gold; the 3D gold icon in the corner | open: the team totals are drawn |
+| `RegisterFinish` in the race | registering the finish at the line | deviation: the frontend stores it when the race is left (the announcer's choice is made at the line) |
+| `mmNetObject::Predict`, `InputUpdate`, `PositionUpdate` | network cars simulated with the remote inputs and pulled toward the received positions | deviation: OpenMM2's snapshots place them kinematically |
 | `PUResults` in the race | results over the running race, opponents added as they finish | deviation: the results are a frontend page |
 | `PUOptions` pages in the popup | the in-race option pages | open: Options is shown disabled (frontend-ui) |
-| `mmMirror` | rear-view mirror | open (rendering-fx / camera-props: `CamMirror` on integration, toggled by event 0x1E) |
+| `mmMirror` drawing | the rear-view mirror's view | open (rendering-fx); the race toggles `RearViewMirror` (event 0x1E) and keeps the driver's flag |
 | `mmHudMap::SetMapMode` 3D view placement | the 3D view moves to the top half / small rectangle | open (rendering-fx) |
-| `mmCDPlayer`, `mmHUD::PostChatMessage`, mouse steering bar | CD player display, chat lines, mouse bar | open |
+| `mmCDPlayer`, mouse steering bar | CD player display, mouse bar (`mouse_bar`, `mouse_ar`) | open |
+| `PlayerCameras::toggleXCam` keys (events 0x0C, 0x2F) | the XCam cheat's orbit cameras | open: the API is on integration (camera-props' second pass); wire it at the merge |
+| HUD bytes of the view settings | map mode, HUD state and map options per driver (mmPlayerConfig +0x7169, +0x716D, +0x7170) | deviation: kept in `[HUD]` of the settings for every driver |
 | Thrill cam (`mmViewMgr::SetViewSetting(2)`) | the thrill camera | open (camera-props) |
 | `mmPlayer::UpdateFF`, `FFImpactCallback` | force feedback | open: no force feedback device layer |
-| `mmPlayer` Controller / Sensitivity | controller choice and steering sensitivity | open (vehicle: `SteeringFilter` on integration) |
-| `mmNetObject::Init` trailer flag | network cars tow their trailer except in multiplayer cruise and C&R | open: remote trailers are not drawn at all |
-| `aiMap::Update` light sets after the police | the light sets update last | open (ai-ambient-city: `ai::World` steps them with the traffic) |
+| `mmInput` binding sets for the other controllers | rebinding the mouse, joystick, gamepad and wheel inputs | open: their defaults are used (the options page binds keys only) |
 | `Aud3DObjectManager::Process3D(false)` | drops positioned sounds behind the results popup | deviation: leaving the race stops them |
 | `mmMulti*` end throttle taper | brakes with the throttle tapering for the wait, then undrivable | deviation: undrivable at once |
 | `mmCCSpeech::PlayPreRace`'s first checkpoint line | the lesson's checkpoint line after the pre-race line | open (audio) |
@@ -292,3 +328,11 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 - frontend-ui: the lobby should pick the Cops vs. Robbers team from the
   car's police flag (`mmMultiCR::InitMyPlayer`); the options page can use
   `app/Controls` for its action table; the in-race Options pages.
+- Second pass, for the merge: camera-props' second pass also declares the
+  player as the type-4 mover and gives the camera probe `World::wheelProbe`
+  (keep one of each); ai-ambient-city's `CityData::levelRoomFlags`
+  (`src/city/RoomInfo.h`) replaces `city::levelRoomFlags` here (RaceScreen's
+  `levelFlagsAt`, `rainVisible`, the camera's room flags and
+  `randomIntersectionStart` should read it); wire `PlayerCameras::toggleXCam`
+  to input events 0x0C and 0x2F with `CameraInput::orbit` (the race already
+  fills the orbit keys).
