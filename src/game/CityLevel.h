@@ -33,6 +33,12 @@ std::optional<asset::BoundGeometry> loadBoundFile(const vfs::Vfs& vfs, std::stri
 phys::GeometryData toGeometryData(const asset::BoundGeometry& bound,
                                   const std::function<const phys::Material*(const asset::BoundMaterial&)>& material = {});
 
+// cityLevel::GetTouchedNeighbors: the rooms across `room`'s perimeter edges
+// that the sphere reaches in the ground plane (instance rooms whatever the
+// sphere), each once, at most `max`; returns how many it wrote to `out`.
+int cityTouchedNeighbors(const city::Psdl& psdl, int* out, int max, int room, const Vec3& centre,
+                         float radius);
+
 // Things that list instances in rooms besides the city's static objects:
 // the props (BangerSet) and the traffic cars on their rails (TrafficBodies).
 class InstanceSource {

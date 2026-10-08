@@ -25,7 +25,7 @@ public:
         m_seed = m_seed * 214013u + 2531011u;
         return static_cast<int>((m_seed >> 16) & 0x7FFF);
     }
-    // [0, 1): irand() * 2^-15 (flt_621B38 = 3.0517578e-05f)
+    // [0, 1): irand() * 2^-15 (frand)
     float frand() { return static_cast<float>(irand()) * 3.0517578125e-05f; }
 
 private:

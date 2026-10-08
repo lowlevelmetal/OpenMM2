@@ -6,6 +6,7 @@
 
 #include "game/CityLevel.h"
 
+#include "asset/Pkg.h"
 #include "city/CityMesh.h"
 #include "city/SdlCollect.h"
 #include "core/Log.h"
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 namespace mm2::game {
 namespace {
@@ -53,6 +55,42 @@ phys::TerrainData toTerrainData(const asset::TerrainBound& t) {
 
 float rowLength(const Vec3& v) {
     return std::sqrt(v.z * v.z + v.y * v.y + v.x * v.x);
+}
+
+// lvlInstance::GetRadius: the geometry set's radius (lvlInstance::GetGeomSet),
+// the largest distance of a vertex of the model's levels of detail from its
+// origin. Null without a model.
+float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
+    const auto bytes = vfs.readAll("geometry/" + str::lower(name) + ".pkg");
+    if (!bytes)
+        return 0.0f;
+    const auto pkg = asset::parsePkg(*bytes);
+    if (!pkg)
+        return 0.0f;
+    float radius2 = 0.0f;
+    for (const auto& mesh : pkg->meshes) {
+        if (!mesh.part.empty())
+            continue;
+        for (const auto& section : mesh.sections)
+            for (const auto& packet : section.packets)
+                for (const auto& v : packet.vertices) {
+                    const float d2 = v.position.z * v.position.z + v.position.y * v.position.y +
+                                     v.position.x * v.position.x;
+                    if (radius2 < d2)
+                        radius2 = d2;
+                }
+    }
+    return std::sqrt(radius2);
+}
+
+// The distance of the farther corner of a bound's box from its origin
+// (InitBoundTerrainLocal raises the geometry set's radius to it).
+float boxCornerRadius(const phys::Bound& b) {
+    float r2 = b.boxMax.z * b.boxMax.z + b.boxMax.y * b.boxMax.y + b.boxMax.x * b.boxMax.x;
+    const float min2 = b.boxMin.z * b.boxMin.z + b.boxMin.y * b.boxMin.y + b.boxMin.x * b.boxMin.x;
+    if (r2 < min2)
+        r2 = min2;
+    return std::sqrt(r2);
 }
 
 } // namespace
@@ -124,11 +162,19 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
         for (const auto& m : b.materials) {
             if (str::iequals(m.name, "none"))
                 continue;
+            // lvlMaterialMgr::Load: a new name becomes an lvlMaterial with
+            // the file's elasticity, friction, effect and sound ("none" is
+            // 0) and the constructor's defaults for the rest (drag 0, width
+            // 1, height 0, depth 0, no particles). A binary bound adds a
+            // plain phMaterial instead (phMaterialMgr::Load); no retail
+            // terrain bound introduces a new name, so both look alike here.
             phys::Material pm;
             pm.name = m.name;
             pm.elasticity = m.elasticity;
             pm.friction = m.friction;
             pm.effect = m.effect;
+            pm.sound = str::istartsWith(m.sound, "none") ? 0 : std::atoi(m.sound.c_str());
+            pm.width = 1.0f;
             if (managerIndex(m.name) < 0)
                 m_manager.push_back(pm);
             if (!str::iequals(m.name, "default") && m_materials.find(m.name) < 0)
@@ -171,8 +217,13 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
                     p.geometry = loadBoundFile(vfs, inst.name, true);
                     if (!p.geometry)
                         p.geometry = loadBoundFile(vfs, inst.name, false);
-                    if (!p.terrain) {
-                        ++m_missingBounds; // malformed: the original deletes the bound
+                    // phBoundTerrain::Load accepts version 1.1 files whose
+                    // polygon count is the geometry's; otherwise it fails
+                    // and InitBoundTerrainLocal deletes the bound
+                    // ("Malformed terrain").
+                    if (!p.terrain || p.terrain->version != 1.1f ||
+                        (p.geometry && p.terrain->polygonCount() != p.geometry->polygons.size())) {
+                        ++m_missingBounds;
                         continue;
                     }
                 } else {
@@ -206,6 +257,7 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
     };
     m_roomInstances.resize(city.psdl.rooms.size());
     std::unordered_map<std::string, std::shared_ptr<const phys::Bound>> cache;
+    std::unordered_map<std::string, float> modelRadii;
     for (Pending& p : pending) {
         const city::Instance& inst = *p.inst;
         auto si = std::make_unique<StaticInstance>();
@@ -250,27 +302,46 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
                        p.geometry->polygons.size(), p.terrain ? p.terrain->polygonCount() : 0u);
             continue;
         }
-        const phys::Bound& b = *si->collisionBound;
-        si->m_radius = rowLength(b.centroid) + b.radius;
+        // lvlInstance::GetRadius (GetBoundSphere, TrivialCollideInstances):
+        // the model's geometry set radius, which a terrain-local bound raises
+        // to its box's farther corner (InitBoundTerrainLocal; the set is
+        // shared by every instance of the model loaded after it).
+        auto radius = modelRadii.find(inst.name);
+        if (radius == modelRadii.end())
+            radius = modelRadii.emplace(inst.name, modelRadius(vfs, inst.name)).first;
+        if (inst.flags & kInstTerrainLocal)
+            radius->second = std::max(radius->second, boxCornerRadius(*si->collisionBound));
+        si->m_radius = radius->second;
         si->room = inst.room;
-        // Flags 0x130 / 0x110: collidable, and terrain-collidable (which
-        // also keeps them from being attached); 0x20, the wheels' mask, on
-        // all but the terrain-bound ones with record flag 0x400.
+        // lvlLevel::LoadInstances: flags 0x130 (0x110 with record flag 0x400)
+        // make the object collidable and terrain-collidable (which also keeps
+        // it from being attached), and 0x20, the wheels' mask, is on all but
+        // the terrain-bound ones with record flag 0x400.
+        // lvlMultiRoomInstance's stand-ins answer IsCollidable false and
+        // IsTerrainCollidable once per gather.
         si->collidable = (inst.flags & kInstTerrainLocal) != 0;
         si->terrainCollidable = true;
         si->wheelCollidable = !(inst.flags & kInstTerrainLocal) || !(inst.flags & kInstNoWheels);
         si->multiRoom = false;
-        // Listed in the room and in the neighbours its sphere touches
-        // (lvlMultiRoomInstance::Create; terrain instances likewise,
-        // inferred); a multi-room instance is collided once per gather.
         const Vec3 centre = si->position();
         if (inst.room > 0 && inst.room < m_roomInstances.size()) {
-            m_roomInstances[inst.room].push_back(si.get());
-            int rooms[32];
-            const int n = touchedNeighbors(rooms, 32, inst.room, centre, si->m_radius);
-            for (int k = 0; k < n; ++k)
-                if (rooms[k] > 0 && static_cast<std::size_t>(rooms[k]) < m_roomInstances.size())
-                    m_roomInstances[static_cast<std::size_t>(rooms[k])].push_back(si.get());
+            if (inst.flags & kInstTerrainLocal) {
+                // lvlLevel::MoveToRoom: its own room only (an instance room,
+                // which GetTouchedNeighbors returns to every neighbour).
+                m_roomInstances[inst.room].push_back(si.get());
+            } else {
+                // lvlMultiRoomInstance::Create: a stand-in in each room its
+                // sphere reaches across the room's perimeter, not in the room
+                // itself; the object goes to room 0. Reaching no room it is
+                // never collided (nor drawn).
+                int rooms[32];
+                const int n = touchedNeighbors(rooms, 32, inst.room, centre, si->m_radius);
+                if (n == 0)
+                    log::debug("collision: {} in room {} reaches no neighbour", inst.name, inst.room);
+                for (int k = 0; k < n; ++k)
+                    if (rooms[k] > 0 && static_cast<std::size_t>(rooms[k]) < m_roomInstances.size())
+                        m_roomInstances[static_cast<std::size_t>(rooms[k])].push_back(si.get());
+            }
         }
         m_instances.push_back(std::move(si));
     }
@@ -371,13 +442,18 @@ int CityLevel::neighbors(int* out, int max, int room) const {
 }
 
 int CityLevel::touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const {
+    return cityTouchedNeighbors(m_city.psdl, out, max, room, centre, radius);
+}
+
+int cityTouchedNeighbors(const city::Psdl& psdl, int* out, int max, int room, const Vec3& centre,
+                         float radius) {
     // cityLevel::GetTouchedNeighbors: the rooms across the room's perimeter
     // edges the sphere reaches (in the ground plane), each once; instance
     // rooms whatever the sphere.
-    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size() || max <= 0)
+    if (room <= 0 || static_cast<std::size_t>(room) >= psdl.rooms.size() || max <= 0)
         return 0;
-    const city::PsdlRoom& r = m_city.psdl.rooms[static_cast<std::size_t>(room)];
-    const auto& verts = m_city.psdl.vertices;
+    const city::PsdlRoom& r = psdl.rooms[static_cast<std::size_t>(room)];
+    const auto& verts = psdl.vertices;
     const float r2 = radius * radius;
     const auto n = r.perimeter.size();
     int count = 0;
@@ -389,10 +465,10 @@ int CityLevel::touchedNeighbors(int* out, int max, int room, const Vec3& centre,
     };
     for (std::size_t i = 0; i < n; ++i) {
         const int neighbor = r.perimeter[i].neighbor;
-        if (neighbor == 0 || seen(neighbor) || static_cast<std::size_t>(neighbor) >= m_city.psdl.rooms.size())
+        if (neighbor == 0 || seen(neighbor) || static_cast<std::size_t>(neighbor) >= psdl.rooms.size())
             continue;
         bool touched = false;
-        if (m_city.psdl.rooms[static_cast<std::size_t>(neighbor)].flags & kRoomInstance) {
+        if (psdl.rooms[static_cast<std::size_t>(neighbor)].flags & kRoomInstance) {
             touched = true;
         } else {
             const std::size_t next = i + 1 != n ? i + 1 : 0;

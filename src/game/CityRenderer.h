@@ -2,6 +2,7 @@
 
 #include "city/CityData.h"
 #include "city/CityMesh.h"
+#include "city/SdlDraw.h"
 #include "game/Camera.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
@@ -12,6 +13,7 @@
 
 #include <array>
 #include <functional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -85,15 +87,20 @@ public:
                   bool fog = true, bool lighting = true);
 
 private:
-    struct Batch {
-        std::uint32_t firstIndex = 0;
-        std::uint32_t indexCount = 0;
-        const std::string* textureName = nullptr; // PSDL texture slot, null = untextured
-        city::SurfaceKind kind{};
+    // One sdlPage16::Draw primitive: a range of m_streetIndices drawn with
+    // texture slot `slot` (0 = untextured).
+    struct Prim {
+        std::uint32_t first = 0, count = 0;
+        std::uint32_t slot = 0;
+        bool wall = false;        // skipped while the camera is behind wall0 -> wall1
+        bool belowCamera = false; // skipped while `height` is above the camera
+        float height = 0.0f;
+        Vec3 wall0, wall1;
     };
     struct Room {
-        std::vector<Batch> batches;
-        Aabb bounds;
+        std::array<std::vector<Prim>, 4> lods; // sdlPage16::Draw's levels of detail
+        Vec3 centre;                           // cityLevel's room sphere
+        float radius = 0.0f;
         std::vector<std::size_t> instances; // indices into m_instances
     };
     struct InstanceDraw {
@@ -104,10 +111,16 @@ private:
         Mat34 transform;
         Aabb worldBounds; // valid once resolved
         float radius = 0.0f;
+        // A collidable (.inst flag 0x2000) object, drawn through
+        // lvlMultiRoomInstance stand-ins: once per frame from whichever of
+        // its rooms is drawn first.
+        bool multiRoom = false;
+        std::uint32_t drawnFrame = 0;
     };
 
     void drawSky(const Camera& camera, const Environment& env);
-    void drawRoom(std::size_t room, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail);
+    void gatherStreets(const Room& room, int lod, const Vec3& eye);
+    void drawStreets(bool alphaPass);
     void drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail);
     void drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth);
     void resolve(InstanceDraw& inst);
@@ -117,21 +130,37 @@ private:
     ModelLibrary& m_models;
     const city::CityData& m_city;
     city::RoomLocator m_locator;
-    render::BufferHandle m_vertices, m_indices;
-    // CPU copy of the street vertices and their kinds, reshaded per environment.
+    render::BufferHandle m_vertices;
+    // CPU copy of the street vertices and how each is shaded (sdlPage16::Draw's
+    // vglCurrentColor), recoloured per environment.
     std::vector<render::Vertex3D> m_streetVertices;
-    std::vector<city::SurfaceKind> m_streetKinds;
+    std::vector<city::SdlShade> m_vertexShade;
+    std::vector<std::uint8_t> m_vertexLight; // wall light table index
+    std::vector<std::uint32_t> m_streetIndices;
+    // Texture slots (name per slot; 0 is untextured) and the indices gathered
+    // for each this frame (vglBeginBatch / vglEndBatch).
+    std::vector<std::string> m_slotNames;
+    std::vector<std::vector<std::uint32_t>> m_buckets;
     std::vector<Room> m_rooms;
     std::vector<InstanceDraw> m_instances;
     std::vector<std::uint8_t> m_roomMarks;
     const GpuModel* m_sky = nullptr;
     float m_skyAngle = 0.0f;
     int m_lastRoom = 0; // cityLevel's sm_LastPvsRoom
+    std::uint32_t m_frame = 0;
     Stats m_stats;
 };
 
 // lvlInstance::GetGeomSet: a missing level of detail takes the next less
 // detailed one (VL -> L -> M -> H); a missing VL draws nothing.
 const GpuMesh* findFilledLod(const GpuModel& model, std::string_view part, asset::Lod lod);
+
+// lvlInstance::GetGeomSet's radius of a part: the largest distance of a
+// vertex from the model origin over its levels of detail (modGetStatic).
+float geomRadius(const GpuModel& model, std::string_view part);
+
+// lvlSDL::LoadBinary: the name a PSDL texture is looked up by (a movie
+// frame name "<base>-0NNN" becomes "<base>").
+std::string sdlTextureName(std::string_view name);
 
 } // namespace mm2::game

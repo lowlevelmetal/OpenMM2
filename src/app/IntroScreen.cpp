@@ -27,6 +27,10 @@ public:
         : m_sound(std::move(sound)), m_step(static_cast<double>(m_sound.sampleRate) / outputRate) {}
 
     void render(float* stereo, int frames) override {
+        if (m_paused.load(std::memory_order_relaxed)) {
+            std::fill(stereo, stereo + static_cast<std::ptrdiff_t>(frames) * 2, 0.0f);
+            return;
+        }
         const std::size_t total = m_sound.frames();
         const int ch = m_sound.channels;
         double pos = m_pos.load(std::memory_order_relaxed);
@@ -52,11 +56,13 @@ public:
 
     double seconds() const { return m_pos.load(std::memory_order_relaxed) / m_sound.sampleRate; }
     bool finished() const { return m_pos.load(std::memory_order_relaxed) >= static_cast<double>(m_sound.frames()); }
+    void setPaused(bool paused) { m_paused.store(paused, std::memory_order_relaxed); }
 
 private:
     audio::SoundBuffer m_sound;
     double m_step;
     std::atomic<double> m_pos{0.0};
+    std::atomic<bool> m_paused{false};
 };
 
 class IntroScreen final : public Screen {
@@ -107,9 +113,30 @@ public:
     }
 
     void update(Context& ctx, double dt) override {
-        if (m_done || skipRequested(ctx)) {
+        if (m_done) {
             finish(ctx);
             return;
+        }
+        // ebolaPlayMovie pauses the movie while the game is not the active
+        // application and resumes it when it is again. (Only once the window
+        // has had focus: a window that never got it was not deactivated.)
+        const bool focused = ctx.renderer.window && ctx.window().focused();
+        m_hadFocus = m_hadFocus || focused;
+        const bool paused = m_hadFocus && !focused;
+        if (m_audio)
+            m_audio->setPaused(paused);
+        if (paused)
+            return;
+        // ebolaPlayMovie checks Esc, Space and the left mouse button (pressed
+        // since the last check) every 250 ms.
+        m_skipPending = m_skipPending || skipPressed(ctx);
+        m_pollClock += dt;
+        if (m_pollClock >= kSkipPollSeconds) {
+            m_pollClock = 0.0;
+            if (m_skipPending) {
+                finish(ctx);
+                return;
+            }
         }
         m_wallClock += dt;
         const double t = m_audio ? m_audio->seconds() : m_wallClock;
@@ -154,13 +181,11 @@ public:
         const auto& l = ov.layout();
         ov.rect(l.left, l.top, l.right - l.left, l.bottom - l.top, render::packColor(0, 0, 0));
         if (m_hasFrame && m_movie) {
-            // Fit the movie into the 640x480 frame, keeping its aspect ratio.
-            const float aspect = static_cast<float>(m_movie->width()) / static_cast<float>(m_movie->height());
-            float w = 640.0f, h = 640.0f / aspect;
-            if (h > 480.0f) {
-                h = 480.0f;
-                w = 480.0f * aspect;
-            }
+            // ebolaPlayMovie: the MCI window at the movie's own size (320 x 240
+            // for LOGOS.AVI), centred on the 640 x 480 screen the game has
+            // just switched to (gfxPipeline::SetRes before the movie).
+            const float w = std::min(640.0f, static_cast<float>(m_movie->width()));
+            const float h = std::min(480.0f, static_cast<float>(m_movie->height()));
             ov.image(m_texture, (640.0f - w) * 0.5f, (480.0f - h) * 0.5f, w, h, {0, 0}, {1, 1}, 0xFFFFFFFFu,
                      render::BlendMode::Opaque, render::Filter::Bilinear);
         }
@@ -173,12 +198,10 @@ private:
         std::vector<std::uint8_t> rgba;
     };
 
-    static bool skipRequested(Context& ctx) {
+    static bool skipPressed(Context& ctx) {
         const auto& in = ctx.input;
-        if (in.anyKeyPressed() || in.mousePressed(platform::MouseButton::Left) ||
-            in.mousePressed(platform::MouseButton::Right))
-            return true;
-        return std::ranges::any_of(in.gamepads(), [](const platform::GamepadState& g) { return g.pressed.any(); });
+        return in.keyPressed(platform::Key::Escape) || in.keyPressed(platform::Key::Space) ||
+               in.mousePressed(platform::MouseButton::Left);
     }
 
     void finish(Context& ctx) {
@@ -211,7 +234,12 @@ private:
     render::TextureHandle m_texture;
     std::shared_ptr<PcmStream> m_audio;
     int m_streamId = 0;
+    static constexpr double kSkipPollSeconds = 0.25;
+
     double m_wallClock = 0.0;
+    double m_pollClock = 0.0;
+    bool m_skipPending = false;
+    bool m_hadFocus = false;
     bool m_done = false;
     bool m_finished = false;
     bool m_hasFrame = false;

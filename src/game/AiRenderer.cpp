@@ -2,18 +2,12 @@
 
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "game/CityRenderer.h"
 #include "game/MeshDraw.h"
 
 #include <format>
 
 namespace mm2::game {
-namespace {
-
-constexpr float kCarDrawDistance = 300.0f;
-constexpr float kPedDrawDistance = 90.0f;
-constexpr float kSignalDrawDistance = 250.0f;
-
-} // namespace
 
 AiRenderer::AiRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs)
     : m_device(device), m_textures(textures), m_models(models), m_vfs(vfs) {}
@@ -101,7 +95,9 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
         call.first = mat.firstIndex;
         call.constants.color = color;
         call.constants.flags = render::DrawFlag::Lighting | render::DrawFlag::Fog;
-        call.state.cull = render::CullMode::None;
+        // modModel::Draw under the default culling (as for every model).
+        call.state.cull = render::CullMode::Back;
+        call.state.frontFace = render::FrontFace::CounterClockwise;
         m_device.draw(call);
     }
 }
@@ -110,39 +106,51 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
     const GpuModel* model = m_models.get(signal.model);
     if (!model)
         return;
-    const float d = signal.transform.m3.dist(camera.position());
-    const asset::Lod lod = d < 60 ? asset::Lod::High : d < 130 ? asset::Lod::Medium : asset::Lod::Low;
+    // lvlInstance::IsVisible with the Object Detail thresholds, and
+    // aiTrafficLightInstance::Draw's first shader set.
+    const auto lod =
+        objectLod(viewDepth(camera.transform, signal.transform.m3), geomRadius(*model, ""), m_detail);
+    if (!lod)
+        return;
     const Mat44 world = Mat44::fromMat34(signal.transform);
-    if (const GpuMesh* body = model->find("", lod))
+    if (const GpuMesh* body = findFilledLod(*model, "", *lod))
         drawGpuMesh(m_device, m_textures, *body, model->materials(0), world);
     // aiTrafficLightInstance::DrawGlow: the light's glow together with the
     // pedestrian signal (WALK only in the walk phase), both or neither.
     const char* colour = signal.state == ai::LightState::Green  ? "GREEN"
                        : signal.state == ai::LightState::Amber  ? "YELLOW"
                                                                 : "RED";
+    // Drawn in cityLevel::DrawRooms' glow pass (rooms nearer than NoDraw):
+    // unlit, no fog, added (ONE/ONE), no depth writes.
+    if (signal.transform.m3.dist2(camera.position()) >= sq(m_detail.noDraw))
+        return;
     const char* time = nightGlows ? "NIGHT" : "DAY";
-    const GpuMesh* glow = model->find(std::format("{}GLOW{}", colour, time), asset::Lod::High);
-    const GpuMesh* walk =
-        model->find(std::format("{}_{}", signal.state == ai::LightState::Walk ? "WALK" : "NOWALK", time),
-                    asset::Lod::High);
+    const GpuMesh* glow = findFilledLod(*model, std::format("{}GLOW{}", colour, time), asset::Lod::High);
+    const char* walkName = signal.state == ai::LightState::Walk ? "WALK" : "NOWALK";
+    const GpuMesh* walk = findFilledLod(*model, std::format("{}_{}", walkName, time), asset::Lod::High);
     if (glow && walk) {
         MeshDrawOptions opts;
         opts.lighting = false;
-        opts.blend = render::BlendMode::Additive;
+        opts.fog = false;
+        opts.blend = render::BlendMode::Add;
         opts.depthWrite = false;
+        opts.alphaRef = 1.0f / 255.0f; // the default alpha test (alpha not 0)
         drawGpuMesh(m_device, m_textures, *glow, model->materials(0), world, opts);
         drawGpuMesh(m_device, m_textures, *walk, model->materials(0), world, opts);
     }
 }
 
 void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time,
+                      bool lights, const ObjectDetail& detail,
                       const std::function<const Mat34*(int)>& physicalTransform) {
     m_stats = {};
+    m_detail = detail;
     const Vec3 eye = camera.position();
     for (const auto& car : world.cars()) {
         const Mat34* physical = physicalTransform ? physicalTransform(car.id) : nullptr;
         const Mat34& transform = physical ? *physical : car.transform;
-        if (transform.m3.dist2(eye) > sq(kCarDrawDistance) || !frustum.intersectsSphere(transform.m3, 4.0f))
+        // The renderer's lvlInstance::IsVisible ends dynamic objects at NoDraw.
+        if (!frustum.intersectsSphere(transform.m3, 4.0f))
             continue;
         CarModel* cm = carModel(car.model);
         if (!cm || !cm->model)
@@ -152,21 +160,27 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         const int paint =
             cm->paintjobs > 1 ? static_cast<int>(car.paint * static_cast<float>(cm->paintjobs - 1)) : 0;
         auto& r = cm->renderers[paint];
-        if (!r)
+        if (!r) {
             r = std::make_unique<VehicleRenderer>(m_device, m_textures, m_models, *cm->model, paint);
+            r->setTraffic(true);
+        }
+        r->setDetail(detail);
         VehiclePose pose;
         pose.body = transform;
-        for (std::size_t i = 0; i < 6; ++i) {
+        // aiVehicleInstance::Draw: the rail's tyre rotation about each axle,
+        // no steering.
+        for (std::size_t i = 0; i < 6; ++i)
             pose.wheelSpin[i] = -car.tireRotation; // rolling forward (-Z) spins about -X
-            pose.wheelSteer[i] = i < 2 ? car.steer : 0.0f;
-        }
         pose.brakeLights = car.braking;
-        pose.headlights = time == TimeOfDay::Night;
+        pose.headlights = lights;
         r->draw(pose, camera.transform);
         ++m_stats.cars;
     }
+    // Pedestrians are dynamic objects too: nothing beyond NoDraw (inferred:
+    // MM2 draws them through lvlInstance::IsVisible like the cars).
     for (const auto& ped : world.peds()) {
-        if (ped.transform.m3.dist2(eye) > sq(kPedDrawDistance) || !frustum.intersectsSphere(ped.transform.m3, 2.0f))
+        if (ped.transform.m3.dist2(eye) > sq(detail.noDraw) ||
+            !frustum.intersectsSphere(ped.transform.m3, 2.0f))
             continue;
         if (const asset::PedType* type = pedType(ped.typeName)) {
             drawPed(ped, *type, camera);
@@ -174,8 +188,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         }
     }
     for (const auto& signal : world.signals()) {
-        if (signal.transform.m3.dist2(eye) > sq(kSignalDrawDistance) ||
-            !frustum.intersectsSphere(signal.transform.m3, 6.0f))
+        if (!frustum.intersectsSphere(signal.transform.m3, 6.0f))
             continue;
         drawSignal(signal, camera, time >= TimeOfDay::Evening);
         ++m_stats.signals;

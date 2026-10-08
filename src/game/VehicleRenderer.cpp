@@ -1,6 +1,7 @@
 #include "game/VehicleRenderer.h"
 
 #include "core/StringUtil.h"
+#include "game/CityRenderer.h"
 
 #include <cmath>
 #include <format>
@@ -8,16 +9,23 @@
 namespace mm2::game {
 namespace {
 
-// ltLight defaults as cars use them (vehCarModel::Init, vehSiren::Init):
-// intensity 25, spot exponent 3; glows are drawn at 0.2 x sqrt(I d^2)
-// metres with 0.6 x the light colour (globals every vehSiren sets).
+// ltLight defaults as cars use them (vehCarModel::Init, vehSiren::Init,
+// aiVehicleManager::Init): intensity 25, spot exponent 3.
 constexpr float kLightIntensity = 25.0f;
 constexpr float kSpotExponent = 3.0f;
-constexpr float kGlowSize = 0.2f;
-constexpr float kGlowColor = 0.6f;
 // vehSiren::Update: the beams turn 2.5 pi rad/s; vehCarModel::DrawHeadlights
 // sweeps the headlights at +-42.411503 rad/s while the siren is on.
 constexpr float kHeadlightSweep = 42.411503f;
+// vehCarModel+0x2c (0.2 in its constructor): WHL4/WHL5 sit (0.2 + 2) wheel
+// radii behind WHL2/WHL3 (vehCarModel::Draw).
+constexpr float kExtraWheelSpacing = 0.2f + 2.0f;
+
+// ltLight::DrawGlow's size and colour scales, globals in MM2: every vehSiren
+// constructor (one per vehCar::Init) sets 0.2 and 0.6 and
+// aiVehicleManager::Init sets 0.2 and 0.95. A single-player race initialises
+// the AI map after the cars (mmGame::Init), so 0.95 is what is drawn with.
+float s_glowSize = 0.2f;
+float s_glowColor = 0.95f;
 
 std::uint32_t argb(const Vec3& c) {
     auto b = [](float v) { return static_cast<std::uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
@@ -50,14 +58,13 @@ VehicleRenderer::VehicleRenderer(render::Device& device, TextureLibrary& texture
     setPaintjob(paintjob);
     if (!m_gpu)
         return;
-    if (const GpuMesh* body = m_gpu->find(m_bodyPart, asset::Lod::High)) {
-        const Vec3 half = (body->bounds.max - body->bounds.min) * 0.5f;
-        m_radius = half.mag();
-    }
+    // lvlInstance::GetRadius: the body set's radius (the farthest body vertex
+    // from the model origin over the levels of detail).
+    m_radius = geomRadius(*m_gpu, m_bodyPart);
     // A part's light colour is its first material's diffuse colour
     // (vehCarModel::GetSurfaceColor).
     auto surface = [&](std::string_view part) -> std::optional<Vec3> {
-        const GpuMesh* mesh = m_gpu->find(part, asset::Lod::High);
+        const GpuMesh* mesh = findFilledLod(*m_gpu, part, asset::Lod::High);
         if (!mesh || mesh->draws.empty() || !str::iequals(mesh->part, part))
             return std::nullopt;
         const auto& mats = m_gpu->materials(m_paintjob);
@@ -85,19 +92,22 @@ VehicleRenderer::VehicleRenderer(render::Device& device, TextureLibrary& texture
     }
     // Fenders follow the front wheels at their pivot's offset from wheel 0
     // (lifted 2.5 cm; FNDR1 mirrors it).
-    if (m_gpu->find("FNDR0", asset::Lod::High) && model.pivot("fndr0") && model.wheel(0))
+    if (findFilledLod(*m_gpu, "FNDR0", asset::Lod::High) && model.pivot("fndr0") && model.wheel(0))
         m_fenderOffset = model.pivot("fndr0")->origin - model.wheel(0)->position + Vec3{0, 0.025f, 0};
 }
 
 void VehicleRenderer::setPaintjob(int paintjob) {
     m_paintjob = paintjob;
     m_paint = m_gpu ? m_gpu->materials(paintjob) : std::vector<asset::PkgMaterial>{};
-    // fxTexelDamage: at the high and medium LODs each body material draws a
-    // copy of its clean texture ("<name>", or "<name>" for a "<name>_dmg"
-    // material) into which impacts copy patches of "<name>_dmg". The low
-    // LODs draw the paint job's materials as stored.
+    // fxTexelDamage: at the high and medium LODs each material of the high
+    // LOD body draws a copy of its clean texture ("<name>", or "<name>" for a
+    // "<name>_dmg" material) into which impacts copy patches of
+    // "<name>_dmg"; every other material is drawn as stored. The low LODs
+    // draw the paint job's materials as stored.
     m_live = m_paint;
     m_texelDamage.reset();
+    if (m_traffic)
+        return;
     for (const auto& mesh : m_model.pkg.meshes)
         if (str::iequals(mesh.part, m_bodyPart) && mesh.lod == asset::Lod::High) {
             static int serial = 0;
@@ -105,10 +115,6 @@ void VehicleRenderer::setPaintjob(int paintjob) {
                                                           std::format("{}{}", m_model.baseName, ++serial));
             break;
         }
-    // Materials without a damage pair: "_dmg" ones draw their clean texture.
-    for (auto& m : m_live)
-        if (str::iendsWith(m.texture, "_dmg") && m_textures.get(m.texture.substr(0, m.texture.size() - 4)))
-            m.texture.resize(m.texture.size() - 4);
 }
 
 void VehicleRenderer::applyDamage(const Vec3& modelPoint, float radius) {
@@ -128,7 +134,7 @@ std::optional<VehicleRenderer::Breakable> VehicleRenderer::nearestBreakable(cons
     auto consider = [&](const std::string& name) {
         const auto* pivot = m_model.pivot(name);
         const std::string part = str::upper(name);
-        if (!pivot || !m_gpu || !m_gpu->find(part, asset::Lod::High) || m_detached.contains(part))
+        if (!pivot || !m_gpu || !findFilledLod(*m_gpu, part, asset::Lod::High) || m_detached.contains(part))
             return;
         const float d2 = pivot->origin.dist2(modelPoint);
         if (d2 < bestD2) {
@@ -195,14 +201,67 @@ std::optional<asset::Lod> VehicleRenderer::lodFor(const VehiclePose& pose, const
     return objectLod(viewDepth(camera, pose.body.m3), m_radius, m_detail, m_detail.noDraw);
 }
 
+void VehicleRenderer::setLightGlowScales(float size, float color) {
+    s_glowSize = size;
+    s_glowColor = color;
+}
+
+void VehicleRenderer::setTraffic(bool traffic) {
+    m_traffic = traffic;
+    if (traffic) {
+        // aiVehicleInstance draws its colour's shaders as stored: no texel
+        // damage.
+        m_texelDamage.reset();
+        m_live = m_paint;
+    }
+}
+
 void VehicleRenderer::drawPart(std::string_view part, asset::Lod lod, const Mat34& transform,
                                const MeshDrawOptions& options, bool live) {
     if (!m_detached.empty() && m_detached.contains(std::string(part)))
         return;
-    const GpuMesh* mesh = m_gpu ? m_gpu->find(part, lod) : nullptr;
-    if (!mesh || !str::iequals(mesh->part, part))
+    // The part's geometry set as lvlInstance::GetGeomSet fills it: a missing
+    // level takes the next less detailed one, never a more detailed one.
+    const GpuMesh* mesh = m_gpu ? findFilledLod(*m_gpu, part, lod) : nullptr;
+    if (!mesh)
         return;
     drawGpuMesh(m_device, m_textures, *mesh, live ? m_live : m_paint, Mat44::fromMat34(transform), options);
+}
+
+void VehicleRenderer::drawReflection(const Mat34& body) {
+    // modShader::BeginEnvMap + modStatic::DrawEnvMapped: the high LOD body
+    // again with refl_dc (cityLevel::GetEnvMap, intensity 1) mapped from the
+    // camera-space normals, lit by an ambient of ftol(power x 255) grey only,
+    // added (ONE/ONE). It is drawn inside the dynamic object pass, so it is
+    // fogged.
+    if (!m_reflections)
+        return;
+    const WorldTexture* env = m_textures.get("refl_dc");
+    const GpuMesh* mesh = env ? findFilledLod(*m_gpu, m_bodyPart, asset::Lod::High) : nullptr;
+    if (!mesh)
+        return;
+    for (const auto& d : mesh->draws) {
+        const float power = d.shader < m_live.size() ? m_live[d.shader].shininess : 0.0f;
+        const int grey = static_cast<int>(power * 255.0f);
+        if (grey == 0)
+            continue;
+        const float level = static_cast<float>(grey & 0xFF) / 255.0f;
+        render::DrawCall call;
+        call.vertices = {mesh->vertices, 0};
+        call.indices = {mesh->indices, 0};
+        call.count = d.indexCount;
+        call.first = d.firstIndex;
+        call.baseVertex = d.baseVertex;
+        call.constants.world = Mat44::fromMat34(body);
+        call.constants.color = {level, level, level, 1.0f};
+        call.constants.flags = render::DrawFlag::Texture1 | render::DrawFlag::EnvMap1 | render::DrawFlag::Fog;
+        call.textures[1] = {env->handle, env->sampler};
+        call.state.blend = render::BlendMode::Add;
+        call.state.depthWrite = false;
+        call.state.depthCompare = render::CompareOp::LessEqual;
+        call.state.cull = render::CullMode::Back;
+        m_device.draw(call);
+    }
 }
 
 void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
@@ -211,90 +270,118 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
     const auto visible = lodFor(pose, camera);
     if (!visible)
         return;
-    const asset::Lod lod = *visible;
-    // vehCarModel::Draw.
-    const bool live = lod == asset::Lod::High || lod == asset::Lod::Medium;
-    drawPart(m_bodyPart, lod, pose.body, {}, live);
-    if (lod != asset::Lod::VeryLow) {
-        MeshDrawOptions decal;
-        decal.blend = render::BlendMode::Alpha;
-        drawPart("DECAL", lod, pose.body, decal, live);
-        // Breakable parts and the paint job's variant part, at their pivots.
-        for (const char* name : {"break0", "break1", "break2", "break3", "break01", "break12", "break23", "break03"})
-            if (const auto* pivot = m_model.pivot(name))
-                drawPart(str::upper(name), lod, Mat34::translation(pivot->origin) * pose.body, {}, live);
-        const auto variant = std::format("variant{}", m_paintjob);
-        if (const auto* pivot = m_model.pivot(variant))
-            drawPart(str::upper(variant), lod, Mat34::translation(pivot->origin) * pose.body, {}, live);
+    if (m_traffic)
+        drawTraffic(pose, *visible);
+    else
+        drawCar(pose, *visible);
+    drawShadow(pose);
+    drawGlows(pose, camera);
+}
 
-        if (lod == asset::Lod::High) {
-            // Reflections (modStatic::DrawEnvMapped): the body again with
-            // refl_dc mapped from the view-space normals, added at the
-            // material's power as intensity.
-            if (m_reflections)
-                if (const WorldTexture* env = m_textures.get("refl_dc"))
-                    if (const GpuMesh* mesh = m_gpu->find(m_bodyPart, asset::Lod::High))
-                        for (const auto& d : mesh->draws) {
-                            const float power = d.shader < m_live.size() ? m_live[d.shader].shininess : 0.0f;
-                            if (power <= 0.0f)
-                                continue;
-                            render::DrawCall call;
-                            call.vertices = {mesh->vertices, 0};
-                            call.indices = {mesh->indices, 0};
-                            call.count = d.indexCount;
-                            call.first = d.firstIndex;
-                            call.baseVertex = d.baseVertex;
-                            call.constants.world = Mat44::fromMat34(pose.body);
-                            call.constants.color = {power, power, power, 1.0f};
-                            call.constants.flags = render::DrawFlag::Texture1 | render::DrawFlag::EnvMap1;
-                            call.textures[1] = {env->handle, env->sampler};
-                            call.state.blend = render::BlendMode::Add;
-                            call.state.depthWrite = false;
-                            call.state.depthCompare = render::CompareOp::LessEqual;
-                            call.state.cull = render::CullMode::Back;
-                            m_device.draw(call);
-                        }
-            // Fenders: turned with the front wheels, upright with the body.
-            if (m_fenderOffset && pose.hasWheelWorld) {
-                for (int i = 0; i < 2; ++i) {
-                    if (!pose.wheelValid[static_cast<std::size_t>(i)])
-                        continue;
-                    const Mat34& wheel = pose.wheelWorld[static_cast<std::size_t>(i)];
-                    Mat34 m;
-                    m.m0 = wheel.m0;
-                    m.m1 = pose.body.m1;
-                    m.m2 = m.m0.cross(m.m1);
-                    Vec3 offset = *m_fenderOffset;
-                    if (i == 1)
-                        offset.x = -offset.x;
-                    m.m3 = m.transformDir(offset) + wheel.m3;
-                    drawPart(std::format("FNDR{}", i), asset::Lod::High, m, {}, live);
-                }
-            }
-        }
-        // Wheels and hubs at the simulation's wheel matrices.
-        if (pose.hasWheelWorld) {
-            for (std::size_t i = 0; i < 6; ++i) {
-                if (!pose.wheelValid[i])
+void VehicleRenderer::drawCar(const VehiclePose& pose, asset::Lod lod) {
+    // vehCarModel::Draw. The very low LOD is the paint job's body alone; the
+    // others use the texel damage shaders at the high and medium LODs.
+    if (lod == asset::Lod::VeryLow) {
+        drawPart(m_bodyPart, lod, pose.body, {}, false);
+        return;
+    }
+    const bool live = lod == asset::Lod::High || lod == asset::Lod::Medium;
+    // vppanozgt in paint job 4 draws with alpha reference 0 (alpha test
+    // GREATER 0) instead of the dynamic pass's 100.
+    MeshDrawOptions part;
+    if (str::iequals(m_model.baseName, "vppanozgt") && m_paintjob == 4)
+        part.alphaRef = 1.0f / 255.0f;
+    drawPart(m_bodyPart, lod, pose.body, part, live);
+    MeshDrawOptions decal = part;
+    decal.blend = render::BlendMode::Alpha;
+    drawPart("DECAL", lod, pose.body, decal, live);
+    // vehBreakableMgr::Draw: the attached breakable parts and the paint job's
+    // variant part at their pivots.
+    for (const char* name : {"break0", "break1", "break2", "break3", "break01", "break12", "break23", "break03"})
+        if (const auto* pivot = m_model.pivot(name))
+            drawPart(str::upper(name), lod, Mat34::translation(pivot->origin) * pose.body, part, live);
+    const auto variant = std::format("variant{}", m_paintjob);
+    if (const auto* pivot = m_model.pivot(variant))
+        drawPart(str::upper(variant), lod, Mat34::translation(pivot->origin) * pose.body, part, live);
+
+    if (lod == asset::Lod::High) {
+        drawReflection(pose.body);
+        // Fenders: turned with the front wheels, upright with the body.
+        if (m_fenderOffset && pose.hasWheelWorld) {
+            for (int i = 0; i < 2; ++i) {
+                if (!pose.wheelValid[static_cast<std::size_t>(i)])
                     continue;
-                drawPart(std::format("{}{}", m_wheelPrefix, i), lod, pose.wheelWorld[i], {}, live);
-                if (i < 4)
-                    drawPart(std::format("HUB{}", i), lod, pose.wheelWorld[i], {}, live);
-            }
-        } else {
-            for (const auto& w : m_model.wheels) {
-                const auto i = static_cast<std::size_t>(std::clamp(w.index, 0, 5));
-                const Vec3 pivot = w.position + Vec3{0, pose.wheelDrop[i], 0};
-                const Mat34 local = Mat34::rotationX(pose.wheelSpin[i]) * Mat34::rotationY(pose.wheelSteer[i]) *
-                                    Mat34::translation(pivot);
-                drawPart(std::format("{}{}", m_wheelPrefix, w.index), lod, local * pose.body, {}, live);
-                if (w.index < 4)
-                    drawPart(std::format("HUB{}", w.index), lod, local * pose.body, {}, live);
+                const Mat34& wheel = pose.wheelWorld[static_cast<std::size_t>(i)];
+                Mat34 m;
+                m.m0 = wheel.m0;
+                m.m1 = pose.body.m1;
+                m.m2 = m.m0.cross(m.m1);
+                Vec3 offset = *m_fenderOffset;
+                if (i == 1)
+                    offset.x = -offset.x;
+                m.m3 = m.transformDir(offset) + wheel.m3;
+                drawPart(std::format("FNDR{}", i), asset::Lod::High, m, part, live);
             }
         }
     }
-    drawShadow(pose);
-    drawGlows(pose, camera);
+    // Wheels and hubs at the simulation's wheel matrices. WHL4 and WHL5 are
+    // WHL2 and WHL3 moved (0.2 + 2) wheel radii back along the body.
+    for (std::size_t i = 0; i < 6; ++i) {
+        const auto m = wheelMatrix(pose, i);
+        if (!m)
+            continue;
+        drawPart(std::format("{}{}", m_wheelPrefix, i), lod, *m, part, live);
+        if (i < 4)
+            drawPart(std::format("HUB{}", i), lod, *m, part, live);
+    }
+}
+
+std::optional<Mat34> VehicleRenderer::wheelMatrix(const VehiclePose& pose, std::size_t i) const {
+    if (i >= 4) {
+        const auto* lead = m_model.wheel(static_cast<int>(i) - 2);
+        const auto m = lead ? wheelMatrix(pose, i - 2) : std::nullopt;
+        if (!m || !m_model.wheel(static_cast<int>(i)))
+            return std::nullopt;
+        Mat34 out = *m;
+        out.m3 += pose.body.m2 * (kExtraWheelSpacing * lead->radius);
+        return out;
+    }
+    if (pose.hasWheelWorld) {
+        if (!pose.wheelValid[i])
+            return std::nullopt;
+        return pose.wheelWorld[i];
+    }
+    const auto* w = m_model.wheel(static_cast<int>(i));
+    if (!w)
+        return std::nullopt;
+    const Vec3 pivot = w->position + Vec3{0, pose.wheelDrop[i], 0};
+    return Mat34::rotationX(pose.wheelSpin[i]) * Mat34::rotationY(pose.wheelSteer[i]) * Mat34::translation(pivot) *
+           pose.body;
+}
+
+void VehicleRenderer::drawTraffic(const VehiclePose& pose, asset::Lod lod) {
+    // aiVehicleInstance::Draw: the body at its LOD with the colour's shaders;
+    // the breakables always at the high LOD; at the high LOD only, the
+    // reflection and the wheels (LAME_WHEELS is off: no wheels below it).
+    drawPart(m_bodyPart, lod, pose.body, {}, false);
+    for (const char* name : {"break0", "break1", "break2", "break3"})
+        if (const auto* pivot = m_model.pivot(name))
+            drawPart(str::upper(name), asset::Lod::High, Mat34::translation(pivot->origin) * pose.body, {}, false);
+    if (lod != asset::Lod::High)
+        return;
+    drawReflection(pose.body);
+    // The wheels on the rails turn about their axles at their pivots (no
+    // steering); WHL4 and WHL5 likewise at their own pivots.
+    for (std::size_t i = 0; i < 6; ++i) {
+        std::optional<Mat34> m;
+        if (i < 4) {
+            m = wheelMatrix(pose, i);
+        } else if (const auto* w = m_model.wheel(static_cast<int>(i))) {
+            m = Mat34::rotationX(pose.wheelSpin[i]) * Mat34::translation(w->position) * pose.body;
+        }
+        if (m)
+            drawPart(std::format("{}{}", m_wheelPrefix, i), asset::Lod::High, *m, {}, false);
+    }
 }
 
 std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
@@ -325,7 +412,8 @@ void VehicleRenderer::drawShadow(const VehiclePose& pose) {
     // vehCarModel::DrawShadow: the high LOD shadow mesh on the ground,
     // alpha blended, depth tested without writes and pulled forward (MM2
     // narrows the depth range to 0.001-0.999).
-    // Without a ground probe (traffic) the shadow sits at the body.
+    // Without a ground probe (traffic on its rails, aiVehicleInstance::
+    // DrawShadow while upright) the shadow sits at the body.
     const auto m = m_probe ? shadowMatrix(pose.body) : std::optional<Mat34>(pose.body);
     if (!m)
         return;
@@ -334,6 +422,10 @@ void VehicleRenderer::drawShadow(const VehiclePose& pose) {
     shadow.depthWrite = false;
     shadow.depthBias = true;
     shadow.blend = render::BlendMode::Alpha;
+    // The shadow pass comes after cityLevel::DrawRooms has put the alpha
+    // test back to its default (alpha not 0), not the GREATER 100 of the
+    // object passes.
+    shadow.alphaRef = 1.0f / 255.0f;
     drawPart("SHADOW", asset::Lod::High, *m, shadow, false);
 }
 
@@ -341,7 +433,7 @@ void VehicleRenderer::addLightGlow(fx::ParticleRenderer& cards, const Vec3& posi
                                    const Vec3& color, const Mat34& camera) {
     // ltLight::ComputeIntensity: I = 25 cos^3(theta) / d^2 towards the eye,
     // 0 behind the light; ltLight::DrawGlow: a camera-facing card of half
-    // size 0.2 sqrt(I d^2) (cos^1.5 theta metres, whatever the distance).
+    // size s sqrt(I d^2) with c x the light colour (s, c: setLightGlowScales).
     const Vec3 toEye = camera.m3 - position;
     const float d2 = toEye.mag2();
     if (d2 <= 0.0f)
@@ -352,52 +444,76 @@ void VehicleRenderer::addLightGlow(fx::ParticleRenderer& cards, const Vec3& posi
     const float intensity = kLightIntensity / d2 * std::pow(c, kSpotExponent);
     fx::SparkPos card;
     card.position = position;
-    card.radius = std::sqrt(d2 * intensity) * kGlowSize;
-    card.color = argb(color * kGlowColor);
+    card.radius = std::sqrt(d2 * intensity) * s_glowSize;
+    card.color = argb(color * s_glowColor);
     cards.add(card, 1, 1, camera);
 }
 
 void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
-    // vehCarModel::DrawGlow: lighting off, no depth writes, added (ONE/ONE),
-    // always the high LOD light parts.
+    // vehCarModel::DrawGlow / aiVehicleInstance::DrawGlow: lighting off, no
+    // fog, no depth writes, added (ONE/ONE), the high LOD light parts.
     MeshDrawOptions glow;
     glow.lighting = false;
     glow.fog = false;
     glow.blend = render::BlendMode::Add;
     glow.depthWrite = false;
-    if (pose.brakeLights) {
+    // The glow pass runs with the default alpha test (alpha not 0).
+    glow.alphaRef = 1.0f / 255.0f;
+    if (m_traffic) {
+        // Tail lights while braking or stopped, and again with the light flag.
+        if (pose.brakeLights)
+            drawPart("TLIGHT", asset::Lod::High, pose.body, glow, false);
+    } else if (pose.brakeLights) {
         drawPart("TLIGHT", asset::Lod::High, pose.body, glow, false);
         drawPart("BLIGHT", asset::Lod::High, pose.body, glow, false);
     }
     if (pose.headlights)
         drawPart("TLIGHT", asset::Lod::High, pose.body, glow, false);
-    if (pose.reverseLights)
+    if (!m_traffic && pose.reverseLights)
         drawPart("RLIGHT", asset::Lod::High, pose.body, glow, false);
 
     m_cards.begin();
-    // Headlight beams (vehCarModel::DrawHeadlights) at night or in fog, or
-    // sweeping in opposite directions while the siren is on.
-    if ((pose.headlights || (pose.siren && !m_sirens.empty())) && (m_headlights[0] || m_headlights[1])) {
-        for (std::size_t i = 0; i < 2; ++i) {
-            if (!m_headlights[i])
-                continue;
-            Vec3 direction = -pose.body.m2;
-            if (pose.siren && !m_sirens.empty()) {
-                const float sweep = pose.sirenAngle / (2.5f * 3.1415927f) * kHeadlightSweep;
-                direction = Mat34::rotationY(i == 0 ? sweep : -sweep).transformDir(direction);
+    if (m_traffic) {
+        // aiVehicleInstance::DrawGlow: one shared white spot light (the
+        // manager's) at the headlight0 pivot, and its mirror image when the
+        // car has a HEADLIGHT1 part, pointing forward and pulled s metres
+        // towards the camera.
+        if (pose.headlights && m_headlights[0]) {
+            Vec3 pull = pose.body.m3 - camera.m3;
+            const float len2 = pull.mag2();
+            pull = len2 > 0.0f ? pull * (-s_glowSize / std::sqrt(len2)) : Vec3{};
+            const Vec3 local = m_headlights[0]->position;
+            addLightGlow(m_cards, pose.body.transform(local) + pull, -pose.body.m2, {1, 1, 1}, camera);
+            if (findFilledLod(*m_gpu, "HEADLIGHT1", asset::Lod::High))
+                addLightGlow(m_cards, pose.body.transform({-local.x, local.y, local.z}) + pull, -pose.body.m2,
+                             {1, 1, 1}, camera);
+        }
+    } else {
+        // Headlight beams (vehCarModel::DrawHeadlights) with the light flag,
+        // or sweeping in opposite directions while the siren is on.
+        if ((pose.headlights || (pose.siren && !m_sirens.empty())) && (m_headlights[0] || m_headlights[1])) {
+            for (std::size_t i = 0; i < 2; ++i) {
+                if (!m_headlights[i])
+                    continue;
+                Vec3 direction = -pose.body.m2;
+                if (pose.siren && !m_sirens.empty()) {
+                    const float sweep = pose.sirenAngle / (2.5f * 3.1415927f) * kHeadlightSweep;
+                    direction = Mat34::rotationY(i == 0 ? sweep : -sweep).transformDir(direction);
+                }
+                addLightGlow(m_cards, pose.body.transform(m_headlights[i]->position), direction,
+                             m_headlights[i]->color, camera);
             }
-            addLightGlow(m_cards, pose.body.transform(m_headlights[i]->position), direction, m_headlights[i]->color,
-                         camera);
         }
+        // Siren beams (vehSiren::Draw): world-space directions turning about
+        // Y, a quarter turn apart.
+        if (pose.siren)
+            for (std::size_t i = 0; i < m_sirens.size(); ++i) {
+                const float a = static_cast<float>(i) * 1.5707964f + pose.sirenAngle;
+                const Vec3 direction = Mat34::rotationY(a).transformDir({1, 0, 0});
+                addLightGlow(m_cards, pose.body.transform(m_sirens[i].position), direction, m_sirens[i].color,
+                             camera);
+            }
     }
-    // Siren beams (vehSiren::Draw): world-space directions turning about Y,
-    // a quarter turn apart.
-    if (pose.siren)
-        for (std::size_t i = 0; i < m_sirens.size(); ++i) {
-            const float a = static_cast<float>(i) * 1.5707964f + pose.sirenAngle;
-            const Vec3 direction = Mat34::rotationY(a).transformDir({1, 0, 0});
-            addLightGlow(m_cards, pose.body.transform(m_sirens[i].position), direction, m_sirens[i].color, camera);
-        }
     m_cards.flush(m_device, m_textures.get("lt_glow"), {render::BlendMode::Add, false, {1, 1, 1, 1}});
 }
 

@@ -55,9 +55,10 @@ SparkLut SparkLut::load(const vfs::Vfs& vfs, std::string_view texture) {
 LineSparks::LineSparks(SparkLut lut) : m_lut(std::move(lut)), m_sparks(kMax) {}
 
 void LineSparks::radialBlast(int count, const Vec3& position, const Vec3& normal) {
-    // Two axes across the normal.
+    // Two axes across the normal: t = normal x Y (normal x X when the normal
+    // is within acos 0.95 of vertical), b = t x normal.
     const Vec3 axis = std::abs(normal.y) >= 0.95f ? Vec3{1, 0, 0} : Vec3{0, 1, 0};
-    const Vec3 t = axis.cross(normal);
+    const Vec3 t = normal.cross(axis);
     const Vec3 b = t.cross(normal);
     for (; count > 0; --count) {
         if (m_count >= kMax)
@@ -132,7 +133,9 @@ void LineSparks::draw(render::Device& device) const {
     call.vertices = device.uploadTransient(render::BufferKind::Vertex, std::span<const render::Vertex3D>(vertices));
     call.count = static_cast<std::uint32_t>(vertices.size());
     call.constants.world = Mat44::identity();
-    call.constants.flags = render::DrawFlag::VertexColor | render::DrawFlag::Fog;
+    // asLineSparks::Draw: untextured, unlit; drawn from lvlLevel's late
+    // callbacks with fog already off, alpha blending on, no depth writes.
+    call.constants.flags = render::DrawFlag::VertexColor;
     call.state.topology = render::Topology::LineList;
     call.state.blend = render::BlendMode::Alpha;
     call.state.depthWrite = false;

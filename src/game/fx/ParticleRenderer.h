@@ -15,9 +15,13 @@
 
 namespace mm2::game::fx {
 
+// The defaults are the render state MM2 draws particles in: asParticles::Cull
+// runs from lvlLevel's late draw callbacks, after cityLevel::DrawRooms has
+// switched fog off for the glows and left normal alpha blending (with the
+// default alpha test, alpha not 0) and no depth writes.
 struct CardStyle {
     render::BlendMode blend = render::BlendMode::Alpha;
-    bool fog = true;
+    bool fog = false;
     Vec4 tint{1, 1, 1, 1};
 };
 

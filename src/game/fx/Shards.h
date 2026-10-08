@@ -12,8 +12,8 @@ namespace mm2::game::fx {
 
 // fxShardManager: 16 glass/paint shards per car, thrown from hard impacts.
 // Each is a small right triangle (0.1 m legs) textured with a random
-// 0.3 x 0.3 patch of one of the car's paint materials (shard i takes
-// material i), tumbling and falling for 1.8 s.
+// 0.3 x 0.3 patch of one of the car's paint materials (materialFor), tumbling
+// and falling for 1.8 s.
 class Shards {
 public:
     static constexpr int kCount = 16;
@@ -28,6 +28,9 @@ public:
     // `textures`: the car's paint job material textures, in order.
     void draw(render::Device& device, TextureLibrary& textures, const std::vector<std::string>& materials) const;
     void reset();
+    // fxShardManager::Draw: the paint job material shard `shard` shows when
+    // the paint job has `materials` of them.
+    static std::size_t materialFor(std::size_t shard, std::size_t materials);
 
     struct Shard {
         Mat34 frame;  // rotation and position

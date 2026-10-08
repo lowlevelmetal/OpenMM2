@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <format>
+#include <mutex>
 
 namespace mm2::city {
 namespace {
@@ -160,12 +161,25 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
             warn(std::format("{}.bai: {}", cityDir, err));
     }
 
-    for (int i = 0; i < kTimesOfDay * kWeathers; ++i) {
-        const std::string path = std::format("{}.lt{:02}", cityDir, i);
-        if (auto b = bytesOf(path, false)) {
-            c.lighting[static_cast<std::size_t>(i)] = parseLighting(text(*b), &err);
-            if (!c.lighting[static_cast<std::size_t>(i)])
-                warn(std::format("{}: {}", path, err));
+    {
+        // LoadCityTimeWeatherLighting keeps the 16 tables for the whole
+        // session and runs ComputeAmbientLightLevels before each .ltNN loads
+        // into its table, so the lower light qualities' ambient levels come
+        // from what the table held before: the constructor's ambient for the
+        // first city of the session, the last loaded city's afterwards.
+        static std::mutex historyMutex;
+        static auto history = defaultAmbients();
+        const std::lock_guard lock(historyMutex);
+        c.ambientBeforeLoad = history;
+        for (int i = 0; i < kTimesOfDay * kWeathers; ++i) {
+            const std::string path = std::format("{}.lt{:02}", cityDir, i);
+            if (auto b = bytesOf(path, false)) {
+                c.lighting[static_cast<std::size_t>(i)] = parseLighting(text(*b), &err);
+                if (!c.lighting[static_cast<std::size_t>(i)])
+                    warn(std::format("{}: {}", path, err));
+                else
+                    history[static_cast<std::size_t>(i)] = c.lighting[static_cast<std::size_t>(i)]->ambient;
+            }
         }
     }
     if (auto b = bytesOf(cityDir + "_fog.csv", false)) {

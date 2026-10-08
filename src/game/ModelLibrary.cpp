@@ -3,6 +3,9 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace mm2::game {
 namespace {
 
@@ -36,7 +39,9 @@ const std::vector<asset::PkgMaterial>& GpuModel::materials(int paintjob) const {
     static const std::vector<asset::PkgMaterial> none;
     if (paintjobs.empty())
         return none;
-    const auto i = static_cast<std::size_t>(std::clamp(paintjob, 0, static_cast<int>(paintjobs.size()) - 1));
+    // vehCarModel::Init and lvlSky::Init take the paint job modulo the
+    // number of shader sets.
+    const auto i = static_cast<std::size_t>(std::max(paintjob, 0)) % paintjobs.size();
     return paintjobs[i];
 }
 
@@ -90,8 +95,15 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         gm.bounds = mesh.bounds();
         std::vector<render::Vertex3D> vertices;
         std::vector<std::uint16_t> indices;
+        float radius2 = 0.0f;
         for (const auto& section : mesh.sections) {
             for (const auto& packet : section.packets) {
+                for (const auto& v : packet.vertices) {
+                    const float d2 = v.position.z * v.position.z + v.position.y * v.position.y +
+                                     v.position.x * v.position.x;
+                    if (radius2 < d2)
+                        radius2 = d2;
+                }
                 GpuMesh::Draw d;
                 d.firstIndex = static_cast<std::uint32_t>(indices.size());
                 d.indexCount = static_cast<std::uint32_t>(packet.indices.size());
@@ -117,6 +129,7 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         }
         if (vertices.empty() || indices.empty())
             continue;
+        gm.radius = std::sqrt(radius2);
         gm.vertices = m_device.createBuffer(render::BufferKind::Vertex, vertices.size() * sizeof(render::Vertex3D),
                                             vertices.data());
         gm.indices = m_device.createBuffer(render::BufferKind::Index, indices.size() * sizeof(std::uint16_t),

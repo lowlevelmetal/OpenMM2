@@ -58,6 +58,13 @@ physics reproduces (`World::advanceFixed`).
 * **Shadows** (asMeshCardInfo::DrawShadows, flag 0x10): a flat card on the
   Height plane while the particle is more than 1 cm above it, drawn before
   the cards, colour halved with red and blue swapped (as the original does).
+* **Render state**: particles, sparks and shards are drawn from lvlLevel's
+  late draw callbacks, after `cityLevel::DrawRooms` has switched fog off for
+  the glow pass: unfogged, unlit, normal alpha blending with the default alpha
+  test (alpha not 0), no depth writes. Tyre tracks are drawn earlier (with the
+  shadows) and are fogged.
+* **asParticles::Reset** drops the particles and the birth matrix; the spew
+  fraction carries over.
 
 ## Wheel particles (vehWheelPtx)
 
@@ -97,7 +104,10 @@ fixed pair, the newest pair follows the wheel; otherwise a pair is added. A
 pair's v is its distance from the last fixed pair in tyre widths (0 starts a
 strip). Strips are drawn with `texture/tire_track.tga` (dark tread, alpha up
 to 25%; vehCar::Init sets its clamp-U flag), u across, white vertex colour,
-alpha blended, no depth writes. MM2 (`vehCar::DrawTracks`) also turns the
+alpha blended, no depth writes, culled like everything else (the strip
+faces up when the wheel laid it rolling forward, so tracks laid in reverse
+are not seen: inferred from the default cull mode and the pair order, not
+seen in the running game). MM2 (`vehCar::DrawTracks`) also turns the
 depth test off and draws the tracks right after the static city, before cars;
 OpenMM2 keeps the depth test with a depth bias because its draw order
 differs.
@@ -108,8 +118,10 @@ differs.
 EngineSmokeRule: Velocity (0, 1, 0), VelocityVar (1, 2, 1), Life 0.8 ± 0.4,
 Mass 0.2, Drag 1, Radius 0.3 ± 0.1, DAlpha −15, DRadius 0.03, Gravity 3) is
 overwritten by the particle fields of `tune/vehicle/<car>.vehCarDamage`
-(vehCarDamage::FileIO includes the rule's). MM2 shares one rule between all
-cars, so the last car loaded wins; OpenMM2 keeps one per car.
+(vehCarDamage::FileIO includes the rule's). The rule is shared by all cars
+(`vehCarDamage::EngineSmokeRule`, OpenMM2's `VehicleEffects::engineSmokeRule`),
+so every car smokes with the rule of the last car loaded (which car that is
+follows the order the race creates its cars in).
 
 Each update (`vehCarDamage::Update`): level = ceil(4 × clamp((damage −
 MedDamage) / (MaxDamage − MedDamage))); at levels 1–4 the frame is 1, 0, 3, 2
@@ -152,8 +164,10 @@ body's share of the two masses, exceeds ImpactThreshold, at 10 mph or more
 unless the other party is a vehicle. Then:
 
 * **Sparks** (`asLineSparks`, `fx/LineSparks`), above 15 mph: ftol(16 ×
-  impact × frame seconds) of them, at most 64 per car, born within 5 cm of
-  the contact, flying 4–5 m/s along the contact normal and 6–7 m/s across it.
+  the impact's running total × frame seconds) of them, at most 64 per car,
+  born within 5 cm of the contact, flying 4–5 m/s along the contact normal
+  and 6–7 m/s across it (across axes t = normal × Y, or normal × X for a
+  near-vertical normal, and t × normal).
   They update in steps of at least 1/30 s: gravity 20 m/s², a bounce off
   y = 0 keeping 80%, and an age byte falling 650 per second from 192–255
   that picks the colour column of `texture/spark.tga` (8×8 ramps, 24-bit
@@ -164,7 +178,10 @@ unless the other party is a vehicle. Then:
   (±0.3, 0.15–0.3, 0.02–0.2) × car speed sideways/up/back in the body frame,
   tumbling at 10.8–54 rad/s about a random axis, falling at 20 m/s², for
   1.8 s. Each is a 0.1 m right triangle showing a random 0.3 × 0.3 patch of
-  the paint job's material of its index, both sides drawn.
+  a paint job material, both sides drawn: `fxShardManager::Draw` steps
+  through the materials but starts again at 0 after 16 / (materials per paint
+  job) of them, so shard i shows material i only with more than 16 materials,
+  material 0 alone with 9–16 (the Mustang), and alternates 0 and 1 with 6–8.
 * **Texel damage** at the first such impact point of the frame (see
   rendering.md).
 * **Parts breaking off** (`vehBreakableMgr::Impact`): with an impact of
