@@ -14,6 +14,15 @@ Parser: `src/asset/Mtx.{h,cpp}`. 819/819 retail files parse; every file is
 `dash_speed_needle` for `<car>_dash.pkg`, …) or `(null)` for single-part city
 objects. A few pivots have no mesh part (`exhaust0/1`, `trailer_hitch`).
 
+**MM2's reader** (`GetPivot`, verified): it opens `geometry/<model>_<part>.mtx`
+and reads the first 48 bytes straight into a `Matrix34` (rows m0 = min,
+m1 = max, m2 = centre, m3 = origin); anything after is ignored. Each caller
+takes what it needs: most use only the origin row (headlights, fenders,
+trailer hitch, exhausts, breakables, dashboard needles), `vehWheel::Init`
+uses the box (radius = |max.y − min.y| / 2, width = max.x − min.x), and a few
+(`vehAxle::Init`, `vehSuspension::Init`, `dgBangerData` with flag 0x100) use
+the rows as a matrix. `asset::parseMtx` accepts files of 48 bytes or more.
+
 ## Semantics (verified against mesh bounds)
 
 Part meshes in the PKG are stored around their own origin. `origin` is where
@@ -37,7 +46,6 @@ the pivots were exported.
 `whl0` front left, `whl1` front right, `whl2` rear left, `whl3` rear right,
 `whl4`/`whl5` a third axle (fire truck, semi). Cars face −Z, so front wheels
 have negative z and left wheels negative x. `asset::loadVehicleModel` derives
-`radius = (max.y − min.y) / 2` and `width = max.x − min.x`; for `vpbug` this
-gives radius 0.336 m at (±0.75, 0.307, −1.184 / 1.381). How the game itself
-derives the physical wheel radius (from the mtx, the mesh or the tune file) is
-not yet confirmed.
+`radius = |max.y − min.y| / 2` and `width = max.x − min.x`, as
+`vehWheel::Init` does; for `vpbug` this gives radius 0.336 m at
+(±0.75, 0.307, −1.184 / 1.381).
