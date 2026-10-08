@@ -3,6 +3,7 @@
 #include "ai/Police.h"
 
 #include "ai/MapView.h"
+#include "ai/PathGeometry.h"
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
 
@@ -390,8 +391,10 @@ void PoliceCar::block(const TrackedCar& perp) {
             // coded the condition reads the suspect's component id where its
             // type was meant (so it holds only on component 1), and the road
             // asked is the path numbered by the type.
-            const int rightOn = posOnRoad(m_net, m_perpComponentType, rightGoal, m_driver.leftSide());
-            const int leftOn = posOnRoad(m_net, m_perpComponentType, leftGoal, m_driver.rightSide());
+            // (aiPath::IsPosOnRoad; no such road: beyond it.)
+            const city::AiPath* road = m_map.path(m_perpComponentType);
+            const int rightOn = road ? pathIsPosOnRoad(*road, rightGoal, m_driver.leftSide()) : 3;
+            const int leftOn = road ? pathIsPosOnRoad(*road, leftGoal, m_driver.rightSide()) : 3;
             if (rightOn == leftOn)
                 goal = side <= 0.0f ? leftGoal : rightGoal;
             else
