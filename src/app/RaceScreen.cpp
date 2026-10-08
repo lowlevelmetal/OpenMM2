@@ -815,7 +815,8 @@ private:
         ps.automatic = m_result.config.automatic;
         ps.throttle = m_lastPedals.accelerator;
         ps.damage01 = sim.damage.damage;
-        ps.wrecked = sim.damage.wrecked();
+        // mmPlayer::IsMaxDamaged: CurrentDamage strictly past MaxDamage.
+        ps.wrecked = sim.damage.maxScaled() < sim.damage.currentDamage;
         if (m_city->water) {
             const int room = m_cityRenderer->roomAt(ps.transform.m3);
             const auto& rooms = m_city->water->rooms;
