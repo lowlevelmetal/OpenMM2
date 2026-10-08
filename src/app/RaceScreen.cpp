@@ -532,6 +532,11 @@ private:
             return nullptr;
         }
         car->sim().options.weatherFriction = weatherFriction();
+        // vehCarModel::InitBound builds a model's bound once, and the
+        // player's car is set up first: AI cars of the player's model collide
+        // with its polygonal bound too.
+        if (vehicle == m_result.config.vehicle)
+            car->sim().setPolygonalBound(true);
         car->addTo(*m_world);
         phys::RayHit hit;
         if (m_world->probe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit))
