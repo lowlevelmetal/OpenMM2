@@ -1263,6 +1263,10 @@ private:
                     if (c.audio)
                         c.audio->reset(); // aiPoliceOfficer::Reset -> vehPoliceCarAudio::Reset
                 }
+                // mmGame::Reset: StartMusic again.
+                if (m_musicDirector)
+                    m_musicDirector->restart();
+                m_musicFinished = m_musicResults = false;
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))

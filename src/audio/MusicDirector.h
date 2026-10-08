@@ -39,6 +39,13 @@ public:
     // The race modes hold the idle logic from the music start until "Go!"
     // (mmSingleCircuit / mmSingleBlitz clear MMDMusicManager +0x50).
     void raceStarted();
+    // mmGame::Reset (the race starts over): StartMusic again at once, so the
+    // Start segment comes back on the next beat and the race modes hold the
+    // idle logic until "Go!". When the Start segment is still the current
+    // one MM2 replays it from its beginning (PlaySegment); OpenMM2 lets it
+    // play on (the same-segment rule; deviation, inferred to be rarely
+    // heard: a restart within the Start segment).
+    void restart();
     // mmPopup::PlayPauseMusic / PlayReturnMusic.
     void pause();
     void resume();
@@ -73,6 +80,7 @@ public:
     MusicState current() const { return m_current; }
 
 private:
+    void startMusic();                      // mmGame::StartMusic
     void segmentSwitch(MusicState s);       // DMusicObject::SegmentSwitch(int): next beat
     void autoTransition(MusicState s);      // SegmentSwitch(int, cmd, flags): next measure
     void matchMusicToPlayerSpeed(float speed, float dt);

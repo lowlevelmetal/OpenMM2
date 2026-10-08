@@ -373,6 +373,36 @@ TEST(AudioParityMm2, FinalStretchSwitchesToTheChaseMusic) {
     EXPECT_EQ(r[0].state, MusicState::Return);
 }
 
+TEST(AudioParityMm2, RestartStartsTheMusicAgain) {
+    // mmGame::Reset: StartMusic at once (past 1.25 s): the Start segment and
+    // the idle logic held until "Go!".
+    MusicDirector d(false);
+    for (int i = 0; i < 100; ++i)
+        d.update(0.02f, 20.0f, 0, false);
+    d.raceStarted();
+    for (int i = 0; i < 400; ++i) // standing still: idle after 5 s
+        d.update(0.02f, 0.0f, 0, false);
+    EXPECT_EQ(d.current(), MusicState::Idle);
+    d.takeCommands();
+    d.restart();
+    const auto c = d.takeCommands();
+    ASSERT_EQ(c.size(), 1u);
+    EXPECT_EQ(c[0].state, MusicState::Start);
+    // Held until "Go!" (no idle switch while standing).
+    for (int i = 0; i < 400; ++i)
+        d.update(0.02f, 0.0f, 0, false);
+    EXPECT_TRUE(d.takeCommands().empty());
+    // While held, MatchMusicToPlayerSpeed takes the moving branch, which
+    // zeroes the idle timer: after "Go!" idle comes 5 s later.
+    d.raceStarted();
+    for (int i = 0; i < 200; ++i)
+        d.update(0.02f, 0.0f, 0, false);
+    EXPECT_EQ(d.current(), MusicState::Start);
+    for (int i = 0; i < 100; ++i)
+        d.update(0.02f, 0.0f, 0, false);
+    EXPECT_EQ(d.current(), MusicState::Idle);
+}
+
 TEST(AudioParityMm2, OldEngineTableLayout) {
     // vehEngineAudio::Load: "Volume Divisor" in the engine header's fourth
     // cell selects ParseCSVBufferOld for every row: name, min volume, max

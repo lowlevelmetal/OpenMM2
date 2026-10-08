@@ -117,6 +117,7 @@ commands to `MusicPlayer`.
 | Finish: the race modes stop the music at once (`StopSegment(0)`); the music logic keeps running, so standing still for 5 s brings in the idle segment; the results popup starts the results segment on the next beat (with an END embellishment, not rendered by dmusic) | MM2 (`mmSingleRace` / `mmSingleCircuit` / `mmSingleBlitz` `StopSegment`, `mmPopup::ShowResults`) |
 | Wrecked: the race modes end the music with a composed ending on the next beat (`StopSegment(1)`: AutoTransition to nothing, DMUS_COMMANDT_END, DMUS_COMPOSEF_BEAT); OpenMM2 stops on the next beat (`MusicDirector::damagedOut`) | MM2 (`mmSingleRace::UpdateGame`, `DMusicObject::StopSegment`); the ending **inferred** |
 | A segment switch to the segment already playing does nothing | MM2 (`DMusicObject::SegmentSwitch`) |
+| Restarting the race (the popup's Restart): StartMusic again at once, so the Start segment comes back and the race modes hold the idle logic until "Go!" (`MusicDirector::restart`). If Start is still the current segment MM2 replays it from its beginning; OpenMM2 lets it play on | MM2 (`mmGame::Reset`, `mmGame::StartMusic`); the replay is a **deviation** |
 
 Notes on the port:
 
