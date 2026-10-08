@@ -415,7 +415,6 @@ fractions of the whole output.
 | Map: look | Cleared to a hard-coded ocean colour: London (0.92, 0.84, 0.778), elsewhere (0.084, 0.68, 0.92) (the `.mmhudmap` Ocean Color is overwritten); `hudmap_<city>.pkg` unlit | `mmHudMap::Init` |
 | Map: icons | Car arrows are flat untextured triangles (0, 0, −1), (±0.7, 0, 1) × icon scale, 15 m above the car: police (red) while chasing, opponents (violet; network players IconType slot + 4: red, yellow, orange, violet, cyan, pink, and two colours read past the table for the last two slots), the player (yellow) over a black one 1.3 times larger; traffic is not shown; `hudmap_tri` is loaded but unused. Waypoints are `hudmap_square` × icon / 7.51, 10 m above: green to clear, yellow the current goal, grey cleared (circuits), the finish dot for the open finish (checkpoint races) or the start line (circuits) | `mmHudMap::DrawIcon`, `DrawColoredTri`, `::DrawPlayer`, `::DrawCops`, `::DrawOpponents`, `::DrawWaypoints`, `::DrawIndicator` |
 | Dashboard | `<car>_dash.pkg` in camera space (DashPos, RoofPos), unlit, no depth test, painted dash, roof, gear indicator, speed, tach and damage needles, dash_extra, wheel. Needles turn by −angle about Z around (box centre of `<car>_dash_<part>.mtx` + PivotOffset) and are moved by Speed/Tach/DmgOffset; angle = RotMin + value / max × (RotMax − RotMin), clamped. Speed against 160, rpm against a fixed 8000 with a floor of 800, damage against its maximum. The gear indicator sits at GearPivotOffset with paint job = transmission gear (R, N, One…), also in automatics | `mmDashView::LoadPkg`, `::LoadPivotInfo`, `::Init`, `::Cull`, `RadialGauge::Cull`, `::GetArrowAngle` |
-| Mouse steering bar | With the mouse driving: `mouse_bar` centred two bar heights above the bottom, `mouse_ar` 16 pixels above it, moved from the centre by steering × (bar width / 2 − 15) pixels; part of the instrument cluster (hidden with it) | `mmExternalView::Init`, `::Cull` |
 | HUD toggle | The "HUD Toggle" key is `mmHUD::ToggleExternalView`: it hides and shows the instrument cluster only. `mmHUD::Disable` (looking around from a point-of-view camera, the in-race menu) hides the dashboard with the readouts, and the messages in single player only | `mmGame::UpdateGameInput`, `mmHUD::ToggleExternalView`, `::Disable` |
 | Circuit lap rows | `mmWaypoints::Update` sets the row of the lap being driven every frame, so a live time shows under the completed laps | `mmWaypoints::Update`, `mmCircuitHUD::SetLapTime` |
 | Map police | Police cars show on the map only while they pursue | `mmHudMap::DrawCops` |
@@ -508,7 +507,8 @@ Not implemented, all verified to exist in MM2:
   `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
   hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
   the renderer draws it.
-* The CD player display (`mmCDPlayer`).
+* The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`)
+  and the CD player display (`mmCDPlayer`).
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

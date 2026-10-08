@@ -496,7 +496,7 @@ void Hud::preload(ui::TextureCache* art) {
                     m_textures.get(mat.texture);
     }
     if (art) {
-        for (const char* t : {"speed_ticks.tga", "damage.tga", "damage_lable.tga", "mouse_bar.tga", "mouse_ar.tga"})
+        for (const char* t : {"speed_ticks.tga", "damage.tga", "damage_lable.tga"})
             art->get(std::string("texture/") + t);
         art->getColorKeyed("texture/digi_colon.tga");
         for (char c = '0'; c <= '9'; ++c) {
@@ -955,26 +955,7 @@ void Hud::drawMap(const Session& session, const PlayerState& player, std::span<c
 void Hud::drawCluster(render::Overlay2D& ov, ui::TextureCache& art, const PlayerState& player, float x,
                       float y) {
     // mmExternalView: origin at the left edge, 100 pixels above the bottom.
-    // Painted in this order: the mouse steering bar, damage meter, gear,
-    // tachometer, speed.
-    if (m_options.mouseSteering) {
-        // mmExternalView::Cull with the mouse (inputDevice 0): mouse_bar
-        // centred 2 bar heights above the bottom, mouse_ar 16 pixels above
-        // it, centred on the screen plus steering x (bar width / 2 - 15).
-        const ui::UiTexture& bar = art.get("texture/mouse_bar.tga");
-        const ui::UiTexture& arrow = art.get("texture/mouse_ar.tga");
-        if (bar && arrow) {
-            const render::UiLayout& l = ov.layout();
-            const int travel = static_cast<int>(bar.width >> 1) - 15;
-            const int shift = static_cast<int>(static_cast<float>(travel) * m_steering); // __ftol
-            const float cx = (l.left + l.right) * 0.5f;
-            const float barX = cx - px(static_cast<float>(bar.width >> 1));
-            const float barY = l.bottom - px(static_cast<float>(bar.height * 2));
-            ui::drawImage(ov, arrow, cx + px(static_cast<float>(shift - static_cast<int>(arrow.width >> 1))),
-                          barY - px(16.0f), px(static_cast<float>(arrow.width)), px(static_cast<float>(arrow.height)));
-            ui::drawImage(ov, bar, barX, barY, px(static_cast<float>(bar.width)), px(static_cast<float>(bar.height)));
-        }
-    }
+    // Painted in this order: damage meter, gear, tachometer, speed.
     const ui::UiTexture& ticks = art.get("texture/speed_ticks.tga");
     const ui::UiTexture& damage = art.get("texture/damage.tga");
     const ui::UiTexture& label = art.get("texture/damage_lable.tga");
