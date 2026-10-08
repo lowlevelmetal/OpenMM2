@@ -15,13 +15,18 @@ struct ProjectionParams {
     float aspect = 1.0f; // aspect ratio to build the projection with
 };
 
-// Angel cameras specify a horizontal FOV intended for a 4:3 screen
-// (asCamera::SetView(horz_fov, aspect, ...); see tune/camera/*.campovcs
-// "CameraFOV"). Returns the vertical FOV and projection aspect to use for a
-// viewport of `viewportAspect` (width / height):
-//   HorPlus   - vertical FOV of the 4:3 original; wider screens see more at
-//               the sides. With maxAspect > 0, screens wider than maxAspect
-//               are cropped vertically instead (ultrawide comfort limit).
+// OpenMM2 carries a camera's field of view as the horizontal FOV it has on a
+// 4:3 screen (the car cameras convert their vertical CameraFOV with
+// cam::horizontalFov4x3). The original's FOV is vertical: the camera views
+// call gfxViewport::Perspective(fov, 0, near, far), which scales y by
+// 1 / tan(fov / 2) and x by that over the viewport's width / height
+// (gfxViewport::SetWindow), so a wider viewport sees more at the sides.
+// Returns the vertical FOV and projection aspect to use for a viewport of
+// `viewportAspect` (width / height):
+//   HorPlus   - the original: vertical FOV of the 4:3 original kept, wider
+//               screens see more at the sides. With maxAspect > 0, screens
+//               wider than maxAspect are cropped vertically instead
+//               (OpenMM2's ultrawide comfort limit).
 //   VertMinus - horizontal FOV kept; wider screens see less vertically.
 //   Stretch   - the 4:3 image is stretched to the viewport.
 ProjectionParams computeProjection(float horizontalFov4x3, float viewportAspect, FovMode mode,
