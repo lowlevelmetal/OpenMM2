@@ -53,19 +53,30 @@ other frame rates.)
 
 ## Rigid body (phInertialCS) — MM2
 
+* Every physics entity's update first adds its weight, Mass * -19.6 on y
+  (`dgPhysEntity::Update`).
 * Momentum p += impulse + dt * F; v = p / m. Angular momentum likewise; the
-  angular velocity is found about each body axis and, with
-  `limitAngVelocity`, each component is limited on its own (cars: 4 pi rad/s,
-  `vehCarSim::Init`), the momentum then recomputed from the limited velocity.
+  angular velocity is found about each body axis and each component is
+  limited on its own, the momentum then recomputed from the limited
+  velocity. The limit is phInertialCS's constructor's 5 rad/s per axis for
+  every body (props, traffic off its rail, trailers); `vehCarSim::Init`
+  raises the car body's to 4 pi.
 * Speed limit 500 m/s. Position += push + dt * v; the accumulated turn
-  (rotational push + dt * w) rotates the matrix about its axis.
+  (rotational push + dt * w) rotates the matrix about its axis
+  (`Matrix34::RotateUnitAxis`). Nothing re-orthonormalises the matrix.
 * **Implicit contacts.** `applyContactForce(F, point, K)` adds a force and its
   stiffness d(force)/d(velocity) (K = c n n^T for a wheel, c = damping +
   dt * spring). A body with such contacts integrates linearly implicitly: the
   linear step through M = (I + dt/m sum K)^-1 and the angular one by solving
   B dw = rhs with B = world inertia + dt sum (X K X^T) - dt^2/m (X K) M
-  (X K)^T (`Matrix34::SolveSVD`; OpenMM2 uses Gaussian elimination, which
-  gives the same result for the non-singular matrices that occur).
+  (X K)^T and rhs = -(dt/m) P M (X K)^T + angular impulse + dt * torque
+  (P = linear impulse + dt * F) with `Matrix34::SolveSVD`, a cofactor solve
+  with rank-2 and rank-1 fallbacks. The linear velocity then changes by
+  (dt dw (X K) + P) / m * M: the opposite sign, for the dw term, to the one
+  the angular solve assumes. Both are as in MM2.
+* The Vector3 / Matrix34 helpers sum their terms in the order the original's
+  compiled code does (`phys/AgeMath`, `core/Math`), so a port of a call
+  rounds as the original did.
 * `filteredVelocity` (GetLocalFilteredVelocity2): a point's velocity with the
   part along the last sample's push removed, used by the wheels.
 * Pushes (`applyPush`, CalcNetPush) and turns (`applyTurn`) only add the part
@@ -74,11 +85,12 @@ other frame rates.)
   `GetLocalAcceleration`, `GetForce`/`GetTorque` (the accumulated force plus
   the accumulated impulse over the sample; the `ApplyContactForce` part is
   not included) serve the joints.
-* Kept from MM1's asInertialCS: the sleep test and constraints. MM2 moved
-  sleeping to `phSleep` (`phys/Sleep`), which traffic cars off their rail
-  and knocked-over props use: still for 15 updates (speed with the pushes
-  and spin below their thresholds, or jittering) puts the body to sleep.
-  OpenMM2 re-orthonormalises the matrix when it drifts.
+* Sleeping is `phSleep`'s (`phys/Sleep`; MM1's asInertialCS sleep test and
+  constraints are gone), which traffic cars off their rail and knocked-over
+  props use: still for 15 updates (speed with the pushes and spin below
+  their thresholds, or jittering) freezes the body and makes it inactive.
+  An inactive body does not integrate, but a push still moves it
+  (`MoveICS`) and its push bookkeeping runs on.
 
 ## Car (vehCarSim) — MM2
 
@@ -467,8 +479,11 @@ narrow phase and the impact response are ports of the `phBound` family,
   touches (`cityLevel::GetTouchedNeighbors`), at most 256, culled by the
   sphere (`src/city/SdlCollect`, docs/formats/psdl.md). Their materials come
   from `city/materials.csv` (texture → material name) resolved in the
-  material manager (`lvlLevelBound::GetMaterial`: 0 is the default,
-  `_default` of `city/materials.mtl`).
+  material manager (`lvlLevelBound::GetMaterial`: 0 is the manager's
+  built-in default, an `lvlMaterial` as its constructor leaves it:
+  elasticity 0.5, friction 1, width 1, no particles; the `_default` block of
+  `city/materials.mtl` is an entry of its own). The wheels get the built-in
+  default for every polygon whose texture maps to `none`.
 * **Objects** (`lvlInstance` in the rooms' lists): the city's collidable
   instances (`.inst` flag 0x2000: their `bound/<name>_bound.bnd` geometry,
   scaled by the matrix's row lengths, listed in every room their sphere
@@ -669,8 +684,6 @@ as speeds at MaxRPM and capped every car at High.)
 - Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
   (MM2's values make vpcentury's trailer ride on its bump stops, see
   "Trailers"); the trailer's impact parameters are inferred.
-- The per-axis angular velocity limits of non-car bodies other than
-  trailers and `vehSuspension` (the visual shocks) are not ported.
 - The engine pivot (`<car>_engine.mtx`) and axle pivots are not loaded yet;
   the original's fallbacks apply.
 
