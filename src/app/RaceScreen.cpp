@@ -332,6 +332,7 @@ private:
         for (const auto& w : city->warnings)
             log::debug("city: {}", w);
         m_city = std::make_unique<city::CityData>(std::move(*city));
+        m_vfs = &ctx.game->vfs;
         m_levelRoomFlags = city::levelRoomFlags(*m_city); // cityLevel::Load, lvlLevel::LoadInstances
         m_textures = std::make_unique<game::TextureLibrary>(ctx.device(), ctx.game->vfs);
         m_models = std::make_unique<game::ModelLibrary>(ctx.device(), ctx.game->vfs);
@@ -1039,9 +1040,8 @@ private:
                 m_announcer.playPreRace();
             break;
         case SpeechCue::Results:
-            // PlayResults(place, (int)OpponentDensity).
             if (!lessons)
-                m_announcer.playResults(static_cast<int>(value), m_result.config.opponents);
+                announceResults(static_cast<int>(value));
             break;
         case SpeechCue::ResultsPoor:
             if (!lessons)
@@ -1056,6 +1056,36 @@ private:
                 m_announcer.playCrashCourseResults(value != 0.0f);
             break;
         }
+    }
+
+    // The modes' RegisterFinish: a finish under the race's table settings is
+    // registered with the driver, and mmGameSingle::UpdateRewards then has
+    // the announcer name the car or paint job it unlocks, or else play the
+    // results for the place (PlayResults(place, (int)OpponentDensity)).
+    // OpenMM2's frontend stores the finish when the race is left; the race
+    // works out the same outcome on a copy of the driver.
+    void announceResults(int place) {
+        if (!m_profile || !m_session)
+            return;
+        game::RaceResult result = m_session->result();
+        game::RaceConfig defaults = result.config;
+        game::session::applyRaceTableDefaults(defaults, m_session->setup().race);
+        if (!game::Progress::recordable(result.config, defaults))
+            return;
+        if (!m_progress)
+            m_progress = game::Progress::load(*m_vfs);
+        game::Profile copy = *m_profile;
+        if (const auto reward = m_progress->record(copy, result)) {
+            if (reward->variant == 0 && m_announcer.loadVehicleUnlock(reward->vehicle)) {
+                m_announcer.playUnlockVehicle();
+                return;
+            }
+            if (reward->variant != 0 && m_announcer.loadTextureUnlock(reward->vehicle)) {
+                m_announcer.playUnlockTexture();
+                return;
+            }
+        }
+        m_announcer.playResults(place, m_result.config.opponents);
     }
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
@@ -2018,7 +2048,9 @@ private:
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
     game::RearViewMirror m_mirror;       // mmMirror: on / off and its camera (drawn by the renderer)
-    std::optional<game::Profile> m_profile; // the driver, for the view settings
+    std::optional<game::Profile> m_profile; // the driver, for the view settings and rewards
+    std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)
+    const vfs::Vfs* m_vfs = nullptr;
     std::unique_ptr<ai::World> m_ai;
 
     // Race rules, opponents and HUD (src/game/session).

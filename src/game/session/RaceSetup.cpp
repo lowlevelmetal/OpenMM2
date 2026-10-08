@@ -136,6 +136,44 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
     return std::nullopt;
 }
 
+void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race) {
+    if (cfg.mode == GameMode::Cruise) {
+        // RaceMenuBase::SetStateRace for cruise.
+        cfg.timeOfDay = TimeOfDay::Noon;
+        cfg.weather = Weather::Clear;
+        cfg.pedestrianDensity = 0.25f;
+        cfg.trafficDensity = 0.5f;
+        cfg.copDensity = 1.0f;
+        return;
+    }
+    if (!race || !race->settings)
+        return;
+    const auto& s = cfg.difficulty == Difficulty::Professional ? race->settings->professional
+                                                               : race->settings->amateur;
+    cfg.timeOfDay = static_cast<TimeOfDay>(std::clamp(s.timeOfDay, 0, 3));
+    cfg.weather = static_cast<Weather>(std::clamp(s.weather, 0, 3));
+    cfg.pedestrianDensity = std::clamp(s.pedDensity, 0.0f, 1.0f);
+    if (cfg.mode == GameMode::CrashCourse) {
+        // Lessons: the lesson table's time, weather and pedestrians, no
+        // traffic, all cops (mmInterface::Update, Crash Course GO).
+        cfg.trafficDensity = 0.0f;
+        cfg.copDensity = 1.0f;
+        cfg.opponents = 0;
+        return;
+    }
+    cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
+    // MM2 keeps the race's cop count in the cop density; OpenMM2's densities
+    // are 0..1, so the count is clamped (the slider shows full either way).
+    cfg.copDensity = std::clamp(static_cast<float>(s.cops), 0.0f, 1.0f);
+    if (cfg.mode == GameMode::Checkpoint) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = 1;
+    } else if (cfg.mode == GameMode::Circuit) {
+        cfg.opponents = std::max(0, s.opponents);
+        cfg.laps = std::max(1, s.numLaps);
+    }
+}
+
 std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
                                        std::string* error, std::uint32_t seed) {
     RaceSetup s;

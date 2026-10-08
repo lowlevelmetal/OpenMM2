@@ -81,6 +81,8 @@ struct RaceSetup {
 
 // Loads the event described by `config`. Fails (returns std::nullopt and
 // sets `error`) when the race does not exist or its waypoints are missing.
+//
+// (See also applyRaceTableDefaults below.)
 // `seed` drives the random parts (the cruise start).
 std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
                                        std::string* error = nullptr, std::uint32_t seed = 1);
@@ -101,5 +103,12 @@ Vec3 headingDirection(float headingDeg);
 // those in underground, road or building rooms and those on freeways or
 // alleys; 2 m above its centre. Nothing when the city has no AI map.
 std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uint32_t& rng);
+
+// The settings a race runs with by default (RaceMenuBase::SetStateRace,
+// the Crash Course page's GO): the race table's time of day, weather and
+// densities for the driver's difficulty, a circuit's laps and opponents.
+// The modes' RegisterFinish register a finish only under these. `race` is
+// the race's definition (null for cruise).
+void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race);
 
 } // namespace mm2::game::session

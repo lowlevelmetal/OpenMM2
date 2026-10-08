@@ -5,6 +5,7 @@
 #include "TestData.h"
 #include "ai/World.h"
 #include "city/CityData.h"
+#include "game/Profile.h"
 #include "game/Strings.h"
 #include "game/session/Session.h"
 #include "vfs/GameSource.h"
@@ -519,4 +520,20 @@ TEST(ParitySession, LevelRoomFlagsFromThePsdl) {
     EXPECT_GT(under, 100);
     EXPECT_GT(water, 0);
     EXPECT_GT(landmarks, 0);
+}
+
+// RegisterFinish registers a finish only under the race table's settings
+// (applyRaceTableDefaults, shared by the menus and the race).
+TEST(ParitySession, FinishesRegisterUnderTheTableSettings) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    auto s = paritySession(GameMode::Circuit, 0);
+    ASSERT_TRUE(s);
+    RaceConfig played = s->setup().config;
+    applyRaceTableDefaults(played, s->setup().race);
+    RaceConfig defaults = played;
+    EXPECT_TRUE(Progress::recordable(played, defaults));
+    EXPECT_EQ(played.laps, std::max(1, s->setup().settings.numLaps));
+    played.weather = played.weather == Weather::Rain ? Weather::Clear : Weather::Rain;
+    EXPECT_FALSE(Progress::recordable(played, defaults));
 }
