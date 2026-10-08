@@ -10,7 +10,8 @@
 //     them `laps` times;
 //   * the [Opponent] line of the race's .aimap tunes the driver
 //     (aiRaceData; see OpponentSettings::fromData);
-//   * a car that falls through the world is disabled (it stops), a wrecked
+//   * held at the start it revs in neutral with the brakes on (undrivable);
+//   * a car that falls through the world is disabled (no more driving), a wrecked
 //     car is repaired after 5 s in circuits only.
 // MM2 has no rubber-banding: nothing scales the opponents by race position.
 //
@@ -47,7 +48,7 @@ struct OpponentSettings {
     RouteParams route;
     // Circuit laps (0 = point-to-point race).
     int laps = 0;
-    // aiVehiclePhysics::Init param_4 (game mode 3, circuits): a wrecked car
+    // aiVehiclePhysics::Init's repair flag (game mode 3, circuits): a wrecked car
     // is repaired after 5 s; elsewhere it stays wrecked.
     bool repairWhenWrecked = false;
     // Never takes the sidewalk round an obstacle (vppanozgt; see
@@ -82,7 +83,7 @@ public:
         Racing,    // aiVehiclePhysics::Forward (or Shortcut)
         BackingUp, // aiVehiclePhysics::Backup
         Wrecked,   // damage over the maximum
-        Stopped,   // at its destination after the finish, or disabled
+        Stopped,   // disabled (fell through the world), or braked to a stop
     };
 
     // `selfId` is the id this car has in the TrackedCar lists.
@@ -145,6 +146,7 @@ private:
 
     Mode m_mode = Mode::Held;
     bool m_held = false;
+    bool m_wasHeld = false; // undrivable last frame (released: into first gear)
     bool m_finished = false;
     bool m_disabled = false;
     bool m_touchingPlayer = false;

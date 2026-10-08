@@ -187,4 +187,32 @@ void pathOuterEdges(const city::AiPath& path, std::size_t k, float& left, float&
 // edges at the middle section.
 void pathOnRoadLimits(const city::AiPath& path, float& road, float& sidewalk);
 
+// aiPath::IsPosOnRoad of road `path` for a point: 1 on the road, 2 on the
+// sidewalk, 3 beyond, from its distance to the road's centre line (XZ) and
+// the limits above, each less `margin`.
+int posOnRoad(const RoadNetwork& net, int path, const Vec3& p, float margin);
+
+// A road network component (aiMap): `type` 1 a road (path id), 3 an
+// intersection.
+struct MapComponentRef {
+    int id = -1;
+    int type = 0;
+};
+// aiMap::PositionToAIMapComp: the intersection a point is inside, else the
+// roads (up to five) it lies across within twice their half width; empty
+// when on none. MM2 asks the components of the point's PSDL room; OpenMM2
+// measures the roads (inferred equivalent).
+std::vector<MapComponentRef> componentsAt(const RoadNetwork& net, const Vec3& p);
+// aiMap::MapComponent: the intersection a point is inside (type 3), else the
+// road it is on or beside (type 1); none (type 0) returns `previous`.
+int mapComponent(const RoadNetwork& net, const Vec3& p, int previous, int& type);
+// aiMap::CalcRoute: the waypoint intersections from `from` to `to`, as the
+// police compute them: a shortest route over the intersections where each
+// road costs its centre line length, from the start's intersection (or both
+// ends of its road at their distances along it) to the goal's intersection
+// (or either end of its road). A start on a road is preceded by that road's
+// other end, so the first leg is the road the car is on. Empty when both
+// lie in the same component.
+std::vector<int> calcRoute(const RoadNetwork& net, const Vec3& from, const Vec3& to);
+
 } // namespace mm2::ai

@@ -619,17 +619,10 @@ private:
         log::info("race: {} police cars", m_cops.size());
     }
 
-    static ai::TrackedCar trackedCar(const phys::CarSim& sim, int id) {
-        const Mat34 m = sim.modelMatrix();
-        ai::TrackedCar t;
-        t.id = id;
-        t.position = m.m3;
-        t.forward = -m.m2;
-        t.velocity = sim.body.ics.linearVelocity;
-        t.halfWidth = sim.halfExtents().x;
-        t.halfLength = sim.halfExtents().z;
-        t.body = &sim.body;
-        return t;
+    // A car as MM2's AI sees it (ai::trackedCar: its inertial frame, speed,
+    // bumper and side distances).
+    static ai::TrackedCar trackedCar(const phys::CarSim& sim, int id, bool player = false) {
+        return ai::trackedCar(sim, id, player);
     }
 
     // Opponent and police AI: reads every car, writes the AI cars' inputs.
@@ -637,7 +630,7 @@ private:
         if (!m_player || (m_opponents.empty() && m_cops.empty()))
             return;
         std::vector<ai::TrackedCar> cars;
-        ai::TrackedCar player = trackedCar(m_player->sim(), 0);
+        ai::TrackedCar player = trackedCar(m_player->sim(), 0, true);
         player.isPlayer = true;
         player.suspect = true;
         player.reversing = m_player->sim().trans.getCurrentGear() == -1;
@@ -656,18 +649,8 @@ private:
             cars.push_back(t);
         }
         if (m_ai) {
-            for (const ai::AmbientCar& c : m_ai->cars()) {
-                ai::TrackedCar t;
-                t.id = 10000 + c.id;
-                t.position = c.transform.m3;
-                t.forward = -c.transform.m2;
-                t.velocity = c.velocity;
-                if (c.data) {
-                    t.halfWidth = 0.5f * c.data->width();
-                    t.halfLength = 0.5f * c.data->length();
-                }
-                cars.push_back(t);
-            }
+            for (const ai::AmbientCar& c : m_ai->cars())
+                cars.push_back(ai::trackedAmbient(c, 10000 + c.id));
         }
         for (auto& o : m_opponents) {
             if (!o.driver) {

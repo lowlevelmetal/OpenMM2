@@ -25,17 +25,11 @@ const TrackedCar* firstPlayer(std::span<const TrackedCar> cars) {
     return nullptr;
 }
 
-Vec3 flatUnit(const Vec3& v) {
-    const Vec2 f{v.x, v.z};
-    const float m = f.mag();
-    return m > 1e-6f ? Vec3{f.x / m, 0.0f, f.y / m} : Vec3{0, 0, -1};
-}
-
 float xzDist(const Vec3& a, const Vec3& b) {
     return Vec2{a.x - b.x, a.z - b.z}.mag();
 }
 
-constexpr float kApprehendRange = 25.0f; // aiPoliceForce::State (dat_5d848c)
+constexpr float kApprehendRange = 25.0f; // aiPoliceForce::State's apprehend range
 
 } // namespace
 
@@ -76,18 +70,19 @@ int PoliceForce::copsOn(int perp) const {
 }
 
 bool PoliceForce::registerPerp(int cop, int perp) {
-    // aiPoliceForce::RegisterPerp: a fourth cop on a suspect, or a fourth
-    // suspect, is turned down.
-    if (const int i = findPerp(perp); i >= 0) {
+    // aiPoliceForce::RegisterPerp: a suspect already pursued takes up to three
+    // cops (whether this cop is among them already is not checked); a new
+    // suspect takes the next of the three slots.
+    for (int i = 0; i < m_numPerps; ++i) {
         const auto ui = static_cast<std::size_t>(i);
-        if (find(cop, perp))
-            return true;
-        if (m_numCops[ui] >= kMaxCops)
+        if (m_perps[ui] != perp)
+            continue;
+        if (m_numCops[ui] > 2)
             return false;
         m_cops[ui][static_cast<std::size_t>(m_numCops[ui]++)] = cop;
         return true;
     }
-    if (m_numPerps >= kMaxPerps)
+    if (m_numPerps > 2)
         return false;
     const auto ui = static_cast<std::size_t>(m_numPerps++);
     m_perps[ui] = perp;
@@ -97,54 +92,55 @@ bool PoliceForce::registerPerp(int cop, int perp) {
 }
 
 bool PoliceForce::unregisterCop(int cop, int perp) {
-    // aiPoliceForce::UnRegisterCop: the later pursuers move up; the suspect
-    // goes when its last pursuer does.
-    const int i = findPerp(perp);
-    if (i < 0)
-        return false;
-    const auto ui = static_cast<std::size_t>(i);
-    int j = -1;
-    for (int k = 0; k < m_numCops[ui]; ++k)
-        if (m_cops[ui][static_cast<std::size_t>(k)] == cop)
-            j = k;
-    if (j < 0)
-        return false;
-    for (int k = j; k + 1 < m_numCops[ui]; ++k)
-        m_cops[ui][static_cast<std::size_t>(k)] = m_cops[ui][static_cast<std::size_t>(k + 1)];
-    m_cops[ui][static_cast<std::size_t>(--m_numCops[ui])] = -1;
-    if (m_numCops[ui] == 0) {
-        const auto last = static_cast<std::size_t>(--m_numPerps);
-        m_perps[ui] = m_perps[last];
-        m_numCops[ui] = m_numCops[last];
-        m_cops[ui] = m_cops[last];
-        m_perps[last] = -1;
-        m_numCops[last] = 0;
-        m_cops[last].fill(-1);
+    // aiPoliceForce::UnRegisterCop: the later pursuers move up. When the
+    // last one goes, the suspect's slot is emptied (no suspect) and the
+    // count drops by one without moving the later slots down: a suspect in
+    // a later slot falls out of the counted ones (its cops are then told
+    // "not pursued" by State) until the slot is taken again.
+    for (int i = 0; i < m_numPerps; ++i) {
+        const auto ui = static_cast<std::size_t>(i);
+        if (m_perps[ui] != perp)
+            continue;
+        for (int j = 0; j < m_numCops[ui]; ++j) {
+            if (m_cops[ui][static_cast<std::size_t>(j)] != cop)
+                continue;
+            for (int k = j; k < m_numCops[ui] - 1; ++k)
+                m_cops[ui][static_cast<std::size_t>(k)] = m_cops[ui][static_cast<std::size_t>(k + 1)];
+            --m_numCops[ui];
+            m_cops[ui][static_cast<std::size_t>(m_numCops[ui])] = -1;
+            if (m_numCops[ui] == 0) {
+                m_perps[ui] = -1;
+                --m_numPerps;
+            }
+            return true;
+        }
     }
-    return true;
+    return false;
 }
 
 int PoliceForce::state(int cop, int perp, std::span<const TrackedCar> cars, float copDistance) const {
+    // aiPoliceForce::State: 1 (apprehend) when `cop` is the suspect's
+    // pursuer nearest to it (3D) and within 25 m, 2 (follow) otherwise; 5
+    // when the suspect is not among the counted ones.
     const int i = findPerp(perp);
     if (i < 0)
         return kNotPursued;
     const auto ui = static_cast<std::size_t>(i);
     const TrackedCar* p = findCar(cars, perp);
-    if (!p)
-        return kFollow;
-    int best = -1;
+    int best = 0;
     float bestDist = 1e9f;
     for (int j = 0; j < m_numCops[ui]; ++j) {
-        const int id = m_cops[ui][static_cast<std::size_t>(j)];
-        if (const TrackedCar* c = findCar(cars, id)) {
-            const float d = p->position.dist2(c->position);
-            if (d < bestDist) {
-                bestDist = d;
-                best = id;
-            }
+        const TrackedCar* c = findCar(cars, m_cops[ui][static_cast<std::size_t>(j)]);
+        if (!p || !c)
+            continue;
+        const float d = p->position.dist2(c->position);
+        if (d < bestDist) {
+            bestDist = d;
+            best = j;
         }
     }
-    return best == cop && copDistance <= kApprehendRange ? kApprehend : kFollow;
+    return m_cops[ui][static_cast<std::size_t>(best)] == cop && copDistance <= kApprehendRange ? kApprehend
+                                                                                                : kFollow;
 }
 
 // --- settings ------------------------------------------------------------------
@@ -177,6 +173,7 @@ PoliceCar::PoliceCar(const RoadNetwork& net, phys::CarSim& car, const Mat34& pos
     m_pursuit = 0;
     m_lastPursuit = -1;
     m_apprehend = 3;
+    setRouteParams(0.0f, 5.0f, 2.0f);
     m_driver.setState(PhysicsDriver::State::Stop);
 }
 
@@ -185,7 +182,10 @@ PoliceCar::~PoliceCar() {
 }
 
 void PoliceCar::reset() {
-    // aiPoliceOfficer::Reset: at the post, braked, watching.
+    // aiPoliceOfficer::Reset: at the post, braked, watching; the opponents
+    // that lost the dice roll may be pursued again. The route to the post
+    // has no waypoints (RegisterRoute: destination speed 0, 5 m short, corner
+    // factor 2). The last suspect is kept.
     m_car.reset(m_post);
     m_driver.reset();
     m_ignored.clear();
@@ -197,8 +197,10 @@ void PoliceCar::reset() {
     m_mode = Mode::Parked;
     m_reason = Reason::None;
     m_route.reset();
+    m_routeIds.clear();
     m_destination = m_post.m3;
     m_destinationHeading = {};
+    setRouteParams(0.0f, 5.0f, 2.0f);
     m_driver.setState(PhysicsDriver::State::Stop);
 }
 
@@ -219,14 +221,16 @@ bool PoliceCar::inView(const TrackedCar& c) const {
 
 void PoliceCar::detect(std::span<const TrackedCar> cars, PoliceForce& force) {
     // aiPoliceOfficer::DetectPerpetrator: the players first, then the
-    // opponents, each within 75 m and in front.
+    // opponents, each within 75 m (3D) and in front.
+    if (m_pursuit != m_lastPursuit)
+        m_lastPursuit = m_pursuit;
     const Vec3 pos = m_car.body.ics.matrix.m3;
     const float range2 = m_settings.detectRange * m_settings.detectRange;
     for (const TrackedCar& c : cars) {
         if (!c.isPlayer || c.id == m_selfId)
             continue;
         if (pos.dist2(c.position) < range2 && inView(c) && force.registerPerp(m_selfId, c.id)) {
-            acquire(c, Reason::PlayerInView, cars);
+            acquire(c, Reason::PlayerInView);
             return;
         }
     }
@@ -238,12 +242,18 @@ void PoliceCar::detect(std::span<const TrackedCar> cars, PoliceForce& force) {
             continue;
         if (!(pos.dist2(c.position) < range2) || !inView(c))
             continue;
-        // Only while the player is near enough to see it, and not always.
+        // Only while the player is within the post's range (XZ), and not
+        // always: an opponent that loses the roll is ignored until Reset.
         if (!player || !(xzDist(pos, player->position) < m_settings.opponentRange))
             continue;
         if (m_random.frand() <= m_settings.opponentChance) {
-            if (force.registerPerp(m_selfId, c.id)) {
-                acquire(c, Reason::OpponentInView, cars);
+            // As coded in build 3393 the registration passes the opponent as
+            // the pursuer and this cop's last suspect (none at first) as the
+            // suspect, so the force does not know this cop is on the
+            // opponent: State calls it not pursued, and the cop blocks it
+            // (ApprehendPerpetrator) unless it follows for the usual reasons.
+            if (force.registerPerp(c.id, m_lastPerp)) {
+                acquire(c, Reason::OpponentInView);
                 return;
             }
         } else {
@@ -252,44 +262,66 @@ void PoliceCar::detect(std::span<const TrackedCar> cars, PoliceForce& force) {
     }
 }
 
-void PoliceCar::acquire(const TrackedCar& c, Reason why, std::span<const TrackedCar> cars) {
+void PoliceCar::acquire(const TrackedCar& c, Reason why) {
+    // DetectPerpetrator on a hit: Forward, follow, FollowPerpetrator.
     m_target = c.id;
+    m_lastPerp = c.id;
     m_reason = why;
     m_driver.setState(PhysicsDriver::State::Forward);
     m_pursuit = PoliceForce::kFollow;
-    m_route.reset();
-    (void)cars;
+    m_perpComponent = mapComponent(m_net, c.position, -1, m_perpComponentType);
     follow(c, xzDist(m_car.body.ics.matrix.m3, c.position));
 }
 
 void PoliceCar::escape(PoliceForce& force) {
-    // aiPoliceOfficer::PerpEscapes: siren off, out of the force, stop.
+    // aiPoliceOfficer::PerpEscapes: siren off, out of the force, watching
+    // again (Stop).
     if (m_target >= 0)
         force.unregisterCop(m_selfId, m_target);
     m_target = -1;
     m_siren = false;
     m_pursuit = 0;
     m_driver.setState(PhysicsDriver::State::Stop);
-    m_route.reset();
+}
+
+void PoliceCar::setRouteParams(float destinationSpeed, float stopShort, float cornerSpeedFactor) {
+    // The settings every aiPoliceOfficer RegisterRoute call passes: MaxThrottle
+    // 1, brake threshold 0.7, look-ahead 75 m, steering round traffic, props
+    // and racers but not the players, no sidewalk preference.
+    RouteParams& p = m_driver.params;
+    p = {};
+    p.maxThrottle = 1.0f;
+    p.cornerSpeedFactor = cornerSpeedFactor;
+    p.brakeThreshold = 0.7f;
+    p.lookAhead = 75.0f;
+    p.avoidTraffic = true;
+    p.avoidProps = true;
+    p.avoidPlayers = false;
+    p.avoidOpponents = true;
+    p.preferSidewalk = false;
+    p.destinationSpeed = destinationSpeed;
+    p.stopShort = stopShort;
 }
 
 void PoliceCar::routeTo(const Vec3& goal, const Vec3& heading) {
-    // aiMap::CalcRoute + aiVehiclePhysics::RegisterRoute: the roads from the
-    // cop to `goal` (OpenMM2 rebuilds the course every second or when the
-    // goal moves on; MM2 every frame).
+    // aiMap::CalcRoute + aiVehiclePhysics::RegisterRoute: the waypoint
+    // intersections from the cop to `goal`, recomputed every frame as MM2
+    // does; the course along them is rebuilt when they change, or every
+    // second / when the goal has moved 15 m (OpenMM2: the course carries the
+    // goal's road as its last leg).
     m_destination = goal;
     m_destinationHeading = heading;
     const Vec3 pos = m_car.body.ics.matrix.m3;
-    const bool stale = !m_route || m_routeAge > 1.0f || xzDist(goal, m_routeGoal) > 15.0f;
+    std::vector<int> ids = calcRoute(m_net, pos, goal);
+    const bool stale =
+        !m_route || ids != m_routeIds || m_routeAge > 1.0f || xzDist(goal, m_routeGoal) > 15.0f;
     if (stale) {
-        m_route = Course::alongRoad(m_net, pos, goal);
-        if (!m_route) {
-            const int to = nearestIntersection(m_net, goal);
-            if (to >= 0) {
-                const int ids[] = {to};
-                m_route = Course::build(m_net, ids, pos, goal, false);
-            }
-        }
+        m_route.reset();
+        if (ids.empty())
+            m_route = Course::alongRoad(m_net, pos, goal);
+        else
+            m_route = Course::build(m_net, ids, pos, goal, false);
+        m_routeIds = std::move(ids);
         m_routeGoal = goal;
         m_routeAge = 0.0f;
         m_lastLeg = 0.0f;
@@ -302,6 +334,11 @@ void PoliceCar::routeTo(const Vec3& goal, const Vec3& heading) {
                     m_lastLeg = std::min(m_lastLeg, finish - leg.end);
         }
     }
+    // RegisterRoute: Shortcut when the cop is on no road or intersection,
+    // else Forward.
+    int type = 0;
+    mapComponent(m_net, pos, -1, type);
+    m_driver.setState(type == 0 ? PhysicsDriver::State::Shortcut : PhysicsDriver::State::Forward);
 }
 
 DriveContext PoliceCar::context() {
@@ -329,7 +366,8 @@ DriveContext PoliceCar::context() {
 
 void PoliceCar::follow(const TrackedCar& perp, float dist) {
     // aiPoliceOfficer::FollowPerpetrator: siren on, the road route to the
-    // suspect, arriving 5 m short of it at its speed + (distance - 12.5 m).
+    // suspect, arriving 5 m short of it at its speed + (distance - 12.5 m),
+    // corner factor 2.
     if (m_pursuit != m_lastPursuit) {
         m_siren = true; // StartSiren
         m_lastPursuit = m_pursuit;
@@ -337,25 +375,14 @@ void PoliceCar::follow(const TrackedCar& perp, float dist) {
     const auto state = m_driver.state();
     if (state != PhysicsDriver::State::Forward && state != PhysicsDriver::State::Shortcut)
         return;
-    routeTo(perp.position, flatUnit(perp.forward));
-    RouteParams& p = m_driver.params;
-    p = {};
-    p.maxThrottle = 1.0f;
-    p.cornerSpeedFactor = 2.0f;
-    p.brakeThreshold = 0.7f;
-    p.lookAhead = 75.0f;
-    p.avoidTraffic = true;
-    p.avoidProps = true;
-    p.avoidPlayers = false;
-    p.avoidOpponents = true;
-    p.preferSidewalk = false;
-    p.destinationSpeed = perp.velocity.mag() + dist - 12.5f;
-    p.stopShort = 5.0f;
+    routeTo(perp.position, perp.forward);
+    setRouteParams(perp.currentSpeed() + dist - 12.5f, 5.0f, 2.0f);
 }
 
 void PoliceCar::apprehend(const TrackedCar& perp, std::span<const TrackedCar> cars) {
-    // aiPoliceOfficer::ApprehendPerpetrator: block the suspect (its Push and
-    // Barricade behaviours are never chosen in this build).
+    // aiPoliceOfficer::ApprehendPerpetrator: on entering it a frand is drawn
+    // and Block chosen (its Push and Barricade behaviours are never chosen in
+    // this build).
     (void)cars;
     if (m_pursuit != m_lastPursuit) {
         m_lastPursuit = m_pursuit;
@@ -372,8 +399,8 @@ void PoliceCar::block(const TrackedCar& perp) {
     if (state != PhysicsDriver::State::Forward && state != PhysicsDriver::State::Shortcut)
         return;
     const Vec3 pos = m_car.body.ics.matrix.m3;
-    const Vec3 f = flatUnit(perp.forward);
-    const Vec3 r{-f.z, 0.0f, f.x};
+    const Vec3& f = perp.forward;  // -m2 of the suspect's matrix
+    const Vec3 r = perp.rightAxis(); // m0
     const Vec3 rel = pos - perp.position;
     const float along = rel.dot(f);
     if (m_apprehend != kBlock) {
@@ -382,43 +409,38 @@ void PoliceCar::block(const TrackedCar& perp) {
             m_apprehend = kBlock;
         return;
     }
-    const float back = perp.halfLength;
+    // The suspect's bound box (its model's GetBound(0)): back bumper max z,
+    // left side -min x.
+    const float back = perp.boundBack();
     Vec3 goal;
     if (-back <= along) {
         // Level with or ahead of the suspect: 12 m in front of it.
         goal = perp.position + f * 12.0f;
     } else {
-        // Behind it: beside its tail, on the cop's side (or, more than 20 m
-        // behind on a road, the side that is on the road).
-        const float sideOff = m_car.halfExtents().x + perp.halfWidth + 1.0f;
+        // Behind it: beside its tail on the cop's side, the cop's right side
+        // + the suspect's left side + 1 m out.
         const float side = rel.dot(r);
+        const float sideOff = m_driver.rightSide() + perp.boundLeft() + 1.0f;
         const Vec3 tail = perp.position - f * back;
         const Vec3 rightGoal = tail + r * sideOff, leftGoal = tail - r * sideOff;
-        const RoadSpot perpSpot = locateOnRoads(m_net, perp.position);
-        if (along > -20.0f || perpSpot.path < 0) {
-            goal = side > 0.0f ? rightGoal : leftGoal;
+        if (along > -20.0f || m_perpComponent != 1) {
+            goal = side <= 0.0f ? leftGoal : rightGoal;
         } else {
-            const bool rightOn = locateOnRoads(m_net, rightGoal).onRoad;
-            const bool leftOn = locateOnRoads(m_net, leftGoal).onRoad;
+            // More than 20 m behind: the side that is better on the road. As
+            // coded the condition reads the suspect's component id where its
+            // type was meant (so it holds only on component 1), and the road
+            // asked is the path numbered by the type.
+            const int rightOn = posOnRoad(m_net, m_perpComponentType, rightGoal, m_driver.leftSide());
+            const int leftOn = posOnRoad(m_net, m_perpComponentType, leftGoal, m_driver.rightSide());
             if (rightOn == leftOn)
                 goal = side <= 0.0f ? leftGoal : rightGoal;
             else
-                goal = leftOn ? leftGoal : rightGoal;
+                goal = leftOn <= rightOn ? leftGoal : rightGoal;
         }
     }
     routeTo(goal, f);
-    RouteParams& p = m_driver.params;
-    p = {};
-    p.maxThrottle = 1.0f;
-    p.cornerSpeedFactor = 1.0f;
-    p.brakeThreshold = 0.7f;
-    p.lookAhead = 75.0f;
-    p.avoidTraffic = true;
-    p.avoidProps = true;
-    p.avoidPlayers = false;
-    p.avoidOpponents = true;
-    p.destinationSpeed = perp.velocity.mag() + (-back <= along ? 0.0f : 25.0f);
-    p.stopShort = 0.0f;
+    // At the suspect's speed, 25 m/s faster from behind.
+    setRouteParams(perp.currentSpeed() + (-back <= along ? 0.0f : 25.0f), 0.0f, 1.0f);
     if (xzDist(pos, goal) < 3.0f)
         m_apprehend = kMirror;
 }
@@ -458,6 +480,7 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
             if (!perp) {
                 escape(force);
             } else {
+                m_perpComponent = mapComponent(m_net, perp->position, m_perpComponent, m_perpComponentType);
                 const Vec3 pos = ics.matrix.m3;
                 const float dist = xzDist(pos, perp->position);
                 int st = force.state(m_selfId, perp->id, cars, dist);
@@ -465,9 +488,10 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
                 // Follow only while the player reverses, the cop backs up,
                 // it has no apprehend behaviours, or the suspect is slow.
                 if ((player && player->reversing) || m_driver.state() == PhysicsDriver::State::Backup ||
-                    m_settings.behaviours == 0 || perp->velocity.mag() < 10.0f)
+                    m_settings.behaviours == 0 || perp->currentSpeed() < 10.0f)
                     st = PoliceForce::kFollow;
-                m_pursuit = st == PoliceForce::kApprehend ? PoliceForce::kApprehend : PoliceForce::kFollow;
+                // 1 apprehend, 2 follow, 5 not pursued (which apprehends too).
+                m_pursuit = st;
                 if (m_pursuit == PoliceForce::kFollow)
                     follow(*perp, dist);
                 else
@@ -479,8 +503,7 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
                 }
                 if (m_driver.wrecked()) {
                     escape(force);
-                    m_pursuit = kOutOfAction;
-                    m_mode = Mode::Disabled;
+                    m_mode = Mode::Parked;
                     return;
                 }
             }
@@ -496,7 +519,8 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
         m_driver.mirror(dt, *perp);
     else
         m_driver.driveRoute(dt, cars, ctx);
-    if (m_driver.wrecked() && m_pursuit != kOutOfAction) {
+    if (m_driver.wrecked()) {
+        // PerpEscapes(true), then out of action, every frame from now on.
         escape(force);
         m_pursuit = kOutOfAction;
     }

@@ -325,7 +325,6 @@ TEST(AiPolice, ForceLimitsAndApprehendState) {
     ai::PoliceForce force; // three cops per suspect, three suspects
     EXPECT_TRUE(force.registerPerp(1, 100));
     EXPECT_TRUE(force.registerPerp(2, 100));
-    EXPECT_TRUE(force.registerPerp(2, 100)); // already pursuing
     EXPECT_TRUE(force.registerPerp(3, 100));
     EXPECT_FALSE(force.registerPerp(4, 100));
     EXPECT_EQ(force.copsOn(100), 3);
@@ -350,7 +349,12 @@ TEST(AiPolice, ForceLimitsAndApprehendState) {
     EXPECT_EQ(force.copsOn(100), 2);
     EXPECT_TRUE(force.unregisterCop(5, 101)); // last cop: the suspect is dropped
     EXPECT_EQ(force.findPerp(101), -1);
-    EXPECT_TRUE(force.registerPerp(7, 103));
+    // aiPoliceForce::UnRegisterCop does not move the later suspects down:
+    // 102, in the third slot, is no longer among the two counted.
+    EXPECT_EQ(force.findPerp(102), -1);
+    EXPECT_EQ(force.state(6, 102, cars, 10.0f), ai::PoliceForce::kNotPursued);
+    EXPECT_TRUE(force.registerPerp(7, 103)); // takes the third slot
+    EXPECT_EQ(force.findPerp(103), 2);
 }
 
 TEST(AiPolice, DensityPlacesTheFirstPosts) {

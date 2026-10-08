@@ -50,14 +50,31 @@ namespace mm2::ai {
 
 // A car the AI should know about this frame: the player, opponents, police
 // and ambient traffic. The game fills one list per frame and passes it to
-// every driver.
+// every driver (trackedCar() / trackedAmbient() fill one as MM2's aiVehicle
+// interface describes the car).
 struct TrackedCar {
     int id = -1;              // unique per car; drivers skip their own id
-    Vec3 position;            // model origin (on the ground, centre of the car)
-    Vec3 forward{0, 0, -1};   // unit facing direction
+    // aiVehicle::Position and GetMatrix: a physics car's inertial frame (its
+    // vehCarSim ICS, about the centre of gravity), an ambient car's AI
+    // matrix (model origin, on the ground).
+    Vec3 position;
+    Vec3 forward{0, 0, -1};   // -m2 of that matrix
+    Vec3 right;               // m0 of that matrix (zero: right of `forward` in XZ)
     Vec3 velocity;            // m/s
+    float speed = -1.0f;      // aiVehicle::Speed (vehCarSim Speed); < 0: |velocity|
     float halfWidth = 1.0f;   // body half extents (m)
     float halfLength = 2.3f;
+    // aiVehicle::FrontBumperDistance, BackBumperDistance, LSideDistance,
+    // RSideDistance: from `position` along the matrix; < 0 uses halfLength
+    // or halfWidth.
+    float frontBumper = -1.0f;
+    float backBumper = -1.0f;
+    float leftSide = -1.0f;
+    float rightSide = -1.0f;
+    // The box of its collision bound (vehCarModel GetBound(0), model space),
+    // which aiPoliceOfficer::Block reads.
+    Vec3 boundMin, boundMax;
+    bool hasBound = false;
     const phys::Body* body = nullptr; // physics body, if simulated (impact matching)
     bool collided = false;    // hit something since the previous frame
     bool isPlayer = false;
@@ -68,26 +85,50 @@ struct TrackedCar {
     // MM2 obstacle classes (aiVehiclePhysics::IsTargetBlocked).
     bool isOpponent() const { return suspect && !isPlayer && !isPolice; }
     bool isAmbient() const { return !suspect && !isPlayer && !isPolice; }
+
+    float currentSpeed() const { return speed >= 0.0f ? speed : velocity.mag(); }
+    float front() const { return frontBumper >= 0.0f ? frontBumper : halfLength; }
+    float back() const { return backBumper >= 0.0f ? backBumper : halfLength; }
+    float leftDistance() const { return leftSide >= 0.0f ? leftSide : halfWidth; }
+    float rightDistance() const { return rightSide >= 0.0f ? rightSide : halfWidth; }
+    float boundBack() const { return hasBound ? boundMax.z : back(); }
+    float boundLeft() const { return hasBound ? -boundMin.x : leftDistance(); }
+    Vec3 rightAxis() const;
 };
+
+struct AmbientCar;
+
+// A physics car as MM2's AI sees it: its ICS position and frame, its speed
+// (vehCarSim Speed) and its bumper and side distances. Players
+// (aiVehiclePlayer) use half the car's InertiaBox, which vehCarSim::Init
+// copies into Size; AI cars (aiVehiclePhysics::Init) the box of their
+// collision bound, measured from the model origin.
+TrackedCar trackedCar(const phys::CarSim& car, int id, bool player);
+// An ambient car (aiVehicleSpline): its AI matrix and speed, and the bumper
+// and side distances aiVehicleSpline::Init takes from its aiVehicleData box
+// (centred on CG).
+TrackedCar trackedAmbient(const AmbientCar& car, int id);
 
 // MM2 applies its per-frame "cheats" every frame at whatever rate it runs;
 // OpenMM2 scales them to the frame time as for a 30 Hz frame:
 // factor^(30 dt), with the exponent clamped to [0.01, 2].
 float perFrame(float factor, float dt);
 
-// Heading error to a target, as MM2 measures it everywhere:
-// atan2(d . m0, d . -m2) with d = target - position (radians, + = right).
+// Heading error to a target, as MM2 measures it everywhere but in Backup:
+// atan2(d . m0, d . -m2) in XZ with d = target - position (radians,
+// + = right).
 float headingError(const Mat34& m, const Vec3& target);
 
 // Signed speed along the car's facing direction (m/s).
 float forwardSpeed(const phys::CarSim& car);
 
-// 1.2 * 19.8 (dat_5d8d00 * 19.8): the deceleration, in m/s^2, that
-// aiVehiclePhysics::CalcSpeed / CalcRoadSpeed assume for cornering and for
-// braking. (MM1's aiGoalFollowWayPts used the same 23.76.)
-inline constexpr float kAiGrip = 1.2f * 19.8f;
-// Bends and turns sharper than this (radians) are braked for
-// (dat_5d8d04).
+// The deceleration, in m/s^2, that aiVehiclePhysics::CalcSpeed /
+// CalcRoadSpeed assume for cornering and for braking: MM2's AI grip factor
+// 1.2 times 19.8. (MM1's aiGoalFollowWayPts used the same 23.76.)
+inline constexpr float kAiGripFactor = 1.2f;
+inline constexpr float kAiGrip = kAiGripFactor * 19.8f;
+// Bends and turns sharper than this (radians) are braked for (MM2's AI
+// sharp-turn angle).
 inline constexpr float kSharpTurn = 0.7f;
 
 // aiVehiclePhysics::RegisterRoute's per-route settings. Racers take them
@@ -126,10 +167,13 @@ class AiStuck {
 public:
     enum State : int { Idle = 0, Watching = 1, Stuck = 2 };
     void reset();
+    // aiVehiclePhysics::InitForward / InitShortcut clear the state only.
+    void clearState() { m_state = Idle; }
     void update(phys::CarSim& car, float dt);
     int state() const { return m_state; }
 
-    // aiStuck::aiStuck (0x3E99999A, 0x3F19999A, 1.0, 1.0).
+    // aiStuck::aiStuck: TimeThresh 0.3 s, PosThresh 0.6 m, MoveThresh 1 m,
+    // RotAmount 1 rad/s.
     float timeThresh = 0.3f;
     float posThresh = 0.6f;
     float moveThresh = 1.0f;
@@ -170,7 +214,7 @@ struct DriveContext {
     Vec3 destination;                 // RegisterRoute's destination
     Vec3 destinationHeading;          // and the heading wanted there (zero = any)
     bool finalApproach = false;       // past the last waypoint: plan to the destination
-    bool repairWhenWrecked = false;   // aiVehiclePhysics::Init param_4 (circuits)
+    bool repairWhenWrecked = false;   // aiVehiclePhysics::Init's repair flag (circuits)
     bool touchingPlayer = false;      // collided with the player since the last frame
     int waypointsPassed = 0;          // aiVehiclePhysics 0x967a (other racers are avoided after 3)
     bool noSidewalk = false;          // never over the sidewalk round an obstacle (goesOverSidewalks)
@@ -200,6 +244,9 @@ public:
     Vec3 target() const { return m_target; }
     int backups() const { return m_backups; }
     float throttle() const { return m_throttle; }
+    // aiVehiclePhysics::LSideDistance / RSideDistance.
+    float leftSide() const { return m_leftSide; }
+    float rightSide() const { return m_rightSide; }
     float brake() const { return m_brake; }
     float steering() const { return m_steering; }
     phys::CarSim& car() { return m_car; }
@@ -210,16 +257,23 @@ public:
     const std::vector<PlannedRoute>& routes() const { return m_routes; }
 
 private:
+    void initForward();
     void forward(float dt, std::span<const TrackedCar> cars, const DriveContext& ctx);
     void initBackup();
-    void backup(float dt);
+    void backup(float dt, const DriveContext& ctx);
     void finishedBackingUp(const DriveContext& ctx);
+    void initShortcut();
     void shortcut(float dt, const DriveContext& ctx);
     void stop(const DriveContext& ctx);
     void calcSpeed(float dt, const DriveContext& ctx);
     void calcRoadSpeed(float dt, const DriveContext& ctx);
     void applyBrake(float brake, float dt);
-    void apply(float handBrake = 0.0f);
+    // Writes the throttle, brakes and steering to the car (MM2 leaves its
+    // handbrake alone everywhere but in Forward).
+    void apply();
+    // aiStuck and vehStuck in Forward and Shortcut; true when they took the
+    // controls this frame.
+    bool handleStuck(float dt);
 
     void enumRoutes(std::vector<RouteNode>& nodes, std::span<const TrackedCar> cars, const DriveContext& ctx,
                     int depth);
@@ -231,6 +285,13 @@ private:
 
     phys::CarSim& m_car;
     int m_selfId = -1;
+    // aiVehiclePhysics::Init: the car's bumper and side distances from the
+    // box of its collision bound (model space): FrontBumperDistance -min z,
+    // BackBumperDistance max z, LSideDistance -min x, RSideDistance max x.
+    float m_frontBumper = 2.0f;
+    float m_backBumper = 2.0f;
+    float m_leftSide = 1.0f;
+    float m_rightSide = 1.0f;
     State m_state = State::Forward;
     State m_lastState = State::Stop;
     AiStuck m_stuck;
@@ -254,6 +315,10 @@ private:
 // facing `carForward`), for a car `side` m from its centre to its side.
 RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float side,
                        const RouteParams& params, const DriveContext& ctx);
+// The same with the car's own left and right side distances (MM2 moves the
+// left curb in by LSideDistance + 1 m and the right one by RSideDistance + 1 m).
+RouteNode courseTarget(const RouteNode& from, const RouteNode* before, const Vec3& carForward, float leftSide,
+                       float rightSide, const RouteParams& params, const DriveContext& ctx);
 
 // aiVehiclePhysics::CalcRoadSpeed for the bends of a course ahead of `s`:
 // the brake fraction the worst of them demands, and its corner speed in

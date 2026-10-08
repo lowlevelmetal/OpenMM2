@@ -895,4 +895,246 @@ void Course::findTurns() {
     }
 }
 
+// --- aiMap components and routes ---------------------------------------------------
+
+namespace {
+
+// The point of a road's centre line nearest `p` (XZ): arc length from
+// center.front(), lateral offset (+ towards the road's x axis) and the
+// projection's place on its segment (0..1 of the whole road, -1/+1 beyond an
+// end).
+struct CentreSpot {
+    float s = 0.0f;
+    float lateral = 0.0f;
+    float distance = std::numeric_limits<float>::max();
+    float dy = 0.0f;
+    bool inside = false; // the projection falls within the road's length
+};
+
+CentreSpot centreSpot(const city::AiPath& path, const Vec3& p) {
+    CentreSpot out;
+    float s0 = 0.0f;
+    for (std::size_t k = 1; k < path.center.size(); ++k) {
+        const Vec3& a = path.center[k - 1];
+        const Vec3& c = path.center[k];
+        const Vec2 ab{c.x - a.x, c.z - a.z};
+        const float len2 = ab.mag2();
+        const float raw = len2 > 1e-6f ? Vec2{p.x - a.x, p.z - a.z}.dot(ab) / len2 : 0.0f;
+        const float t = clampf(raw, 0.0f, 1.0f);
+        const Vec3 q = lerp(a, c, t);
+        const float d = xzDist(q, p);
+        if (d < out.distance) {
+            Vec3 x{1, 0, 0};
+            if (k - 1 < path.xAxis.size())
+                x = flatUnit(lerp(path.xAxis[k - 1], path.xAxis[std::min(k, path.xAxis.size() - 1)], t));
+            out.distance = d;
+            out.s = s0 + t * std::sqrt(len2);
+            out.lateral = (p - q).dot(x);
+            out.dy = p.y - q.y;
+            out.inside = (k > 1 || raw >= 0.0f) && (k + 1 < path.center.size() || raw <= 1.0f);
+        }
+        s0 += std::sqrt(len2);
+    }
+    return out;
+}
+
+} // namespace
+
+int posOnRoad(const RoadNetwork& net, int path, const Vec3& p, float margin) {
+    const city::AiMap* map = net.source();
+    if (!map || path < 0 || static_cast<std::size_t>(path) >= map->paths.size())
+        return 3;
+    const city::AiPath& src = map->paths[static_cast<std::size_t>(path)];
+    float road = 0.0f, sidewalk = 0.0f;
+    pathOnRoadLimits(src, road, sidewalk);
+    const float a = std::abs(centreSpot(src, p).lateral);
+    if (a < road - margin)
+        return 1;
+    if (a < sidewalk - margin)
+        return 2;
+    return 3;
+}
+
+std::vector<MapComponentRef> componentsAt(const RoadNetwork& net, const Vec3& p) {
+    std::vector<MapComponentRef> out;
+    const city::AiMap* map = net.source();
+    if (!map)
+        return out;
+    // An intersection takes the point first.
+    const RoadSpot spot = locateOnRoads(net, p);
+    if (spot.intersection >= 0) {
+        out.push_back({spot.intersection, 3});
+        return out;
+    }
+    // Then every road (up to five) the point lies across, within twice the
+    // road's half width of its centre line (PositionToAIMapComp, which asks
+    // the roads of the point's room).
+    for (std::size_t pi = 0; pi < map->paths.size() && out.size() < 5; ++pi) {
+        const city::AiPath& path = map->paths[pi];
+        const Aabb& b = net.paths()[pi].bounds;
+        const float margin = 2.0f * path.halfWidth + 1.0f;
+        if (p.x < b.min.x - margin || p.x > b.max.x + margin || p.z < b.min.z - margin ||
+            p.z > b.max.z + margin)
+            continue;
+        const CentreSpot c = centreSpot(path, p);
+        if (c.inside && std::abs(c.lateral) < path.halfWidth + path.halfWidth && std::abs(c.dy) < 6.0f)
+            out.push_back({static_cast<int>(pi), 1});
+    }
+    return out;
+}
+
+int mapComponent(const RoadNetwork& net, const Vec3& p, int previous, int& type) {
+    // aiMap::MapComponent: an intersection, else a road the point is on or
+    // beside (IsPosOnRoad below 3, no margin); none leaves the id as it was.
+    const RoadSpot spot = locateOnRoads(net, p);
+    if (spot.intersection >= 0) {
+        type = 3;
+        return spot.intersection;
+    }
+    if (spot.path >= 0 && posOnRoad(net, spot.path, p, 0.0f) < 3) {
+        type = 1;
+        return spot.path;
+    }
+    type = 0;
+    return previous;
+}
+
+std::vector<int> calcRoute(const RoadNetwork& net, const Vec3& from, const Vec3& to) {
+    // aiMap::CalcRoute (as the police call it): a shortest route over the
+    // intersections, every road costing its centre line length.
+    const city::AiMap* map = net.source();
+    const auto& nodes = net.intersections();
+    const auto& paths = net.paths();
+    if (!map || nodes.empty())
+        return {};
+    const std::vector<MapComponentRef> starts = componentsAt(net, from);
+    const std::vector<MapComponentRef> goals = componentsAt(net, to);
+    // Both in the same component: no waypoints.
+    for (const MapComponentRef& a : starts)
+        for (const MapComponentRef& b : goals)
+            if (a.id == b.id && a.type == b.type)
+                return {};
+    constexpr int kNone = 9999;
+    constexpr float kFar = 9999999.0f;
+    const std::size_t n = nodes.size();
+    std::vector<float> cost(n, kFar);
+    std::vector<int> pred(n, kNone);
+    std::vector<int> open; // most recently added first (aiMap::AddRoutingNode)
+    auto add = [&](int id) {
+        if (std::find(open.begin(), open.end(), id) == open.end())
+            open.insert(open.begin(), id);
+    };
+    auto centreLength = [&](int path) { return paths[static_cast<std::size_t>(path)].centreLength; };
+    auto seed = [&](int id, float c, int previous) {
+        if (id < 0)
+            return;
+        cost[static_cast<std::size_t>(id)] = c;
+        pred[static_cast<std::size_t>(id)] = previous;
+        add(id);
+    };
+    // Off the roads (type 0): the ends of the nearest road, by straight-line
+    // distance (MM2: the intersections, else the road ends, of the rooms
+    // round the point).
+    auto nearestRoadEnds = [&](const Vec3& p) {
+        std::vector<int> ends;
+        const RoadSpot spot = locateOnRoads(net, p);
+        if (spot.path >= 0)
+            for (int e : paths[static_cast<std::size_t>(spot.path)].intersection)
+                if (e >= 0)
+                    ends.push_back(e);
+        return ends;
+    };
+    int marker = kNone; // the start's predecessor mark
+    int count = 0;
+    const MapComponentRef start = starts.empty() ? MapComponentRef{-1, 0} : starts.front();
+    if (start.type == 0) {
+        for (int e : nearestRoadEnds(from))
+            seed(e, xzDist(from, nodes[static_cast<std::size_t>(e)].centre), kNone);
+    } else if (start.type == 3) {
+        // From an intersection: its neighbours at their road lengths.
+        marker = start.id;
+        count = 1;
+        for (int pid : nodes[static_cast<std::size_t>(start.id)].paths) {
+            if (pid < 0 || static_cast<std::size_t>(pid) >= paths.size())
+                continue;
+            const PathInfo& info = paths[static_cast<std::size_t>(pid)];
+            const int other = info.intersection[1] == start.id ? info.intersection[0] : info.intersection[1];
+            seed(other, centreLength(pid), start.id);
+        }
+        cost[static_cast<std::size_t>(start.id)] = 0.0f;
+    } else {
+        // On a road: each end at the distance along the centre line.
+        count = 1;
+        const PathInfo& info = paths[static_cast<std::size_t>(start.id)];
+        const float along = centreSpot(map->paths[static_cast<std::size_t>(start.id)], from).s;
+        seed(info.intersection[0], centreLength(start.id) - along, kNone);
+        seed(info.intersection[1], along, kNone);
+    }
+    // The goals: the goal's intersection, or both ends of its road.
+    std::vector<int> targets;
+    for (const MapComponentRef& g : goals) {
+        if (g.type == 3) {
+            targets.push_back(g.id);
+        } else {
+            const PathInfo& info = paths[static_cast<std::size_t>(g.id)];
+            targets.push_back(info.intersection[1]);
+            targets.push_back(info.intersection[0]);
+        }
+    }
+    if (goals.empty())
+        targets = nearestRoadEnds(to);
+    if (std::find(targets.begin(), targets.end(), marker) != targets.end())
+        return {};
+    int found = -1;
+    while (!open.empty()) {
+        int best = -1;
+        float least = kFar;
+        for (int id : open) {
+            if (cost[static_cast<std::size_t>(id)] < least) {
+                least = cost[static_cast<std::size_t>(id)];
+                best = id;
+            }
+        }
+        if (best < 0)
+            break;
+        if (std::find(targets.begin(), targets.end(), best) != targets.end()) {
+            found = best;
+            break;
+        }
+        std::erase(open, best);
+        for (int pid : nodes[static_cast<std::size_t>(best)].paths) {
+            if (pid < 0 || static_cast<std::size_t>(pid) >= paths.size())
+                continue;
+            const PathInfo& info = paths[static_cast<std::size_t>(pid)];
+            const int other = info.intersection[1] == best ? info.intersection[0] : info.intersection[1];
+            if (other < 0)
+                continue;
+            const float c = centreLength(pid) + cost[static_cast<std::size_t>(best)];
+            if (c < cost[static_cast<std::size_t>(other)]) {
+                cost[static_cast<std::size_t>(other)] = c;
+                add(other);
+                pred[static_cast<std::size_t>(other)] = best;
+            }
+        }
+    }
+    if (found < 0)
+        return {};
+    std::vector<int> route;
+    for (int id = found; id != marker && id != kNone; id = pred[static_cast<std::size_t>(id)])
+        route.push_back(id);
+    if (count == 1) {
+        if (start.type == 3) {
+            route.push_back(start.id);
+        } else {
+            // From a road: its end that the route does not leave by comes
+            // first, so that the first leg is the car's own road.
+            const PathInfo& info = paths[static_cast<std::size_t>(start.id)];
+            const int first = route.back();
+            route.push_back(first == info.intersection[0] ? info.intersection[1] : info.intersection[0]);
+        }
+    }
+    std::reverse(route.begin(), route.end());
+    return route;
+}
+
 } // namespace mm2::ai

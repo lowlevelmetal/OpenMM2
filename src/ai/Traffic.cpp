@@ -113,6 +113,10 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
         // aiVehicleSpline::Init: bumper and side distances from the box bound
         // (aiVehicleManager::AddVehicleDataEntry: centred at CG, Size extents).
         const VehicleData& d = m_types[static_cast<std::size_t>(c.type)];
+        // aiVehicleSpline::Init keeps a vehicle named exactly "vabus" at
+        // lane randomness -0.5 (no retail type has that name).
+        if (d.model == "vabus")
+            c.laneRandomness = -0.5f;
         c.backBumper = d.cg.z + d.size.z * 0.5f;
         c.frontBumper = d.size.z * 0.5f - d.cg.z;
         c.leftSide = d.size.x * 0.5f - d.cg.x;
@@ -770,6 +774,9 @@ void Traffic::resetRandomDrive(Car& c) {
                               src->line.points[static_cast<std::size_t>(std::min(i, S - 1))], t);
     }
     c.curReactTicks = c.totReactTicks;
+    // Reset ends by posing the car on its curve (the pose solver Update
+    // calls), whatever its speed.
+    solvePose(c, m_player);
 }
 
 bool Traffic::stopSignOkayToGo(int node, int car) {
@@ -1020,7 +1027,11 @@ void Traffic::solveVelocity(int idx, float dt) {
                 chooseNext(c);
         }
         if (!c.enterInt) {
-            int lead = ahead(idx, c.lane);
+            // The car ahead, or the one ahead of it when that one is regaining
+            // its lane. As coded, the distance is measured to the car found but
+            // AvoidCollision is given the car directly ahead.
+            const int direct = ahead(idx, c.lane);
+            int lead = direct;
             if (lead >= 0 && m_cars[static_cast<std::size_t>(lead)].goal == AmbientGoal::RegainRail)
                 lead = ahead(lead, c.lane);
             const Car* lc = lead >= 0 ? &m_cars[static_cast<std::size_t>(lead)] : nullptr;
@@ -1030,7 +1041,7 @@ void Traffic::solveVelocity(int idx, float dt) {
                     if (c.target < limit || c.accel < c.accelFactor)
                         cruise();
                 } else if (reacted) {
-                    avoidCollision(c, *lc, leadDist);
+                    avoidCollision(c, m_cars[static_cast<std::size_t>(direct)], leadDist);
                 }
             } else if (!reacted || 2.0f < v || dist <= 1.0f) {
                 // Stop at the line.
@@ -1413,7 +1424,9 @@ void Traffic::updateRandomDrive(int idx, float dt, const PlayerCar& player) {
     if (c.goalTicks == 0)
         resetRandomDrive(c);
     solveVelocity(idx, dt);
-    if (m_settings.laneChanges && c.laneChangeOk && c.rail == Rail::Lane &&
+    // (MM2 does not look at the rail type here: the first quarter of the
+    // lane is always passed on a lane rail.)
+    if (m_settings.laneChanges && c.laneChangeOk &&
         laneLength(c.path, c.dir, c.drawLane) * 0.25f < c.roadDist) {
         solveLane(c);
         changeLanes(idx);
@@ -1775,55 +1788,70 @@ void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
                 resetReactTicks(q.front());
         }
     }
-    // aiPath::UpdateAmbients for each populated road, each car once.
-    std::vector<int> order;
+    for (auto& c : m_cars)
+        c.horn = false;
+    // aiPath::UpdateAmbients for each populated road (most recently
+    // populated first), direction -1 then +1, each lane list from its front:
+    // a car is updated in the list of its logical lane, once a frame (the
+    // vehicles' update parity). As coded, the walk takes the car behind
+    // before updating a car and stops after as many cars as the list holds
+    // at each step, so when a car leaves the list (onto its next road, or
+    // into another lane) the last car of the list waits for the next frame.
     std::vector<std::uint8_t> seen(m_cars.size(), 0);
-    for (int p : m_activePaths) {
+    const std::vector<int> paths = m_activePaths;
+    for (int p : paths) {
         for (int dir : {-1, 1}) {
             const auto& lanes = m_net.paths()[static_cast<std::size_t>(p)].lanesOf(dir);
             for (std::size_t l = 0; l < lanes.size(); ++l) {
-                for (int car : m_queues[static_cast<std::size_t>(lanes[l])]) {
-                    const Car& c = m_cars[static_cast<std::size_t>(car)];
-                    if (c.lane == static_cast<int>(l) && !seen[static_cast<std::size_t>(car)]) {
+                const auto& q = m_queues[static_cast<std::size_t>(lanes[l])];
+                int car = q.empty() ? -1 : q.front();
+                for (std::size_t i = 0; car >= 0 && i < q.size(); ++i) {
+                    int behind = -1;
+                    if (auto it = std::ranges::find(q, car); it != q.end() && it + 1 != q.end())
+                        behind = *(it + 1);
+                    if (m_cars[static_cast<std::size_t>(car)].lane == static_cast<int>(l) &&
+                        !seen[static_cast<std::size_t>(car)]) {
                         seen[static_cast<std::size_t>(car)] = 1;
-                        order.push_back(car);
+                        updateCar(car, dt, player);
                     }
+                    car = behind;
                 }
             }
         }
     }
-    for (auto& c : m_cars)
-        c.horn = false;
-    for (int idx : order) {
-        Car& c = m_cars[static_cast<std::size_t>(idx)];
-        if (!c.active)
-            continue;
-        switch (c.goal) {
-        case AmbientGoal::RandomDrive:
-            updateRandomDrive(idx, dt, player);
-            break;
-        case AmbientGoal::Collision:
-            if (c.goalTicks == 0)
-                c.signal = TurnSignal::Hazard; // aiGoalCollision::Reset
-            ++c.goalTicks;
-            break;
-        case AmbientGoal::RegainRail:
-            updateRegainRail(idx, dt, player);
-            break;
-        case AmbientGoal::AvoidPlayer:
-            updateAvoidPlayer(idx, dt, player);
-            break;
-        case AmbientGoal::Parked:
-            break;
-        }
-        if (!c.active)
-            continue;
-        // aiVehicleSpline::Update: the tyres turn with the distance driven.
-        c.tireRotation += dt * c.speed;
-        if (c.tireRotation > kTireRotationWrap)
-            c.tireRotation -= kTireRotationWrap;
-    }
     publish();
+}
+
+// aiVehicleAmbient::Update: the running goal (its Reset first), then
+// aiVehicleSpline::Update.
+void Traffic::updateCar(int idx, float dt, const PlayerCar& player) {
+    Car& c = m_cars[static_cast<std::size_t>(idx)];
+    if (!c.active)
+        return;
+    switch (c.goal) {
+    case AmbientGoal::RandomDrive:
+        updateRandomDrive(idx, dt, player);
+        break;
+    case AmbientGoal::Collision:
+        if (c.goalTicks == 0)
+            c.signal = TurnSignal::Hazard; // aiGoalCollision::Reset
+        ++c.goalTicks;
+        break;
+    case AmbientGoal::RegainRail:
+        updateRegainRail(idx, dt, player);
+        break;
+    case AmbientGoal::AvoidPlayer:
+        updateAvoidPlayer(idx, dt, player);
+        break;
+    case AmbientGoal::Parked:
+        break;
+    }
+    if (!c.active)
+        return;
+    // aiVehicleSpline::Update: the tyres turn with the distance driven.
+    c.tireRotation += dt * c.speed;
+    if (c.tireRotation > kTireRotationWrap)
+        c.tireRotation -= kTireRotationWrap;
 }
 
 void Traffic::publish() {
