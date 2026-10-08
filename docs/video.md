@@ -27,9 +27,14 @@ with `vfs::openSourceFile(source, "LOGOS.AVI")`.
   corrupt frames repeat the previous picture.
 * `src/app/IntroScreen.*`: decodes on a worker thread (6 frames ahead), plays
   the soundtrack as a mixer stream on `Bus::Effects` and shows the frame due
-  at the audio clock (wall clock when no audio device is open), letterboxed in
-  the 640×480 UI space. Any key, mouse button or gamepad button skips it.
-  Without `LOGOS.AVI` the screen continues straight to the frontend.
+  at the audio clock (wall clock when no audio device is open) at its own
+  size (320×240) in the middle of the 640×480 UI space, as MM2's
+  `ebolaPlayMovie` plays it in an MCI window centred on the 640×480 screen.
+  Esc, Space or the left mouse button skip it, checked every 250 ms; it
+  pauses while the window is inactive (after it has had focus once).
+  Without `LOGOS.AVI` the screen continues straight to the frontend. MM2
+  skips the movie with `-nomovie` or in a window; OpenMM2 plays it in a
+  window too.
 * `tools/introplay`: `--compare-yuv`, `--compare-rgba`, `--png` and window
   playback through `IntroScreen`.
 
