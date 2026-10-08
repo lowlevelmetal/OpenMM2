@@ -29,6 +29,26 @@ void MusicDirector::autoTransition(MusicState s) {
 
 void MusicDirector::raceStarted() { m_blocked = false; }
 
+void MusicDirector::startMusic() {
+    // mmGame::StartMusic (music mode): the idle logic held in the race modes,
+    // SegmentSwitch to the Start segment, MMDMusicManager::Reset (the idle
+    // timer expired), then the started flag (mmGame +0x275).
+    if (!m_cruise)
+        m_blocked = true;
+    segmentSwitch(MusicState::Start);
+    m_idleTimer = kTimerExpired;
+    m_started = true;
+}
+
+void MusicDirector::restart() {
+    // mmGame::Reset clears the started flag and calls StartMusic at once,
+    // which does nothing in the game's first 1.25 s (UpdateDMusic starts the
+    // music later then).
+    m_started = false;
+    if (kStartDelay <= m_seconds)
+        startMusic();
+}
+
 void MusicDirector::update(float dt, float speed, int copsPursuing, bool airborne) {
     // UpdateSeconds.
     m_seconds += dt;
@@ -39,11 +59,7 @@ void MusicDirector::update(float dt, float speed, int copsPursuing, bool airborn
         // "Go!" and the Start segment begins.
         if (m_seconds < kStartDelay)
             return;
-        if (!m_cruise)
-            m_blocked = true;
-        segmentSwitch(MusicState::Start);
-        m_idleTimer = kTimerExpired;
-        m_started = true;
+        startMusic();
         return;
     }
     // UpdateMusic.
@@ -94,21 +110,6 @@ void MusicDirector::matchMusicToPlayerSpeed(float speed, float dt) {
 
 void MusicDirector::pause() { segmentSwitch(MusicState::Paused); }
 
-void MusicDirector::restart() {
-    m_started = false;
-    if (m_seconds < kStartDelay)
-        return; // update() starts it
-    if (!m_cruise)
-        m_blocked = true;
-    // StartMusic plays segment 0 from its start even when it is the current
-    // one (PlaySegment), then MMDMusicManager::Reset.
-    m_previous = m_current;
-    m_current = MusicState::Start;
-    m_commands.push_back({MusicState::Start, MusicTiming::Beat});
-    m_idleTimer = kTimerExpired;
-    m_started = true;
-}
-
 void MusicDirector::resume() {
     // PlayReturnMusic: back to the previous segment (DMusicObject +0x28), from
     // its start; nothing if that is the current one.
@@ -135,6 +136,16 @@ void MusicDirector::results() {
     m_previous = m_current;
     m_current = MusicState::Results;
     m_commands.push_back({MusicState::Results, MusicTiming::Beat});
+}
+
+void MusicDirector::finalStretch() {
+    // mmWaypoints::Update: SegmentSwitch(+0x24, DMUS_COMMANDT_END,
+    // DMUS_COMPOSEF_BEAT), which does nothing for the segment already playing.
+    if (m_current == MusicState::CopChase)
+        return;
+    m_previous = m_current;
+    m_current = MusicState::CopChase;
+    m_commands.push_back({MusicState::CopChase, MusicTiming::Beat});
 }
 
 std::vector<MusicDirector::Command> MusicDirector::takeCommands() {

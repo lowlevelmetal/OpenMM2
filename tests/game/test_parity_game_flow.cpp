@@ -10,7 +10,6 @@
 #include "game/session/RaceSetup.h"
 #include "game/session/Session.h"
 #include "phys/World.h"
-#include "phys/vehicle/CarSim.h"
 #include "vfs/GameSource.h"
 
 #include <gtest/gtest.h>
@@ -92,21 +91,6 @@ TEST(GameFlowParity, StartPlaceIsTheWaypointAndItsNegatedHeading) {
     EXPECT_NEAR(r.m2.z, s.m2.z, 1e-6f);
 }
 
-// mmGame::InitOtherPlayers / CollideAIOpponents: from 2 m above the body to
-// 10 m below it; the reset place goes 0.9 m above the hit.
-TEST(GameFlowParity, SettleOnGroundProbesFromTheBodyAndAddsNinetyCentimetres) {
-    const auto settled = settleOnGround({5.0f, 3.0f, 7.0f}, planeProbe(1.0f));
-    ASSERT_TRUE(settled);
-    EXPECT_FLOAT_EQ(settled->x, 5.0f);
-    EXPECT_FLOAT_EQ(settled->y, 1.9f);
-    EXPECT_FLOAT_EQ(settled->z, 7.0f);
-    // Ground 2 m above the body is still found (the probe starts there) ...
-    EXPECT_TRUE(settleOnGround({0.0f, 0.0f, 0.0f}, planeProbe(1.99f)));
-    // ... but not above that, nor more than 10 m below: the car stays.
-    EXPECT_FALSE(settleOnGround({0.0f, 0.0f, 0.0f}, planeProbe(2.5f)));
-    EXPECT_FALSE(settleOnGround({0.0f, 0.0f, 0.0f}, planeProbe(-10.5f)));
-}
-
 // mmGame::FindGroundPos: from 7.5 m above to 15 m below; the hit itself, or
 // the point when nothing is hit.
 TEST(GameFlowParity, FindGroundPosProbesSevenAndAHalfUpFifteenDown) {
@@ -115,24 +99,6 @@ TEST(GameFlowParity, FindGroundPosProbesSevenAndAHalfUpFifteenDown) {
     EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(-14.0f)).y, -14.0f);
     EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(8.0f)).y, 0.0f);
     EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(-16.0f)).y, 0.0f);
-}
-
-// A race start as MM2 makes it: the body at the start + CenterOfGravity, then
-// settled: the body ends 0.9 m + CG above the road, so the model origin (at
-// the bottom of MM2's car models) is 0.9 + 2 CG.y above it and the car drops
-// onto its wheels.
-TEST(GameFlowParity, RaceStartLeavesTheCarAboveTheRoad) {
-    phys::CarSimParams params;
-    params.centerOfGravity = {0.0f, -0.1f, 0.15f};
-    phys::CarSim car;
-    car.init(params, phys::VehicleGeometry::placeholder());
-    const ResetPlace start{{0.0f, 0.0f, 0.0f}, 0.0f};
-    car.resetAt(start.position, start.angle);
-    const auto settled = settleOnGround(car.body.ics.matrix.m3, planeProbe(0.0f));
-    ASSERT_TRUE(settled);
-    car.resetAt(*settled, start.angle);
-    EXPECT_NEAR(car.body.ics.matrix.m3.y, 0.8f, 1e-6f);
-    EXPECT_NEAR(car.modelMatrix().m3.y, 0.7f, 1e-6f);
 }
 
 // Where each mode puts the player (retail data): the race modes on the first
@@ -163,30 +129,28 @@ TEST(GameFlowParity, PlayerPlacePerMode) {
     EXPECT_TRUE(atIntersection);
 }
 
-// mmSingleCircuit::HitWaterHandler: the car is reset at the last waypoint
-// cleared with that waypoint's angle (and no ground probe); the start stays
-// the reset place for a restart.
-TEST(GameFlowParity, CircuitWaterRespawnsAtTheLastCheckpointPlace) {
+// mmSingleCircuit::HitWaterHandler: after 5 s in the water the car goes back
+// to the last waypoint cleared (here the start), facing its heading.
+TEST(GameFlowParity, CircuitWaterRespawnsAtTheLastCheckpoint) {
     MM2_REQUIRE_GAME_DATA();
     if (!flowRetail())
         GTEST_SKIP() << "retail data incomplete";
     auto s = flowSession(GameMode::Circuit, 0);
     ASSERT_TRUE(s);
     s->start();
-    EXPECT_FALSE(s->respawnPlace());
     PlayerState p;
     p.transform = s->playerSpawn();
     p.inWater = true;
-    std::vector<Event> events;
-    for (int i = 0; i < 400 && !s->respawnPlace(); ++i) {
+    bool respawned = false;
+    for (int i = 0; i < 400 && !respawned; ++i) {
         s->update(1.0f / 60.0f, p);
         for (auto& e : s->takeEvents())
-            events.push_back(e);
+            respawned = respawned || e.type == EventType::Respawn;
     }
-    ASSERT_TRUE(s->respawnPlace());
-    const ResetPlace expected = startPlace(s->checkpoints().front());
-    EXPECT_EQ(s->respawnPlace()->position.y, expected.position.y);
-    EXPECT_FLOAT_EQ(s->respawnPlace()->angle, expected.angle);
+    ASSERT_TRUE(respawned);
+    const Mat34 expected = spawnAt(s->checkpoints().front());
+    EXPECT_EQ(s->respawnTransform().m3.y, expected.m3.y);
+    EXPECT_FLOAT_EQ(s->respawnTransform().m2.x, expected.m2.x);
 }
 
 namespace {

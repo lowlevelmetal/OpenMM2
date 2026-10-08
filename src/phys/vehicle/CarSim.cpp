@@ -106,7 +106,9 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     drivetrains[2].configure(p.drivetrain);
     drivetrains[2].attach(&engine, &trans);
 
-    // vehCarSim::ConfigureDrivetrain.
+    // vehCarSim::ConfigureDrivetrain (vehCarSim::Init reaches it through
+    // vehCarSim::ReconfigureDrivetrain, which first runs
+    // vehCarSim::UnconfigureDrivetrain on the still empty drivetrains).
     Wheel& fl = wheels[0];
     Wheel& fr = wheels[1];
     Wheel& bl = wheels[2];
@@ -168,7 +170,10 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     // origin (in the body's frame, the origin is at +CenterOfGravity).
     const Vec3 half = p.inertiaBox * 0.5f;
     splash.init(centerOfGravity - half, half + centerOfGravity);
-    reset(Mat34::identity());
+    // vehCarSim::Init ends with SetResetPos(origin) and Reset: the body at
+    // CenterOfGravity, unturned (the constructor's reset rotation is 0).
+    setResetPos({});
+    reset();
 }
 
 void CarSim::reset(const Mat34& model) {
@@ -177,14 +182,31 @@ void CarSim::reset(const Mat34& model) {
     resetBody(m);
 }
 
-void CarSim::resetAt(const Vec3& position, float rotation) {
-    // vehCarSim::SetResetPos adds CenterOfGravity to the position;
-    // vehCarSim::Reset turns the reset body about Y (Matrix34::Rotate).
+float resetRotationOf(const Mat34& spawn) {
+    // Mat34::rotationY(a) has m2 = (sin a, 0, cos a).
+    return std::atan2(spawn.m2.x, spawn.m2.z);
+}
+
+void CarSim::setResetPos(const Vec3& position) {
+    // vehCarSim::SetResetPos: CenterOfGravity plus the position.
     const Vec3& cg = centerOfGravity;
+    m_resetPos = {cg.x + position.x, cg.y + position.y, cg.z + position.z};
+}
+
+void CarSim::reset() {
+    // vehCarSim::Reset: phInertialCS::Reset (identity, at rest), the
+    // position from the reset position, then Matrix34::Rotate about the Y
+    // axis by the reset rotation (the 3x3 part only).
     Mat34 m = Mat34::identity();
-    age::rotate(m, {0.0f, 1.0f, 0.0f}, rotation);
-    m.m3 = {cg.x + position.x, cg.y + position.y, cg.z + position.z};
+    m.m3 = m_resetPos;
+    age::rotate(m, {0.0f, 1.0f, 0.0f}, resetRotation);
     resetBody(m);
+}
+
+void CarSim::resetAt(const Vec3& position, float rotation) {
+    setResetPos(position);
+    resetRotation = rotation;
+    reset();
 }
 
 void CarSim::resetBody(const Mat34& bodyMatrix) {
@@ -243,10 +265,11 @@ void CarSim::setPolygonalBound(bool polygonal) {
 
 void CarSim::buildBound() {
     // vehCarModel::InitBound: bound/<car>_bound.bnd (phBoundGeometry::Load
-    // into a vehBound, whose single own material every polygon uses); AI
-    // cars replace it with a dgBoundBox of its box (SetOffset to the box's
-    // centre, SetSize to its extent). vehCar::Init then gives the bound
-    // BoundFriction and BoundElasticity.
+    // into a vehBound, whose single own material every polygon uses:
+    // vehBound::vehBound, vehBound::Init); AI cars replace it with a
+    // dgBoundBox of its box (SetOffset to the box's centre, SetSize to its
+    // extent). vehCar::Init then gives the bound BoundFriction and
+    // BoundElasticity (vehBound::SetFriction, vehBound::SetElasticity).
     std::unique_ptr<BoundGeometry> geometry;
     if (m_boundData)
         geometry = makeGeometryBound(*m_boundData);
@@ -520,7 +543,8 @@ void CarSim::onImpact(Collider& self, const Impact& impact, const Vec3& impulse)
 
 void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Collider* other) {
     // vehCarDamage::InsertImpact. The impact is worth the impulse times
-    // GetDamageModifier (1) times the other body's share of the masses.
+    // vehCarDamage::GetDamageModifier (1; no class overrides it) times the
+    // other body's share of the masses.
     float share = 1.0f;
     if (other && other->ics) {
         share = other->ics->mass;

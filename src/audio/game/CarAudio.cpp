@@ -6,6 +6,7 @@
 #include "audio/game/CarAudio.h"
 
 #include "audio/AngelRandom.h"
+#include "audio/game/Voices.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
@@ -169,8 +170,20 @@ EngineSound::Evaluation EngineSound::evaluate(const EngineSampleDef& d, float rp
     const float outSlope = (d.maxVolume - d.minVolume) * (outRange != 0.0f ? 1.0f / outRange : 0.0f);
     const float minVolume = silenced ? 0.0f : d.minVolume;
     const float maxVolume = silenced ? 0.0f : d.maxVolume;
-    // CalculateVolume.
-    if (rpm <= d.fadeInStartRpm || d.fadeOutEndRpm <= rpm)
+    if (d.oldLayout) {
+        // CalculateVolumeOld: rpm / divisor below the cut RPM, divisor / rpm
+        // from it; the minimum first, then the maximum. A divisor of 0 (or 0
+        // RPM at the cut) divides by zero in MM2; OpenMM2 keeps a NaN out of
+        // the mixer (malformed data only).
+        float v = rpm < d.cutRpm ? rpm / d.volumeDivisor : d.volumeDivisor / rpm;
+        if (std::isnan(v))
+            v = 0.0f;
+        if (v < minVolume)
+            v = minVolume;
+        else if (maxVolume < v)
+            v = maxVolume;
+        e.volume = v;
+    } else if (rpm <= d.fadeInStartRpm || d.fadeOutEndRpm <= rpm)
         e.volume = minVolume;
     else if (rpm < d.fadeInEndRpm)
         e.volume = (rpm - d.fadeInStartRpm) * inSlope + minVolume;
@@ -1297,6 +1310,19 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
     }
 }
 
+void OpponentCarAudio::reset() {
+    // Aud3DObject::Reset for a positioned object: RemoveFrom3DMgr when it
+    // holds a slot, then the distance values.
+    if (hasSlot()) {
+        releaseSlot();
+        silence();
+    }
+    m_3d.reset();
+    m_attenuation = 0.0f; // +0xc
+    m_pan = 0.0f;         // +4
+    m_doppler = 1.0f;     // +0x10
+}
+
 void OpponentCarAudio::stop() {
     releaseSlot();
     if (m_echo)
@@ -1468,29 +1494,63 @@ void AmbientCarAudio::updateHorn(float dt) {
 }
 
 void AmbientCarAudio::echoOn(float delay) {
-    // aiEngineAudio::EchoOn, vehHornAudio::EchoOn (the manager's delay, not
-    // the player's horn's 0.05 s); the driver's AudCreature is not ported.
+    // aiAmbientVehicleAudio::EchoOn: aiEngineAudio::EchoOn, vehHornAudio::
+    // EchoOn (the manager's delay, not the player's horn's 0.05 s) and the
+    // driver's AudCreature::EchoOn.
     sampleEchoOn(m_engine, delay);
     sampleEchoOn(m_horn, delay);
+    if (m_voice)
+        m_voice->echoOn(delay);
     m_echo = true;
 }
 
 void AmbientCarAudio::echoOff() {
+    // aiAmbientVehicleAudio::EchoOff: aiEngineAudio::EchoOff, vehHornAudio::
+    // EchoOff, AudCreature::EchoOff.
     m_engine.disableEcho();
     m_horn.disableEcho();
+    if (m_voice)
+        m_voice->echoOff();
     m_echo = false;
 }
 
 void AmbientCarAudio::silence() {
     // aiAmbientVehicleAudio::UnAssignSounds: the echo goes off, the engine
     // and horn stop and the horn pattern goes idle (vehHornAudio::Reset keeps
-    // its beep index); impacts play out.
+    // its beep index); impacts play out; the driver's voice drops its queued
+    // lines (AudCreature::UnAssignSounds).
     if (m_echo)
         echoOff();
     m_engine.stop();
     if (m_horn.playing())
         m_horn.stop();
     m_hornState = 2;
+    if (m_voice)
+        m_voice->unassign();
+}
+
+void AmbientCarAudio::avoidReaction() {
+    // aiAmbientVehicleAudio::PlayAvoidanceReaction: with a slot (+0x44) and a
+    // voice.
+    if (hasSlot() && m_voice)
+        m_voice->avoid();
+}
+
+void AmbientCarAudio::impactReaction(float force) {
+    // aiAmbientVehicleAudio::PlayImpactReaction.
+    if (hasSlot() && m_voice)
+        m_voice->impact(force);
+}
+
+void AmbientCarAudio::reset() {
+    // aiAmbientVehicleAudio::Reset: Aud3DObject::Reset (RemoveFrom3DMgr for a
+    // slot holder, the distance values), then +0x80 / +0x84.
+    if (hasSlot()) {
+        releaseSlot();
+        silence();
+    }
+    m_3d.reset();
+    m_speed = m_prevSpeed = 0.0f;
 }
 
 void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3& velocity, float dt,
@@ -1514,8 +1574,11 @@ void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, f
     else if (m_echo && !tunnel)
         echoOff();
     if (m_echo) {
+        // aiAmbientVehicleAudio::UpdateEcho: engine, horn, the driver's voice.
         m_engine.updateEcho(dt);
         m_horn.updateEcho(dt);
+        if (m_voice)
+            m_voice->updateEcho(dt);
     }
     if (m_3d.pastMaxDistance(transform.m3, listener.m3)) {
         releaseSlot();
@@ -1557,6 +1620,10 @@ void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, f
     // slowing, else the speed bands.
     if (auto p = pitchFor(m_engineDef, pitchSpeed, decaying || pitchSpeed < m_prevSpeed))
         m_pitch = *p;
+    // AudCreature::UpdateAttenuation with the squared distance to the
+    // listener (GetDistToClosestHead2), before the impacts'.
+    if (m_voice)
+        m_voice->updateAttenuation(attenuation, pan, m_3d.distance2());
     m_impacts.updateAttenuation(attenuation, pan);
     if (!decaying)
         m_prevSpeed = m_speed;

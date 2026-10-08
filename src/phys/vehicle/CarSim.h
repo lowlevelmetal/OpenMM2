@@ -128,6 +128,12 @@ struct CarSimOptions {
     bool polygonalBound = false;
 };
 
+// The turn about Y of a spawn transform built by Mat34::rotationY (the
+// session's starts, posts and checkpoints keep MM2's angle only in this
+// form): the reset rotation (vehCarSim +0x250) that faces the car the same
+// way, equal to the original angle up to a float rounding.
+float resetRotationOf(const Mat34& spawn);
+
 // vehCarSim (Midtown Madness 2): a car, verified against the build 3393
 // code. Construct, init(), add body() to a World, set inputs each frame.
 //
@@ -151,12 +157,24 @@ public:
     void setDamageParams(const CarDamageParams& p) { damage.params = p; }
 
     // Places the car's model origin at `model` and resets all state
-    // (vehCarSim::Reset and vehCar::Reset; OpenMM2's placement).
+    // (vehCarSim::Reset and vehCar::Reset; OpenMM2's placement, for the
+    // OpenMM2-only repositioning of AI cars and network cars).
     void reset(const Mat34& model);
-    // MM2's placement (vehCarSim::SetResetPos, ResetRotation, then the same
-    // resets): the body goes to `position` + CenterOfGravity, turned by
-    // `rotation` about Y, so the model origin lands at position +
+    // vehCarSim::SetResetPos: from now on vehCar::Reset puts the body's
+    // centre at `position` + CenterOfGravity (vehCarSim +0x210). Every
+    // caller passes a point on or above the road (a race start, a police
+    // post, a checkpoint), so the model origin lands at position +
     // CenterOfGravity + R * CenterOfGravity.
+    void setResetPos(const Vec3& position);
+    const Vec3& resetPos() const { return m_resetPos; }
+    // vehCarSim +0x250: the reset body's turn about Y (radians; the game
+    // writes it next to each SetResetPos).
+    float resetRotation = 0.0f;
+    // vehCarSim::Reset with vehCar::Reset's resets: the body at resetPos(),
+    // turned by resetRotation (Matrix34::Rotate about Y), at rest.
+    void reset();
+    // MM2's placement in one call: setResetPos(position), resetRotation =
+    // rotation, reset().
     void resetAt(const Vec3& position, float rotation);
 
     // Inputs (vehCarSim brake/handbrake/steering, vehEngine throttle).
@@ -195,7 +213,9 @@ public:
     // Ground used by the wheels; defaults to the World the body is in.
     void setGround(const GroundQuery* ground) { m_ground = ground; }
     // Called with every impact vehCarDamage::ApplyImpact applies (sounds,
-    // effects, game logic).
+    // effects, game logic): the effects MM2 runs in ApplyImpact itself and
+    // the game callback (vehCarDamage::SetGameCallback, which only
+    // mmPlayer::Init sets: mmPlayer::ImpactCallback).
     std::function<void(const CarImpact&)> onImpactCallback;
 
     // vehCarModel::InitBound again with another choice of bound (see
@@ -263,6 +283,7 @@ private:
     void insertImpact(const Impact& impact, const Vec3& impulse, const Collider* other);
     void applyImpact(CarDamage::ImpactInfo& entry);
 
+    Vec3 m_resetPos; // vehCarSim +0x210 (SetResetPos)
     std::array<int, 3> m_drivetrainOrder{0, 1, 2};
     int m_numDrivetrains = 3;
     const GroundQuery* m_ground = nullptr;

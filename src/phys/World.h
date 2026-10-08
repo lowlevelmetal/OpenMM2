@@ -71,7 +71,11 @@ public:
 };
 
 // A simulated body (a mover of dgPhysManager): its rigid body (phInertialCS),
-// its collider and bounds, and its place among the level's instances.
+// its collider and bounds, and its place among the level's instances. It
+// stands for dgPhysEntity: dgPhysEntity::GetCollider is `collider`,
+// dgPhysEntity::PreUpdate the controller's hooks, dgPhysEntity::DetachMe
+// and dgPhysEntity::FirstImpactCallback are empty in the base, and
+// dgPhysEntity::RequiresTerrainCollision answers true (World::collideTerrain).
 class Body : public Instance {
 public:
     Body();
@@ -153,6 +157,8 @@ public:
     Aabb aabb() const;
 };
 
+// dgPhysManager (dgPhysManager::dgPhysManager also runs
+// phContact::DisableContacts: no contacts, penetration 0).
 class World final : public GroundQuery {
 public:
     World();
@@ -251,6 +257,8 @@ private:
     bool running(const Mover& m) const { return !m.removed && m.active; }
     bool updating(const Mover& m) const { return running(m) && !m.fresh && m.body->updates; }
 
+    // The frame's mover bookkeeping (dgPhysManager::ResetTable clears the
+    // table, DeclareMover fills it).
     void beginFrame();
     void gatherCollidables(Mover& mover);
     bool trivialCollide(const Instance& a, const Instance& b) const;

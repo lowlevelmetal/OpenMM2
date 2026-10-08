@@ -6,6 +6,7 @@
 #include "game/Camera.h"
 #include "game/RaceConfig.h"
 #include "game/ModelLibrary.h"
+#include "game/RoomVisibility.h"
 #include "game/TextureLibrary.h"
 #include "game/VehicleRenderer.h"
 #include "render/Device.h"
@@ -16,6 +17,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_map>
 
 namespace mm2::game {
 
@@ -35,6 +37,11 @@ public:
     void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time, bool lights,
               const ObjectDetail& detail, const std::function<const Mat34*(int)>& physicalTransform = {});
 
+    // The rooms the city listed for the view (CityRenderer::rooms()): cars,
+    // pedestrians and signals are then drawn from the rooms MM2 keeps them
+    // in (RoomVisibility).
+    void setRooms(const RoomVisibility* rooms) { m_rooms = rooms; }
+
     struct Stats {
         int cars = 0;
         int peds = 0;
@@ -52,7 +59,11 @@ private:
     const asset::PedType* pedType(const std::string& name);
     void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
     void drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
-    void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows);
+    void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows,
+                    const RoomVisibility::Passes* passes);
+    // lvlLevel::MoveToRoom's room of an object, found from its last one
+    // (cityLevel::FindRoomId).
+    RoomVisibility::Passes roomPasses(std::unordered_map<int, int>& rooms, int id, const Vec3& position);
 
     render::Device& m_device;
     TextureLibrary& m_textures;
@@ -64,6 +75,11 @@ private:
     std::vector<render::Vertex3D> m_skinned;
     ObjectDetail m_detail;
     Stats m_stats;
+    const RoomVisibility* m_rooms = nullptr;
+    // The rooms of the traffic cars (aiVehicleAmbient's update after its
+    // spline, aiVehicleActive::Update), the pedestrians (aiPedestrian::Update)
+    // and the signals (aiTrafficLightSet::SetFourWay), by id or index.
+    std::unordered_map<int, int> m_carRooms, m_pedRooms, m_signalRooms;
 };
 
 } // namespace mm2::game

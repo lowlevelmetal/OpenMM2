@@ -178,6 +178,8 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
             v->m_trailer->body.geometryRadius = geomSetRadius(*v->m_trailerModel, "TRAILER");
         }
     }
+    // vehGyro::Init, vehStuck::Init, vehCarDamage::Init: each part loads
+    // its own tune file.
     if (auto f = readDat(vfs, tunePath("vehgyro")); f && f->top()) {
         phys::GyroParams p;
         if (phys::loadGyroParams(*f->top(), p))
@@ -215,11 +217,43 @@ void SimVehicle::reset(const Mat34& model) {
     m_controls.reset();
 }
 
-void SimVehicle::resetAt(const Vec3& position, float angle) {
-    m_sim.resetAt(position, angle);
+void SimVehicle::setResetPos(const Vec3& position, float rotation) {
+    m_sim.setResetPos(position);
+    m_sim.resetRotation = rotation;
+}
+
+void SimVehicle::setResetPos(const Mat34& spawn) {
+    setResetPos(spawn.m3, phys::resetRotationOf(spawn));
+}
+
+void SimVehicle::reset() {
+    m_sim.reset();
     if (m_trailer)
         m_trailer->reset();
     m_controls.reset();
+}
+
+bool SimVehicle::settleOnGround(const phys::World& world, const Vec3& from) {
+    const Vec3 top{from.x, from.y + 2.0f, from.z};
+    const Vec3 bottom{from.x, from.y - 10.0f, from.z};
+    phys::RayHit hit;
+    if (!world.wheelProbe(top, bottom, hit, nullptr, nullptr))
+        return false;
+    Vec3 p = hit.position;
+    p.y = p.y + 0.9f;
+    m_sim.setResetPos(p);
+    reset();
+    return true;
+}
+
+void SimVehicle::respawnAt(const Mat34& at) {
+    const Vec3 savedPos = m_sim.resetPos();
+    const float savedRotation = m_sim.resetRotation;
+    setResetPos(at);
+    reset();
+    // SetResetPos(the saved reset position): CenterOfGravity is added again.
+    m_sim.setResetPos(savedPos);
+    m_sim.resetRotation = savedRotation;
 }
 
 VehiclePose SimVehicle::trailerPose() const {

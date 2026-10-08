@@ -108,18 +108,6 @@ ResetPlace startPlace(const Checkpoint& cp) {
     return {cp.position, cp.headingDeg * -0.017453292f};
 }
 
-std::optional<Vec3> settleOnGround(const Vec3& body, const GroundProbe& probe) {
-    if (!probe)
-        return std::nullopt;
-    const Vec3 from{body.x, body.y + 2.0f, body.z};
-    const Vec3 to{body.x, body.y - 10.0f, body.z};
-    auto hit = probe(from, to);
-    if (!hit)
-        return std::nullopt;
-    hit->y = hit->y + 0.9f;
-    return hit;
-}
-
 Vec3 findGroundPos(const Vec3& p, const GroundProbe& probe) {
     if (!probe)
         return p;
@@ -336,13 +324,10 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             // in degrees, converted with the original's 0.017444445 and not
             // negated as the player's start angle is.
             if (!op.path.empty()) {
-                op.place = {op.path.front().position, op.path.front().brake * 0.017444445f};
-                op.spawn = Mat34::rotationY(op.place.angle);
-                op.spawn.m3 = op.place.position;
+                op.spawn = Mat34::rotationY(op.path.front().brake * 0.017444445f);
+                op.spawn.m3 = op.path.front().position;
             } else {
                 op.spawn = s.checkpoints.empty() ? Mat34::identity() : spawnAt(s.checkpoints.front());
-                if (!s.checkpoints.empty())
-                    op.place = startPlace(s.checkpoints.front());
             }
             s.opponents.push_back(std::move(op));
         }
@@ -365,7 +350,7 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     //
     // The car is placed there (the modes' InitGameObjects: SetResetPos and
     // vehCar::Reset); then the race modes' InitOtherPlayers settle it on the
-    // ground (settleOnGround), while mmSingleRoam::InitOtherPlayers leaves
+    // ground (SimVehicle::settleOnGround), while mmSingleRoam::InitOtherPlayers leaves
     // it at RespawnXYZ's point, 2 m above the intersection.
     std::uint32_t rng = seed;
     s.playerDrop = StartDrop::OnGround;

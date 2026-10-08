@@ -91,7 +91,7 @@ Cross-cutting findings that changed many rows:
 | `Audio3D::attenuation` | `Aud3DObject::CalculateAttenuation` | verified | |
 | `Audio3D::pan` | `Aud3DObject::CalcSinglePlayerPan` | verified | 0.2 × listener-space x / pseudo distance; 0 inside min; OpenMM2 also returns 0 at zero pseudo distance where MM2 divides by 0. The front/back factor MM2 stores at +8 is read by nothing |
 | `Audio3D::doppler` | `Aud3DObject::CalculateDoppler` | verified | approach × factor × frame time + 1 |
-| `Audio3D::resetDistance` | `Aud3DObject::Reset` | fixed | no longer called when a slot is lost (MM2's UnAssignSounds keeps the distance history) |
+| `Audio3D::resetDistance` | `Aud3DObject::Reset` | fixed | no longer called when a slot is lost (MM2's UnAssignSounds keeps the distance history). The full Reset, which the owners call, is `Audio3D::reset` (reverse audit, mm2/audio.md) |
 | `Audio3D` defaults | `Aud3DObject::Aud3DObject` | fixed | max² starts at -1 (never in range before SetDropOffs), d² at 1000000, percent at -1 |
 | `Object3DManager::Object3DManager` | `Aud3DObjectManager::Aud3DObjectManager(4)`, `mmPlayer::Init` | verified | three slots for positioned objects: the player's car holds the fourth for good (priority + 1000000) |
 | `Object3DManager::add` | `Aud3DObjectManager::Add`, `FindUnusedSlot`, `FindGreatestDistance` | verified | first free slot; else the walk for the farthest of no higher priority, replaced if the newcomer's priority is higher, or equal and closer |
@@ -113,7 +113,7 @@ Cross-cutting findings that changed many rows:
 | `agePanToMixer` | `audSound::SetPan` | verified | far channel at -|pan| × 100 dB |
 | `ageMasterVolume` | `AudManager::AssignWaveVolume`, `AudManager::Log`, `DMusicWaveBuffer::SetVolume` | fixed | new: log(200 s) / log(200); the sliders were linear gains |
 | `readText` | `datAssetManager::Open` | openmm2 | |
-| `parseCarAudio` | `vehCarAudio::Load`, `vehEngineAudio::Load`, `vehEngineSampleWrapper::ParseCSVBuffer` | fixed | was: searched for "Horn wave" / "Engine wave" and required 11 numeric cells. Now line 2 is the horn row, line 3 the engine header, every later line an engine sample; an empty table is allowed. The "Volume Divisor" layout (`ParseCSVBufferOld`) is rejected (see Missing) |
+| `parseCarAudio` | `vehCarAudio::Load`, `vehEngineAudio::Load`, `vehEngineSampleWrapper::ParseCSVBuffer` | fixed | was: searched for "Horn wave" / "Engine wave" and required 11 numeric cells. Now line 2 is the horn row, line 3 the engine header, every later line an engine sample; an empty table is allowed. The "Volume Divisor" layout (`ParseCSVBufferOld`) is read since the reverse audit (mm2/audio.md) |
 | `ImpactTable::find` | — | openmm2 | tools; MM2 never reads the ID column |
 | `ImpactTable::byIndex` | `AudImpact::GetAudImpactDataPtr` | verified | |
 | `parseImpactTable` | `AudImpact::ReadCSV`, `AudImpactData::ReadCSV` | fixed | now block by block ("***", header, row, sample header, samples); a file that ends before ENDOFDATA loses the whole table, as in MM2 |
@@ -255,7 +255,7 @@ Cross-cutting findings that changed many rows:
 | `Announcer::playCopsAndRobbers` | `mmCNRSpeech::Play(char*)` | fixed | a random group of the event's range (was a random row of a reparsed table) |
 | `Announcer::beginCrashCourse` | `mmSpeechContainer::InitCC`, `mmCCSpeech::SetSubPath`, `LoadGroup`, `SetReadState`, `LoadCheckPointIndexInfo` | fixed | new port (was a first-row approximation) |
 | `Announcer::playCrashCoursePreRace / CheckPoint / Results / Unlock` | `mmCCSpeech::PlayPreRace / PlayCheckPoint / PlayResults / PlayUnlock` | fixed | new port |
-| `Announcer::update` | `AudSpeech::Update` | verified | every slot counts down; the first due one starts when nothing plays |
+| `Announcer::update` | `AudSpeech::Update` | verified | every slot counts down; the first due one starts when nothing plays. The reverse audit (mm2/audio.md) found it is called twice a frame while the game runs and once while it is paused (`AudManager::Update`, `mmGame::Update`) |
 | `Announcer::speaking / stop / reset` | `AudSpeech::IsPlaying / Stop / EmptyQueue` | verified | |
 | `CreatureVoice::advanceClock / resetGlobals` | `AudCreatureImpact::UpdateStatics` | fixed | the shared "last line" values start at 0 (zero-initialised globals), not -1 |
 | `CreatureVoice::load` | `AudCreatureAvoid / AudCreatureImpact` copies | fixed | lines are wave sounds on the SOUND FX bus (were on the commentary bus); attenuation 1, pan 0 to start |
@@ -377,12 +377,12 @@ Cross-cutting findings that changed many rows:
 
 | MM2 | What it does | Status |
 | --- | --- | --- |
-| `aiAmbientVehicleAudio` wiring (`aiVehicleSpline::Init / Update`, `aiGoalAvoidPlayer::Reset` → `PlayAvoidanceHorn` + `PlayAvoidanceReaction`, `aiVehicleActive` impacts → `PlayImpactHorn` / `PlayImpactReaction`, `aiMap` → `UpdateStatics(player speed)`) | Ambient traffic engines, horns and their drivers' voices | open: `AmbientCarAudio` is ported (with its echo) but no traffic car creates one, and the drivers' `AudCreature` containers are not ported (ai-vehicles + session) |
-| The owners of `BridgeAudio`, `SubwayAudio`, `CableCarAudio` and the ferry's `AmbientObject` (`gizBridge`, `aiSubway`, `gizTrain`, `aiCableCar`, `gizFerry`) | Drawbridges, tube trains, trains, cable cars and ferries | the audio objects are ported; the simulations that would own and update them are not in OpenMM2 |
+| `aiAmbientVehicleAudio` wiring (`aiVehicleSpline::Init / Update`, `aiGoalAvoidPlayer::Reset` → `PlayAvoidanceHorn` + `PlayAvoidanceReaction`, `aiVehicleActive` impacts → `PlayImpactHorn` / `PlayImpactReaction`, `aiMap` → `UpdateStatics(player speed)`) | Ambient traffic engines, horns and their drivers' voices | closed: wired with the ai-vehicles merge (95ac73e); the reverse audit ([mm2/audio.md](mm2/audio.md)) moved the driver's voice into `AmbientCarAudio` (`setVoice`: echo, unassign, reactions) and ported `aiAmbientVehicleAudio::Reset` |
+| The owners of `BridgeAudio`, `SubwayAudio`, `CableCarAudio` and the ferry's `AmbientObject` (`gizBridge`, `aiSubway`, `gizTrain`, `aiCableCar`, `gizFerry`) | Drawbridges, tube trains, trains, cable cars and ferries | the audio objects are ported, with `reset` for the owners' Reset since the reverse audit; the simulations are the world-objects agent's |
 | `MMDMusicManager::EchoOn / EchoOff` | An echo on the DirectMusic buffer | never called in build 3393: nothing to port |
-| `vehNitroCarAudio` | Nitro sound for every non-semi, non-police car when vehtypes.csv says "Always nitro" (FALSE in retail) | open, no effect on retail data |
-| `vehEngineSampleWrapper::ParseCSVBufferOld`, `CalculateVolumeOld` | The "Volume Divisor" engine table layout (volume = rpm / divisor below a cut RPM, divisor / rpm above, clamped) | open, no car table MM2 loads uses it |
+| `vehNitroCarAudio` | Nitro sound for every non-semi, non-police car when vehtypes.csv says "Always nitro" (FALSE in retail) | not needed: only made with "Always nitro", and its sample never plays (`vehCarAudioContainer::PlayNitro` has no caller); see mm2/audio.md |
+| `vehEngineSampleWrapper::ParseCSVBufferOld`, `CalculateVolumeOld` | The "Volume Divisor" engine table layout (volume = rpm / divisor below a cut RPM, divisor / rpm above, clamped) | ported by the reverse audit (mm2/audio.md): `EngineSampleDef::oldLayout` |
 | `AudSoundBase` raw `PlayLoop` volume path | `PlayLoop` with an explicit volume bypasses the SOUND FX master | not ported (MM2 always passes -1) |
-| `Aud3DObjectManager::Process3D(false)` (results popup, `mmPopup`) | Removes every positioned object from its slot and stops the rain loop while popups show | open: session (popups) |
+| `Aud3DObjectManager::Process3D(false)` (results popup, `mmPopup`) | Removes every positioned object from its slot and stops the rain loop while popups show | replaced: OpenMM2 shows the results as a menu page, and leaving the race stops every sound (mm2/audio.md) |
 | `Aud3DObjectManager::QueueInCopVoice / PlayCopVoice` | Called on a damage out; both are empty in build 3393 | nothing to port |
 | `mmAmbientAudio` | A city "walla" loop; never constructed | nothing to port |

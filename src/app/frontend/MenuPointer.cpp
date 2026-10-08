@@ -1,0 +1,40 @@
+// The menus' own mouse pointer (MM2's sfPointer).
+
+#include "app/frontend/Frontend.h"
+
+#include <imgui.h>
+
+#include <algorithm>
+
+namespace mm2::app::frontend {
+
+// sfPointer: MenuManager's pointer node. ResChange loads texture/midcursor.tga
+// and limits its corner to the screen less 4 pixels; Update declares it to
+// the cull manager only when the game is not in a window (gfxPipeline's
+// inWindow, set by -window or -max), where DirectDraw's exclusive mode shows
+// no Windows cursor; Cull copies it, colour keyed (CopyClippedBitmap with
+// transparency), with its top-left corner at the mouse. In a window Windows'
+// own cursor shows instead.
+//
+// OpenMM2 draws it the same way whenever the window is not a decorated one
+// (borderless or exclusive full screen) and hides the system cursor there.
+// The picture keeps its size on the 640x480 menu screen, as OpenMM2 scales
+// the whole menu; MM2 drew it at its pixel size whatever the resolution.
+// MM2 also hides it while an IME composition is open; OpenMM2 does not track
+// that.
+void drawMenuPointer(Frontend& fe, ui::UiFrame& f) {
+    if (fe.ctx.display.windowMode == platform::WindowMode::Windowed)
+        return;
+    ImGui::SetMouseCursor(ImGuiMouseCursor_None); // hides the system cursor next frame
+    const ui::UiTexture& t = fe.textures.getColorKeyed("texture/midcursor.tga");
+    if (!t)
+        return;
+    const auto extent = fe.ctx.device().outputExtent();
+    Vec2 p = fe.ctx.input.mousePosition();
+    p.x = std::clamp(p.x, 0.0f, std::max(0.0f, static_cast<float>(extent.width) - 4.0f));
+    p.y = std::clamp(p.y, 0.0f, std::max(0.0f, static_cast<float>(extent.height) - 4.0f));
+    const Vec2 v = f.overlay.layout().toVirtual(p);
+    ui::drawImage(f.overlay, t, v.x, v.y);
+}
+
+} // namespace mm2::app::frontend

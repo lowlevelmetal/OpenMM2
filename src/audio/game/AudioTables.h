@@ -47,6 +47,13 @@ struct EngineSampleDef {
     float fadeOutStartRpm = 0, fadeOutEndRpm = 0;
     float minPitch = 0, maxPitch = 0;
     float pitchStartRpm = 0, pitchEndRpm = 0;
+    // The "Volume Divisor" layout (vehEngineSampleWrapper::ParseCSVBufferOld,
+    // +0x41): volume = rpm / divisor below cutRpm, divisor / rpm from it,
+    // clamped to the min / max volume (CalculateVolumeOld). The fade columns
+    // are not used.
+    bool oldLayout = false;
+    float volumeDivisor = 0; // +0x44
+    float cutRpm = 0;        // +0x48
 };
 
 // The "flags" column (2 on vpcentury, 4 on vpcop, 8 on vpsemi) and "Num Engine
@@ -67,9 +74,8 @@ struct CarAudioDef {
     std::string clutch; // "REVERSE" for cars, "TRUCKGEARSHIFT" for trucks
     float clutchVolume = 0;
     // vehEngineAudio::Load switches to ParseCSVBufferOld / CalculateVolumeOld
-    // when the engine header's fourth cell is "Volume Divisor". No car table
-    // MM2 loads has that layout (only the unused "copy of" files); OpenMM2
-    // does not implement it and rejects such a table.
+    // when the engine header's fourth cell is "Volume Divisor" (any case). No
+    // car table MM2 loads has that layout (only the unused "copy of" files).
     bool oldEngineLayout = false;
     std::vector<EngineSampleDef> engine;
 };

@@ -19,8 +19,8 @@ namespace mm2::game::session {
 // The place a game mode gives a car: vehCarSim::SetResetPos(position) and
 // the reset angle (vehCarSim +0x250). vehCar::Reset then puts the body (the
 // centre of gravity) at position + CenterOfGravity, unrotated, turned by
-// `angle` radians about Y (game::SimVehicle::resetAt), and every later
-// vehCar::Reset (a restart) puts it back there.
+// `angle` radians about Y (game::SimVehicle::setResetPos and reset), and
+// every later vehCar::Reset (a restart) puts it back there.
 struct ResetPlace {
     Vec3 position;
     float angle = 0.0f;
@@ -29,7 +29,7 @@ struct ResetPlace {
 // How a mode settles the player's car on its start (its InitOtherPlayers).
 enum class StartDrop : std::uint8_t {
     None,       // mmSingleRoam: RespawnXYZ's point as it is
-    OnGround,   // mmGame / mmGameSingle and the race modes: settleOnGround
+    OnGround,   // mmGame / mmGameSingle and the race modes: game::SimVehicle::settleOnGround
     FindGround, // the multiplayer races' grid slot: findGroundPos, once
 };
 
@@ -45,9 +45,6 @@ struct OpponentSetup {
     std::string pathFile; // virtual path
     std::vector<city::OpponentPoint> path;
     Mat34 spawn;
-    // aiRouteRacer::Init: the .opp's first row, turned by its fourth column
-    // (degrees x 0.017444445); mmGame::CollideAIOpponents then settles it.
-    ResetPlace place;
     std::vector<float> params;
 };
 
@@ -129,12 +126,6 @@ Mat34 spawnAt(const Checkpoint& cp);
 // mmSingleCircuit::HitWaterHandler) use them: the waypoint's position, its
 // heading x -0.017453292.
 ResetPlace startPlace(const Checkpoint& cp);
-
-// mmGame::InitOtherPlayers and mmGame::CollideAIOpponents: a car whose body
-// (centre of gravity) is at `body` is probed from 2 m above it to 10 m below
-// it; on a hit its new reset position is 0.9 m above the hit (the angle is
-// kept). Nothing when the probe misses (the car stays where it is).
-std::optional<Vec3> settleOnGround(const Vec3& body, const GroundProbe& probe);
 
 // mmGame::FindGroundPos: the first hit from 7.5 m above `p` to 15 m below
 // it, else `p` itself.

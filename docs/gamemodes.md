@@ -177,15 +177,16 @@ row of their `.opp` line, turned by its fourth column (degrees × 0.017444445,
 not negated as the player's start angle is; `aiRouteRacer::Init`); the last
 row is where the AI finishes.
 
-How a car is put on its place (`game::session::ResetPlace`,
-`SimVehicle::resetAt`): the modes call `vehCarSim::SetResetPos(p)` with a
+How a car is put on its place (`RaceSetup::playerPlace` / `playerDrop`
+say where and how per mode; `SimVehicle::setResetPos`, `reset`,
+`settleOnGround` do it): the modes call `vehCarSim::SetResetPos(p)` with a
 reset angle and `vehCar::Reset`, which puts the body (the centre of
 gravity) at p + CenterOfGravity, unrotated, and turns it about Y. Every
 later reset (a restart) goes back there. The modes then settle it:
 
 | Mode | Player | Racers |
 |---|---|---|
-| Blitz, circuit, checkpoint race, crash course | start waypoint, then `mmGame::InitOtherPlayers`: probe from 2 m above the body to 10 m below it, reset place 0.9 m above the hit | `.opp` row, then `mmGame::CollideAIOpponents`: the same probe and 0.9 m |
+| Blitz, circuit, checkpoint race, crash course | start waypoint, then `mmGame::InitOtherPlayers`: probe from 2 m above the body to 10 m below it, reset place 0.9 m above the hit | `.opp` row, then `mmGame::CollideAIOpponents`: the same probe from the model origin, and 0.9 m |
 | Cruise (single and multiplayer) | `RespawnXYZ`: 2 m above the intersection centre, angle 0, no probe | — |
 | Multiplayer Blitz, circuit, checkpoint race | grid slot, then `mmGame::FindGroundPos` (probe 7.5 m up to 15 m down, the hit itself) | — |
 | Police | their post and angle (`aiPoliceOfficer::Reset`), no probe | — |
@@ -195,7 +196,10 @@ start leaves the car 0.7 m above the road (0.9 m plus twice a typical
 CenterOfGravity y of -0.1) and it drops onto its wheels. The water
 handlers that put the car back on a checkpoint (`mmSingleCircuit` /
 `mmGameMulti::HitWaterHandler`) reset it at that waypoint's place with its
-angle and no probe, and keep the start as the reset place for a restart.
+angle and no probe, and put the start back as the reset place for a
+restart through `SetResetPos`, which adds CenterOfGravity again: each such
+respawn moves the restart place by CenterOfGravity (`SimVehicle::respawnAt`
+keeps MM2's drift).
 A restart also puts every prop back (`lvlLevel::ResetInstances`).
 
 ### Water, falling out of the city, wrecks
