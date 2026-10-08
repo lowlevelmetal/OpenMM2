@@ -6,6 +6,7 @@
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
 #include "phys/vehicle/Controls.h"
+#include "phys/vehicle/Trailer.h"
 #include "phys/vehicle/VehicleGeometry.h"
 #include "phys/vehicle/Wheel.h"
 
@@ -225,4 +226,28 @@ TEST(VehicleParity, KeyboardSteeringFilter) {
     const float fh = 100.0f / 95.0f;
     const float inHi = (1.5f - 2.5f) * fh + 2.5f;
     EXPECT_NEAR(s.filter(-1.0f, dt), -std::pow(inHi * dt, (1.0f - 2.0f) * fh + 2.0f), 1e-6f);
+}
+
+// dgTrailerJoint::Update's debug key: Ctrl+B breaks a holding hitch.
+TEST(VehicleParity, CtrlBBreaksTheTrailerHitch) {
+    World world;
+    world.setStatic(flatGround());
+    CarSim car;
+    car.init(CarSimParams{}, VehicleGeometry::placeholder());
+    car.reset(Mat34::identity());
+    TrailerGeometry tg;
+    for (std::size_t i = 0; i < 4; ++i)
+        tg.wheels[i] = VehicleGeometry::placeholder().wheels[i];
+    tg.carHitch = Vec3{0.0f, 0.5f, 2.5f};
+    tg.trailerHitch = Vec3{0.0f, 0.5f, -3.0f};
+    Trailer trailer;
+    trailer.init(TrailerParams{}, TrailerJointParams{}, tg, car);
+    world.add(&car.body);
+    trailer.addTo(world);
+    world.step(kFixedSampleStep);
+    EXPECT_FALSE(trailer.joint.isBroken());
+    Trailer::breakKeyPressed = true;
+    world.step(kFixedSampleStep);
+    Trailer::breakKeyPressed = false;
+    EXPECT_TRUE(trailer.joint.isBroken());
 }

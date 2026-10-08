@@ -96,6 +96,11 @@ public:
     void beforeIntegrate(Body& body, float dt, const World& world) override;
     void afterIntegrate(Body& body, float dt, const World& world) override;
 
+    // dgTrailerJoint::Update's debug key: in the frame Ctrl+B goes down
+    // (ioKeyboard's state, global like it), every hitch still holding
+    // breaks. The game sets it once a frame.
+    static inline bool breakKeyPressed = false;
+
     Body body;
     TrailerJoint joint;
     TrailerParams params;

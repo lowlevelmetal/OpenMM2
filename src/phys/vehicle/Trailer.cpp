@@ -249,6 +249,12 @@ void Trailer::afterIntegrate(Body& b, float dt, const World& world) {
     env.randomSeed = world.randomSeed();
     for (Drivetrain& d : drivetrains)
         d.update(env, m_tractor->params.mass);
+    // dgTrailerJoint::Update first breaks a holding hitch on Ctrl+B (and
+    // does nothing else that sample).
+    if (!joint.isBroken() && breakKeyPressed) {
+        joint.breakJoint();
+        return;
+    }
     joint.update(dt, env.invDt);
 }
 

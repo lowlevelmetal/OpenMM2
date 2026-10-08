@@ -161,8 +161,16 @@ public:
         for (auto& c : m_cops)
             if (c.sim)
                 c.sim->sim().setWaterLevel(waterLevelAt(c.sim->sim().modelMatrix().m3));
-        if (m_world)
-            m_world->advanceFixed(static_cast<float>(dt));
+        // dgTrailerJoint::Update's debug key: Ctrl+B breaks every trailer
+        // hitch (held until a physics sample has seen it).
+        {
+            using platform::Key;
+            const auto& in = ctx.input;
+            if (!m_flyCamera && (in.keyDown(Key::LCtrl) || in.keyDown(Key::RCtrl)) && in.keyPressed(Key::B))
+                phys::Trailer::breakKeyPressed = true;
+        }
+        if (m_world && m_world->advanceFixed(static_cast<float>(dt)) > 0)
+            phys::Trailer::breakKeyPressed = false;
         // The props and traffic cars the collisions set moving follow their
         // bodies; the ones that came to rest stop being simulated.
         if (m_bangers)
