@@ -676,11 +676,20 @@ as speeds at MaxRPM and capped every car at High.)
   (`phCollision::TestBoundForce`) are not ported; no race object uses them
   (inferred). The trailer's bound materials resolve to the bound default
   (MM2 looks their names up in the city's material manager). A body outside
-  every room keeps its last room (MM2 moves it to room 0). MM2's cap of 32
-  movers and its freezing of type-1 movers (props) outside the rooms the
-  cars are in (`dgPhysManager::Update`) are not modelled. Wheel probes
-  still use OpenMM2's probe geometry (the render mesh of the PSDL) rather
-  than `lvlSDL::CollideProbe` over `sdlPage16::Collect`'s polygons.
+  every room keeps its last room (MM2 moves it to room 0). `phys::World`
+  models dgPhysManager's mover table (`Body::declare(type, flags)`: at most
+  32 movers a frame, the rooms around type-3 and type-4 movers active,
+  type-1 movers outside them left out and detached, the flags' update and
+  collision bits), but the owners do not declare their levels yet: every
+  body is a type-2 mover with all flags, so props are never culled, the
+  rooms around opponents within 200 m of a player (type 3 in MM2) do not
+  keep props alive, and police beyond 250 m (not declared in MM2) are
+  still simulated. (MM2's opponents beyond 200 m and police between 200 and
+  250 m drop flag 0x8, which changes nothing while 0x2 and 0x10 are set.)
+  Movers without a body (traffic on its rail while it avoids, regains its
+  rail or collides) are not supported. Wheel
+  probes still use OpenMM2's probe geometry (the render mesh of the PSDL)
+  rather than `lvlSDL::CollideProbe` over `sdlPage16::Collect`'s polygons.
 - Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
   (MM2's values make vpcentury's trailer ride on its bump stops, see
   "Trailers"); the trailer's impact parameters are inferred.

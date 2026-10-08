@@ -80,6 +80,7 @@ public:
     // phys::Level.
     int findRoom(const Vec3& position, int hint) const override;
     int touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const override;
+    int neighbors(int* out, int max, int room) const override;
     void collect(const int* rooms, int count, const Vec3& centre, float radius,
                  phys::LevelBound& out) const override;
     void instances(int room, std::vector<phys::Instance*>& out) const override;

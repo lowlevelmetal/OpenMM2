@@ -11,6 +11,8 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <memory>
+#include <vector>
 
 using namespace mm2;
 using namespace mm2::phys;
@@ -182,4 +184,88 @@ TEST(ParityPhysCore, NormalizeKeepsTheBackAxis) {
     EXPECT_NEAR(m.m0.dot(m.m1), 0.0f, 1e-6f);
     EXPECT_NEAR(m.m0.dot(m.m2), 0.0f, 1e-6f);
     EXPECT_NEAR(m.m1.mag(), 1.0f, 1e-6f);
+}
+
+namespace {
+
+// Three rooms along x (1: x < 100, 2: 100..200, 3: beyond), each next to
+// the following one.
+class StripLevel final : public Level {
+public:
+    int findRoom(const Vec3& p, int) const override { return p.x < 100.0f ? 1 : (p.x < 200.0f ? 2 : 3); }
+    int touchedNeighbors(int*, int, int, const Vec3&, float) const override { return 0; }
+    int neighbors(int* out, int max, int room) const override {
+        int n = 0;
+        if (room > 1 && n < max)
+            out[n++] = room - 1;
+        if (room < 3 && n < max)
+            out[n++] = room + 1;
+        return n;
+    }
+    void collect(const int*, int, const Vec3&, float, LevelBound& out) const override { out.clear(); }
+    void instances(int, std::vector<Instance*>&) const override {}
+};
+
+struct DetachCountingBody final : Body {
+    int detached = 0;
+    void detach() override { ++detached; }
+};
+
+} // namespace
+
+TEST(ParityPhysCore, TypeOneMoversOutsideTheActiveRoomsAreDetached) {
+    // dgPhysManager::DeclareMover / Update: the player (type 4) makes its
+    // room and the neighbours active; a type-1 mover elsewhere is left out
+    // of the frame and detached.
+    StripLevel level;
+    World world;
+    world.setLevel(&level);
+    DetachCountingBody player, near, far;
+    player.place(Mat34::translation({0.0f, 10.0f, 0.0f}));
+    near.place(Mat34::translation({150.0f, 10.0f, 0.0f}));
+    far.place(Mat34::translation({250.0f, 10.0f, 0.0f}));
+    player.declare(4, 0x1b);
+    near.declare(1, 0x1b);
+    far.declare(1, 0x1b);
+    world.add(&player);
+    world.add(&near);
+    world.add(&far);
+    world.advanceFixed(1.0f / 60.0f);
+    EXPECT_TRUE(player.player);
+    EXPECT_TRUE(world.isActive(&near));
+    EXPECT_FALSE(world.isActive(&far));
+    EXPECT_EQ(near.detached, 0);
+    EXPECT_EQ(far.detached, 1);
+    EXPECT_LT(near.ics.linearVelocity.y, 0.0f);
+    EXPECT_EQ(far.ics.linearVelocity.y, 0.0f);
+}
+
+TEST(ParityPhysCore, MoverTableHoldsThirtyTwo) {
+    World world;
+    std::vector<std::unique_ptr<Body>> bodies;
+    for (int i = 0; i < 33; ++i) {
+        bodies.push_back(std::make_unique<Body>());
+        world.add(bodies.back().get());
+    }
+    world.advanceFixed(1.0f / 60.0f);
+    EXPECT_LT(bodies[31]->ics.linearVelocity.y, 0.0f);
+    EXPECT_EQ(bodies[32]->ics.linearVelocity.y, 0.0f);
+}
+
+TEST(ParityPhysCore, UndeclaredOrNonUpdatingBodiesStandStill) {
+    World world;
+    Body a, b;
+    world.add(&a);
+    world.add(&b);
+    b.declared = false;
+    world.advanceFixed(1.0f / 60.0f);
+    EXPECT_LT(a.ics.linearVelocity.y, 0.0f);
+    EXPECT_EQ(b.ics.linearVelocity.y, 0.0f);
+    // DeclareMover's flags: without 0x1 the body does not update.
+    a.declare(2, 0x1a);
+    EXPECT_FALSE(a.updates);
+    EXPECT_TRUE(a.collideTerrain && a.collideInstances && a.collideMovers);
+    const float v = a.ics.linearVelocity.y;
+    world.advanceFixed(1.0f / 60.0f);
+    EXPECT_EQ(a.ics.linearVelocity.y, v);
 }

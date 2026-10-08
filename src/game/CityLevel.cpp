@@ -350,6 +350,21 @@ int CityLevel::findRoom(const Vec3& position, int hint) const {
     return room != 0 ? room : hint;
 }
 
+int CityLevel::neighbors(int* out, int max, int room) const {
+    // cityLevel::GetNeighbors: the rooms across the room's perimeter edges,
+    // each once, in perimeter order.
+    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size())
+        return 0;
+    int count = 0;
+    for (const auto& edge : m_city.psdl.rooms[static_cast<std::size_t>(room)].perimeter) {
+        const int neighbor = edge.neighbor;
+        if (neighbor == 0 || count >= max || std::find(out, out + count, neighbor) != out + count)
+            continue;
+        out[count++] = neighbor;
+    }
+    return count;
+}
+
 int CityLevel::touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const {
     // cityLevel::GetTouchedNeighbors: the rooms across the room's perimeter
     // edges the sphere reaches (in the ground plane), each once; instance

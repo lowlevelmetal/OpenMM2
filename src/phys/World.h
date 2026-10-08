@@ -94,13 +94,32 @@ public:
     Mat34 boundMatrix;
     Collider collider;
 
-    // dgPhysManager mover flags: 2 collide with the city, 8 with the
-    // instances of the rooms around, 0x10 with the other movers.
+    // dgPhysManager::DeclareMover's flags: 0x1 the body updates (its
+    // controller, its integration and its pending push), 0x2 it collides
+    // with the city, 0x8 with the instances of the rooms around, 0x10 with
+    // the other movers.
+    bool updates = true;
     bool collideTerrain = true;
     bool collideInstances = true;
     bool collideMovers = true;
+    // DeclareMover's type: 1 a body that is detached (Instance::detach) and
+    // left out for the frame when its room is not one of the active rooms
+    // (knocked-over props); 2 a plain mover; 3 and 4 make their room and its
+    // neighbours active rooms (opponents near a player, the player); 4 is
+    // also PlayerInst.
+    int moverType = 2;
+    // MM2's owners declare their movers anew every frame (the table is reset
+    // after each frame); OpenMM2 keeps the last declaration, and an owner
+    // sets `declared` false for a frame in which MM2 would not declare the
+    // body (it then neither updates nor collides).
+    bool declared = true;
     // dgPhysManager's PlayerInst: what it hits gets hitByPlayer.
     bool player = false;
+
+    // dgPhysManager::DeclareMover(instance, type, flags) for the coming
+    // frames: sets moverType and the flags above (type 4 also sets player)
+    // and marks the body declared.
+    void declare(int type, unsigned flags);
     // A body whose motion comes from outside (network cars): not
     // integrated, others collide with it as with an object that does not
     // move (its collider has no ICS).
@@ -149,9 +168,20 @@ public:
     // MM2 updates its movers in the order they were declared each frame).
     // remove() may be called during a step (from impact callbacks); the body
     // must stay alive until the step ends.
+    //
+    // Each frame (advanceFixed / advanceOversampled) takes, as
+    // dgPhysManager::DeclareMover and Update do, the declared bodies in
+    // order up to 32 (with a level, only those in a room), makes the rooms
+    // of the type-3 and type-4 ones and their neighbours active (at most 20
+    // rooms), and leaves out and detaches the type-1 bodies outside them.
     void add(Body* body);
     void remove(Body* body);
     bool contains(const Body* body) const;
+    // dgPhysManager::IgnoreMover: the body takes no further part in this
+    // frame (the props and traffic owners call it when they detach a body).
+    void ignoreMover(const Body* body);
+    // Whether the body takes part in the current frame.
+    bool isActive(const Body* body) const;
 
     // One simulation sample.
     void step(float dt);
@@ -194,9 +224,13 @@ private:
         Body* body = nullptr;
         bool fresh = false;   // NewMover's 0x100: no update or collision until the sample ends
         bool removed = false; // removed during a step (dropped when it ends)
+        bool active = true;   // in dgPhysManager's table this frame (declared, within 32, not culled)
         std::vector<Instance*> collidables;
     };
     bool live(const Mover& m) const { return !m.removed; }
+    // Taking part this frame; `updating` also has the update flag.
+    bool running(const Mover& m) const { return !m.removed && m.active; }
+    bool updating(const Mover& m) const { return running(m) && !m.fresh && m.body->updates; }
 
     void beginFrame();
     void gatherCollidables(Mover& mover);
@@ -225,6 +259,8 @@ private:
     std::vector<Intersection> m_isectsA, m_isectsB;
     std::vector<Impact> m_impacts;
     std::vector<Instance*> m_roomScratch;
+    // dgPhysManager's active rooms (+0x10, at most 20) for this frame.
+    std::vector<int> m_activeRooms;
 };
 
 } // namespace mm2::phys

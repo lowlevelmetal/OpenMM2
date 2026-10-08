@@ -44,6 +44,10 @@ public:
     // The entity's call after the impacts that attached it were resolved
     // (dgPhysEntity vtable 0x24).
     virtual void attached() {}
+    // lvlInstance::Detach: dgPhysManager::Update calls it on a type-1 mover
+    // outside the active rooms (dgHitBangerInstance::Detach lets the body
+    // go and moves the prop to room 0, out of the world).
+    virtual void detach() {}
 
     // dgBangerInstance (lvlInstance flag 1): resolved with dgImpact and the
     // banger's impulse limit; breaking loose calls bangerHit
@@ -106,6 +110,9 @@ public:
     // cityLevel::GetTouchedNeighbors: up to `max` rooms next to `room` whose
     // shared perimeter edges the sphere touches.
     virtual int touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const = 0;
+    // cityLevel::GetNeighbors: up to `max` rooms across `room`'s perimeter,
+    // each once, in perimeter order (none by default).
+    virtual int neighbors(int* /*out*/, int /*max*/, int /*room*/) const { return 0; }
     // lvlSDL::CollidePolyToLevel's collection: sdlPage16::Collect of each
     // room for the sphere into `out` (cleared first).
     virtual void collect(const int* rooms, int count, const Vec3& centre, float radius, LevelBound& out) const = 0;

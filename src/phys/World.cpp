@@ -1,5 +1,6 @@
-// dgPhysManager (Update, GatherCollidables, TrivialCollideInstances,
-// CollideTerrain, CollideInstances, NewMover) from the code of midtown2.exe
+// dgPhysManager (DeclareMover, IgnoreMover, NewMover, Update,
+// GatherCollidables, TrivialCollideInstances, CollideTerrain,
+// CollideInstances) from the code of midtown2.exe
 // build 3393 (MM2Recomp). See docs/physics.md, "How a sample runs" and
 // "Collision".
 
@@ -13,6 +14,9 @@ namespace {
 
 // dgPhysManager::GatherCollidables keeps at most 32 per mover.
 constexpr std::size_t kMaxCollidables = 32;
+// dgPhysManager's mover table and its active room list.
+constexpr std::size_t kMaxMovers = 32;
+constexpr std::size_t kMaxActiveRooms = 20;
 // cityLevel::GetTouchedNeighbors' table size in GatherCollidables and
 // CollideTerrain.
 constexpr int kMaxNeighbors = 8;
@@ -62,6 +66,18 @@ void Body::resetCollider() {
     collider.id = audioId;
     collider.body = this;
     collider.setKey(this);
+}
+
+void Body::declare(int type, unsigned flags) {
+    // dgPhysManager::DeclareMover.
+    moverType = type;
+    updates = (flags & 0x1) != 0;
+    collideTerrain = (flags & 0x2) != 0;
+    collideInstances = (flags & 0x8) != 0;
+    collideMovers = (flags & 0x10) != 0;
+    declared = true;
+    if (type == 4)
+        player = true;
 }
 
 const Bound* Body::bound(int which) const {
@@ -124,18 +140,32 @@ void World::add(Body* body) {
 }
 
 void World::addNewMover(Body* body) {
-    // dgPhysManager::NewMover: flag 0x100 until the end of the sample.
+    // dgPhysManager::NewMover: flag 0x100 until the end of the sample. A body
+    // already listed starts over as new; a full table (32) takes no more.
     for (Mover& m : m_movers) {
         if (m.body == body) {
-            if (m.removed) {
-                m.removed = false;
-                m.fresh = true;
-            }
+            m.removed = false;
+            m.fresh = true;
+            m.active = true;
             return;
         }
     }
+    const auto taken = std::ranges::count_if(m_movers, [this](const Mover& m) { return running(m); });
+    if (static_cast<std::size_t>(taken) >= kMaxMovers)
+        return;
     add(body);
     m_movers.back().fresh = true;
+}
+
+void World::ignoreMover(const Body* body) {
+    // dgPhysManager::IgnoreMover: the entry's flags cleared for the frame.
+    for (Mover& m : m_movers)
+        if (m.body == body)
+            m.active = false;
+}
+
+bool World::isActive(const Body* body) const {
+    return std::ranges::any_of(m_movers, [&](const Mover& m) { return m.body == body && running(m); });
 }
 
 void World::remove(Body* body) {
@@ -157,10 +187,48 @@ bool World::probe(const Vec3& a, const Vec3& b, RayHit& hit) const {
 }
 
 void World::beginFrame() {
-    // dgPhysManager::Update clears the "hit by the player" marks of its
-    // movers once per frame, before the samples.
+    // dgPhysManager::DeclareMover: the declared bodies in order, at most 32
+    // (with a level, only those in a room); the rooms of the type-3 and
+    // type-4 ones and their neighbours become active (at most 20).
+    m_activeRooms.clear();
+    std::size_t taken = 0;
+    const auto addActiveRoom = [this](int room) {
+        if (m_activeRooms.size() < kMaxActiveRooms &&
+            std::ranges::find(m_activeRooms, room) == m_activeRooms.end())
+            m_activeRooms.push_back(room);
+    };
+    for (Mover& m : m_movers) {
+        Body& b = *m.body;
+        // A body placed outside the room bookkeeping finds its room first
+        // (MM2's owners move their instances into a room when they place
+        // them; DeclareMover refuses an instance in none).
+        if (m_level && live(m) && b.declared && b.room == 0)
+            b.room = m_level->findRoom(b.position(), 0);
+        m.active = live(m) && b.declared && taken < kMaxMovers && (!m_level || b.room != 0);
+        if (!m.active)
+            continue;
+        ++taken;
+        if (b.moverType > 2 && m_level) {
+            int rooms[64];
+            rooms[0] = b.room;
+            const int n = 1 + m_level->neighbors(rooms + 1, 63, b.room);
+            for (int k = 0; k < n; ++k)
+                addActiveRoom(rooms[k]);
+        }
+    }
+    // dgPhysManager::Update, before the samples: a type-1 mover whose room
+    // is not active takes no part this frame and is detached
+    // (lvlInstance::Detach); then the "hit by the player" marks are cleared.
+    for (Mover& m : m_movers) {
+        if (!m.active || m.body->moverType != 1 || !m_level)
+            continue;
+        if (std::ranges::find(m_activeRooms, m.body->room) != m_activeRooms.end())
+            continue;
+        m.active = false;
+        m.body->detach();
+    }
     for (Mover& m : m_movers)
-        if (live(m))
+        if (running(m))
             m.body->hitByPlayer = false;
 }
 
@@ -207,12 +275,12 @@ void World::step(float dt) {
     const std::size_t count = m_movers.size();
     for (std::size_t i = 0; i < count; ++i) {
         Body* b = m_movers[i].body;
-        if (live(m_movers[i]) && b->controller)
+        if (updating(m_movers[i]) && b->controller)
             b->controller->beforeIntegrate(*b, dt, *this);
     }
     for (std::size_t i = 0; i < count; ++i) {
         Body* b = m_movers[i].body;
-        if (!live(m_movers[i]))
+        if (!updating(m_movers[i]))
             continue;
         if (!b->kinematic)
             b->ics.update(dt, invDt);
@@ -221,7 +289,7 @@ void World::step(float dt) {
     }
     for (std::size_t i = 0; i < count; ++i) {
         Body* b = m_movers[i].body;
-        if (!live(m_movers[i]))
+        if (!updating(m_movers[i]))
             continue;
         if (b->controller)
             b->controller->afterIntegrate(*b, dt, *this);
@@ -240,7 +308,8 @@ void World::step(float dt) {
     // or its objects.
     for (Mover& m : m_movers) {
         m.collidables.clear();
-        if (live(m) && !m.fresh && m.body->collisionBound && (m.body->collideTerrain || m.body->collideInstances))
+        if (running(m) && !m.fresh && m.body->collisionBound &&
+            (m.body->collideTerrain || m.body->collideInstances))
             gatherCollidables(m);
     }
 
@@ -248,7 +317,7 @@ void World::step(float dt) {
     // gathered instances. Movers that collisions set in motion are appended
     // (fresh) and wait for the next sample.
     for (std::size_t i = 0; i < m_movers.size(); ++i) {
-        if (!live(m_movers[i]) || m_movers[i].fresh || !m_movers[i].body->collisionBound)
+        if (!running(m_movers[i]) || m_movers[i].fresh || !m_movers[i].body->collisionBound)
             continue;
         Body* a = m_movers[i].body;
         if (a->collideTerrain)
@@ -256,7 +325,7 @@ void World::step(float dt) {
         if (a->collideMovers) {
             for (std::size_t j = i + 1; j < m_movers.size(); ++j) {
                 Body* b = m_movers[j].body;
-                if (!live(m_movers[j]) || m_movers[j].fresh || !b->collideMovers || !b->collisionBound)
+                if (!running(m_movers[j]) || m_movers[j].fresh || !b->collideMovers || !b->collisionBound)
                     continue;
                 // Colliders sharing an unbroken joint (a tractor and its
                 // trailer) do not collide.
@@ -270,7 +339,7 @@ void World::step(float dt) {
             // The list may not survive the calls (new movers reallocate).
             std::vector<Instance*> list = m_movers[i].collidables;
             for (Instance* c : list)
-                if (live(m_movers[i]))
+                if (running(m_movers[i]))
                     collideInstances(*m_movers[i].body, *c);
         }
     }
@@ -280,11 +349,11 @@ void World::step(float dt) {
         m.fresh = false;
     // phColliderBase::UpdateMtx: the pending pushes move the bodies.
     for (Mover& m : m_movers)
-        if (live(m))
+        if (updating(m))
             m.body->collider.updateMtx();
     for (std::size_t i = 0; i < m_movers.size(); ++i) {
         Body* b = m_movers[i].body;
-        if (live(m_movers[i]) && b->controller)
+        if (updating(m_movers[i]) && b->controller)
             b->controller->afterCollisions(*b, dt, *this);
     }
     m_stepping = false;
