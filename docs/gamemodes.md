@@ -507,8 +507,9 @@ Not implemented, all verified to exist in MM2:
   `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
   hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
   the renderer draws it.
-* The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`)
-  and the CD player display (`mmCDPlayer`).
+* The CD player display (`mmCDPlayer`). (The mouse steering bar, `mouse_bar`
+  / `mouse_ar` in `mmExternalView::Cull`, is drawn with the instrument
+  cluster.)
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

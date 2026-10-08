@@ -131,8 +131,12 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/app/Context.h` | 103 | O | - |
 | `src/app/Controls.cpp` | 105 | P | session |
 | `src/app/Controls.h` | 104 | P | session |
+| `src/app/ForceFeedback.cpp` | 311 | P | mm2-input-ff |
+| `src/app/ForceFeedback.h` | 114 | P | mm2-input-ff |
 | `src/app/GameData.cpp` | 153 | O | - |
 | `src/app/GameData.h` | 37 | O | - |
+| `src/app/GameInput.cpp` | 505 | P | mm2-input-ff |
+| `src/app/GameInput.h` | 193 | P | mm2-input-ff |
 | `src/app/IntroScreen.cpp` | 233 | M | rendering-fx |
 | `src/app/IntroScreen.h` | 14 | M | rendering-fx |
 | `src/app/RaceScreen.cpp` | 1528 | M | session |
@@ -426,6 +430,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/platform/Clock.h` | 36 | M | openmm2-only |
 | `src/platform/Dialogs.cpp` | 137 | O | - |
 | `src/platform/Dialogs.h` | 42 | O | - |
+| `src/platform/ForceFeedback.cpp` | 245 | M | mm2-input-ff |
+| `src/platform/ForceFeedback.h` | 48 | M | mm2-input-ff |
 | `src/platform/ImGuiPlatform.cpp` | 27 | O | - |
 | `src/platform/ImGuiPlatform.h` | 26 | O | - |
 | `src/platform/Input.cpp` | 230 | M | openmm2-only |

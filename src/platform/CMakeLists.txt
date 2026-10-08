@@ -3,6 +3,7 @@ add_library(mm2_platform STATIC
     Clock.cpp
     Window.cpp
     Input.cpp
+    ForceFeedback.cpp
     Dialogs.cpp
     ImGuiPlatform.cpp)
 target_link_libraries(mm2_platform

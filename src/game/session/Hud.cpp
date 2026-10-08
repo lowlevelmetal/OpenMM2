@@ -496,7 +496,7 @@ void Hud::preload(ui::TextureCache* art) {
                     m_textures.get(mat.texture);
     }
     if (art) {
-        for (const char* t : {"speed_ticks.tga", "damage.tga", "damage_lable.tga"})
+        for (const char* t : {"speed_ticks.tga", "damage.tga", "damage_lable.tga", "mouse_bar.tga", "mouse_ar.tga"})
             art->get(std::string("texture/") + t);
         art->getColorKeyed("texture/digi_colon.tga");
         for (char c = '0'; c <= '9'; ++c) {
@@ -959,6 +959,24 @@ void Hud::drawCluster(render::Overlay2D& ov, ui::TextureCache& art, const Player
     const ui::UiTexture& ticks = art.get("texture/speed_ticks.tga");
     const ui::UiTexture& damage = art.get("texture/damage.tga");
     const ui::UiTexture& label = art.get("texture/damage_lable.tga");
+
+    // With the mouse controller, first the steering bar (mouse_bar) at the
+    // bottom centre, two bar heights up, and its arrow (mouse_ar) 16 pixels
+    // above it, moved (bar width / 2 - 15) x the steering from the centre
+    // (input-ff's part of mmExternalView::Cull).
+    if (player.mouseSteer) {
+        const ui::UiTexture& bar = art.get("texture/mouse_bar.tga");
+        const ui::UiTexture& arrow = art.get("texture/mouse_ar.tga");
+        const render::UiLayout& l = ov.layout();
+        const float centre = (l.left + l.right) * 0.5f;
+        const float barY = l.bottom - px(2.0f * static_cast<float>(bar.height));
+        const int half = static_cast<int>(bar.width / 2) - 15;
+        const int travel = static_cast<int>(static_cast<float>(half) * *player.mouseSteer); // ftol
+        ui::drawImage(ov, arrow, centre + px(static_cast<float>(travel - static_cast<int>(arrow.width / 2))),
+                      barY - px(16.0f), px(static_cast<float>(arrow.width)), px(static_cast<float>(arrow.height)));
+        ui::drawImage(ov, bar, centre - px(static_cast<float>(bar.width) * 0.5f), barY,
+                      px(static_cast<float>(bar.width)), px(static_cast<float>(bar.height)));
+    }
 
     // mmSlidingGauge at (8, 88): a window as wide as speed_ticks slides
     // across the 500-pixel colour bar with the damage; the label on top.

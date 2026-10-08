@@ -318,22 +318,31 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   one); sliders in MM2's units: sensitivity 0.5–2, dead zone 0–0.33
   (`[Controls] DeadZone`, default 0.1), collision and road force 0–2;
   sensitivity for every type but the keyboard, dead zone and calibration
-  for joystick and wheel, POV for a joystick, FORCE FEEDBACK whenever a
-  force-feedback device is present (any joystick in OpenMM2, **inferred**),
-  the intensities while it is on (`ControlSetup::ActivateDeviceOptions`,
-  `InitCustomControls`, `SetFFPermissions`); CUSTOMIZE at 348,315. DEFAULTS also
+  for joystick and wheel, POV for a joystick, FORCE FEEDBACK with the
+  joystick or wheel controller and a force-feedback joystick (an SDL haptic
+  device, or in OpenMM2 also a pad with rumble motors), the intensities
+  while it is on (`ControlSetup::ActivateDeviceOptions`,
+  `InitCustomControls`, `SetFFPermissions`); CUSTOMIZE at 348,315. The
+  steering bar (`mmMouseSteerBar`, `mouse_bar` / `mouse_ar` at 0.1, 0.85 of
+  the screen) shows the chosen controller's steering. DEFAULTS also
   selects the keyboard and an automatic transmission. Calibration is left to
   the operating system.
-* **Customize** (`cuss_bk`): MM2's 34 action slots in list order (Steering
-  and Camera Pan are not listed for the keyboard), two columns at 50,62 in
-  20 px rows, 15 visible, with MM2's keyboard defaults
-  (`mmInput::SetDefaultConfig`). Enter or a click waits for a key; Escape
-  cancels; F1–F10 are refused (`xasn_dlg`); a key already in use asks with
-  `ctrl_dlg` and unbinds the other action. Only keyboard bindings are
-  offered (MM2 also had mouse, joystick, pad and wheel columns). Bindings
-  are stored as `[Controls] Bind.<string id>`; the page and the race share
-  one action table (`app::controls`), and the race reads the bindings, the
-  dead zone and the other `[Controls]` options from it.
+* **Customize** (`cuss_bk`): the chosen controller's binding set: the slots
+  it reads and does not fix (`mmInput::Init`: Steering and Camera Pan are
+  not listed for the keyboard, Steer Left / Right not for the others, the
+  steering axis only for the game pad), two columns at 50,62 in 20 px rows,
+  15 visible, with MM2's defaults for that controller
+  (`mmInput::SetDefaultConfig`) and its descriptions
+  (`mmIODev::GetDescription`: "Left Mouse Button", "Joy Button 3", "Joy
+  Y-Axis Up"). Enter or a click waits for a key, a mouse button or (for the
+  joystick types) a joystick button or axis (`mmInput::PollStates`); Escape
+  cancels; F1–F10 and controls the slot cannot take are refused
+  (`xasn_dlg`); a control already in use asks with `ctrl_dlg` and unbinds
+  the other action (`mmInput::BuildCaptureIO`). Bindings are stored per
+  controller as `[Controls] Bind.<string id>` (keyboard) or
+  `Bind.<Mouse|Joystick|GamePad|Wheel>.<string id>`; the page and the race
+  share the tables (`app::controls`), and the race reads the bindings, the
+  dead zone and the other `[Controls]` options from it (`app/GameInput`).
 * **About** (`about_bk`): `credits.jpg` at 39,203 (215×173) from its top,
   held 1.5 s, then scrolling at 50 px/s in whole pixels and wrapping
   without a gap (`AboutMenu::Update`); DONE at 439,415; the product ID label (130,180) shows "UNKNOWN"
