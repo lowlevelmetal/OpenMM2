@@ -1,6 +1,7 @@
 #include "data/TextTables.h"
 
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 
 namespace mm2::data {
 
@@ -41,21 +42,19 @@ std::string KeyValueFile::getString(std::string_view key, std::string_view fallb
 }
 
 int KeyValueFile::getInt(std::string_view key, int fallback) const {
+    // mmVehInfo::Load / mmCityInfo::Load scan "Key=%d": the decimal prefix.
     auto v = get(key);
     if (!v)
         return fallback;
-    if (auto i = str::parseInt(*v))
-        return static_cast<int>(*i);
-    if (auto d = str::parseDouble(*v))
-        return static_cast<int>(*d);
-    return fallback;
+    return atoiPrefix(*v).value_or(fallback);
 }
 
 float KeyValueFile::getFloat(std::string_view key, float fallback) const {
+    // "Key=%f" (and atof for UIDist): the numeric prefix.
     auto v = get(key);
     if (!v)
         return fallback;
-    auto d = str::parseDouble(*v);
+    auto d = atofPrefix(*v);
     return d ? static_cast<float>(*d) : fallback;
 }
 
@@ -101,17 +100,19 @@ std::string_view CsvTable::cell(std::size_t row, std::size_t col) const {
 }
 
 float CsvTable::cellFloat(std::size_t row, std::size_t col, float fallback) const {
-    auto d = str::parseDouble(cell(row, col));
-    return d ? static_cast<float>(*d) : fallback;
+    // parCsvFile::GetFloat is atof: the numeric prefix, 0 for other text.
+    const auto c = cell(row, col);
+    if (c.empty())
+        return fallback;
+    return static_cast<float>(cAtof(c));
 }
 
 int CsvTable::cellInt(std::size_t row, std::size_t col, int fallback) const {
+    // parCsvFile::GetInt is atoi: the decimal prefix, 0 for other text.
     const auto c = cell(row, col);
-    if (auto i = str::parseInt(c))
-        return static_cast<int>(*i);
-    if (auto d = str::parseDouble(c))
-        return static_cast<int>(*d);
-    return fallback;
+    if (c.empty())
+        return fallback;
+    return cAtoi(c);
 }
 
 } // namespace mm2::data

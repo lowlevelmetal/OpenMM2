@@ -32,7 +32,8 @@ TEST(DatFile, ParsesNestedBlocksAndArrays) {
     ASSERT_TRUE(trans);
     EXPECT_EQ(trans->getFloats("GearRatios").size(), 5u);
     EXPECT_EQ(trans->getFloats("UpshiftRPM").size(), 1u);
-    EXPECT_FLOAT_EQ(*top->getFloat("Approach Rate"), 1.2f);
+    // MM2's tokenizer cannot match a field name with a space in it.
+    EXPECT_FALSE(top->getFloat("Approach Rate"));
     EXPECT_EQ(*top->getString("Name"), "hello world");
 }
 
