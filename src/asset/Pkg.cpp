@@ -283,6 +283,21 @@ Aabb PkgMesh::bounds() const {
     return b;
 }
 
+float PkgMesh::radius() const {
+    // modGetStatic(name, radius): its vertex callback keeps the largest
+    // (x*x + y*y) + z*z, then the square root.
+    float radius2 = 0.0f;
+    for (const auto& s : sections)
+        for (const auto& p : s.packets)
+            for (const auto& v : p.vertices) {
+                const Vec3& q = v.position;
+                const float d2 = (q.x * q.x + q.y * q.y) + q.z * q.z;
+                if (radius2 < d2)
+                    radius2 = d2;
+            }
+    return std::sqrt(radius2);
+}
+
 const PkgMesh* Pkg::find(std::string_view name) const {
     for (const auto& m : meshes)
         if (str::iequals(m.name, name))

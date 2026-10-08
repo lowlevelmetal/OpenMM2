@@ -75,20 +75,11 @@ float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
     const auto pkg = asset::parsePkg(*bytes);
     if (!pkg)
         return 0.0f;
-    float radius2 = 0.0f;
-    for (const auto& mesh : pkg->meshes) {
-        if (!radiusPart(mesh.part))
-            continue;
-        for (const auto& section : mesh.sections)
-            for (const auto& packet : section.packets)
-                for (const auto& v : packet.vertices) {
-                    const float d2 = v.position.z * v.position.z + v.position.y * v.position.y +
-                                     v.position.x * v.position.x;
-                    if (radius2 < d2)
-                        radius2 = d2;
-                }
-    }
-    return std::sqrt(radius2);
+    float radius = 0.0f;
+    for (const auto& mesh : pkg->meshes)
+        if (radiusPart(mesh.part))
+            radius = std::max(radius, mesh.radius());
+    return radius;
 }
 
 // The distance of the farther corner of a bound's box from its origin
