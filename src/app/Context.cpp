@@ -14,8 +14,10 @@ void Context::applyAudioSettings() {
     if (!mixer)
         return;
     // Options > Audio: the volumes, with the toggles muting their buses
-    // (sound FX: effects, engines and voices; commentary: voices; music; city
-    // sounds: the ambient sounds and the city's ambience segment).
+    // (sound FX: effects, engines and voices, the city's wave ambient sounds
+    // included; commentary: voices; music; city sounds: the city's DirectMusic
+    // ambience segment, which DMusicWaveBuffer::SetVolume plays at the MUSIC
+    // volume).
     // AudioOptions::SetAudioState: turning SOUND FX off sets the volume of
     // every AudSoundBase sound to zero (audManager::SetVolAllSounds on the
     // sound class that SOUND FX VOLUME scales through
@@ -24,11 +26,14 @@ void Context::applyAudioSettings() {
     mixer->setMasterVolume(settings.masterVolume);
     mixer->setBusVolume(audio::Bus::Effects, settings.soundEffects ? settings.effectsVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Engine, settings.soundEffects ? settings.engineVolume : 0.0f);
-    mixer->setBusVolume(audio::Bus::Ambient, settings.citySounds ? settings.ambientVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Ambient, settings.citySounds ? settings.musicVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Voice,
                         settings.soundEffects && settings.commentary ? settings.voiceVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Music, settings.music ? settings.musicVolume : 0.0f);
     mixer->setBalance(settings.balance);
+    // AudioOptions::SetStereoFX: mono centres every voice; surround only adds
+    // an EAX/3D flag, so it plays as stereo.
+    mixer->setStereo(settings.stereoFx != 0);
 }
 
 audio::MusicPlayer* Context::music() {
@@ -38,7 +43,8 @@ audio::MusicPlayer* Context::music() {
             log::warn("music: soundtrack unavailable");
         } else {
             m_musicStream = mixer->addStream(m_music->musicStream(), audio::Bus::Music);
-            // The city ambience segment follows the CITY SOUNDS option, not MUSIC.
+            // The city ambience segment: CITY SOUNDS turns it on, the MUSIC
+            // volume sets its level (applyAudioSettings).
             m_ambienceStream = mixer->addStream(m_music->ambienceStream(), audio::Bus::Ambient);
         }
     }

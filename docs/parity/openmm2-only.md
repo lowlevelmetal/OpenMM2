@@ -16,7 +16,7 @@ each other, the camera projection, mipmap generation, joystick axis scaling
 and the number parsing the data loaders use. Those functions were audited
 against MM2 like the P files and their files are reclassified M below.
 
-Summary: 34 functions; verified 5, fixed 7, deviation 6, inferred 4, open 2,
+Summary: 34 functions; verified 6, fixed 8, deviation 5, inferred 4, open 1,
 openmm2 10.
 
 ## Frame timing and the main loop
@@ -53,8 +53,8 @@ openmm2 10.
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
 | `Context::applyAudioSettings`: SOUND FX toggle | `AudioOptions::SetAudioState`, `AudioOptions::SetSoundFX`, the wave mute in AudManager (linker-folded under the name `AudManager::GetMixerPtr`), `audManager::SetVolAllSounds`, `AudSoundBase::AudSoundBase`, `AudSpeech::AudSpeech` | fixed | SOUND FX off sets the volume of every AudSoundBase sound to zero, the same class of sounds `AudManager::AssignWaveVolume` scales. Commentary is played by AudSpeech through AudStream, an AudSoundBase, so it falls silent too; OpenMM2 muted only effects and engines. Now the voice bus needs both SOUND FX and COMMENTARY. Test: `AudioOptionsParity.SoundFxToggleSilencesCommentaryToo`. Not reproduced: with SOUND FX off at start-up MM2 never initialises the wave audio (`InitAudioManager` gets the flag), so switching it on has no effect until the next start; OpenMM2 applies it at once. |
-| `Context::applyAudioSettings`: volumes, balance, master | `AudioOptions::SetSFXVolume`, `AudioOptions::SetMusicVolume`, `AudioOptions::SetBalance`, `AudManager::AssignWaveVolume`, `DMusicManager::SetVolume` | deviation | Same buses as MM2 (wave volume on effects, engines and voices; music volume on DirectMusic; balance on both). The gains stay linear where MM2 maps the wave volume through `AudManager::Log` (the frontend's documented choice); the master volume is an OpenMM2 extra. |
-| `Context::applyAudioSettings`: `Bus::Ambient` | `mmAmbientAudio::Update`, `MMDMusicManager::UpdateAmbientSFX` | open | The bus carries both the wave ambient sounds (rain, thunder, the city's ambient loops: AudSoundBase sounds, so MM2 scales them with SOUND FX VOLUME and silences them with SOUND FX off) and the DirectMusic ambience segment (MUSIC volume). One bus cannot follow both; needs a separate bus for the segment (audio and frontend areas). |
+| `Context::applyAudioSettings`: volumes, balance, master | `AudioOptions::SetSFXVolume`, `AudioOptions::SetMusicVolume`, `AudioOptions::SetBalance`, `AudManager::AssignWaveVolume`, `DMusicManager::SetVolume` | verified | Same buses as MM2 (wave volume on effects, engines and voices; music volume on DirectMusic; balance on both). The mixer now applies MM2's `AudManager::AssignWaveVolume` curve to the slider values itself (audio audit); the master volume is an OpenMM2 extra. STEREO FX reaches the mixer (`Mixer::setStereo`: mono centres every voice, surround plays as stereo, `AudioOptions::SetStereoFX`). |
+| `Context::applyAudioSettings`: `Bus::Ambient` | `mmAmbientAudio::Update`, `MMDMusicManager::UpdateAmbientSFX` | fixed | The bus carried both the wave ambient sounds (rain, thunder, the city's ambient loops: AudSoundBase sounds, so MM2 scales them with SOUND FX VOLUME and silences them with SOUND FX off) and the DirectMusic ambience segment (MUSIC volume). The audio audit moved the wave sounds to `Bus::Effects`; `Bus::Ambient` now carries only the segment, at the MUSIC volume while CITY SOUNDS is on. The separate, unexposed `[Audio] Ambient` volume is gone (the MUSIC slider wrote it with the music volume). |
 | `Context::music`, `shutdownMusic`, `saveSettings`, `loadGameData` | | openmm2 | Glue. |
 
 ## Game data mounting

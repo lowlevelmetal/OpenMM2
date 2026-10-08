@@ -474,7 +474,7 @@ public:
                              });
         menu.add<ui::Slider>(fe.layout.widget(id, 11, {450, 246, 183, 29}), [&st] { return st.musicVolume; },
                              [&ctx](float v) {
-                                 ctx.settings.musicVolume = ctx.settings.ambientVolume = v;
+                                 ctx.settings.musicVolume = v;
                                  ctx.applyAudioSettings();
                              });
         menu.add<ui::Slider>(
@@ -496,7 +496,7 @@ protected:
         auto& st = fe.ctx.settings;
         const Settings d;
         st.effectsVolume = st.engineVolume = st.voiceVolume = 1.0f;
-        st.musicVolume = st.ambientVolume = 1.0f;
+        st.musicVolume = 1.0f;
         st.balance = 0.0f;
         st.soundEffects = d.soundEffects;
         st.commentary = d.commentary;

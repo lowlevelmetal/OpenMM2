@@ -21,7 +21,6 @@ void Settings::load(const std::filesystem::path& path) {
     masterVolume = volume(ini, "Master", masterVolume);
     effectsVolume = volume(ini, "Effects", effectsVolume);
     engineVolume = volume(ini, "Engine", engineVolume);
-    ambientVolume = volume(ini, "Ambient", ambientVolume);
     voiceVolume = volume(ini, "Voice", voiceVolume);
     musicVolume = volume(ini, "Music", musicVolume);
     soundEffects = ini.getBool("Audio", "SoundEffects", soundEffects);
@@ -49,7 +48,6 @@ bool Settings::save(const std::filesystem::path& path) {
     ini.setDouble("Audio", "Master", masterVolume);
     ini.setDouble("Audio", "Effects", effectsVolume);
     ini.setDouble("Audio", "Engine", engineVolume);
-    ini.setDouble("Audio", "Ambient", ambientVolume);
     ini.setDouble("Audio", "Voice", voiceVolume);
     ini.setDouble("Audio", "Music", musicVolume);
     ini.remove("Audio", "HighQuality"); // superseded by Quality

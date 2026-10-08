@@ -21,7 +21,6 @@ struct Settings {
     float masterVolume = 1.0f;
     float effectsVolume = 1.0f;
     float engineVolume = 1.0f;
-    float ambientVolume = 1.0f;
     float voiceVolume = 1.0f;
     float musicVolume = 1.0f;
     // The audio toggles, with MM2's start-up defaults (mmStatePack::SetDefaults
@@ -31,11 +30,11 @@ struct Settings {
     bool music = false;       // flag 0x4: interactive music
     bool citySounds = true;   // flag 0x800: city ambience
     // STEREO FX 0 Mono, 1 Stereo, 2 Surround (AudioOptions::SetStereoFX:
-    // flags 0x40 and 0x100); stored only.
+    // flags 0x40 and 0x100); surround plays as stereo.
     int stereoFx = 1;
     // SOUND QUALITY 0 Low, 1 Medium, 2 High: MM2's channel count 8/16/32
-    // (AudioOptions::SetQuality). Stored only: OpenMM2's mixer has no
-    // channel limit to set (open).
+    // (AudioOptions::SetQuality). Stored only: AudManager::SetNumChannels is
+    // empty in MM2, which always mixes 32 voices.
     int soundQuality = 2;
     // MM2 always plays the 22 kHz sounds (InitAudioManager sets aud22 and
     // .22k whatever the quality), so this stays true.
