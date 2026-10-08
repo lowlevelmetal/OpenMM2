@@ -529,8 +529,9 @@ steady circle vpsemi's trailer then lags (its body velocity reads 10 m/s at
 Impacts see the inverse mass matrix through the joint while it holds
 (`phColliderJointed::GetInvMassMatrix`), and the tractor and its trailer do
 not collide with each other (`dgPhysManager::Update`). The
-Ctrl+B debug key that breaks the joint (`dgTrailerJoint::Update`) is not
-ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
+Ctrl+B debug key breaks every holding joint in the frame it goes down
+(`dgTrailerJoint::Update` checks it first and then does nothing else that
+sample). TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
 nor drawn: `vehTrailerInstance::Init` loads only TWHL0–3 (drawing them at
 their offset from TWHL2/3 is mm2hook's addition). A car's own WHL4/WHL5
 (`vehCarModel::Draw`) are drawn with the WHL2/WHL3 matrices moved back along
@@ -593,6 +594,11 @@ narrow phase and the impact response are ports of the `phBound` family,
   (building walls are the PSDL's facade bounds). An object's sphere is its
   position and its model's radius (`lvlInstance::GetRadius`, the geometry
   set's), which a terrain-local bound raises to its box's farther corner.
+  A car's sphere is centred one up axis above its centre of mass
+  (`vehCarModel::GetPosition`), a trailer's on its centre of mass
+  (`vehTrailerInstance::GetPosition`); their radii are the "body" and
+  "trailer" geometries', which their bounds do not raise. The car's room
+  follows the same point (`vehCar::Update`).
   Materials a text bound file adds are `lvlMaterial`s: the file's
   elasticity, friction, effect and sound, drag 0, width 1, height 0, depth 0
   and no particles.
@@ -743,7 +749,8 @@ game's impact callback (the hit counts).
 ## simcar results
 
 `mm2tool simcars <game> 60`: full throttle from rest on flat asphalt
-(`_default` material), automatic gearbox, fixed 1/60 s step, retail geometry
+(the material manager's built-in `default` material, friction 1),
+automatic gearbox, fixed 1/60 s step, retail geometry
 (wheel pivots from `.mtx`, body box from the bound). The `.info` Top Speed is
 the menu's statistic, not a measurement. vpsemi and vpcentury tow their
 trailers. vpcop is the police car's own tune (as the AI drives it); the
@@ -751,26 +758,35 @@ player's vpcop drives as vpmustang99.
 
 | car | drive | mass | hp | High (mph) | 0-60 (s) | 1/4 mile (s) | top (mph) | .info Top Speed |
 |---|---|---|---|---|---|---|---|---|
-| vp4x4 | 4WD | 2500 | 550 | 85 | 4.00 | 12.48 | 104.5 | 57 |
-| vpauditt | RWD | 1300 | 551 | 120 | 4.17 | 12.28 | 146.5 | 182 |
-| vpbug | FWD | 1000 | 260 | 90 | 7.10 | 15.55 | 115.9 | 91 |
+| vp4x4 | 4WD | 2500 | 550 | 85 | 4.00 | 12.47 | 104.6 | 57 |
+| vpauditt | RWD | 1300 | 551 | 120 | 4.15 | 12.27 | 146.5 | 182 |
+| vpbug | FWD | 1000 | 260 | 90 | 7.08 | 15.55 | 115.9 | 91 |
 | vpbullet | RWD | 1300 | 550 | 110 | 4.23 | 12.40 | 133.1 | 137 |
-| vpbus | RWD | 5000 | 450 | 83 | 13.48 | 19.52 | 103.5 | 60 |
-| vpcab | RWD | 1000 | 300 | 95 | 6.75 | 15.03 | 126.7 | 103 |
-| vpcaddie | RWD | 1300 | 550 | 110 | 4.40 | 12.62 | 133.0 | 136 |
-| vpcentury | RWD | 3500 | 750 | 75 | 10.98 | 18.20 | 112.4 | 91 |
-| vpcoop | FWD | 800 | 250 | 80 | 9.28 | 17.27 | 104.3 | 60 |
-| vpcoop2k | FWD | 800 | 300 | 108 | 7.93 | 16.05 | 131.9 | 115 |
-| vpcop | RWD | 1300 | 750 | 140 | 2.93 | 10.68 | 164.9 | 160 |
-| vpdb7 | FWD | 1573 | 550 | 150 | 4.58 | 12.70 | 177.3 | 206 |
-| vpddbus | RWD | 4915 | 456 | 65 | 9.87 | 17.38 | 99.4 | 25 |
-| vpdune | FWD | 1000 | 400 | 106 | 4.45 | 12.73 | 136.7 | 170 |
-| vpford | RWD | 2500 | 550 | 85 | 6.42 | 14.88 | 104.1 | 58 |
-| vpmustang99 | RWD | 1300 | 500 | 115 | 5.45 | 13.62 | 135.3 | 160 |
-| vppanoz | FWD | 1300 | 650 | 151 | 4.37 | 12.40 | 177.2 | 216 |
-| vppanozgt | RWD | 1200 | 902 | 180 | 2.67 | 10.28 | 275.0 | 240 |
-| vpsemi | RWD | 3500 | 896 | 85 | 11.60 | 18.68 | 106.8 | 69 |
-| vpvwcup | FWD | 1000 | 550 | 122 | 3.78 | 11.97 | 155.7 | 194 |
+| vpbus | RWD | 5000 | 450 | 83 | 13.47 | 19.52 | 103.6 | 60 |
+| vpcab | RWD | 1000 | 300 | 95 | 6.75 | 15.02 | 126.7 | 103 |
+| vpcaddie | RWD | 1300 | 550 | 110 | 4.38 | 12.60 | 133.0 | 136 |
+| vpcentury | RWD | 3500 | 750 | 75 | 10.97 | 18.20 | 112.5 | 91 |
+| vpcoop | FWD | 800 | 250 | 80 | 9.27 | 17.27 | 104.3 | 60 |
+| vpcoop2k | FWD | 800 | 300 | 108 | 7.92 | 16.05 | 132.0 | 115 |
+| vpcop | RWD | 1300 | 750 | 140 | 2.92 | 10.67 | 164.9 | 160 |
+| vpdb7 | FWD | 1573 | 550 | 150 | 4.58 | 12.68 | 177.3 | 206 |
+| vpddbus | RWD | 4915 | 456 | 65 | 9.87 | 17.37 | 99.5 | 25 |
+| vpdune | FWD | 1000 | 400 | 106 | 4.43 | 12.73 | 136.8 | 170 |
+| vpford | RWD | 2500 | 550 | 85 | 6.40 | 14.87 | 104.1 | 58 |
+| vpmustang99 | RWD | 1300 | 500 | 115 | 5.43 | 13.60 | 135.3 | 160 |
+| vppanoz | FWD | 1300 | 650 | 151 | 4.35 | 12.38 | 177.2 | 216 |
+| vppanozgt | RWD | 1200 | 902 | 180 | 2.60 | 10.22 | 275.1 | 240 |
+| vpsemi | RWD | 3500 | 896 | 85 | 11.47 | 18.55 | 107.0 | 69 |
+| vpvwcup | FWD | 1000 | 550 | 122 | 3.78 | 11.97 | 155.9 | 194 |
+
+With the wheel centred the cars do not all run exactly straight, because
+their pivots are not mirrored. vpbug's right wheels sit 3.9 cm further out
+than its left ones, and vpsemi's hitch is 7.4 cm left of the tractor's
+centreline. The drive and the trailer's drag therefore turn them slowly:
+over a minute at full throttle, vpbug turns about 3 degrees and the vpsemi
+rig about 40 degrees, both to the left. OpenMM2 did this before the parity
+audit too. That MM2 does the same is inferred (same data, same forces),
+not observed.
 
 Top speeds are set by power against drag, or by MaxRPM in top gear: High is
 the top gear's speed at OptRPM. (Before the MM2 port, OpenMM2 took Low/High

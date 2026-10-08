@@ -2,9 +2,10 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
-Summary: 138 functions (rows; a few group overloads or a struct's
-defaults); verified 77, fixed 38, deviation 7, inferred 2, open 1,
-openmm2 13.
+Summary: 141 functions (rows; a few group overloads or a struct's
+defaults); verified 76, fixed 42, deviation 6, inferred 2, open 1,
+openmm2 14. (Second pass after the merge with phys-core, 2026-10-08: see
+"Second pass" at the end.)
 
 Scope: `vehCarSim` and its parts (`vehWheel`, `vehDrivetrain`, `vehEngine`,
 `vehTransmission`, `vehAero`, `vehAxle`, `vehGyro`, `vehStuck`,
@@ -68,8 +69,8 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `Wheel::computeFriction` | `vehWheel::ComputeFriction` | verified | asm |
 | `Wheel::calcSuspensionForce` | `vehWheel::CalcSuspensionForce` | fixed | asm. The bottoming impulse now calls `calcCollisionNoFriction` (phImpact::CalcCollisionNoFriction) instead of an inline copy that summed the inverse mass matrix in another order |
 | `Wheel::bumpDisplacement` | `vehWheel::GetBumpDisplacement` | verified | asm; the game's `frand` on World::randomSeed |
-| `Wheel::computeDwtdw` | `vehWheel::ComputeDwtdw` | fixed | asm. up . normal, |back|^2 and the lateral, forward and normal contact velocities are summed z, y, x as MM2 does; the probe's intersection is kept whenever it hits (dgPhysManager::Collide fills it before the wheel's own checks), which vehCar::RequiresTerrainCollision reads. Breakpoints, surface, sinking, CarFrictionHandling verified |
-| deep-water test in `Wheel::computeDwtdw` | | deviation | material depth >= 1 carries no wheel; vehWheel has no such test. It stands in while the wheel probes use the PSDL render mesh instead of MM2's collision polygons (how MM2's probe lets a car sink into deep water is not settled) |
+| `Wheel::computeDwtdw` | `vehWheel::ComputeDwtdw` | fixed | asm. up . normal, |back|^2 and the lateral, forward and normal contact velocities are summed z, y, x as MM2 does; the probe's intersection is kept whenever it hits (dgPhysManager::Collide fills it before the wheel's own checks), which vehCar::RequiresTerrainCollision reads. Breakpoints, surface, sinking, CarFrictionHandling verified. After the merge the probe is `World::wheelProbe` (dgPhysManager::Collide) with the wheel's own `ProbeCache` (its lvlSegmentInfo), ignoring the car's own instance; trailer wheels ignore none, as vehWheel::Init without a vehCarSim leaves it. Re-checked against the asm |
+| deep-water test in `Wheel::computeDwtdw` | | openmm2 | material depth >= 1 carries no wheel; vehWheel has no such test. With a level loaded it is a no-op: the city's collision polygons never include deep water (lvlSDL's Collect skips the deepwater fans), so the probe cannot hit it. It acts only where OpenMM2 probes its own geometry (tests, simcar) |
 | `Wheel::update` | `vehWheel::Update` | fixed | asm. The friction circle squares mu * load once; the contact force is summed suspension, lateral force, longitudinal force, lateral drag, longitudinal drag (OpenMM2 had the reverse); spin and wobble go through Matrix34::Rotate (`age::rotate`). Tyre displacement model, slip, slide and drag verified |
 | `Wheel::visualDispVert` / `visualDispLat` / `visualDispLong` | `vehWheel::GetVisualDispVert` / `Lat` / `Long` | verified | |
 | `makeRotateY` | `Matrix34::MakeRotateY` | verified | asm |
@@ -207,13 +208,21 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `Trailer::modelMatrix` | `vehTrailerInstance::GetMatrix` | verified | |
 | `Trailer::hitchGap` / `hitchAngle` | | openmm2 | diagnostics |
 | `Trailer::beforeIntegrate` | `vehTrailer::Update` (inputs) | verified | back wheels only, SSS steering against, handbrake split by the SSS steering |
-| `Trailer::afterIntegrate` | `vehTrailer::Update` | verified | drivetrains then the joint |
+| `Trailer::afterIntegrate` | `vehTrailer::Update`, `dgTrailerJoint::Update` | fixed | drivetrains then the joint (verified). The joint's Ctrl+B test was missing: while `Trailer::breakKeyPressed` is set (RaceScreen sets it for the frame B goes down with either Ctrl held, as ioKeyboard reports it), a holding hitch breaks and the joint does nothing else that sample |
+
+## src/phys/vehicle/VehicleBody.h
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `VehicleBody::position` | `vehCarModel::GetPosition`, `vehTrailerInstance::GetPosition` | fixed | added (asm): a car's centre is the ICS position plus its up axis (vehCarSim +0x90 + +0x78), a trailer's the ICS position (vehTrailer +0x288). dgPhysManager's sphere tests and vehCar::Update's room tracking use it; the body used the model origin |
+| `VehicleBody::radius` | `lvlInstance::GetRadius` | fixed | added: the geometry set's radius (see `geomSetRadius`), which vehCarModel::InitBound and vehTrailer::Init do not raise; the body used the bound's sphere. Without a model (tests) the bound's sphere stays |
 
 ## src/game/PlayerVehicle.h, PlayerVehicle.cpp
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
 | `readDat` | | openmm2 | |
+| `geomSetRadius` | `lvlInstance::GetGeomSet`'s radius, `modGetStatic` | fixed | added (asm): the largest (x*x + y*y) + z*z over the vertices of the part's levels of detail, then its square root; "body" for the car (vehCarModel::Init's BeginGeom) and "trailer" for its trailer (vehTrailerInstance::Init). Replaces RaceScreen's copy for aiVehiclePlayer |
 | `readPivot` | `GetPivot` | fixed | added: the 12 floats of the .mtx as a matrix |
 | `readSimPivots` | the pivots `vehCarSim::Init` reads | fixed | wheels via vehWheel::Init's formula (absolute radius) and the engine and axle pivots, which were never loaded (no retail car has them) |
 | `SimVehicle::loadPlayer` | `mmPlayer::Init` | fixed | added: the player's vpcop runs vehCarSim::Init again with "vpmustang99" (unless `-tune_car`): Mustang tune and pivots, vpcop body, bound, damage, gyro, stuck and splash box; no trailer in multiplayer cruise and Cops and Robbers (RaceScreen passes the rule) |
@@ -230,7 +239,7 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
-| `PlayerCar` fields | `aiVehiclePlayer` | fixed | Left/RSideDistance and Front/BackBumperDistance are half of vehCarSim's Size (its InertiaBox), not of the bound's box: RaceScreen now fills width and length from the InertiaBox. Matrix and position are the InertialCS's (verified) |
+| `PlayerCar` fields | `aiVehiclePlayer` | fixed | Left/RSideDistance and Front/BackBumperDistance are half of vehCarSim's Size (its InertiaBox), not of the bound's box: RaceScreen now fills width and length from the InertiaBox. Matrix and position are the InertialCS's (verified); the radius is the car body's `lvlInstance::GetRadius` |
 | `PlayerCar::speed` | `aiVehiclePlayer::Speed` | fixed | vehCarSim's forward speed, summed z, y, x |
 
 ## Missing
@@ -250,3 +259,29 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `mmPlayer::EnableRegen` / `UpdateRegen` call | Cops and Robbers regeneration | open for session: call `CarSim::regenerate` once a frame while regeneration is on |
 | `dgPhysManager::CollideTerrain`'s `RequiresTerrainCollision` | skip the body's terrain collision for a car upright on its wheels | open for phys-core: `CarSim` / `Trailer::requiresTerrainCollision` exist |
 | `mmNetObject::Init`'s trailer flag | whether a network car tows its trailer | open for session |
+
+## Second pass
+
+After the merge of every area into integration (phys-core's wheel probe,
+`age::rotate` as MakeRotate + Dot3x3, InertialCS's spin limit always on):
+
+- The merged wheel probe wiring matches vehWheel::ComputeDwtdw (see
+  `Wheel::computeDwtdw`): no change needed.
+- Spin limits: vehCarSim::Init writes 4 pi (12.566371) to all three
+  MaxAngVelocity axes; vehTrailer::Init leaves phInertialCS's default
+  5 rad/s. CarSim and Trailer no longer set the redundant switch, and no
+  longer write the InertialCS impact fields nothing reads.
+- The trailer's Ctrl+B hitch break is wired (`Trailer::afterIntegrate`).
+- Cars and trailers have MM2's instance sphere (`VehicleBody`).
+- `mm2tool simcar` drives on the built-in "default" material (friction 1),
+  not materials.mtl's "_default" (0.9); docs/physics.md's table is rerun.
+- simcar / simcars on the merged physics: acceleration and top speeds
+  within 0.15 s and 0.2 mph of the pre-merge table (which also drove on
+  friction 0.9), and no car sinks: the
+  body height holds at speed, apart from vppanozgt's aero downforce, which
+  lowers it 5.6 cm at 275 mph. With the wheel centred, cars whose pivots
+  are not mirrored curve slowly to the left. vpbug turns 3 degrees a
+  minute (right wheels 3.9 cm further out). The vpsemi rig turns about
+  40 degrees a minute (hitch 7.4 cm left of centre; the tractor alone
+  holds within 0.7 degrees). The pre-audit build does the same; that MM2
+  does is inferred from the data, not observed.

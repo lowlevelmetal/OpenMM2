@@ -57,6 +57,7 @@ public:
     VehiclePose pose() const;
 
     // Semi trailer (vpsemi, vpcentury), if the car has one.
+    const phys::Trailer* trailer() const { return m_trailer.get(); }
     const asset::VehicleModel* trailerModel() const { return m_trailerModel.get(); }
     VehiclePose trailerPose() const;
 

@@ -163,8 +163,16 @@ public:
         for (auto& c : m_cops)
             if (c.sim)
                 c.sim->sim().setWaterLevel(waterLevelAt(c.sim->sim().modelMatrix().m3));
-        if (m_world)
-            m_world->advanceFixed(static_cast<float>(dt));
+        // dgTrailerJoint::Update's debug key: Ctrl+B breaks every trailer
+        // hitch (held until a physics sample has seen it).
+        {
+            using platform::Key;
+            const auto& in = ctx.input;
+            if (!m_flyCamera && (in.keyDown(Key::LCtrl) || in.keyDown(Key::RCtrl)) && in.keyPressed(Key::B))
+                phys::Trailer::breakKeyPressed = true;
+        }
+        if (m_world && m_world->advanceFixed(static_cast<float>(dt)) > 0)
+            phys::Trailer::breakKeyPressed = false;
         // The props and traffic cars the collisions set moving follow their
         // bodies; the ones that came to rest stop being simulated.
         if (m_bangers)
@@ -446,7 +454,6 @@ private:
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
-        m_playerRadius = bodyRadius(m_player->model());
         // mmGame::Init: vehTransmission::Automatic with the player's
         // transmission choice; the AUTO REVERSE option (mmInput +0x18C).
         m_player->sim().trans.automatic(m_result.config.automatic);
@@ -687,7 +694,7 @@ private:
         pc.width = sim.params.inertiaBox.x;
         pc.length = sim.params.inertiaBox.z;
         // lvlInstance::GetRadius: the car's geometry radius.
-        pc.radius = m_playerRadius > 0.0f ? m_playerRadius : sim.halfExtents().mag();
+        pc.radius = sim.body.radius();
         pc.steering = sim.steering;
         pc.reversing = sim.trans.getCurrentGear() < 0;
         pc.horn = hornDown(ctx);
@@ -696,22 +703,6 @@ private:
             racers.push_back(o.sim->sim().body.ics.matrix.m3);
         m_ai->setOpponents(racers);
         m_ai->update(dt, pc);
-    }
-
-    // lvlInstance::GetRadius for a car: modGetStatic's radius (the largest
-    // vertex distance from the model origin) over its body's LODs, the
-    // instance's first geometry.
-    static float bodyRadius(const asset::VehicleModel& model) {
-        float r2 = 0.0f;
-        for (const auto& mesh : model.pkg.meshes) {
-            if (mesh.part != "BODY")
-                continue;
-            for (const auto& section : mesh.sections)
-                for (const auto& packet : section.packets)
-                    for (const auto& v : packet.vertices)
-                        r2 = std::max(r2, v.position.dot(v.position));
-        }
-        return std::sqrt(r2);
     }
 
     // Opponent and police AI: reads every car, writes the AI cars' inputs.
@@ -2031,7 +2022,6 @@ private:
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
     bool m_ambienceStopped = false; // MMDMusicManager +0x53: the ambience segment stopped underground
-    float m_playerRadius = 0.0f; // the player's car's geometry radius (lvlInstance::GetRadius)
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;
     std::map<std::string, audio::game::SoundSlot> m_gameSounds; // the session's sounds by name

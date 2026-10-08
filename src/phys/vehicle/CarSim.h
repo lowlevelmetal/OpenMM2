@@ -9,6 +9,7 @@
 #include "phys/vehicle/Stuck.h"
 #include "phys/vehicle/Transmission.h"
 #include "phys/vehicle/TuneParams.h"
+#include "phys/vehicle/VehicleBody.h"
 #include "phys/vehicle/VehicleGeometry.h"
 #include "phys/vehicle/Wheel.h"
 
@@ -210,7 +211,7 @@ public:
     // ImpactHandler: vehCarDamage::Impact.
     void onImpact(Collider& self, const Impact& impact, const Vec3& impulse) override;
 
-    Body body;
+    VehicleBody body;
     CarSimParams params;
     Options options;
     Vec3 centerOfGravity; // vehCarSim CenterOfGravity
