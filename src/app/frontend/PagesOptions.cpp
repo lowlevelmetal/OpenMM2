@@ -186,8 +186,9 @@ public:
         resolution.help = "jpg/gfx_tres.jpg";
 
         // 10-11: FAR CLIP (VISIBILITY) in metres and LIGHTING QUALITY 0-3.
-        // Lighting snaps to whole steps, up when raised and down when lowered
-        // (GraphicsOptions::SetLightQuality).
+        // Lighting snaps to whole steps (GraphicsOptions::SetLightQuality):
+        // a raised value becomes the whole part of value + 1, a lowered one
+        // its whole part, kept within 0..3.
         menu.add<ui::Slider>(
                 fe.layout.widget(id, 10, {450, 179, 184, 29}),
                 [&ctx] { return iniFloat(ctx, "Graphics", "FarClip", kDefaultFarClip, 100.0f, 1000.0f); },
@@ -200,7 +201,9 @@ public:
                 },
                 [&ctx](float v) {
                     const int old = iniInt(ctx, "Graphics", "LightingQuality", kDefaultLighting, 0, 3);
-                    const int snapped = static_cast<int>(v > static_cast<float>(old) ? std::ceil(v) : std::floor(v));
+                    if (v == static_cast<float>(old))
+                        return;
+                    const int snapped = static_cast<int>(v > static_cast<float>(old) ? v + 1.0f : v);
                     ctx.settings.ini.setInt("Graphics", "LightingQuality", std::clamp(snapped, 0, 3));
                 },
                 0.0f, 3.0f)
@@ -223,8 +226,8 @@ public:
 
         addAdvanced(fe);
         finish(fe);
-        // MM2 appears to focus RESOLUTION on entry (the SetFocusWidget
-        // argument is not recovered; inferred).
+        // GraphicsOptions::GraphicsOptions makes RESOLUTION the initial focus
+        // (SetFocusWidget right after creating it).
         menu.setInitialFocus(&resolution);
     }
 
@@ -430,9 +433,12 @@ public:
                 st.music = false;
         });
 
-        // 7-9: DEVICE, STEREO FX (326 Mono / 327 Stereo), SOUND QUALITY
-        // (574-576). Quality picks 8/16/32 voices in MM2; OpenMM2 maps Low to
-        // the 11 kHz sounds and Medium/High to the 22 kHz ones.
+        // 7-9: DEVICE (initial focus: AudioOptions::AudioOptions sets it
+        // with SetFocusWidget), STEREO FX (326 Mono / 327 Stereo), SOUND
+        // QUALITY (574-576). Quality sets MM2's channel count, 8/16/32
+        // (AudioOptions::SetQuality); the sounds are always the 22 kHz ones
+        // (InitAudioManager). OpenMM2's mixer has no channel limit to set, so
+        // the choice is stored only.
         auto& device = menu.add<ui::ValueBox>(
             fe.layout.widget(id, 7, {kBoxX, 62, kBoxWide, kBoxH}),
             [&ctx] {
@@ -440,20 +446,22 @@ public:
                 return std::vector<std::string>{n.empty() ? std::string("No sound device") : n};
             },
             [] { return 0; }, [](int) {});
+        // STEREO FX: Mono, Stereo, and Surround on a 16-bit device (string
+        // 329; 328 "Surround (Not Recommended)" on an 8-bit one), as
+        // AudioOptions::AudioOptions builds the list; OpenMM2's output is
+        // never 8-bit.
         menu.add<ui::ValueBox>(
             fe.layout.widget(id, 8, {kBoxX, 100, kBoxMid, kBoxH}),
-            [s1 = s.get(326, "Mono"), s2 = s.get(327, "Stereo")] { return std::vector<std::string>{s1, s2}; },
-            [&st] { return st.stereo ? 1 : 0; }, [&st](int i) { st.stereo = i == 1; });
+            [o = std::vector<std::string>{s.get(326, "Mono"), s.get(327, "Stereo"), s.get(329, "Surround")}] {
+                return o;
+            },
+            [&st] { return st.stereoFx; }, [&st](int i) { st.stereoFx = i; });
         menu.add<ui::ValueBox>(
             fe.layout.widget(id, 9, {kBoxX, 134, kBoxMid, kBoxH}),
             [lo = s.get(574, "Low"), mid = s.get(575, "Medium"), hi = s.get(576, "High")] {
                 return std::vector<std::string>{lo, mid, hi};
             },
-            [&st] { return st.soundQuality; },
-            [&st](int i) {
-                st.soundQuality = i;
-                st.audioHighQuality = i >= 1;
-            });
+            [&st] { return st.soundQuality; }, [&st](int i) { st.soundQuality = i; });
 
         // 10-12: SOUND FX VOLUME (effects, engines, voices), MUSIC/CITY
         // VOLUME (music and ambience), BALANCE -1..1 with the normal arrows.
@@ -477,7 +485,6 @@ public:
             },
             -1.0f, 1.0f);
         finish(fe);
-        // MM2 appears to focus DEVICE on entry (inferred, as for Graphics).
         menu.setInitialFocus(&device);
     }
 
@@ -495,9 +502,8 @@ protected:
         st.commentary = d.commentary;
         st.music = d.music;
         st.citySounds = d.citySounds;
-        st.stereo = d.stereo;
+        st.stereoFx = d.stereoFx;
         st.soundQuality = d.soundQuality;
-        st.audioHighQuality = d.audioHighQuality;
         fe.ctx.applyAudioSettings();
     }
 
@@ -588,19 +594,25 @@ public:
         finish(fe);
     }
 
-    // Which widgets the controller type uses (ControlSetup::CreateDeviceOptions).
+    // Which widgets are usable (ControlSetup::ActivateDeviceOptions per
+    // controller type, then InitCustomControls and SetFFPermissions): AUTO
+    // REVERSE always; SENSITIVITY for mouse, joystick, game pad and wheel;
+    // DEAD ZONE and CALIBRATE for joystick and wheel; POV HAT for a joystick
+    // with a hat; FORCE FEEDBACK whenever a force-feedback device is present,
+    // whatever the type; the two intensities while FORCE FEEDBACK is on.
     void update(Frontend& fe, double) override {
         Context& ctx = fe.ctx;
         const Controller c = controller(ctx);
         const bool stick = c == Controller::Joystick || c == Controller::Wheel;
-        const bool feedbackDevice = stick && joystickConnected(ctx);
         m_autoReverse->enabled = true;
-        m_sensitivity->enabled = c == Controller::Mouse || stick;
-        m_deadZone->enabled = c == Controller::Mouse || stick;
+        m_sensitivity->enabled = c != Controller::Keyboard;
+        m_deadZone->enabled = stick;
         // OpenMM2 cannot tell whether a stick has a POV hat; any joystick may use it.
         m_pov->enabled = c == Controller::Joystick;
-        m_feedback->enabled = feedbackDevice;
-        const bool feedbackOn = feedbackDevice && iniBool(ctx, "Controls", "ForceFeedback", false);
+        // Inferred: any connected joystick or game pad stands for MM2's
+        // force-feedback device (OpenMM2 does not query rumble support).
+        m_feedback->enabled = joystickConnected(ctx);
+        const bool feedbackOn = iniBool(ctx, "Controls", "ForceFeedback", false);
         m_collision->enabled = feedbackOn;
         m_roadForce->enabled = feedbackOn;
         m_calibrate->enabled = stick;
@@ -944,9 +956,10 @@ protected:
 
 // AboutMenu (menu 34): the credits picture (credits.jpg, 215x4582) scrolls
 // in the box at 39,203 (215x173): it starts at the top, holds for 1.5 s and
-// then scrolls, wrapping without a gap. The speed is not recovered from MM2;
-// 30 px/s is inferred. The product ID label shows string 325 "UNKNOWN":
-// OpenMM2 never reads CD keys. No navigation strip.
+// then scrolls at 50 px/s in whole pixels, wrapping without a gap
+// (AboutMenu::Update, AboutMenu::Cull). The product ID label shows string
+// 325 "UNKNOWN", MM2's text when the registry has no product ID: OpenMM2
+// never reads CD keys. No navigation strip.
 class AboutPage final : public Page {
 public:
     explicit AboutPage(Frontend& fe) {
@@ -971,9 +984,10 @@ private:
         const ui::UiTexture& t = fe.textures.get("jpg/credits.jpg");
         if (!t)
             return;
-        constexpr double kHold = 1.5, kSpeed = 30.0;
+        constexpr double kHold = 1.5, kSpeed = 50.0;
         const float h = static_cast<float>(t.height);
-        const float offset = std::fmod(static_cast<float>(std::max(0.0, m_time - kHold) * kSpeed), h);
+        const int pixels = m_time > kHold ? static_cast<int>((m_time - kHold) * kSpeed + 0.5) : 0;
+        const float offset = static_cast<float>(pixels % static_cast<int>(t.height));
         const Vec4 clip{m_credits.x, m_credits.y, m_credits.w, m_credits.h};
         f.overlay.setClip(&clip);
         ui::drawImage(f.overlay, t, m_credits.x, m_credits.y - offset);

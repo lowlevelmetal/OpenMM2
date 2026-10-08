@@ -114,7 +114,7 @@ TEST(Menu, FocusFollowsCreationOrderAndCrossesToTheStrip) {
     // Up before the first: the other group's first (MenuManager::ToggleFocus).
     press([](ui::NavInput& n) { n.up = true; });
     EXPECT_EQ(m.focused(), &nav1);
-    // Escape on the strip returns to the page.
+    // Escape on the strip returns the focus to the page (and backs it up).
     press([](ui::NavInput& n) { n.back = true; });
     EXPECT_EQ(m.focused(), &first);
     // Left/Right never move focus, and do nothing on a closed drop-down.
@@ -151,7 +151,7 @@ TEST(Menu, BackCallsHandler) {
     EXPECT_TRUE(back);
 }
 
-TEST(ValueBox, DropDownSelectsWithKeyboardSkippingDisabledOptions) {
+TEST(ValueBox, DropDownSelectsWithKeyboard) {
     Fixture fx;
     ui::Menu m;
     int v = 0;
@@ -165,8 +165,14 @@ TEST(ValueBox, DropDownSelectsWithKeyboardSkippingDisabledOptions) {
     m.update(f);
     ASSERT_TRUE(box.modal());
     fx.nav = {};
-    fx.nav.down = true;
-    m.update(f); // skips option 1
+    fx.nav.end = true;
+    m.update(f);
+    fx.nav = {};
+    fx.nav.up = true;
+    m.update(f);
+    fx.nav = {};
+    fx.nav.up = true;
+    m.update(f); // 4 -> 3 -> 2
     fx.nav = {};
     fx.nav.accept = true;
     m.update(f);

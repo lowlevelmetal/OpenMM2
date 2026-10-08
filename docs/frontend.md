@@ -43,16 +43,22 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
   disabled text colour; locked entries in drop-down lists are olive.
 * **Sprite buttons** (`UIBMButton`): frames normal, highlight, pressed,
   disabled; the pressed frame shows only while the mouse button is held on
-  the button, which acts when it is released over it (or on Enter). 5-frame
+  the button. Its sound plays when the mouse button goes down on it, and it
+  acts when the mouse button is released over it, wherever the press began
+  (`UIMenu::CheckMouseHits`), or on Enter. 5-frame
   sheets are toggles: off, off+highlight, on, on+highlight, disabled; they
   flip on the press, Enter or Space.
 * **Drop-downs** (`UITextDropdown`, `mmDropDown`): 23 px tall whatever the
   layout says, text 5 px from the left, `drop_arrow` at the right (frames
   unfocused / focused / open). Enter or a click opens a list of every option
   (black cells of the box's size, a white outline on the highlight, more
-  columns when it would leave the screen); Up/Left and Down/Right move,
-  Home/End jump, Enter picks, Escape closes. Left/Right do nothing on a
-  closed box. The up/down arrows beside the boxes are separate 3-frame
+  columns when it would leave the screen: when two columns would not fit
+  right of the box, the list starts one box width further left per extra
+  column, `mmDropDown::InitString`); Up/Left and Down/Right move by one,
+  Home/End jump, Enter picks, Escape closes. Stepping onto, or releasing
+  the mouse over, an entry that cannot be picked (a locked race) selects
+  the first one that can (`TextDropWidget::SetValue`). Left/Right do
+  nothing on a closed box. The up/down arrows beside the boxes are separate 3-frame
   `roller_up`/`roller_down` buttons; whether they wrap is per page.
 * **Rollers** (`UITextRoller2`, laps and opponents): the value centred, the
   arrows built in; Left/Right and the arrows step and play "Switch".
@@ -72,7 +78,10 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
   disabled and read-only ones; past the last page widget focus moves to the
   navigation strip and back to the page; Up before the first goes to the
   other group's first widget (`MenuManager::ToggleFocus`); Escape on the
-  strip returns to the page. Left/Right never move focus; Space only flips
+  strip moves the focus back to the page and backs the page up as well.
+  Widgets are focus stops while enabled and writable, which includes a
+  shown picture icon (the race map; no highlight). Left/Right never move
+  focus; Space only flips
   toggles. Every time a page is entered the focus goes back to its initial
   widget (`UIMenu::Enable`). The mouse focuses what it is over; over empty
   space the highlight and help picture disappear until the next key. There
@@ -125,8 +134,9 @@ panel shows the driver (`MainMenu::DisplayDriverInfo`,
 RACE, LAST VEHICLE, CONTROLLER and, for professionals only, SCORE, labels at
 x 177 and values at x 209 on alternate lines from y 165. QUICK RACE opens
 the garage with the driver's last event (crash course and Cops & Robbers
-become cruise). Escape asks to quit (`quit_dlg`: OK at +296,+38 first,
-CANCEL at +196,+38).
+become cruise); it uses the event currently set up, which the race menu
+may have changed since the driver was loaded. Escape asks to quit
+(`quit_dlg`: OK at +296,+38 first, CANCEL at +196,+38) without a sound.
 
 **Drivers** (`mmInterface::PlayerCreate`, `PlayerRemove`,
 `InitPlayerInfo`): at most 18, listed in creation order; names up to 18
@@ -134,8 +144,11 @@ characters, duplicates compared case-sensitively (`dupp_dlg`, after which
 the dialog opens again); an empty name does nothing; the 19th driver gets
 `plim_dlg`; the only driver cannot be deleted (`lstp_dlg`); `delp_dlg` asks
 with YES (+180,+176, first) and NO (+18,+176), after which the oldest driver
-is loaded. A new driver gets the net name "noname" and the first car. The
-first start creates "DriverX" without a dialog.
+is loaded. A new driver gets the net name "noname" and, having no last car
+or event, cruise in "vpbug" (`mmInterface::PlayerSetState`); MM2 shows
+"---" for its LAST RACE and LAST VEHICLE, which OpenMM2's profiles cannot
+tell apart yet. Only an empty name is ignored. The first start creates
+"DriverX" without a dialog.
 
 **Driver Record** (`Dialog_DriverRec`, `mmInterface::PlayerFillRecords`,
 `mmCompDRecord`): every race of the chosen mode in the chosen city, 12 rows
@@ -158,9 +171,10 @@ as the first page after the race, and only when the race reached its end
 opponents) and time in the big panel from 40,75, the mode (strings 5, 6, 7,
 12) and race in the bottom-left panel at 40,396, the reward message at
 290,396, and the text buttons Restart Race / Restart Lesson, Next Race /
-Next Lesson, Race Menu / Back to School and Exit to Windows from 440,75 in
-the popups' colours (white, focused yellow-green, disabled grey). The
-buttons' line spacing and the lesson line are **inferred**. Next is offered
+Next Lesson, Race Menu / Back to School and Exit to Windows from 440,75,
+48 px apart (the popup button height, 0.1 of the screen), in the popups'
+colours (white, focused yellow-green, disabled grey). The lesson line is
+**inferred**. Next is offered
 when the next checkpoint race exists and is open, for blitz and circuit
 unless it was the last race, and for lessons other than 2, 6 and from 10 on
 (`NextRaceAvailable`); it loads the next race's defaults (an unpassed
@@ -187,6 +201,9 @@ Positions come from `tune/widget.csv` by the widget's creation index in MM2's me
 * TIME 12–14 (strings 629–632) and WEATHER 15–17 (strings 625–628).
 * Density sliders 18–20 at 450,316/350/384, 183 wide.
 * Map 22 at 22,194, 242×184: `<RaceDir>_map<roam|race<n>|circuit<n>|blitz<n>>.jpg`.
+  It is the menu's initial focus and a focus stop while shown (a UIIcon;
+  `RaceMenuBase::Init` calls `SetFocusWidget` after adding it), so the
+  menu opens with nothing highlighted; Down goes to race_veh.
 * race_veh 23 at 439,415.
 * Defaults (`RaceMenuBase::SetStateRace`): cruise is always noon, clear,
   pedestrians 0.25, traffic 0.5, cops 1; races take their time, weather,
@@ -204,7 +221,7 @@ Positions come from `tune/widget.csv` by the widget's creation index in MM2's me
 
 * Every car, in `mmVehList`'s built-in order (`tune/cars.txt` is never
   read), with wrapping arrows for car and paint. Each car's paint is
-  remembered for the session.
+  remembered for the session. VEHICLES has the initial focus.
 * TRANSMISSION lists "Manual|Automatic".
 * Read-only statistic bars at 125,270/293/319/344, 187 wide, each scaled
   from 0.5× the smallest to 1.1× the largest value of all cars.
@@ -237,6 +254,10 @@ Positions come from `tune/widget.csv` by the widget's creation index in MM2's me
   of three.
 * `cc_smchk` draws a tick at x 179 for a passed lesson and a cross at x 225
   for a failed one, on the painted rows (`ccStatus`).
+* Entering from the intro shows training, lesson 0; coming back from a
+  race shows the lesson or work-experience race just driven
+  (`CrashCourse::PreSetup`). Every race started here, lessons and work
+  experience alike, comes back to this page (`mmInterface::ShowMain`).
 * A lesson not yet passed starts at once in the school's car (London
   `vpcab`, San Francisco `vpbullet`; GO shows `veh_go`). Otherwise GO shows
   `race_veh` and opens the garage (`CrashCourse::SetVehicleNext`). Lessons
@@ -277,13 +298,20 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   (326/327), SOUND QUALITY (574–576; OpenMM2 maps Low to the 11 kHz sounds
   and Medium/High to 22 kHz, MM2 chooses 8/16/32 voices), and the SOUND FX
   VOLUME, MUSIC/CITY VOLUME (both default 1) and BALANCE (−1..1, normal
-  arrows) sliders at 450,212/246/280. MM2's log-200 volume curve is not
-  ported.
+  arrows) sliders at 450,212/246/280. STEREO FX lists Mono, Stereo and
+  Surround (MM2 adds Surround on a 16-bit device); SOUND QUALITY sets MM2's
+  channel count only (8/16/32): the game always plays the 22 kHz sounds
+  (`InitAudioManager`), and OpenMM2 stores the choice. MM2's log-200
+  volume curve is not ported.
 * **Control** (`ctrl_bk`): AUTO REVERSE (on), POV HAT (off), FORCE FEEDBACK
   (off); CONTROLLER = the five types 580–584 (joystick types greyed without
-  one); sliders in MM2's units: sensitivity 0.5–2, dead zone 0–0.33,
-  collision and road force 0–2; widgets enabled per controller type
-  (`ControlSetup::CreateDeviceOptions`); CUSTOMIZE at 348,315. DEFAULTS also
+  one); sliders in MM2's units: sensitivity 0.5–2, dead zone 0–0.33
+  (`[Controls] DeadZone`, default 0.1), collision and road force 0–2;
+  sensitivity for every type but the keyboard, dead zone and calibration
+  for joystick and wheel, POV for a joystick, FORCE FEEDBACK whenever a
+  force-feedback device is present (any joystick in OpenMM2, **inferred**),
+  the intensities while it is on (`ControlSetup::ActivateDeviceOptions`,
+  `InitCustomControls`, `SetFFPermissions`); CUSTOMIZE at 348,315. DEFAULTS also
   selects the keyboard and an automatic transmission. Calibration is left to
   the operating system.
 * **Customize** (`cuss_bk`): MM2's 34 action slots in list order (Steering
@@ -296,15 +324,15 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   are stored as `[Controls] Bind.<string id>` and are not yet read by the
   race input.
 * **About** (`about_bk`): `credits.jpg` at 39,203 (215×173) from its top,
-  held 1.5 s, then scrolling and wrapping without a gap (speed **inferred**,
-  30 px/s); DONE at 439,415; the product ID label (130,180) shows "UNKNOWN"
+  held 1.5 s, then scrolling at 50 px/s in whole pixels and wrapping
+  without a gap (`AboutMenu::Update`); DONE at 439,415; the product ID label (130,180) shows "UNKNOWN"
   (string 325), as OpenMM2 never reads CD keys; no navigation strip.
 * MM2 stores these settings per driver (`mmPlayerConfig`, `<driver>.cfg`);
   OpenMM2 keeps them in `[Graphics]`, `[Audio]` and `[Controls]` of
-  `openmm2.ini` so they apply before a driver is chosen. **Inferred:**
-  Graphics/Audio initial focus (RESOLUTION/DEVICE), the help pictures
-  matched by name (`gfx_tren/tres/tfp/tlq/ttq/tobj/shd`,
-  `ctl_tcon/tss/tcal/titn/trf/tcus`, `ctl_dd` for the dead zone).
+  `openmm2.ini` so they apply before a driver is chosen. The Graphics and
+  Audio pages open on RESOLUTION and DEVICE (`SetFocusWidget` in their
+  constructors); the help pictures are MM2's lists (`gfx_tsky … gfx_shd`,
+  with `gfx_tdis` for DISPLAY missing from the data; `ctl_trev … ctl_dd`).
 
 ## Drivers and unlocks
 

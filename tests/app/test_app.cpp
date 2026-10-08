@@ -103,7 +103,8 @@ TEST(Settings, AudioOptionsFollowMM2) {
     EXPECT_TRUE(u.music);
     EXPECT_FALSE(u.citySounds);
     EXPECT_EQ(u.soundQuality, 0);
-    EXPECT_FALSE(u.audioHighQuality);
+    // MM2 plays the 22 kHz sounds at every quality (InitAudioManager).
+    EXPECT_TRUE(u.audioHighQuality);
     std::filesystem::remove(path);
 }
 

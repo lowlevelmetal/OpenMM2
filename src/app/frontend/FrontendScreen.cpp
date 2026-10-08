@@ -497,6 +497,15 @@ void Frontend::notice(std::string picture, int id, std::function<void()> then) {
     dialog(std::move(picture), id, {{"texture/dlg_ok.tga", ok, std::move(then)}});
 }
 
+// --- Crash Course return ------------------------------------------------------------------------
+
+namespace {
+bool g_crashCourseReturn = false;
+} // namespace
+
+bool crashCourseReturn() { return g_crashCourseReturn; }
+void setCrashCourseReturn(bool on) { g_crashCourseReturn = on; }
+
 // --- Names ------------------------------------------------------------------------------------
 
 const char* timeOfDayName(game::TimeOfDay t) {
@@ -761,9 +770,9 @@ public:
         if (m_fe.store.list().empty()) {
             const auto& s = ctx.game->strings;
             if (auto p = m_fe.store.create(s.get(65, "DriverX"))) {
+                // No last car or event yet: cruise in "vpbug", the profile's
+                // defaults (mmInterface::PlayerSetState).
                 p->netName = s.get(66, "DriverX");
-                if (!ctx.game->catalog.vehicles().empty())
-                    p->vehicle = ctx.game->catalog.vehicles().front().baseName;
                 p->save();
             }
         }
@@ -795,8 +804,11 @@ public:
             // Only the page the player lands on plays its switch sound.
             m_fe.quietSwitches = true;
             m_fe.push(frontend::makeDriverPage(m_fe));
-            if (result->config.mode == game::GameMode::CrashCourse) {
+            if (frontend::crashCourseReturn() || result->config.mode == game::GameMode::CrashCourse) {
+                // A lesson or "work experience" race started from the Crash
+                // Course page returns to it, on the event just driven.
                 m_fe.push(frontend::makeCrashIntroPage(m_fe));
+                m_fe.config = result->config; // the intro set up lesson 0
                 m_fe.quietSwitches = result->ended;
                 m_fe.push(frontend::makeCrashCoursePage(m_fe, result->config.city));
             } else {

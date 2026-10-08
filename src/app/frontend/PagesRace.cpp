@@ -166,14 +166,23 @@ public:
                 [d] { return *d; }, [d](float v) { *d = v; });
         }
 
-        // 22: the race map (RaceMenuBase::LoadRaceMap).
-        m_mapBox = fe.layout.widget(id, 22, {22, 194, 242, 184});
-        menu.add<ui::Custom>([this, &fe](ui::UiFrame& f) { drawMap(fe, f); });
+        // 21 is the help label. 22: the race map (RaceMenuBase::LoadRaceMap),
+        // a UIIcon shown only when the picture exists; while shown it is a
+        // focus stop without a highlight, and it is the menu's initial focus
+        // (RaceMenuBase::Init calls SetFocusWidget right after adding it), so
+        // the menu opens with nothing highlighted.
+        auto& map = menu.add<ui::Picture>(fe.layout.widget(id, 22, {22, 194, 242, 184}),
+                                          [this] { return m_mapPath; });
+        map.focusStop = true;
+        menu.setInitialFocus(&map);
 
-        // 23: on to the garage.
+        // 23: on to the garage (mmInterface::Update, race menu GO: the race
+        // will come back to this menu).
         const Vec2 next = fe.layout.position(id, 23, layout::kNext);
-        menu.add<ui::SpriteButton>(SpriteSheet{"texture/race_veh.tga", 4}, next.x, next.y,
-                                   [&fe] { fe.push(makeVehiclePage(fe)); });
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/race_veh.tga", 4}, next.x, next.y, [&fe] {
+            setCrashCourseReturn(false);
+            fe.push(makeVehiclePage(fe));
+        });
         addBack(fe, *this);
         addNavStrip(fe, *this);
         refresh(fe);
@@ -259,6 +268,7 @@ private:
     // circuits and are read-only until it is passed.
     void refresh(Frontend& fe) {
         const auto& cfg = fe.config;
+        m_mapPath = mapPicture(fe);
         for (int i = 0; i < 4; ++i)
             m_lamps[i]->enabled = modeAvailable(fe, m_modes[i]);
         const bool cruise = cfg.mode == GameMode::Cruise;
@@ -280,17 +290,17 @@ private:
             m_sliders[i]->readOnly = !passed || (circuit && i == 1);
     }
 
-    // jpg/<RaceDir>_map<roam|race<n>|circuit<n>|blitz<n>>.jpg, hidden when missing.
-    void drawMap(Frontend& fe, ui::UiFrame& f) const {
+    // jpg/<RaceDir>_map<roam|race<n>|circuit<n>|blitz<n>>.jpg, hidden when
+    // missing (empty path).
+    std::string mapPicture(Frontend& fe) const {
         const auto& cfg = fe.config;
         const auto* c = fe.currentCity();
         if (!c)
-            return;
+            return {};
         const std::string name =
             cfg.mode == GameMode::Cruise ? std::string("roam") : std::format("{}{}", game::modeKey(cfg.mode), cfg.raceIndex);
-        const ui::UiTexture& t = fe.textures.get(std::format("jpg/{}_map{}.jpg", str::lower(c->raceDir), name));
-        if (t)
-            ui::drawImage(f.overlay, t, m_mapBox.x, m_mapBox.y, m_mapBox.w, m_mapBox.h);
+        const std::string path = std::format("jpg/{}_map{}.jpg", str::lower(c->raceDir), name);
+        return fe.ctx.game->vfs.exists(path) ? path : std::string();
     }
 
     ui::LampItem* m_lamps[4] = {};
@@ -305,7 +315,7 @@ private:
     ui::ValueBox* m_weather = nullptr;
     Arrows m_weatherArrows;
     ui::Slider* m_sliders[3] = {};
-    Box m_mapBox;
+    std::string m_mapPath;
     const ui::Widget* m_lastFocus = nullptr;
     bool m_showHelp = false;
 };
@@ -401,6 +411,9 @@ public:
                 return v;
             },
             [this, &fe] { return vehicleIndex(fe); }, [this, &fe](int i) { pickVehicle(fe, i); });
+        // VehicleSelectBase::InitCarSelection makes VEHICLES the initial
+        // focus (SetFocusWidget right after creating it).
+        menu.setInitialFocus(m_vehicleBox);
         addArrows(fe, *this, id, 6, {608, 270}, {608, 288}, *m_vehicleBox, true);
 
         // 9-12: read-only bars for horsepower, top speed, durability and mass;

@@ -22,9 +22,7 @@ public:
     explicit CrashIntroPage(Frontend& fe) {
         menuId = menu_id::kCrashIntro;
         menu.background = "jpg/ilon_bk.jpg";
-        // Entering sets the event to the crash course, race 0.
-        fe.config.mode = GameMode::CrashCourse;
-        fe.config.raceIndex = 0;
+        onEnter(fe);
         const Vec2 lon = fe.layout.position(menuId, 0, {439, 359});
         const Vec2 sf = fe.layout.position(menuId, 1, {439, 415});
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/cci_lon.tga", 4}, lon.x, lon.y, [&fe] {
@@ -35,6 +33,13 @@ public:
         }).sound = "Selectionmade";
         addBack(fe, *this);
         addNavStrip(fe, *this);
+    }
+
+    // CrashCourseIntro::PreSetup: entering sets the event to the crash
+    // course, lesson 0 (also when coming back from the course page).
+    void onEnter(Frontend& fe) override {
+        fe.config.mode = GameMode::CrashCourse;
+        fe.config.raceIndex = 0;
     }
 };
 
@@ -51,6 +56,21 @@ public:
         menu.background = m_city == "sf" ? "jpg/ccsf_bk.jpg" : "jpg/cclon_bk.jpg";
         fe.config.city = m_city;
         constexpr int id = menu_id::kCrashCourse;
+        // CrashCourse::PreSetup keeps the event set up when it is a lesson or
+        // a work-experience blitz or checkpoint race (coming back from one);
+        // anything else becomes training (the intro has set lesson 0).
+        switch (fe.config.mode) {
+        case GameMode::Blitz:
+            m_kind = Kind::Blitz;
+            m_workRace = std::max(0, fe.config.raceIndex);
+            break;
+        case GameMode::Checkpoint:
+            m_kind = Kind::Checkpoint;
+            m_workRace = std::max(0, fe.config.raceIndex);
+            break;
+        case GameMode::CrashCourse: m_lesson = std::clamp(fe.config.raceIndex, 0, kLessons - 1); break;
+        default: break;
+        }
 
         // 0: TRAINING; 1-3: the lesson and its arrows.
         const Vec2 train = fe.layout.position(id, 0, {290, 109});
@@ -190,6 +210,9 @@ private:
     void proceed(Frontend& fe) {
         auto& cfg = fe.config;
         cfg.city = m_city;
+        // mmInterface::Update, Crash Course GO: after the race the menus
+        // come back to this page, for lessons and work experience alike.
+        setCrashCourseReturn(true);
         if (m_kind == Kind::Training) {
             cfg.mode = GameMode::CrashCourse;
             cfg.raceIndex = m_lesson;
