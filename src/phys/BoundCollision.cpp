@@ -59,10 +59,12 @@ void segSegDistNorm(const Vec3& a0, const Vec3& a1, const Vec3& da, const Vec3& 
         const Vec3 y = a0 * s1;
         pointA = (y - x) / ds;
     }
-    // And where b crosses the plane through a's line.
+    // And where b crosses the plane through a's line (Vector3::Dot: z, y,
+    // then x).
     const Vec3 c2 = normal.cross(da);
-    const float t0 = -(w.dot(c2));
-    const float t1 = (b1 - a0).dot(c2);
+    const Vec3 f = b1 - a0;
+    const float t0 = -((w.z * c2.z + w.y * c2.y) + w.x * c2.x);
+    const float t1 = (f.z * c2.z + f.y * c2.y) + f.x * c2.x;
     if (noOverlap(t0, t1)) {
         ok = 0;
         return;
