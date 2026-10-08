@@ -591,10 +591,6 @@ private:
             fe.playSound(name, 0.91f);
     }
 
-    // MM2 draws the selected car in 3D here (viewport 32,55 608x192, field of
-    // view 0.6 rad, camera 0.18 rad above the car at its UIDist, the car
-    // turning at 1 rad/s, refl_showroom.tga reflections). That viewer is not
-    // implemented; the car's showcase photo stands in for it.
     ui::ValueBox* m_vehicleBox = nullptr;
     ui::ValueBox* m_colorBox = nullptr;
     ui::ValueBox* m_transmission = nullptr;

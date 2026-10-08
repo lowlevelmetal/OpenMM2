@@ -297,6 +297,10 @@ void Frontend::update(double dt) {
     const render::UiLayout screen = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
     const ui::NavInput nav = navReader.read(ctx.input, screen, dt);
     ui::UiFrame f{*ctx.overlay, textures, text, nav, time, &m_soundFn};
+    // MenuManager::OpenDialog leaves the menu under a dialog enabled: the
+    // garage keeps updating, so its car turns on under the LOCKED dialog.
+    if (Page* scene = scenePage(); scene && scene != page)
+        scene->update(*this, dt);
     page->update(*this, dt);
     if (top() == page)
         page->menu.update(f);

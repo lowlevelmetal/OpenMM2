@@ -157,16 +157,20 @@ void Showroom::draw(const render::UiLayout& layout) {
     const auto& gpu = *car->gpu;
     game::MeshDrawOptions opts;
     opts.fog = false;
+    // The frontend never runs cityLevel::DrawRooms (GREATER 100), so the
+    // device default from gfxRenderState::Default holds: alpha reference 0,
+    // NOTEQUAL ("alpha not 0"). Inferred: nothing in the frontend changes it.
+    opts.alphaRef = 1.0f / 255.0f;
     auto drawPart = [&](std::string_view part, const Mat34& world, const game::MeshDrawOptions& o) {
         const game::GpuMesh* mesh = game::findFilledLod(gpu, part, asset::Lod::High);
         if (mesh && str::iequals(mesh->part, part))
             game::drawGpuMesh(m_device, *m_textures, *mesh, mats, Mat44::fromMat34(world), o);
     };
     // 1-2: SHADOW_H at the car's own matrix (as modelled under the car,
-    // lit and alpha blended like the body), then BODY_H.
+    // lit, depth-tested and alpha blended like the body: mmVehicleForm::Cull
+    // turns blending on and leaves depth writes alone), then BODY_H.
     game::MeshDrawOptions shadow = opts;
     shadow.blend = render::BlendMode::Alpha;
-    shadow.depthWrite = false;
     drawPart("SHADOW", body, shadow);
     drawPart("BODY", body, opts);
     // 3: the body again with refl_showroom (modShader::BeginEnvMap +
@@ -203,10 +207,21 @@ void Showroom::draw(const render::UiLayout& layout) {
     for (int i = 0; i < 4; ++i)
         if (const auto* w = model.wheel(i))
             drawPart(std::format("WHL{}", i), Mat34::translation(w->position) * body, opts);
-    // 5: the extra parts at their pivots, or at the origin without one.
-    for (const char* name : kExtraParts) {
-        const auto* pivot = model.pivot(name);
-        drawPart(str::upper(name), Mat34::translation(pivot ? pivot->origin : Vec3{}) * body, opts);
+    // 5: the extra parts in package order, each at its pivot, or at the
+    // origin without one. Only the high LOD (`<name>_H`) counts.
+    int extras = 0;
+    for (const auto& mesh : gpu.meshes) {
+        if (extras == 12)
+            break;
+        if (mesh.lod != asset::Lod::High || mesh.draws.empty())
+            continue;
+        const auto it = std::ranges::find_if(kExtraParts, [&](const char* n) { return str::iequals(mesh.part, n); });
+        if (it == std::end(kExtraParts))
+            continue;
+        ++extras;
+        const auto* pivot = model.pivot(*it);
+        const Mat34 world = Mat34::translation(pivot ? pivot->origin : Vec3{}) * body;
+        game::drawGpuMesh(m_device, *m_textures, mesh, mats, Mat44::fromMat34(world), opts);
     }
     m_device.setScissor(nullptr);
 }
