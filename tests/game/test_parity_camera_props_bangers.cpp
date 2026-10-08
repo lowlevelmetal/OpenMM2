@@ -256,3 +256,58 @@ TEST(ParityBangers, PropTablesReadLikeParCsvFile) {
     ASSERT_EQ(defs[0].files.size(), 3u);      // a, "", c; none after the final comma
     EXPECT_EQ(defs[0].files[1], "");
 }
+
+// lvlLevel::LoadInstances places each record's PKG xrefs as unhit bangers:
+// full matrix (xref times record), the record's variant, its room as the
+// hint; an xref without banger data (cl10's trees) is not placed.
+TEST(ParityBangersRetail, PkgXrefsBecomeBangers) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& v = *test::gameData();
+    // The xref reader agrees with the full PKG parser on every retail model
+    // that has an xrefs chunk (33 of them).
+    int withXrefs = 0;
+    for (const auto& e : v.listFiles()) {
+        if (!e.path.starts_with("geometry/") || !e.path.ends_with(".pkg") || asset::isKnownBrokenRetailAsset(e.path))
+            continue;
+        const std::string model = e.path.substr(9, e.path.size() - 13);
+        const auto xrefs = pkgXrefs(v, model);
+        if (xrefs.empty())
+            continue;
+        ++withXrefs;
+        const auto bytes = v.readAll(e.path);
+        ASSERT_TRUE(bytes);
+        const auto pkg = asset::parsePkg(*bytes);
+        ASSERT_TRUE(pkg) << model;
+        ASSERT_EQ(pkg->xrefs.size(), xrefs.size()) << model;
+        for (std::size_t i = 0; i < xrefs.size(); ++i) {
+            EXPECT_EQ(pkg->xrefs[i].name, xrefs[i].name);
+            EXPECT_EQ(pkg->xrefs[i].transform.m3.y, xrefs[i].transform.m3.y);
+        }
+    }
+    EXPECT_EQ(withXrefs, 33);
+
+    BangerDataLibrary lib(v);
+    auto city = city::loadCity(v, "london");
+    ASSERT_TRUE(city);
+    const city::Instance* parliament = nullptr;
+    for (const auto& inst : city->instances)
+        if (inst.name == "wl_parliment_l")
+            parliament = &inst;
+    ASSERT_TRUE(parliament);
+    const auto xrefs = pkgXrefs(v, "wl_parliment_l");
+    ASSERT_EQ(xrefs.size(), 2u);
+    const auto placed = placeXrefs(*parliament, xrefs, lib);
+    ASSERT_EQ(placed.size(), 2u);
+    for (std::size_t i = 0; i < placed.size(); ++i) {
+        EXPECT_EQ(placed[i].model, "sp_light_red_f");
+        EXPECT_TRUE(placed[i].fullMatrix);
+        EXPECT_EQ(placed[i].room, 0);
+        EXPECT_EQ(placed[i].roomHint, parliament->room);
+        const Vec3 expect = parliament->transform.transform(xrefs[i].transform.m3);
+        EXPECT_NEAR((placed[i].transform.m3 - expect).mag(), 0.0f, 1e-3f);
+    }
+    // The trees cl10 references have no banger data.
+    city::Instance tree;
+    tree.name = "cl10";
+    EXPECT_TRUE(placeXrefs(tree, pkgXrefs(v, "cl10"), lib).empty());
+}

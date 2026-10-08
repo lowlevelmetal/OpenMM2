@@ -106,6 +106,7 @@ public:
         bool everHit = false; // one of the ring of hit instances rather than a placed prop
         int active = -1; // index into the active pool
         int room = 0;
+        int roomHint = 0; // with room 0: where FindRoomId starts (an xref's parent room)
     };
     // The placed props (in add() order) and the hit instances (created as
     // the ring first hands them out).

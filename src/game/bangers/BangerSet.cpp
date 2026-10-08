@@ -366,7 +366,7 @@ void BangerSet::placeUnroomed() {
     for (std::size_t i = 0; i < m_instances.size(); ++i) {
         const Instance& inst = m_instances[i];
         if (!inst.everHit && inst.state == State::Unhit && inst.room == 0 && !m_props[i]->listed)
-            moveToRoom(i, findRoom(inst.ground.m3, 0));
+            moveToRoom(i, findRoom(inst.ground.m3, inst.roomHint));
     }
 }
 
@@ -413,6 +413,7 @@ void BangerSet::add(const std::vector<PlacedProp>& props) {
         inst.matrix = inst.ground;
         inst.matrix.m3 = p.transform.transform(d->cg);
         inst.paint = p.variant;
+        inst.roomHint = p.roomHint;
         inst.state = State::Unhit;
         Prop& prop = *m_props[i];
         prop.banger = true;

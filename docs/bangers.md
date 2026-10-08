@@ -77,6 +77,16 @@ name. A mass of 0 or less becomes 1 in OpenMM2 (no retail file has one).
    unless stored in the compact Y-rotation form, and the record's variant
    byte as paint job. MM2 picks them by the record's banger flag (0x200);
    retail data sets it on exactly the instances with banger data.
+   After each record (banger or not) come the bangers its geometry's PKG
+   xrefs place (lvlLevel::LoadInstances, the "xrefs" chunk read by
+   lvlInstance::EndGeom): each xref's matrix times the record's, dropped
+   when a row is zero or two rows have a dot product above 0.01, rows
+   outside 0.97..1.03 squared length normalised, kept as a full matrix with
+   the record's variant, in the room FindRoomId finds from the record's
+   room. An xref whose model has no banger data is not placed at all (MM2
+   reports it as not exported): cl10's trees. 33 retail models have xrefs
+   (tower and bridge lights, awnings, doors, windows): 65 bangers in London,
+   368 in San Francisco. They are not drawn with their parent model.
 3. **`city/<map>/props.pathset`** (cityLevel::LoadPathSet, dgPath): the
    trailer after the last point (OpenMM2's parser reads it as the last
    point's spare word) holds a type byte and a spacing byte in quarter
