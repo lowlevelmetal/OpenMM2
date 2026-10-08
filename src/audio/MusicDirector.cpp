@@ -95,20 +95,28 @@ void MusicDirector::matchMusicToPlayerSpeed(float speed, float dt) {
 void MusicDirector::pause() { segmentSwitch(MusicState::Paused); }
 
 void MusicDirector::resume() {
-    // PlayReturnMusic: back to the segment before the pause, from its start.
-    if (m_current == MusicState::Paused)
-        segmentSwitch(m_previous);
+    // PlayReturnMusic: back to the previous segment (DMusicObject +0x28), from
+    // its start; nothing if that is the current one.
+    segmentSwitch(m_previous);
 }
 
 void MusicDirector::finish() {
-    // StopSegment: silence; the segment index stays.
+    // StopSegment(0): silence; the segment index stays.
     m_commands.push_back({MusicState::Silent, MusicTiming::Immediate});
 }
 
+void MusicDirector::damagedOut() {
+    // StopSegment(1): an ending on the next beat; the segment index stays.
+    m_commands.push_back({MusicState::Silent, MusicTiming::Beat});
+}
+
 void MusicDirector::results() {
-    if (m_cruise)
+    // Cruise has no results segment (mmSingleRoamMusicData leaves its index
+    // at -1) and no results popup.
+    if (m_cruise || m_current == MusicState::Results)
         return;
-    // ShowRoster: AutoTransition(results, DMUS_COMMANDT_END, DMUS_COMPOSEF_BEAT).
+    // ShowResults: SegmentSwitch(results, DMUS_COMMANDT_END,
+    // DMUS_COMPOSEF_BEAT): a composed transition on the next beat.
     m_previous = m_current;
     m_current = MusicState::Results;
     m_commands.push_back({MusicState::Results, MusicTiming::Beat});

@@ -1,11 +1,12 @@
 #include "audio/Music.h"
 
+#include "audio/AngelRandom.h"
 #include "audio/MusicMotif.h"
+#include "audio/TextFields.h"
 
 #include "core/File.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
-#include "data/TextTables.h"
 
 #include <dmusic.h>
 
@@ -122,12 +123,17 @@ MusicSong songFromRow(const std::vector<std::string>& row, bool race) {
     return s;
 }
 
+// mmSingleRaceMusicData / mmSingleRoamMusicData::LoadMusicSegments: every
+// line after the header is a song (GetNumDMusicChoiceGroups counts lines, so
+// a blank line is a song with no segments: no music if it is drawn); cells are
+// read with strtok, so an empty cell shifts the ones after it.
 std::vector<MusicSong> parseSongs(std::string_view text, bool race) {
     std::vector<MusicSong> songs;
-    const auto table = data::CsvTable::parse(text, true);
-    for (const auto& row : table.rows()) {
-        if (row.empty() || row[0].empty())
-            continue;
+    const auto lines = fgetsLines(text);
+    for (std::size_t i = 1; i < lines.size(); ++i) {
+        std::vector<std::string> row;
+        for (auto cell : strtokFields(lines[i]))
+            row.emplace_back(cell);
         songs.push_back(songFromRow(row, race));
     }
     return songs;
@@ -166,13 +172,22 @@ std::vector<MusicSong> MusicTables::parseRace(std::string_view text) { return pa
 std::vector<MusicSong> MusicTables::parseCruise(std::string_view text) { return parseSongs(text, false); }
 
 std::string MusicTables::parseSingle(std::string_view text) {
-    const auto lines = data::splitLines(text);
-    for (std::size_t i = 1; i < lines.size(); ++i) {
-        const auto cell = str::trim(str::split(lines[i], ',')[0]);
-        if (!cell.empty())
-            return std::string(cell);
-    }
-    return {};
+    // AudioOptions::LoadUIMusicCSV / mmGameMusicData::LoadAmbientSFXSegments:
+    // the first cell of line 2 (the ambience file has one choice).
+    const auto lines = fgetsLines(text);
+    if (lines.size() < 2)
+        return {};
+    return std::string(field(strtokFields(lines[1]), 0));
+}
+
+int MusicTables::pickSong(int count) {
+    // mmGameMusicData::RandomizeNumber(count): a fresh time-seeded draw,
+    // (count - 0.01) * 0.01 * number * 100, truncated.
+    AngelRandom r(randomizeSeed());
+    const double u = r.number();
+    const double range = static_cast<double>(static_cast<float>(count) - 0.01f);
+    const double v = range * static_cast<double>(0.01f) * u * static_cast<double>(100.0f);
+    return static_cast<int>(v);
 }
 
 MusicTables MusicTables::load(const vfs::Vfs& vfs) {
@@ -335,10 +350,8 @@ const MusicSong* MusicEngine::currentSong() const {
 void MusicEngine::selectSong(int song, bool cruise) {
     m_cruise = cruise;
     const auto& list = cruise ? m_tables.cruise : m_tables.race;
-    if (song < 0 && !list.empty()) {
-        static std::mt19937 rng{std::random_device{}()};
-        song = static_cast<int>(rng() % list.size());
-    }
+    if (song < 0 && !list.empty())
+        song = MusicTables::pickSong(static_cast<int>(list.size()));
     m_song = std::max(song, 0);
     m_startedSong = false;
 }
@@ -392,7 +405,11 @@ void MusicEngine::transitionTo(const std::string& name, MusicTiming timing) {
     if (!m_music)
         return;
     if (name.empty()) {
-        DmPerformance_playSegment(m_music, nullptr, DmTiming_INSTANT);
+        // A stop can wait for a boundary too (StopSegment(1)'s ending).
+        const DmTiming stopAt = timing == MusicTiming::Beat      ? DmTiming_BEAT
+                                : timing == MusicTiming::Measure ? DmTiming_MEASURE
+                                                                 : DmTiming_INSTANT;
+        DmPerformance_playSegment(m_music, nullptr, m_playing.empty() ? DmTiming_INSTANT : stopAt);
         m_playing.clear();
         return;
     }
@@ -424,7 +441,7 @@ void MusicEngine::setState(MusicState state, MusicTiming timing) {
     const MusicState previous = m_state;
     m_state = state;
     if (state == MusicState::Silent) {
-        transitionTo({}, MusicTiming::Immediate);
+        transitionTo({}, timing == MusicTiming::Auto ? MusicTiming::Immediate : timing);
         return;
     }
     if (timing == MusicTiming::Auto) {
@@ -443,9 +460,13 @@ void MusicEngine::setState(MusicState state, MusicTiming timing) {
 void MusicEngine::triggerMotif() {
     if (!m_motif || !loadMotifStyle())
         return;
+    // SegmentWrapper::Play does nothing while the motif is still playing (its
+    // second play included; OpenMM2's ring-out tail does not count).
+    if (m_motifDelay >= 0 || m_motifRemaining > static_cast<std::int64_t>(1.5 * m_rate))
+        return;
     // DMusicObject::PlayMotif plays the motif as a secondary segment from the
     // next beat (DMUS_SEGF_SECONDARY | GRID | BEAT; the beat is assumed to win
-    // over the grid), with one repeat.
+    // over the grid), with one repeat (SetRepeats(1)).
     m_motifDelay = m_playing.empty() ? 0 : OpenMM2_DmPerformance_samplesToBeat(m_music);
     m_motifRepeats = 1;
 }
@@ -723,14 +744,12 @@ void MusicPlayer::playMenu() {
 }
 
 void MusicPlayer::startRace(int song, bool cruise, bool play) {
-    // Pick a random song here so the right segments are preloaded
-    // (mmSingleRaceMusicData / mmSingleRoamMusicData::LoadMusic pick a table
-    // row uniformly at random).
+    // Pick the song here so the right segments are preloaded
+    // (mmSingleRaceMusicData / mmSingleRoamMusicData::LoadMusic draw a table
+    // row with mmGameMusicData::RandomizeNumber).
     const auto& songs = cruise ? m_tables.cruise : m_tables.race;
-    if (song < 0 && !songs.empty()) {
-        static std::mt19937 rng{std::random_device{}()};
-        song = static_cast<int>(rng() % songs.size());
-    }
+    if (song < 0 && !songs.empty())
+        song = MusicTables::pickSong(static_cast<int>(songs.size()));
     loadThen(songSegments(song, cruise), [song, cruise, play](MusicEngine& e) {
         e.selectSong(song, cruise);
         if (play)

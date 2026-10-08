@@ -54,6 +54,8 @@ struct MusicTables {
     static std::vector<MusicSong> parseCruise(std::string_view text);
     // ui.csv / *ambience.csv: a header line followed by one segment name.
     static std::string parseSingle(std::string_view text);
+    // mmGameMusicData::RandomizeNumber: the song drawn from `count` rows.
+    static int pickSong(int count);
     static MusicTables load(const vfs::Vfs& vfs);
 };
 
@@ -148,7 +150,7 @@ public:
     int sampleRate() const { return m_rate; }
 
     // Selects the song for Racing/Idle/... states. `cruise` picks from the
-    // cruise table. song < 0 picks one at random (as the original did; inferred).
+    // cruise table. song < 0 draws one (MusicTables::pickSong).
     void selectSong(int song, bool cruise);
     int song() const { return m_song; }
     bool cruise() const { return m_cruise; }
