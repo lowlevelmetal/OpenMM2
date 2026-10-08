@@ -138,6 +138,23 @@ TrackedCar trackedAmbient(const AmbientCar& car, int id) {
     return t;
 }
 
+bool nearestPlayer2(const Vec3& position, std::span<const TrackedCar> cars, float& distance2) {
+    bool any = false;
+    distance2 = 9999999.0f;
+    for (const TrackedCar& c : cars) {
+        if (!c.isPlayer)
+            continue;
+        any = true;
+        const float dx = position.x - c.position.x;
+        const float dy = position.y - c.position.y;
+        const float dz = position.z - c.position.z;
+        const float d = dx * dx + dy * dy + dz * dz;
+        if (d < distance2)
+            distance2 = d;
+    }
+    return any;
+}
+
 float perFrame(float factor, float dt) {
     return std::pow(factor, clampf(30.0f * dt, 0.01f, 2.0f));
 }

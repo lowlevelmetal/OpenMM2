@@ -499,3 +499,51 @@ TEST(ParityAiTraffic, RegainRailMapsTheCarFirst) {
         ADD_FAILURE() << "parked";
     }
 }
+
+// aiRouteRacer::Update and aiPoliceOfficer::Update declare their car to the
+// physics manager every frame by the distance (3D) to the nearest player.
+TEST(ParityAiPlanner, MoverDeclarationsByPlayerDistance) {
+    const city::AiMap map = plannerBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    std::vector<city::OpponentPoint> rows(4);
+    const Vec3 at[] = {{2, 0, -40}, {1, 0, -1}, {1, 0, -199}, {2, 0, -150}};
+    for (std::size_t i = 0; i < rows.size(); ++i)
+        rows[i].position = at[i];
+    PlannerCar racer(2.0f, -40.0f);
+    auto opponent = ai::Opponent::create(view, racer.sim, rows, {}, 0, 1, 0);
+    ASSERT_TRUE(opponent);
+    PlannerCar copCar(-2.0f, -60.0f);
+    ai::PoliceSquad police(view);
+    police.add(copCar.sim, facingNorth(-2.0f, -60.0f), 2);
+    const ai::PoliceCar& cop = *police.cars().front();
+
+    auto withPlayerAt = [&](float z) {
+        ai::TrackedCar player;
+        player.id = 0;
+        player.isPlayer = true;
+        player.suspect = true;
+        player.position = {2.0f, 0.0f, z};
+        return std::vector<ai::TrackedCar>{player};
+    };
+    auto run = [&](const std::vector<ai::TrackedCar>& cars) {
+        opponent->setHeld(true);
+        opponent->update(1.0f / 30.0f, cars);
+        police.update(1.0f / 30.0f, cars, nullptr, false);
+    };
+    run(withPlayerAt(-40.0f - 150.0f)); // racer 150 m, cop about 130 m away
+    EXPECT_EQ(opponent->mover().type, 3);
+    EXPECT_EQ(opponent->mover().flags, 0x1bu);
+    EXPECT_EQ(cop.mover().type, 2);
+    EXPECT_EQ(cop.mover().flags, 0x1bu);
+    run(withPlayerAt(-60.0f + 230.0f)); // racer 210 m, cop 230 m
+    EXPECT_EQ(opponent->mover().type, 2);
+    EXPECT_EQ(opponent->mover().flags, 0x13u);
+    EXPECT_EQ(cop.mover().type, 2);
+    EXPECT_EQ(cop.mover().flags, 0x13u);
+    run(withPlayerAt(-60.0f + 300.0f)); // cop beyond 250 m: not declared
+    EXPECT_EQ(cop.mover().type, 0);
+    run({}); // no player: racers plain, police not declared
+    EXPECT_EQ(opponent->mover().type, 2);
+    EXPECT_EQ(cop.mover().type, 0);
+}

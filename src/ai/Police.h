@@ -125,6 +125,10 @@ public:
 
     Mode mode() const { return m_mode; }
     bool siren() const { return m_siren; }
+    // aiPoliceOfficer::Update's mover declaration this frame: within 200 m
+    // of a player (2, 0x1b), within 250 m (2, 0x13) in a race game (else
+    // 0x1b), beyond (or with no player) not declared (type 0).
+    MoverDeclaration mover() const { return m_mover; }
     int target() const { return m_target; } // TrackedCar id of the suspect, -1 = none
     bool closingIn() const { return m_pursuit == PoliceForce::kApprehend; }
     bool blocking() const { return m_pursuit == PoliceForce::kApprehend && m_apprehend == kMirror; }
@@ -183,6 +187,7 @@ private:
     std::vector<int> m_ignored; // opponents that lost the dice roll (until reset)
     const phys::Body* m_playerBody = nullptr;
     bool m_touchingPlayer = false;
+    MoverDeclaration m_mover;
 };
 
 // The city's police: the force and its cars.

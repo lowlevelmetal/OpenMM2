@@ -230,6 +230,26 @@ struct RouteRegistration {
     Vec3 destinationHeading;    // the way the car should face there (unit, XZ; zero = any)
 };
 
+// dgPhysManager::DeclareMover's arguments for an AI car this frame: the
+// mover type (2 plain, 3 also activating its room and the rooms round it;
+// 0: not declared) and what it collides with (0x1 update, 0x2 the city,
+// 0x8 instances, 0x10 other movers). The game hands them to its physics
+// manager.
+struct MoverDeclaration {
+    int type = 0;
+    unsigned flags = 0;
+};
+
+// The global switch the race game's setup sets, which keeps the instances
+// out of the collisions of racers away from the players (and of police
+// 200 - 250 m from them); inferred from the function that also registers
+// the opponents' HUD icons.
+inline constexpr bool kRaceGameMovers = true;
+
+// The nearest player's squared distance (3D, ICS positions) in `cars`;
+// false when there is none.
+bool nearestPlayer2(const Vec3& position, std::span<const TrackedCar> cars, float& distance2);
+
 // What the game tells a driver each frame.
 struct DriveContext {
     bool repairWhenWrecked = false; // aiVehiclePhysics::Init's repair flag (circuits)

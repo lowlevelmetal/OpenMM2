@@ -164,6 +164,9 @@ public:
         car.racerIndex = m_driver.aiId();
     }
     int resets() const { return m_resets; }
+    // aiRouteRacer::Update's mover declaration this frame: within 200 m of a
+    // player (3, 0x1b), else (2, 0x13) in a race game (2, 0x1b otherwise).
+    MoverDeclaration mover() const { return m_mover; }
     int backups() const { return m_driver.backups(); }
 
 private:
@@ -178,6 +181,7 @@ private:
     RouteRegistration m_route;
     PhysicsDriver m_driver;
     bool m_registered = false; // aiRouteRacer 0x9784 == 0x9782: the route is registered
+    MoverDeclaration m_mover;
     std::function<void(const phys::CarImpact&)> m_prevCallback;
 
     Mode m_mode = Mode::Held;

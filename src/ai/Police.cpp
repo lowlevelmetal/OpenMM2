@@ -419,6 +419,16 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
     auto& ics = m_car.body.ics;
     DriveContext ctx;
     ctx.touchingPlayer = touching;
+    // dgPhysManager::DeclareMover by the distance to the nearest player
+    // (MM2 declares after driving, from the same positions).
+    float near2 = 0.0f;
+    m_mover = {};
+    if (nearestPlayer2(ics.matrix.m3, cars, near2)) {
+        if (near2 < 40000.0f)
+            m_mover = {2, 0x1b};
+        else if (near2 < 62500.0f)
+            m_mover = {2, kRaceGameMovers ? 0x13u : 0x1bu};
+    }
 
     if (!active) {
         // OpenMM2: sessions in which the police are held.

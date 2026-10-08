@@ -209,6 +209,13 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     for (const TrackedCar& c : cars)
         if (c.isPlayer)
             m_playerBody = c.body;
+    // aiRouteRacer::Update declares the racer every frame, held, driving or
+    // disabled (the test is made after driving; the positions barely move).
+    float near2 = 0.0f;
+    if (nearestPlayer2(m_car.body.ics.matrix.m3, cars, near2) && near2 < 40000.0f)
+        m_mover = {3, 0x1b};
+    else
+        m_mover = {2, kRaceGameMovers ? 0x13u : 0x1bu};
     trackProgress(dt);
     // dgPhysManager::CollideInstances marks what the player's car hits
     // (lvlInstance flag 0x8000, cleared each frame).
