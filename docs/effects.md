@@ -104,7 +104,10 @@ fixed pair, the newest pair follows the wheel; otherwise a pair is added. A
 pair's v is its distance from the last fixed pair in tyre widths (0 starts a
 strip). Strips are drawn with `texture/tire_track.tga` (dark tread, alpha up
 to 25%; vehCar::Init sets its clamp-U flag), u across, white vertex colour,
-alpha blended, no depth writes. MM2 (`vehCar::DrawTracks`) also turns the
+alpha blended, no depth writes, culled like everything else (the strip
+faces up when the wheel laid it rolling forward, so tracks laid in reverse
+are not seen: inferred from the default cull mode and the pair order, not
+seen in the running game). MM2 (`vehCar::DrawTracks`) also turns the
 depth test off and draws the tracks right after the static city, before cars;
 OpenMM2 keeps the depth test with a depth bias because its draw order
 differs.
