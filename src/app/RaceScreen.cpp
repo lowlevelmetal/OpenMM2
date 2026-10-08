@@ -480,7 +480,11 @@ private:
         m_player->reset(m_spawn);
         m_pose = m_player->pose();
         std::vector<std::string> missing;
-        m_cams.load(ctx.game->vfs, m_result.config.vehicle, &missing);
+        // mmPlayer::Init: the dashboard eye depends on the screen's shape.
+        float aspect = 4.0f / 3.0f;
+        if (const auto extent = ctx.device().sceneExtent(); extent.height)
+            aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
+        m_cams.load(ctx.game->vfs, m_result.config.vehicle, &missing, aspect);
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             m_cams.setVehicleFlags(static_cast<int>(info->flags));
         for (const auto& m : missing)
@@ -1670,6 +1674,12 @@ private:
         t.reverseGear = m_player->reversing();
         for (std::size_t i = 0; i < t.wheels.size(); ++i)
             t.wheels[i] = {sim.wheels[i].onGround, sim.wheels[i].intersection.normal};
+        // mmPlayer::Update: the flags of the room the car's model is in.
+        if (m_cityRenderer) {
+            const int room = m_cityRenderer->roomAt(t.matrix.m3);
+            if (room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size())
+                t.roomFlags = m_city->psdl.rooms[static_cast<std::size_t>(room)].flags;
+        }
         return t;
     }
 
