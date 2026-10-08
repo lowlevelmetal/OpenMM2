@@ -51,8 +51,10 @@ Image downsample(const Image& src) {
                 auto at = [&](std::uint32_t px, std::uint32_t py) {
                     return static_cast<unsigned>(src.pixels[(static_cast<std::size_t>(py) * src.width + px) * 4 + c]);
                 };
+                // gfxImage::GenerateMipmaps: the sum of the 2x2 block shifted
+                // right by two (truncated, not rounded).
                 dst.pixels[(static_cast<std::size_t>(y) * dst.width + x) * 4 + c] =
-                    static_cast<std::uint8_t>((at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1) + 2) / 4);
+                    static_cast<std::uint8_t>((at(x0, y0) + at(x1, y0) + at(x0, y1) + at(x1, y1)) >> 2);
             }
         }
     }
