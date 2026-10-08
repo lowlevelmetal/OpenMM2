@@ -22,14 +22,14 @@ std::string fit(ui::UiFrame& f, const ui::FontSpec& font, std::string text, floa
     return text;
 }
 
-// The controller named on the main menu (MenuManager::GetControllerName,
-// strings 580-584: Mouse, Keyboard, Joystick, Game Pad, Steering Wheel).
+// The controller named on the main menu (mmInterface::PlayerFillStats ->
+// MenuManager::GetControllerName, strings 580-584: Mouse, Keyboard,
+// Joystick, Game Pad, Steering Wheel): the type the Control page's
+// CONTROLLER box writes.
 std::string controllerName(Frontend& fe) {
     const auto& s = fe.ctx.game->strings;
-    const std::string device = fe.ctx.settings.ini.getString("Controls", "Device", "1");
-    if (const auto i = str::parseInt(device); i && *i >= 0 && *i <= 4)
-        return s.get(static_cast<std::uint32_t>(580 + *i));
-    return device.empty() ? s.get(581, "Keyboard") : device;
+    const auto i = std::clamp<long long>(fe.ctx.settings.ini.getInt("Controls", "Controller", 1), 0, 4);
+    return s.get(static_cast<std::uint32_t>(580 + i));
 }
 
 // --- Loading screen ------------------------------------------------------------------------
@@ -81,13 +81,16 @@ public:
         button(1, "texture/main_sp.tga", {439, 301}, "jpg/mn_sp.jpg", [&fe] { fe.push(makeRacesPage(fe)); });
         button(2, "texture/main_mp.tga", {439, 359}, "jpg/mn_mp.jpg", [&fe] {
             leaveCrashCourse(fe);
+            setCrashCourseReturn(false);
             fe.push(makeSessionsPage(fe));
         });
-        // Quick Race: the garage with the driver's last event
-        // (mmInterface::Update, Main Menu case 3).
+        // Quick Race: the garage with the event currently set up, which is
+        // the driver's last one unless the race menu changed it since
+        // (mmInterface::Update, main menu QUICK RACE; mmInterface::Switch to
+        // the garage turns Cops & Robbers into cruise).
         button(3, "texture/main_qck.tga", {439, 415}, "jpg/mn_qck.jpg", [&fe] {
-            fe.configFromProfile();
             leaveCrashCourse(fe);
+            setCrashCourseReturn(false);
             fe.push(makeVehiclePage(fe));
         });
 
@@ -135,11 +138,10 @@ public:
         });
 
         addNavStrip(fe, *this);
-        menu.setInitialFocus(&crash);
-        menu.onBack = [&fe] {
-            fe.playSound("Selectionmade", 0.86f);
-            fe.askQuit();
-        };
+        menu.setInitialFocus(&crash); // MainMenu::MainMenu: SetFocusWidget after DVRCC
+        // Escape asks to quit (mmInterface::Update, main menu back); the
+        // Escape key's own sound plays only in the in-game popups.
+        menu.onBack = [&fe] { fe.askQuit(); };
         refresh(fe);
     }
 
@@ -275,8 +277,8 @@ private:
         const std::string name = m_name;
         const game::Difficulty difficulty = m_difficulty;
         fe.pop();
-        if (str::trim(name).empty())
-            return; // nothing happens
+        if (name.empty())
+            return; // an empty name does nothing (a name of spaces is a name)
         game::ProfileStore::CreateError error{};
         auto p = fe.store.create(name, &error);
         if (!p) {
@@ -289,8 +291,8 @@ private:
         }
         p->difficulty = difficulty;
         p->netName = fe.ctx.game->strings.get(77, "noname");
-        if (!fe.ctx.game->catalog.vehicles().empty())
-            p->vehicle = fe.ctx.game->catalog.vehicles().front().baseName;
+        // The new driver has no last car or event: mmInterface::PlayerSetState
+        // then sets up cruise in "vpbug" (the profile's defaults).
         p->city = fe.config.city;
         p->save();
         fe.selectProfile(p->name);

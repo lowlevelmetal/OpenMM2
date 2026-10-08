@@ -25,23 +25,30 @@ public:
         const auto& s = fe.ctx.game->strings;
         menu.background = crash ? "jpg/crshi_bk.jpg" : "jpg/rshi_bk.jpg";
         menu.popupSounds = true;
-        // Text buttons at x 0.6875 from y 0.15625, one line apart (the line
-        // height of PUMenuBase's buttons is inferred).
-        constexpr float x = 440, w = 135, lineH = 30;
+        // Text buttons at x 0.6875 from y 0.15625, each the popup's button
+        // height (0.1 of the screen, PUMenuBase::PUMenuBase) below the last,
+        // 0.2109375 wide, the last 0.3125 (PUResults::Init640). The
+        // multiplayer roster button between Next and Race Menu is not shown
+        // after single-player races.
+        constexpr float x = 440, w = 135, lineH = 48, lastW = 200;
         float y = 75;
-        auto add = [&](std::string label, std::function<void()> fn) -> ui::TextButton& {
-            auto& b = menu.add<ui::TextButton>(ui::Box{x, y, w, lineH}, std::move(label), std::move(fn));
+        auto add = [&](std::string label, std::function<void()> fn, float width) -> ui::TextButton& {
+            auto& b = menu.add<ui::TextButton>(ui::Box{x, y, width, lineH}, std::move(label), std::move(fn));
             y += lineH;
             return b;
         };
-        auto& restart = add(crash ? s.get(653, "Restart Lesson") : s.get(492, "Restart Race"), [this, &fe] {
-            fe.config = m_result.config;
-            fe.startRace();
-        });
-        auto& next = add(crash ? s.get(654, "Next Lesson") : s.get(493, "Next Race"), [this, &fe] { nextRace(fe); });
+        auto& restart = add(
+            crash ? s.get(653, "Restart Lesson") : s.get(492, "Restart Race"),
+            [this, &fe] {
+                fe.config = m_result.config;
+                fe.startRace();
+            },
+            w);
+        auto& next = add(
+            crash ? s.get(654, "Next Lesson") : s.get(493, "Next Race"), [this, &fe] { nextRace(fe); }, w);
         next.enabled = hasNextRace(fe);
-        add(crash ? s.get(496, "Back to School") : s.get(497, "Race Menu"), [&fe] { fe.pop(); });
-        add(s.get(498, "Exit to Windows"), [&fe] { fe.askQuit(); });
+        add(crash ? s.get(496, "Back to School") : s.get(497, "Race Menu"), [&fe] { fe.pop(); }, w);
+        add(s.get(498, "Exit to Windows"), [&fe] { fe.askQuit(); }, lastW);
         menu.setInitialFocus(&restart);
         menu.onBack = [&fe] { fe.pop(); };
     }

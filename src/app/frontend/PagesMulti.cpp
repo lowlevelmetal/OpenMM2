@@ -94,9 +94,12 @@ const char* crModeName(game::CopsAndRobbersMode m) {
     return "";
 }
 
-constexpr int kTimeLimits[] = {5, 10, 20, 30};       // string table 336-339
-constexpr int kPointLimits[] = {100, 250, 500, 1000}; // 340-343
-const char* const kGoldMass[] = {"Weightless", "Quarter Ton", "Half Ton"}; // 332-334
+// The Cops & Robbers limits and gold masses HostRaceMenu::InitCRWidgets
+// offers, with its strings (510-513, 514-517, 506-508).
+constexpr int kTimeLimits[] = {5, 10, 20, 30};
+constexpr int kPointLimits[] = {100, 250, 500, 1000};
+const char* const kGoldMass[] = {"Weightless", "Quarter Ton", "Half Ton"};
+constexpr std::uint32_t kTimeLimitStrings = 510, kPointLimitStrings = 514, kGoldMassStrings = 506;
 
 std::string raceTitle(Frontend& fe, const game::RaceConfig& c) {
     std::string title = modeDisplayName(fe, c.mode);
@@ -833,20 +836,26 @@ public:
         }
         m_limitValue = &menu.add<ui::ValueBox>(
             Box{522, 167, 88, 27},
-            [this] {
+            [this, &fe] {
+                const auto& st = fe.ctx.game->strings;
                 std::vector<std::string> v;
-                if (limitKind() == 2)
-                    for (int p : kPointLimits)
-                        v.push_back(std::format("{} pts", p));
-                else
-                    for (int t : kTimeLimits)
-                        v.push_back(std::format("{} min", t));
+                for (std::uint32_t i = 0; i < 4; ++i) {
+                    if (limitKind() == 2)
+                        v.push_back(st.get(kPointLimitStrings + i, std::format("{} pts", kPointLimits[i])));
+                    else
+                        v.push_back(st.get(kTimeLimitStrings + i, std::format("{} minutes", kTimeLimits[i])));
+                }
                 return v;
             },
             [this] { return limitIndex(); }, [this](int i) { setLimitIndex(i); });
         m_goldBox = &menu.add<ui::ValueBox>(
             Box{399, 223, 128, 27},
-            [] { return std::vector<std::string>(std::begin(kGoldMass), std::end(kGoldMass)); },
+            [&fe] {
+                std::vector<std::string> v;
+                for (std::uint32_t i = 0; i < 3; ++i)
+                    v.push_back(fe.ctx.game->strings.get(kGoldMassStrings + i, kGoldMass[i]));
+                return v;
+            },
             [this] { return m_goldMass; }, [this](int i) { m_goldMass = i; });
         m_goldBox->help = "jpg/host_gm.jpg";
 

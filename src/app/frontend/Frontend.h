@@ -235,6 +235,15 @@ void addNavStrip(Frontend& fe, Page& page, NavOptions options = NavOptions::Open
 // navigation bar's PREV (290,415) and belongs to the strip's focus group.
 ui::SpriteButton& addBack(Frontend& fe, Page& page, const char* sprite = "texture/mnav_prv.tga");
 
+// Whether the next race was started from the Crash Course page (lessons and
+// "work experience" alike). MM2 keeps this in a global that the Crash Course
+// GO sets and the race menu's GO, QUICK RACE and MULTIPLAYER clear
+// (mmInterface::Update); after the race mmInterface::ShowMain returns to the
+// Crash Course page when it is set, else to the race menu. Kept for the
+// process, like the original's global.
+bool crashCourseReturn();
+void setCrashCourseReturn(bool on);
+
 // Display names.
 const char* timeOfDayName(game::TimeOfDay t);
 const char* weatherName(game::Weather w);
