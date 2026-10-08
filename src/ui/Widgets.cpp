@@ -84,6 +84,8 @@ NavInput NavReader::read(const platform::Input& in, const render::UiLayout& layo
     n.tabNext = in.keyPressed(Key::Tab);
     n.home = in.keyPressed(Key::Home);
     n.end = in.keyPressed(Key::End);
+    n.pageUp = in.keyPressed(Key::PageUp);
+    n.pageDown = in.keyPressed(Key::PageDown);
     // Gamepads are an OpenMM2 addition (MM2's menus read only keyboard and mouse).
     for (const auto& pad : in.gamepads()) {
         auto btn = [&](GamepadButton b) { return pad.buttons.test(static_cast<int>(b)); };
@@ -844,6 +846,121 @@ void TextEntry::modalInput(UiFrame& f) {
     }
 }
 
+// --- ScrollBar (VSWidget) ---------------------------------------------------------------------
+
+namespace {
+const SpriteSheet kScrollUp{"texture/scroll_uarr.tga", 4, true};
+const SpriteSheet kScrollDown{"texture/scroll_darr.tga", 4, true};
+const SpriteSheet kScrollOn{"texture/scroll_act.tga", 2, true};
+const SpriteSheet kScrollOff{"texture/scroll_inact.tga", 2, true};
+constexpr float kScrollGap = 2.0f; // VSWidget::VSWidget (+0xac, +0xb0)
+} // namespace
+
+void ScrollBar::place(float x, float y, float height) {
+    m_x = x;
+    m_y = y;
+    m_height = height;
+}
+
+ScrollBar::Metrics ScrollBar::metrics(UiFrame& f) const {
+    Metrics m;
+    const Vec2 seg = spriteFrameSize(f, kScrollOn);
+    const Vec2 arrow = spriteFrameSize(f, kScrollDown);
+    m.segW = seg.x;
+    m.segH = std::floor(seg.y);
+    m.arrowW = arrow.x;
+    m.arrowH = std::floor(arrow.y);
+    if (m.segH <= 0.0f)
+        return m;
+    const int height = static_cast<int>(m_height);
+    m.segments = std::clamp((height - 2 * static_cast<int>(m.arrowH)) / static_cast<int>(m.segH), 2, 200);
+    m.base = std::max(1, height / static_cast<int>(m.segH) - 1);
+    const int thumb = static_cast<int>(static_cast<float>(m.segments) * m_ratio) - 1;
+    m.thumb = thumb > 0 ? std::min(thumb, m.segments - 1) : 1;
+    return m;
+}
+
+void ScrollBar::clamp(const Metrics& m) { m_value = std::clamp(m_value, 0, std::max(0, m.segments - 1 - m.thumb)); }
+
+bool ScrollBar::inc(UiFrame& f) {
+    const Metrics m = metrics(f);
+    m_downPressed = true;
+    const int before = m_value;
+    ++m_value;
+    clamp(m);
+    return m_value != before;
+}
+
+bool ScrollBar::dec(UiFrame& f) {
+    const Metrics m = metrics(f);
+    m_upPressed = true;
+    const int before = m_value;
+    --m_value;
+    clamp(m);
+    return m_value != before;
+}
+
+void ScrollBar::setRow(UiFrame& f, int row, int count) {
+    const Metrics m = metrics(f);
+    m_value = count > 0 ? static_cast<int>(static_cast<double>(row) * m.base / count + 0.5) : 0;
+    clamp(m);
+}
+
+int ScrollBar::firstRow(UiFrame& f, int count, int rows) const {
+    const Metrics m = metrics(f);
+    const int row = static_cast<int>(static_cast<double>(m_value) / m.base * count + 0.5);
+    return std::clamp(row, 0, std::max(0, count - rows));
+}
+
+bool ScrollBar::contains(UiFrame& f, Vec2 p) const {
+    const Metrics m = metrics(f);
+    // SetHotSpots: the arrows' width from the trough's left, the arrows and
+    // the trough without the gaps.
+    const float bottom = m_y + m.arrowH + m.segH * static_cast<float>(m.segments) + m.arrowH;
+    return p.x >= m_x && p.x <= m_x + m.arrowW && p.y >= m_y && p.y <= bottom;
+}
+
+void ScrollBar::draw(UiFrame& f, bool focused) const {
+    Metrics m = metrics(f);
+    const int top = std::clamp(m_value, 0, std::max(0, m.segments - 1 - m.thumb));
+    const float arrowX = m_x - std::floor((m.arrowW - m.segW) * 0.5f);
+    const int band = focused ? 1 : 0;
+    drawSpriteFrame(f, kScrollUp, focused ? (m_upPressed ? 2 : 1) : 0, arrowX, m_y);
+    float y = m_y + kScrollGap + m.arrowH;
+    for (int i = 0; i < m.segments; ++i) {
+        const bool thumb = i >= top && i <= top + m.thumb;
+        drawSpriteFrame(f, thumb ? kScrollOn : kScrollOff, band, m_x, y);
+        y += m.segH;
+    }
+    drawSpriteFrame(f, kScrollDown, focused ? (m_downPressed ? 2 : 1) : 0, arrowX, y + kScrollGap);
+}
+
+bool ScrollBar::mouse(UiFrame& f, bool press) {
+    const Metrics m = metrics(f);
+    const Vec2 p = f.nav.mouse;
+    if (!contains(f, p)) {
+        release();
+        return false;
+    }
+    const float troughTop = m_y + m.arrowH;
+    const float troughBottom = troughTop + m.segH * static_cast<float>(m.segments);
+    if (p.y <= troughTop) {
+        dec(f);
+    } else if (p.y > troughBottom) {
+        inc(f);
+    } else {
+        // The thumb walks towards the pointer until it covers it.
+        while (p.y < troughTop + m.segH * static_cast<float>(m_value) && dec(f)) {
+        }
+        while (p.y > troughTop + m.segH * static_cast<float>(m_value + m.thumb + 1) && inc(f)) {
+        }
+        release();
+    }
+    if (press)
+        f.play("Switch", 0.85f);
+    return true;
+}
+
 // --- Picture -----------------------------------------------------------------------------------
 
 Picture::Picture(Box b, std::function<std::string()> p) : path(std::move(p)) { box = b; }
@@ -1044,6 +1161,10 @@ void Menu::update(UiFrame& f) {
         cur->adjust(f, -1);
     if (nav.right)
         cur->adjust(f, 1);
+    if (nav.pageUp)
+        cur->page(f, -1);
+    if (nav.pageDown)
+        cur->page(f, 1);
     if (nav.accept)
         cur->activate(f);
     else if (nav.space)

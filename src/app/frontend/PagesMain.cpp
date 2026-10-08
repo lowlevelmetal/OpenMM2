@@ -347,7 +347,7 @@ public:
                 radio(fe, 1 + i, {200, 323 + 25.0f * static_cast<float>(i)}, [this, t] { return m_table == t; },
                       [this, t] {
                           m_table = t;
-                          m_scroll = 0;
+                          resetScroll();
                       });
             }
         }
@@ -357,7 +357,7 @@ public:
             radio(fe, firstRadio + i, {40, 323 + 25.0f * static_cast<float>(i)}, [this, m] { return m_mode == m; },
                   [this, m] {
                       m_mode = m;
-                      m_scroll = 0;
+                      resetScroll();
                   });
         }
         const char* cities[] = {"sf", "london"};
@@ -366,7 +366,7 @@ public:
             radio(fe, firstRadio + 3 + i, {360, 323 + 25.0f * static_cast<float>(i)}, [this, c] { return m_city == c; },
                   [this, c] {
                       m_city = c;
-                      m_scroll = 0;
+                      resetScroll();
                   });
         }
         const Vec2 done = fe.layout.position(id, firstRadio + 5, {421, 418}, origin);
@@ -376,6 +376,8 @@ public:
     }
 
 protected:
+    virtual void resetScroll() { m_scroll = 0; }
+
     void radio(Frontend& fe, int index, Vec2 code, std::function<bool()> on, std::function<void()> pick) {
         const Vec2 p = fe.layout.position(m_id, index, code, origin);
         auto& r = menu.add<ui::LampItem>(SpriteSheet{"texture/dlg_chkb.tga", 5}, p.x, p.y, std::move(on), std::move(pick));
@@ -453,23 +455,94 @@ public:
 // SetSubwidgetGeometry puts the race at 4 px, the driver a quarter of the
 // width further, the time or score 0.2857 further and the vehicle 0.1923
 // less 26 px further. The scroll arrows' positions are inferred.
+// Dialog_HallOfFame's list (UICompositeScroll, 11 rows of 18 px from
+// 81,91) with its VSWidget at 546,91, 198 px high (the list's right edge
+// less 0.0329 of the screen): one focus stop, whose focus lights the bar.
+class RecordList final : public ui::Widget {
+public:
+    static constexpr int kRows = 11;
+
+    explicit RecordList(std::function<int()> count) : m_count(std::move(count)) {
+        box = {81, 91, 0.9f * 540.0f, 198};
+        m_bar.place(546, 91, 198);
+    }
+
+    // UICompositeScroll::SetVScrollVals (the thumb is rows / count) and
+    // VScrollCB (the first row from the bar's value).
+    int firstRow(ui::UiFrame& f) {
+        m_bar.setRatio(ratio());
+        return m_bar.firstRow(f, m_count(), kRows);
+    }
+    void reset() { m_bar.reset(); }
+
+    void draw(ui::UiFrame& f, bool focused) override {
+        m_bar.setRatio(ratio());
+        m_bar.draw(f, focused);
+    }
+
+    // UICompositeScroll::Action: Left / Right go to the VSWidget first
+    // (Dec / Inc and "Switch") and then step the list once more, so a press
+    // moves two segments (read from the code, not observed).
+    bool adjust(ui::UiFrame& f, int dir) override {
+        for (int i = 0; i < 2; ++i)
+            dir < 0 ? m_bar.dec(f) : m_bar.inc(f);
+        f.play("Switch", 0.85f);
+        return true;
+    }
+
+    // Page Up / Page Down: a page of rows.
+    bool page(ui::UiFrame& f, int dir) override {
+        const int start = firstRow(f);
+        while (std::abs(firstRow(f) - start) < kRows && (dir < 0 ? m_bar.dec(f) : m_bar.inc(f))) {
+        }
+        m_bar.release();
+        return true;
+    }
+
+    // The VSWidget takes a press on the bar and the drags that follow it
+    // (UICompositeScroll::CaptureAction); a press on a row (the list's left
+    // 0.9) plays "Switch". The mouse wheel scrolls (an OpenMM2 convenience).
+    void mouse(ui::UiFrame& f, bool hovered) override {
+        const ui::NavInput& nav = f.nav;
+        if (nav.mouseReleased) {
+            m_dragging = false;
+            m_bar.release();
+        }
+        if (m_dragging && nav.mouseDown && nav.mouseMoved)
+            m_bar.mouse(f, false);
+        if (hovered && nav.mousePressed) {
+            if (m_bar.mouse(f, true))
+                m_dragging = true;
+            else if (nav.mouse.x < box.x + 0.9f * box.w)
+                f.play("Switch", 0.85f);
+        }
+        if (hovered && nav.wheel != 0.0f) {
+            for (int i = 0; i < static_cast<int>(std::abs(nav.wheel)); ++i)
+                nav.wheel > 0.0f ? m_bar.dec(f) : m_bar.inc(f);
+            m_bar.release();
+        }
+    }
+    bool modal() const override { return m_dragging; }
+    void modalInput(ui::UiFrame& f) override { mouse(f, true); }
+
+private:
+    float ratio() const {
+        const int count = m_count();
+        return count > 0 ? static_cast<float>(kRows) / static_cast<float>(count) : 1.0f;
+    }
+    std::function<int()> m_count;
+    ui::ScrollBar m_bar;
+    bool m_dragging = false;
+};
+
 class RaceRecordsDialog final : public RecordDialog {
 public:
     explicit RaceRecordsDialog(Frontend& fe) : RecordDialog(fe, "jpg/hoff_dlg.jpg", menu_id::kHallOfFame, true) {
-        auto& up = menu.add<ui::SpriteButton>(SpriteSheet{"texture/scroll_uarr.tga", 4}, 543, 88,
-                                              [this] { m_scroll = std::max(0, m_scroll - 1); });
-        auto& down = menu.add<ui::SpriteButton>(SpriteSheet{"texture/scroll_darr.tga", 4}, 543, 266,
-                                                [this] { ++m_scroll; });
-        up.sound = down.sound = "Switch";
-    }
-
-    void update(Frontend& fe, double) override {
-        // The mouse wheel scrolls the list (an OpenMM2 convenience).
-        if (const float wheel = fe.ctx.input.mouseWheel().y; wheel != 0.0f)
-            m_scroll = std::max(0, m_scroll - static_cast<int>(wheel));
+        m_list = &menu.add<RecordList>([this, &fe] { return 5 * static_cast<int>(fe.racesFor(m_mode, m_city).size()); });
     }
 
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
+        m_scroll = m_list->firstRow(f);
         const auto& s = fe.ctx.game->strings;
         const auto font = ui::style::valueFont();
         const auto white = ui::style::kRecordText;
@@ -509,7 +582,6 @@ public:
                 rows.push_back(std::move(r));
             }
         }
-        m_scroll = std::clamp(m_scroll, 0, std::max(0, static_cast<int>(rows.size()) - 11));
         const float top = 10.0f + 0.177f * 460.0f, rowH = 0.0375f * 480.0f;
         for (int i = m_scroll; i < static_cast<int>(rows.size()) && i < m_scroll + 11; ++i) {
             const Row& r = rows[static_cast<std::size_t>(i)];
@@ -520,6 +592,15 @@ public:
             f.text.draw(f.overlay, font, fit(fe, f, font, r.vehicle, kWideColumn, 667), vehicleX, y, white);
         }
     }
+
+private:
+    void resetScroll() override {
+        m_scroll = 0;
+        if (m_list)
+            m_list->reset();
+    }
+
+    RecordList* m_list = nullptr;
 };
 
 } // namespace

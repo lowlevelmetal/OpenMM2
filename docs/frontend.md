@@ -173,9 +173,17 @@ being the number in strings 664-668.
 shared by all drivers, per table (Amateur Times, Pro Times, Pro Points),
 mode and city: five rows for every race, filled or not (an empty one has no
 driver, "  ---  " and "---"), with RACE, DRIVER, TIME or SCORE (title 350 or
-349) and VEHICLE. 11 rows of 18 px from 81,91 with a scroll bar; the columns
-split a 486 px row at 4, 125.5, 264.4 and 331.8 px. The scroll arrows'
-positions are **inferred**; MM2 never draws a passed mark here.
+349) and VEHICLE. 11 rows of 18 px from 81,91; the columns split a 486 px
+row at 4, 125.5, 264.4 and 331.8 px. The list is one focus stop with MM2's
+scroll bar (`VSWidget`) at 546,91, 198 px high: `scroll_uarr`, a trough of
+`scroll_inact` segments with the `scroll_act` thumb (rows / count of the
+trough), `scroll_darr`, 2 px apart; the list's focus lights its band. The
+arrows step a segment, the trough walks the thumb to the pointer and can
+be dragged, Left and Right move two segments, Page Up and Page Down a page,
+and a click on a row plays "Switch". The first row shown is the thumb's
+segment / (198 / segment height - 1) x the rows, rounded
+(`UICompositeScroll::VScrollCB`). The mouse wheel also scrolls (OpenMM2's).
+MM2 never draws a passed mark here.
 
 **Results** (`PUResults::Init640`). MM2 shows them in the game, over the
 paused scene, five seconds after the finish; OpenMM2 shows the same layout
@@ -373,7 +381,8 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   Steering and Camera Pan are not listed for the keyboard, Steer Left /
   Right not for the others, the
   steering axis only for the game pad), two columns at 50,62 in 20 px rows,
-  15 visible, with MM2's defaults for that controller
+  15 visible with the same scroll bar 10 px to their right (hidden while
+  every row fits), with MM2's defaults for that controller
   (`mmInput::SetDefaultConfig`) and its descriptions
   (`mmIODev::GetDescription`: "Left Mouse Button", "Joy Button 3", "Joy
   Y-Axis Up"). Enter or a click waits for a key, a mouse button or (for the

@@ -781,13 +781,13 @@ public:
             f.text.draw(f.overlay, font, text, box.x + 125, y,
                         selected ? ui::style::kValueTextFocus : ui::style::kRecordText);
         }
-        // Scroll bar arrows (UIVScrollBar) right of the list: the arrow frame
-        // while there is more to scroll to, else the empty frame (the frame
-        // choice is inferred from the sprites).
-        const float sx = box.x + box.w + 10;
-        ui::drawSpriteFrame(f, {"texture/scroll_uarr.tga", 4}, m_scroll > 0 ? 1 : 3, sx, box.y);
-        ui::drawSpriteFrame(f, {"texture/scroll_darr.tga", 4},
-                            m_scroll + kRows < static_cast<int>(m_actions.size()) ? 1 : 3, sx, box.y + box.h - 21);
+        // The VSWidget 10 px right of the list, as tall as the rows, hidden
+        // while every row fits (UICWArray::SetVScrollVals); the list's focus
+        // lights its band (UICWArray::Switch).
+        if (scrolls()) {
+            placeBar(f);
+            m_bar.draw(f, focused || m_active);
+        }
     }
 
     bool activate(ui::UiFrame&) override {
@@ -805,9 +805,9 @@ public:
             m_active = true;
             select(rowAt(nav.mouse.y));
             startCapture();
-        } else if (nav.mousePressed && scrollArrow(nav.mouse) != 0) {
+        } else if (nav.mousePressed && onBar(f)) {
             m_active = true;
-            m_scroll += scrollArrow(nav.mouse);
+            barMouse(f, true);
         } else if (hovered && nav.mouseMoved) {
             m_active = true;
         } else if (nav.up || nav.down) {
@@ -830,10 +830,20 @@ public:
             capture();
             return;
         }
-        // Scrolling and arrow clicks while the list has the keyboard.
+        // The scroll bar (VSWidget::Action, UICWArray::CaptureAction: a
+        // press, then the drag until the release) and row clicks while the
+        // list has the keyboard.
+        if (nav.mouseReleased) {
+            m_dragging = false;
+            m_bar.release();
+        }
+        if (m_dragging && nav.mouseDown && nav.mouseMoved) {
+            barMouse(f, false);
+            return;
+        }
         if (nav.mousePressed) {
-            if (scrollArrow(nav.mouse) != 0) {
-                m_scroll += scrollArrow(nav.mouse);
+            if (onBar(f)) {
+                barMouse(f, true);
             } else if (box.contains(nav.mouse)) {
                 select(rowAt(nav.mouse.y));
                 startCapture();
@@ -853,8 +863,7 @@ public:
         if (nav.back && onEscape)
             onEscape();
         // The mouse leaving the list hands it back to the page's widgets.
-        const float sx = box.x + box.w + 10;
-        if (nav.mouseMoved && !box.contains(nav.mouse) && !Box{sx, box.y, 21, box.h}.contains(nav.mouse))
+        if (nav.mouseMoved && !m_dragging && !box.contains(nav.mouse) && !onBar(f))
             m_active = false;
     }
 
@@ -872,14 +881,30 @@ private:
 
     int rowAt(float y) const { return m_scroll + static_cast<int>((y - box.y) / kRowH); }
 
-    // -1 / +1 when `p` is on the scroll bar's up / down arrow.
-    int scrollArrow(Vec2 p) const {
-        const float sx = box.x + box.w + 10;
-        if (Box{sx, box.y, 21, 21}.contains(p))
-            return -1;
-        if (Box{sx, box.y + box.h - 21, 21, 21}.contains(p))
-            return 1;
-        return 0;
+    bool scrolls() const { return static_cast<int>(m_actions.size()) > kRows; }
+
+    // The bar follows the list's first row (the selection scrolls it too).
+    void placeBar(ui::UiFrame& f) {
+        const int count = static_cast<int>(m_actions.size());
+        m_bar.place(box.x + box.w + 10, box.y, box.h);
+        m_bar.setRatio(count > 0 ? static_cast<float>(kRows) / static_cast<float>(count) : 1.0f);
+        m_bar.setRow(f, m_scroll, count);
+    }
+
+    bool onBar(ui::UiFrame& f) {
+        if (!scrolls())
+            return false;
+        placeBar(f);
+        return m_bar.contains(f, f.nav.mouse);
+    }
+
+    // VSWidget::EvalMouseXY, then the list's first row from the bar
+    // (UICWArray::VScrollCB).
+    void barMouse(ui::UiFrame& f, bool press) {
+        placeBar(f);
+        if (m_bar.mouse(f, press) && press)
+            m_dragging = true;
+        m_scroll = m_bar.firstRow(f, static_cast<int>(m_actions.size()), kRows);
     }
 
     void select(int i) {
@@ -956,6 +981,8 @@ private:
     controls::CaptureReader m_reader;
     int m_selected = 0;
     int m_scroll = 0;
+    ui::ScrollBar m_bar;
+    bool m_dragging = false;
     bool m_active = false;
     bool m_capturing = false;
     bool m_swallow = false;

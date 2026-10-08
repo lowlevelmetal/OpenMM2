@@ -39,6 +39,7 @@ struct NavInput {
     bool enter = false;  // Return/keypad Enter only (text entry commits)
     bool tabNext = false;
     bool home = false, end = false;
+    bool pageUp = false, pageDown = false;
     Vec2 mouse{-1e9f, -1e9f}; // virtual coordinates
     bool mouseMoved = false;
     bool mousePressed = false;  // left button went down this frame
@@ -147,6 +148,8 @@ public:
     virtual bool activateSpace(UiFrame&) { return false; }
     // Left/right. Returns true if handled; focus never moves on left/right.
     virtual bool adjust(UiFrame&, int /*dir*/) { return false; }
+    // Page Up (-1) / Page Down (1): the record list's pages.
+    virtual bool page(UiFrame&, int /*dir*/) { return false; }
     // Mouse handling while the widget is hovered or focused.
     virtual void mouse(UiFrame&, bool /*hovered*/) {}
     // Called when the widget gains or loses keyboard focus.
@@ -258,6 +261,65 @@ private:
 // roller_up/roller_down buttons of MM2's menus); `wrap` per page. Returns
 // true when the value changed.
 bool stepOption(ValueBox& box, int dir, bool wrap);
+
+// MM2's VSWidget, the scroll bar of the record lists (UICompositeScroll)
+// and the customize list (UICWArray): scroll_uarr, a trough of segments
+// (scroll_inact, the thumb in scroll_act; each a band of the bitmap's half
+// height, the second band while the list has the focus) and scroll_darr,
+// with 2 px between the arrows and the trough. The arrows (4 frames:
+// unfocused, focused, focused and pressed) sit centred over the trough.
+// The bar counts in segments: its value is the thumb's first segment, and
+// the owner turns it into a row (firstRow, UICompositeScroll::VScrollCB).
+class ScrollBar {
+public:
+    // VSWidget::Init / SetStep / SetHotSpots: the trough's left top and the
+    // bar's height (2 to 200 segments fit between the arrows).
+    void place(float x, float y, float height);
+    // VSWidget::SetTrough: the thumb's share of the trough (rows shown over
+    // rows), clamped to 0..1; the thumb spans whole part of segments x share
+    // segments, at least 2 and at most all of them.
+    void setRatio(float ratio) { m_ratio = std::clamp(ratio, 0.0f, 1.0f); }
+    int value() const { return m_value; }
+    // The value whose first row (firstRow) is `row`, for lists whose owner
+    // scrolls them by other means (the customize list's selection).
+    void setRow(UiFrame& f, int row, int count);
+    // VSWidget::Inc / Dec: one segment, clamped (`f` gives the sizes).
+    bool inc(UiFrame& f);
+    bool dec(UiFrame& f);
+    // UICompositeScroll::VScrollCB: the first row of `count`, `rows` at a
+    // time: value / (bar height / segment - 1) x count, rounded, clamped.
+    int firstRow(UiFrame& f, int count, int rows) const;
+    // VSWidget::Cull.
+    void draw(UiFrame& f, bool focused) const;
+    // VSWidget::EvalMouseXY for a press (or a drag while the owner holds
+    // the mouse): the up arrow decrements, the down arrow increments, the
+    // trough moves the thumb a segment at a time until it covers the
+    // pointer; "Switch" on a press. False when the pointer is off the bar.
+    bool mouse(UiFrame& f, bool press);
+    // Any other mouse event (VSWidget::Action) unpresses the arrows.
+    void release() { m_upPressed = m_downPressed = false; }
+    // Back to the top (a new list).
+    void reset() {
+        m_value = 0;
+        release();
+    }
+    bool contains(UiFrame& f, Vec2 p) const;
+
+private:
+    struct Metrics {
+        float segW = 0, segH = 0, arrowW = 0, arrowH = 0;
+        int segments = 2; // SetStep
+        int thumb = 1;    // SetTrough: the thumb's last segment past its first
+        int base = 1;     // CalcTroughRatio: whole segments in the height, less one
+    };
+    Metrics metrics(UiFrame& f) const;
+    void clamp(const Metrics& m);
+
+    float m_x = 0, m_y = 0, m_height = 0;
+    float m_ratio = 0.25f; // VSWidget::SetStep's SetTrough(0.25)
+    int m_value = 0;
+    bool m_upPressed = false, m_downPressed = false;
+};
 
 // Text button of the in-game popups (UIButton in MM2's PUMenuBase menus,
 // e.g. the results): white text, yellow-green when focused, grey when
