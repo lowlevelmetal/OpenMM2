@@ -11,10 +11,11 @@
 #include "city/SdlCollect.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
+#include <cstdint>
 
 namespace mm2::game {
 namespace {
@@ -172,7 +173,7 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
             pm.elasticity = m.elasticity;
             pm.friction = m.friction;
             pm.effect = m.effect;
-            pm.sound = str::istartsWith(m.sound, "none") ? 0 : std::atoi(m.sound.c_str());
+            pm.sound = str::istartsWith(m.sound, "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(m.sound));
             pm.width = 1.0f;
             if (managerIndex(m.name) < 0)
                 m_manager.push_back(pm);

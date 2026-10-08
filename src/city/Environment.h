@@ -79,14 +79,16 @@ std::optional<std::vector<std::uint32_t>> parseLightMap(std::span<const std::byt
                                                         std::string* error = nullptr);
 
 // city/materials.mtl: physics materials ("mtl name { key: values }").
+// Defaults are lvlMaterial's constructor's (what a block that ends after
+// its sound or depth leaves).
 struct PhysMaterial {
     std::string name;
-    float elasticity = 0, friction = 0, drag = 0;
-    float width = 0, height = 0, depth = 0;
+    float elasticity = 0.5f, friction = 1.0f, drag = 0;
+    float width = 1.0f, height = 0, depth = 0;
     std::string effect;
     int sound = 0;
     std::array<int, 2> ptxIndex{-1, -1};
-    std::array<float, 2> ptxThreshold{};
+    std::array<float, 2> ptxThreshold{0.25f, 0.5f};
 };
 std::optional<std::vector<PhysMaterial>> parseMaterialLibrary(std::string_view text,
                                                               std::string* error = nullptr);

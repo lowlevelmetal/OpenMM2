@@ -11,6 +11,7 @@
 #include "city/Reader.h"
 #include "city/RoomInfo.h"
 #include "city/RoomLocator.h"
+#include "data/CNumbers.h"
 
 #include <gtest/gtest.h>
 
@@ -20,19 +21,21 @@
 
 using namespace mm2;
 
+// The city loaders read numbers through data/CNumbers.h (atoi, atof and
+// sscanf's prefixes).
 TEST(ParityCityText, NumbersReadLikeTheCLibrary) {
-    using namespace city::detail;
+    using namespace data;
     EXPECT_EQ(cAtoi("12abc"), 12);
     EXPECT_EQ(cAtoi("  -7"), -7);
     EXPECT_EQ(cAtoi("0x10"), 0); // no hexadecimal
     EXPECT_EQ(cAtoi("3.9"), 3);
     EXPECT_EQ(cAtoi("abc"), 0);
-    EXPECT_FLOAT_EQ(cAtof("1.5e2xyz"), 150.0f);
-    EXPECT_FLOAT_EQ(cAtof(".5\t# comment"), 0.5f);
-    EXPECT_FLOAT_EQ(cAtof("2e"), 2.0f);
-    EXPECT_FALSE(scanFloat("#0").has_value());
-    EXPECT_FALSE(scanInt("-").has_value());
-    EXPECT_EQ(scanInt("1 # on").value_or(-1), 1);
+    EXPECT_DOUBLE_EQ(cAtof("1.5e2xyz"), 150.0);
+    EXPECT_DOUBLE_EQ(cAtof(".5\t# comment"), 0.5);
+    EXPECT_DOUBLE_EQ(cAtof("2e"), 2.0);
+    EXPECT_FALSE(atofPrefix("#0").has_value());
+    EXPECT_FALSE(atoiPrefix("-").has_value());
+    EXPECT_EQ(atoiPrefix("1 # on").value_or(-1), 1);
 }
 
 TEST(ParityCityText, AimapListsTakeTheirCount) {

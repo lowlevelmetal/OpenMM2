@@ -2,9 +2,11 @@
 
 #include "city/Reader.h"
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
 
+#include <cstdint>
 #include <format>
 
 namespace mm2::city {
@@ -33,7 +35,9 @@ std::vector<std::string_view> words(std::string_view line) {
 // A number as MM2's loaders read one (atof / sscanf "%f"): the numeric prefix
 // of the word, nothing when it has none.
 std::optional<float> num(std::string_view s) {
-    return detail::scanFloat(s);
+    if (const auto v = data::atofPrefix(s))
+        return static_cast<float>(*v);
+    return std::nullopt;
 }
 
 } // namespace
@@ -73,12 +77,12 @@ std::optional<std::vector<FogDef>> parseFogTable(std::string_view text, std::str
             return std::nullopt;
         }
         FogDef fog;
-        fog.r = static_cast<std::uint8_t>(detail::cAtoi(row[0]));
-        fog.g = static_cast<std::uint8_t>(detail::cAtoi(row[1]));
-        fog.b = static_cast<std::uint8_t>(detail::cAtoi(row[2]));
+        fog.r = static_cast<std::uint8_t>(data::cAtoi(row[0]));
+        fog.g = static_cast<std::uint8_t>(data::cAtoi(row[1]));
+        fog.b = static_cast<std::uint8_t>(data::cAtoi(row[2]));
         // lvlSky::AutoInit reads the fog distances with atoi too.
-        fog.start = static_cast<float>(detail::cAtoi(row[3]));
-        fog.end = static_cast<float>(detail::cAtoi(row[4]));
+        fog.start = static_cast<float>(data::cAtoi(row[3]));
+        fog.end = static_cast<float>(data::cAtoi(row[4]));
         if (row.size() > 5)
             fog.description = row[5];
         out.push_back(std::move(fog));
@@ -199,7 +203,13 @@ std::optional<std::vector<PhysMaterial>> parseMaterialLibrary(std::string_view t
             return std::nullopt;
         }
         const auto key = w[0].substr(0, w[0].size() - 1);
-        auto f = [&](std::size_t i) { return i < w.size() ? num(w[i]).value_or(0.0f) : 0.0f; };
+        // lvlMaterial::Load: datAsciiTokenizer's GetFloat / GetInt (a token
+        // not starting like a number is 0, else atof / atoi of its prefix);
+        // the sound is a plain token, "none" (its first four letters, any case) 0, else
+        // atoi. MM2 reads the keys in the retail order.
+        auto token = [&](std::size_t i) { return i < w.size() ? w[i] : std::string_view{}; };
+        auto f = [&](std::size_t i) { return data::datTokenFloat(token(i)); };
+        auto n = [&](std::size_t i) { return static_cast<std::int16_t>(data::datTokenInt(token(i))); };
         if (key == "elasticity")
             cur->elasticity = f(1);
         else if (key == "friction")
@@ -215,9 +225,9 @@ std::optional<std::vector<PhysMaterial>> parseMaterialLibrary(std::string_view t
         else if (key == "effect")
             cur->effect = w.size() > 1 ? std::string(w[1]) : std::string();
         else if (key == "sound")
-            cur->sound = static_cast<int>(f(1));
+            cur->sound = str::istartsWith(token(1), "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(token(1)));
         else if (key == "ptxindex")
-            cur->ptxIndex = {static_cast<int>(f(1)), static_cast<int>(f(2))};
+            cur->ptxIndex = {n(1), n(2)};
         else if (key == "ptxthreshold")
             cur->ptxThreshold = {f(1), f(2)};
     }
