@@ -51,7 +51,6 @@ with the retail disc in the drive), MIDI, the streamed playlist music,
 final-lap / race-progress / unlock-race / Cops & Robbers commentary
 (no callers), and the split-screen listeners.
 
-
 ## AudManagerBase, AudManager (the audio manager)
 
 What it is for: the one audio manager MM2 makes (InitAudioManager at
