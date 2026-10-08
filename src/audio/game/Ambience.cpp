@@ -129,6 +129,15 @@ void AmbientObject::lose() {
     slotLost();
 }
 
+void AmbientObject::reset() {
+    // Aud3DAmbientObject::Reset is Aud3DObject::Reset: RemoveFrom3DMgr for a
+    // slot holder, then the distance values. Aud3DAmbientObject's own
+    // attenuation, pan and doppler (+0x6c, +0x74, +0x70) are not touched.
+    if (hasSlot())
+        lose();
+    m_audio.reset();
+}
+
 void AmbientObject::stop() {
     releaseSlot();
     if (m_echo)
@@ -446,6 +455,16 @@ void CableCarAudio::slotLost() {
         m_loop.stop();
     if (m_start.playing())
         m_start.stop();
+}
+
+void CableCarAudio::reset() {
+    // aiCableCarAudio::Reset is Aud3DObject::Reset: RemoveFrom3DMgr for a
+    // slot holder, then the distance values.
+    if (hasSlot()) {
+        releaseSlot();
+        slotLost();
+    }
+    m_audio.reset();
 }
 
 void CableCarAudio::stop() {

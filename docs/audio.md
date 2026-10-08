@@ -86,6 +86,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Priorities: cars 9, police 7 (10 with the siren on), ambient traffic 8, city emitters from their file (12 in every retail file, so they win over cars) | MM2 (`vehCarAudio::Init`, `vehPoliceCarAudio::Init` / `StartSiren` / `StopSiren`, `aiAmbientVehicleAudio::Init`, `Aud3DAmbientObject::Load`) |
 | Drop-offs: cars and police 0..150 m, ambient traffic 0..100 m, pedestrians 0..40 m, city emitters from their file | MM2 (`SetDropOffs` callers) |
 | Losing a slot stops the loops (engine, surface, skids, horn, siren, emitters); impacts, thumps and an explosion play out | MM2 (`UnAssignSounds` of each class) |
+| An object's owner resetting it (a car put back at its start or reset by its driver, an ambient car put back on the road, a ferry, bridge, train or cable car reset with the world) takes its slot away and forgets its distance history, so the next update asks for a slot again with no doppler shift (`OpponentCarAudio::reset`, `AmbientCarAudio::reset`, `AmbientObject::reset`, `CableCarAudio::reset`) | MM2 (`Aud3DObject::Reset` through `vehCar::Reset` / `vehCarAudioContainer::Reset`, `aiAmbientVehicleAudio::Reset`, `Aud3DAmbientObject::Reset`, `aiCableCarAudio::Reset`) |
 | `vehCarAudio`'s 25 m "amplification" multiplies by 1 + 0.01 × a speed field nothing sets, i.e. by 1 | MM2 (`vehCarAudio::UpdateAudio3D`); not ported |
 
 ## Inputs from the game (`CarAudioInputs`)
@@ -159,6 +160,8 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Horn after a hit ≥ "min stuck horn impact force": the last pattern (a 3 s blast) one time in four | MM2 (`vehHornAudio::PlayImpact`, a constant 7.5 of 10) |
 | Patterns: (play, pause) pairs; a play time of 0 sounds for one update; the horn's volume and frequency follow the car only while a pattern runs | MM2 (`vehHornAudioTiming::Update`, `vehHornAudio::UpdateDoppler`) |
 | Engine/horn files `aud/cardata/ambient/<model>_engine.csv` / `_horn.csv`, else `default_*`. The sedan model is `va_sedans_s`, so the `va_sedan_s_*` files are never used | MM2 (`aiAmbientVehicleAudio::Init`, `aiEngineAudio::Load`, `vehHornAudio::Load`) |
+| The driver's voice (`AmbientCarAudio::setVoice`): it follows the car's attenuation, pan and squared distance while the car holds its slot, echoes with the car in tunnels and drops its queued lines when the car loses the slot. A near miss that starts a horn pattern, and an impact, make the driver react (only with a slot) | MM2 (`aiAmbientVehicleAudio::UpdateAudio`, `EchoOn` / `EchoOff` / `UpdateEcho`, `UnAssignSounds`, `PlayAvoidanceReaction`, `PlayImpactReaction`) |
+| MM2 keeps one driver voice per voice file and sound slot (`s_ppAudCreatureContainer`), handed to whichever car takes the slot; OpenMM2 gives every car its own. Every voice is updated with the player's speed every frame either way, so the eligibility timers agree, except that a car's voice made after the session started begins with empty timers | deviation |
 
 ## City ambience (`<city>ambientcontainer.csv`)
 
@@ -173,7 +176,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Drawbridges (`BridgeAudio`, "drawbridge": the moving loop and the bell): both samples on when the span starts to move, off when it stops, speed 0 | MM2 (`mmBridgeAudio`, `gizBridge::Update`) |
 | Trains (`SubwayAudio`, "subwaycar", heard only underground): from 1 m/s the running loop, below it sample 1 ("NOTHING"), the switch deactivating the other | MM2 (`aiSubwayAudio::Update`, `aiSubway`, `gizTrain`) |
 | Cable cars (`CableCarAudio`, 0..100 m, priority 8): stopped below 0.001 m/s; starting when the speed crosses 0.1 m/s (CABLECARSTART, and the CABLECARGOBELL bell once, without pan or doppler); running (the CABLECAR loop) once the start sound ends; stopping when it drops to 0.5 m/s (the loop stops, CABLECARSTOP plays); all at 0.98 × attenuation. STREETCABLE is assigned but never played | MM2 (`aiCableCarAudio`, `aiCableCarAudioData::UpdateState`, `UpdatePlay`) |
-| The bridges, trains, cable cars and ferries themselves are not simulated in OpenMM2 yet: these objects are their owners' hooks | **missing owners** |
+| The owners' calls: load once (gizBridge::Init "drawbridge", gizFerry::Init "ferry", aiSubway::Init / gizTrain::Init "subwaycar", aiCableCar::Init), then every frame `setPosition` and `update` with the race's listener, tunnel flag and (trains, cable cars) the object's speed, `activate` / `deactivate` (bridges), and `reset` from the owner's Reset (gizBridge, gizFerry, gizTrain, aiSubway, aiCableCar). Every object takes the race's `Object3DManager` | MM2 (`gizBridge`, `gizFerry`, `gizTrain`, `aiSubway`, `aiCableCar`) |
 | `mmAmbientAudio` (a "walla" loop) is never constructed in MM2 | MM2 (no caller of the constructor); not ported |
 
 ## Rain
@@ -194,6 +197,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Pre-race: r = RandomizeNumber(11.5); ≤ 7.5 a random row of the mode's pre-race range, ≤ 8.5 time of day, ≤ 9.5 weather (nothing if that table was not loaded), else the car's line (else the mode's); it starts 1.5 s later | MM2 (`mmRaceSpeech::PlayPreRace`) |
 | Results: 1st win; a place above half the field mid; else poor. Win/mid use the car's line when r > 5 of 10, poor when r > 8; without a "mid" table (blitz) nothing is said | MM2 (`PlayResults`, `PlayResultsWin` / `Mid` / `Poor`) |
 | Final checkpoint, final lap, damage penalty, race progress, texture unlock and results stop the line playing and empty the queue; unlock-race and unlock-vehicle lines wait 0.1 s in the queue. The queue starts with one slot and gains one for every unlock-vehicle line loaded (and every unlock header after the first in a table); a play that finds no free slot is dropped; the first due play starts once nothing is playing | MM2 (`AudSpeech::Play`, `PutInQueue`, `Update`, `Stop`, `AllocateQueuePlayData`) |
+| The queue is updated twice a frame while the game runs (GameLoop's `AudManager::Update`, then `mmGame::Update`), so its delays pass at twice the clock's speed: the pre-race line starts 0.75 s after it is queued, not 1.5 s. While the game is paused only `mmGame::Update`'s update is left: the queue counts at the clock's speed and a due line starts during the pause (after the pause has stopped every sound, below) | MM2 (`AudManager::Update`, `mmGame::Update`, `mmSpeechContainer::Update`); `AudioManager` |
 | File names `<announcer><prefix>NN` | verified against the sample names |
 | Cops & Robbers: `bullshit.csv` in SF, `cnrlondon.csv` elsewhere; an event draws one of its rows, cuts the line playing and starts after 0.01 s; a fourth "num used" column smaller than the row's range picks a random window of that many lines. The London rows' names end in a space ("AL1\AL1ROBROB "), which MM2 keeps, so those files are never found and London's Cops & Robbers commentary is silent | MM2 (`mmSpeechContainer::InitCNR`, `mmCNRSpeech::LoadGroup`, `SetReadState`, `Play`); the missing files **inferred** from `AudStream::PlayOnce`'s path |
 | Crash Course: `ccl<lesson>` in London, `ccs<lesson>` elsewhere; the intro after 1.5 s and checkpoint 0's location line after 1.51 s; results at once; lesson 4 adds the checkpoint location lines (`cc_cpoint_waveinfo`, `cc_cpoint_indexinfo`: a fixed line number per checkpoint) | MM2 (`mmSpeechContainer::InitCC`, `mmCCSpeech`) |
@@ -226,13 +230,25 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | A pedestrian that dodges the player asks for a sound slot (within 40 m, priority 8) and queues a scream half of the time; once the scream is over it gives the slot back; past 40 m it loses it. Each voice file has one voice per slot, shared by every pedestrian of that sex, updated every frame with the player's speed | MM2 (`aiPedestrian::Init / Update / Wander / Avoid`, `AudCreatureContainer::PlayAvoidanceReaction`, `Update`, `UpdateAudio`, `UpdateStatics`) |
 | Hook: `PedestrianAudio::update` takes each pedestrian's id, model, position and the `scream` flag `ai::Pedestrians` sets on a dodge; the race feeds it every frame | OpenMM2 |
 
+## Pause
+
+| Behaviour | Evidence |
+|---|---|
+| While the game is paused (the popup menu in single player, the full-screen map) every wave sound stops, on the first two paused frames: engines, skids, sirens, ambience, rain, voices and the announcer's line. Loops start again from the beginning once the game runs on, as their owners find them stopped; one-shots are cut. The music (DirectMusic) plays on; the popup switches it to its pause segment (`mmPopup::PlayPauseMusic`) | MM2 (`AudManager::Update`, `AudManagerBase::UpdatePaused` with its counter limit of 1, `StopAllSounds`); `audio/game/AudioManager.h`, the race's hook at the start of its frame |
+
 ## Not implemented
 
 * EAX.
-* Ambient traffic sounds in the race: `AmbientCarAudio` is ported but no
-  traffic car creates one, and the drivers' voices (an `AudCreature` per
-  ambient car) are not wired.
-* `vehNitroCarAudio` (only used if vehtypes.csv says "Always nitro").
+* The in-race CD player (`mmCDPlayer`): with the game disc in a drive
+  (`cdid.txt`, which SafeDisc requires at launch) MM2 sets `hasMusicCD` and
+  the player's keys do nothing, so it never works in the retail game; MM2
+  would also play CD track 2 at the splash with music on, a track the
+  single-track disc does not have (inferred from the image). OpenMM2 has no
+  CD audio.
+* `vehNitroCarAudio`: only made when vehtypes.csv says "Always nitro" (FALSE
+  in retail), and its nitro sample is never played
+  (`vehCarAudioContainer::PlayNitro` has no caller), so it sounds like
+  `vehCarAudio`.
 * The old "Volume Divisor" engine table layout (`ParseCSVBufferOld`); no car
   table MM2 loads uses it.
 
