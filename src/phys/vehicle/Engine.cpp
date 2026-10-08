@@ -55,9 +55,11 @@ float Engine::calcTorqueAtFullThrottle(float w) const {
     const float o = optRotationSpeed;
     if (w <= o)
         return (kPhi * o - w) * (kInvPhi * o + w) * torqueCoef;
-    if (w <= maxRotationSpeed)
-        return (maxRotationSpeed - w) * (kPhi * o - w) * (kInvPhi * o + w) * ((w + maxRotationSpeed) - (o + o)) *
-               torqueCoef * taperCoef;
+    if (w <= maxRotationSpeed) {
+        // Multiplied in vehEngine::CalcTorqueAtFullThrottle's order.
+        const float taper = (w + maxRotationSpeed) - (o + o);
+        return (((taper * (kInvPhi * o + w)) * (kPhi * o - w)) * (maxRotationSpeed - w)) * torqueCoef * taperCoef;
+    }
     return 0.0f;
 }
 
