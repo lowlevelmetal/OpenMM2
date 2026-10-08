@@ -4,13 +4,21 @@
 
 namespace mm2::platform {
 
+// MM2's limits on one frame's time step (datTimeManager::Update clamps
+// Seconds to ClampMin .. ClampMax after measuring the real frame time; the
+// game runs in real time, MainPhase calling datTimeManager::RealTime(0)).
+// A frame that took longer than a tenth of a second advances the game by only
+// a tenth of a second: hitches slow the game down rather than producing one
+// huge step.
+inline constexpr float kMinFrameSeconds = 0.0001f;
+inline constexpr float kMaxFrameSeconds = 0.1f;
+
 // Measures frame times. tick() returns the seconds since the previous tick,
-// clamped to `maxDelta` so a debugger pause or window drag does not produce
-// a huge simulation step.
+// clamped to [minDelta, maxDelta] (by default MM2's limits above).
 class FrameClock {
 public:
     FrameClock();
-    double tick(double maxDelta = 0.25);
+    double tick(double minDelta = kMinFrameSeconds, double maxDelta = kMaxFrameSeconds);
     double elapsed() const; // seconds since construction
     double lastDelta() const { return m_lastDelta; }
 
