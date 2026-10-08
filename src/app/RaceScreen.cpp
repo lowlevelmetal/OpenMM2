@@ -1229,8 +1229,11 @@ private:
                     m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
-                // The race starts over (mmGame::Reset): every car to its start,
+                // The race starts over (mmGame::Reset): every prop back in its
+                // place (lvlLevel::ResetInstances), every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
+                if (m_bangers)
+                    m_bangers->reset();
                 phys::setElasticityCap(phys::kElasticityCap);
                 m_player->reset(m_spawn);
                 if (m_vehicleFx)
