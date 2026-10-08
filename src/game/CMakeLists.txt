@@ -16,3 +16,9 @@ add_subdirectory(session)
 file(GLOB game_fx_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/fx/*.cpp"
      "${CMAKE_CURRENT_SOURCE_DIR}/bangers/*.cpp")
 target_sources(mm2_game PRIVATE ${game_fx_sources})
+
+# The city's moving and scripted objects: gizmos, parked cars, cable cars
+# (src/game/world). They drive the ambient sound objects of src/audio/game.
+file(GLOB game_world_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/world/*.cpp")
+target_sources(mm2_game PRIVATE ${game_world_sources})
+target_link_libraries(mm2_game PUBLIC OpenMM2::audio)

@@ -169,7 +169,7 @@ the gear indicator and the steering wheel, unlit and without depth test.
 | `mmDashView::Activate`, `mmDashView::Deactivate` | ported | `game/CamPlayer.cpp` `setDash` (`m_xcamDash`), `HudOptions::dashboard` | The activated flag (+0x5DE) is what SetViewSetting remembers for XCams and the split map. |
 | `mmDashView::Reset`, `mmDashView::BeforeSave`, `mmDashView::AfterLoad` | not needed |  | Node plumbing and the editor's save of the gauge offsets. |
 | `mmDashView::Update` | ported | `game/session/Hud.cpp` `drawDash` | The dash follows the camera matrix; ActivateUntilTransitionIsOver is never called. |
-| `mmDashView::Cull` | ported (new) | `game/session/Hud.cpp` `drawWorld`, `drawDash`; RaceScreen `setDashFrame` | Parts, order, gear paint job, needles and wheel verified. Fixed: the dash is drawn with a 0.01 m near plane (gfxViewport::Perspective) and the scene's put back after. Not drawn while looking around (mmPlayer +0x1D6C, the camera pan): the HUD is disabled then. |
+| `mmDashView::Cull` | ported (new) | `game/session/Hud.cpp` `drawWorld`, `drawDash`; RaceScreen `setDashFrame` | Parts, order, gear paint job, needles and wheel verified. Fixed: the wheel turns by the recorded steering (mmPlayer +0x2264, RaceScreen `m_steerApplied`); the dash is drawn with a 0.01 m near plane (gfxViewport::Perspective) and the scene's put back after. Not drawn while looking around (mmPlayer +0x1D6C, the camera pan): the HUD is disabled then. |
 
 ## RadialGauge
 
@@ -465,11 +465,14 @@ The lobby results record (mmGameMulti / mmMultiCR::SendLobbyResults).
 ## For other subsystems
 
 - **input-ff**: the race's mouse steering bar (mmExternalView::Cull) is
-  yours (`PlayerState::mouseSteer`); this branch drew it too and took its
-  copy back (commit "Leave the race's mouse steering bar to the input-ff
-  change"). The dashboard's wheel and the bar should read the same
-  recorded steering (mmPlayer +0x2264); RaceScreen passes the HUD
-  `m_lastPedals.steering` for the wheel.
+  drawn by your change (`PlayerState::mouseSteer`); this branch drew it too
+  and took its copy back (commit "Leave the race's mouse steering bar to
+  the input-ff change"). The dashboard's wheel now reads the same recorded
+  steering (`m_steerApplied`, mmPlayer +0x2264), which stays set after the
+  race when the car's own input is cleared. Looking around (GameInput's
+  camPan, the POV hat included) turns the hood and dashboard cameras
+  (`PlayerCameras::update`, camPovCS +0x144) and hides the HUD and the dash
+  model, as mmGame::UpdateGameInput and mmDashView::Cull do.
 - **game-flow**: PlayNetAlert and the network players' places (above).
   The view keys now go through `PlayerCameras::setViewSetting`, which keeps
   the map mode; code that changes the map mode should call

@@ -360,8 +360,9 @@ void CityRenderer::drawSky(const Camera& camera, const Environment& env) {
     const GpuMesh* mesh = m_sky->find("", asset::Lod::High);
     if (!mesh)
         return;
-    // lvlSky::DrawHat: at the camera, its height scaled and offset by the
-    // .sky parameters, turned about Y; unlit, unfogged, no depth.
+    // lvlSky::Draw (its states) and lvlSky::DrawHat: at the camera, its
+    // height scaled and offset by the .sky parameters, turned about Y;
+    // unlit, unfogged, no depth.
     const auto& p = m_city.sky->params;
     const float yOffset = p.size() > 0 ? p[0] : 0.0f, yScale = p.size() > 1 ? p[1] : 1.0f;
     const Vec3 eye = camera.position();

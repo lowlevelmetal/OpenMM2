@@ -122,6 +122,11 @@ public:
     const phys::Body* body(std::size_t i) const;
     // dgBangerData's bound for `data`, built on first use.
     const phys::Bound* bound(const BangerData& data) const;
+    // dgBangerInstance::GetBound(which) and lvlInstance::GetRadius for any
+    // dgUnhitBangerInstance of `data` (the gizmos own theirs): the bound, or
+    // for 1 the box around a bound that is not a box; the bound's radius.
+    const phys::Bound* boundOf(const BangerData& data, int which) const;
+    float boundRadius(const BangerData& data) const;
     std::size_t skipped() const { return m_skipped; } // props without banger data
     int activeCount() const { return m_attached; }
     // dgBangerDataManager's age mode: actives declared by age rather than by
