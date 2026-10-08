@@ -470,23 +470,10 @@ void BangerSet::setWorld(phys::World* world) {
 }
 
 void BangerSet::reset() {
-    // dgBangerActiveManager::Reset: every active detached, the pool back in
-    // its original order.
-    while (m_attached > 0) {
-        --m_attached;
-        activeDetach(*m_active[static_cast<std::size_t>(m_list[static_cast<std::size_t>(m_attached)])]);
-    }
-    for (int k = 0; k < kMaxActive; ++k)
-        m_list[static_cast<std::size_t>(k)] = k;
-    // dgBangerManager::Reset: the hit instances leave their rooms.
-    m_ringNext = 0;
-    for (const std::size_t i : m_ring) {
-        if (m_instances[i].room != 0 || m_props[i]->listed)
-            moveToRoom(i, 0);
-        m_instances[i].state = State::Gone;
-    }
-    // lvlLevel::ResetInstances -> dgUnhitBangerInstance::Reset: every placed
-    // prop back in its room, standing.
+    // lvlLevel::ResetInstances: every instance's own Reset first, then
+    // dgBangerManager::Reset, then dgBangerActiveManager::Reset.
+    // dgUnhitBangerInstance::Reset: every placed prop back in its room,
+    // standing.
     for (std::size_t i = 0; i < m_instances.size(); ++i) {
         Instance& inst = m_instances[i];
         if (inst.everHit)
@@ -502,6 +489,21 @@ void BangerSet::reset() {
         prop.collidable = true;
         inst.state = State::Unhit;
     }
+    // dgBangerManager::Reset: the hit instances leave their rooms.
+    m_ringNext = 0;
+    for (const std::size_t i : m_ring) {
+        if (m_instances[i].room != 0 || m_props[i]->listed)
+            moveToRoom(i, 0);
+        m_instances[i].state = State::Gone;
+    }
+    // dgBangerActiveManager::Reset: every active detached, the pool back in
+    // its original order.
+    while (m_attached > 0) {
+        --m_attached;
+        activeDetach(*m_active[static_cast<std::size_t>(m_list[static_cast<std::size_t>(m_attached)])]);
+    }
+    for (int k = 0; k < kMaxActive; ++k)
+        m_list[static_cast<std::size_t>(k)] = k;
     syncActiveList();
     m_ticker.reset();
 }
