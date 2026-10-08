@@ -278,6 +278,33 @@ void CarSim::setInputs(float throttle, float brakeInput, float steer, float hand
     handBrake = clampf(handBrakeInput, 0.0f, 1.0f);
 }
 
+void CarSim::setDrivable(bool on, int mode) {
+    if (on) {
+        undrivableMode = 0;
+        drivable = true;
+        trans.setDrive();
+        return;
+    }
+    drivable = false;
+    undrivableMode = mode;
+    if (mode == 1 || mode == 3)
+        trans.setNeutral();
+}
+
+void CarSim::preUpdate() {
+    if (drivable)
+        return;
+    if (undrivableMode == 1) {
+        brakes = 1.0f;
+        trans.setNeutral();
+    } else if (undrivableMode == 2 || undrivableMode == 3) {
+        brakes = 1.0f;
+        engine.throttle = 0.0f;
+        steering = 0.0f;
+        handBrake = 0.0f;
+    }
+}
+
 Mat34 CarSim::modelMatrix() const {
     // vehCarSim::SetWorldMatrix: the body matrix moved by R * CenterOfGravity
     // (summed in its order).

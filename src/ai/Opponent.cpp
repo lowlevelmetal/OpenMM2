@@ -197,11 +197,11 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
         // steering 0) and vehCar::PreUpdate holds it with the brakes on and
         // the gearbox in neutral.
         m_mode = Mode::Held;
+        if (!m_wasHeld)
+            m_car.setDrivable(false, 1);
         if (m_car.wheels[0].hit)
-            m_car.setInputs(1.0f, 1.0f, 0.0f, m_car.handBrake);
-        else
-            m_car.setInputs(m_car.engine.throttle, 1.0f, m_car.steering, m_car.handBrake);
-        m_car.trans.setNeutral();
+            m_car.setInputs(1.0f, 0.0f, 0.0f, m_car.handBrake);
+        m_car.preUpdate();
         m_wasHeld = true;
         m_noProgressTime = 0.0f;
         return;
@@ -210,7 +210,7 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
         // mmGameSingle::EnableRacers: vehCar::SetDrivable(1, 1) puts the
         // gearbox in first (vehTransmission::SetForward).
         m_wasHeld = false;
-        m_car.trans.setDrive();
+        m_car.setDrivable(true, 1);
     }
 
     // Fallen through the world (aiRouteRacer::DriveRoute): disabled. From then

@@ -274,6 +274,9 @@ private:
     // aiStuck and vehStuck in Forward and Shortcut; true when they took the
     // controls this frame.
     bool handleStuck(float dt);
+    // Forward and Shortcut first: a car the game has made undrivable only
+    // revs (true: nothing else this frame).
+    bool undrivable();
 
     void enumRoutes(std::vector<RouteNode>& nodes, std::span<const TrackedCar> cars, const DriveContext& ctx,
                     int depth);

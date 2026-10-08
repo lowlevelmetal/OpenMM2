@@ -441,9 +441,22 @@ bool PhysicsDriver::handleStuck(float dt) {
     return false;
 }
 
+bool PhysicsDriver::undrivable() {
+    // vehCar's drivable flag cleared (vehCar::SetDrivable(0, ...)): with the
+    // front-left wheel on the ground the car is revved (throttle 1, no
+    // brakes, steering 0); vehCar::PreUpdate then holds it.
+    if (m_car.drivable)
+        return false;
+    if (m_car.wheels[0].hit)
+        m_car.setInputs(1.0f, 0.0f, 0.0f, m_car.handBrake);
+    return true;
+}
+
 void PhysicsDriver::forward(float dt, std::span<const TrackedCar> cars, const DriveContext& ctx) {
     // aiVehiclePhysics::Forward.
     auto& ics = m_car.body.ics;
+    if (undrivable())
+        return;
     if (handleStuck(dt))
         return;
     if (!ctx.course) {
@@ -536,6 +549,8 @@ void PhysicsDriver::shortcut(float dt, const DriveContext& ctx) {
     // next waypoint (here the course ahead), or the destination less the
     // stop distance; 1 m up; steering gain 1.33, at most 0.75.
     auto& ics = m_car.body.ics;
+    if (undrivable())
+        return;
     if (handleStuck(dt))
         return;
     Vec3 aim = ctx.destination;

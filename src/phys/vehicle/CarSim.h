@@ -237,6 +237,17 @@ public:
     // game clears it while a car is held before the start. vehCar::Update
     // then runs neither vehStuck nor vehSplash.
     bool drivable = true;
+    // vehCar +0xec: how a car that is not drivable is held (see preUpdate).
+    int undrivableMode = 0;
+    // vehCar::SetDrivable(on, mode): drivable again (mode 0, out of neutral
+    // into first: vehTransmission::SetForward), or held in `mode`; modes 1
+    // and 3 also select neutral.
+    void setDrivable(bool on, int mode);
+    // vehCar::PreUpdate's hold of a car that is not drivable, every frame
+    // before the physics: mode 1 brakes on and neutral (the throttle is left
+    // alone, so the engine revs); modes 2 and 3 brakes on with the throttle,
+    // steering and handbrake off.
+    void preUpdate();
 
 private:
     WheelEnv makeEnv(float dt, const World& world);
