@@ -1227,11 +1227,10 @@ private:
             steerTarget = f(2);
             pedals.handbrake = f(3);
         }
-        // Keyboard steering ramps like a wheel being turned; the rates are
-        // inferred (the original's steering sensitivity option scales them).
-        const float rate = (std::abs(steerTarget) < std::abs(m_steer) || steerTarget * m_steer < 0) ? 6.0f : 3.0f;
-        m_steer += clampf(steerTarget - m_steer, -rate * dt, rate * dt);
-        pedals.steering = m_steer;
+        // mmInput::FilterDiscreteSteering / FilterGamepadSteering, with the
+        // speed-sensitive rates and curve mmPlayer::Update sets.
+        pedals.steering = m_steering.filter(steerTarget, dt);
+        m_steering.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during false-start
         // penalties), and until the shared start time in multiplayer.
         // mmPlayer +0x2258: once the race is over the car brakes with the
@@ -1437,7 +1436,7 @@ private:
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
-    float m_steer = 0.0f;
+    phys::SteeringFilter m_steering;
     game::PlayerCameras m_cams;
     std::unique_ptr<ai::World> m_ai;
 

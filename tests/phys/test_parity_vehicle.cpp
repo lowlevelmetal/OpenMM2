@@ -5,6 +5,7 @@
 #include "phys/PolygonSoup.h"
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
+#include "phys/vehicle/Controls.h"
 #include "phys/vehicle/VehicleGeometry.h"
 #include "phys/vehicle/Wheel.h"
 
@@ -130,4 +131,32 @@ TEST(VehicleParity, HeldCarRunsNoSplash) {
     EXPECT_TRUE(held.car->splash.active());
     EXPECT_NEAR(held.car->modelMatrix().m3.y, y0, 0.01f);
     EXPECT_GT(free.car->modelMatrix().m3.y, y0 + 0.5f);
+}
+
+// mmInput::FilterDiscreteSteering with mmPlayer::Update's defaults: at a
+// standstill the speed blend is SpeedBaseLow / (Hi - Low) = 5 / 95; the
+// first step from the centre uses DeltaIn (the signs differ), later ones
+// DeltaOut; the car gets |position|^Filter.
+TEST(VehicleParity, KeyboardSteeringFilter) {
+    SteeringFilter s;
+    s.setSpeed(0.0f);
+    const float f = 5.0f / 95.0f;
+    const float in = (1.5f - 2.5f) * f + 2.5f;
+    const float out = (2.5f - 3.5f) * f + 3.5f;
+    const float e = (1.0f - 2.0f) * f + 2.0f;
+    const float dt = 1.0f / 60.0f;
+    const float p1 = in * dt;
+    EXPECT_NEAR(s.filter(1.0f, dt), std::pow(p1, e), 1e-6f);
+    const float p2 = out * dt + p1;
+    EXPECT_NEAR(s.filter(1.0f, dt), std::pow(p2, e), 1e-6f);
+    // Letting go returns at DeltaIn and stops at the centre.
+    EXPECT_NEAR(s.filter(0.0f, dt), std::pow(p2 - in * dt, e), 1e-6f);
+    for (int i = 0; i < 60; ++i)
+        s.filter(0.0f, dt);
+    EXPECT_FLOAT_EQ(s.filter(0.0f, dt), 0.0f);
+    // Fast, the curve is nearly linear and the rates slower.
+    s.setSpeed(100.0f);
+    const float fh = 100.0f / 95.0f;
+    const float inHi = (1.5f - 2.5f) * fh + 2.5f;
+    EXPECT_NEAR(s.filter(-1.0f, dt), -std::pow(inHi * dt, (1.0f - 2.0f) * fh + 2.0f), 1e-6f);
 }
