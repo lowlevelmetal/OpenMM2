@@ -40,6 +40,7 @@ Key keyFromName(std::string_view name) {
 Input::Input() = default;
 
 Input::~Input() {
+    m_ff.reset(); // before its joystick closes
     for (void* g : m_gamepadHandles)
         SDL_CloseGamepad(static_cast<SDL_Gamepad*>(g));
     for (void* j : m_joystickHandles)
@@ -157,6 +158,8 @@ void Input::openDevice(std::uint32_t id) {
 }
 
 void Input::closeDevice(std::uint32_t id) {
+    if (m_ff && m_ffId == id)
+        m_ff.reset();
     for (std::size_t i = 0; i < m_gamepads.size(); ++i) {
         if (m_gamepads[i].id == id) {
             log::info("input: gamepad disconnected: {}", m_gamepads[i].name);
@@ -219,6 +222,31 @@ bool Input::rumbleGamepad(std::size_t index, float low, float high, std::uint32_
     if (index >= m_gamepadHandles.size())
         return false;
     return SDL_RumbleGamepad(static_cast<SDL_Gamepad*>(m_gamepadHandles[index]), motor(low), motor(high), ms);
+}
+
+FFDevice* Input::forceFeedback(bool preferGamepad) {
+    // The same device the race reads as its joystick.
+    const bool usePad = preferGamepad ? !m_gamepads.empty() : m_joysticks.empty() && !m_gamepads.empty();
+    std::uint32_t id = 0;
+    SDL_Joystick* joystick = nullptr;
+    if (usePad) {
+        id = m_gamepads.front().id;
+        joystick = SDL_GetGamepadJoystick(static_cast<SDL_Gamepad*>(m_gamepadHandles.front()));
+    } else if (!m_joysticks.empty()) {
+        id = m_joysticks.front().id;
+        joystick = static_cast<SDL_Joystick*>(m_joystickHandles.front());
+    }
+    if (!joystick) {
+        m_ff.reset();
+        m_ffId = 0;
+        return nullptr;
+    }
+    if (m_ffId != id) {
+        m_ff.reset();
+        m_ff = openForceFeedback(joystick);
+        m_ffId = id;
+    }
+    return m_ff.get();
 }
 
 bool Input::rumbleJoystick(std::size_t index, float low, float high, std::uint32_t ms) {

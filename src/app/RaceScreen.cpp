@@ -1,5 +1,7 @@
 // A session in the city.
 #include "app/Controls.h"
+#include "app/ForceFeedback.h"
+#include "app/GameInput.h"
 #include "app/Screens.h"
 #include "city/CityData.h"
 #include "city/RoomInfo.h"
@@ -128,6 +130,7 @@ public:
         // The police drivers hand their cars' impact callbacks back when they
         // go: before the cars (m_cops) are destroyed.
         m_police.reset();
+        m_ff.stopAll(); // mmInput::StopAllFF
     }
 
     bool usesScene() const override { return m_city != nullptr; }
@@ -148,6 +151,13 @@ public:
         if (ctx.mixer)
             m_audioManager.update(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
                                   static_cast<float>(dt));
+        // mmInput::Update: the controller's bindings against the devices.
+        {
+            const auto size = ctx.window().size();
+            m_gameInput.update(controls::readFrame(ctx.input, m_gameInput.controller(), m_controlOptions.deadZone,
+                                                   static_cast<float>(size.width), static_cast<float>(size.height)),
+                               static_cast<float>(dt));
+        }
         // mmPopup: Escape opens the main menu (pausing a single-player game,
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         m_popupGraveyard.clear();
@@ -160,7 +170,7 @@ public:
             // (mmSpeechContainer::Stop), then mmPopup::ProcessEscape.
             m_announcer.stop();
             openPopup(ctx, true);
-        } else if (!m_flyCamera && m_bindings.pressed(ctx.input, controls::Action::EnterChat)) {
+        } else if (!m_flyCamera && m_gameInput.fired(controls::Action::EnterChat)) {
             openChat(ctx);
         }
         if (m_textInput && m_popup != Popup::Chat) {
@@ -190,6 +200,7 @@ public:
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
             m_textures->update(m_time);
+            updateForceFeedback(ctx, static_cast<float>(dt), true);
             return;
         }
         updatePlayer(ctx, static_cast<float>(dt));
@@ -280,21 +291,29 @@ public:
         render::Device& dev = ctx.device();
         render::ClearValues clear;
         clear.color = m_env.clearColor;
-        // mmPlayer::SetWideFOV: the wide-angle view is letterboxed to 66% of
-        // the screen height, 18% down, on black.
-        const bool letterbox = !m_flyCamera && m_cams.wideAngle();
+        const auto extent = dev.sceneExtent();
+        render::Rect band{0, 0, extent.width, extent.height};
+        // The 3D view (gfxPipeline::VP) on black: letterboxed to 66% of the
+        // height, 18% down, for the wide angle (mmPlayer::SetWideFOV), the
+        // top half with the split map, the small map's place with the
+        // full-screen map (mmHudMap::SetMapMode; Hud::sceneRect).
+        syncHudView();
+        if (m_hud && !m_flyCamera)
+            band = m_hud->sceneRect(extent);
+        const bool letterbox = band != render::Rect{0, 0, extent.width, extent.height};
         if (letterbox)
             clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
         dev.beginScene(clear);
-
-        const auto extent = dev.sceneExtent();
-        render::Rect band{0, 0, extent.width, extent.height};
+        std::vector<game::session::MapBlip> blips = hudBlips(ctx);
+        // mmGameManager::Cull draws the full-screen map before the level.
+        const bool hudShown = m_hud && m_session && m_player && !m_flyCamera;
+        const bool mapShown = hudShown && (m_popup == Popup::None || m_popup == Popup::Chat);
+        const bool fullMap = mapShown && m_cams.mapMode() == game::MapMode::FullScreen;
+        if (fullMap)
+            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         if (letterbox) {
-            const auto h = static_cast<float>(extent.height);
-            band.y = static_cast<std::int32_t>(h * 0.18f);
-            band.height = static_cast<std::uint32_t>(h * 0.66f);
-            dev.setViewport({0.0f, static_cast<float>(band.y), static_cast<float>(band.width),
-                             static_cast<float>(band.height)});
+            dev.setViewport({static_cast<float>(band.x), static_cast<float>(band.y),
+                             static_cast<float>(band.width), static_cast<float>(band.height)});
             dev.setScissor(&band);
             render::ClearValues sky;
             sky.color = m_env.clearColor;
@@ -322,55 +341,100 @@ public:
             game::fx::drawLensFlares(dev, *m_textures, flares);
             dev.setFrameConstants(frame);
         }
+        if (m_hud && m_session && m_player) {
+            // The arrow, icons, stands and dash are drawn in the 3D view.
+            m_hud->setViewProjection(frame.view * frame.proj);
+            m_hud->setDashFrame(frame, Mat44::perspective(proj.fovY, proj.aspect, 0.01f, m_camera.farPlane, true));
+            // mmDashView turns the wheel by the recorded steering (mmPlayer +0x2264).
+            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_steerApplied, blips);
+        }
         if (letterbox) {
             dev.setScissor(nullptr);
-            dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
+            dev.setViewport(
+                {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
         }
-        if (m_hud && m_session && m_player) {
-            m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
-            // mmGame::UpdateGameInput: looking around from a point-of-view
-            // camera disables the HUD (mmHUD::Disable), straight ahead
-            // enables it again.
-            m_hud->options().visible =
-                (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
-                (m_popup == Popup::None || m_popup == Popup::Chat); // mmPopup::ProcessEscape: mmHUD::Disable
-            std::vector<game::session::MapBlip> blips;
-            // mmHudMap and mmIcons follow the cars' phInertialCS matrices;
-            // the icons carry each racer's place (UpdateScore's IconIndex).
-            for (const auto& o : m_opponents)
-                blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent,
-                                 m_session->opponentPlace(o.sessionIndex)});
-            // mmGameMulti::RegisterMapNetObjects: the other network players
-            // (cruise and the races; Cops and Robbers registers its own).
-            if (multiplayer(ctx) && m_result.config.mode != game::GameMode::CopsAndRobbers) {
-                const auto& players = ctx.netGame->players();
-                std::size_t other = 0;
-                for (std::size_t slot = 0; slot < players.size(); ++slot) {
-                    const auto& p = players[slot];
-                    if (p.id == ctx.netGame->localId())
-                        continue;
-                    const std::size_t index = other++;
-                    const auto it = m_remotes.find(p.id);
-                    if (it == m_remotes.end() || !it->second.sim)
-                        continue;
-                    blips.push_back({it->second.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Network,
-                                     m_session->netRacerPlace(index), static_cast<int>(slot), p.name});
-                }
-            }
-            // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
-            for (const auto& c : m_cops)
-                if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
-                    blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
-            m_hud->setViewProjection(frame.view * frame.proj);
-            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
-            // mmPopup::ProcessEscape deactivates the map (the chat line does not).
-            if (m_popup == Popup::None || m_popup == Popup::Chat)
-                m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
-        }
+        // mmPopup::ProcessEscape deactivates the map (the chat line does not).
+        if (mapShown && !fullMap)
+            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         // mmGameManager::Update declares the mirror after the dashboard and
         // the HUD map.
         drawMirror(ctx, frame);
         dev.endScene();
+    }
+
+    // The HUD's view options from the cameras' view settings (mmViewMgr):
+    // the map's mode, the wide angle and the dashboard.
+    void syncHudView() {
+        if (!m_hud)
+            return;
+        auto& o = m_hud->options();
+        o.mapMode = m_cams.mapMode();
+        o.wideAngle = !m_flyCamera && m_cams.wideAngle();
+        o.dashActive = !m_flyCamera && m_cams.dashboard();
+        o.dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
+        // mmGame::UpdateGameInput: looking around from a point-of-view
+        // camera disables the HUD (mmHUD::Disable), straight ahead enables
+        // it again. mmPopup::ProcessEscape disables it too.
+        o.visible = (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
+                    (m_popup == Popup::None || m_popup == Popup::Chat);
+    }
+
+    // The other cars for the HUD's map and icons (mmGame's OppIconInfo).
+    std::vector<game::session::MapBlip> hudBlips(Context& ctx) const {
+        using game::session::MapBlip;
+        std::vector<MapBlip> blips;
+        // mmHudMap and mmIcons follow the cars' phInertialCS matrices; the
+        // icons show the opponents' places (mmSingleRace / mmSingleCircuit
+        // ::UpdateScore).
+        for (std::size_t i = 0; i < m_opponents.size(); ++i) {
+            MapBlip b{m_opponents[i].sim->sim().body.ics.matrix, MapBlip::Kind::Opponent};
+            if (m_session)
+                b.place = m_session->opponentPlace(m_opponents[i].sessionIndex);
+            blips.push_back(std::move(b));
+        }
+        // The network players (mmGameMulti::RegisterMapNetObjects): their
+        // start slot (the place in the host's player list, NetStartArray),
+        // coloured by slot, or red / blue by team in Cops and Robbers team
+        // games, the gold carrier marked "$" (place 9, mmMultiCR::
+        // OppStealGold); in the races their rank (mmGameMulti::UpdateScore;
+        // an icon turned off, place 0, once that player has finished).
+        if (multiplayer(ctx)) {
+            const auto& players = ctx.netGame->players();
+            for (const auto& rc : ctx.netGame->remoteCars()) {
+                if (!rc.hasState)
+                    continue;
+                int slot = 0, other = 0, racer = -1;
+                for (std::size_t k = 0; k < players.size(); ++k) {
+                    if (players[k].id == rc.id) {
+                        slot = static_cast<int>(k);
+                        racer = other;
+                    }
+                    if (players[k].id != ctx.netGame->localId())
+                        ++other;
+                }
+                MapBlip b{rc.transform, MapBlip::Kind::Remote};
+                b.slot = slot;
+                b.name = rc.name;
+                b.iconColor = game::session::hud::netIconColor(slot);
+                if (m_session && racer >= 0)
+                    b.place = m_session->netRacerPlace(static_cast<std::size_t>(racer));
+                if (b.place == 0)
+                    continue; // finished: OppIconInfo Enabled 0 (map and icon)
+                if (m_cr) {
+                    if (m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll)
+                        b.iconColor = m_cr->teamOf(rc.id) == game::session::CrTeam::Robber ? 0xFFEF0000u
+                                                                                         : 0xFF0000EFu;
+                    if (m_cr->goldCarrier() == rc.id)
+                        b.place = 9;
+                }
+                blips.push_back(std::move(b));
+            }
+        }
+        // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
+        for (const auto& c : m_cops)
+            if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
+                blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
+        return blips;
     }
 
     // The level as lvlLevel::Draw draws it for one view: the city, traffic,
@@ -530,8 +594,13 @@ private:
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
         m_yaw = 0.0f;
         m_pitch = -0.15f;
-        m_bindings.load(ctx.settings.ini);
         m_controlOptions = controls::Options::load(ctx.settings.ini);
+        m_gameInput.load(ctx.settings.ini, controls::readJoystick(ctx.input, m_controlOptions.controller,
+                                                                  m_controlOptions.deadZone));
+        // mmPlayer::Init: the force feedback's switches and the road wave.
+        m_ff.configure(m_gameInput.controller(), m_controlOptions);
+        m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
+        m_ff.start();
         createSession(ctx);
         loadVehicle(ctx); // places the camera behind the car
         loadAi(ctx);
@@ -1260,6 +1329,9 @@ private:
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
+        // mmExternalView::Cull draws the steering bar for the mouse.
+        if (m_gameInput.controller() == controls::Controller::Mouse)
+            ps.mouseSteer = m_steerApplied;
         return ps;
     }
 
@@ -1303,8 +1375,8 @@ private:
         // DisableRacers / EnableRacers: the player's vehCarDamage switch.
         m_player->sim().damage.enabled = m_session->playerDamageEnabled();
         // mmSingleStunt::UpdateEvade turns the map on during its first line.
-        if (m_hud && m_session->wantsMap() && m_hud->options().mapMode == game::session::MapMode::Off)
-            m_hud->cycleMap();
+        if (m_hud && m_session->wantsMap() && m_cams.mapMode() == game::MapMode::Off)
+            m_cams.cycleMap();
         // mmPlayer::SetPostRaceCam / mmGameMulti::SetFinishCam at the endings
         // that set it (Session::postRaceCamera).
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
@@ -1375,7 +1447,8 @@ private:
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                     m_cams.startPreRace();
-                m_steering.reset();
+                m_gameInput.reset();
+                m_ff.reset(); // mmPlayer::Reset: ResetFF, mmCarRoadFF::Reset
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
                 if (m_vehicle)
@@ -1577,6 +1650,8 @@ private:
     void openChat(Context& ctx) {
         m_popup = Popup::Chat;
         m_popupPaused = false;
+        m_gameInput.flush(); // mmPopup::ProcessChat: mmInput::Flush, StopAllFF
+        m_ff.stopAll();
         popupMusic(ctx, true);
         m_chatText.clear();
         ctx.input.startTextInput(ctx.window());
@@ -1884,6 +1959,7 @@ private:
             // above the carrier.
             if (m_cr->goldActive() || (m_cr->goldCarrier() >= 0 && m_cr->goldCarrier() != m_crSelf))
                 d.gold = m_cr->goldPosition();
+            d.goldOnMap = m_cr->goldPosition(); // mmHudMap::DrawCopsnRobbers
             const bool teams = m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
             const bool colours = m_result.config.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
             d.bases.push_back({colours ? "pt_blue" : "pt_bank", m_cr->set().bank});
@@ -1895,6 +1971,26 @@ private:
             d.redScore = m_cr->score(game::session::CrTeam::Robber);
             d.playerScore = m_cr->playerScore(m_crSelf);
             d.timeLeft = m_cr->timeRemaining();
+            // mmCRHUD::SetName (red on team 1), AddPlayer / SetScore /
+            // ActivateRosterGold for the others, ActivateGold while the
+            // player carries the gold.
+            d.playerName = ctx.netGame->player(static_cast<std::uint8_t>(m_crSelf))
+                               ? ctx.netGame->player(static_cast<std::uint8_t>(m_crSelf))->name
+                               : std::string();
+            d.playerRed = teams && m_crMyTeam == game::session::CrTeam::Robber;
+            d.carryingGold = m_cr->goldCarrier() == m_crSelf;
+            for (const auto& p : ctx.netGame->players()) {
+                if (p.id == m_crSelf)
+                    continue;
+                game::session::CrDisplay::RosterEntry r;
+                r.name = p.name;
+                r.score = m_cr->playerScore(p.id);
+                r.color = game::session::hud::netIconColor(p.id);
+                if (teams)
+                    r.color = m_cr->teamOf(p.id) == game::session::CrTeam::Robber ? 0xFFEF0000u : 0xFF0000EFu;
+                r.gold = m_cr->goldCarrier() == p.id;
+                d.roster.push_back(std::move(r));
+            }
             m_hud->setCopsAndRobbers(std::move(d));
         }
     }
@@ -1906,15 +2002,18 @@ private:
         // ProcessEscape: pauses unless the game already is (the full-screen
         // map), and remembers it so closing does not resume it.
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
+        m_ff.stopAll(); // mmPopup::ProcessEscape: mmInput::StopAllFF and Flush
+        m_gameInput.flush();
         if (m_popupPaused)
             m_paused = true;
         popupMusic(ctx, true);
         buildPopup(ctx);
     }
 
-    // mmPopup::DisablePU(returnMusic).
+    // mmPopup::DisablePU(returnMusic) (mmInput::Flush).
     void closePopup(Context& ctx, bool returnMusic) {
         m_popup = Popup::None;
+        m_gameInput.flush();
         // Buttons close the popup from inside its update: keep the menu
         // until the next frame.
         if (m_popupMenu)
@@ -2476,8 +2575,10 @@ private:
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
             m_vehicleFx->impact(impact, m_player->sim());
-        if (impact.damaging)
+        if (impact.damaging) {
             ++(impact.otherIsBody ? m_vehicleImpacts : m_objectImpacts);
+            m_ff.impact(impact.total, m_player->sim().speedMph()); // mmPlayer::FFImpactCallback
+        }
     }
 
     audio::game::SurfaceWeather surfaceWeather() const {
@@ -2696,14 +2797,18 @@ private:
         if (!m_player)
             return;
         phys::PedalInput pedals;
-        float keyTarget = 0.0f;
-        std::optional<float> analog;      // through FilterGamepadSteering
-        std::optional<float> deviceAxis;  // through mmPlayer::FilterSteering
-        const controls::Controller controller = m_controlOptions.controller;
-        if (!m_flyCamera && m_popup == Popup::None)
-            readController(ctx, controller, pedals, keyTarget, analog, deviceAxis);
+        // mmReplayManager::Update reads mmInput::GetThrottle / GetBrakes /
+        // GetSteering(playerFilterSteering) / GetHandBrake (the pedal swap
+        // is ArcadeControls'); the steering filters use the parameters
+        // mmPlayer::Update set from the last frame's speed.
+        if (!m_flyCamera && m_popup == Popup::None) {
+            pedals.accelerator = m_gameInput.throttle();
+            pedals.brake = m_gameInput.brakes();
+            pedals.handbrake = m_gameInput.handBrake();
+            pedals.steering = m_gameInput.steering(dt);
+        }
         // Development aid: constant pedal input "accel,brake,steer,handbrake"
-        // (the steering as an analog device's).
+        // (the steering through the game pad's filter).
         if (const char* dbg = std::getenv("OPENMM2_DEBUG_INPUT")) {
             const auto parts = str::split(dbg, ',');
             auto f = [&](std::size_t i) {
@@ -2711,30 +2816,14 @@ private:
             };
             pedals.accelerator = f(0);
             pedals.brake = f(1);
-            analog = f(2);
+            pedals.steering = m_gameInput.filterAxis(clampf(f(2), -1.0f, 1.0f), dt);
             pedals.handbrake = f(3);
         }
-        // mmInput::GetSteering: the keyboard and the gamepad through
-        // FilterDiscreteSteering / FilterGamepadSteering, the mouse, joystick
-        // and wheel axes through mmPlayer::FilterSteering, with the
-        // speed-sensitive parameters mmPlayer::Update sets (from the last
-        // frame's speed).
-        if (deviceAxis && !analog)
-            pedals.steering = m_analogSteering.filter(controller, *deviceAxis, dt);
-        else
-            pedals.steering = m_steering.filter(analog ? clampf(*analog, -1.0f, 1.0f) : keyTarget, dt);
-        m_steering.setSpeed(m_player->sim().speed());
-        m_analogSteering.setSpeed(m_player->sim().speed(), m_controlOptions.sensitivity);
-        // mmGame::UpdateSteeringBrakes reads the inputs back from
-        // mmReplayManager's frame buffer, as bytes (live play too).
-        {
-            const auto q =
-                controls::replayQuantize(pedals.steering, pedals.accelerator, pedals.brake, pedals.handbrake);
-            pedals.steering = q.steering;
-            pedals.accelerator = q.throttle;
-            pedals.brake = q.brakes;
-            pedals.handbrake = q.handbrake;
-        }
+        // ... and records them, and the car is driven with the recorded
+        // values (bytes).
+        pedals = controls::replayQuantize(pedals);
+        m_steerApplied = pedals.steering; // mmPlayer::SetSteering: +0x2264
+        m_gameInput.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during wreck
         // penalties, and after a wreck or a multiplayer finish), and until
         // the shared start time in multiplayer.
@@ -2762,6 +2851,7 @@ private:
             m_player->drive(pedals);
         }
         m_lastPedals = pedals;
+        updateForceFeedback(ctx, dt, false);
         // Falling out of the city is the session's rule
         // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
@@ -2769,127 +2859,40 @@ private:
             m_player->reset();
     }
 
-    // The driving inputs of the chosen controller (mmInput::SetDefaultConfig's
-    // binding set for it; GetThrottleVal / GetBrakesVal / GetHandBrake /
-    // GetSteering). The joystick's X and Y (and the wheel's) go through the
-    // CONTROLLER DEAD ZONE as mmJoystick::SetDeadZone sets it on DirectInput.
-    void readController(Context& ctx, controls::Controller controller, phys::PedalInput& pedals, float& keyTarget,
-                        std::optional<float>& analog, std::optional<float>& deviceAxis) {
-        using controls::Action;
-        using controls::Controller;
-        auto& in = ctx.input;
-        const float deadZone = m_controlOptions.deadZone;
-        auto keyHandbrake = [&] { return m_bindings.down(in, Action::Handbrake) ? 1.0f : 0.0f; };
-        switch (controller) {
-        case Controller::Keyboard:
-        default:
-            // A bound key gives 1; Steer Left wins over Steer Right.
-            pedals.accelerator = m_bindings.down(in, Action::Throttle) ? 1.0f : 0.0f;
-            pedals.brake = m_bindings.down(in, Action::Brakes) ? 1.0f : 0.0f;
-            pedals.handbrake = keyHandbrake();
-            if (m_bindings.down(in, Action::SteerLeft))
-                keyTarget = -1.0f;
-            else if (m_bindings.down(in, Action::SteerRight))
-                keyTarget = 1.0f;
-            // OpenMM2 extra: a connected gamepad drives beside the keyboard
-            // (triggers, left stick, South for the handbrake).
-            for (const auto& pad : in.gamepads()) {
-                using platform::GamepadAxis;
-                const auto axis = [&](GamepadAxis a) { return pad.axes[static_cast<std::size_t>(a)]; };
-                pedals.accelerator = std::max(pedals.accelerator, axis(GamepadAxis::RightTrigger));
-                pedals.brake = std::max(pedals.brake, axis(GamepadAxis::LeftTrigger));
-                const float x = controls::applyDeadZone(axis(GamepadAxis::LeftX), deadZone);
-                if (x != 0.0f)
-                    analog = x;
-                if (pad.buttons.test(static_cast<std::size_t>(platform::GamepadButton::South)))
-                    pedals.handbrake = 1.0f;
-            }
-            return;
-        case Controller::Mouse: {
-            // The cursor's place across the window steers; buttons 1 and 2
-            // (left, right) are throttle and brakes; the handbrake stays a key.
-            const auto size = ctx.window().size();
-            deviceAxis = m_analogSteering.mouseAxis(in.mousePosition().x, static_cast<float>(size.width));
-            pedals.accelerator = in.mouseDown(platform::MouseButton::Left) ? 1.0f : 0.0f;
-            pedals.brake = in.mouseDown(platform::MouseButton::Right) ? 1.0f : 0.0f;
-            pedals.handbrake = keyHandbrake();
-            return;
-        }
-        case Controller::GamePad:
-            // The stick through FilterGamepadSteering; buttons 0 and 1
-            // throttle and brakes, button 3 the handbrake (South, East and
-            // North on an SDL gamepad, inferred from DirectInput's order).
-            for (const auto& pad : in.gamepads()) {
-                using platform::GamepadAxis;
-                using platform::GamepadButton;
-                const auto button = [&](GamepadButton b) { return pad.buttons.test(static_cast<std::size_t>(b)); };
-                analog = controls::applyDeadZone(pad.axes[static_cast<std::size_t>(GamepadAxis::LeftX)], deadZone);
-                pedals.accelerator = button(GamepadButton::South) ? 1.0f : 0.0f;
-                pedals.brake = button(GamepadButton::East) ? 1.0f : 0.0f;
-                pedals.handbrake = button(GamepadButton::North) ? 1.0f : 0.0f;
-                return;
-            }
-            pedals.handbrake = keyHandbrake();
-            return;
-        case Controller::Joystick:
-        case Controller::Wheel: {
-            // X steers; Y forward is the throttle and back the brakes
-            // (mmJoystick::GetAxis codes 0x13 / 0x14). The wheel's handbrake
-            // is button 0, the joystick's button 5 (when it has one; else
-            // the key).
-            float x = 0.0f, y = 0.0f;
-            bool handbrake = false;
-            if (!in.joysticks().empty()) {
-                const auto& j = in.joysticks().front();
-                x = j.axes.size() > 0 ? j.axes[0] : 0.0f;
-                y = j.axes.size() > 1 ? j.axes[1] : 0.0f;
-                const std::size_t b = controller == Controller::Wheel ? 0 : 5;
-                handbrake = b < j.buttons.size() ? j.buttons[b] : keyHandbrake() != 0.0f;
-            } else if (!in.gamepads().empty()) {
-                // A pad SDL recognises as a gamepad: its left stick (OpenMM2).
-                using platform::GamepadAxis;
-                const auto& pad = in.gamepads().front();
-                x = pad.axes[static_cast<std::size_t>(GamepadAxis::LeftX)];
-                y = pad.axes[static_cast<std::size_t>(GamepadAxis::LeftY)];
-                handbrake = keyHandbrake() != 0.0f;
-            }
-            x = controls::applyDeadZone(x, deadZone);
-            y = controls::applyDeadZone(y, deadZone);
-            deviceAxis = x;
-            pedals.accelerator = y < 0.0f ? -y : 0.0f;
-            pedals.brake = y > 0.0f ? y : 0.0f;
-            pedals.handbrake = handbrake ? 1.0f : 0.0f;
-            return;
-        }
-        }
+    // Force feedback (mmPlayer::Update -> UpdateFF while mmInput::DoingFF;
+    // paused: ResetFF) on the race's joystick (app/ForceFeedback).
+    void updateForceFeedback(Context& ctx, float dt, bool paused) {
+        m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
+        if (m_player)
+            m_ff.update(controls::ffCarState(m_player->sim()), dt, paused);
     }
 
-    // The horn key (mmGame::UpdateHorn), not in the free camera.
-    bool hornDown(Context& ctx) const {
-        return !m_flyCamera && m_bindings.down(ctx.input, controls::Action::Horn);
-    }
+    // The horn (mmGame::UpdateHorn: the slot's held bit), not in the free
+    // camera.
+    bool hornDown(Context&) const { return !m_flyCamera && m_gameInput.held(controls::Action::Horn); }
 
     // mmGame::UpdateGameInput: the discrete in-race keys, handled while the
     // game is paused too.
     void updateGameInput(Context& ctx) {
         using controls::Action;
         const auto& in = ctx.input;
-        auto pressed = [&](Action a) { return m_bindings.pressed(in, a); };
+        auto pressed = [&](Action a) { return m_gameInput.fired(a); };
         bool viewChanged = false;
         if (m_hud) {
             auto& hud = *m_hud;
             if (pressed(Action::MapToggle)) {
-                hud.cycleMap();
+                m_cams.cycleMap();
                 viewChanged = true;
             }
             if (pressed(Action::FullScreenMap)) {
                 // In single player the full-screen map pauses the game and
                 // leaving it resumes (mmReplayManager flags 0x1c / 0x1d).
                 if (!multiplayer(ctx))
-                    m_paused = hud.options().mapMode != game::session::MapMode::FullScreen;
-                hud.toggleFullScreenMap();
+                    m_paused = m_cams.mapMode() != game::MapMode::FullScreen;
+                m_cams.toggleFullScreenMap();
                 viewChanged = true;
             }
+            hud.options().mapMode = m_cams.mapMode();
             if (pressed(Action::MapZoom)) {
                 hud.toggleMapZoom();
                 viewChanged = true;
@@ -2911,7 +2914,7 @@ private:
         // themselves (key events 0x2E and 0x2F), whatever the two camera
         // actions are bound to.
         auto pausedKey = [&](Action a, platform::Key k) {
-            return m_paused && m_bindings.key(a) != k && in.keyPressed(k);
+            return m_paused && m_gameInput.binding(a) != controls::Binding::key(k) && in.keyPressed(k);
         };
         if (pressed(Action::ChangeCamera) || pausedKey(Action::ChangeCamera, platform::Key::C))
             m_cams.toggleCamera();
@@ -2924,11 +2927,10 @@ private:
         if (pressed(Action::Dashboard))
             m_cams.toggleDashboard();
         // mmViewMgr::SetViewSetting(9), input event 0x1E: the rear-view mirror.
-        if (pressed(Action::RearViewMirror))
+        if (pressed(Action::RearViewMirror)) {
             m_mirror.toggle();
-        for (const auto& pad : in.gamepads())
-            if (pad.pressed.test(static_cast<std::size_t>(platform::GamepadButton::North)))
-                m_cams.toggleCamera();
+            m_cams.setViewSetting(game::ViewSetting::Mirror);
+        }
         if (m_player) {
             auto& trans = m_player->sim().trans;
             auto& pedals = m_player->controls();
@@ -2981,12 +2983,15 @@ private:
     void loadViewSettings(Context& ctx) {
         auto& o = m_hud->options();
         const auto& ini = ctx.settings.ini;
-        o.mapMode = static_cast<game::session::MapMode>(std::clamp(ini.getInt("HUD", "MapMode", 0), 0LL, 2LL));
+        // mmHudMap::Reset applies the kept map mode (the map and the 3D
+        // view's place, not the rest of SetViewSetting).
+        m_cams.setMapMode(static_cast<game::MapMode>(std::clamp(ini.getInt("HUD", "MapMode", 0), 0LL, 2LL)));
+        o.mapMode = m_cams.mapMode();
         o.rotatingMap = ini.getBool("HUD", "RotatingMap", o.rotatingMap);
         o.zoomedIn = ini.getBool("HUD", "MapZoomIn", o.zoomedIn);
         o.opponentIcons = ini.getBool("HUD", "OpponentIcons", o.opponentIcons);
         o.cluster = ini.getBool("HUD", "Cluster", o.cluster);
-        m_hudMapBeforeFull = o.mapMode;
+        m_hudMapBeforeFull = m_cams.mapMode();
     }
 
     void saveViewSettings(Context& ctx) {
@@ -2994,9 +2999,10 @@ private:
         auto& ini = ctx.settings.ini;
         // The full-screen map is not kept (mmPlayerConfig keeps the mode it
         // was opened from).
-        const auto mode = o.mapMode == game::session::MapMode::FullScreen ? m_hudMapBeforeFull : o.mapMode;
-        if (o.mapMode != game::session::MapMode::FullScreen)
-            m_hudMapBeforeFull = o.mapMode;
+        const auto current = m_cams.mapMode();
+        const auto mode = current == game::MapMode::FullScreen ? m_hudMapBeforeFull : current;
+        if (current != game::MapMode::FullScreen)
+            m_hudMapBeforeFull = current;
         ini.setInt("HUD", "MapMode", static_cast<int>(mode));
         ini.setBool("HUD", "RotatingMap", o.rotatingMap);
         ini.setBool("HUD", "MapZoomIn", o.zoomedIn);
@@ -3042,14 +3048,18 @@ private:
     // The original's car cameras (TrackCamCS / PovCamCS, ported from MM1).
     void updateCarCamera(Context& ctx, float dt) {
         auto& in = ctx.input;
-        using controls::Action;
-        // mmInput::GetCamPan: the look keys.
-        bool left = m_bindings.down(in, Action::LookLeft), right = m_bindings.down(in, Action::LookRight),
-             back = m_bindings.down(in, Action::LookBack), forward = m_bindings.down(in, Action::LookForward);
+        // OpenMM2 extras: a game pad's right stick looks around, and with the
+        // keyboard or the mouse controller its North button changes the
+        // camera (the joystick types bind the pad's buttons themselves).
+        bool left = false, right = false, back = false, forward = false;
+        const auto c = m_gameInput.controller();
+        const bool padIsController =
+            c == controls::Controller::Joystick || c == controls::Controller::GamePad || c == controls::Controller::Wheel;
         for (const auto& pad : in.gamepads()) {
             using platform::GamepadAxis;
             using platform::GamepadButton;
-            if (pad.pressed.test(static_cast<std::size_t>(GamepadButton::North)))
+            if (!padIsController && !m_flyCamera && m_popup == Popup::None &&
+                pad.pressed.test(static_cast<std::size_t>(GamepadButton::North)))
                 m_cams.toggleCamera();
             const float rx = pad.axes[static_cast<std::size_t>(GamepadAxis::RightX)];
             const float ry = pad.axes[static_cast<std::size_t>(GamepadAxis::RightY)];
@@ -3059,7 +3069,8 @@ private:
             forward |= ry < -0.5f;
         }
         game::CameraInput input;
-        input.camPan = game::cameraPanFor(left, right, back, forward);
+        // mmInput::GetCamPan: the joystick's POV hat or the look buttons.
+        input.camPan = m_gameInput.camPan(left, right, back, forward);
         m_camPan = input.camPan;
         if (const auto extent = ctx.device().sceneExtent(); extent.height)
             input.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
@@ -3214,9 +3225,11 @@ private:
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
-    phys::SteeringFilter m_steering;
-    // The player's controls: [Controls] bindings and options (mmInput).
-    controls::Bindings m_bindings;
+    // The player's controls: the [Controls] options and the chosen
+    // controller's bindings read each frame (mmInput, app/GameInput).
+    controls::GameInput m_gameInput;
+    controls::ForceFeedback m_ff; // mmPlayer::UpdateFF and the effects
+    float m_steerApplied = 0.0f;  // the recorded steering (mmPlayer +0x2264)
     controls::Options m_controlOptions;
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.
@@ -3247,7 +3260,6 @@ private:
     std::set<std::uint8_t> m_crPlayers;   // the players last frame (who left)
     bool m_regen = false;       // mmPlayer::EnableRegen
     float m_throttleCap = 1.0f; // mmGame +0x40c
-    controls::AnalogSteering m_analogSteering; // mmPlayer::FilterSteering
     std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
     bool m_textInput = false;                // SDL text input on for the chat line
     std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)

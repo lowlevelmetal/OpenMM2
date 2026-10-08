@@ -28,6 +28,7 @@
 //                 hud.drawMap(...)                   // last: sets its own viewport
 //   overlay pass: hud.drawOverlay(...)               // outside overlay.begin()/end()
 
+#include "game/CamPlayer.h"
 #include "game/Camera.h"
 #include "game/ModelLibrary.h"
 #include "game/Strings.h"
@@ -84,40 +85,44 @@ struct DashParams {
 };
 std::optional<DashParams> loadDashParams(const vfs::Vfs& vfs, const std::string& car);
 
-// Other cars shown on the map and marked by the opponent icons.
+// Other cars shown on the map and marked by the opponent icons (mmGame's
+// OppIconInfo for the opponents and the network players; aiMap's police).
 struct MapBlip {
     Mat34 transform;
     // Ambient traffic is accepted but not drawn (MM2's map shows only the
     // player, opponents and police). Police should be passed while they
-    // chase (mmHudMap::DrawCops). Network: another player's car
-    // (mmGameMulti::RegisterMapNetObjects).
-    enum class Kind : std::uint8_t { Opponent, Police, Ambient, Teammate, Network } kind = Kind::Opponent;
-    // The icon's OppIconInfo: IconIndex (the place digit, 10 = none, 0 =
-    // the icon is off), the network player's start slot (its colour) and
-    // name (the label mmIcons draws in network games).
+    // chase (mmHudMap::DrawCops). Remote: a network player.
+    enum class Kind : std::uint8_t { Opponent, Police, Ambient, Remote } kind = Kind::Opponent;
+    // mmIcons (OppIconInfo): the place shown on the icon (1-8 the digits of
+    // opp_icon, 9 its gold "$", the Cops and Robbers carrier; 10 none) and
+    // the icon's colour (0xAARRGGBB; violet for single-player opponents).
     int place = 10;
-    int slot = -1;
+    std::uint32_t iconColor = 0xFFB400FFu;
+    // Network players: their slot in mmGameMulti's players (the map colours
+    // them with IconType slot + 4) and their name (mmIcons' labels).
+    int slot = 0;
     std::string name;
 };
 
 // mmHudMap map modes 0-3: "Map Toggle" cycles Off, Small, Split;
-// "Full Screen Map" switches to FullScreen and back.
-enum class MapMode : std::uint8_t {
-    Off,
-    Small,      // tune/<city>.mmhudmap Pos/Size, minus 10 pixels
-    Split,      // the bottom half of the screen (the 3D view takes the top half in MM2)
-    FullScreen, // the whole screen (the 3D view becomes a picture-in-picture in MM2)
-};
+// "Full Screen Map" switches to FullScreen and back. They are view settings
+// (PlayerCameras::setViewSetting changes them with the camera, the wide
+// angle and the dashboard).
+using MapMode = game::MapMode;
 
 struct HudOptions {
     bool visible = true;              // mmHUD::Enable / Disable: the clock, map and icons stay
     bool cluster = true;              // "HUD Toggle" key: mmHUD::ToggleExternalView, the instrument cluster
     MapMode mapMode = MapMode::Off;   // new players start with the map off (mmStatePack)
+    bool wideAngle = false;           // the wide view (camViewCS +0x18): letterboxed 3D view
     bool rotatingMap = true;          // "Rotating Map" (on in mmStatePack)
     bool zoomedIn = false;            // "Map Zoom" (tune/<city>.mmhudmap ZoomIn)
     bool opponentIcons = true;        // "Opponent Position" (mmIcons; on for new players)
     bool metric = false;              // km/h instead of mph (OpenMM2 option)
-    bool dashboard = false;           // in-car dashboard view active
+    bool dashboard = false;           // the dash model shows (mmDashView active, its camera current)
+    // The HUD's dashboard flag (mmHUD::ActivateDash): hides the instrument
+    // cluster and, for right-hand-drive cars, moves the small map left.
+    bool dashActive = false;
     // Virtual units per original screen pixel: 1 shows the HUD as the game
     // draws it at 640x480, 0.5 as at 1280x960.
     float pixelSize = 1.0f;
@@ -179,23 +184,42 @@ bool checkReadoutShown(GameMode mode, const LessonEvent* lesson);
 enum class MapIcon : std::uint8_t {
     Outline = 0,  // black, behind the player's arrow
     Police = 1,   // red
-    Teammate = 3, // green (OpenMM2 multiplayer; MM2 colours network players by index)
     Player = 5,   // yellow
     Opponent = 7, // violet (single player)
+    // Network players use slot + 4 (mmHudMap::DrawOpponents): red, yellow,
+    // orange, violet, cyan, pink, then two values past the end of MM2's
+    // ten-entry table (the bytes that follow it).
 };
-// The icon's colour as 0xAARRGGBB (the table DrawIcon indexes).
+// The icon's colour as 0xAARRGGBB (the table DrawIcon indexes; 0 .. 11).
 std::uint32_t mapIconColor(MapIcon icon);
-// mmGame's icon colours (its constructor's table of eight, OppIconInfo
-// Color): the cards over the other network players' cars, by start slot.
-std::uint32_t netPlayerColor(int slot);
-// mmHudMap::DrawOpponents in a network game: the arrow of the player in
-// start slot s takes the map colour s + 4; slots 6 and 7 read past MM2's
-// ten-colour table, where OpenMM2 uses their card colour (inferred).
-std::uint32_t netMapColor(int slot);
+std::uint32_t mapIconColor(int iconType);
+// mmGame::mmGame: the opponent icons' colours of the network players by
+// slot (blue, green, red, yellow, orange, violet, cyan, pink); Cops and
+// Robbers team games paint them red or blue (mmMultiCR::GameMessage).
+std::uint32_t netIconColor(int slot);
+// mmIcons::Cull draws the icons in passes 0 .. slots - 1: pass k draws the
+// icons not drawn yet whose place is k + 1 or above 7. Returns the indices
+// in drawing order (icons placed past `slots` and below 8 are not drawn).
+std::vector<std::size_t> iconDrawOrder(std::span<const int> places, int slots);
+// The opp_icon.tex cell of a place 1 .. 9 (4 x 4 cells of 0.25): column
+// (place - 1) % 4, row (place - 1) / 4.
+Vec2 iconDigitCell(int place);
 
-// mmHudMap::GetNextMapMode ("Map Toggle"): Off -> Small -> Split -> Off;
-// from full screen, the mode it was opened from.
-MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen);
+// mmHudMap::GetNextMapMode (game/CamPlayer.h).
+using game::nextMapMode;
+
+// The 3D view's pixel rectangle on a screen of `width` x `height`
+// (gfxPipeline::VP): mmHudMap::SetMapMode puts it in the top half for the
+// split map (0, 0, w, h / 2) and in the small map's place for the full-screen
+// map (Pos x screen, Size x screen); otherwise mmPlayer::SetWideFOV letterboxes
+// it for the wide angle (0, 0.18 h, w, 0.66 h) or gives it the whole screen.
+// Sizes truncated (__ftol) as the original.
+render::Rect sceneRect(int width, int height, const HudMapParams& params, MapMode mode, bool wideAngle);
+// mmHUD::Update: the message nodes sit at 0.8 / 0.875 (or 0.2 / 0.35 for the
+// upper messages) while the 3D view starts at the top of the screen, and at
+// 0.05 / 0.1 when it does not (the wide angle's letterbox, the full-screen
+// map's inset). `second` is the SetMessage2 line.
+float messageTop(bool top, bool second, bool viewAtTop);
 
 } // namespace hud
 
@@ -203,11 +227,12 @@ MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen);
 struct CrDisplay {
     bool enabled = false;
     std::optional<Vec3> gold; // the gold's place (drawn while not delivered)
+    Vec3 goldOnMap;           // the gold object's place, always shown on the map
     struct Base {
         std::string model; // pt_bank / pt_hideout, pt_blue / pt_red in Robber Teams
         Vec3 position;
     };
-    std::vector<Base> bases;
+    std::vector<Base> bases; // the bank (blue) first, then the hideout (red)
     std::optional<Vec3> arrowInterest; // mmArrow::SetInterest
     float time = 0.0f;                 // the powerup's spin (ElapsedTime)
     // mmCRHUD's readouts: the team totals (team 0 blue, team 1 red) or, in
@@ -216,6 +241,21 @@ struct CrDisplay {
     bool copsVsRobbers = true; // "COPS" / "ROBBERS", else "BLUE" / "RED"
     int blueScore = 0, redScore = 0, playerScore = 0;
     float timeLeft = -1.0f; // the time limit's clock (none below 0)
+    // mmCRHUD::SetName: the player's name, blue, or red on team 1.
+    std::string playerName;
+    bool playerRed = false;
+    // mmCRHUD::AddPlayer / SetScore / ActivateRosterGold: the other players
+    // in the order they joined (seven rows), each in its icon colour
+    // (0xAARRGGBB) with its score, "$" on the gold carrier's row.
+    struct RosterEntry {
+        std::string name;
+        int score = 0;
+        std::uint32_t color = 0xFFFFFFFFu;
+        bool gold = false;
+    };
+    std::vector<RosterEntry> roster;
+    // mmCRHUD::ActivateGold: the player carries the gold.
+    bool carryingGold = false;
 };
 
 class Hud {
@@ -245,6 +285,9 @@ public:
 
     // Virtual-space rectangle of the map (x, y, w, h) for the current options.
     Vec4 mapRect(const render::UiLayout& layout) const;
+    // The 3D view's pixel rectangle on the scene for the current options
+    // (hud::sceneRect).
+    render::Rect sceneRect(render::Extent2D scene) const;
 
     // The scene's view * projection, for the labels mmIcons projects onto
     // the screen. Set each frame before drawOverlay.
@@ -252,20 +295,23 @@ public:
         m_viewProj = viewProj;
         m_viewProjValid = true;
     }
+    // The scene's frame constants and the same projection with a 0.01 m
+    // near plane, which mmDashView::Cull sets while it draws the dash
+    // (gfxViewport::Perspective); drawWorld restores the frame after.
+    void setDashFrame(const render::FrameConstants& frame, const Mat44& nearProj) {
+        m_sceneFrame = frame;
+        m_dashProj = nearProj;
+        m_dashFrameValid = true;
+    }
 
-    // The in-race view keys, as mmViewMgr::SetViewSetting handles them.
-    // "Map Toggle" (1): Off -> Small -> Split -> Off (mmHudMap::GetNextMapMode);
-    // from full screen, back to the mode it was opened from.
-    void cycleMap();
-    // "Full Screen Map" (10): full screen, remembering the mode (mmHudMap
-    // +0x40), and back to it.
-    void toggleFullScreenMap();
+    // The in-race view keys the HUD handles itself, as mmViewMgr::SetViewSetting
+    // does (the map's mode is changed by PlayerCameras::setViewSetting).
     // "Map Zoom" (7, mmHudMap::ToggleMapRes) and "Rotating Map" (8,
     // ToggleMapOrient): nothing while the map is off.
     void toggleMapZoom();
     void toggleMapRotation();
     // "HUD Toggle" (4, mmHUD::ToggleExternalView): the instrument cluster;
-    // it comes back only outside the dashboard view.
+    // it comes back only without the HUD's dashboard flag.
     void toggleCluster();
     // "Opponent Position" (mmGame::UpdateGameInput, SetIconsState).
     void toggleOpponentIcons() { m_options.opponentIcons = !m_options.opponentIcons; }
@@ -288,14 +334,17 @@ private:
                      float y);
     void drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y);
     void drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
-    void drawNameLabels(render::Overlay2D& ov, ui::TextRenderer& text);
-    void drawDigit(const Vec3& at, float size, int place, const Mat34& cam);
+    // mmIcons::Cull's labels (network games only): the players' names.
+    void drawIconLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
+    void drawCardQuad(const std::array<Vec3, 4>& corners, const std::array<Vec2, 4>& uvs,
+                      const WorldTexture& texture);
     // `second`: the SetMessage2 line, in its own one-line node under the message.
     void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
     void drawChat(render::Overlay2D& ov, ui::TextRenderer& text);
     void drawCrObjects(const Camera& camera);
     void drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art);
+    void drawCrGoldIcon(const Camera& camera);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;
     float px(float pixels) const { return pixels * m_options.pixelSize; }
@@ -313,16 +362,19 @@ private:
     // mmHudMap: current camera height and icon size, approaching the targets.
     float m_mapZoom = 0.0f, m_mapIconScale = 0.0f;
     std::optional<MapMode> m_mapModeApplied; // snaps zoom and icon size on change
-    MapMode m_mapModeBeforeFull = MapMode::Off; // mmHudMap +0x40
     Mat44 m_viewProj;
     bool m_viewProjValid = false;
-    std::vector<MapBlip> m_labelBlips; // the network players, for mmIcons' name labels
-    Vec3 m_labelEye;                   // the camera position when they were drawn
+    render::FrameConstants m_sceneFrame;
+    Mat44 m_dashProj;
+    bool m_dashFrameValid = false;
+    std::vector<MapBlip> m_labelBlips; // the network players' labels (drawIcons -> drawIconLabels)
+    Vec3 m_labelEye;
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;
     std::array<std::string, 5> m_chat; // mmHUD's chat node (+0x8b0)
     CrDisplay m_cr;
+    Mat34 m_crGoldSpin; // mmCRHUD +0x148: the HUD gold's spin and place in camera space
     bool m_chatShown = false;
     float m_chatTime = 0.0f;
 };

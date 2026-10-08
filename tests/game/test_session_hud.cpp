@@ -191,8 +191,9 @@ TEST(HudLogic, MapRect) {
     EXPECT_NEAR(r.y, 360.0f, 1e-3f);
     EXPECT_NEAR(r.z, 124.4f, 1e-3f);
     EXPECT_NEAR(r.w, 110.0f, 1e-3f);
-    // Right-hand-drive cars move it to the left edge in the dashboard view.
-    options.dashboard = true;
+    // Right-hand-drive cars move it to the left edge while the HUD's
+    // dashboard flag is set.
+    options.dashActive = true;
     EXPECT_NEAR(hud::mapRect(l, params, options, true).x, 0.0f, 1e-4f);
     EXPECT_NEAR(hud::mapRect(l, params, options, false).x, 499.2f, 1e-3f);
     options.mapMode = MapMode::Split;
@@ -203,7 +204,7 @@ TEST(HudLogic, MapRect) {
     EXPECT_EQ(hud::mapRect(l, params, options, false).z, 0.0f);
     // Widescreen: fractions of the whole output.
     options.mapMode = MapMode::Small;
-    options.dashboard = false;
+    options.dashActive = false;
     const render::UiLayout wide = render::computeUiLayout({1280, 720}, render::UiScaleMode::Fit);
     r = hud::mapRect(wide, params, options, false);
     EXPECT_NEAR(r.x + r.z + 10.0f + 0.01f * (wide.right - wide.left), wide.right, 1e-2f);

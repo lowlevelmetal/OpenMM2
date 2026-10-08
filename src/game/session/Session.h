@@ -167,11 +167,16 @@ public:
     int lap() const; // current lap, 1-based (circuit)
     int laps() const { return m_setup.laps; }
     int position() const { return m_rank; }
-    // The live place over each racer's icon (mmSingleRace / mmSingleCircuit::
-    // UpdateScore, mmGameMulti::UpdateScore write it as the icon's
-    // IconIndex): an opponent's (in opponents() order) or another network
-    // player's (in setNetRacers() order); 10 = no number, 0 = no icon.
-    int opponentPlace(std::size_t i) const { return i < m_oppPlaces.size() ? m_oppPlaces[i] : 10; }
+    // Checkpoint races and circuits: an opponent's place as its icon shows
+    // it (mmSingleRace / mmSingleCircuit::UpdateScore write it into the
+    // opponent's OppIconInfo); 10 (no number) before the first update and in
+    // the other modes.
+    int opponentPlace(std::size_t index) const {
+        return index < m_opponentPlaces.size() ? m_opponentPlaces[index] : 10;
+    }
+    // Multiplayer races: another network player's rank over its icon
+    // (mmGameMulti::UpdateScore), in setNetRacers() order; 10 = no number,
+    // 0 = no icon (finished, or no car).
     int netRacerPlace(std::size_t i) const { return i < m_netPlaces.size() ? m_netPlaces[i] : 10; }
     int racerCount() const { return multiplayer() ? m_netRacerCount : static_cast<int>(m_opponents.size()) + 1; }
 
@@ -280,7 +285,6 @@ private:
     void setTarget(int index);
     void updateOpponents(std::span<const OpponentState> opponents);
     void updateRank(const PlayerState& player, std::span<const OpponentState> opponents);
-    void updateOpponentPlaces(const PlayerState& player, std::span<const OpponentState> opponents);
     bool updateHazards(float dt, const PlayerState& player);
     void hitWater();
     void dropThroughCity();
@@ -317,6 +321,7 @@ private:
     std::vector<char> m_oppEnabled;
     int m_finishers = 0;
     int m_rank = 1;
+    std::vector<int> m_opponentPlaces; // OppIconInfo places (hud-views)
 
     Phase m_phase = Phase::Countdown;
     Stage m_stage = Stage::Intro;
@@ -371,7 +376,7 @@ private:
         bool self = false;
     };
     std::vector<NetRacer> m_netRacers;
-    std::vector<int> m_oppPlaces, m_netPlaces; // the icons' IconIndex
+    std::vector<int> m_netPlaces; // the other players' icons' IconIndex
     std::vector<NetResult> m_netResults; // mmGameMulti::SortResults' table, by time
     int m_netRacerCount = 1;
     bool m_netTimeoutOn = false;         // SetTimeoutOn / SetTimeoutOff
