@@ -1,6 +1,7 @@
 // The game's menus: page stack, shared state and the Screen wrapper.
 #include "app/Screens.h"
 #include "app/frontend/Frontend.h"
+#include "app/frontend/Showroom.h"
 #include "audio/Music.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
@@ -302,7 +303,8 @@ void Frontend::update(double dt) {
 }
 
 void Frontend::drawPage(Page& p, ui::UiFrame& f, bool active) {
-    if (!p.menu.background.empty())
+    // A page with 3D has its background drawn in the scene pass.
+    if (!p.menu.background.empty() && !p.drawsScene())
         ui::drawImage(f.overlay, textures.get(p.menu.background), 0, 0, 640, 480);
     if (!p.dialogPicture.empty()) {
         const ui::UiTexture& t = textures.get(p.dialogPicture);
@@ -327,6 +329,45 @@ void Frontend::draw() {
     for (std::size_t i = first; i < m_pages.size(); ++i)
         drawPage(*m_pages[i], f, i + 1 == m_pages.size());
     ov.end();
+}
+
+Frontend::~Frontend() = default;
+
+Page* Frontend::scenePage() const {
+    std::size_t first = m_pages.empty() ? 0 : m_pages.size() - 1;
+    while (first > 0 && m_pages[first]->dialog)
+        --first;
+    Page* p = m_pages.empty() ? nullptr : m_pages[first].get();
+    return p && p->drawsScene() ? p : nullptr;
+}
+
+void Frontend::drawScene() {
+    Page* p = scenePage();
+    if (!p)
+        return;
+    // asCullManager::Update: clear to black, the camera's underlay (the
+    // menu's background), then the 3D through the menu camera; the widgets
+    // follow in the overlay pass.
+    render::Device& dev = ctx.device();
+    render::ClearValues clear;
+    clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
+    dev.beginScene(clear);
+    if (!p->menu.background.empty()) {
+        auto& ov = *ctx.overlay;
+        ov.begin(ctx.display.uiScale);
+        const render::Extent2D scene = dev.sceneExtent();
+        dev.setViewport({0, 0, static_cast<float>(scene.width), static_cast<float>(scene.height), 0, 1});
+        ui::drawImage(ov, textures.get(p->menu.background), 0, 0, 640, 480);
+        ov.end();
+    }
+    p->drawScene(*this);
+    dev.endScene();
+}
+
+Showroom& Frontend::showroom() {
+    if (!m_showroom)
+        m_showroom = std::make_unique<Showroom>(ctx.device(), ctx.game->vfs);
+    return *m_showroom;
 }
 
 // --- Common widgets ------------------------------------------------------------------------
@@ -835,6 +876,9 @@ public:
         m_fe.update(dt);
     }
 
+    // The garage's 3D car (Frontend::scenePage).
+    bool usesScene() const override { return m_fe.scenePage() != nullptr; }
+    void drawScene(Context&) override { m_fe.drawScene(); }
     void drawOverlay(Context&) override { m_fe.draw(); }
 
 private:

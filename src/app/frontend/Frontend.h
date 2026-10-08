@@ -24,6 +24,7 @@
 namespace mm2::app::frontend {
 
 class Frontend;
+class Showroom;
 
 // One screen or dialog of the frontend.
 class Page {
@@ -43,12 +44,18 @@ public:
     virtual void drawBelow(Frontend&, ui::UiFrame&) {} // after background, before widgets
     virtual void drawAbove(Frontend&, ui::UiFrame&) {} // after widgets
     virtual void onEnter(Frontend&) {}                 // when it becomes the top page again
+    // A page with 3D content (the garage's car): its background is drawn in
+    // the scene pass under the 3D, as MM2's camera underlay is, and
+    // drawScene() adds the 3D after it.
+    virtual bool drawsScene() const { return false; }
+    virtual void drawScene(Frontend&) {}
 };
 
 // State shared by all pages and the page stack.
 class Frontend {
 public:
     Frontend(Context& ctx);
+    ~Frontend();
 
     Context& ctx;
     ui::TextureCache textures;
@@ -130,6 +137,13 @@ public:
 
     void update(double dt);
     void draw();
+    // The topmost full-screen page when it draws 3D (dialogs over it keep
+    // it), and its scene pass.
+    Page* scenePage() const;
+    void drawScene();
+    // The garage's 3D car, kept for the process like MM2's menus (the
+    // camera distance and each car's angle carry over).
+    Showroom& showroom();
 
 private:
     void drawPage(Page& p, ui::UiFrame& f, bool active);
@@ -137,6 +151,7 @@ private:
     std::vector<std::unique_ptr<Page>> m_pages;
     std::vector<std::unique_ptr<Page>> m_graveyard; // popped this frame; freed after drawing
     int m_menuId = -1; // menu id of the topmost full page
+    std::unique_ptr<Showroom> m_showroom;
     std::unique_ptr<audio::SoundBank> m_soundBank;
     std::map<std::string, audio::game::SoundSlot, std::less<>> m_sounds;
     ui::SoundFn m_soundFn;

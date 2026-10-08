@@ -243,9 +243,25 @@ Positions come from `tune/widget.csv` by the widget's creation index in MM2's me
   picked (with its remembered paint), else the first unlocked one, except
   when coming back from the showcase. Picking a car and entering the garage
   play `<car>_select` unless it is still playing.
-* MM2 draws the car in 3D (viewport 32,55 608×192, field of view 0.6 rad,
-  camera 0.18 rad above at the car's UIDist, turning 1 rad/s). OpenMM2
-  shows the car's showcase photo there instead (**not implemented**).
+* The car turns in 3D over the background (`app/frontend/Showroom.*`;
+  MM2's `VehicleSelectBase` nodes: an `asDofCS` and an `mmVehicleForm` per
+  car, seen through `MenuManager::Init`'s camera). The background is drawn
+  in the scene pass, then the car, then the widgets, as `asCullManager`
+  draws the camera's underlay, the 3D and the 2D. Camera: viewport
+  32,55 608×192 (`asCamera::SetViewport` 0.05, 0.115, 0.95 x 0.4, cut to
+  whole pixels), vertical field of view 0.6 rad with the projection's own
+  aspect 3.2, near 1, far 100, no fog; `asViewCS` polar view at azimuth 0,
+  incline 0.18 rad (`VehicleSelectBase::Update`), offset (0, 0.86, 0), its
+  distance easing to the picked car's UIDist at 21 units a second (from 10
+  the first time). Light: the Sun alone, white along (-1, -1, -1), no
+  ambient. The car turns about Y at 1 rad/s at the origin, each car keeping
+  its angle; drawn as `mmVehicleForm::Cull`: SHADOW_H at the car's matrix,
+  BODY_H, the body again with `refl_showroom` added in its materials'
+  power, the four wheels and the extra parts (break0-3, break01/12/23/03,
+  fndr0/1, whl4/5) at their pivots, all at the high LOD in the paint job
+  picked, with `_dmg` textures replaced by their clean ones. Locked cars
+  look the same (the tint MM2 stores is never read); the LOCKED sign marks
+  them. One car's model is loaded the first time it is shown.
 
 **Showcase** (menu 9): `<car>_show.jpg` with a DONE arrow (`host_dn`) at
 439,415; no navigation strip.
@@ -508,7 +524,6 @@ defaults), `vehicle:<name>`, `go` (start the race), `result:<position>`,
 
 ## Not yet done
 
-* 3D vehicle showroom (MM2 rotates the car model; see "Garage").
 * Instant replay (MM2's REPLAY button is switched off anyway).
 * Options per driver (`mmPlayerConfig`), mouse/joystick bindings, MM2's
   log-200 volume curve.

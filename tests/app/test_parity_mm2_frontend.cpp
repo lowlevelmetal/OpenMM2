@@ -2,10 +2,12 @@
 // against MM2's own code (MM2Recomp, midtown2.exe build 3393); see
 // docs/parity/mm2/frontend.md.
 #include "app/frontend/PopupOptions.h"
+#include "app/frontend/Showroom.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cmath>
 
 using namespace mm2;
 using namespace mm2::app::frontend;
@@ -110,4 +112,26 @@ TEST(MM2FrontendParity, PopupKeyMapSlots) {
     EXPECT_EQ(std::count(pad.begin(), pad.end(), 6), 0);
     EXPECT_EQ(pad.back(), 33);
     EXPECT_FLOAT_EQ(popup::cardFor(PopupPage::KeyMap).y, 24.0f);
+}
+
+// The garage's camera (MenuManager::Init, VehicleSelectBase::Update):
+// viewport 0.05, 0.115, 0.95 x 0.4 of 640x480 cut to whole pixels; the
+// polar view at incline 0.18 rad over the offset (0, 0.86, 0); the distance
+// easing at 21 units a second.
+TEST(MM2FrontendParity, ShowroomCamera) {
+    const render::Rect vp = Showroom::viewport640();
+    EXPECT_EQ(vp.x, 32);
+    EXPECT_EQ(vp.y, 55);
+    EXPECT_EQ(vp.width, 608u);
+    EXPECT_EQ(vp.height, 192u);
+    const Mat34 m = Showroom::cameraMatrix(6.0f);
+    EXPECT_NEAR(m.m3.x, 0.0f, 1e-5f);
+    EXPECT_NEAR(m.m3.y, 0.86f + 6.0f * std::sin(0.18f), 1e-4f);
+    EXPECT_NEAR(m.m3.z, 6.0f * std::cos(0.18f), 1e-4f);
+    // Looking down the -Z row at the offset point.
+    EXPECT_NEAR(m.m2.y, std::sin(0.18f), 1e-5f);
+    EXPECT_NEAR(m.m2.z, std::cos(0.18f), 1e-5f);
+    EXPECT_FLOAT_EQ(Showroom::easeDistance(10.0f, 6.0f, 0.1f), 7.9f);
+    EXPECT_FLOAT_EQ(Showroom::easeDistance(7.0f, 6.0f, 0.1f), 6.0f);
+    EXPECT_FLOAT_EQ(Showroom::easeDistance(5.0f, 6.0f, 0.02f), 5.42f);
 }

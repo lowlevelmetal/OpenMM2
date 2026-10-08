@@ -6,6 +6,7 @@
 // original menu (the comments give the index); the numbers in the code are
 // the table's values, used when it has no row.
 #include "app/frontend/Frontend.h"
+#include "app/frontend/Showroom.h"
 #include "core/StringUtil.h"
 
 #include <algorithm>
@@ -378,8 +379,6 @@ public:
         const auto& cars = fe.ctx.game->catalog.vehicles();
         enterWithUnlockedCar(fe);
 
-        // The showroom (no widget): a photo stands in for the 3D car.
-        menu.add<ui::Custom>([this, &fe](ui::UiFrame& f) { drawShowroom(fe, f); });
         // 0: the LOCKED sign (locked.tga, black transparent).
         const Vec2 sign = fe.layout.position(id, 0, {200, 160});
         menu.add<ui::Custom>([this, &fe, sign](ui::UiFrame& f) {
@@ -499,11 +498,25 @@ public:
         }
     }
 
-    void update(Frontend& fe, double) override {
+    void update(Frontend& fe, double dt) override {
         // The car's description picture stays in the help box (ShowCarDesc);
         // VEHICLE SHOWCASE shows veh_tsc while it has the focus.
         menu.defaultHelp = carDescription(fe, fe.config.vehicle, !carUnlocked(fe), !paintUnlocked(fe),
                                           fe.config.vehicleColor);
+        // The 3D car (VehicleSelectBase::SetPick: the picked car's node on,
+        // the camera easing to its UIDist; VehicleSelectBase::Update).
+        Showroom& room = fe.showroom();
+        const auto* v = fe.ctx.game->catalog.vehicle(fe.config.vehicle);
+        room.setCar(fe.config.vehicle, v ? v->uiDistance : 6.0f);
+        room.setPaintjob(fe.config.vehicleColor);
+        room.update(static_cast<float>(dt));
+    }
+
+    // The turning car through MenuManager's frontend camera, over the
+    // garage's background (VehicleSelectBase's mmVehicleForm nodes).
+    bool drawsScene() const override { return true; }
+    void drawScene(Frontend& fe) override {
+        fe.showroom().draw(render::computeUiLayout(fe.ctx.device().outputExtent(), fe.ctx.display.uiScale));
     }
 
 private:
@@ -582,19 +595,6 @@ private:
     // view 0.6 rad, camera 0.18 rad above the car at its UIDist, the car
     // turning at 1 rad/s, refl_showroom.tga reflections). That viewer is not
     // implemented; the car's showcase photo stands in for it.
-    void drawShowroom(Frontend& fe, ui::UiFrame& f) const {
-        const std::string pic = showPicture(fe, fe.config.vehicle);
-        const ui::UiTexture& t = fe.textures.get(pic);
-        if (!t)
-            return;
-        // The photo occupies (48,84)-(360,300) of the showcase screen.
-        constexpr float px0 = 48, py0 = 84, px1 = 360, py1 = 300;
-        constexpr Box view{32, 55, 608, 192};
-        const float h = view.h - 12.0f, w = h * (px1 - px0) / (py1 - py0);
-        f.overlay.image(t.handle, view.x + (view.w - w) * 0.5f, view.y + 6.0f, w, h,
-                        {px0 / 640.0f, 1.0f - py0 / 480.0f}, {px1 / 640.0f, 1.0f - py1 / 480.0f});
-    }
-
     ui::ValueBox* m_vehicleBox = nullptr;
     ui::ValueBox* m_colorBox = nullptr;
     ui::ValueBox* m_transmission = nullptr;
