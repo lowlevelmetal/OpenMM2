@@ -499,6 +499,9 @@ private:
         loadAi(ctx);
         loadEffects(ctx);
         loadPedestrianProps(ctx);
+        // mmGame::Init: aiMap::Reset right after aiMap::Init.
+        if (m_ai)
+            m_ai->reset();
         spawnOpponents(ctx);
         spawnPolice(ctx);
         // Every vehCar::Init builds a vehSiren, whose constructor sets the
@@ -1245,8 +1248,19 @@ private:
                     if (o.driver)
                         o.driver->reset();
                 }
-                for (auto& c : m_cops)
-                    c.driver->reset();
+                // aiMap::Reset: aiVehicleManager (a child node), the police
+                // force and officers, the roads, traffic and pedestrians.
+                if (m_trafficBodies)
+                    m_trafficBodies->reset();
+                if (m_ai)
+                    m_ai->reset();
+                if (m_police)
+                    m_police->reset();
+                for (auto& c : m_cops) {
+                    if (c.fx)
+                        c.fx->reset(); // vehCar::Reset (aiVehiclePhysics::Reset)
+                    c.renderer->resetDamage();
+                }
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))

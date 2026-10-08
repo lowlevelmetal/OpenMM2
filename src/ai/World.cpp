@@ -235,6 +235,19 @@ void World::step(const PlayerCar& player) {
     updateSignals();
 }
 
+void World::reset() {
+    // aiMap::Reset: the light sets are children of aiMap (asNode::Reset,
+    // then aiIntersection::Reset resets each set again); the roads,
+    // intersections and ambient cars (Traffic::reset); the pedestrians.
+    m_lights.reset();
+    m_traffic->reset();
+    m_peds->reset();
+    m_accumulator = 0.0f;
+    m_pendingLightSteps = 0;
+    m_playerRoom = 0;
+    updateSignals();
+}
+
 void World::updateLights() {
     if (m_pendingLightSteps == 0)
         return;
@@ -244,6 +257,9 @@ void World::updateLights() {
 }
 
 void World::update(float dt, const PlayerCar& player) {
+    // aiVehicleManager::Update (a child of aiMap, once a frame): the clock
+    // the ambient cars' indicators blink by, the game time summed in a float.
+    m_vehicleClock = m_vehicleClock + dt;
     m_accumulator += dt;
     int steps = 0;
     while (m_accumulator >= kAiStepSeconds && steps < 8) {

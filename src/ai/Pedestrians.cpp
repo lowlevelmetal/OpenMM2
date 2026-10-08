@@ -62,7 +62,7 @@ float turnTowards(float heading, float angle) {
 
 Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types,
                          const PedSettings& settings, std::uint64_t seed)
-    : m_net(network), m_types(std::move(types)), m_settings(settings), m_rng(seed) {
+    : m_net(network), m_types(std::move(types)), m_settings(settings), m_seed(seed), m_rng(seed) {
     // The sequences the AI asks for, by name (aiPedestrian::Init). LDIVE and
     // RDIVE are looked up too but no retail table has them.
     for (const auto& t : m_types) {
@@ -718,6 +718,32 @@ void Pedestrians::adjust(const std::vector<std::uint16_t>& from, const std::vect
 
 void Pedestrians::populateAll() {
     m_populateAll = true;
+}
+
+void Pedestrians::reset() {
+    // aiMap::Reset: ResetRandomSeed first (OpenMM2: this stream's own seed).
+    m_rng.seed(static_cast<std::uint32_t>(m_seed));
+    // aiPath::Reset: each road's pedestrian list (+0x20), its players' mask
+    // and its link in the populated list (+0x34); aiMap +0x180 emptied.
+    std::ranges::fill(m_pathHead, -1);
+    std::ranges::fill(m_pathActive, 0);
+    std::ranges::fill(m_activeNext, -1);
+    m_activeHead = -1;
+    // aiIntersection::Reset: its prop list (+0x28) emptied.
+    for (auto& list : m_nodeObstacles)
+        list.clear();
+    // aiPedestrian::Reset() (the voice) for each pedestrian, then
+    // aiMap::AddPedestrian in index order: the last is taken first.
+    m_poolHead = -1;
+    for (std::size_t i = 0; i < m_peds.size(); ++i) {
+        Ped& p = m_peds[i];
+        p.lost = false;
+        p.path = p.prevPath = -1;
+        poolAdd(static_cast<int>(i));
+    }
+    m_started = false;
+    m_room = 0;
+    publish();
 }
 
 // --- Props ----------------------------------------------------------------------

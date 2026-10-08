@@ -72,8 +72,15 @@ struct AmbientCar {
     float speed = 0.0f;
     float tireRotation = 0.0f; // radians, wraps at 6.28 (aiVehicleSpline::Update)
     float steer = 0.0f;        // rail cars have no steering angle in MM2
+    // aiVehicleInstance::DrawGlow lights the TLIGHT part when the car
+    // decelerates (aiVehicleSpline +0x54 below 0) or stands (speed 0).
     bool braking = false;
+    // The indicators (aiVehicleInstance +0x1a) and their blink phase
+    // (+0x18): DrawGlow lights SLIGHT0 (bit 1) and SLIGHT1 (bit 2) while
+    // bit 3 of (phase + aiVehicleManager's clock) is set; the clock is the
+    // AI time x 16 (aiVehicleManager::Update), so they blink once a second.
     TurnSignal signal = TurnSignal::None;
+    int blinkPhase = 0;
     bool horn = false; // tried to honk this step (aiGoalAvoidPlayer::Reset)
     AmbientGoal goal = AmbientGoal::RandomDrive;
     bool physical = false; // handed over to the physics simulation
@@ -103,6 +110,14 @@ public:
     // One update (aiMap::Update's ambient part). `playerRoom` is the PSDL room
     // the player is in (0: outside every room, nothing changes).
     void step(float dt, const PlayerCar& player, int playerRoom);
+    // aiMap::Reset's ambient part (mmGame::Init after the AI map loads, and
+    // mmGame::Reset when a race restarts): the random seed back to its start
+    // (ResetRandomSeed), every road and intersection list emptied
+    // (aiPath::Reset, aiIntersection::Reset), every car back in the pool in
+    // index order with its rail reset (aiMap::AddAmbient, aiRailSet::Reset).
+    // The next step populates the roads around the player's room. A car's
+    // wreck flag (aiVehicleInstance flag 2) survives, as in MM2.
+    void reset();
     // Convenience for tools: a player of default size at `pos` moving at `vel`.
     void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 
@@ -189,6 +204,7 @@ private:
         // Pool slot, fixed for the session (aiVehicleAmbient ctor / Init).
         int type = 0;
         float paint = 0.0f;
+        int blinkPhase = 0; // aiVehicleInstance +0x18 (DrawGlow reads its low byte)
         float laneRandomness = 0.0f; // aiRailSet +0x24
         int totReactTicks = 8;
         float exceedLimit = 0.0f; // +0x48
@@ -326,6 +342,7 @@ private:
     std::vector<VehicleData> m_types;
     TrafficSettings m_settings;
     float m_density = 0.0f; // aiMap +0x3c
+    std::uint64_t m_seed = 1; // ResetRandomSeed's value for this stream
     Random m_rng;
     std::vector<Car> m_cars;
     std::vector<int> m_pool; // free cars, last = next to use (aiMap +0x44)

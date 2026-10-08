@@ -218,6 +218,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     m_stats = {};
     m_detail = detail;
     const Vec3 eye = camera.position();
+    const int blinkClock = world.blinkClock();
     for (const auto& car : world.cars()) {
         const Mat34* physical = physicalTransform ? physicalTransform(car.id) : nullptr;
         const Mat34& transform = physical ? *physical : car.transform;
@@ -245,6 +246,10 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             pose.wheelSpin[i] = -car.tireRotation; // rolling forward (-Z) spins about -X
         pose.brakeLights = car.braking;
         pose.headlights = lights;
+        // aiVehicleInstance::DrawGlow: the indicators the AI set (+0x1a),
+        // blinking with the car's own phase.
+        if (ai::World::indicatorsOn(car, blinkClock))
+            pose.indicators = static_cast<int>(car.signal);
         r->draw(pose, camera.transform);
         ++m_stats.cars;
     }

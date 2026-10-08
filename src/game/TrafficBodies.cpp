@@ -523,6 +523,20 @@ void TrafficBodies::drop(Active& active) {
     active.rail = nullptr;
 }
 
+void TrafficBodies::reset() {
+    // aiVehicleManager::Reset: Detach for each attached active, the count to
+    // 0, then aiVehicleActive::Reset (empty) for all 32.
+    for (int i = 0; i < m_count; ++i)
+        detach(*m_order[static_cast<std::size_t>(i)]);
+    m_count = 0;
+    for (auto& r : m_railCars) {
+        if (!r)
+            continue;
+        r->held = false;
+        r->lost = false;
+    }
+}
+
 void TrafficBodies::beforeStep() {
     const auto& cars = m_ai.cars();
     const auto find = [&](int id) -> const ai::AmbientCar* {

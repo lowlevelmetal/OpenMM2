@@ -34,6 +34,9 @@ struct VehiclePose {
     bool brakeLights = false;
     // Reverse gear: reversing lights.
     bool reverseLights = false;
+    // Traffic indicators lit this frame (aiVehicleInstance::DrawGlow): bit 1
+    // the SLIGHT0 part, bit 2 SLIGHT1 (both: hazards).
+    int indicators = 0;
     // Police lights (vehSiren) on, and how far their beams have turned
     // (radians; vehSiren::Update turns them 2.5 pi per second while on).
     bool siren = false;

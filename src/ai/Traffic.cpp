@@ -79,7 +79,8 @@ PlayerCar PlayerCar::at(const Vec3& pos, const Vec3& vel) {
 
 Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
                  const TrafficSettings& settings, std::uint64_t seed)
-    : m_net(network), m_lights(lights), m_types(std::move(types)), m_settings(settings), m_rng(seed) {
+    : m_net(network), m_lights(lights), m_types(std::move(types)), m_settings(settings), m_seed(seed),
+      m_rng(seed) {
     if (m_types.empty()) {
         VehicleData d;
         d.model = "va_sedans_s";
@@ -97,11 +98,21 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
         c.laneRandomness = std::sin(m_rng.frand() * 6.2831f) * 0.5f;
         c.totReactTicks = 8 - static_cast<int>(m_rng.frand() * -17.0f);
     }
-    // Then per car: its type, aiVehicleAmbient::Init (aiVehicleInstance::
-    // SetColor, aiGoalRandomDrive ctor).
+    // Then per car: its type, aiVehicleAmbient::Init: aiVehicleSpline::Init
+    // builds the aiVehicleInstance, whose ctor keeps an arbitrary number
+    // (lvlInstance +0x18, the indicators' blink phase) and draws a paint job
+    // (SetColor); Init then calls SetColor again, so the second draw is the
+    // car's paint; then the aiGoalRandomDrive ctor.
     float exceedCounter = 0.0f;
     for (auto& c : m_cars) {
         c.type = pickType();
+        // MM2's number is irand(int), a stateless LCG step, of the instance's
+        // own address (no draw from the shared seed). OpenMM2 takes the same
+        // step of the car's index scaled by the instance size, a stable
+        // stand-in for its address (inferred).
+        const auto index = static_cast<std::uint32_t>(&c - m_cars.data());
+        c.blinkPhase = static_cast<int>(((index * 0x40u) * 214013u + 2531011u) >> 16 & 0x7FFFu);
+        (void)m_rng.frand(); // aiVehicleInstance ctor's SetColor, overwritten below
         c.paint = m_rng.frand();
         c.exceedLimit = exceedCounter + exceedCounter;
         exceedCounter -= 1.0f;
@@ -484,7 +495,6 @@ void Traffic::returnToPool(int car) {
     c.active = false;
     c.physical = false;
     c.speed = 0.0f;
-    c.signal = TurnSignal::None;
     m_pool.push_back(car);
 }
 
@@ -526,21 +536,37 @@ bool Traffic::placeCar(int slot, int path, int dir, int lane, float dist) {
         if (o.dist2(at) < sq(kAmbientOpponentClearance))
             return true;
     m_pool.pop_back();
-    // aiVehicleAmbient::Reset.
+    // aiVehicleAmbient::Reset: aiVehicleSpline::Reset (speed, tyre
+    // rotation, reaction ticks, the obstacle map state), then each goal's
+    // Init (aiGoalRandomDrive::Init: acceleration and target speed 0, no
+    // lane change or stop sign pending; aiGoalRegainRail::Init: one regain
+    // attempt, its start point at the origin, base 0 and length 30;
+    // aiGoalAvoidPlayer::Init: its heading and offsets 0).
     c.active = true;
     c.mapId = c.mapType = c.mapVert = -1;
     c.mapRoom = 0;
+    c.mapSide = 0;
     c.physical = false;
     c.goal = AmbientGoal::RandomDrive;
     c.goalTicks = 0;
     c.speed = 0.0f;
     c.accel = 0.0f;
     c.target = 0.0f;
+    c.tireRotation = 0.0f;
     c.laneChangeOk = false;
     c.atStopSign = false;
     c.enterInt = false;
     c.curReactTicks = c.totReactTicks;
-    c.signal = TurnSignal::None;
+    c.regainAttempts = 1;
+    c.regainStart = {};
+    c.regainBase = 0.0f;
+    c.regainLength = kRegainDistance;
+    c.heading = 0.0f;
+    c.passOffset = 0.0f;
+    c.centred = false;
+    // (The indicators, aiVehicleInstance +0x1a, are left as they were: only
+    // SolveVelocity, ChangeLanes and the end of a turn or lane change in
+    // SolveRailType, aiGoalCollision::Reset and the end of a regain set them.)
     c.horn = false;
     c.fitted = false;
     c.transform = Mat34::identity();
@@ -648,6 +674,58 @@ int Traffic::poolFree() const {
     return static_cast<int>(m_pool.size());
 }
 
+void Traffic::reset() {
+    // aiMap::Reset: ResetRandomSeed first (OpenMM2: this stream's own seed).
+    m_rng.seed(static_cast<std::uint32_t>(m_seed));
+    // aiPath::Reset: the lane lists, the section obstacle lists
+    // (ResetObstacles), the populated flag and list link, the always
+    // stop / go flags.
+    for (auto& q : m_queues)
+        q.clear();
+    for (auto& path : m_roadObstacles)
+        for (auto& side : path)
+            for (auto& list : side)
+                list.clear();
+    std::ranges::fill(m_pathActive, 0);
+    std::ranges::fill(m_alwaysStop, 0);
+    m_activePaths.clear();
+    // aiIntersection::Reset: the stop sign lists and the vehicle list.
+    for (auto& list : m_stopWaiting)
+        list.clear();
+    for (auto& list : m_stopAllowed)
+        list.clear();
+    for (auto& list : m_nodeObstacles)
+        list.clear();
+    // Every car back into the pool (aiMap::AddAmbient, in index order: the
+    // last one is taken first) with its rail reset (aiRailSet::Reset: no
+    // road, distances 0, the reaction distance 25 m).
+    m_pool.clear();
+    for (std::size_t i = 0; i < m_cars.size(); ++i) {
+        Car& c = m_cars[i];
+        c.active = false;
+        c.physical = false;
+        c.mapType = c.mapId = c.mapVert = -1;
+        c.speed = 0.0f;
+        c.accel = 0.0f;
+        c.target = 0.0f;
+        c.horn = false;
+        c.path = c.nextPath = -1;
+        c.lane = c.drawLane = c.nextLane = 0;
+        c.rail = Rail::Lane;
+        c.section = 0;
+        c.roadDist = c.laneChangeDist = c.segDist = c.segLen = 0.0f;
+        c.enterInt = false;
+        c.reactDist = kIntersectionReactDist;
+        m_pool.push_back(static_cast<int>(i));
+    }
+    // The next step populates the roads round the player's room
+    // (aiMap::Reset's AdjustAmbients from room 0).
+    m_started = false;
+    m_room = 0;
+    m_avoidEvents.clear();
+    publish();
+}
+
 // --- aiGoalRandomDrive ------------------------------------------------------
 
 bool Traffic::chooseNext(Car& c) {
@@ -733,7 +811,6 @@ float Traffic::distanceToVehicle(const Car& a, const Car& b) const {
 void Traffic::resetRandomDrive(Car& c) {
     c.atStopSign = false;
     c.enterInt = false;
-    c.signal = TurnSignal::None;
     const Lane* lane = laneOf(c.path, c.dir, c.lane);
     if (!lane || lane->line.points.size() < 2)
         return;
@@ -2228,8 +2305,11 @@ void Traffic::publish() {
         a.speed = c.speed;
         a.velocity = -c.transform.m2 * c.speed;
         a.tireRotation = c.tireRotation;
-        a.braking = c.accel < -0.5f || (c.speed < 0.5f && c.target == 0.0f);
+        // aiVehicleInstance::DrawGlow: the tail lights while decelerating or
+        // standing.
+        a.braking = c.accel < 0.0f || c.speed == 0.0f;
         a.signal = c.signal;
+        a.blinkPhase = c.blinkPhase;
         a.horn = c.horn;
         a.goal = c.goal;
         a.physical = c.physical;

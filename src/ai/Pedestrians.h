@@ -106,6 +106,15 @@ public:
 
     // One update; `room` is the player's PSDL room (0: outside, no change).
     void step(float dt, const PlayerCar& player, int room);
+    // aiMap::Reset's pedestrian part (mmGame::Init after the AI map loads,
+    // and mmGame::Reset when a race restarts): the random seed back to its
+    // start (ResetRandomSeed), every road's list and populated flag cleared
+    // (aiPath::Reset), the intersections' prop lists emptied
+    // (aiIntersection::Reset clears what AddBangersToObsMap listed at load,
+    // so pedestrians never see an intersection's props in play), every
+    // pedestrian reset and back in the pool in index order. The next step
+    // populates the roads round the player's room.
+    void reset();
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
     std::size_t activeCount() const;
@@ -240,6 +249,7 @@ private:
     std::vector<PedTypeInfo> m_types;
     std::vector<Seqs> m_seqs;
     PedSettings m_settings;
+    std::uint64_t m_seed = 1; // ResetRandomSeed's value for this stream
     Random m_rng;
     std::vector<Ped> m_peds;
     int m_poolHead = -1;                // aiMap +0x88
