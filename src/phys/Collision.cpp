@@ -19,11 +19,11 @@ Vec3 getRelDisp(const Mat34& ref, const Mat34& m, const Mat34& last, const Vec3&
     const float dx = m.m3.x - last.m3.x;
     const float dy = m.m3.y - last.m3.y;
     const float dz = m.m3.z - last.m3.z;
-    const float lx = m.m0.x * dx + dz * m.m0.z + m.m0.y * dy;
-    const float ly = m.m1.x * dx + dz * m.m1.z + m.m1.y * dy;
-    const float lz = m.m2.x * dx + dz * m.m2.z + m.m2.y * dy;
-    Vec3 out{lx * ref.m0.x + ly * ref.m1.x + lz * ref.m2.x, ly * ref.m1.y + lx * ref.m0.y + lz * ref.m2.y,
-             ly * ref.m1.z + lx * ref.m0.z + lz * ref.m2.z};
+    const float lx = (m.m0.y * dy + dz * m.m0.z) + m.m0.x * dx;
+    const float ly = (m.m1.y * dy + dz * m.m1.z) + m.m1.x * dx;
+    const float lz = (m.m2.y * dy + dz * m.m2.z) + m.m2.x * dx;
+    Vec3 out{(lz * ref.m2.x + ly * ref.m1.x) + lx * ref.m0.x, (lz * ref.m2.y + lx * ref.m0.y) + ly * ref.m1.y,
+             (lz * ref.m2.z + lx * ref.m0.z) + ly * ref.m1.z};
     out = {relPos.x + out.x, relPos.y + out.y, relPos.z + out.z};
     return out;
 }
@@ -97,12 +97,12 @@ int testBoundGeneric(const Bound& a, Collider& ca, const Bound& b, Collider& cb,
             // Both vectors go into the terrain's space.
             const Vec3 d{(lastB.m3.x - ma.m3.x) + neg.x, (lastB.m3.y - ma.m3.y) + neg.y,
                          (lastB.m3.z - ma.m3.z) + neg.z};
-            const Vec3 localPos{neg.x * mb.m0.x + neg.y * mb.m0.y + neg.z * mb.m0.z,
-                                neg.y * mb.m1.y + neg.z * mb.m1.z + neg.x * mb.m1.x,
-                                neg.y * mb.m2.y + neg.z * mb.m2.z + neg.x * mb.m2.x};
-            const Vec3 localDisp{d.x * mb.m0.x + d.y * mb.m0.y + d.z * mb.m0.z,
-                                 d.x * mb.m1.x + d.y * mb.m1.y + d.z * mb.m1.z,
-                                 d.x * mb.m2.x + d.y * mb.m2.y + d.z * mb.m2.z};
+            const Vec3 localPos{(neg.z * mb.m0.z + neg.y * mb.m0.y) + neg.x * mb.m0.x,
+                                (neg.x * mb.m1.x + neg.z * mb.m1.z) + neg.y * mb.m1.y,
+                                (neg.x * mb.m2.x + neg.z * mb.m2.z) + neg.y * mb.m2.y};
+            const Vec3 localDisp{(d.z * mb.m0.z + d.y * mb.m0.y) + d.x * mb.m0.x,
+                                 (d.z * mb.m1.z + d.y * mb.m1.y) + d.x * mb.m1.x,
+                                 (d.z * mb.m2.z + d.y * mb.m2.y) + d.x * mb.m2.x};
             return findImpactsSphereToTerrain(static_cast<const BoundTerrain&>(b), sa, ma, mb, &ca, &cb, impacts,
                                               maxImpacts, localPos, localDisp);
         }
