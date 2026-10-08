@@ -30,11 +30,16 @@ struct Settings {
     bool commentary = true;   // flag 0x400
     bool music = false;       // flag 0x4: interactive music
     bool citySounds = true;   // flag 0x800: city ambience
-    bool stereo = true;       // STEREO FX: Mono / Stereo (flag 0x40); stored only
-    // SOUND QUALITY 0 Low, 1 Medium, 2 High. MM2 chooses 8/16/32 voices;
-    // OpenMM2 approximates it with the 11 kHz (Low) or 22 kHz sounds.
+    // STEREO FX 0 Mono, 1 Stereo, 2 Surround (AudioOptions::SetStereoFX:
+    // flags 0x40 and 0x100); stored only.
+    int stereoFx = 1;
+    // SOUND QUALITY 0 Low, 1 Medium, 2 High: MM2's channel count 8/16/32
+    // (AudioOptions::SetQuality). Stored only: OpenMM2's mixer has no
+    // channel limit to set (open).
     int soundQuality = 2;
-    bool audioHighQuality = true; // 22 kHz sounds; derived from soundQuality >= 1
+    // MM2 always plays the 22 kHz sounds (InitAudioManager sets aud22 and
+    // .22k whatever the quality), so this stays true.
+    bool audioHighQuality = true;
     float balance = 0.0f;         // BALANCE, -1 (left) .. 1 (right)
 
     // [Network]

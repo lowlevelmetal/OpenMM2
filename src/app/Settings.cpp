@@ -30,11 +30,13 @@ void Settings::load(const std::filesystem::path& path) {
     citySounds = ini.getBool("Audio", "CitySounds", citySounds);
     if (music && citySounds)
         citySounds = false; // MM2's toggles are exclusive (AudioOptions::ToggleMusic)
-    stereo = ini.getBool("Audio", "Stereo", stereo);
+    // Files from before the three-way option only have Stereo.
+    const long long oldStereo = ini.getBool("Audio", "Stereo", true) ? 1 : 0;
+    stereoFx = static_cast<int>(std::clamp<long long>(ini.getInt("Audio", "StereoFx", oldStereo), 0, 2));
     // Files from before the three-step option only have HighQuality.
     const bool high = ini.getBool("Audio", "HighQuality", true);
     soundQuality = static_cast<int>(std::clamp<long long>(ini.getInt("Audio", "Quality", high ? 2 : 0), 0, 2));
-    audioHighQuality = soundQuality >= 1;
+    audioHighQuality = true; // the quality never selects the 11 kHz sounds
     balance = std::clamp(static_cast<float>(ini.getDouble("Audio", "Pan", balance)), -1.0f, 1.0f);
     playerName = ini.getString("Network", "PlayerName", playerName);
     port = static_cast<int>(std::clamp<long long>(ini.getInt("Network", "Port", port), 0, 65535));
@@ -50,14 +52,14 @@ bool Settings::save(const std::filesystem::path& path) {
     ini.setDouble("Audio", "Ambient", ambientVolume);
     ini.setDouble("Audio", "Voice", voiceVolume);
     ini.setDouble("Audio", "Music", musicVolume);
-    audioHighQuality = soundQuality >= 1;
-    ini.setBool("Audio", "HighQuality", audioHighQuality);
+    ini.remove("Audio", "HighQuality"); // superseded by Quality
     ini.setInt("Audio", "Quality", soundQuality);
     ini.setBool("Audio", "SoundEffects", soundEffects);
     ini.setBool("Audio", "Commentary", commentary);
     ini.setBool("Audio", "MusicOn", music);
     ini.setBool("Audio", "CitySounds", citySounds);
-    ini.setBool("Audio", "Stereo", stereo);
+    ini.setInt("Audio", "StereoFx", stereoFx);
+    ini.remove("Audio", "Stereo"); // superseded by StereoFx
     ini.setDouble("Audio", "Pan", balance);
     ini.remove("Audio", "Balance"); // 0..1 balance of earlier versions
     ini.set("Network", "PlayerName", playerName);
