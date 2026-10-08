@@ -94,25 +94,9 @@ public:
                 return;
     }
 
-    // datAsciiTokenizer::GetFloat: a token that does not start with a digit,
-    // '-' or '.' is an error and reads as 0.
-    float getFloat() {
-        const Token t = getToken(kNumberBuffer);
-        const char c = t.text.empty() ? '\0' : t.text[0];
-        if (!((c >= '0' && c <= '9') || c == '-' || c == '.'))
-            return 0.0f;
-        return static_cast<float>(cAtof(t.text));
-    }
-
-    // datAsciiTokenizer::GetInt: a token that does not start with a digit or
-    // '-' is an error and reads as 0.
-    int getInt() {
-        const Token t = getToken(kNumberBuffer);
-        const char c = t.text.empty() ? '\0' : t.text[0];
-        if (!((c >= '0' && c <= '9') || c == '-'))
-            return 0;
-        return cAtoi(t.text);
-    }
+    // datAsciiTokenizer::GetFloat / GetInt (datTokenFloat, datTokenInt).
+    float getFloat() { return datTokenFloat(getToken(kNumberBuffer).text); }
+    int getInt() { return datTokenInt(getToken(kNumberBuffer).text); }
 
     int line() const { return m_line; }
 

@@ -135,9 +135,11 @@ public:
     // cityLevel::GetNeighbors: up to `max` rooms across `room`'s perimeter,
     // each once, in perimeter order (none by default).
     virtual int neighbors(int* /*out*/, int /*max*/, int /*room*/) const { return 0; }
-    // The room's flag byte (lvlSDL's room flags: 0x40 warp, 0x80 instance
-    // room).
+    // The room's flag byte (lvlSDL's room flags: 0x80 instance room).
     virtual int roomFlags(int /*room*/) const { return 0; }
+    // The room's lvlRoomInfo flags (city::LevelRoomFlag: 0x40 a warp room
+    // whose wheel probes also test the instances of its paired room).
+    virtual int roomInfoFlags(int /*room*/) const { return 0; }
     // sdlPage16::CollideSegment's collection of one room for a wheel probe
     // (sdlPage16::Collect in batches of 256 until the room is done, into
     // `out`, cleared first): lvlSDL::CollideProbe marks the room it probes,

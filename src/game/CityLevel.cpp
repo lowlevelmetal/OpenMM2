@@ -11,10 +11,11 @@
 #include "city/SdlCollect.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdlib>
+#include <cstdint>
 
 namespace mm2::game {
 namespace {
@@ -57,9 +58,17 @@ float rowLength(const Vec3& v) {
     return std::sqrt(v.z * v.z + v.y * v.y + v.x * v.x);
 }
 
-// lvlInstance::GetRadius: the geometry set's radius (lvlInstance::GetGeomSet),
-// the largest distance of a vertex of the model's levels of detail from its
-// origin. Null without a model.
+// lvlInstance::GetRadius: the geometry set's radius. lvlFixedAny::Init takes
+// the largest of its entries' radii (lvlInstance::GetGeomSet: the farthest
+// vertex of any level of detail from the origin, modGetStatic) for the model
+// itself and its "mask", "nonrandom", "refl" and "opaque" parts, not its
+// shadow. Null without a model. (No retail collidable city model has any of
+// those parts.)
+bool radiusPart(std::string_view part) {
+    return part.empty() || str::iequals(part, "mask") || str::iequals(part, "nonrandom") ||
+           str::iequals(part, "refl") || str::iequals(part, "opaque");
+}
+
 float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
     const auto bytes = vfs.readAll("geometry/" + str::lower(name) + ".pkg");
     if (!bytes)
@@ -67,27 +76,19 @@ float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
     const auto pkg = asset::parsePkg(*bytes);
     if (!pkg)
         return 0.0f;
-    float radius2 = 0.0f;
-    for (const auto& mesh : pkg->meshes) {
-        if (!mesh.part.empty())
-            continue;
-        for (const auto& section : mesh.sections)
-            for (const auto& packet : section.packets)
-                for (const auto& v : packet.vertices) {
-                    const float d2 = v.position.z * v.position.z + v.position.y * v.position.y +
-                                     v.position.x * v.position.x;
-                    if (radius2 < d2)
-                        radius2 = d2;
-                }
-    }
-    return std::sqrt(radius2);
+    float radius = 0.0f;
+    for (const auto& mesh : pkg->meshes)
+        if (radiusPart(mesh.part))
+            radius = std::max(radius, mesh.radius());
+    return radius;
 }
 
 // The distance of the farther corner of a bound's box from its origin
-// (InitBoundTerrainLocal raises the geometry set's radius to it).
+// (InitBoundTerrainLocal raises the geometry set's radius to it), each
+// corner's squared length summed (x*x + y*y) + z*z as the code does.
 float boxCornerRadius(const phys::Bound& b) {
-    float r2 = b.boxMax.z * b.boxMax.z + b.boxMax.y * b.boxMax.y + b.boxMax.x * b.boxMax.x;
-    const float min2 = b.boxMin.z * b.boxMin.z + b.boxMin.y * b.boxMin.y + b.boxMin.x * b.boxMin.x;
+    float r2 = (b.boxMax.x * b.boxMax.x + b.boxMax.y * b.boxMax.y) + b.boxMax.z * b.boxMax.z;
+    const float min2 = (b.boxMin.x * b.boxMin.x + b.boxMin.y * b.boxMin.y) + b.boxMin.z * b.boxMin.z;
     if (r2 < min2)
         r2 = min2;
     return std::sqrt(r2);
@@ -173,7 +174,8 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
             pm.elasticity = m.elasticity;
             pm.friction = m.friction;
             pm.effect = m.effect;
-            pm.sound = str::istartsWith(m.sound, "none") ? 0 : std::atoi(m.sound.c_str());
+            pm.sound =
+                str::istartsWith(m.sound, "none") ? 0 : static_cast<std::int16_t>(data::cAtoi(m.sound));
             pm.width = 1.0f;
             if (managerIndex(m.name) < 0)
                 m_manager.push_back(pm);
@@ -418,12 +420,10 @@ void CityLevel::removeSource(const InstanceSource* source) {
 }
 
 int CityLevel::findRoom(const Vec3& position, int hint) const {
-    // cityLevel::FindRoomId tries the room it was in, its neighbours, then
-    // the whole city (FullProbe). OpenMM2's RoomLocator answers the last;
-    // off every room the body keeps its last room (OpenMM2: MM2 moves it
-    // to room 0, where it collides with nothing).
-    const int room = m_locator.find(position, hint);
-    return room != 0 ? room : hint;
+    // cityLevel::FindRoomId (RoomLocator): the hint room, its neighbours,
+    // then the whole city (FullProbe); 0 off every room, where a body
+    // collides with no level geometry.
+    return m_locator.find(position, hint);
 }
 
 int CityLevel::neighbors(int* out, int max, int room) const {
@@ -539,6 +539,12 @@ int CityLevel::roomFlags(int room) const {
     if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size())
         return 0;
     return m_city.psdl.rooms[static_cast<std::size_t>(room)].flags;
+}
+
+int CityLevel::roomInfoFlags(int room) const {
+    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.levelRoomFlags.size())
+        return 0;
+    return m_city.levelRoomFlags[static_cast<std::size_t>(room)];
 }
 
 void CityLevel::collectProbe(int room, const Vec3& centre, float radius, phys::LevelBound& out) const {

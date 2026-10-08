@@ -1,10 +1,12 @@
 # Parity audit: ai-ambient-city
 
-Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
+Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07; second
+pass (the other areas' changes to the city code, room flags, props, numbers)
+on 2026-10-08.
 
-Summary: 227 functions (named entries in the tables; a few constructors
-appear in several rows by aspect); verified 118, fixed 50, deviation 13,
-inferred 22, open 12, openmm2 12.
+Summary: 236 functions (named entries in the tables; a few constructors
+appear in several rows by aspect); verified 116, fixed 61, deviation 13,
+inferred 22, open 4, openmm2 20.
 
 ## Random (`src/ai/Random.h`)
 
@@ -47,10 +49,14 @@ inferred 22, open 12, openmm2 12.
 | `forwardCollision` | `aiPedestrian::DetectPlayerForwardCollision` | verified | Reverse gear (gear 0) flips the axes; neutral counts as forward; quarter length to 20 m, half width + 2 m. |
 | `anticipateCollision` | `aiPedestrian::DetectPlayerAnticipate` | verified | Up to 35 m, half width + 4 m along -m0 whatever the gear. |
 | `playerCollision` | `aiPedestrian::DetectPlayerCollision` | fixed | Uses the matrix of the last update (was the current heading). |
-| `wallProbe` | the probe in `Anticipate` / `Avoid` | verified | 2 m road side to 10 m building side, 1 m up. |
+| `wallProbe` | the probe in `Anticipate` / `Avoid` | fixed | 2 m road side to 10 m building side, 1 m up, verified. MM2 probes with dgPhysManager::Collide and the wheels' mask (lvlSDL::CollideProbe's polygons and the objects flagged 0x20); RaceScreen now gives the pedestrians `World::wheelProbe` (was the render-mesh soup). MM2 keeps a segment cache per pedestrian starting from its room; each OpenMM2 probe finds its rooms afresh (deviation, same rooms). |
 | `backupAt` | `aiPedestrian::Anticipate` | verified | Side-signed 0.2 m offset and heading. |
+| `setObstacles` | `aiPath::AddBangersToObsMap`, `aiIntersection::AddBangersToObsMap`, `aiPath::AddBanger`, `aiIntersection::AddBanger`, `aiBanger::aiBanger`, `aiPath::CenterLength` | fixed | New. Per section 1..n-1 of each regular road, the props of the road's rooms (each room's instances newest first, lvlLevel::MoveToRoom) that lie along it from the section's centre point back along its z axis (0 < along < the centre-line length to the point before) and are not drivable (CollisionType 0x20), on side -1 when on the x axis side; per intersection the props of its room with a break threshold above 7.5e7; each list newest first. Built from the props the race placed (RaceScreen passes BangerSet's; inferred: the race props are placed before the AI map loads). |
+| `isBlockingTarget` | `aiBanger::IsBlockingTarget`, `Radius`, `Position` | fixed | New. Ground origin = CG frame less the data CG offset; unit 3D way, XZ lateral and along, flat distance to the target; in the way when -r < lateral < r with r = min(YRadius, 2) + width x 0.5 + 1, 0 < along < distance + reach, and atan2(lateral, along) within 0.7 rad; operation order from the asm. |
+| `detectBangerCollision` | `aiPedestrian::DetectBangerCollision` | fixed | New. The current section's list by side (on a corner the list of the intersection the direction leads to), else the next section's (past either end the intersection's, beyond the road nothing); the first prop in the way wins, not the nearest. |
+| `avoidBanger` | `aiPedestrian::AvoidBanger` | fixed | New. AvoidObstacle round the prop's centre (GetPosition) at YRadius + 1 while it stands (lvlInstance flag 1), else the model's radius + 1 (a knocked-over prop keeps its place in the lists); STAND queues STAND_WALK. |
 | `avoidObstacle` | `aiPedestrian::AvoidObstacle` | fixed | Side choice and the in-place turn (GetHeading row 0 at the kept distance, offset direction kept) verified. Now: the target is stored; the corner turn-back moves the pedestrian between road lists; MM2 parks the old previous side (an int) in the radius slot and loads it as a float, so +1 aims at the obstacle itself (denormal offset) and -1 makes a NaN that takes heading and position (OpenMM2 hides that pedestrian until its road is cleared, `lost`); angle summed z, y, x. |
-| `wander` | `aiPedestrian::Wander`, `AvoidPlayer` | fixed | Entry queues, wall reset, 6 m player check, STAND_WALK queueing and the walk verified; keeps the road distance. Props are not avoided (see Missing). |
+| `wander` | `aiPedestrian::Wander`, `AvoidPlayer` | fixed | Entry queues, wall reset, 6 m player check, STAND_WALK queueing and the walk verified; keeps the road distance. Now also asks DetectBangerCollision and picks between the prop and the player car as MM2 does (the prop when strictly nearer; equal distances walk on). |
 | `anticipate` | `aiPedestrian::Anticipate` | fixed | MM2 reacts to a change of reaction only and leaves the crossing state's "last" alone (OpenMM2 also compared/updated the crossing state); turning to run with the car turns round by +3.14 or -3.14 by the heading's sign (was always +3.14) after GetHeading row 0. |
 | `avoid` | `aiPedestrian::Avoid` | fixed | Reaction-only entry as above; running at a wall backs up with the unsigned axis (as coded; OpenMM2 used Anticipate's side-signed version); on a corner MM2 neither probes nor clears the wall flag. Dive choice, keep-up scales (5 at the ground dives, 3 after frame 12) and sums verified. |
 | `curbPoint`, `crossTargets` | `PreCrossStreet`, `WaitCrossStreet` targets | verified | Near/far curb points 2.5 m into the intersection by the crossing choice and the previous direction/side. |
@@ -63,7 +69,7 @@ inferred 22, open 12, openmm2 12.
 | `animate` | `pedAnimationInstance::PreUpdate`, `Update` | fixed | One frame clock shared by all pedestrian updates: each adds dt x 30 and takes the whole frames, the fraction carries to the next pedestrian (OpenMM2 rounded dt x 30 per update). |
 | `updateRoad` | `aiPath::UpdatePedestrians` | fixed | New: down the road's list from its head; a pedestrian that moves road carries the walk into its new road's list (those update now, the rest of the old road waits), stopping at the road's head. A step cap is an OpenMM2 guard. |
 | `step` | `aiMap::Update`, `aiMap::Reset` | fixed | First room at the start, room changes other than to 0 adjust; now updates the populated roads in MM2's list order (newest first) instead of path index order. |
-| `publish`, `activeCount`, `distanceFromSidewalk` | — | openmm2 | Output for the renderer, audio and tests. |
+| `publish`, `activeCount`, `distanceFromSidewalk` | — | openmm2 | Output for the renderer, audio and tests. `placed` reports aiPedestrian::Reset's AudCreatureContainer::Reset (the voice's 3D slot goes; PedestrianAudio now honours it), `scream` the four PlayAvoidanceReaction calls (Wander's back-up end, Avoid's two dives and run). |
 
 ## Ambient routing (`src/ai/AmbientRoute.{h,cpp}`)
 
@@ -135,16 +141,16 @@ inferred 22, open 12, openmm2 12.
 | `SdlPolyBuffer::reset` | the resets in `lvlSDL::CollidePolyToLevel` / `CollideProbe` | verified | |
 | `sdlTextureMaterials` | `lvlSDL::LoadBinary` (materials.csv) | verified | Header skipped, "none" skipped, first row wins, movie "-0nnn" suffix stripped. |
 | `sdlMaterialIndex` | `lvlMaterialMgr::Load` order | verified | |
-| `buildRoomMesh` / `RoomBuilder::roadStrip` | `sdlPage16::Draw` case 0 | open | MM2 draws four levels of detail (outer-to-outer strip with the LOD texture over every other section; the same with outer edges lowered 0.15 m; sidewalks and road separately; and only at the top level the curb raised 0.15 m with half-bright curb faces) and maps the road with `ArcMap` (t 1 at the curbs, 0 at the centre; s along the strip in whole repeats of about the average width, run back and forth); the builder has one level, curbs raised to the outer height, and u across / v along / width. Porting `sdlPage16::Draw` (immediate mode with vertex colours from `GetShadedColor`) needs LOD and colour support in the renderer (rendering-fx). |
-| `RoomBuilder::sidewalkStrip` | `sdlPage16::Draw` case 8 | open | MM2: planar 4 m repeats (x / 4, z / 4 less the whole repeats at the first vertex), curb end caps as half-bright triangles, curb faces half-bright, curb rise only at the top level. |
-| `RoomBuilder::rectStrip` | `sdlPage16::Draw` case 0x10 | open | MM2: `ArcMap` s along, t 0/1 across, first texture. |
-| `RoomBuilder::sliver` | `sdlPage16::Draw` case 0x18 | open | MM2: u = round(flat length x density), v = (vertex height - top) x density, back-face culled, shaded by the light index of the last FacadeBound; an untextured flat-colour path at level 0. |
-| `RoomBuilder::crosswalk` | `sdlPage16::Draw` case 0x20 | open | MM2: (1,0)/(0,0) on the first pair, v = length / width on the second, third texture, drawn only when not above the camera; the 1 cm lift is OpenMM2's (z-fighting). |
+| `buildRoomMesh` / `RoomBuilder::roadStrip` | `sdlPage16::Draw` case 0 | openmm2 | No longer MM2's drawing path: `sdlPage16::Draw` is ported in `city::buildSdlRoomDraw` (SdlDraw, rendering-fx), which CityRenderer draws. The builder (one level, curbs raised to the outer height, u across / v along) remains for the tunnels, the static probe soup (`World::probe`) and mm2tool. |
+| `RoomBuilder::sidewalkStrip` | `sdlPage16::Draw` case 8 | openmm2 | Superseded for drawing by SdlDraw (see the first builder row); the differences from MM2 noted here remain in the builder: MM2: planar 4 m repeats (x / 4, z / 4 less the whole repeats at the first vertex), curb end caps as half-bright triangles, curb faces half-bright, curb rise only at the top level. |
+| `RoomBuilder::rectStrip` | `sdlPage16::Draw` case 0x10 | openmm2 | Superseded for drawing by SdlDraw (see the first builder row); the differences from MM2 noted here remain in the builder: MM2: `ArcMap` s along, t 0/1 across, first texture. |
+| `RoomBuilder::sliver` | `sdlPage16::Draw` case 0x18 | openmm2 | Superseded for drawing by SdlDraw (see the first builder row); the differences from MM2 noted here remain in the builder: MM2: u = round(flat length x density), v = (vertex height - top) x density, back-face culled, shaded by the light index of the last FacadeBound; an untextured flat-colour path at level 0. |
+| `RoomBuilder::crosswalk` | `sdlPage16::Draw` case 0x20 | openmm2 | Superseded for drawing by SdlDraw (see the first builder row); the differences from MM2 noted here remain in the builder: MM2: (1,0)/(0,0) on the first pair, v = length / width on the second, third texture, drawn only when not above the camera; the 1 cm lift is OpenMM2's (z-fighting). |
 | `RoomBuilder::fan` | `sdlPage16::Draw` cases 0x28, 0x30 | verified | Planar 8 m repeats as MM2 (MM2 subtracts the whole repeats at the hub, which wrap addressing ignores). MM2 skips road fans above the camera (a draw-time cull). |
 | `RoomBuilder::facadeBound` | `sdlPage16::Draw` case 0x38 | deviation | MM2 draws nothing and takes the attribute's first word as the light index for the following walls; OpenMM2 emits the wall only for the probe soup (`includeFacadeBounds`). |
-| `RoomBuilder::dividedStrip` | `sdlPage16::Draw` case 0x40 | open | As road strips (levels of detail, ArcMap), plus the divider's cap flags (header bits 6 and 7) and per-type drawing; the builder's divider shapes are reconstructions. |
-| `RoomBuilder::tunnel`, `tunnelWalls`, `junctionWalls` | `sdlPage16::Draw` case 0x48 | open | MM2 draws tunnel walls, railings (0.333 x h1 out), sloped sides at 0.75 / 0.25 of the height and ceilings with their own mapping; the builder's walls are reconstructions. |
-| `RoomBuilder::facade` | `sdlPage16::Draw` case 0x58 | open | MM2 reads the repeats unsigned (the builder takes the magnitude of the signed value), maps v 0 at the bottom and the repeat at the top (the builder the reverse), culls back faces and shades by the FacadeBound light. |
+| `RoomBuilder::dividedStrip` | `sdlPage16::Draw` case 0x40 | openmm2 | Superseded for drawing by SdlDraw (see the first builder row); the differences from MM2 noted here remain in the builder: As road strips (levels of detail, ArcMap), plus the divider's cap flags (header bits 6 and 7) and per-type drawing; the builder's divider shapes are reconstructions. |
+| `RoomBuilder::tunnel`, `tunnelWalls`, `junctionWalls` | `sdlPage16::Draw` case 0x48 | open | The one attribute SdlDraw does not port; CityRenderer draws tunnels from this builder at every level. MM2 draws tunnel walls, railings (0.333 x h1 out), sloped sides at 0.75 / 0.25 of the height and ceilings with their own mapping; the builder's walls are reconstructions (rendering-fx). |
+| `RoomBuilder::facade` | `sdlPage16::Draw` case 0x58 | openmm2 | Superseded for drawing by SdlDraw (see the first builder row); the differences from MM2 noted here remain in the builder: MM2 reads the repeats unsigned (the builder takes the magnitude of the signed value), maps v 0 at the bottom and the repeat at the top (the builder the reverse), culls back faces and shades by the FacadeBound light. |
 | `RoomBuilder::roof` | `sdlPage16::Draw` case 0x60 | verified | Height-table height, planar 8 m repeats; MM2 skips roofs above the camera (draw-time cull). |
 | `RoomBuilder` helpers (`batch`, `tri`, `triUp`, `triFacing`, `quadUp`, `quadFacing`, `wall`, `cumulative`, `sidewalkBand`, `roadBand`, `tex`), `surfaceKindName`, `CityMesh::triangleCount`, `vertexCount`, `buildCityMesh` | — | inferred | Mesh assembly for the GPU renderer; MM2 draws immediate-mode strips and fans. Texture groups (`tex`: value - 1 + offset) match `sdlPage16::GetTexture`. |
 | `parseCityInfo` | `mmCityInfo::Load` | fixed | Counts read with "%d"; a nonzero count now becomes the number of names (one more than the bars), a zero count leaves the names unread; MustPlace and UnlockGroup (never read by MM2) removed. Key lookup instead of MM2's fixed key order (retail order). |
@@ -165,58 +171,95 @@ inferred 22, open 12, openmm2 12.
 | `parseLighting` | `cityTimeWeatherLighting::FileIO` | verified | Field names and types. (MM2 computes the derived ambient levels before loading the file; see the notes for rendering-fx.) |
 | `parseFogTable` | `lvlSky::AutoInit` (<map>_fog.csv) | fixed | Start and end are atoi in MM2 (were atof); MM2 reads at most 16 rows. |
 | `parseSky` | `lvlSky::AutoInit` (.sky) | verified | "%s %f %f %f" from the first line. |
-| `parseWater` | `cityLevel::Load` (.water) | verified | Height, then room ids (MM2 marks them HasWater). |
+| `parseWater` | `cityLevel::Load` (.water) | verified | Height (`cityLevel::GetWaterLevel` for every room), then room ids, which get lvlRoomInfo flag 4 when 0 < id < room count (see `levelRoomFlags`). MM2 tokenises (GetFloat, then 8-character tokens through atoi); OpenMM2 reads a number per line (retail: one per line). |
 | `parseLightMap` | `cityLevel::Load` (.lmap) | verified | LMP0, count = room count (else MM2 ignores the file). |
-| `parseMaterialLibrary` | `lvlMaterial::Load` | verified | Same keys; MM2 reads them in a fixed order (retail order). |
+| `parseMaterialLibrary` | `lvlMaterial::Load`, `lvlMaterial::lvlMaterial` | fixed | Numbers now as datAsciiTokenizer reads them (GetFloat / GetInt: a token not starting with a digit, '-' or '.' ('-' or a digit for GetInt) is 0, else atof / atoi; the particle indices are shorts); the sound is a plain token, "none" in its first four letters without case 0, else atoi (it was read as a float); a block that ends early keeps the constructor's values (elasticity 0.5, friction 1, width 1, thresholds 0.25 / 0.5; were zeros). MM2 reads the keys in the retail order; any order is OpenMM2 leniency. |
 | `parseTextureMaterials` | `lvlSDL::LoadBinary` | verified | |
 | `parseExtent`, `parseResetPoints` | — | inferred | No loader for .ext or .reset in midtown2.exe; used by tools only. |
 | `listCities` | `mmCityList::LoadAll`, `Load` | inferred | MM2 loads sf.cinfo first, then tune/*.cinfo in enumeration order, keeping the first city per race directory; OpenMM2 sorts by map name and the frontend moves SF first. |
 | `listRaces`, `loadCity` | the per-mode file names | inferred | OpenMM2 glue gathering the files MM2's game modes open. |
 | `detail::Reader` | `Stream::Read` | verified | Little-endian reads; vec3 x, y, z. |
-| `detail::cAtoi`, `cAtof`, `scanInt`, `scanFloat` | `atoi`, `atof`, `sscanf` | fixed | New: C-library prefix parsing for the text formats (strict whole-string parsing rejected trailing text and accepted hex). |
+| `levelRoomFlags`, `LevelRoomFlag`, `CityData::levelRoomFlags` | `cityLevel::Load` (lvlRoomInfo flags), `lvlLevel::LoadInstances` | fixed | New: the game's own room flags, which start at 0 and are not the PSDL's: 0x01 open intersections and roads (read only behind a switch mmGame keeps off), 0x02 and 0x08 PSDL subterranean, 0x04 Water of Death (a first texture attribute whose material is lvlMaterialMgr's second, deepwater, or listed in .water: 23 London rooms, 45 SF), 0x20 rooms of instances with flag 0x100 (.inst and _ai.inst), 0x40 rooms 411, 412, 423, 625 when the name contains "sf". The cameras (mmPlayer::Update), the wheels' warp probe (dgPhysManager::Collide) and the sinking test (vehCar) read these now; they read the PSDL byte before (0x08 is every road room there). gizBridge::Init's 0x10 is set at run time and not built. |
+| `data::cAtoi`, `cAtof`, `atoiPrefix`, `atofPrefix`, `datTokenFloat`, `datTokenInt` (src/data/CNumbers.h) | `atoi`, `atof`, `sscanf`, `datAsciiTokenizer::GetFloat` / `GetInt` | fixed | The city loaders' own prefix parser (`city::detail::cAtoi` and friends, first pass) is gone: Race, Environment, the materials (city and phys) and DatFile now share CNumbers.h, which gained the tokenizer rules from DatFile. |
 
 ## Missing
 
 | MM2 | What it does | Status |
 | --- | --- | --- |
 | `aiPath::ReadShortcut` (city/<map>_sup.bai) | Shortcut roads loaded after the regular ones, linked into the intersections (`AddRoad`, `CreateRoadMap`) and rooms; used by opponent routing (`aiMap::CalcRoute`) and skipped by `GetRoadToRight/Left` | open: the parse is small (same path layout), but routing and the road network belong to ai-vehicles |
-| `aiPedestrian::DetectBangerCollision`, `AvoidBanger` | Pedestrians step round props on the walkway (and at the corner's intersection) using the per-section and per-intersection obstacle lists `aiPath::AddBangersToObsMap` / `aiIntersection::AddBangersToObsMap` build | open: needs those obstacle maps (props are camera-props, the maps ai-vehicles) |
+| `gizBridge::Init`'s room flag 0x10 | The rooms at a bridge and 5 m above it, read by vehCar's skid marks | open: OpenMM2's bridges do not set it (vehicle / camera-props) |
 | `aiPedestrian::DetectPedCollision`, `AvoidPedCollision` | Pedestrian-to-pedestrian avoidance | not needed: DetectPedCollision has no caller, and Wander's call of AvoidPedCollision sits behind a test that is never true |
 | `aiPedestrian::Stop`, `Go` | Queue WALK_STAND / STAND_WALK | not needed: no callers |
 | `aiMap::AddPedPlayer`, `RemPedPlayer` (per-player bits) | Several players sharing populated roads | not needed for one player; the bookkeeping matches MM2 with player 0 |
 | `pedAnimation::DrawSkeleton` (the .rays data) | Stick-figure level of detail for distant pedestrians, drawn from the per-bone widths, offsets and colours in anim/<type>.rays | open for rendering-fx: the AI does not use it |
-| `sdlPage16::Draw` | The textured, shaded, four-level PSDL drawing | open (see CityMesh rows): a port needs LOD and vertex colour support in CityRenderer |
-| `cityLevel::FindRoomId` hint in the camera's room lookup | `CityRenderer::roomAt` passes no hint | open for rendering-fx: pass the last room |
+| `sdlPage16::Draw` case 0x48 | Tunnel walls, railings, slopes and ceilings | open for rendering-fx: SdlDraw ports every other attribute |
+| aiPedestrian's lvlSegmentInfo (+0xb4) | The wall probe's segment cache, starting at the pedestrian's room | deviation: OpenMM2's probe finds the rooms afresh (same result outside warps) |
 
 ## Notes for other areas
 
 - ai-vehicles: `Traffic::accidentAt` should check MM2's per-section lists
   (see `accident`); `RoadNetwork` picks end 0 for a light on a loop road
   where `aiTrafficLightSet` uses end 1; shortcut roads (`_sup.bai`).
-- phys-core / vehicle / rendering-fx: MM2's wheel probes see the Collect
-  polygons, not the render mesh. `lvlSDL::CollideProbe` first retests the
-  wheel's cached polygon (`sdlPolyCached`), then collides the segment
-  (sphere at its midpoint, radius 0.51 x length) with `sdlPage16::CollideSegment`
-  in the start room, the end room and up to ten neighbouring rooms flagged
-  Instance (0x80), with the probe room's SpecialBound flag making road
-  surfaces triangles; the nearest hit's polygon material is reported.
-  OpenMM2's probe soup (`CityLevel`) is built from `CityMesh` (render
-  triangles plus facade bounds) and instance bounds, so the wheels miss the
-  curb faces, the 0.15 m sidewalk rise, divider walls and tops, tunnel
-  walls and railings, the SpecialBound triangles and the deep-water fan skip.
-  `collectRoomPolygons(..., probeRoom)` already implements the MM2 side.
-- rendering-fx: `cityTimeWeatherLighting::ComputeAmbientLightLevels` runs
-  before the .lt file is loaded (the derived levels come from the previous
-  values); `CityRenderer::roomAt` should pass a hint; the .rays stick figure.
-- session: the traffic and pedestrians read the player at its ICS
-  (centre of mass) position as `aiVehiclePlayer::Position` gives it, which
-  `RaceScreen` passes (checked). `aiMap::Update` runs the ambient traffic and
-  the pedestrians *before* the racers and the police and the light sets
-  last; `RaceScreen` runs the opponent and police drivers before
-  `World::update` (lights still last). `PlayerCar::radius` should be the
-  model's bounding radius (`lvlInstance::GetRadius`); it is the box's
-  half-diagonal.
+  `aiPoliceOfficer`'s give-up in deep water reads lvlRoomInfo flag 4
+  (`CityData::levelRoomFlags & city::LevelRoomFlag::WaterOfDeath`), not
+  the PSDL's flag 4 (which marks building blocks).
+- session: `mmGame::RespawnXYZ` rejects intersections by the lvlRoomInfo
+  flags of `FindRoomId(centre, 0)` (0x0A when its fourth argument is set,
+  0x24 always); `randomIntersectionStart` tests the PSDL flags 0x02, 0x04,
+  0x08 and 0x20 of the intersection's room, a different set. The traffic
+  and pedestrians read the player at its ICS (centre of mass) position as
+  `aiVehiclePlayer::Position` gives it, which `RaceScreen` passes
+  (checked). `aiMap::Update` runs the ambient traffic and the pedestrians
+  *before* the racers and the police and the light sets last; `RaceScreen`
+  runs the opponent and police drivers before `World::update` (lights still
+  last). `PlayerCar::radius` should be the model's bounding radius
+  (`lvlInstance::GetRadius`); it is the box's half-diagonal.
+- phys-core: `World::probe` (camera line of sight, traffic ground, spawns)
+  still tests the static soup built from `CityMesh`; MM2's segment probes
+  all go through `dgPhysManager::Collide` / `lvlSDL::CollideProbe` like the
+  wheels (`wheelProbe`, which the pedestrians now use).
+  `dgPhysManager::CollideTerrain`'s skip of the mover's own room for
+  lvlRoomInfo flag 1 sits behind a switch mmGame sets to 0, so it needs no
+  port.
+- vehicle: vehCar's skid-mark texture test reads lvlRoomInfo 0x10, which
+  only `gizBridge::Init` sets (not built). `PlayerVehicle`'s
+  `geomSetRadius` (integration) can use `asset::PkgMesh::radius`, which
+  sums (x*x + y*y) + z*z as modGetStatic does.
+- rendering-fx: when a city lacks a .ltNN file (or it fails to load) MM2
+  keeps the whole previous table (every field, not only the ambient level
+  `ambientBeforeLoad` tracks); retail cities have all sixteen. The .rays
+  stick figure and the tunnel attribute of `sdlPage16::Draw`.
 - Neither the pedestrians nor the lights need a hook for the racers'
   `StopRoadTraffic` (it only holds ambient cars).
-- The C-library number helpers here (`city::detail::cAtoi` and friends)
-  overlap `src/data/CNumbers.h` on integration; they can be merged.
+
+## Second pass (after the merge of every area)
+
+Reviewed what phys-core and rendering-fx added to `CityLevel`, `CityData`
+and `src/city` against `lvlLevel`, `cityLevel`, `lvlSDL` and `sdlPage16`:
+
+- Verified: `CityLevel::neighbors` (cityLevel::GetNeighbors: perimeter
+  order, each once), `collectProbe` and the probe's instance-room rule
+  (lvlSDL::CollideProbe reads the PSDL flags, 0x80, up to ten neighbours),
+  the wheels' 0x20 mask (lvlLevel::LoadInstances: 0x130, 0x110 for a
+  terrain-bound record with 0x400), the multi-room placement
+  (lvlMultiRoomInstance::Create: a stand-in in each room the sphere
+  reaches, from the last, the object itself in room 0), the terrain bound's
+  version 1.1 and polygon count check (phBoundTerrain::Load, compared as
+  floats), the radius raise to the box's farther corner, the ambient light
+  history (`LoadCityTimeWeatherLighting` is the only caller of
+  ComputeAmbientLightLevels) and the `SdlDraw` port's ArcMap, GetCentroid,
+  BACKFACE, the level thresholds, the attribute dispatch and the facade
+  path (its untextured level-0 branch reads a flag nothing sets).
+- Fixed: the game's room flags (`levelRoomFlags`, new; the cameras, the
+  warp probe and the sinking test read the PSDL byte), `findRoom` (0 off
+  every room, as FindRoomId), the radius parts and summation order
+  (`PkgMesh::radius`, shared with ModelLibrary; the box corners too), the
+  pedestrians' props (`setObstacles`, `detectBangerCollision`,
+  `avoidBanger`, new), the pedestrians' wall probe (`wheelProbe`), the
+  material numbers (`parseMaterialLibrary`, `phys::parseMaterials`) and one
+  atoi/atof (`data/CNumbers.h`), and the pedestrian voice reset
+  (`PedestrianAudio` honours aiPedestrian::Reset).
+- The pedestrian audio itself (audio area) matches aiPedestrian's calls:
+  PlayAvoidanceReaction at the end of a back-up in Wander and at Avoid's
+  dives and run, UpdateStatics before the pedestrians, the per-pedestrian
+  update, and now Reset.

@@ -79,6 +79,10 @@ struct PkgMesh {
     std::size_t vertexCount() const;
     std::size_t triangleCount() const;
     Aabb bounds() const;
+    // modGetStatic's radius: the largest distance of a vertex from the
+    // model's origin (lvlInstance::GetGeomSet takes the largest over a
+    // part's levels of detail).
+    float radius() const;
 };
 
 // A material as modShader::Load builds it. Full materials store a

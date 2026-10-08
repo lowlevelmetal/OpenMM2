@@ -420,5 +420,23 @@ TEST(AudioParityWorld, PedestrianVoicesFollowMm2) {
     PedestrianSoundInput man{9, "pedmodel_man", {5, 0, 0}, true};
     peds.update({&man, 1}, listener, 20.0f, 0.02f);
     EXPECT_FALSE(peds.audible(9));
+
+    // A pedestrian put on another road (aiPedestrian::Reset) gives up its
+    // slot at once, mid-scream (AudCreatureContainer::Reset).
+    screamed = false;
+    for (int seed = 1; seed < 40 && !screamed; ++seed) {
+        FixedSeedSource fixed(seed);
+        woman.avoiding = true;
+        peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+        woman.avoiding = false;
+        peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+        screamed = peds.speaking(7);
+    }
+    ASSERT_TRUE(screamed);
+    ASSERT_TRUE(peds.audible(7));
+    woman.reset = true;
+    peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+    EXPECT_FALSE(peds.audible(7));
+    EXPECT_EQ(manager.used(), 0);
     peds.stop();
 }

@@ -7,6 +7,10 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
 using namespace mm2;
 
 namespace {
@@ -117,4 +121,54 @@ TEST(ParityAmbientCity, PedestriansDealtUntilTheTurnComesBack) {
     EXPECT_EQ(populate(threeRoads(0, 2), 10), 10u);
     // A pool smaller than a lap.
     EXPECT_EQ(populate(threeRoads(0, 0), 3), 3u);
+}
+
+namespace {
+
+// The closest any pedestrian comes to `point` (XZ) in 120 s of walking.
+float closestApproach(const city::AiMap& map, const std::vector<ai::PedObstacle>& props, Vec3 point) {
+    const auto net = ai::RoadNetwork::build(map, {});
+    ai::PedSettings settings;
+    settings.pool = 10;
+    ai::Pedestrians peds(net, walker(), settings, 1);
+    peds.setObstacles(props, {});
+    const ai::PlayerCar far = ai::PlayerCar::at({5000, 0, 5000}, {});
+    float closest = 1e9f;
+    for (int i = 0; i < 30 * 120; ++i) {
+        peds.step(1.0f / 30.0f, far, 1);
+        for (const auto& p : peds.peds()) {
+            const float dx = p.transform.m3.x - point.x, dz = p.transform.m3.z - point.z;
+            closest = std::min(closest, std::sqrt(dx * dx + dz * dz));
+        }
+    }
+    return closest;
+}
+
+} // namespace
+
+// aiPath::AddBangersToObsMap lists a prop on the sidewalk section beside it;
+// Wander's DetectBangerCollision finds it on the way to the target point and
+// AvoidBanger steps round it at its radius + 1 m.
+TEST(ParityAmbientCity, PedestriansStepRoundProps) {
+    city::AiMap map = threeRoads(2, 2); // only road 0 is open to pedestrians
+    map.paths[0].rooms = {1};
+    map.paths[0].centerLengths = {30.0f, 60.0f, 90.0f};
+    std::vector<ai::PedObstacle> props;
+    for (const float x : {-5.5f, 5.5f}) {
+        ai::PedObstacle o;
+        o.room = 1;
+        o.position = {x, 0.5f, -45.0f};
+        o.origin = {x, 0.0f, -45.0f};
+        o.yRadius = 0.5f;
+        props.push_back(o);
+    }
+    const Vec3 left{-5.5f, 0.0f, -45.0f};
+    const float without = closestApproach(map, {}, left);
+    const float with = closestApproach(map, props, left);
+    EXPECT_LT(without, 0.5f);
+    EXPECT_GT(with, 0.6f); // curving off over the 30 m section
+    // A drivable prop is not listed.
+    for (auto& o : props)
+        o.drivable = true;
+    EXPECT_LT(closestApproach(map, props, left), 0.5f);
 }

@@ -2,8 +2,10 @@
 #include "app/Controls.h"
 #include "app/Screens.h"
 #include "city/CityData.h"
+#include "city/RoomInfo.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "asset/Pkg.h"
 #include "asset/VehicleModel.h"
 #include "audio/MusicDirector.h"
 #include "audio/SoundBank.h"
@@ -375,6 +377,7 @@ private:
         loadVehicle(ctx); // places the camera behind the car
         loadAi(ctx);
         loadEffects(ctx);
+        loadPedestrianProps(ctx);
         spawnOpponents(ctx);
         spawnPolice(ctx);
         m_hud = std::make_unique<game::session::Hud>(ctx.device(), *m_textures, *m_models, ctx.game->vfs,
@@ -554,13 +557,23 @@ private:
         return car;
     }
 
-    // The water level under `p` if it lies in a water room (lvlLevel's room
-    // flag 4 and GetWaterLevel; city/<map>.water).
+    // lvlRoomInfo's flags of the room `p` is in (city::LevelRoomFlag), not
+    // the PSDL's room flags.
+    int levelRoomFlagsAt(const Vec3& p) const {
+        if (!m_cityRenderer)
+            return 0;
+        const int room = m_cityRenderer->roomAt(p);
+        if (room <= 0 || static_cast<std::size_t>(room) >= m_city->levelRoomFlags.size())
+            return 0;
+        return m_city->levelRoomFlags[static_cast<std::size_t>(room)];
+    }
+
+    // The water level under `p` if it lies in a Water of Death room
+    // (lvlRoomInfo flag 4: a deepwater first texture, or listed in
+    // city/<map>.water) and cityLevel::GetWaterLevel, the .water file's
+    // level for every room.
     std::optional<float> waterLevelAt(const Vec3& p) const {
-        if (!m_city->water || !m_cityRenderer)
-            return std::nullopt;
-        const auto& rooms = m_city->water->rooms;
-        if (std::find(rooms.begin(), rooms.end(), m_cityRenderer->roomAt(p)) == rooms.end())
+        if (!m_city->water || !(levelRoomFlagsAt(p) & city::LevelRoomFlag::WaterOfDeath))
             return std::nullopt;
         return m_city->water->height;
     }
@@ -770,7 +783,7 @@ private:
             return;
         m_pedSounds.clear();
         for (const auto& p : m_ai->peds())
-            m_pedSounds.push_back({p.id, p.typeName, p.transform.m3, p.scream});
+            m_pedSounds.push_back({p.id, p.typeName, p.transform.m3, p.scream, p.placed});
         m_pedAudio.update(m_pedSounds, m_camera.transform, m_player->sim().speed(), dt, m_tunnel);
     }
 
@@ -816,12 +829,8 @@ private:
         ps.damage01 = sim.damage.damage;
         // mmPlayer::IsMaxDamaged: CurrentDamage strictly past MaxDamage.
         ps.wrecked = sim.damage.maxDamaged();
-        if (m_city->water) {
-            const int room = m_cityRenderer->roomAt(ps.transform.m3);
-            const auto& rooms = m_city->water->rooms;
-            ps.inWater = ps.transform.m3.y < m_city->water->height &&
-                         std::find(rooms.begin(), rooms.end(), room) != rooms.end();
-        }
+        if (const auto level = waterLevelAt(ps.transform.m3))
+            ps.inWater = ps.transform.m3.y < *level;
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
@@ -1202,7 +1211,69 @@ private:
                 at = hit.position;
                 return true;
             });
+            // aiPedestrian's wall probe is dgPhysManager::Collide with the
+            // wheels' mask: lvlSDL::CollideProbe's polygons and the objects
+            // flagged 0x20. (MM2 keeps a segment cache per pedestrian whose
+            // start room is the pedestrian's; here each probe finds its rooms
+            // afresh.)
+            m_ai->pedestrians().setProbe([this](const Vec3& from, const Vec3& to, Vec3& at) {
+                phys::RayHit hit;
+                if (!m_world->wheelProbe(from, to, hit, nullptr, nullptr))
+                    return false;
+                at = hit.position;
+                return true;
+            });
         }
+    }
+
+    // aiMap's load lists the props standing in the city for the pedestrians
+    // to step round (aiPath / aiIntersection::AddBangersToObsMap; inferred:
+    // the race's own props are placed by then too).
+    void loadPedestrianProps(Context& ctx) {
+        if (!m_ai || !m_bangers)
+            return;
+        std::map<std::string, float> radii;
+        auto modelRadius = [&](const std::string& model) {
+            // lvlInstance::GetRadius of an unhit banger: its geometry set's
+            // radius over the model's levels of detail.
+            const auto it = radii.find(model);
+            if (it != radii.end())
+                return it->second;
+            float radius = 0.0f;
+            if (const auto bytes = ctx.game->vfs.readAll("geometry/" + str::lower(model) + ".pkg"))
+                if (const auto pkg = asset::parsePkg(*bytes))
+                    for (const auto& mesh : pkg->meshes)
+                        if (mesh.part.empty())
+                            radius = std::max(radius, mesh.radius());
+            return radii.emplace(model, radius).first->second;
+        };
+        std::vector<ai::PedObstacle> props;
+        for (const auto& inst : m_bangers->instances()) {
+            ai::PedObstacle o;
+            o.room = inst.room;
+            const Mat34& m = inst.matrix;
+            o.position = m.m3;
+            if (inst.data) {
+                const Vec3& cg = inst.data->cg;
+                // aiBanger::Position: the centre of gravity's frame less the
+                // data's CG offset.
+                o.origin = {((m.m3.x - m.m0.x * cg.x) - m.m1.x * cg.y) - m.m2.x * cg.z,
+                            ((m.m3.y - m.m0.y * cg.x) - m.m1.y * cg.y) - m.m2.y * cg.z,
+                            ((m.m3.z - m.m0.z * cg.x) - m.m1.z * cg.y) - m.m2.z * cg.z};
+                o.yRadius = inst.data->yRadius;
+                o.impulseLimit2 = inst.data->impulseLimit2;
+                o.drivable = (inst.data->collisionType & 0x20) != 0;
+            } else {
+                o.origin = m.m3;
+            }
+            o.modelRadius = modelRadius(inst.model);
+            props.push_back(o);
+        }
+        const game::bangers::BangerSet* bangers = m_bangers.get();
+        m_ai->pedestrians().setObstacles(std::move(props), [bangers](std::size_t i) {
+            return i < bangers->instances().size() &&
+                   bangers->instances()[i].state == game::bangers::BangerSet::State::Unhit;
+        });
     }
 
     void loadEffects(Context& ctx) {
@@ -1761,12 +1832,9 @@ private:
         t.reverseGear = m_player->reversing();
         for (std::size_t i = 0; i < t.wheels.size(); ++i)
             t.wheels[i] = {sim.wheels[i].onGround, sim.wheels[i].intersection.normal};
-        // mmPlayer::Update: the flags of the room the car's model is in.
-        if (m_cityRenderer) {
-            const int room = m_cityRenderer->roomAt(t.matrix.m3);
-            if (room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size())
-                t.roomFlags = m_city->psdl.rooms[static_cast<std::size_t>(room)].flags;
-        }
+        // mmPlayer::Update: the lvlRoomInfo flags of the room the car's model
+        // is in (0x02 / 0x08 subterranean, 0x20 a terrain-bound instance).
+        t.roomFlags = levelRoomFlagsAt(t.matrix.m3);
         return t;
     }
 

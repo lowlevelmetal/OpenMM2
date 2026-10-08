@@ -106,4 +106,23 @@ inline std::optional<int> atoiPrefix(std::string_view s) {
 // atoi: the decimal prefix, 0 when there is none.
 inline int cAtoi(std::string_view s) { return atoiPrefix(s).value_or(0); }
 
+// datAsciiTokenizer::GetFloat of a whitespace-delimited token: a token that
+// does not start with a digit, '-' or '.' is an error and reads as 0; else
+// atof.
+inline float datTokenFloat(std::string_view token) {
+    const char c = token.empty() ? '\0' : token[0];
+    if (!(detail::cDigit(c) || c == '-' || c == '.'))
+        return 0.0f;
+    return static_cast<float>(cAtof(token));
+}
+
+// datAsciiTokenizer::GetInt: a token that does not start with a digit or
+// '-' is an error and reads as 0; else atoi.
+inline int datTokenInt(std::string_view token) {
+    const char c = token.empty() ? '\0' : token[0];
+    if (!(detail::cDigit(c) || c == '-'))
+        return 0;
+    return cAtoi(token);
+}
+
 } // namespace mm2::data
