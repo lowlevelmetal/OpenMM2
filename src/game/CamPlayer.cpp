@@ -21,11 +21,21 @@ const char* viewName(PlayerCameras::View view) {
     case PlayerCameras::View::Pre: return "pre";
     case PlayerCameras::View::Point: return "point";
     case PlayerCameras::View::Polar: return "polar";
+    case PlayerCameras::View::XCam: return "xcam";
     }
     return "?";
 }
 
-PlayerCameras::PlayerCameras() : m_dash({}, true) { m_view.setCurrent(&m_near); }
+PlayerCameras::PlayerCameras() : m_dash({}, true) {
+    m_view.setCurrent(&m_near);
+    // mmPlayer::Init: the second XCam follows the car's heading
+    // (AzimuthLock), 38.1 m away and 0.321 rad up; the first keeps the
+    // camPolarCS defaults.
+    PolarCamera::Params& x = m_xcam[1].params();
+    x.azimuthLock = 1;
+    x.polarDistance = 38.131401f;
+    x.polarIncline = 0.321209013f;
+}
 
 void PlayerCameras::load(const vfs::Vfs& vfs, std::string_view carIn, std::vector<std::string>* missing,
                          float screenAspect) {
@@ -74,6 +84,7 @@ CarCamera& PlayerCameras::camera(View view) {
     case View::Pre: return m_pre;
     case View::Point: return m_point;
     case View::Polar: return m_polar;
+    case View::XCam: return m_xcam[m_xcamIndex];
     }
     return m_near;
 }
@@ -89,6 +100,8 @@ CarCamera* PlayerCameras::carCam(int index) {
 
 CarCamera* PlayerCameras::currentCameraPtr() {
     // mmPlayer::GetCurrentCameraPtr
+    if (m_group == 1)
+        return &m_xcam[m_xcamIndex];
     return m_group == 2 ? static_cast<CarCamera*>(&m_dash) : carCam(m_camIndex);
 }
 
@@ -112,7 +125,8 @@ void PlayerCameras::setCamera(int group, int index) {
     // mmPlayer::SetCamera: ignored before and after the race.
     if (m_preRace || m_postRace)
         return;
-    const int currentIndex = m_group == 0 ? m_camIndex : 0;
+    // mmPlayer::GetCamera
+    const int currentIndex = m_group == 0 ? m_camIndex : (m_group == 1 ? m_xcamIndex : 0);
     if (group == m_group && index == currentIndex)
         return;
     if (group == 0) {
@@ -122,6 +136,12 @@ void PlayerCameras::setCamera(int group, int index) {
         }
         m_savedIndex = m_camIndex;
         m_group = 0;
+    } else if (group == 1) {
+        if (index >= 0 && index < 2) {
+            m_xcamIndex = index;
+            m_view.newCam(&m_xcam[index], CameraView::Blend::EaseInOut, 0.8f);
+        }
+        m_group = 1;
     } else if (group == 2) {
         m_view.setCurrent(&m_dash);
         m_group = 2;
@@ -264,8 +284,8 @@ void PlayerCameras::toggleCamera() {
 }
 
 void PlayerCameras::toggleDashboard() {
-    // mmViewMgr::SetViewSetting(6)
-    if (m_preRace || m_postRace)
+    // mmViewMgr::SetViewSetting(6): not from an XCam.
+    if (m_preRace || m_postRace || m_group == 1)
         return;
     bool dash = !m_dashActive;
     if (!dash)
@@ -276,6 +296,36 @@ void PlayerCameras::toggleDashboard() {
         dash = false;
     setWideFov(m_wide);
     m_dashActive = dash;
+}
+
+void PlayerCameras::toggleXCam() {
+    // mmViewMgr::SetViewSetting(2)
+    const int next = m_xcamCheat ? (m_xcamIndex + 1) % 2 : 0; // GetNextCycleXCamIndex
+    bool dash = false;
+    bool remember = false;
+    int group = 1, index = 0;
+    if (m_group != 1) {
+        remember = m_dashActive; // mmHUD::IsDashActive
+        index = m_xcamIndex;
+    } else if (next == m_xcamIndex) {
+        if (m_xcamDash) {
+            dash = true;
+            group = 2;
+        } else {
+            group = 0;
+            index = m_camIndex;
+        }
+    } else {
+        index = next;
+    }
+    setCamera(group, index);
+    setWideFov(m_wide);
+    // mmHUD::SetDash: switching the dash view on or off sets or clears its
+    // flag; entering an XCam with the dashboard on sets it again after.
+    m_dashActive = dash;
+    m_xcamDash = dash;
+    if (remember)
+        m_xcamDash = true;
 }
 
 void PlayerCameras::setDashboard(bool on) {
@@ -344,6 +394,8 @@ void PlayerCameras::startWaterCam() { m_waterPending = true; }
 PlayerCameras::View PlayerCameras::view() const {
     if (m_group == 2)
         return View::Dash;
+    if (m_group == 1)
+        return View::XCam;
     switch (m_camIndex) {
     case 0: return View::Near;
     case 1: return View::Pov;

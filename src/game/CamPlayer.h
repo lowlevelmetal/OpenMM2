@@ -12,6 +12,7 @@
 //   pre    camPreCS    before the race (constructor defaults)
 //   point  camPointCS  after the race, and when the car is in the water
 //   polar  camPolarCS  multiplayer finish line (constructor defaults)
+//   xcam   camPolarCS  the "XCam" orbit cameras (SetViewSetting(2))
 //
 // "Change Camera" cycles near -> pov -> far with a 0.8 s ease-in-out blend
 // (mmViewMgr::SetViewSetting, mmPlayer::SetCamera). See docs/camera.md.
@@ -43,7 +44,7 @@ namespace mm2::game {
 
 class PlayerCameras {
 public:
-    enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash, Pre, Point, Polar };
+    enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash, Pre, Point, Polar, XCam };
 
     PlayerCameras();
 
@@ -82,6 +83,7 @@ public:
     PreCamera& preCam() { return m_pre; }
     PointCamera& pointCam() { return m_point; }
     PolarCamera& polarCam() { return m_polar; }
+    PolarCamera& xCam(int index) { return m_xcam[index == 1 ? 1 : 0]; }
     CarCamera& camera(View view);
 
     // mmPlayer::Reset (camera part): back to the selected camera, or the
@@ -102,6 +104,16 @@ public:
     bool dashboard() const { return m_dashActive; }
     // mmViewMgr::SetViewSetting(5), wide angle (not with the dashboard).
     void toggleWideAngle();
+    // mmViewMgr::SetViewSetting(2) (input events 0x0C and 0x2F): the first
+    // press blends (mode 3, 0.8 s) to an "XCam", a camPolarCS orbiting the
+    // car that the keyboard steers (CameraInput::orbit) and that remembers
+    // whether the dashboard was on; the next press goes back to the cycled
+    // camera, or to the dashboard. With the XCam cheat the presses cycle
+    // between the two XCams instead (mmPlayer::GetNextCycleXCamIndex); the
+    // cheat's flag is never set in midtown2.exe, so only the first is
+    // reached.
+    void toggleXCam();
+    void setXCamCheat(bool on) { m_xcamCheat = on; }
     bool wideAngle() const { return m_wide; }
     // Selects a camera of the cycle (Near, Pov or Far) as "Change Camera"
     // would (mmPlayer::SetCamera(0, index)), or the dashboard.
@@ -148,11 +160,15 @@ private:
     PreCamera m_pre;
     PointCamera m_point;
     PolarCamera m_polar; // mmPlayer +0x1FBC
+    PolarCamera m_xcam[2]; // mmPlayer +0x18B8, +0x19E0 (XCams)
     CameraView m_view;
 
     int m_camIndex = 0;   // mmPlayer+0xE48 into near, pov, far
     int m_savedIndex = 0; // kept across resets (the original's global)
-    int m_group = 0;      // mmPlayer+0x28: 0 cycled cameras, 2 dashboard
+    int m_group = 0;      // mmPlayer+0x28: 0 cycled cameras, 1 XCams, 2 dashboard
+    int m_xcamIndex = 0;  // mmPlayer+0xE50
+    bool m_xcamDash = false;  // the dash view's "activated" flag (mmDashView +0x5DE)
+    bool m_xcamCheat = false; // XcamCheat
     bool m_dashActive = false; // HUD dashboard on
     bool m_wide = false;
     bool m_firstUpdate = true; // +0xE58

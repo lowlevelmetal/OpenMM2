@@ -18,7 +18,7 @@ MM2 function.
 | `camPovCS` (hood / dashboard) | `PovCamera` | `CamPov.*` |
 | `camPreCS` (pre-race) | `PreCamera` | `CamRace.*` |
 | `camPointCS` (post-race, water) | `PointCamera` | `CamRace.*` |
-| `camPolarCS` (multiplayer finish line) | `PolarCamera` | `CamRace.*` |
+| `camPolarCS` (multiplayer finish line, XCams) | `PolarCamera` | `CamRace.*` |
 | `camViewCS` + `camTransitionCS` | `CameraView` | `CamView.*` |
 | `mmPlayer`, `mmViewMgr::SetViewSetting`, `mmGame::UpdateGameInput` (camera parts) | `PlayerCameras` | `CamPlayer.*` |
 | `Matrix34` / `Vector3` helpers | `cam::` functions | `CamMath.*` |
@@ -107,6 +107,7 @@ cams.display();                          // draw body / hide it / draw the dash 
 | pre | camPreCS | none: `camPreCS::Init` does not load, constructor defaults |
 | point | camPointCS | none |
 | polar | camPolarCS | none (`mmPlayer::Init` gives it no name) |
+| xcam 0, 1 | camPolarCS | none; the second follows the car's heading (AzimuthLock), 38.1 m away, 0.321 rad up |
 
 A missing file leaves the camera at the constructor defaults, and its
 `AfterLoad` does not run (`asNode::Load` only calls it after a successful
@@ -164,6 +165,17 @@ camera's `Offset.z` by 0.7352941.
   (2) rad/s and 2 x PolarDelta m/s, or with either Shift key PolarDelta
   rad/s and 5 x PolarDelta m/s; the distance stays within 0.5 .. 200 m and
   the incline within +-pi. Camera changes are ignored until the next reset.
+* **XCam** (`mmViewMgr::SetViewSetting(2)`, input events 0x0C and 0x2F,
+  `PlayerCameras::toggleXCam`): blends (mode 3, 0.8 s) to the first XCam, a
+  `camPolarCS` with its defaults orbiting the car (2.5 m up, 10 m away,
+  azimuth 2.5, 0.25 rad up), steered by the keyboard like the finish-line
+  camera. It turns the dashboard off and remembers whether it was on (the
+  dash view's activated flag); the next press goes back to the dashboard
+  or to the cycled camera. "Change Camera" also leaves it; the dashboard
+  key does nothing meanwhile. `mmPlayer::GetNextCycleXCamIndex` would cycle
+  the two XCams with the XcamCheat flag, which midtown2.exe never sets, so
+  the second XCam (heading-locked, 38.1 m away, 0.321 rad up) is
+  unreachable (`setXCamCheat` reaches it).
 * **Water** (`mmPlayer::Update`, while the car's splash is active): the
   point camera is placed 9 m above the view and blended to (mode 3, 0.8 s),
   once per reset.
@@ -267,7 +279,7 @@ mode. The inset follows the screen size, so it works at any resolution.
 | `mmPlayerConfig::GetViewSettings`, `SetViewSettings` (camera part) | `PlayerCameras::viewSettings` / `setViewSettings` |
 | `mmViewMgr::SetViewSetting` 0, 5, 6, `mmGame::UpdateGameInput` (CamPan), `mmInput::GetCamPan` | ported |
 | `Matrix34::LookAt`, `GetEulers("zxy")`, `FromEulersZXY`, `MakeRotate*`, `Dot`, `Dot3x3`, `Rotate`, `RotateFull`, `PolarView`, `Vector3::Approach`, `Angle`, `InvMag` | ported with the original association of every sum |
-| `camPolarCS` | ported (`PolarCamera`), used for the multiplayer finish line; the two cheat "XCams" (`SetViewSetting(2)` with the camera cheat) are not ported |
+| `camPolarCS`, `mmViewMgr::SetViewSetting(2)`, `mmPlayer::GetNextCycleXCamIndex`, `GetCurrentXCamIndex`, `SetCamera` group 1 | ported (`PolarCamera`, `PlayerCameras::toggleXCam`): the multiplayer finish line and the XCams |
 | `camAICS` (keyboard-driven free camera), `camPostCS` (only its `MakeActive` is called; it is never shown) | not ported |
 | `mmMirror::Init`, `Reset`, `FileIO`, the camera part of `Cull` | ported (`RearViewMirror`); drawing it is open (rendering) |
 | `mmExternalView` (HUD gauges over the chase views) | HUD, not part of the cameras |
