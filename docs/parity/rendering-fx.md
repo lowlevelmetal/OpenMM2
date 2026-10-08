@@ -2,10 +2,13 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
-Summary: 175 rows (functions; some rows split a constructor's or a draw
+Summary: 197 rows (functions; some rows split a constructor's or a draw
 function's parts, group small helpers, or cover a shader); verified 67,
-fixed 71, deviation 8, inferred 3, open 8, openmm2 18. Missing MM2
-behaviour: 12 items.
+fixed 94, deviation 9, inferred 3, open 4, openmm2 20. Missing MM2
+behaviour: 7 items. A second pass (2026-10-08) ported the tunnels, the
+rear-view mirror, the wide-angle letterbox, emissive materials, the sirens'
+lens flares, cloud shadows, the far pedestrians' stick figures, the Texture
+Quality limit and the session-long lighting tables.
 
 Scope: the city, car, traffic, pedestrian and signal renderers
 (`CityRenderer`, `VehicleRenderer`, `AiRenderer`, `MeshDraw`), the model
@@ -36,23 +39,26 @@ GREATER 100, and that every retail room colour is white because
 | `makeEnvironment`: wall light table | `sdlCommon::UpdateLighting` | verified | 64 facings a = i π / 32 − π / 2: ambient + Σ max(0, n · −L) × colour, clamped per channel |
 | `makeEnvironment`: fog, far plane, clear colour | `lvlSky::SetupFog`, `cityLevel::DrawRooms`, `PUGraphics::FixClip` | verified | linear, start min(far − 30, start), end min(far, end); clear colour = fog colour. The table's integer distances (`lvlSky::AutoInit`'s atoi) were fixed on integration by dc8c599 |
 | `makeEnvironment`: sky paint job | `lvlSky::AutoInit`, `lvlSky::DrawHat` | verified | time × 4 + weather (snow uses the rain tables: OpenMM2's snow has no MM2 counterpart) |
-| `makeEnvironment` without a lighting table | `LoadCityTimeWeatherLighting` | deviation | MM2 keeps the table's previous contents when a file is missing; OpenMM2 uses fixed default lights. Every retail city has all 16 files |
+| `makeEnvironment` without a lighting table | `LoadCityTimeWeatherLighting` | openmm2 | only synthetic cities lack a table now: `city::loadCity` keeps the sixteen tables for the session and loads each .ltNN over its table (`datParser::Load`), so a missing file or field keeps the previous value (the constructor's for the first city) — fixed in the second pass |
+| `makeEnvironment`: cloud shadows | `cityLevel::Load` (`vglSetCloudMap`), `mmGame::SetLevelGraphics` | fixed | shadmap_day for times 0 and 1, shadmap_nite for 2 and 3; the flag mask 0 / 4 / 2 by the Cloud Shadows option (second pass) |
 | `unpackRgb`, `transformBounds`, `argbToRgba` | — | openmm2 | colour and bounds helpers |
 | `sdlTextureName` | `lvlSDL::LoadBinary` | fixed | a PSDL name ending in "-0NNN" is looked up by its base (gfxGetTextureMovie plays the frames) |
 | `findFilledLod` | `lvlInstance::GetGeomSet` | fixed | a missing level takes the next less detailed one only (VL → L → M → H); a missing VL draws nothing. The fallback for models without LOD names is OpenMM2 glue |
 | `geomRadius` | `lvlInstance::GetGeomSet`, `modGetStatic` | fixed | the farthest vertex from the model origin over the part's levels (was the bounds' half diagonal) |
 | constructor: streets | `cityLevel::Load` (`sdlPage16::ComputeBoundSphere`), `sdlPage16::Draw` | fixed | the room spheres and the four levels of `SdlDraw`'s primitives; vertex shading per primitive; one texture slot per PSDL name |
-| constructor: tunnels | `sdlPage16::Draw` (Tunnel attributes) | open | still the CityMesh reconstruction at every level (see Missing) |
+| constructor: tunnels | `sdlPage16::Draw` (Tunnel attributes) | fixed | SdlDraw's tunnels (second pass; the CityMesh stand-in is gone) |
+| constructor: texture names | `cityLevel::Load` under `gfxTexReduceSize` | fixed | names the streets', city objects' (with xrefs) and sky's textures while RaceScreen holds the Texture Quality limit (second pass) |
 | constructor: objects | `lvlLevel::LoadInstances`, `lvlMultiRoomInstance::Create` | fixed | a collidable (flag 0x2000, not terrain-local) object is listed in the neighbours of its room that its sphere (position, model radius) reaches, not in its own room; reaching none it is never drawn |
 | `CityRenderer::setEnvironment` | `sdlPage16::Draw` (vglCurrentColor), `GetShadedColor`, `cityLevel::Load` | fixed | room colour (white), half of it where Draw halves it (curb faces and caps, raised dividers' walls), facades and slivers the light table entry of the room's last FacadeBound (was the wall's rounded facing) |
 | `CityRenderer::update` | `lvlSky::Update` | verified | the dome turns at the .sky rate |
 | `CityRenderer::drawMesh` | `modStatic::Draw` | verified | through `drawGpuMesh` |
 | `CityRenderer::drawSky` | `lvlSky::DrawHat` | verified | at (camera x, camera y × yScale + yOffset, camera z), unlit, unfogged, no depth |
 | `CityRenderer::resolve` | `lvlInstance::GetGeomSet` | verified | the model and its radius; loading on first use is OpenMM2's |
-| `CityRenderer::drawModel` | `lvlFixedAny::Draw`; xrefs: `lvlLevel::LoadInstances` | open | draws the model's high-to-low set; PKG xrefs are drawn as static children here, while MM2 turns each into an unhit banger (see Missing) |
+| `CityRenderer::drawModel` | `lvlFixedAny::Draw`; xrefs: `lvlLevel::LoadInstances` | open | draws the model's high-to-low set and its cloud pass; PKG xrefs are drawn as static children here, while MM2 turns each into an unhit banger (camera-props; see Missing). No retail city model has the `mask`, `refl`, `nonrandom` or `opaque` parts lvlFixedAny::Draw / DrawReflectedParts / Init use (scanned every geometry/*.pkg) |
+| `CityRenderer::drawCloudShadow` | `lvlFixedAny::Draw`, `modStatic::DrawOrthoMapped`, `gfxPacket::OrthoMap` | fixed | packets whose texture has the cloud bit and no alpha format, again with the cloud map at ((y + x), (y + z)) / 128 of their model-space positions, white, alpha blended and tested above 0, fogged (second pass) |
 | `CityRenderer::drawInstance` | `lvlInstance::IsVisible`, `lvlMultiRoomInstance::Draw` | fixed | d = view depth − radius against the Object Detail thresholds, no NoDraw limit for static objects; a multi-room object once per frame |
 | `CityRenderer::gatherStreets` | `sdlPage16::Draw`, `sdlCommon::BACKFACE` | fixed | road fans, crosswalks and roofs above the camera's height and walls seen from behind are left out. MM2's height is the camera's plus the view matrix's third row times the near distance (deviation of at most the near distance, ignored) |
-| `CityRenderer::drawStreets` | `vglBeginBatch`, `vglEndBatch`, `gfxRenderState::DoFlush` | fixed | one batch per texture, opaque formats first then alpha formats (GREATER 100), the textures' own address modes, the default culling (was forced repeat, then no culling) |
+| `CityRenderer::drawStreets` | `vglBeginBatch`, `vglEndBatch`, `gfxRenderState::DoFlush` | fixed | one batch per texture, opaque formats first then alpha formats (GREATER 100), the textures' own address modes, the default culling (was forced repeat, then no culling); an opaque bucket with the cloud bit drawn again with the cloud map at ((y + x), (z + y)) / 128 in world space (`vglEndBatch`'s second pass, none for alpha textures; second pass) |
 | `CityRenderer::draw` | `cityLevel::Draw`, `cityLevel::DrawRooms` | fixed | the camera's room (or the last one found), the CPVS row, each room's sphere tested against the view, the street level of detail from the sphere's depth − radius (camera room: − radius), streets in one batch, then the objects room by room from the end of the list. Without a PVS OpenMM2 tests every room's sphere (MM2 floods out through the neighbours: deviation, an OpenMM2 debug path) |
 | `DetailSettings`, `EnvironmentOptions` | `cityLevel::SetObjectDetail`, `PUGraphics` options | openmm2 | option plumbing |
 
@@ -60,6 +66,10 @@ GREATER 100, and that every retail room colour is white because
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
+| `Builder::tunnel`, `junctionTunnel` | `sdlPage16::Draw` (Tunnel, ten words) | fixed | second pass, from the assembly: walls on the first mask's perimeter edges (u = max(1, length / height)), inner walls with 0x4000 unless 0x4, the ceiling fan at the highest corner + height from the stored corner backwards (0x8), with 0x4 an apron 1 m below the highest corner, its corners pushed out by 0.333 x height beside a wall (0.25 m elsewhere), and on each walled edge a railing face and top whose ends the second and third masks bevel (x 1.414); nothing at height 0 |
+| `Builder::stripTunnel`, `beside` | `sdlPage16::Draw` (Tunnel, other counts) | fixed | second pass, from the assembly: along the next road, divided road or rectangle strip (past a Texture attribute): straight walls (0x1 left first texture, 0x2 right second; 0x4000 both sides) or bulging ones (0x2000, out to the railing line at a quarter and three quarters of the height; caps 0x10/0x20, 0x40/0x80, the left start cap's upper corner at the full height as in MM2); railings (0x4: fourth / fifth texture, end points pushed along the road by 0x200/0x400 and 0x800; MM2's right-hand loop stops before the last section so 0x1000 does nothing there) and the deck between them (sixth texture); a flat (0x8) or arched (0x100: 1.5 m at the quarters, 2 m in the middle) ceiling with ArcMap across. Another next type draws nothing (MM2 would reuse the last stride; no retail data) |
+| `Builder::finish`: non-finite corners | Direct3D with infinite coordinates | deviation | a primitive with a non-finite corner (SF's junction railings around duplicated perimeter corners give rail / 0) is dropped; MM2 sends it and Direct3D draws nothing visible |
+| `sdlWallMap` | `sdlPage16::WallMap` | fixed | as ArcMap with whole repeats of the given length (second pass) |
 | `buildSdlRoomDraw`, `Builder::build` | `sdlPage16::Draw` | fixed | the attribute walk; a Texture value 0 skips the road, sidewalk, rectangle, crosswalk, fan and divided road attributes after it; FacadeBound draws nothing but sets the light index (0 at the start of each room) |
 | `Builder::lowDetailRoad` | `sdlPage16::Draw` (road and divided road, levels 0 and 1) | fixed | the group's third texture, ArcMap along the outer left edge over the full width; level 0 every other section (0, 2, … for an odd count; 0, 1, 3, … for an even one), level 1 every section with both edges 0.15 m lower |
 | `Builder::sidewalkSide` | `sdlPage16::Draw` (levels 2 and 3) | fixed | the second texture from the outer edge (t 1) to the curb (t 0, raised 0.15 at level 3); at level 3 the half-bright curb face. Drawn only when the first section's outer and curb vertices differ |
@@ -113,7 +123,7 @@ GREATER 100, and that every retail room colour is white because
 | `AiRenderer::draw`: signals | `aiTrafficLightInstance::Draw` | fixed | `lvlInstance::IsVisible` with the Object Detail thresholds |
 | `AiRenderer::draw`: room visibility | `cityLevel::DrawRooms` | deviation | MM2 draws traffic, pedestrians and signals from the visible rooms' lists; OpenMM2 tests the view frustum only, so objects the PVS hides are drawn (and depth-hidden) |
 | `AiRenderer::drawPed` | `pedAnimationInstance::Draw`, `modModel::Draw` | fixed | posed with the root drift taken out; the default culling (was none; the retail meshes face out counter-clockwise, tested) |
-| `AiRenderer::drawPed`: far pedestrians | `aiPedestrianInstance::Draw`, `pedAnimation::DrawSkeleton` | open | beyond 35 m MM2 draws the stick figure from the `.rays` file (see Missing) |
+| `AiRenderer::drawSkeleton` | `aiPedestrianInstance::Draw`, `pedAnimation::DrawSkeleton`, the pedestrian type loader's .rays reading | fixed | second pass: beyond 35 m, for each bone with a start width its position raised by the offset, a quad to its parent across the camera's right axis, coloured trunc(255 x diffuse) of the variant's shader its row names; untextured, unlit, both sides |
 | `AiRenderer::drawSignal` | `aiTrafficLightInstance::Draw`, `DrawGlow` | fixed | the first shader set; the light's glow and the walk signal both or neither, added, unfogged, default alpha test, only within NoDraw |
 
 ## src/game/VehicleRenderer.h, VehicleRenderer.cpp
@@ -140,14 +150,15 @@ GREATER 100, and that every retail room colour is white because
 | `VehicleRenderer::addLightGlow`, `drawGlows` | `vehCarModel::DrawGlow`, `DrawHeadlights`, `ltLight::DrawGlow`, `aiVehicleInstance::DrawGlow` | fixed | default alpha test; traffic: TLIGHT while braking and with the light flag, one white headlight pair pulled 0.2 m to the camera |
 | headlight sweep with the siren | `vehCarModel::DrawHeadlights` | deviation | ±42.4 rad/s sweep; the sweep's base direction is OpenMM2's |
 | suspension and engine parts | `vehSuspension::Update`, `vehCarModel::Init` (shock0–3, arm0–3, shaft2/3, axle0/1, engine) | deviation | not drawn; no retail vehicle model has any of these parts (scanned every geometry/v*.pkg) |
-| traffic turn signals | `aiVehicleInstance::DrawGlow` (SLIGHT0/1) | open | see Missing |
+| traffic turn signals | `aiVehicleInstance::DrawGlow` (SLIGHT0/1) | open | see Missing (ai-vehicles) |
+| `VehicleRenderer::setLensFlareTarget`, siren flares in `drawGlows` | `vehSiren::Init`, `vehSiren::Draw` | fixed | second pass: one ltLensFlare(20) per car with sirens; each siren light's flares queued with ltLight::ComputeIntensity(eye, 0.05) |
 
 ## src/game/MeshDraw.h, MeshDraw.cpp
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
 | `drawGpuMesh` | `modStatic::Draw`, `modShader::Load`, `gfxRenderState::DoFlush` | fixed | untextured materials halved at night only when lit; alpha blending (and test) when the diffuse alpha is not 1 or the texture's format has alpha (was by texels); the default culling |
-| `drawGpuMesh`: emissive colour | `modShader` (the compact third colour) | open | the PKG reader keeps it; the shader has no emissive term (see Missing) |
+| `drawGpuMesh`: emissive colour | `modShader` (the compact third colour), Direct3D lighting | fixed | second pass: added to the lit colour before the per-vertex clamp (DrawConstants::emissive, mesh.vert) |
 | `ObjectDetail::forLevel` | `cityLevel::SetObjectDetail` | verified | Med 20/30/40/70, Low 70/90/100/130, VLow 150/175/200/200, NoDraw 200/250/300/300 |
 | `objectLod` | `lvlInstance::IsVisible` | verified | strictly beyond each threshold |
 | `viewDepth` | `lvlInstance::IsVisible` (`gfxViewport` depth) | verified | |
@@ -158,6 +169,7 @@ GREATER 100, and that every retail room colour is white because
 | --- | --- | --- | --- |
 | `GpuModel::find` | — | openmm2 | nearest-LOD lookup for OpenMM2 tools; renderers use `findFilledLod` |
 | `GpuModel::materials` | `vehCarModel::Init`, `lvlSky::Init` | fixed | paint job modulo the number of shader sets |
+| `ModelLibrary::add`: second texture coordinates | `gfxPacket::OrthoMap` | fixed | second pass: uv1 holds the cloud map coordinates ((y + x), (y + z)) / 128 of the model-space position |
 | `ModelLibrary::get`, `add`, destructor | `modGetStatic` | verified | the radius per mesh (farthest vertex); materials as the reader snapped them (the renderer no longer re-rounds) |
 | `argbToRgba`, `lodRank` | — | openmm2 | |
 
@@ -172,7 +184,8 @@ GREATER 100, and that every retail room colour is white because
 | `TextureLibrary::load` | `gfxGetTexture`, `gfxImage::GenerateMipmaps`, `gfxTexture::Create` | fixed | the file's levels exactly; a square Targa a full 2×2 chain, a JPEG one generated level; clamp U 0x1, clamp V 0x10000, else repeat |
 | `TextureLibrary::update` | `gfxTextureMovie::Update`, `UpdateAll` | verified | frame from the accumulated game time × rate; MM2 steps a float timer per frame (deviation in rounding only) |
 | `TextureLibrary::image`, `adopt`, `release`, `clear`, `setVariants` | — | openmm2 | cache management; `setVariants` is the variant handler's switch |
-| Texture Quality option | `gfxTexReduceSize` (32 << quality during city load) | open | see Missing |
+| `TextureLibrary::setSizeLimit`, `declare`, the limit in `load` | `cityLevel::Load` (`gfxTexReduceSize` = 32 << gfxTextureQuality while the city loads), `gfxDefaultPrepareImage`, `gfxImage::Halve` | fixed | second pass: a texture named under a limit keeps it whenever it loads; top mip levels dropped, or a single level halved keeping every other texel of every other row (counted from the loader's top row), until both sides fit. Props placed from pathsets are not named (deviation) |
+| `TextureLibrary::cloudMap` | `vglSetCloudMap` | fixed | second pass: the image through the variant handler, every texel black with its alpha inverted, no mipmaps |
 
 ## src/game/TexelDamage.h, TexelDamage.cpp
 
@@ -282,6 +295,26 @@ GREATER 100, and that every retail room colour is white because
 | `Rand::irand`, `frand` | `irand`, `frand` | verified | seed × 214013 + 2531011, 15 bits; × 2⁻¹⁵ |
 | one generator per subsystem | `gRandSeed`, `DisableGlobalSeed`/`EnableGlobalSeed` | deviation | MM2 shares one global seed (effects switch to a secondary one); OpenMM2 seeds each subsystem so simulations stay deterministic independently |
 
+## src/game/fx/LensFlares.h, LensFlares.cpp (new, second pass)
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `LensFlare::LensFlare` | `ltLensFlare::ltLensFlare`, `ltFlare::ltFlare`, `ltFlare::Random` | fixed | random colours (frand + 1) / 2, k = (1.5 frand)^2 along the centre line (sign random), brightness min(1, 0.25 / k), half size 0.1 sqrt(k), reach 1.5 + 0.5 frand; flare 0 on the light (0.3), flare 1 mirrored (0.25) |
+| `LensFlare::draw` | `ltLensFlare::Draw` | fixed | drawn when intensity x 0.5 reaches 0.05 and the light is within twice the half height of the centre (fading from half of it); colour light x flare x min(1, intensity x brightness). OpenMM2 keeps the cards square at any aspect (MM2's flare viewport is a fixed 4:3 ortho; deviation only away from 4:3) |
+| `spotIntensity` | `ltLight::ComputeIntensity` | fixed | 25 / d^2 x cos^3, nothing behind the beam, less the threshold, at least 0 |
+| `drawLensFlares` | `ltLensFlare::DrawBegin`, `DrawEnd` | fixed | added, unlit, no depth, texture lt_flare; the mirror view draws none (MM2 would draw its flares at full-screen positions) |
+| `Rand` for the flares | MM2's global frand | deviation | as the other effects |
+
+## src/app/RaceScreen.cpp hooks (session's file; second pass)
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `drawLevel` | `lvlLevel::Draw` (cityLevel::Draw) | openmm2 | the world drawing moved out of `drawScene` so the main view and the mirror share it |
+| `drawMirror` | `mmMirror::Cull`, `mmMirror::Reset` | fixed | the inset (RearViewMirror::viewport) cleared to black, the level from the mirror frame on the player's car, `Perspective(Fov, Aspect 2, NearClip, FarClip)`, winding swapped, the player's car hidden (its trailer stays). The on/off switch and the profile flag are the session's |
+| `drawScene`: letterbox | `mmPlayer::SetWideFOV` | fixed | in wide-angle mode the scene clears black and the level draws in the band trunc(0.18 h) down, trunc(0.66 h) tall, at that band's aspect |
+| `drawScene`: lens flares | `vehSiren::Draw` | fixed | flares queued while the level draws, added over it after |
+| Texture Quality, Cloud Shadows | `mmGame::SetLevelGraphics`, `cityLevel::Load` | fixed | the [Graphics] TextureQuality limit around CityRenderer's construction; CloudShadows into EnvironmentOptions |
+
 ## src/render/Types.h, Types.cpp (M)
 
 | OpenMM2 | MM2 | Verdict | Notes |
@@ -290,6 +323,8 @@ GREATER 100, and that every retail room colour is white because
 | `BlendMode` | `SetBlendSet` | verified | Alpha = set 0 (SRCALPHA/INVSRCALPHA), Additive = set 2 (SRCALPHA/ONE), Add = set 7 (ONE/ONE); Opaque, Modulate and Premultiplied serve OpenMM2's compositing |
 | `CompareOp` default LessEqual | `gfxRenderState` ZFUNC | verified | |
 | `CullMode`, `FrontFace` | `gfxRenderState` cull (offset 0x1b, default clockwise from `rglOpenPipe`) | verified | counter-clockwise front faces with back culling reproduce Direct3D's clockwise culling |
+| `Device::setFrontFaceFlipped`, `effectiveState` (Device.h, both backends) | `mmMirror::Cull`'s swapped cull mode | fixed | second pass: swaps every draw's winding while a mirrored view draws |
+| `DrawConstants::emissive`, `GpuDrawConstants` (112 bytes) | Direct3D material emissive | fixed | second pass |
 
 ## src/render/shaders (M)
 
@@ -315,15 +350,10 @@ GREATER 100, and that every retail room colour is white because
 
 | MM2 | What it does | Status |
 | --- | --- | --- |
-| `sdlPage16::Draw` (Tunnel attributes) | junction walls on the masked perimeter edges (u = max(1, length / height)), inner walls with flag 0x4000, a ceiling at the highest corner + height (texture +2), sloped sides with 1.414 bevels (+4), roof caps (+5), strip tunnels' walls stepped in by height × 0.333 | open: needs the assembly read (the decompile loses the `Vector3` operands); CityMesh's reconstruction stands in |
-| `lvlLevel::LoadInstances` xrefs | each PKG xref of an instance becomes an unhit banger (`dgUnhitBangerInstance::RequestBanger`) at the xref matrix times the instance's (rows renormalised outside 0.97–1.03, rejected when a row is zero or not orthogonal within 0.01), placed in the room FindRoomId gives | open for camera-props (BangerSet) and rendering: 33 retail models have xrefs (tower lights, trees, awnings, doors); CityRenderer draws them as static children until BangerSet places them |
-| `pedAnimation::DrawSkeleton` | pedestrians beyond 35 m drawn as unlit, untextured quads per bone from the `.rays` widths and offsets, coloured per variant, culling off | open: the mapping of the `.rays` columns to the colour table is in pedAnimation's loader, not yet read |
-| `aiVehicleInstance::DrawGlow` (SLIGHT0/1) | traffic turn signals blinking on a frame counter | open for ai-vehicles (the turn state) and rendering |
-| `vehSiren` lens flares (`ltLensFlare`) | `lt_flare` cards within about 13 m | open |
-| `lvlFixedAny::DrawReflectedParts` | `<name>_refl` parts drawn in the reflection pass | open |
-| `lvlFixedAny::Draw` cloud map | `shadmap_day`/`shadmap_nite` projected with UVs (x + y, y + z) / 128 over objects | open |
-| `gfxTexReduceSize` | the Texture Quality option halves textures to 32 << quality while a city loads | open for frontend-ui (the option) and rendering |
-| `cityLevel::FindRoomId`, `FullProbe`, `IsInRoomCheckWarps` | room search from a hint, its neighbours and warp links, with per-room height ranges | open: RoomLocator takes a hint on integration; CityRenderer::roomAt and draw should pass sm_LastPvsRoom (m_lastRoom) |
+| `lvlLevel::LoadInstances` xrefs | each PKG xref of an instance becomes an unhit banger (`dgUnhitBangerInstance::RequestBanger`) at the xref matrix times the instance's (rows renormalised outside 0.97–1.03, rejected when a row is zero or not orthogonal within 0.01), placed in the room FindRoomId gives | open for camera-props (BangerSet): 33 retail models have xrefs (tower lights, trees, awnings, doors); CityRenderer draws them as static children until BangerSet places them |
+| `aiVehicleInstance::DrawGlow` (SLIGHT0/1) | traffic turn signals blinking on a frame counter | open for ai-vehicles (the turn state) |
+| `cityLevel::FindRoomId`, `FullProbe`, `IsInRoomCheckWarps` | room search from a hint, its neighbours and warp links, with per-room height ranges | CityRenderer passes the hint on integration; `CityLevel::findRoom` still uses RoomLocator's search |
 | `cityLevel::Draw` without a PVS | flood fill from the camera's room through neighbours and warps | deviation: OpenMM2 tests every room's sphere (debug path) |
-| `mmMirror` (rear-view mirror) | a second viewport, cleared, fixed-aspect projection, swapped culling, the player's car hidden | open for session / camera-props (CamMirror is theirs) |
-| modShader emissive | the compact third material colour as emissive | open: needs an emissive term in DrawConstants and mesh.vert |
+| `gfxTexture::sm_LOD` | Direct3D texture-manager residency limit per street level | not ported: no lasting visual effect |
+| `lvlFixedAny` `mask` / `refl` / `nonrandom` / `opaque` parts, `DrawReflectedParts` | extra parts drawn with the model, in the reflected-parts pass, and widening the radius | no retail city model has them (scanned) |
+| Rain under landmarks | a 100 m probe upwards in landmark rooms hides the rain | open for session |
