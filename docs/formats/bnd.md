@@ -31,6 +31,9 @@ sand, mud. All files declare 0 edges.
 How the game reads it (`phBoundGeometry::Load`; `src/phys/Bound.cpp`
 `makeGeometryBound`):
 
+* Tokens (`datBaseTokenizer`) are separated by spaces, tabs, line breaks
+  or NULs; `;` starts a comment to the end of the line and a double-quoted
+  token may hold spaces. No retail file uses either.
 * The tokens are read in a fixed order: `version:` (anything but 1.01 is an
   error), `verts:`, `materials:`, `edges:`, `polys:`, then the vertices, the
   materials (`lvlMaterial::Load`, which also accepts the optional

@@ -21,29 +21,54 @@ constexpr std::uint32_t kMaxBoundVerts = 65536;
 constexpr std::uint32_t kMaxBoundPolys = 1u << 20;
 constexpr std::uint32_t kMaxBoundMaterials = 256;
 
-// Whitespace tokenizer that remembers line numbers for error messages.
+// datBaseTokenizer::GetToken's tokens, remembering line numbers for error
+// messages: separated by space, tab, CR, LF or NUL; a token starting with a
+// double quote runs to the next one (the quotes are not part of it); ';'
+// (datBaseTokenizer::CommentChar) starts a comment to the end of the line.
+// The original appends the line break to a token a comment interrupts; here
+// the comment simply ends the token. No retail bound file has comments or
+// quotes.
 class Tokens {
 public:
     explicit Tokens(std::string_view text) : m_text(text) {}
 
     bool next(std::string_view& tok) {
-        while (m_pos < m_text.size() && isSpace(m_text[m_pos])) {
-            if (m_text[m_pos] == '\n')
-                ++m_line;
-            ++m_pos;
+        for (;;) {
+            while (m_pos < m_text.size() && isSpace(m_text[m_pos]))
+                advance();
+            if (m_pos >= m_text.size())
+                return false;
+            if (m_text[m_pos] != kComment)
+                break;
+            while (m_pos < m_text.size() && m_text[m_pos] != '\n' && m_text[m_pos] != '\r')
+                advance();
         }
-        if (m_pos >= m_text.size())
-            return false;
+        if (m_text[m_pos] == '"') {
+            advance();
+            const std::size_t start = m_pos;
+            while (m_pos < m_text.size() && m_text[m_pos] != '"')
+                advance();
+            tok = m_text.substr(start, m_pos - start);
+            if (m_pos < m_text.size())
+                advance();
+            return true;
+        }
         const std::size_t start = m_pos;
-        while (m_pos < m_text.size() && !isSpace(m_text[m_pos]))
-            ++m_pos;
+        while (m_pos < m_text.size() && !isSpace(m_text[m_pos]) && m_text[m_pos] != kComment)
+            advance();
         tok = m_text.substr(start, m_pos - start);
         return true;
     }
     int line() const { return m_line; }
 
 private:
-    static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n'; }
+    static constexpr char kComment = ';';
+    static bool isSpace(char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\0'; }
+    void advance() {
+        if (m_text[m_pos] == '\n')
+            ++m_line;
+        ++m_pos;
+    }
     std::string_view m_text;
     std::size_t m_pos = 0;
     int m_line = 1;

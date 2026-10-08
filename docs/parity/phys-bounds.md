@@ -3,7 +3,7 @@
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 159 functions (a row may group small helpers or overloads);
-verified 98, fixed 35, deviation 13, inferred 6, open 0, openmm2 7.
+verified 101, fixed 36, deviation 13, inferred 1, open 0, openmm2 8.
 Missing: 1 open, 1 deviation, the rest unreached in midtown2.exe.
 
 Scope: `src/asset/Bound.{h,cpp}` (F), `src/phys/Bound.{h,cpp}`,
@@ -28,11 +28,11 @@ original is well defined.
 | `BoundMaterial` defaults | `phMaterial::phMaterial` | verified | Elasticity 0.1, friction 0.5, the values a material starts from before its keys are read. |
 | `BoundPolygon::isQuad`, `vertexCount` | `phPolygon` (fourth index 0 = triangle) | verified | `CalculateNormal`, `ComputeEdgeNormalCross` and the segment tests all test the fourth index. |
 | `BoundGeometry::bounds` | — | openmm2 | Box for the tools. |
-| `Tokens` | `datAsciiTokenizer` | inferred | Whitespace-separated tokens; no retail bound file has comments. |
+| `Tokens` | `datBaseTokenizer::GetToken`, `SkipComment` | fixed | Now also treats NUL as a separator, reads double-quoted tokens and skips `;` comments (the tokenizer's comment character) to the end of the line; before, a comment or a quoted name broke the parse. A comment in the middle of a token ends it here; the original glues the line break onto the token. No retail bound file has comments, quotes or NULs. |
 | `parseBnd` | `phBoundGeometry::Load`, `lvlMaterial::Load` | verified | Same result for all 525 retail files. The game reads the header tokens in a fixed order and requires version 1.01; the parser accepts any order and does not check the version (every retail file is 1.01 with the game's order). The optional `drag:`..`ptxthreshold:` material keys are skipped (no bound file has them). Out-of-range indices fail instead of being undefined. |
 | `parseBbnd` | `phBoundGeometry::LoadBinary`, `phMaterial::LoadBinary` | verified | Layout (u8 version, three u32 counts, vertices, 104-byte materials, 10-byte polygons). The game does not check the version byte or the size; the parser rejects both (all 324 retail files are version 1 and exact). |
 | `parseTer` | `phBoundTerrain::Load` | verified | Field order and sizes match the reads. The game requires version 1.1 and the geometry's polygon count; the count is checked in `makeTerrainBound`, the version nowhere (every retail file is 1.1, see Missing). |
-| `TerrainBound::sectionIndex`, `sectionList` | the section tables `phBoundTerrain::Load` reads | inferred | File-level helpers for the tools; the game's queries (`BoundTerrain.cpp`) index sections by x and z only. |
+| `TerrainBound::sectionIndex`, `sectionList` | — | openmm2 | Helpers only the tests use; the game's queries (`BoundTerrain.cpp`, verified) index sections by x and z alone. |
 
 ## src/phys/Bound.h, src/phys/Bound.cpp (P)
 
@@ -63,7 +63,7 @@ original is well defined.
 | `Bound::numMaterials` | `phBound::GetNumMaterials`, `dg*::GetNumMaterials` | verified | 0, or 1 with an own material. |
 | `Bound::setFriction`, `setElasticity` | `dg*::SetFriction`, `SetElasticity` (`phBound`'s are no-ops) | verified | Friction at +0x2c, elasticity at +0x28 of the material. |
 | `Bound::vertex` | `phBound::GetVertex` | verified | A dummy point. |
-| `Bound::testEdge`, `testProbe` (base) | — | inferred | The base never answers; every bound type overrides them. |
+| `Bound::testEdge`, `testProbe` (base) | phBound's vtable slots 0x24 / 0x28 | verified | Pure virtual in phBound; every bound type overrides them, so the base answer (none) is never reached. |
 | `Bound::testSegment` | `phBound::TestSegment` | verified | Probe → TestProbe with maxT 2 (needs 1 slot), edge → TestEdge (needs 2), AI segments → 0. |
 | `Bound::calculateSphereFromBoundingBox` | `phBound::CalculateSphereFromBoundingBox` | fixed | Radius summed z, y, x. |
 | `Bound::setOffset` | `phBound::SetOffset` | verified | Never clears the offset flag. |
@@ -171,7 +171,7 @@ original is well defined.
 | `relative` | `Matrix34::FastInverse` + `Matrix34::Dot` | verified | |
 | `dot` | `Vector3::Dot` | fixed | Summed z, y, x (was x, y, z). |
 | `materialOf` | FindImpacts' material read | verified | |
-| `DispSegment`, `EdgeSegment`, `Scratch` | `phBoundPolygonal::DispSegment`, `Segment`, the static buffers | inferred | Same contents and initial values (0xffff, 2.0, −1.0). |
+| `DispSegment`, `EdgeSegment`, `Scratch` | `phBoundPolygonal::DispSegment`, `Segment`, the static buffers | verified | Same contents and initial values (0xffff, 2.0, −1.0); vectors instead of fixed buffers. |
 | `getAllSegments` | `phBoundPolygonal::GetAllSegments` | fixed | Threshold dot and previous-pose transform in the original's orders. |
 | `collidePolygon` | per-polygon pass of `TestBoundPolyPolyUseDotSmall` and `lvlSDL::CollidePolyToLevel` | fixed | Plane distances summed z, y, x. −1.5 × penetration backup, entry/exit rules verified. |
 | `writeIntersections` | output loops of the same | fixed | Edge normals summed z, y, x. The capacity check is a guard. |
@@ -191,7 +191,7 @@ original is well defined.
 | `findImpactsPolyToPoly` | `phBoundPolygonal::FindImpactsPolyToPoly` | verified | |
 | `findImpacts` | `phBoundPolygonal::FindImpacts` | fixed | **Behaviour:** B's leftover vertices go to RetryVertPolyCollide as (B, A), so the impact keeps collider A = A; OpenMM2 passed (A, B) and swapped the colliders against the elements and normal (impulse reversed; terrain material on the wrong side). Edge-edge approach summed z, y, x. |
 | `findImpactsSphereToPoly` | `phBoundPolygonal::FindImpactsSphereToPoly` | fixed | Centre and offset dots, offset rotation, probe test and fallback depth in the original's orders. |
-| `LevelBound::clear`, `addPolygon` | `sdlPoly::InitNoArea` (edge normals) | inferred | Corners copied per polygon instead of shared; the level's edges are never used. |
+| `LevelBound::clear`, `addPolygon` | `sdlPoly::InitNoArea` (edge normals) | verified | Same normals and edge normals; corners copied per polygon instead of shared in lvlSDL's buffer (the level's edges are never used). |
 | `LevelBound::vertex` | `lvlSDL::GetVertex` | verified | |
 | `LevelBound::material` | `lvlLevelBound::GetMaterial` | verified | |
 | `Level::material` | — | openmm2 | Fallback for a level without a table. |
