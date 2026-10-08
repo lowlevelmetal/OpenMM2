@@ -1,11 +1,13 @@
 # Parity audit: camera-props
 
-Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
+Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07; second
+pass on 2026-10-08 (PKG xrefs as bangers, banger movers, the cameras'
+probe, the XCams).
 
-Summary: 191 functions; verified 110, fixed 50, deviation 11, inferred 2,
+Summary: 195 functions; verified 107, fixed 57, deviation 11, inferred 2,
 open 0, openmm2 18.
 
-Missing (MM2 code without an OpenMM2 counterpart, listed at the end): 9 open,
+Missing (MM2 code without an OpenMM2 counterpart, listed at the end): 7 open,
 3 owned by other areas, 9 not needed.
 
 Scope: the car cameras and the view (`src/game/Cam*`, `Camera.*`), the
@@ -84,8 +86,8 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `TrackCamera::updateHill` | `camTrackCS::UpdateHill` | verified | asm checked, including the tilt < 0.01 branch. |
 | `TrackCamera::updateTrack` | `camTrackCS::UpdateTrack` | verified | |
 | `TrackCamera::preApproach` | `camTrackCS::PreApproach` | verified | |
-| `TrackCamera::minMax` | `camTrackCS::MinMax` | verified | Probe semantics are the caller's: MM2 collides with the city and the room's instances flagged 0x20, ignoring the player's car; RaceScreen's probe is the world's static geometry (inferred equivalent). |
-| `TrackCamera::collide` | `camTrackCS::Collide` | verified | Type 1 near-plane corners (tan from `gfxViewport::Perspective`, +0.33), type 2 pull-in. |
+| `TrackCamera::minMax` | `camTrackCS::MinMax` | fixed | The algorithm verified. The probe RaceScreen passed was the static polygon soup; MM2 collides through dgPhysManager::Collide with mask 0x20, ignoring the player's car (the city's collision polygons and the rooms' instances flagged 0x20). RaceScreen now passes World::wheelProbe with the player's body as the one never hit. |
+| `TrackCamera::collide` | `camTrackCS::Collide` | fixed | Type 1 near-plane corners (tan from `gfxViewport::Perspective`, +0.33), type 2 pull-in, verified; the probe is World::wheelProbe now (see minMax). |
 | `setCollideMargin` | `camTrackCS +0x180` (set by `mmPlayer::Update`) | verified | |
 
 ## CamPov (camPovCS)
@@ -108,7 +110,7 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `PreCamera::update` | `camPreCS::Update` | verified | |
 | `PointCamera::PointCamera`, `setPosition`, `setVelocity`, `setMaxDist`, `setMinDist`, `setAppRate` | `camPointCS::camPointCS`, `SetPos`, `SetVel`, `SetMaxDist`, `SetMinDist`, `SetAppRate` | verified | MaxDist 70, near 0.5. |
 | `PointCamera::update` | `camPointCS::Update` | verified | Zoom 60 → 25 degrees between 0.3 × MaxDist and MaxDist; asm checked. Sets the perspective even in wide-angle mode, as MM2. |
-| `PolarCamera` (all) | `camPolarCS::camPolarCS`, `Update`, `FileIO` defaults | fixed | Was missing; ported for the multiplayer finish camera (keyboard orbit, limits 0.5..200 m and ±pi, AzimuthLock). |
+| `PolarCamera` (all) | `camPolarCS::camPolarCS`, `Update`, `FileIO` defaults | fixed | Was missing; ported for the multiplayer finish camera and the XCams (keyboard orbit, limits 0.5..200 m and ±pi, AzimuthLock). |
 
 ## CamView (camViewCS, camTransitionCS)
 
@@ -132,8 +134,9 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `PlayerCameras::toggleCamera` | `mmViewMgr::SetViewSetting(0)` | verified | |
 | `PlayerCameras::toggleDashboard`, `setDashboard` | `mmViewMgr::SetViewSetting(6)` | verified | |
 | `PlayerCameras::toggleWideAngle` | `mmViewMgr::SetViewSetting(5)` | verified | The map-mode conditions belong to the HUD. |
+| `PlayerCameras::toggleXCam`, `setXCamCheat`, `xCam` | `mmViewMgr::SetViewSetting(2)`, `mmPlayer::GetNextCycleXCamIndex`, `GetCurrentXCamIndex`, `SetCamera` group 1, `mmPlayer::Init` (the XCams' settings) | fixed | Was missing: the first press blends (mode 3, 0.8 s) to the current XCam (camPolarCS about the car), turning the dashboard off and remembering it (the dash view's activated flag); the next press returns to the dashboard or the cycled camera. XcamCheat, which would cycle the two XCams, is never set in midtown2.exe. The dashboard key does nothing in an XCam (SetViewSetting(6) returns for group 1). |
 | `PlayerCameras::select` | `mmPlayer::SetCamera` | openmm2 | Convenience for menus and tests. |
-| `setCamera`, `carCam`, `currentCameraPtr`, `isPov`, `setWideFov`, `view` | `mmPlayer::SetCamera`, `CarCams`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `GetCamera` | verified | Rain-audio interior flag in SetCamera is audio's. |
+| `setCamera`, `carCam`, `currentCameraPtr`, `isPov`, `setWideFov`, `view` | `mmPlayer::SetCamera`, `CarCams`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `GetCamera` | verified | Group 1 (the XCams) added with toggleXCam. Rain-audio interior flag in SetCamera is audio's. |
 | `PlayerCameras::startPreRace` | `mmPlayer::SetPreRaceCam` | verified | |
 | `PlayerCameras::startPostRace` | `mmPlayer::SetPostRaceCam` | verified | MaxDist 25, MinDist 5, AppRate 5, 3.5 m above the far camera. |
 | `PlayerCameras::startMultiplayerPostRace` | `mmPlayer::SetMPPostCam` | fixed | Was missing (the doc said nothing calls it; `mmGameMulti::SetFinishCam` does). |
@@ -186,7 +189,7 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `BangerSet::BangerSet` | `dgBangerActiveManager::dgBangerActiveManager`, `dgBangerActive::dgBangerActive` | verified | 32 actives, list in index order, asParticles::Init(64, 2, 2). Each active's particles get their own random seed (MM2: the global frand; deviation shared with the effects). |
 | `~BangerSet`, `newInstance`, `prop`, `body`, `bound`, `hitCount`, `setWorld`, `instancesIn`, `roomsTracked`, `findRoom`, `inWorld`, `syncActiveList` | — | openmm2 | Glue to phys::World and CityLevel. |
 | `moveToRoom` | `lvlLevel::MoveToRoom` | inferred | Appends to the room list (MM2's list order not established). |
-| `placeUnroomed` | `cityLevel::LoadPath` | fixed | Room of the placement point (FindRoomId of the path matrix's position); was the CG's. |
+| `placeUnroomed` | `cityLevel::LoadPath`, `lvlLevel::LoadInstances` (xrefs) | fixed | Room of the placement point (FindRoomId of the path matrix's position, or of an xref's starting from its record's room); was the CG's. |
 | `add` | `dgUnhitBangerInstance::RequestBanger`, `Init`, `SetVariant`, `MoveToRoom` | fixed | The CG offset is turned by the matrix as placed before the Y form keeps m00/m02 (was the reduced matrix; a tilted street prop's CG differed), and the variant is kept. |
 | `reset` | `dgBangerActiveManager::Reset`, `dgBangerManager::Reset`, `dgUnhitBangerInstance::Reset` | verified | Same end state (MM2 resets the nodes in tree order, then lvlLevel::ResetInstances). |
 | `getBanger` | `dgBangerManager::GetBanger` (`Init(40)`) | verified | Slot 0 twice after a wrap kept; the previous prop's active detached and its room left. OpenMM2 creates the 40 instances as first used. |
@@ -196,10 +199,11 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `activeAttach` | `dgBangerActive::Attach` | verified | Not collidable, Zero + instance matrix, InitBoxMass(Mass, Size), collider with GetBound(3) (the data's bound) and ColliderId, momentum from GetVelocity (zero), SmoothAngInertia(40), WakeUp, age 0, debris blast. MM2 writes a stationary rule's position into the shared data's rule and returns before setting the rule when the prop is not standing; no retail rule with a texture is stationary. |
 | `activeDetach` | `dgBangerActive::Detach` | verified | IgnoreMover, collidable again, link cleared; OpenMM2 also clears the particles (MM2 stops updating and drawing them; Attach resets them). |
 | `detachMe` | `dgBangerActive::DetachMe` | verified | |
+| `ActiveBody::detach`, `worldDetach` | `dgHitBangerInstance::Detach` (called by `dgPhysManager::Update` on a type-1 mover outside the active rooms) | fixed | Was missing: the hit instance's active detaches (DetachMe) and the instance leaves its room, so a knocked-over prop still moving vanishes when the cars leave it behind; a prop still standing keeps lvlInstance's empty Detach. World::beginFrame now defers the removals made from inside an owner's detach (phys-core, one change), and RaceScreen declares the player's car as the type-4 mover (mmGame::Update), without which no room would be active. |
 | `newMover` | `dgPhysManager::NewMover` | verified | Refused for an instance in no room; collides with everything from the next sample. |
 | `unhitImpact` | `dgUnhitBangerInstance::Impact` | verified | Checked against the asm (ground point, part CG, velocity change sums); with parts, data entry +p+1 = BREAK p+1, NewMover with the unhit prop for the first part only, then the prop's active DetachMe. |
 | `directUpdate` | `dgBangerActive::Update` + `PostUpdate` (CollisionType 0x2) | verified | No retail data uses 0x2. |
-| `declare` | `dgBangerActiveManager::Update` (second loop) | verified | Flag priority 0x2, 0x40, 0x10, 0x4. The age-based mode (dgBangerDataManager +0x2a8a8) is switched off by mmGame::Init. The mover type MM2 declares (2 for 0x40, 1 for 0x10 / 0x4) is not modelled: see Missing. |
+| `declare` | `dgBangerActiveManager::Update` (second loop), `dgPhysManager::DeclareMover` | fixed | Flag priority 0x2, 0x40, 0x10, 0x4 verified; the mover type was not declared (every active was a type-2 mover). Now Body::declare: 0x40 (2, 0x1b), 0x10 (1, 0x1b), 0x4 (1, 0x3), 0x2 updated by the manager, else undeclared; the age mode (dgBangerDataManager +0x2a8a8, off after mmGame::Init) by age: (1, 0x1b) up to the second age, (1, 0x3) up to the first, then the manager's update (`setAgeMode`, ages 6 and 30000 s). |
 | `update` | `dgBangerActive::PostUpdate`, `dgBangerActiveManager::Update` (first loop) | deviation | Actives asleep or below −100 detach as in MM2; one whose instance is in no room is detached (MM2 only takes it off the list, leaving the instance linked and uncollidable). Debris at a fixed step (effects). |
 | `ejectPart` | `vehBreakableMgr::Eject` | verified | Checked against the asm: frand order y, x, z, sums (z, x, y) and (z, y, x), momentum (not velocity) speed ± 1, angular impulse 2 ± 1. OpenMM2 uses its own random stream. |
 | `draw` (props, trees) | `dgBangerInstance::Draw`, `DrawTree`, `dgTreeRenderer::RenderTrees` | fixed | Trees always the high LOD, unlit, reference 120, after the others; unlit props reference 140. Trees now take the prop's variant (was paint job 0). No retail banger PKG has a SHADOW mesh, so DrawShadowMap draws nothing. |
@@ -222,7 +226,9 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `AiRoad::vertexSingleCenter` | `lvlAiMap::GetVertexSingleCenter` | fixed | New (used by the curb pull only). |
 | `placeStreetProps` | `cityLevel::Load` (propulate loop), `cityPropulator::Propulate`, `lvlSDL::Propulate`, the propulator's placement callback | fixed | Rule 0 has no props; the left rule stands on the walk with side 1, walked first; X axis normalised with the (z, y, x) sum; maxUse spent per rule side and road even when the chosen file cell is empty; frand / irand order verified. Roads without the sidewalk flag are skipped (identical result: every candidate is degenerate). MM2 quits on a missing rule or def; OpenMM2 skips it. Retail effect: same 10,184 street props, positions within 7 cm, 10 room changes in London. |
 | `racePropsName` | `cityLevel::Load`, `dgGameModeNames` | fixed | New: the race's path set name (roam, race%d, multicop, circuit%d, blitz%d, crash%d). |
-| `placeCityProps` | `cityLevel::Load`, `lvlLevel::LoadInstances` | fixed | cityLevel::Load's order (street rules, .inst, _ai.inst, props.pathset, then the race's path set, which was not placed at all); .inst bangers keep the full matrix unless stored in the Y form (the old test of flag 0x80 read the variant byte's top bit; values were identical) and take the variant byte. Banger records are picked by banger data, MM2 by the record flag 0x200: identical on retail (107 flagged records, all with data, no unflagged record with data), and consistent with CityLevel / CityRenderer, which skip by name. |
+| `placeCityProps` | `cityLevel::Load`, `lvlLevel::LoadInstances` | fixed | cityLevel::Load's order (street rules, .inst, _ai.inst, props.pathset, then the race's path set, which was not placed at all); .inst bangers keep the full matrix unless stored in the Y form and take the variant byte; after each record (banger or not) the bangers its geometry's PKG xrefs place (were drawn by CityRenderer as static children instead). Banger records are picked by banger data, MM2 by the record flag 0x200: identical on retail (107 flagged records, all with data, no unflagged record with data). |
+| `pkgXrefs` | `lvlInstance::EndGeom` (`modPackage::OpenFile("xrefs")`) | fixed | New: the "xrefs" chunk of geometry/<model>.pkg (named with its NUL; a count, then 80-byte entries). Agrees with asset::parsePkg on all 33 retail models that have one. |
+| `placeXrefs` | `lvlLevel::LoadInstances` (xref loop) | fixed | New: xref matrix times the record's (Matrix34::Dot); a zero row or a pair of rows with a dot product above 0.01 drops it ("bad x-ref matrix"), rows outside 0.97..1.03 squared length normalised; only models with banger data (RequestBanger, else "not exported": cl10's trees); full matrix, the record's variant, room found from the placement point starting at the record's room (`PlacedProp::roomHint`). Retail: 65 bangers in London, 368 in San Francisco. |
 
 ## src/game/bangers/RoadDecals.{h,cpp}
 
@@ -296,12 +302,10 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
 | `camTrackCS::SwingToRear`, `Front`, `Rear` and the swing spline | Swing the chase camera between front and rear on a spline | not needed: nothing calls them (`UpdateSwing` is empty) |
 | `camAICS` | A free camera; `mmPlayer::Init` initialises it but nothing shows it | not needed |
 | `camPostCS` | A post-race orbit; only its `MakeActive` runs (from `SetPostRaceCam`), which sets its own fields | not needed: never shown |
-| The camera cheat's "XCams" (`mmPlayer` +0x18B8 / +0x19E0 `camPolarCS`, `SetViewSetting(2)`, `GetNextCycleXCamIndex`, `SetCamera` group 1) | Two keyboard orbit cameras cycled with the XCam cheat | open, minor: `PolarCamera` exists; needs the cheat flag, a key and `SetCamera` group 1 (frontend-ui / session) |
 | `mmMirror::Cull` (drawing) | Draws the level into the mirror inset (cull winding swapped, player's car hidden) | open (rendering-fx): the camera side is `RearViewMirror`; docs/camera.md lists what the renderer must do |
 | `mmViewMgr::SetViewSetting` 1, 3, 4, 7, 8, 10 and the map-mode conditions of 5 | HUD map modes, HUD toggle, external view, map resolution and orientation | session (HUD) |
 | `mmGame::UpdateGameInput` (HUD part) | Hides the HUD while looking around in the point-of-view cameras | session (HUD) |
 | `mmRainAudio::SetInterior` in `mmPlayer::SetCamera` | Rain sounds from inside in the hood view | audio |
-| `dgPhysManager::Update` (type-1 mover culling, with `DeclareMover`'s type) | Movers declared with type 1 (props with CollisionType 0x10 or 0x4, ragdolls) whose room is not the room of a type-3/4 mover (player 4; opponents, network players 3) or a neighbour of one are detached; for a knocked-over prop that is `dgHitBangerInstance::Detach`, so it vanishes when the cars leave it while it still moves. | open: needs mover types and the active-room list in phys::World (phys-core); BangerSet would declare 1 or 2 per CollisionType. |
 | `dgGlassInstance`, BillFlags 0x100, `-andyglasshack` | Glass props and the pivot read for them | not needed: no retail banger sets 0x100 (the switch is a command-line hack). |
 | `dgBangerData::Save`, `LoadEntry`, `ChangeData`, `AdjustBound` | Editor support | not needed for gameplay. |
 | `dgBangerInstance::DrawShadowMap` | Draws the geometry's SHADOW mesh in the shadow pass | not needed: banger PKGs have no SHADOW mesh. |
@@ -331,9 +335,9 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
   `viewSettings()` back into the profile when the game ends; create a
   `RearViewMirror` for the player's car, on when `Profile::mirror` is set,
   toggle it with the mirror control (input event 0x1E) and store the state
-  back. RaceScreen's camera probe is the world's
-  static geometry; MM2's (`dgPhysManager::Collide`, flags 0x20) is the city
-  plus the room's instances flagged 0x20, ignoring the player's car.
+  back. (Second pass: RaceScreen now gives the cameras World::wheelProbe
+  and declares the player's car as the type-4 mover; both one-line changes
+  there.)
 - **rendering-fx:** draw the mirror (see docs/camera.md, "Rear-view
   mirror") and the wide-angle letterbox (`CameraView::wideAngle`).
 - **vehicle:** `mmPlayer::Init` initialises the player's vpcop with
@@ -348,9 +352,10 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
   checkpoint by place or already passed) and show passed entries in their
   own style in `RaceRecordsDialog` (`Dialog_HallOfFame` style 2); the
   per-driver options and the last TCP/IP address listed under Missing.
-- **phys-core:** `dgPhysManager::Update`'s mover types and active-room
-  culling (knocked-over props vanish when the cars leave their rooms), see
-  Missing.
+- **ai-vehicles / session:** with the bangers now type-1 movers, only the
+  player's room and its neighbours keep knocked-over props simulated; MM2
+  also declares opponents within 200 m of a player (aiRouteRacer, type 3)
+  and network players (type 3), whose rooms keep props alive too.
 - **ai-ambient-city / formats:** `city::parseCityInfo` (the parser the game
   uses for cities) still trusts the race counts; MM2 replaces a non-zero
   count by the number of names and ignores the list when it is 0
@@ -361,4 +366,5 @@ and the existing `test_camera.cpp`, `test_bangers.cpp`, `test_catalog.cpp`,
   such a value.
 - **rendering-fx (props):** MM2 draws glows and road decals per visible
   room (decals from the room of the midpoint of points 0 and 2, in the
-  room's colour).
+  room's colour). CityRenderer no longer draws PKG xrefs with their parent
+  (second pass, one change in `drawModel`): they are bangers now.
