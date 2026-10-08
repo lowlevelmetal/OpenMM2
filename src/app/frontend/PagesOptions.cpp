@@ -641,8 +641,9 @@ public:
         m_autoReverse->enabled = true;
         m_sensitivity->enabled = c != Controller::Keyboard;
         m_deadZone->enabled = stick;
-        // OpenMM2 cannot tell whether a stick has a POV hat; any joystick may use it.
-        m_pov->enabled = c == Controller::Joystick;
+        // ControlSetup::InitCustomControls: POV HAT for the joystick when it
+        // has one (mmInput::JoystickHasCoolie).
+        m_pov->enabled = c == Controller::Joystick && controls::readJoystick(ctx.input, bound, deadZone).hasPov;
         // ControlSetup::ActivateDeviceOptions / InitCustomControls: FORCE
         // FEEDBACK with the joystick or the wheel controller and a
         // force-feedback joystick (mmInput +0x160; OpenMM2 also counts a

@@ -33,6 +33,7 @@ struct JoystickFrame {
     float pov = -1.0f;
     std::uint32_t buttons = 0; // bit n: button n + 1
     int numButtons = 0;
+    bool hasPov = false; // DIDEVCAPS dwPOVs (mmJoyMan::HasCoolie)
 
     // mmJoystick::GetAxis for a component (0 for buttons and U / V, which
     // mmJoystick::Poll never reads).

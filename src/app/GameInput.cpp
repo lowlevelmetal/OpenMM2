@@ -108,6 +108,7 @@ JoystickFrame readJoystick(const platform::Input& in, Controller c, float deadZo
         hat |= down(GamepadButton::DpadDown) ? 0x4 : 0;
         hat |= down(GamepadButton::DpadLeft) ? 0x8 : 0;
         j.pov = povFromHat(hat);
+        j.hasPov = true; // the D-pad
         constexpr GamepadButton kOrder[] = {GamepadButton::South,        GamepadButton::East,
                                             GamepadButton::West,         GamepadButton::North,
                                             GamepadButton::LeftShoulder, GamepadButton::RightShoulder,
@@ -129,6 +130,7 @@ JoystickFrame readJoystick(const platform::Input& in, Controller c, float deadZo
     j.z = directInputAxis(axis(2), 0.0f);
     j.r = directInputAxis(axis(3), 0.0f);
     j.pov = s.hats.empty() ? -1.0f : povFromHat(s.hats.front());
+    j.hasPov = !s.hats.empty();
     for (std::size_t i = 0; i < s.buttons.size() && i < 32; ++i)
         if (s.buttons[i])
             j.buttons |= 1u << i;

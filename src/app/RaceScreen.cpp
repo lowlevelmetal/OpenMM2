@@ -1451,6 +1451,8 @@ private:
     void openChat(Context& ctx) {
         m_popup = Popup::Chat;
         m_popupPaused = false;
+        m_gameInput.flush(); // mmPopup::ProcessChat: mmInput::Flush, StopAllFF
+        m_ff.stopAll();
         m_chatText.clear();
         ctx.input.startTextInput(ctx.window());
         m_textInput = true;
@@ -1731,15 +1733,17 @@ private:
         // ProcessEscape: pauses unless the game already is (the full-screen
         // map), and remembers it so closing does not resume it.
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
-        m_ff.stopAll(); // mmPopup::ProcessEscape: mmInput::StopAllFF
+        m_ff.stopAll(); // mmPopup::ProcessEscape: mmInput::StopAllFF and Flush
+        m_gameInput.flush();
         if (m_popupPaused)
             m_paused = true;
         buildPopup(ctx);
     }
 
     void closePopup() {
-        // mmPopup::DisablePU.
+        // mmPopup::DisablePU (mmInput::Flush).
         m_popup = Popup::None;
+        m_gameInput.flush();
         // Buttons close the popup from inside its update: keep the menu
         // until the next frame.
         if (m_popupMenu)
