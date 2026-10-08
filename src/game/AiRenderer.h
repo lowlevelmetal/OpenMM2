@@ -51,6 +51,7 @@ private:
     CarModel* carModel(const std::string& name);
     const asset::PedType* pedType(const std::string& name);
     void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
+    void drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
     void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows);
 
     render::Device& m_device;

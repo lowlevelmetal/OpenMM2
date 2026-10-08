@@ -65,6 +65,13 @@ lvlFixedAny::Init looks for (it draws `mask` with the model, `refl` in
 DrawRooms' reflected-parts pass, and widens the radius over them), so they
 are not drawn.
 
+## Pedestrians
+
+| Topic | Behaviour | Evidence |
+|---|---|---|
+| Near | within 35 m of the camera the posed model (`modModel::Draw`, default culling), lit and fogged | MM2 (`aiPedestrianInstance::Draw`, `pedAnimationInstance::Draw`) |
+| Far | beyond 35 m a stick figure from `anim/<type>.rays`: for each bone with a start width, its position raised by the bone's offset (its children see the raised position), a quad to its parent across the camera's right axis with the start and end half widths, coloured trunc(255 x diffuse) of the variant's shader the variant row names; untextured, unlit, both sides, fogged. A type without a .rays file draws nothing there | MM2 (`pedAnimation::DrawSkeleton`; the .rays reading in the pedestrian type's loader: per bone start width, end width, offset, parent and an unused byte, then one shader index per bone for each variant) |
+
 ## Wide angle
 
 | Topic | Behaviour | Evidence |
