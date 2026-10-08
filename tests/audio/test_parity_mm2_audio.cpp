@@ -347,3 +347,30 @@ TEST(AudioParityMm2, AmbientDriverVoiceFollowsItsCar) {
     voice.stop();
     car.stop();
 }
+
+TEST(AudioParityMm2, OldEngineTableLayout) {
+    // vehEngineAudio::Load: "Volume Divisor" in the engine header's fourth
+    // cell selects ParseCSVBufferOld for every row: name, min volume, max
+    // volume, divisor, min pitch, max pitch, (unused), cut RPM.
+    const auto car = parseCarAudio("h\nHORN,0.9,0,4,REVERSE,0.8\n"
+                                   "Engine wave name,min vol,max vol,volume divisor\n"
+                                   "IDLE,0.3,0.95,4000,0.8,1.6,1000,5000\n");
+    ASSERT_TRUE(car);
+    ASSERT_TRUE(car->oldEngineLayout);
+    ASSERT_EQ(car->engine.size(), 1u);
+    const EngineSampleDef& d = car->engine[0];
+    EXPECT_TRUE(d.oldLayout);
+    EXPECT_FLOAT_EQ(d.volumeDivisor, 4000.0f);
+    EXPECT_FLOAT_EQ(d.minPitch, 0.8f);
+    EXPECT_FLOAT_EQ(d.maxPitch, 1.6f);
+    EXPECT_FLOAT_EQ(d.cutRpm, 5000.0f);
+    // CalculateVolumeOld: rpm / divisor below the cut, divisor / rpm from it,
+    // clamped to min, then max.
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(d, 800.0f).volume, 0.3f);   // 0.2 -> min
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(d, 2000.0f).volume, 0.5f);  // 2000 / 4000
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(d, 4800.0f).volume, 0.95f); // 1.2 -> max
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(d, 8000.0f).volume, 0.5f);  // 4000 / 8000
+    EXPECT_FALSE(EngineSound::evaluate(d, 2000.0f, true).audible);    // Silence: 0..0
+    // The pitch range is never set: the max pitch above 0 RPM (inferred).
+    EXPECT_FLOAT_EQ(EngineSound::evaluate(d, 2000.0f).pitch, 1.6f);
+}

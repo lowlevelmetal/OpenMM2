@@ -61,15 +61,28 @@ std::optional<CarAudioDef> parseCarAudio(std::string_view textIn, std::string* e
         return std::nullopt;
     }
     def.oldEngineLayout = str::iequals(field(t.cells(2), 3), "Volume Divisor");
-    if (def.oldEngineLayout) {
-        setError(error, "engine table uses the old \"Volume Divisor\" layout (not supported)");
-        return std::nullopt;
-    }
     for (std::size_t i = 3; i < t.size(); ++i) {
-        // vehEngineSampleWrapper::ParseCSVBuffer.
         const Cells e = t.cells(i);
         EngineSampleDef s;
         s.wave = text(field(e, 0));
+        if (def.oldEngineLayout) {
+            // vehEngineSampleWrapper::ParseCSVBufferOld: name, min volume, max
+            // volume, volume divisor, min pitch, max pitch, a value it stores
+            // as a reciprocal into the pitch slope (read by nothing, as the
+            // pitch range is empty), cut RPM. The pitch range (+0x34 / +0x38)
+            // is left as the constructor left it, unset; OpenMM2 takes 0
+            // (inferred), so the pitch is the max pitch above 0 RPM.
+            s.oldLayout = true;
+            s.minVolume = num(e, 1);
+            s.maxVolume = num(e, 2);
+            s.volumeDivisor = num(e, 3);
+            s.minPitch = num(e, 4);
+            s.maxPitch = num(e, 5);
+            s.cutRpm = num(e, 7);
+            def.engine.push_back(std::move(s));
+            continue;
+        }
+        // vehEngineSampleWrapper::ParseCSVBuffer.
         s.minVolume = num(e, 1);
         s.maxVolume = num(e, 2);
         s.fadeInStartRpm = num(e, 3);

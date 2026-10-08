@@ -170,8 +170,20 @@ EngineSound::Evaluation EngineSound::evaluate(const EngineSampleDef& d, float rp
     const float outSlope = (d.maxVolume - d.minVolume) * (outRange != 0.0f ? 1.0f / outRange : 0.0f);
     const float minVolume = silenced ? 0.0f : d.minVolume;
     const float maxVolume = silenced ? 0.0f : d.maxVolume;
-    // CalculateVolume.
-    if (rpm <= d.fadeInStartRpm || d.fadeOutEndRpm <= rpm)
+    if (d.oldLayout) {
+        // CalculateVolumeOld: rpm / divisor below the cut RPM, divisor / rpm
+        // from it; the minimum first, then the maximum. A divisor of 0 (or 0
+        // RPM at the cut) divides by zero in MM2; OpenMM2 keeps a NaN out of
+        // the mixer (malformed data only).
+        float v = rpm < d.cutRpm ? rpm / d.volumeDivisor : d.volumeDivisor / rpm;
+        if (std::isnan(v))
+            v = 0.0f;
+        if (v < minVolume)
+            v = minVolume;
+        else if (maxVolume < v)
+            v = maxVolume;
+        e.volume = v;
+    } else if (rpm <= d.fadeInStartRpm || d.fadeOutEndRpm <= rpm)
         e.volume = minVolume;
     else if (rpm < d.fadeInEndRpm)
         e.volume = (rpm - d.fadeInStartRpm) * inSlope + minVolume;

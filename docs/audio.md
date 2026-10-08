@@ -113,6 +113,7 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
 | Engine row pitch: min up to the shift start, max from the shift end, `min + rpm * (max - min) / (end - start)` between — the slope multiplies the whole RPM, so the pitch jumps at the start of the range (and past max pitch just before its end) unless the range starts at 0 | MM2 (`CalculatePitch`, `ParseCSVBuffer`) |
 | A sample stops while its table volume is below 0.25; positioned cars then scale volume by attenuation and pitch by doppler | MM2 (`vehEngineSampleWrapper::UpdateRPM`) |
 | Engine silenced after a damage out: min and max volume become 0 but the fade slopes keep their table values, so a sample in a fade can still be heard (up to max - min) | MM2 (`vehEngineSampleWrapper::Silence`, `vehEngineAudio::Silence`) |
+| A car table whose engine header has "Volume Divisor" in its fourth cell uses the old layout (no table MM2 loads does): each row is name, min volume, max volume, divisor, min pitch, max pitch, an unused value, cut RPM; volume = rpm / divisor below the cut RPM and divisor / rpm from it, clamped to the min and max volume; the pitch is the max pitch above 0 RPM, as the pitch range is never set (inferred: MM2 leaves it unset) | MM2 (`vehEngineAudio::Load`, `vehEngineSampleWrapper::ParseCSVBufferOld`, `CalculateVolumeOld`) |
 | Clutch sample whenever the gear changes into or out of reverse (including the first update in reverse); positioned cars have none | MM2 (`vehCarAudio::UpdateGear`, `Load`) |
 | Horn: loops while held, from the start; positioned cars only have one when they are network players (container mode 0), AI cars (mode 1) none | MM2 (`vehCarAudio::PlayHorn` / `StopHorn`, `vehCarAudioContainer::Init`) |
 | A car with siren lights (every police-list car: vpcop, vpsemi) toggles its siren with the horn button and never plays its horn | MM2 (`mmGame::UpdateHorn`, `vehCarAudioContainer::PlayHorn`) |
@@ -249,8 +250,6 @@ a time. Ported from MM2 `Aud3DObject` and `Aud3DObjectManager`:
   in retail), and its nitro sample is never played
   (`vehCarAudioContainer::PlayNitro` has no caller), so it sounds like
   `vehCarAudio`.
-* The old "Volume Divisor" engine table layout (`ParseCSVBufferOld`); no car
-  table MM2 loads uses it.
 
 ## Data quirks
 
