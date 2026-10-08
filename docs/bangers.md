@@ -45,8 +45,13 @@ name. A mass of 0 or less becomes 1 in OpenMM2 (no retail file has one).
    prop1 on; empty cells skipped), each prop's `propdefs.csv` row by name
    (start, distance and the lerps read with atof, maxUse with atoi; file1–4
    as far as the row has cells: an empty cell between commas counts and
-   places nothing, the one after a comma ending the line does not). MM2
-   quits when a rule or a prop is missing; OpenMM2 skips it. The random
+   places nothing, the one after a comma ending the line does not). Both
+   files are read as parCsvFile does: at most 16 columns (proprules.csv
+   names 20, so a rule holds at most 15 props), every line after the header
+   a row (blank lines too), '#' ends a line, lines of more than 255
+   characters split into rows, cells end at a comma or a control character
+   and keep their spaces. MM2 quits when a rule or a prop is missing;
+   OpenMM2 skips it. The random
    generator restarts (seed 1) per road. For each prop of a rule the whole
    road is walked along both sidewalks, the left one first, once per road
    strip of the first room: from `start` metres, every `distance`, at a

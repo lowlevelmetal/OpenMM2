@@ -6,10 +6,10 @@
 
 #include "core/Log.h"
 #include "core/StringUtil.h"
-#include "data/TextTables.h"
 #include "game/fx/Random.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <format>
 #include <map>
@@ -23,6 +23,109 @@ std::string_view text(const std::vector<std::byte>& b) {
 }
 
 bool zeroRow(const Vec3& v) { return v.x == 0.0f && v.y == 0.0f && v.z == 0.0f; }
+
+// parCsvFile::Load, as cityPropulator::Load reads propdefs.csv and
+// proprules.csv. The first line names the columns, at most 16 of them; every
+// following line is a row, blank lines included, with at most one cell per
+// column. Lines are read as fgets does into 256 bytes: one row per line, or
+// per 255 characters of a longer line. A '#' ends the line. A cell starts
+// after any control characters and runs to the next control character or
+// comma (bytes from 0x80 count as control characters: MSVC's char is
+// signed), which it consumes: an empty cell between two commas exists, but
+// none follows a comma that ends the line. Cells keep their spaces. A row
+// shorter than the header has no cells (MM2's null) after its last one.
+class ParCsv {
+public:
+    static constexpr std::size_t kMaxColumns = 16;
+
+    explicit ParCsv(std::string_view text) {
+        bool header = true;
+        std::size_t pos = 0;
+        while (pos < text.size()) {
+            // fgets(256): up to and including the newline, at most 255 bytes.
+            std::size_t end = pos;
+            while (end < text.size() && end - pos < 255 && text[end] != '\n')
+                ++end;
+            if (end < text.size() && end - pos < 255)
+                ++end; // the newline
+            std::string_view line = text.substr(pos, end - pos);
+            pos = end;
+            if (const auto hash = line.find('#'); hash != std::string_view::npos)
+                line = line.substr(0, hash);
+            if (header) {
+                m_header = cells(line, kMaxColumns);
+                header = false;
+            } else {
+                m_rows.push_back(cells(line, m_header.size()));
+            }
+        }
+    }
+
+    // parCsvFile::GetColumn: case-insensitive; -1 when missing (MM2 quits).
+    int column(std::string_view name) const {
+        for (std::size_t i = 0; i < m_header.size(); ++i)
+            if (str::iequals(m_header[i], name))
+                return static_cast<int>(i);
+        return -1;
+    }
+    const std::vector<std::vector<std::string>>& rows() const { return m_rows; }
+
+    // The cell, or nullptr where MM2 has none.
+    static const std::string* cell(const std::vector<std::string>& row, int column) {
+        return column >= 0 && static_cast<std::size_t>(column) < row.size() ? &row[static_cast<std::size_t>(column)]
+                                                                             : nullptr;
+    }
+
+private:
+    static bool control(char c) { return static_cast<signed char>(c) < 0x20; }
+
+    static std::vector<std::string> cells(std::string_view line, std::size_t limit) {
+        std::vector<std::string> out;
+        std::size_t p = 0;
+        while (p < line.size() && out.size() < limit) {
+            while (p < line.size() && control(line[p]))
+                ++p;
+            const std::size_t start = p;
+            while (p < line.size() && !control(line[p]) && line[p] != ',')
+                ++p;
+            const std::size_t stop = p;
+            if (p < line.size())
+                ++p; // the comma or control character ends the cell
+            if (p != start)
+                out.emplace_back(line.substr(start, stop - start));
+        }
+        return out;
+    }
+
+    std::vector<std::string> m_header;
+    std::vector<std::vector<std::string>> m_rows;
+};
+
+// atof / atoi of a cell (parCsvFile::GetFloat / GetInt): leading white space,
+// then the longest number at the start; 0 when there is none.
+std::string_view numberStart(std::string_view s) {
+    std::size_t i = 0;
+    while (i < s.size() && (s[i] == ' ' || (s[i] >= '\t' && s[i] <= '\r')))
+        ++i;
+    s.remove_prefix(i);
+    if (s.starts_with('+'))
+        s.remove_prefix(1);
+    return s;
+}
+
+float atofCell(const std::string& cell) {
+    const std::string_view s = numberStart(cell);
+    double v = 0.0;
+    std::from_chars(s.data(), s.data() + s.size(), v);
+    return static_cast<float>(v);
+}
+
+int atoiCell(const std::string& cell) {
+    const std::string_view s = numberStart(cell);
+    int v = 0;
+    std::from_chars(s.data(), s.data() + s.size(), v);
+    return v;
+}
 
 // lvlAiMap's flags of the current road (lvlAiRoad's first word: OpenMM2's
 // PsdlRoad keeps its bytes as flags, unknown1 and the high half).
@@ -212,55 +315,70 @@ private:
 } // namespace
 
 std::vector<PropDef> parsePropDefs(std::string_view t) {
+    // cityPropulator's def reader (the callback of cityPropulator::Propulate)
+    // finds a def's row by its "name" column and reads start, distance,
+    // minLerp, maxLerp (atof) and maxUse (atoi) by column name; the variants
+    // are the cells from file1 (lvlSDL::Propulate's callback). A missing
+    // column falls back to the usual position and a missing cell keeps the
+    // default (MM2 quits or reads a null cell; no retail file has either).
     std::vector<PropDef> out;
-    const auto csv = data::CsvTable::parse(t);
+    const ParCsv csv(t);
     auto col = [&](const char* name, int fallback) {
         const int c = csv.column(name);
-        return c >= 0 ? static_cast<std::size_t>(c) : static_cast<std::size_t>(fallback);
+        return c >= 0 ? c : fallback;
     };
-    const std::size_t start = col("start", 1), distance = col("distance", 2), maxUse = col("maxUse", 3),
-                      minLerp = col("minLerp", 4), maxLerp = col("maxLerp", 5), file1 = col("file1", 6);
-    for (std::size_t r = 0; r < csv.rows().size(); ++r) {
-        const auto& row = csv.rows()[r];
-        if (row.empty() || row[0].empty())
-            continue;
+    const int name = col("name", 0), start = col("start", 1), distance = col("distance", 2),
+              maxUse = col("maxUse", 3), minLerp = col("minLerp", 4), maxLerp = col("maxLerp", 5),
+              file1 = col("file1", 6);
+    for (const auto& row : csv.rows()) {
+        const std::string* n = ParCsv::cell(row, name);
+        if (!n)
+            continue; // a row without that cell (a blank line) never matches a name
         PropDef d;
-        d.name = str::lower(row[0]);
-        d.start = csv.cellFloat(r, start);
-        d.distance = csv.cellFloat(r, distance, 1.0f);
-        d.maxUse = csv.cellInt(r, maxUse, 1);
-        d.minLerp = csv.cellFloat(r, minLerp, 0.1f);
-        d.maxLerp = csv.cellFloat(r, maxLerp, d.minLerp);
-        // file1..file4, every cell the row has: parCsvFile keeps an empty
-        // cell between two commas as an empty name, but not the one after a
-        // comma that ends the line. (Its numbers are atof / atoi of the
-        // cells, which read the plain decimals of the retail files as
-        // cellFloat / cellInt do.)
-        std::size_t cells = row.size();
-        if (cells > 0 && row[cells - 1].empty())
-            --cells;
-        for (std::size_t c = file1; c < file1 + 4 && c < cells; ++c)
-            d.files.push_back(str::lower(row[c]));
+        d.name = str::lower(*n);
+        if (const auto* c = ParCsv::cell(row, start))
+            d.start = atofCell(*c);
+        if (const auto* c = ParCsv::cell(row, distance))
+            d.distance = atofCell(*c);
+        if (const auto* c = ParCsv::cell(row, maxUse))
+            d.maxUse = atoiCell(*c);
+        if (const auto* c = ParCsv::cell(row, minLerp))
+            d.minLerp = atofCell(*c);
+        d.maxLerp = d.minLerp;
+        if (const auto* c = ParCsv::cell(row, maxLerp))
+            d.maxLerp = atofCell(*c);
+        // file1..file4 as far as the row has cells: an empty cell between
+        // two commas is an empty name (picking it places nothing).
+        for (int c = file1; c < file1 + 4; ++c)
+            if (const auto* f = ParCsv::cell(row, c))
+                d.files.push_back(str::lower(*f));
         out.push_back(std::move(d));
     }
     return out;
 }
 
 std::vector<PropRule> parsePropRules(std::string_view t) {
+    // cityPropulator::LookupRule finds a rule by its "rulename" column;
+    // Propulate takes the cells from the "prop1" column to the last column,
+    // stopping at the row's end and skipping empty names.
     std::vector<PropRule> out;
-    const auto csv = data::CsvTable::parse(t);
+    const ParCsv csv(t);
+    const int nameCol = std::max(csv.column("rulename"), 0);
     const int first = csv.column("prop1");
-    const std::size_t prop1 = first >= 0 ? static_cast<std::size_t>(first) : 1;
+    const int prop1 = first >= 0 ? first : 1;
     for (const auto& row : csv.rows()) {
-        if (row.empty() || row[0].empty())
+        const std::string* n = ParCsv::cell(row, nameCol);
+        if (!n)
             continue;
         PropRule r;
-        r.name = str::lower(row[0]);
-        // cityPropulator::Propulate: from prop1 to the end of the row; empty
-        // cells are skipped.
-        for (std::size_t c = prop1; c < row.size(); ++c)
-            if (!row[c].empty())
-                r.props.push_back(str::lower(row[c]));
+        r.name = str::lower(*n);
+        for (int c = prop1;; ++c) {
+            const std::string* p = ParCsv::cell(row, c);
+            if (!p)
+                break;
+            if (!p->empty())
+                r.props.push_back(str::lower(*p));
+        }
         out.push_back(std::move(r));
     }
     return out;
