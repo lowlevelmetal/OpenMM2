@@ -8,7 +8,7 @@
 #include "data/DatFile.h"
 #include "phys/vehicle/TuneParams.h"
 
-#include <cmath>
+#include <algorithm>
 #include <format>
 
 namespace mm2::game {
@@ -57,25 +57,14 @@ void readSimPivots(const vfs::Vfs& vfs, const std::string& model, phys::VehicleG
     geom.axlePivots[1] = readPivot(vfs, model, "axle1");
 }
 
-// lvlInstance::GetGeomSet's radius of `part`: the largest distance of a
-// vertex from the model origin over the part's levels of detail (each
-// level's modGetStatic radius, the square root of its largest
-// (x*x + y*y) + z*z).
+// lvlInstance::GetGeomSet's radius of `part`: the largest modGetStatic
+// radius over the part's levels of detail.
 float geomSetRadius(const asset::VehicleModel& model, std::string_view part) {
-    float radius2 = 0.0f;
-    for (const auto& mesh : model.pkg.meshes) {
-        if (mesh.part != part)
-            continue;
-        for (const auto& section : mesh.sections)
-            for (const auto& packet : section.packets)
-                for (const auto& v : packet.vertices) {
-                    const Vec3& p = v.position;
-                    const float d2 = (p.x * p.x + p.y * p.y) + p.z * p.z;
-                    if (radius2 < d2)
-                        radius2 = d2;
-                }
-    }
-    return std::sqrt(radius2);
+    float radius = 0.0f;
+    for (const auto& mesh : model.pkg.meshes)
+        if (mesh.part == part)
+            radius = std::max(radius, mesh.radius());
+    return radius;
 }
 
 } // namespace
