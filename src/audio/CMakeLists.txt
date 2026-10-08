@@ -2,9 +2,12 @@
 file(GLOB audio_game_sources CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/game/*.cpp")
 add_library(mm2_audio STATIC
     ${audio_game_sources}
+    AngelRandom.cpp
+    AngelUnits.cpp
     Wav.cpp
     Mixer.cpp
     SoundBank.cpp
+    TextFields.cpp
     AudioDevice.cpp
     Music.cpp
     MusicDirector.cpp)

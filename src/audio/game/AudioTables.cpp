@@ -1,7 +1,9 @@
+// Parsers for the in-game sound tables, each following the MM2 loader that
+// reads the file; see AudioTables.h.
 #include "audio/game/AudioTables.h"
 
+#include "audio/TextFields.h"
 #include "core/StringUtil.h"
-#include "data/TextTables.h"
 
 #include <algorithm>
 #include <cmath>
@@ -10,44 +12,20 @@
 namespace mm2::audio::game {
 namespace {
 
-using Row = std::vector<std::string>;
+using Cells = std::vector<std::string_view>;
 
-// Splits CSV text into trimmed cells, dropping trailing empty cells and
-// lines that are empty after that.
-std::vector<Row> rows(std::string_view text) {
-    std::vector<Row> out;
-    for (auto line : data::splitLines(text)) {
-        Row r;
-        for (auto cell : str::split(line, ','))
-            r.emplace_back(str::trim(cell));
-        while (!r.empty() && r.back().empty())
-            r.pop_back();
-        if (!r.empty())
-            out.push_back(std::move(r));
-    }
-    return out;
-}
+// One table as MM2 reads it: fgets lines, strtok cells.
+struct Lines {
+    std::vector<std::string_view> lines;
+    explicit Lines(std::string_view text) : lines(fgetsLines(text)) {}
+    std::size_t size() const { return lines.size(); }
+    bool has(std::size_t i) const { return i < lines.size(); }
+    Cells cells(std::size_t i) const { return has(i) ? strtokFields(lines[i]) : Cells{}; }
+};
 
-float num(const Row& r, std::size_t i, float fallback = 0.0f) {
-    if (i >= r.size())
-        return fallback;
-    auto d = str::parseDouble(r[i]);
-    return d ? static_cast<float>(*d) : fallback;
-}
-
-int inum(const Row& r, std::size_t i, int fallback = 0) {
-    if (i >= r.size())
-        return fallback;
-    if (auto v = str::parseInt(r[i]))
-        return static_cast<int>(*v);
-    if (auto d = str::parseDouble(r[i]))
-        return static_cast<int>(*d);
-    return fallback;
-}
-
-bool isNumber(const Row& r, std::size_t i) { return i < r.size() && str::parseDouble(r[i]).has_value(); }
-
-bool startsWith(const Row& r, std::string_view prefix) { return !r.empty() && str::istartsWith(r[0], prefix); }
+std::string text(std::string_view cell) { return std::string(cell); }
+float num(const Cells& c, std::size_t i) { return crtAtof(field(c, i)); }
+int inum(const Cells& c, std::size_t i) { return crtAtoi(field(c, i)); }
 
 void setError(std::string* error, std::string msg) {
     if (error)
@@ -55,22 +33,6 @@ void setError(std::string* error, std::string msg) {
 }
 
 } // namespace
-
-float ageVolumeToGain(float v) {
-    if (v <= 0.0f)
-        return 0.0f;
-    if (v >= 1.0f)
-        return 1.0f;
-    // (v - 1) * 10000 hundredths of a decibel -> amplitude.
-    return std::pow(10.0f, (v - 1.0f) * 5.0f);
-}
-
-float agePanToMixer(float pan) {
-    // pan * 10000 hundredths of a decibel on the far channel -> its gain.
-    const float a = std::min(std::abs(pan), 1.0f);
-    const float far = std::pow(10.0f, -a * 5.0f);
-    return pan < 0.0f ? -(1.0f - far) : 1.0f - far;
-}
 
 std::optional<std::string> readText(const vfs::Vfs& vfs, std::string_view path) {
     auto bytes = vfs.readAll(path);
@@ -81,50 +43,44 @@ std::optional<std::string> readText(const vfs::Vfs& vfs, std::string_view path) 
 
 // --- Cars ---------------------------------------------------------------------
 
-std::optional<CarAudioDef> parseCarAudio(std::string_view text, std::string* error) {
-    const auto r = rows(text);
+std::optional<CarAudioDef> parseCarAudio(std::string_view textIn, std::string* error) {
+    const Lines t(textIn);
+    // vehCarAudio::Load: line 1 is a header; line 2 "horn, horn volume, flags,
+    // num engine samples, clutch, clutch volume".
     CarAudioDef def;
-    std::size_t i = 0;
-    // "Horn wave name,Horn volume,flags,Num Engine Samples,clutch wave name,clutch volume"
-    while (i < r.size() && !startsWith(r[i], "Horn wave"))
-        ++i;
-    if (i + 1 >= r.size()) {
-        setError(error, "no horn header");
+    const Cells h = t.cells(1);
+    def.horn = text(field(h, 0));
+    def.hornVolume = num(h, 1);
+    def.flags = static_cast<unsigned>(inum(h, 2));
+    def.clutch = text(field(h, 4));
+    def.clutchVolume = num(h, 5);
+    // vehEngineAudio::Load: the engine header (fails the load when missing),
+    // then every remaining line is an engine sample.
+    if (!t.has(2)) {
+        setError(error, "no engine header");
         return std::nullopt;
     }
-    const Row& h = r[++i];
-    def.horn = h.size() > 0 ? h[0] : std::string();
-    def.hornVolume = num(h, 1, 0.95f);
-    def.flags = static_cast<unsigned>(inum(h, 2));
-    const int count = inum(h, 3);
-    def.clutch = h.size() > 4 ? h[4] : std::string();
-    def.clutchVolume = num(h, 5, 0.9f);
-    ++i;
-    while (i < r.size() && !startsWith(r[i], "Engine wave"))
-        ++i;
-    ++i;
-    // The engine rows follow; "Num Engine Samples" is not always accurate
-    // (opponent files list fewer rows than they claim), so read what is there.
-    for (; i < r.size() && r[i].size() >= 11 && isNumber(r[i], 1); ++i) {
-        const Row& e = r[i];
+    def.oldEngineLayout = str::iequals(field(t.cells(2), 3), "Volume Divisor");
+    if (def.oldEngineLayout) {
+        setError(error, "engine table uses the old \"Volume Divisor\" layout (not supported)");
+        return std::nullopt;
+    }
+    for (std::size_t i = 3; i < t.size(); ++i) {
+        // vehEngineSampleWrapper::ParseCSVBuffer.
+        const Cells e = t.cells(i);
         EngineSampleDef s;
-        s.wave = e[0];
+        s.wave = text(field(e, 0));
         s.minVolume = num(e, 1);
         s.maxVolume = num(e, 2);
         s.fadeInStartRpm = num(e, 3);
         s.fadeInEndRpm = num(e, 4);
         s.fadeOutStartRpm = num(e, 5);
         s.fadeOutEndRpm = num(e, 6);
-        s.minPitch = num(e, 7, 1);
-        s.maxPitch = num(e, 8, 1);
+        s.minPitch = num(e, 7);
+        s.maxPitch = num(e, 8);
         s.pitchStartRpm = num(e, 9);
-        s.pitchEndRpm = num(e, 10, 1);
+        s.pitchEndRpm = num(e, 10);
         def.engine.push_back(std::move(s));
-    }
-    (void)count;
-    if (def.engine.empty()) {
-        setError(error, "no engine samples");
-        return std::nullopt;
     }
     return def;
 }
@@ -146,45 +102,59 @@ const BangerSoundDef* ImpactTable::byIndex(int index) const {
     return &bangers[static_cast<std::size_t>(index)];
 }
 
-std::optional<ImpactTable> parseImpactTable(std::string_view text, std::string* error) {
-    const auto r = rows(text);
-    ImpactTable t;
-    for (std::size_t i = 0; i < r.size(); ++i) {
-        if (!startsWith(r[i], "Banger name") || i + 1 >= r.size())
-            continue;
-        const Row& h = r[++i];
-        if (h.empty() || str::iequals(h[0], "ENDOFDATA"))
-            break;
-        BangerSoundDef b;
-        b.name = h[0];
-        const int count = inum(h, 1);
-        b.id = inum(h, 2);
-        ++i; // "sample name,min volume,..." header
-        for (int k = 0; k < count && i + 1 < r.size(); ++k) {
-            const Row& s = r[++i];
-            if (!isNumber(s, 1))
-                break;
-            ImpactSampleDef d;
-            d.wave = s[0];
-            d.minVolume = num(s, 1);
-            d.maxVolume = num(s, 2);
-            d.minForce = num(s, 3);
-            d.maxForce = num(s, 4);
-            d.frequency = num(s, 5, 1);
-            b.samples.push_back(std::move(d));
-        }
-        t.bangers.push_back(std::move(b));
-    }
-    if (t.bangers.empty()) {
-        setError(error, "no banger entries");
+std::optional<ImpactTable> parseImpactTable(std::string_view textIn, std::string* error) {
+    const Lines t(textIn);
+    ImpactTable table;
+    auto discard = [&](const char* why) -> std::optional<ImpactTable> {
+        setError(error, std::format("{} before ENDOFDATA (AudImpact::ReadCSV discards the table)", why));
         return std::nullopt;
+    };
+    // AudImpact::ReadCSV: "***", the banger header, "<name>,<count>,<id>".
+    std::size_t i = 0;
+    if (!t.has(i))
+        return discard("empty file");
+    while (true) {
+        if (!t.has(++i))
+            return discard("missing banger header");
+        if (!t.has(++i))
+            return discard("missing banger row");
+        const Cells b = t.cells(i);
+        if (field(b, 0) == "ENDOFDATA")
+            break;
+        BangerSoundDef banger;
+        banger.name = text(field(b, 0));
+        const int count = inum(b, 1);
+        banger.id = inum(b, 2);
+        if (count > 0) {
+            // AudImpactData::ReadCSV: the sample header, then <count> rows.
+            if (!t.has(++i))
+                return discard("missing sample header");
+            for (int k = 0; k < count; ++k) {
+                if (!t.has(++i))
+                    return discard("missing sample row");
+                const Cells s = t.cells(i);
+                ImpactSampleDef d;
+                d.wave = text(field(s, 0));
+                d.minVolume = num(s, 1);
+                d.maxVolume = num(s, 2);
+                d.minForce = num(s, 3);
+                d.maxForce = num(s, 4);
+                d.frequency = num(s, 5);
+                banger.samples.push_back(std::move(d));
+            }
+        }
+        table.bangers.push_back(std::move(banger));
+        if (!t.has(++i))
+            return discard("end of file");
     }
-    return t;
+    return table;
 }
 
 // --- Surfaces -----------------------------------------------------------------
 
-bool SurfaceSoundDef::hasSurfaceSound() const { return !wave.empty() && !str::iequals(wave, "NOSOUND"); }
+// vehSurfaceAudioData::ParseCSVBuffer compares the first eight bytes with
+// "NOSOUND\0": exact case.
+bool SurfaceSoundDef::hasSurfaceSound() const { return !wave.empty() && wave != "NOSOUND"; }
 
 const SurfaceSoundDef* SurfaceTable::at(int index) const {
     if (surfaces.empty())
@@ -194,346 +164,373 @@ const SurfaceSoundDef* SurfaceTable::at(int index) const {
     return &surfaces[static_cast<std::size_t>(index)];
 }
 
-std::optional<SurfaceTable> parseSurfaceTable(std::string_view text, std::string* error) {
-    const auto r = rows(text);
-    SurfaceTable t;
-    std::size_t i = 0;
-    while (i < r.size() && !startsWith(r[i], "Tunnel sound"))
-        ++i;
-    if (i + 1 < r.size())
-        t.tunnelIndex = inum(r[++i], 0);
-    for (; i < r.size(); ++i) {
-        if (!startsWith(r[i], "surface wave") || i + 1 >= r.size())
-            continue;
-        t.ice = r[i].size() > 1 && str::iequals(r[i][1], "min surface volume");
-        const Row& s = r[++i];
-        if (s.empty() || str::iequals(s[0], "ENDOFDATA"))
-            break;
-        SurfaceSoundDef d;
-        d.wave = s[0];
-        int skids = 0;
-        if (t.ice) {
-            // wave, min vol, max vol, vol divisor, min pitch, max pitch,
-            // pitch divisor, min skid vol, max skid vol, skid vol divisor,
-            // num skid samples, for tunnels
-            d.minVolume = num(s, 1);
-            d.maxVolume = num(s, 2);
-            d.volumeDivisor = num(s, 3);
-            d.minPitch = num(s, 4, 1);
-            d.maxPitch = num(s, 5, 1);
-            d.pitchDivisor = num(s, 6);
-            d.minSkidVolume = num(s, 7);
-            d.maxSkidVolume = num(s, 8);
-            d.skidVolumeDivisor = num(s, 9);
-            skids = inum(s, 10);
-            d.forTunnels = inum(s, 11) != 0;
-        } else {
-            // wave, max speed, min vol, max vol, min pitch, max pitch, min skid
-            // vol, max skid vol, num skid samples
-            d.maxSpeed = num(s, 1, 125);
-            d.minVolume = num(s, 2);
-            d.maxVolume = num(s, 3);
-            d.minPitch = num(s, 4, 1);
-            d.maxPitch = num(s, 5, 1);
-            d.minSkidVolume = num(s, 6);
-            d.maxSkidVolume = num(s, 7);
-            skids = inum(s, 8);
-        }
-        if (i + 1 < r.size() && startsWith(r[i + 1], "skid wave"))
-            ++i;
-        for (int k = 0; k < skids && i + 1 < r.size() && isNumber(r[i + 1], 1); ++k) {
-            const Row& sk = r[++i];
-            d.skids.push_back({sk[0], num(sk, 1), num(sk, 2, 1)});
-        }
-        t.surfaces.push_back(std::move(d));
+std::optional<SurfaceTable> parseSurfaceTable(std::string_view textIn, std::string* error) {
+    const Lines t(textIn);
+    if (!t.has(1)) {
+        setError(error, "no tunnel index");
+        return std::nullopt;
     }
-    if (t.surfaces.empty()) {
+    SurfaceTable table;
+    // vehSurfaceAudio::LoadCSV: header, tunnel sound index.
+    table.tunnelIndex = inum(t.cells(1), 0);
+    // Then blocks: a header line, the surface row, the skid header and the
+    // skid rows. A block cut short keeps what was read (LoadCSV has already
+    // added the entry) and ends the table.
+    for (std::size_t i = 2; t.has(i);) {
+        table.surfaces.emplace_back();
+        SurfaceSoundDef& d = table.surfaces.back();
+        if (!t.has(++i))
+            break;
+        const Cells s = t.cells(i);
+        d.wave = text(field(s, 0));
+        d.maxSpeed = num(s, 1);
+        d.minVolume = num(s, 2);
+        d.maxVolume = num(s, 3);
+        d.minPitch = num(s, 4);
+        d.maxPitch = num(s, 5);
+        d.minSkidVolume = num(s, 6);
+        d.maxSkidVolume = num(s, 7);
+        const int skids = inum(s, 8);
+        if (!t.has(++i))
+            break;
+        bool cut = false;
+        for (int k = 0; k < skids; ++k) {
+            if (!t.has(++i)) {
+                cut = true;
+                break;
+            }
+            const Cells sk = t.cells(i);
+            d.skids.push_back({text(field(sk, 0)), num(sk, 1), num(sk, 2)});
+        }
+        if (cut)
+            break;
+        ++i;
+    }
+    if (table.surfaces.empty()) {
         setError(error, "no surface entries");
         return std::nullopt;
     }
-    return t;
+    return table;
 }
 
 // --- Sirens -------------------------------------------------------------------
 
-std::optional<SirenTable> parseSirenTable(std::string_view text, std::string* error) {
-    const auto r = rows(text);
-    SirenTable t;
-    for (std::size_t i = 0; i < r.size(); ++i) {
-        if (startsWith(r[i], "Explosion sample") && i + 1 < r.size()) {
-            t.explosion = r[i + 1][0];
-            t.explosionVolume = num(r[i + 1], 1, 0.95f);
-            ++i;
-        } else if (startsWith(r[i], "Sample name") && i + 1 < r.size()) {
-            SirenSampleDef s;
-            ++i;
-            s.wave = r[i][0];
-            s.volume = num(r[i], 1, 0.95f);
-            while (i + 2 < r.size() && startsWith(r[i + 1], "play time")) {
-                s.steps.push_back({num(r[i + 2], 0, 1), inum(r[i + 2], 1)});
-                i += 2;
-            }
-            t.samples.push_back(std::move(s));
+std::optional<SirenTable> parseSirenTable(std::string_view textIn, std::string* error) {
+    const Lines t(textIn);
+    SirenTable table;
+    // vehPoliceCarAudio::Load: header, explosion sample.
+    table.explosion = text(field(t.cells(1), 0));
+    // ReadSirenData: "Sample name" switches to sample rows, "play time" to
+    // (play time, next) rows for the last sample; both compared exactly.
+    int state = -1;
+    for (std::size_t i = 2; i < t.size(); ++i) {
+        const Cells c = t.cells(i);
+        if (c.empty())
+            continue;
+        if (c[0] == "Sample name") {
+            state = 0;
+        } else if (c[0] == "play time") {
+            state = 1;
+        } else if (state == 0) {
+            table.samples.push_back({text(c[0]), num(c, 1), {}});
+        } else if (state == 1 && !table.samples.empty()) {
+            table.samples.back().steps.push_back({num(c, 0), inum(c, 1)});
         }
     }
-    if (t.samples.empty()) {
+    if (table.samples.empty()) {
         setError(error, "no siren samples");
         return std::nullopt;
     }
-    return t;
+    return table;
 }
 
 // --- Small tables -------------------------------------------------------------
 
-std::optional<SuspensionDef> parseSuspension(std::string_view text) {
-    const auto r = rows(text);
-    if (r.size() < 2 || !isNumber(r[1], 1))
+std::optional<SuspensionDef> parseSuspension(std::string_view textIn) {
+    const Lines t(textIn);
+    if (!t.has(1))
         return std::nullopt;
+    const Cells c = t.cells(1);
     SuspensionDef d;
-    d.wave = r[1][0];
-    d.minVelocity = num(r[1], 1, 2);
-    d.maxVelocity = num(r[1], 2, 3);
-    d.minVolume = num(r[1], 3, 0.85f);
-    d.maxVolume = num(r[1], 4, 0.9f);
-    d.volumeDivisor = num(r[1], 5, 3);
+    d.wave = text(field(c, 0));
+    d.minVelocity = num(c, 1);
+    d.maxVelocity = num(c, 2);
+    d.minVolume = num(c, 3);
+    d.maxVolume = num(c, 4);
+    const float divisor = num(c, 5);
+    d.volumeScale = divisor == 0.0f ? 0.0f : 1.0f / divisor;
     return d;
 }
 
-std::optional<TireWobbleDef> parseTireWobble(std::string_view text) {
-    const auto r = rows(text);
-    if (r.size() < 2 || !isNumber(r[1], 1))
+std::optional<TireWobbleDef> parseTireWobble(std::string_view textIn) {
+    const Lines t(textIn);
+    if (!t.has(1))
         return std::nullopt;
+    const Cells c = t.cells(1);
     TireWobbleDef d;
-    d.wave = r[1][0];
-    d.minVolume = num(r[1], 1, 0.97f);
-    d.maxVolume = num(r[1], 2, 1);
-    d.minPitch = num(r[1], 3, 0.75f);
-    d.maxPitch = num(r[1], 4, 1.5f);
-    d.pitchDivisor = num(r[1], 5, 15);
+    d.wave = text(field(c, 0));
+    d.minVolume = num(c, 1);
+    d.maxVolume = num(c, 2);
+    d.minPitch = num(c, 3);
+    d.maxPitch = num(c, 4);
+    const float divisor = num(c, 5);
+    d.pitchScale = divisor == 0.0f ? 0.0f : 1.0f / divisor;
     return d;
 }
 
-std::optional<SemiDef> parseSemiData(std::string_view text) {
-    const auto r = rows(text);
-    if (r.size() < 2 || r[1].size() < 2)
+std::optional<SemiDef> parseSemiData(std::string_view textIn) {
+    const Lines t(textIn);
+    if (!t.has(1))
         return std::nullopt;
+    const Cells c = t.cells(1);
     SemiDef d;
-    d.reverse = r[1][0];
-    d.airBlow = r[1][1];
-    d.reverseVolume = num(r[1], 2, 0.87f);
-    d.airBlowVolume = num(r[1], 3, 0.9f);
+    d.reverse = text(field(c, 0));
+    d.airBlow = text(field(c, 1));
+    d.reverseVolume = num(c, 2);
+    d.airBlowVolume = num(c, 3);
     return d;
 }
 
+// IsSemiOrBus / IsPolice compare with strcmp: exact case.
 bool VehicleTypes::isFreight(std::string_view car) const {
-    for (const auto& c : freight)
-        if (str::iequals(c, car))
-            return true;
-    return false;
+    return std::find(freight.begin(), freight.end(), car) != freight.end();
 }
 
 bool VehicleTypes::isPolice(std::string_view car) const {
-    for (const auto& c : police)
-        if (str::iequals(c, car))
-            return true;
-    return false;
+    return std::find(police.begin(), police.end(), car) != police.end();
 }
 
-VehicleTypes parseVehicleTypes(std::string_view text) {
-    VehicleTypes t;
-    const auto r = rows(text);
-    for (std::size_t i = 0; i + 1 < r.size(); ++i) {
-        std::vector<std::string>* list = nullptr;
-        if (startsWith(r[i], "Semi or bus"))
-            list = &t.freight;
-        else if (startsWith(r[i], "Police"))
-            list = &t.police;
-        else if (startsWith(r[i], "Always nitro")) {
-            t.alwaysNitro = str::parseBool(r[i + 1][0]).value_or(false);
-            continue;
-        }
-        if (!list)
-            continue;
-        for (const auto& c : r[i + 1]) {
-            if (str::iequals(c, "ENDOFDATA"))
+VehicleTypes parseVehicleTypes(std::string_view textIn) {
+    const Lines t(textIn);
+    VehicleTypes types;
+    // RegisterSemiNames / RegisterPoliceNames: the names on lines 2 and 4, up
+    // to ENDOFDATA; line 6 "TRUE" (any case) for always-nitro.
+    auto names = [&](std::size_t line, std::vector<std::string>& out) {
+        for (auto cell : t.cells(line)) {
+            if (cell == "ENDOFDATA")
                 break;
-            list->push_back(str::lower(c));
+            out.emplace_back(cell);
         }
-    }
-    return t;
+    };
+    names(1, types.freight);
+    names(3, types.police);
+    types.alwaysNitro = str::iequals(field(t.cells(5), 0), "TRUE");
+    return types;
 }
 
 // --- Ambient traffic ------------------------------------------------------------
 
-std::optional<AmbientEngineDef> parseAmbientEngine(std::string_view text) {
-    const auto r = rows(text);
-    if (r.size() < 2)
+std::optional<AmbientEngineDef> parseAmbientEngine(std::string_view textIn) {
+    const Lines t(textIn);
+    if (!t.has(1))
         return std::nullopt;
     AmbientEngineDef d;
-    d.wave = r[1][0];
-    d.volume = num(r[1], 1, 0.97f);
-    for (std::size_t i = 2; i < r.size(); ++i) {
-        if (r[i].size() < 4 || !isNumber(r[i], 0))
-            continue;
-        d.bands.push_back({num(r[i], 0), num(r[i], 1), num(r[i], 2, 1), num(r[i], 3, 1)});
+    // aiEngineAudio::ReadCSV: header; sample and volume; band header; bands.
+    const Cells c = t.cells(1);
+    d.wave = text(field(c, 0));
+    d.volume = num(c, 1);
+    for (std::size_t i = 3; i < t.size(); ++i) {
+        const Cells b = t.cells(i);
+        d.bands.push_back({num(b, 0), num(b, 1), num(b, 2), num(b, 3)});
     }
-    if (d.bands.empty())
-        return std::nullopt;
     return d;
 }
 
-std::optional<HornDef> parseHorn(std::string_view text) {
-    const auto r = rows(text);
-    if (r.size() < 2)
+std::optional<HornDef> parseHorn(std::string_view textIn) {
+    const Lines t(textIn);
+    if (!t.has(1))
         return std::nullopt;
     HornDef d;
-    d.wave = r[1][0];
-    d.volume = num(r[1], 1, 0.97f);
-    d.pitch = num(r[1], 2, 1);
-    d.stuckImpactForce = num(r[1], 3, 5500);
-    for (std::size_t i = 2; i < r.size(); ++i) {
-        if (startsWith(r[i], "horn play duration")) {
+    // vehHornAudio::ReadCSV: header; sample, volume, pitch, stuck force; then
+    // "horn play duration" (any case) starts a pattern and other rows add a
+    // (play, pause) beep to it.
+    const Cells c = t.cells(1);
+    d.wave = text(field(c, 0));
+    d.volume = num(c, 1);
+    d.pitch = num(c, 2);
+    d.stuckImpactForce = num(c, 3);
+    for (std::size_t i = 2; i < t.size(); ++i) {
+        const Cells r = t.cells(i);
+        if (str::iequals(field(r, 0), "horn play duration"))
             d.patterns.emplace_back();
-            continue;
-        }
-        if (!d.patterns.empty() && isNumber(r[i], 0))
-            d.patterns.back().beeps.emplace_back(num(r[i], 0), num(r[i], 1));
+        else if (!d.patterns.empty())
+            d.patterns.back().beeps.emplace_back(num(r, 0), num(r, 1));
     }
     return d;
 }
 
 // --- City ambience ----------------------------------------------------------------
 
-std::optional<AmbientSoundSet> parseAmbientSoundSet(std::string_view name, std::string_view text, std::string* error) {
-    const auto r = rows(text);
-    AmbientSoundSet s;
-    s.name = str::lower(name);
-    std::size_t i = 0;
-    if (r.size() < 2 || !startsWith(r[0], "Min distance")) {
+std::optional<AmbientSoundSet> parseAmbientSoundSet(std::string_view name, std::string_view textIn,
+                                                    std::string* error) {
+    const Lines t(textIn);
+    if (!t.has(1)) {
         setError(error, "missing header");
         return std::nullopt;
     }
-    s.minDistance = num(r[1], 0);
-    s.maxDistance = num(r[1], 1, 100);
-    s.priority = inum(r[1], 2, 12);
-    s.audibleArea = inum(r[1], 3);
-    for (i = 2; i < r.size(); ++i) {
-        if (startsWith(r[i], "sample name"))
+    AmbientSoundSet s;
+    s.name = str::lower(name);
+    // Aud3DAmbientObject::Load: header; min / max distance, priority, area;
+    // the sample header.
+    const Cells h = t.cells(1);
+    s.minDistance = num(h, 0);
+    s.maxDistance = num(h, 1);
+    s.priority = inum(h, 2);
+    s.audibleArea = inum(h, 3);
+    std::size_t i = 3;
+    // ReadSoundData: sample rows up to "VECTORPOINTS" (exact case).
+    bool points = false;
+    for (; i < t.size(); ++i) {
+        const Cells e = t.cells(i);
+        if (e.empty())
             continue;
-        if (startsWith(r[i], "VECTORPOINTS"))
+        if (e[0] == "VECTORPOINTS") {
+            points = true;
             break;
-        const Row& e = r[i];
-        if (e.size() < 3 || !isNumber(e, 1))
-            continue;
+        }
         AmbientSampleDef d;
-        d.wave = e[0];
-        d.volume = num(e, 1, 1);
+        d.wave = text(e[0]);
+        d.volume = num(e, 1);
         d.type = static_cast<AmbientSampleType>(std::clamp(inum(e, 2), 0, 3));
         d.intervalLow = num(e, 3);
         d.intervalHigh = num(e, 4);
-        d.active = inum(e, 5, 1) != 0;
+        d.active = inum(e, 5) != 0;
         d.minSpeed = num(e, 6);
-        d.maxSpeed = num(e, 7, 999999);
+        d.maxSpeed = num(e, 7);
         d.doppler = inum(e, 8) != 0;
         s.samples.push_back(std::move(d));
     }
-    for (; i < r.size(); ++i) {
-        if (r[i].size() >= 3 && isNumber(r[i], 0) && isNumber(r[i], 2))
-            s.points.push_back({num(r[i], 0), num(r[i], 1), num(r[i], 2)});
+    // Aud3DObject::ReadVectorPoints: skips the line after VECTORPOINTS ("x,y,z"),
+    // then one point per line.
+    if (points) {
+        for (i += 2; i < t.size(); ++i) {
+            const Cells p = t.cells(i);
+            if (p.empty())
+                continue;
+            s.points.push_back({num(p, 0), num(p, 1), num(p, 2)});
+        }
     }
     return s;
 }
 
-std::vector<std::string> parseAmbientContainer(std::string_view text) {
+std::vector<std::string> parseAmbientContainer(std::string_view textIn) {
+    // Aud3DAmbObjContainer::Init: a header, then a set name per line.
+    const Lines t(textIn);
     std::vector<std::string> names;
-    const auto r = rows(text);
-    for (std::size_t i = 1; i < r.size(); ++i)
-        names.push_back(str::lower(r[i][0]));
+    for (std::size_t i = 1; i < t.size(); ++i) {
+        const Cells c = t.cells(i);
+        if (!c.empty())
+            names.push_back(str::lower(c[0]));
+    }
     return names;
 }
 
 // --- Creature voices --------------------------------------------------------------
 
-std::optional<CreatureVoiceDef> parseCreatureVoice(std::string_view text) {
-    const auto r = rows(text);
+std::optional<CreatureVoiceDef> parseCreatureVoice(std::string_view textIn) {
+    const Lines t(textIn);
     CreatureVoiceDef d;
-    for (std::size_t i = 0; i < r.size(); ++i) {
-        if (startsWith(r[i], "Min speed") && i + 1 < r.size()) {
-            VoiceSpeedTrigger t;
-            const Row& v = r[++i];
-            t.minSpeed = num(v, 0);
-            t.maxSpeed = num(v, 1);
-            t.minTimeInRange = num(v, 2);
-            t.maxTimeOutOfRange = num(v, 3);
-            if (i + 1 < r.size() && startsWith(r[i + 1], "sample name"))
-                ++i;
-            while (i + 1 < r.size() && r[i + 1].size() >= 2 && isNumber(r[i + 1], 1) && !isNumber(r[i + 1], 0)) {
-                t.lines.push_back({r[i + 1][0], num(r[i + 1], 1, 0.98f), 0});
-                ++i;
-            }
-            d.triggers.push_back(std::move(t));
-        } else if (startsWith(r[i], "min impact force") && i + 1 < r.size()) {
-            d.minImpactForce = num(r[++i], 0);
-            if (i + 1 < r.size() && startsWith(r[i + 1], "sample name"))
-                ++i;
-            while (i + 1 < r.size() && r[i + 1].size() >= 2 && isNumber(r[i + 1], 1) && !isNumber(r[i + 1], 0)) {
-                d.impactLines.push_back({r[i + 1][0], num(r[i + 1], 1, 0.98f), num(r[i + 1], 2)});
-                ++i;
-            }
+    enum class Block { None, Avoid, Impact };
+    // AudCreature::ReadCSV: the first line names the first block.
+    auto blockOf = [](std::string_view cell) {
+        if (str::iequals(cell, "min speed"))
+            return Block::Avoid;
+        if (str::iequals(cell, "min impact force"))
+            return Block::Impact;
+        return Block::None;
+    };
+    Block block = blockOf(field(t.cells(0), 0));
+    std::size_t i = 1;
+    while (block != Block::None) {
+        // AudCreatureAvoid / AudCreatureImpact::ParseCSVBuffer: the values
+        // line, the sample header, then sample rows until the next block
+        // header or the end of the file.
+        const Cells v = t.cells(i);
+        VoiceSpeedTrigger trigger;
+        if (block == Block::Avoid) {
+            trigger.minSpeed = num(v, 0);
+            trigger.maxSpeed = num(v, 1);
+            trigger.minTimeInRange = num(v, 2);
+            trigger.maxTimeOutOfRange = num(v, 3);
+        } else {
+            d.hasImpact = true;
+            d.minImpactForce = num(v, 0);
+            d.impactLines.clear();
         }
+        Block next = Block::None;
+        for (i += 2; i < t.size(); ++i) {
+            const Cells r = t.cells(i);
+            if (const Block b = blockOf(field(r, 0)); b != Block::None) {
+                next = b;
+                ++i;
+                break;
+            }
+            if (block == Block::Avoid)
+                trigger.lines.push_back({text(field(r, 0)), num(r, 1), 0.0f});
+            else
+                d.impactLines.push_back({text(field(r, 0)), num(r, 1), num(r, 2)});
+        }
+        if (block == Block::Avoid)
+            d.triggers.push_back(std::move(trigger));
+        block = next;
     }
-    if (d.triggers.empty() && d.impactLines.empty())
-        return std::nullopt;
     return d;
+}
+
+std::optional<float> parseNumFileChoices(std::string_view textIn) {
+    const Lines t(textIn);
+    if (!t.has(1))
+        return std::nullopt;
+    return num(t.cells(1), 0);
 }
 
 // --- Announcer --------------------------------------------------------------------
 
-const std::vector<SpeechLineSet>* SpeechTable::find(std::string_view event) const {
-    for (const auto& [name, sets] : events)
-        if (str::iequals(name, event))
-            return &sets;
-    return nullptr;
+bool SpeechRow::header() const {
+    constexpr std::string_view kHeader = "header";
+    return name.size() > kHeader.size() &&
+           str::iequals(std::string_view(name).substr(name.size() - kHeader.size()), kHeader);
 }
 
-std::optional<SpeechTable> parseSpeechTable(std::string_view text) {
-    const auto r = rows(text);
-    SpeechTable t;
-    for (const auto& row : r) {
-        if (str::istartsWith(row[0], "Name prefix"))
-            continue;
-        if (str::iendsWith(row[0], "header")) {
-            std::string event(str::trim(row[0].substr(0, row[0].size() - 6)));
-            t.events.emplace_back(str::upper(event), std::vector<SpeechLineSet>{});
-            continue;
-        }
-        if (t.events.empty() || row.size() < 2)
-            continue;
-        SpeechLineSet s;
-        std::string prefix = row[0];
-        // Cops & Robbers tables give "AL1\AL1ROBROB": keep the file part.
-        if (auto slash = prefix.find_last_of("\\/"); slash != std::string::npos)
-            prefix = prefix.substr(slash + 1);
-        s.prefix = str::lower(str::trim(prefix));
-        s.end = inum(row, 1, 1);
-        s.add = inum(row, 2, 0);
-        t.events.back().second.push_back(std::move(s));
-    }
-    if (t.events.empty())
+bool SpeechRow::headerIs(std::string_view event) const {
+    return name.size() >= event.size() && str::iequals(std::string_view(name).substr(0, event.size()), event);
+}
+
+std::string SpeechRow::eventName() const {
+    // The last space before the "header" suffix ends the name.
+    const std::size_t suffix = name.size() - 6;
+    std::size_t space = 0;
+    for (std::size_t i = 0; i < suffix; ++i)
+        if (name[i] == ' ')
+            space = i;
+    return name.substr(0, space);
+}
+
+std::optional<SpeechTable> parseSpeechTable(std::string_view textIn) {
+    // mmRaceSpeech / mmCNRSpeech / mmCCSpeech::LoadGroup: a header line, then
+    // header and line-set rows "<prefix>,<end>,<add>[,<num used>]".
+    const Lines t(textIn);
+    if (!t.has(0))
         return std::nullopt;
-    return t;
+    SpeechTable table;
+    for (std::size_t i = 1; i < t.size(); ++i) {
+        const Cells c = t.cells(i);
+        if (c.empty())
+            continue;
+        table.rows.push_back({text(c[0]), num(c, 1), num(c, 2), num(c, 3)});
+    }
+    return table;
 }
 
-std::optional<AnnouncerList> parseAnnouncerList(std::string_view text) {
-    const auto r = rows(text);
+std::optional<AnnouncerList> parseAnnouncerList(std::string_view textIn) {
+    // mmRaceSpeech::LoadCityInfo: header, count, header, prefix.
+    const Lines t(textIn);
+    if (!t.has(3))
+        return std::nullopt;
     AnnouncerList a;
-    for (std::size_t i = 0; i + 1 < r.size(); ++i) {
-        if (startsWith(r[i], "Num announcers"))
-            a.count = inum(r[i + 1], 0);
-        else if (startsWith(r[i], "prefix"))
-            a.prefix = str::lower(r[i + 1][0]);
-    }
-    if (a.count <= 0 || a.prefix.empty())
+    a.count = num(t.cells(1), 0);
+    a.prefix = str::lower(field(t.cells(3), 0));
+    if (a.prefix.empty())
         return std::nullopt;
     return a;
 }

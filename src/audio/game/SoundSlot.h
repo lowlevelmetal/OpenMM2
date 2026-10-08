@@ -4,7 +4,9 @@
 // wrapping one DirectSound buffer: one instance plays at a time, volume and pan
 // are in Angel units (dB-linear, see ageVolumeToGain / agePanToMixer) and pitch
 // is a multiple of the sample's own rate (AudSoundBase::PlayLoop / PlayOnce /
-// Stop / IsPlaying / SetVolume / SetFrequency / SetPan).
+// Stop / IsPlaying / SetVolume / SetFrequency / SetPan). The setters apply the
+// clamps of the audObject layer underneath (audObject::SetVolume / SetPitch /
+// SetPan); see the methods.
 
 #include "audio/Mixer.h"
 #include "audio/SoundBank.h"
@@ -16,6 +18,10 @@ namespace mm2::audio::game {
 
 class SoundSlot {
 public:
+    // The "leave as is" argument of AudSoundBase::PlayLoop / PlayOnce: a
+    // volume or pitch of -1 or less is not applied.
+    static constexpr float kKeep = -1.0f;
+
     SoundSlot() = default;
     SoundSlot(const SoundSlot&) = delete;
     SoundSlot& operator=(const SoundSlot&) = delete;
@@ -28,19 +34,29 @@ public:
     bool valid() const { return m_buffer != nullptr; }
     const SoundBuffer* buffer() const { return m_buffer.get(); }
 
-    // Starts looping if not already playing, then applies the parameters.
+    // AudSoundBase::PlayLoop: applies a volume / pitch above -1 straight to the
+    // buffer (audSound::SetVolume / SetPitch: no audObject clamps, and a
+    // DirectSound volume outside -100..0 dB is rejected), then starts looping
+    // unless the buffer is already playing. MM2's callers pass -1 for both and
+    // set volume and frequency through setVolume / setPitch first.
     // `emitter` makes the voice 3D (mixer-positioned) when non-null; MM2's own
     // sounds are 2D voices with a pan (setPan) instead.
-    void playLoop(float volume, float pitch, const Emitter3D* emitter = nullptr);
-    // Starts a one-shot from the beginning (restarting it if playing, as
-    // DirectSound's Play on a playing buffer does after SetCurrentPosition(0)).
-    void playOnce(float volume, float pitch = 1.0f, const Emitter3D* emitter = nullptr);
+    void playLoop(float volume = kKeep, float pitch = kKeep, const Emitter3D* emitter = nullptr);
+    // AudSoundBase::PlayOnce: applies a volume / pitch above -1 through the
+    // clamping setters, then plays from the start unless the buffer is already
+    // playing (audSound::Play leaves a playing buffer alone; Stop rewinds).
+    void playOnce(float volume = kKeep, float pitch = kKeep, const Emitter3D* emitter = nullptr);
     void stop();
     bool playing() const;
 
+    // audObject::SetVolume: the mixer multiplies in the bus master volume and
+    // clamps the product to 0..1.
     void setVolume(float volume);
+    // AudSoundBase::SetFrequency / audObject::SetPitch: the multiplier is
+    // clamped to 0..2, then the rate to 100..100000 Hz (clampPitch).
     void setPitch(float pitch);
-    // Angel pan, kept for later plays like a DirectSound buffer's pan.
+    // audObject::SetPan: clamped to -1..1 and kept for later plays like a
+    // DirectSound buffer's pan.
     void setPan(float pan);
     void setEmitter(const Emitter3D& emitter);
 
@@ -50,6 +66,7 @@ public:
 
 private:
     VoiceParams params(bool loop, const Emitter3D* emitter) const;
+    void start(bool loop, const Emitter3D* emitter);
 
     Mixer* m_mixer = nullptr;
     std::shared_ptr<const SoundBuffer> m_buffer;
@@ -57,6 +74,7 @@ private:
     int m_priority = 0;
     VoiceHandle m_voice = 0;
     bool m_looping = false;
+    // Aud3DSampleWrapper::Load leaves every game sample at volume 0 until set.
     float m_volume = 0.0f;
     float m_pitch = 1.0f;
     float m_pan = 0.0f;

@@ -1,4 +1,5 @@
 #include "TestData.h"
+#include "audio/AngelUnits.h"
 #include "audio/Mixer.h"
 #include "audio/SoundBank.h"
 #include "audio/Wav.h"
@@ -93,8 +94,11 @@ TEST(Mixer, PanAndBusVolume) {
     m.play(s, p);
     std::vector<float> out(2 * 10);
     m.mix(out.data(), 10);
-    EXPECT_NEAR(out[0], 0.0f, 1e-4f);  // left silenced
-    EXPECT_NEAR(out[1], 0.25f, 1e-3f); // right: 0.5 sample * 0.5 bus
+    EXPECT_NEAR(out[0], 0.0f, 1e-4f); // left silenced
+    // Right: the 0.5 sample at the bus's MM2 master volume: a half slider is
+    // log(100) / log(200) = 0.869 in Angel units, -13 dB.
+    EXPECT_NEAR(out[1], 0.5f * ageVolumeToGain(ageMasterVolume(0.5f)), 1e-3f);
+    EXPECT_NEAR(ageMasterVolume(0.5f), 0.869176f, 1e-5f);
 }
 
 TEST(Mixer, DistanceRolloffFollowsDirectSound3D) {
@@ -158,7 +162,7 @@ TEST(Mixer, StreamsMixOnTheirBus) {
     m.setBusVolume(Bus::Music, 0.5f);
     std::vector<float> out(2 * 8);
     m.mix(out.data(), 8);
-    EXPECT_NEAR(out[0], 0.125f, 1e-6f);
+    EXPECT_NEAR(out[0], 0.25f * ageVolumeToGain(ageMasterVolume(0.5f)), 1e-6f);
     m.removeStream(id);
     m.mix(out.data(), 8);
     EXPECT_EQ(out[0], 0.0f);

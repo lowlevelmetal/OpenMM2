@@ -1,17 +1,24 @@
 #pragma once
 
 // Data tables for the in-game sound effects (aud/cardata, aud/ambient,
-// aud/creaturedata, aud/spchdata in MM2AUD.AR). Column meanings follow MM2's
-// own loaders: vehCarAudio::Load, vehEngineSampleWrapper::ParseCSVBuffer,
-// vehSurfaceAudioData::ParseCSVBuffer, AudImpactData::ReadCSV,
-// vehPoliceCarAudio::ReadSirenData, aiEngineAudio::ReadCSV,
-// vehHornAudio::ReadCSV, Aud3DAmbientObject::ReadSoundData,
-// AudCreatureAvoid / AudCreatureImpact::ParseCSVBuffer and
-// mmRaceSpeech::LoadGroup. Parsers accept the files as shipped (trailing empty
-// cells, stray "copy of" files, CR/LF).
+// aud/creaturedata, aud/spchdata in MM2AUD.AR). Each parser follows the MM2
+// loader that reads the file line by line: which line holds what, how a block
+// ends, and how cells are read (strtok skips empty cells, atof / atoi read a
+// numeric prefix; see audio/TextFields.h): vehCarAudio::Load,
+// vehEngineAudio::Load, vehEngineSampleWrapper::ParseCSVBuffer,
+// vehSurfaceAudio::LoadCSV, vehSurfaceAudioData::ParseCSVBuffer,
+// AudImpact::ReadCSV, AudImpactData::ReadCSV, vehPoliceCarAudio::Load /
+// ReadSirenData, vehSurfaceAudio::LoadSuspension / LoadTireWobble,
+// vehSemiCarAudio::Load, vehCarAudioContainer::RegisterTypes,
+// aiEngineAudio::ReadCSV, vehHornAudio::ReadCSV, Aud3DAmbientObject::Load /
+// ReadSoundData, Aud3DObject::ReadVectorPoints, Aud3DAmbObjContainer::Init,
+// AudCreature::ReadCSV, AudCreatureAvoid / AudCreatureImpact::ParseCSVBuffer,
+// mmRaceSpeech::LoadCityInfo / LoadGroup. Where MM2 would read past the end
+// of a line (a missing cell is a NULL token there) the parsers use 0.
 //
 // Volumes in every table are Angel volume units, see ageVolumeToGain().
 
+#include "audio/AngelUnits.h"
 #include "core/Math.h"
 #include "vfs/Vfs.h"
 
@@ -22,19 +29,10 @@
 
 namespace mm2::audio::game {
 
-// Angel volume (AudSoundBase::SetVolume) to linear gain. MM2's
-// audSound::SetVolume passes (v - 1) * 10000 to IDirectSoundBuffer::SetVolume,
-// so v is linear in decibels: 1 = 0 dB, 0.9 = -10 dB, 0.25 = -75 dB,
-// 0 = -100 dB.
-float ageVolumeToGain(float v);
-
-// Angel pan (AudSoundBase::SetPan, -1 left .. 1 right) to the mixer's pan.
-// audSound::SetPan passes pan * 10000 to IDirectSoundBuffer::SetPan, which
-// attenuates the opposite channel by |pan| * 100 dB and leaves the near one
-// at full level; the mixer attenuates the opposite channel linearly by |pan|.
-// A DirectSound pan of 0.2, the most MM2's 3D sounds use, is -20 dB on the
-// far channel.
-float agePanToMixer(float pan);
+// MM2's volume and pan units (audio/AngelUnits.h).
+using audio::ageMasterVolume;
+using audio::agePanToMixer;
+using audio::ageVolumeToGain;
 
 // vehEngineSampleWrapper::UpdateRPM stops a sample whose table volume falls
 // below 0.25 (-75 dB) and restarts it above.
@@ -47,8 +45,8 @@ struct EngineSampleDef {
     float minVolume = 0, maxVolume = 0;
     float fadeInStartRpm = 0, fadeInEndRpm = 0;
     float fadeOutStartRpm = 0, fadeOutEndRpm = 0;
-    float minPitch = 1, maxPitch = 1;
-    float pitchStartRpm = 0, pitchEndRpm = 1;
+    float minPitch = 0, maxPitch = 0;
+    float pitchStartRpm = 0, pitchEndRpm = 0;
 };
 
 // The "flags" column (2 on vpcentury, 4 on vpcop, 8 on vpsemi) and "Num Engine
@@ -64,10 +62,15 @@ inline constexpr unsigned SirenHorn = 8;
 
 struct CarAudioDef {
     std::string horn;
-    float hornVolume = 0.95f;
+    float hornVolume = 0;
     unsigned flags = 0;
     std::string clutch; // "REVERSE" for cars, "TRUCKGEARSHIFT" for trucks
-    float clutchVolume = 0.9f;
+    float clutchVolume = 0;
+    // vehEngineAudio::Load switches to ParseCSVBufferOld / CalculateVolumeOld
+    // when the engine header's fourth cell is "Volume Divisor". No car table
+    // MM2 loads has that layout (only the unused "copy of" files); OpenMM2
+    // does not implement it and rejects such a table.
+    bool oldEngineLayout = false;
     std::vector<EngineSampleDef> engine;
 };
 std::optional<CarAudioDef> parseCarAudio(std::string_view text, std::string* error = nullptr);
@@ -82,67 +85,66 @@ struct ImpactSampleDef {
 };
 struct BangerSoundDef {
     std::string name; // WALL, LIGHT, SIGN, ...
-    int id = 0;       // "ID" column
+    int id = 0;       // "ID" column (tools; AudImpact::ReadCSV never reads it)
     std::vector<ImpactSampleDef> samples;
 };
 struct ImpactTable {
     std::vector<BangerSoundDef> bangers; // file order
-    // By the "ID" column (tools; MM2 does not read the column).
+    // By the "ID" column (tools).
     const BangerSoundDef* find(int id) const;
     // AudImpact::GetAudImpactDataPtr: bangers are indexed by their position in
     // the file; an index out of range (MM2 passes 1000 for "no banger data")
     // selects the first entry, WALL.
     const BangerSoundDef* byIndex(int index) const;
 };
+// AudImpact::ReadCSV: blocks of "***", the header, "<name>,<count>,<id>", the
+// sample header and <count> sample rows, until a block named ENDOFDATA. A file
+// that ends before ENDOFDATA (or inside a block) loses every block: MM2 then
+// has no impact sounds.
 std::optional<ImpactTable> parseImpactTable(std::string_view text, std::string* error = nullptr);
 
-// --- Surfaces: aud/cardata/{player,opponent}/default_surface{dry,wet,ice}.csv
+// --- Surfaces: aud/cardata/player/default_surface{dry,wet}.csv -----------------
 
 struct SkidSampleDef {
-    std::string wave;
-    float min = 0, max = 1; // slippage range (dry/wet) or speed range (ice)
+    std::string wave; // "NOSOUND" (exact case) = none
+    float min = 0, max = 0; // slippage range
 };
 struct SurfaceSoundDef {
-    std::string wave; // "NOSOUND" = none
-    // dry/wet tables
-    float maxSpeed = 125;
+    std::string wave; // "NOSOUND" (exact case) = none
+    float maxSpeed = 0;
     float minVolume = 0, maxVolume = 0;
-    float minPitch = 1, maxPitch = 1;
+    float minPitch = 0, maxPitch = 0;
     float minSkidVolume = 0, maxSkidVolume = 0;
-    // ice table: divisors instead of a max speed
-    float volumeDivisor = 0, pitchDivisor = 0, skidVolumeDivisor = 0;
-    bool forTunnels = false;
     std::vector<SkidSampleDef> skids;
     bool hasSurfaceSound() const;
 };
 struct SurfaceTable {
-    // default_surfaceice.csv layout. MM2 never loads that file: vehCarAudio::Init
-    // picks default_surfacewet in rain and default_surfacedry otherwise, snow
-    // included. The layout is still parsed for tools.
-    bool ice = false;
-    int tunnelIndex = 0;  // entry used for every wheel while the tunnel echo is on
+    int tunnelIndex = 0; // entry used for every wheel while the tunnel echo is on
     std::vector<SurfaceSoundDef> surfaces; // indexed by surface sound index
     const SurfaceSoundDef* at(int index) const;
 };
+// vehSurfaceAudio::LoadCSV: the tunnel index on line 2, then blocks of a
+// header line, the surface row, the skid header and the skid rows. The ice
+// table (default_surfaceice.csv, never loaded by MM2) has other columns and
+// reads as garbage, as it would in MM2.
 std::optional<SurfaceTable> parseSurfaceTable(std::string_view text, std::string* error = nullptr);
 
 // --- Police sirens: aud/cardata/player/{london,sf}policesiren.csv ------------
 // (opponent/policesiren.csv has the same layout but MM2 never loads it.)
 
 struct SirenStep {
-    float playTime = 1;
-    int next = 0; // index of the sample that follows
+    float playTime = 0;
+    int next = 0; // index of the sample that follows (read with atoi)
 };
 struct SirenSampleDef {
     std::string wave;
-    float volume = 0.95f;
+    float volume = 0;
     std::vector<SirenStep> steps; // (play time, next) pairs, used in turn
 };
 struct SirenTable {
     std::string explosion;
     // vehPoliceCarAudio::Load reads only the explosion sample's name: it
     // always plays at volume 1 (times distance attenuation).
-    float explosionVolume = 0.95f;
     std::vector<SirenSampleDef> samples;
 };
 std::optional<SirenTable> parseSirenTable(std::string_view text, std::string* error = nullptr);
@@ -153,16 +155,16 @@ struct SuspensionDef { // player/suspensionaudio.csv (vehSurfaceAudio::LoadSuspe
     std::string wave;
     float minVelocity = 2; // the wheels' average compression speed must reach |minVelocity|
     float maxVelocity = 3; // read but unused by MM2
-    float minVolume = 0.85f, maxVolume = 0.9f;
-    float volumeDivisor = 3; // volume = clamp(speed / divisor, min, max)
+    float minVolume = 0.75f, maxVolume = 1;
+    float volumeScale = 1.0f / 3.0f; // 1 / "Volume Divisor" (0 for a divisor of 0)
 };
 std::optional<SuspensionDef> parseSuspension(std::string_view text);
 
 struct TireWobbleDef { // player/tirewobble.csv (vehSurfaceAudio::LoadTireWobble)
     std::string wave;
-    float minVolume = 0.97f, maxVolume = 1;     // clamp of the damage fraction
-    float minPitch = 0.75f, maxPitch = 1.5f;    // clamp of speed / pitchDivisor
-    float pitchDivisor = 15;
+    float minVolume = 0.95f, maxVolume = 1;  // clamp of the damage fraction
+    float minPitch = 0.75f, maxPitch = 0.95f; // clamp of speed * pitchScale
+    float pitchScale = 0.0633333f;           // 1 / "pitch divisor" (0 for a divisor of 0)
 };
 std::optional<TireWobbleDef> parseTireWobble(std::string_view text);
 
@@ -185,14 +187,15 @@ VehicleTypes parseVehicleTypes(std::string_view text);
 
 struct SpeedBand {
     float minSpeed = 0, maxSpeed = 0;
-    float minPitch = 1, maxPitch = 1;
+    float minPitch = 0, maxPitch = 0;
 };
 struct AmbientEngineDef {
     std::string wave;
-    float volume = 0.97f;
-    // Speed bands (m/s) in file order. aiEngineAudio::CalculatePitch uses the
-    // last band (0..500 in every retail file) while the car slows down and the
-    // others while it holds or gains speed.
+    float volume = 0;
+    // Speed bands (m/s) in file order: every line after the third.
+    // aiEngineAudio::CalculatePitch uses the last band (0..500 in every retail
+    // file) while the car slows down and the others while it holds or gains
+    // speed.
     std::vector<SpeedBand> bands;
 };
 std::optional<AmbientEngineDef> parseAmbientEngine(std::string_view text);
@@ -202,10 +205,10 @@ struct HornPattern {
 };
 struct HornDef {
     std::string wave;
-    float volume = 0.97f, pitch = 1;
+    float volume = 0, pitch = 0;
     // vehHornAudio::PlayImpact: a hit at least this hard plays the last pattern
     // (a long blast in every retail file) one time in four.
-    float stuckImpactForce = 5500;
+    float stuckImpactForce = 0;
     std::vector<HornPattern> patterns;
 };
 std::optional<HornDef> parseHorn(std::string_view text);
@@ -221,17 +224,19 @@ enum class AmbientSampleType : int {
 };
 struct AmbientSampleDef {
     std::string wave;
-    float volume = 1;
+    float volume = 0;
+    // The "sample type" column. UpdateSoundData aborts the game on any other
+    // value; OpenMM2 clamps it to 0..3 instead.
     AmbientSampleType type = AmbientSampleType::Loop;
     float intervalLow = 0, intervalHigh = 0;
-    bool active = true;
-    float minSpeed = 0, maxSpeed = 999999; // of the object the set is attached to
+    bool active = false;
+    float minSpeed = 0, maxSpeed = 0; // of the object the set is attached to
     bool doppler = false;
 };
 struct AmbientSoundSet {
     std::string name;
-    float minDistance = 0, maxDistance = 100;
-    int priority = 12; // Aud3DObjectManager priority
+    float minDistance = 0, maxDistance = 0;
+    int priority = 0; // Aud3DObjectManager priority
     // Aud3DAmbientObject::Update: 0 everywhere, 1 only underground (while the
     // tunnel echo is on), 2 only above ground.
     int audibleArea = 0;
@@ -247,7 +252,7 @@ std::vector<std::string> parseAmbientContainer(std::string_view text);
 
 struct VoiceLine {
     std::string wave;
-    float volume = 0.98f;
+    float volume = 0;
     float delay = 0; // impact lines: seconds after the impact
 };
 // One AudCreatureAvoid block: lines a driver or pedestrian says when the AI
@@ -262,31 +267,45 @@ struct VoiceSpeedTrigger {
 };
 struct CreatureVoiceDef {
     std::vector<VoiceSpeedTrigger> triggers;
-    float minImpactForce = 0; // AudCreatureImpact
+    // AudCreatureImpact: the last "min impact force" block of the file.
+    bool hasImpact = false;
+    float minImpactForce = 0;
     std::vector<VoiceLine> impactLines;
 };
+// AudCreature::ReadCSV: blocks start with a "min speed" or "min impact force"
+// header (any case); a file starting with anything else has no blocks.
 std::optional<CreatureVoiceDef> parseCreatureVoice(std::string_view text);
+// AudCreatureContainer::LoadNumFileChoices: the "Num files" value of
+// numambcarvoicefiles_<l|s>.csv and num{fe,}malepedvoicefiles.csv.
+std::optional<float> parseNumFileChoices(std::string_view text);
 
 // --- Announcer: aud/spchdata --------------------------------------------------
 
-// One row under an "<EVENT> header": candidate lines "<prefix>NN", NN in
-// (addValue, endValue], file name <announcer><prefix>NN (lower case).
-struct SpeechLineSet {
-    std::string prefix;
-    int end = 1;
-    int add = 0;
+// One line of a speech table after its first: a header ("<EVENT> header", any
+// case) or a line set "<prefix>,<end>,<add>[,<num used>]": candidate files
+// <announcer><prefix>NN, NN in (add, end].
+struct SpeechRow {
+    std::string name;
+    float end = 0, add = 0;
+    float numUsed = 0; // Cops & Robbers tables only
+    // mmRaceSpeech::SetReadState: a first cell ending in "header" (not just
+    // "header" itself).
+    bool header() const;
+    // strnicmp(name, event, strlen(event)): the event names are prefixes.
+    bool headerIs(std::string_view event) const;
+    // mmCNRSpeech::SetReadState: the event name, up to the last space before
+    // "header".
+    std::string eventName() const;
 };
 struct SpeechTable {
-    // Event name (e.g. "PRERACE", "FINALCHECKPOINT", "RESULTSWIN") ->
-    // the rows listed under it.
-    std::vector<std::pair<std::string, std::vector<SpeechLineSet>>> events;
-    const std::vector<SpeechLineSet>* find(std::string_view event) const;
+    std::vector<SpeechRow> rows;
 };
 std::optional<SpeechTable> parseSpeechTable(std::string_view text);
 
-// <city>.csv: "Num announcers" and "prefix" (AL -> al1..al6).
+// <city>.csv (mmRaceSpeech::LoadCityInfo): "Num announcers" on line 2 (read
+// with atof) and the prefix on line 4 (AL -> al1..al6).
 struct AnnouncerList {
-    int count = 0;
+    float count = 0;
     std::string prefix;
 };
 std::optional<AnnouncerList> parseAnnouncerList(std::string_view text);

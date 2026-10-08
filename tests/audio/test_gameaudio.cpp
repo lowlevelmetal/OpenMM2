@@ -1,4 +1,5 @@
 #include "TestData.h"
+#include "audio/AngelRandom.h"
 #include "audio/game/Ambience.h"
 #include "audio/game/AudioTables.h"
 #include "audio/game/CarAudio.h"
@@ -168,7 +169,6 @@ TEST(GameAudio, EngineCurvesFollowVehEngineSampleWrapper) {
 TEST(GameAudio, SkidSamplesAndVolumes) {
     auto table = parseSurfaceTable(kSurfaceDry);
     ASSERT_TRUE(table);
-    EXPECT_FALSE(table->ice);
     ASSERT_EQ(table->surfaces.size(), 2u);
     const auto& road = table->surfaces[0];
     EXPECT_FALSE(road.hasSurfaceSound());
@@ -257,7 +257,7 @@ TEST(GameAudio, SuspensionThumpUsesTheAverageCompression) {
     Mixer mixer(48000);
     SurfaceSounds s;
     s.load(mixer, bank, *parseSurfaceTable(kSurfaceDry), Bus::Effects);
-    s.loadSuspension(mixer, bank, {"thump", 2, 3, 0.85f, 0.9f, 3}, Bus::Effects);
+    s.loadSuspension(mixer, bank, {"thump", 2, 3, 0.85f, 0.9f, 1.0f / 3.0f}, Bus::Effects);
     CarAudioInputs in = grounded();
     in.wheels[0].suspensionSpeed = 6.0f; // one wheel: average 1.5 < 2
     s.update(in, 0.02f);
@@ -274,7 +274,7 @@ TEST(GameAudio, TireWobbleThumpsOncePerRevolution) {
     Mixer mixer(48000);
     SurfaceSounds s;
     s.load(mixer, bank, *parseSurfaceTable(kSurfaceDry), Bus::Effects);
-    s.loadTireWobble(mixer, bank, {"wobble", 0.97f, 1, 0.75f, 1.5f, 15}, Bus::Effects);
+    s.loadTireWobble(mixer, bank, {"wobble", 0.97f, 1, 0.75f, 1.5f, 1.0f / 15.0f}, Bus::Effects);
     CarAudioInputs in = grounded();
     in.speed = 10.0f;
     in.wheelRadius = 0.3f; // 1.885 m per revolution
@@ -364,20 +364,18 @@ TEST(GameAudio, PositionedSoundsAttenuateWithSquaredDistance) {
     Audio3D a;
     a.setDropOffs(0.0f, 150.0f);
     Mat34 listener = Mat34::identity();
-    a.updateDistance({75, 0, 0}, listener.m3);
-    ASSERT_TRUE(a.withinMaxDistance());
+    ASSERT_TRUE(a.withinMaxDistance({75, 0, 0}, listener.m3));
     EXPECT_NEAR(a.attenuation(), 0.75f, 1e-5f); // 1 - 75^2 / 150^2
     // Pan: 0.2 * x / (|dx| + |dy| + |dz|).
     EXPECT_NEAR(a.pan(listener, {75, 0, 0}), 0.2f, 1e-6f);
     a.updateDistance({30, 0, -30}, listener.m3);
     EXPECT_NEAR(a.pan(listener, {30, 0, -30}), 0.1f, 1e-6f);
     // Doppler: the pseudo distance closed since the last update.
-    a.updateDistance({20, 0, -30}, listener.m3);
+    EXPECT_FALSE(a.pastMaxDistance({20, 0, -30}, listener.m3));
     EXPECT_NEAR(a.doppler(1.0f / kDopplerSpeed, 0.5f), 1.0f + 10.0f / kDopplerSpeed * 0.5f, 1e-5f);
-    a.updateDistance({200, 0, 0}, listener.m3);
-    EXPECT_TRUE(a.pastMaxDistance());
+    EXPECT_TRUE(a.pastMaxDistance({200, 0, 0}, listener.m3));
     a.alwaysAudible = true; // a siren keeps the slot
-    EXPECT_FALSE(a.pastMaxDistance());
+    EXPECT_FALSE(a.pastMaxDistance({200, 0, 0}, listener.m3));
 }
 
 namespace {
@@ -491,12 +489,13 @@ TEST(GameAudio, CreatureVoicesAnswerNearMisses) {
     EXPECT_FALSE(voice.speaking());
     // A near miss queues a line half of the time (RandomizeNumber(2n) < n).
     bool spoke = false;
-    for (unsigned seed = 1; seed < 20 && !spoke; ++seed) {
-        voice.seed(seed);
+    for (int seed = 1; seed < 20 && !spoke; ++seed) {
+        setRandomizeSeedSource([seed] { return seed; });
         voice.avoid();
         voice.update(10, 0.05f, at, listener);
         spoke = voice.speaking();
     }
+    setRandomizeSeedSource({});
     EXPECT_TRUE(spoke);
 
     // Impact lines: none during the first minute (the shared clock starts at 0).
@@ -518,29 +517,24 @@ TEST(GameAudio, CreatureVoicesAnswerNearMisses) {
 }
 
 TEST(GameAudio, AnnouncerLineNamesAndChoice) {
-    SpeechLineSet pre{"pre", 11, 0};
-    auto names = Announcer::lineNames("al1", pre);
-    ASSERT_EQ(names.size(), 11u);
-    EXPECT_EQ(names.front(), "al1pre01");
-    EXPECT_EQ(names.back(), "al1pre11");
-    SpeechLineSet cnr{"al1robrob", 4, 2};
-    names = Announcer::lineNames("al1", cnr);
-    ASSERT_EQ(names.size(), 2u);
-    EXPECT_EQ(names[0], "al1robrob03");
+    EXPECT_EQ(Announcer::lineName("AL1PRE", 1), "AL1PRE01");
+    EXPECT_EQ(Announcer::lineName("AL1PRE", 11), "AL1PRE11");
     auto t = parseSpeechTable("Name prefix/type header,end sufix value,sufix add value,num used\n"
                               "BLUETEAMHASGOLD header,,,\nAL1\\AL1ROBROB ,1,0,1\nROBGETLOOT header,,,\nAL1\\AL1COPS,4,0,4\n");
     ASSERT_TRUE(t);
-    ASSERT_TRUE(t->find("robgetloot"));
-    EXPECT_EQ(t->find("ROBGETLOOT")->front().prefix, "al1cops");
+    ASSERT_EQ(t->rows.size(), 4u);
+    EXPECT_TRUE(t->rows[0].header());
+    EXPECT_EQ(t->rows[0].eventName(), "BLUETEAMHASGOLD");
+    EXPECT_TRUE(t->rows[2].headerIs("robget")); // event names are prefixes
+    EXPECT_EQ(t->rows[1].name, "AL1\\AL1ROBROB "); // strtok keeps the space
+    EXPECT_FLOAT_EQ(t->rows[3].numUsed, 4.0f);
     // AudSpeechData::GetRandomName: (add, end], the last number moves up one
     // and wraps to 1, not to add + 1.
-    SpeechLineSet laps{"racelaps01", 10, 8};
-    EXPECT_EQ(Announcer::pickLine(laps, -1, 0.0f), 9);
-    EXPECT_EQ(Announcer::pickLine(laps, -1, 0.999f), 10);
-    EXPECT_EQ(Announcer::pickLine(laps, 9, 0.0f), 10);
-    EXPECT_EQ(Announcer::pickLine(laps, 10, 0.999f), 1);
-    SpeechLineSet single{"x", 1, 0};
-    EXPECT_EQ(Announcer::pickLine(single, 1, 0.5f), 1); // one line repeats
+    EXPECT_EQ(Announcer::pickLine(10, 8, -1, 9.0), 9);
+    EXPECT_EQ(Announcer::pickLine(10, 8, -1, 10.98), 10);
+    EXPECT_EQ(Announcer::pickLine(10, 8, 9, 9.2), 10);
+    EXPECT_EQ(Announcer::pickLine(10, 8, 10, 10.5), 1);
+    EXPECT_EQ(Announcer::pickLine(1, 0, 1, 1.5), 1); // one line repeats
 }
 
 TEST(GameAudio, AnnouncerPreRaceWaitsAndEventsInterrupt) {
@@ -554,11 +548,14 @@ TEST(GameAudio, AnnouncerPreRaceWaitsAndEventsInterrupt) {
     ASSERT_TRUE(a.load(data.vfs, bank, mixer, "london"));
     EXPECT_EQ(a.announcerId(), "al1");
     a.beginRace(AnnouncerMode::Blitz, {}, 1, 4); // snow: no weather lines; no time-of-day table
-    a.seed(3);
     std::string line;
-    for (int i = 0; i < 20 && line.empty(); ++i)
+    // The draws are seeded with the clock's second (AudManagerBase::RandomizeNumber).
+    for (int i = 0; i < 40 && line.empty(); ++i) {
+        setRandomizeSeedSource([i] { return 1000 + i; });
         line = a.playPreRace(); // the time-of-day / weather branches play nothing
-    ASSERT_TRUE(line.starts_with("al1pre")) << line;
+    }
+    setRandomizeSeedSource({});
+    ASSERT_EQ(line, "al1pre") << line; // queued: the number is drawn when it starts
     EXPECT_TRUE(a.speaking());
     a.update(1.0f);
     EXPECT_EQ(mixer.activeVoices(), 0); // waits 1.5 s
@@ -800,8 +797,10 @@ TEST(GameAudioRetail, AnnouncerAndAmbience) {
             a.stop();
         }
         a.beginSession(1);
-        EXPECT_FALSE(a.playCrashCourse(0, "PRERACE").empty()) << city;
+        ASSERT_TRUE(a.beginCrashCourse(0)) << city;
+        EXPECT_FALSE(a.playCrashCoursePreRace().empty()) << city;
         a.stop();
+        a.beginCopsAndRobbers();
         EXPECT_FALSE(a.playCopsAndRobbers("ROBGETLOOT").empty()) << city;
         a.stop();
 
@@ -842,7 +841,7 @@ TEST(GameAudioRetail, OpponentAmbientAndCityEmitters) {
     EXPECT_EQ(mixer.activeVoices(), 0);
     EXPECT_EQ(SirenPlayer::copsPursuingPlayer(), 0);
 
-    AmbientCarAudio sedan; // tune name va_sedans_s, audio files va_sedan_s_*
+    AmbientCarAudio sedan; // va_sedans_s has no files of its own: the default engine and horn
     ASSERT_TRUE(sedan.load(v, bank, mixer, "va_sedans_s"));
     Mat34 at = Mat34::identity();
     at.m3 = {5, 0, 0};
@@ -859,7 +858,6 @@ TEST(GameAudioRetail, OpponentAmbientAndCityEmitters) {
     const auto* river = amb.set("londonriver");
     ASSERT_TRUE(river);
     ASSERT_FALSE(river->points.empty());
-    amb.seed(1);
     Mat34 there = Mat34::identity();
     there.m3 = river->points.front();
     for (int i = 0; i < 30 * 50; ++i) // 30 s next to the first river point

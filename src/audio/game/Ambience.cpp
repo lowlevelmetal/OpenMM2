@@ -2,6 +2,7 @@
 // Aud3DAmbientObject, mmRainAudio). See docs/audio.md.
 #include "audio/game/Ambience.h"
 
+#include "audio/AngelRandom.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
@@ -32,16 +33,14 @@ float CityAmbience::interval(const AmbientSampleDef& d) {
     // PendOneShot: RandomizeNumber(low, high), or exactly high when equal.
     if (d.intervalLow == d.intervalHigh)
         return d.intervalHigh;
-    std::uniform_real_distribution<float> dist(std::min(d.intervalLow, d.intervalHigh),
-                                               std::max(d.intervalLow, d.intervalHigh));
-    return dist(m_rng);
+    return static_cast<float>(randomizeNumber(d.intervalLow, d.intervalHigh));
 }
 
 void CityAmbience::Set::slotLost() {
     // Aud3DAmbientObject::UnAssignSounds.
     for (auto& smp : samples)
-        smp.slot.stop();
-    audio.resetDistance();
+        if (smp.slot.playing())
+            smp.slot.stop();
 }
 
 CityAmbience::Set* CityAmbience::find(std::string_view name) {
@@ -89,7 +88,7 @@ int CityAmbience::loadSet(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, st
     s->samples.resize(s->def.samples.size());
     for (std::size_t i = 0; i < s->samples.size(); ++i) {
         const auto& d = s->def.samples[i];
-        s->samples[i].slot.load(mixer, bank, d.wave, Bus::Ambient, s->def.priority / 4);
+        s->samples[i].slot.load(mixer, bank, d.wave, Bus::Effects);
         s->samples[i].timer = 0.0f;
         // ReadSoundData: any Loop, Interval or Triggered sample makes the set positional.
         if (d.type != AmbientSampleType::RandomOnce)
@@ -131,17 +130,17 @@ void CityAmbience::playOneShot(Set& s, std::size_t index) {
         pan = s.pan;
         pitch = s.doppler;
     } else {
-        std::uniform_real_distribution<float> vol(0.75f, 1.0f), side(-1.0f, 1.0f);
-        volume = vol(m_rng);
-        pan = side(m_rng);
+        // Two draws in the same second: the volume and the pan move together.
+        volume = static_cast<float>(randomizeNumber(0.75f, 1.0f));
+        pan = static_cast<float>(randomizeNumber(-1.0f, 1.0f));
         pitch = 1.0f;
     }
-    slot.setPan(pan);
     slot.setVolume(d.volume * volume);
+    slot.setPan(pan);
     if (d.doppler)
         slot.setPitch(pitch);
     if (!slot.playing())
-        slot.playOnce(slot.volume(), slot.pitch());
+        slot.playOnce();
 }
 
 void CityAmbience::updateSet(Set& s, float dt, bool inTunnel) {
@@ -155,14 +154,11 @@ void CityAmbience::updateSet(Set& s, float dt, bool inTunnel) {
         // the listener, chosen while the set has no slot.
         if (!s.def.points.empty())
             s.position = nearestPoint(s.def, m_listener.m3);
-        s.audio.updateDistance(s.position, m_listener.m3);
-        if (!s.acquireSlot(s.audio.withinMaxDistance()))
+        if (!s.acquireSlot(s.audio.withinMaxDistance(s.position, m_listener.m3)))
             return;
-    } else {
-        s.audio.updateDistance(s.position, m_listener.m3);
     }
     // Aud3DAmbientObject::UpdateAudio.
-    if (!areaOk || s.audio.pastMaxDistance()) {
+    if (!areaOk || s.audio.pastMaxDistance(s.position, m_listener.m3)) {
         s.releaseSlot();
         s.slotLost();
         return;
@@ -191,7 +187,7 @@ void CityAmbience::updateSet(Set& s, float dt, bool inTunnel) {
             if (!inSpeedRange)
                 smp.slot.stop();
             else if (!smp.slot.playing())
-                smp.slot.playLoop(smp.slot.volume(), smp.slot.pitch());
+                smp.slot.playLoop();
             break;
         case AmbientSampleType::RandomOnce:
         case AmbientSampleType::Interval: // UpdateOneShot
@@ -226,8 +222,7 @@ void CityAmbience::playAt(std::string_view name, int sample, const Vec3& positio
     if (!s || sample < 0 || static_cast<std::size_t>(sample) >= s->samples.size())
         return;
     s->position = position;
-    s->audio.updateDistance(position, m_listener.m3);
-    if (!s->audio.withinMaxDistance())
+    if (!s->audio.withinMaxDistance(position, m_listener.m3))
         return;
     s->attenuation = s->audio.attenuation();
     s->pan = s->audio.pan(m_listener, position);
@@ -252,19 +247,20 @@ void CityAmbience::setLoop(std::string_view name, int sample, int id, bool on, c
     if (!loop) {
         m_moving.push_back(MovingLoop{std::string(name), sample, id, {}});
         loop = &m_moving.back();
-        loop->slot.load(*m_mixer, *m_bank, s->def.samples[static_cast<std::size_t>(sample)].wave, Bus::Ambient,
-                        s->def.priority / 4);
+        const auto& wave = s->def.samples[static_cast<std::size_t>(sample)].wave;
+        loop->slot.load(*m_mixer, *m_bank, wave, Bus::Effects);
     }
     const auto& d = s->def.samples[static_cast<std::size_t>(sample)];
     Audio3D audio;
     audio.setDropOffs(s->def.minDistance, s->def.maxDistance);
-    audio.updateDistance(position, m_listener.m3);
-    if (!audio.withinMaxDistance()) {
+    if (!audio.withinMaxDistance(position, m_listener.m3)) {
         loop->slot.stop();
         return;
     }
+    loop->slot.setVolume(audio.attenuation() * d.volume);
     loop->slot.setPan(audio.pan(m_listener, position));
-    loop->slot.playLoop(audio.attenuation() * d.volume, 1.0f);
+    if (!loop->slot.playing())
+        loop->slot.playLoop();
 }
 
 void CityAmbience::stop() {
@@ -289,17 +285,17 @@ constexpr float kFlashTime = 13.0f, kThunderTime = 15.0f, kSecondThunderDelay = 
 
 void RainAudio::load(SoundBank& bank, Mixer& mixer, bool night) {
     m_night = night;
-    m_exterior.load(mixer, bank, "Rainexterior", Bus::Ambient, 3);
+    m_exterior.load(mixer, bank, "Rainexterior", Bus::Effects);
     m_exterior.setVolume(kExteriorVolume);
-    m_interior.load(mixer, bank, "Raininterior", Bus::Ambient, 3);
+    m_interior.load(mixer, bank, "Raininterior", Bus::Effects);
     m_interior.setVolume(kInteriorVolume);
     m_thunder = SoundSlot();
     m_thunder2 = SoundSlot();
     if (night) {
-        m_thunder.load(mixer, bank, "Thunder", Bus::Ambient, 3);
+        m_thunder.load(mixer, bank, "Thunder", Bus::Effects);
         m_thunder.setVolume(1.0f);
         m_thunder.setPan(-0.2f);
-        m_thunder2.load(mixer, bank, "Thunder", Bus::Ambient, 3);
+        m_thunder2.load(mixer, bank, "Thunder", Bus::Effects);
         m_thunder2.setVolume(1.0f);
         m_thunder2.setPan(0.2f);
         m_thunder2.setPitch(0.8f);
@@ -320,13 +316,15 @@ void RainAudio::shelter(bool on) {
         m_thunder.setPan(0.0f);
         m_thunder2.setPan(0.0f);
     } else {
-        // ShelterOff. Its thunder pans (+-20, i.e. +-200000 hundredths of a
-        // decibel) are outside DirectSound's range and are rejected, so after
-        // the first shelter the claps stay centred.
+        // ShelterOff. Its thunder pans of -20 and 20 are clamped to -1 and 1
+        // (audObject::SetPan), so after the first shelter the claps are hard
+        // left and hard right instead of +-0.2.
         m_exterior.setVolume(kOpenExteriorVolume);
         m_interior.setVolume(kOpenInteriorVolume);
         m_thunder.setVolume(1.0f);
         m_thunder2.setVolume(1.0f);
+        m_thunder.setPan(-20.0f);
+        m_thunder2.setPan(20.0f);
     }
     m_sheltered = on;
 }
@@ -341,7 +339,7 @@ void RainAudio::update(bool raining, bool interior, bool sheltered, float dt) {
     if (interior != m_interiorOn) {
         SoundSlot& on = interior ? m_interior : m_exterior;
         SoundSlot& off = interior ? m_exterior : m_interior;
-        on.playLoop(on.volume(), 1.0f);
+        on.playLoop();
         off.stop();
         m_interiorOn = interior;
     }
@@ -350,7 +348,7 @@ void RainAudio::update(bool raining, bool interior, bool sheltered, float dt) {
         shelter(sheltered);
     SoundSlot& current = m_interiorOn ? m_interior : m_exterior;
     if (!current.playing())
-        current.playLoop(current.volume(), 1.0f);
+        current.playLoop();
     if (!m_night) {
         m_timer = 0;
         return;
@@ -359,17 +357,17 @@ void RainAudio::update(bool raining, bool interior, bool sheltered, float dt) {
         m_flashState = 1;
         m_flash = true;
     } else if (m_flashState == 1) {
-        m_flashState = 2; // the flash lasts one update (mmSky::DoFlash)
+        m_flashState = 2;
     }
     if (kThunderTime <= m_timer && !m_thunderState) {
         if (!m_thunder.playing())
-            m_thunder.playOnce(m_thunder.volume(), m_thunder.pitch());
+            m_thunder.playOnce();
         m_thunderState = true;
         m_timer = 0;
     }
     if (kSecondThunderDelay < m_timer && m_thunderState) {
         if (!m_thunder2.playing())
-            m_thunder2.playOnce(m_thunder2.volume(), m_thunder2.pitch());
+            m_thunder2.playOnce();
         m_thunderState = false;
         m_timer = 0;
         m_flashState = 0;

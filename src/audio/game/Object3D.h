@@ -26,21 +26,26 @@ inline constexpr float kDopplerSpeed = 56.7166633f;
 class Audio3D {
 public:
     // SetDropOffs: full volume inside minDistance, silent from maxDistance.
+    // Until it is called the maximum is -1 (the Aud3DObject constructor), so
+    // the object is never within range.
     void setDropOffs(float minDistance, float maxDistance);
     float maxDistance2() const { return m_max2; }
 
     // CalcDistToClosestHeads2: squared distance and |dx|+|dy|+|dz| ("pseudo
     // distance") to the listener; the change of the latter since the previous
-    // update drives the doppler shift.
+    // call drives the doppler shift. WithinMaxDistance and PastMaxDistance
+    // each make this call, so on the update in which an object takes a slot
+    // (both run) the second one sees no change and the doppler shift is 0.
     void updateDistance(const Vec3& position, const Vec3& listener);
+    // Aud3DObject::Reset: forget the previous pseudo distance.
     void resetDistance() { m_prevManhattan = -1.0f; }
     float distance2() const { return m_dist2; }
 
     // WithinMaxDistance: d^2 < max^2 (used to start sounding).
-    bool withinMaxDistance();
+    bool withinMaxDistance(const Vec3& position, const Vec3& listener);
     // PastMaxDistance: d^2 >= max^2 unless alwaysAudible (a police car with
     // its siren on keeps its slot, and its last attenuation, at any distance).
-    bool pastMaxDistance();
+    bool pastMaxDistance(const Vec3& position, const Vec3& listener);
     // CalculateAttenuation: 1 - (d^2 - min^2) / (max^2 - min^2), a volume
     // multiplier in Angel units (so linear in decibels against d^2).
     float attenuation() const { return 1.0f - m_percent; }
@@ -57,10 +62,10 @@ public:
 private:
     float percentToMax(float d2) const; // CalcPercentToMaxDist2
 
-    float m_min2 = 0.0f, m_max2 = 1.0e10f, m_invRange = 1.0e-10f;
-    float m_dist2 = 0.0f;
+    float m_min2 = 0.0f, m_max2 = -1.0f, m_invRange = 0.0f;
+    float m_dist2 = 1.0e6f; // Aud3DObject +0x2c starts at 1000000
     float m_manhattan = 0.0f, m_prevManhattan = -1.0f, m_approach = 0.0f;
-    float m_percent = 0.0f;
+    float m_percent = -1.0f; // +0x38 starts at -1
 };
 
 // Aud3DObjectManager: a fixed number of slots for positioned objects; an

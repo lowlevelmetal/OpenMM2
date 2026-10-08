@@ -12,6 +12,8 @@ namespace mm2::audio::game {
 void Audio3D::setDropOffs(float minDistance, float maxDistance) {
     m_min2 = minDistance * minDistance;
     m_max2 = maxDistance * maxDistance;
+    // MM2 divides unconditionally; equal distances (no retail file has them)
+    // would make the range infinite there and silent here.
     const float range = m_max2 - m_min2;
     m_invRange = range != 0.0f ? 1.0f / range : 0.0f;
 }
@@ -22,8 +24,8 @@ void Audio3D::updateDistance(const Vec3& position, const Vec3& listener) {
     const float dz = position.z - listener.z;
     m_dist2 = dx * dx + dy * dy + dz * dz;
     const float manhattan = std::abs(dx) + std::abs(dy) + std::abs(dz);
-    // The first update has no previous distance: no doppler shift.
-    m_prevManhattan = m_prevManhattan < 0.0f ? manhattan : m_manhattan;
+    // The first call after a reset has no previous distance: no doppler shift.
+    m_prevManhattan = m_prevManhattan == -1.0f ? manhattan : m_manhattan;
     m_approach = m_prevManhattan - manhattan;
     m_manhattan = manhattan;
 }
@@ -36,7 +38,8 @@ float Audio3D::percentToMax(float d2) const {
     return (d2 - m_min2) * m_invRange;
 }
 
-bool Audio3D::withinMaxDistance() {
+bool Audio3D::withinMaxDistance(const Vec3& position, const Vec3& listener) {
+    updateDistance(position, listener);
     if (m_dist2 < m_max2) {
         m_percent = percentToMax(m_dist2);
         return true;
@@ -44,7 +47,8 @@ bool Audio3D::withinMaxDistance() {
     return false;
 }
 
-bool Audio3D::pastMaxDistance() {
+bool Audio3D::pastMaxDistance(const Vec3& position, const Vec3& listener) {
+    updateDistance(position, listener);
     if (m_max2 <= m_dist2)
         return !alwaysAudible; // the attenuation keeps its last value
     m_percent = percentToMax(m_dist2);
