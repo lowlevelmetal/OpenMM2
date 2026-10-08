@@ -32,8 +32,12 @@ public:
         // after single-player races.
         constexpr float x = 440, w = 135, lineH = 48, lastW = 200;
         float y = 75;
+        // UIMenu::AddButton in screen fractions, UIButton type 0 (centred
+        // vertically, from the box's left) in PUMenuBase's GetFont 24.
         auto add = [&](std::string label, std::function<void()> fn, float width) -> ui::TextButton& {
             auto& b = menu.add<ui::TextButton>(ui::Box{x, y, width, lineH}, std::move(label), std::move(fn));
+            b.type = 0;
+            b.font = ui::style::popupButtonFont();
             y += lineH;
             return b;
         };
