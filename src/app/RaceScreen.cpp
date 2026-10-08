@@ -1467,6 +1467,12 @@ private:
         // Aud3DObjectManager::EchoOn(0.5) / EchoOff: every positioned sound's
         // echo follows the same flag.
         m_audioSlots.setTunnel(m_tunnel);
+        // MMDMusicManager::UpdateAmbientSFX: the city's ambience segment stops
+        // underground (StopSegment(0)) and starts again outside (PlaySegment).
+        if (auto* music = ctx.music(); music && m_tunnel != m_ambienceStopped) {
+            music->setAmbience(m_tunnel ? std::string_view{} : std::string_view(m_result.config.city));
+            m_ambienceStopped = m_tunnel;
+        }
         if (m_carAudioOk) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
             in.throttle = m_lastPedals.accelerator;
@@ -2023,6 +2029,7 @@ private:
     bool m_announcerOk = false;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
+    bool m_ambienceStopped = false; // MMDMusicManager +0x53: the ambience segment stopped underground
     float m_playerRadius = 0.0f; // the player's car's geometry radius (lvlInstance::GetRadius)
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;

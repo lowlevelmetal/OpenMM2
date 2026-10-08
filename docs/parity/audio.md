@@ -1,14 +1,19 @@
 # Parity audit: audio
 
-Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
+Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07; second
+pass (tunnel echo, world-owned ambient objects, cable cars, pedestrian voices,
+the race-side hooks) on 2026-10-08.
 
-Summary: 210 functions; verified 70, fixed 98, deviation 11, inferred 10,
-open 4, openmm2 17.
+Summary (after the second pass): 265 table rows (a row may cover several
+related functions); verified 69, fixed 153, deviation 11, inferred 10,
+open 2, openmm2 20. The open rows are the police explosion repeat (waiting on
+the ai-vehicles audit) and the ambient traffic, which no traffic car drives
+yet.
 
-Scope: `src/audio/game/*` (P), `src/audio/Mixer.*`, `Music*`,
+Scope: `src/audio/game/*` (P, including `PedAudio.*` from the second pass), `src/audio/Mixer.*`, `Music*`,
 `MusicDirector.*`, `MusicMotif.*` (M), `src/audio/SoundBank.*`, `Wav.*` (F),
-plus the files added by the audit: `src/audio/AngelRandom.*` (MM2's random
-numbers), `AngelUnits.*` (volume / pan units, moved out of
+plus the files added by the audit: `src/audio/EchoEffect.*` (the tunnel
+echo's duplicate buffer), `src/audio/AngelRandom.*` (MM2's random numbers), `AngelUnits.*` (volume / pan units, moved out of
 `game/AudioTables`) and `TextFields.*` (MM2's fgets / strtok / atof reading).
 Behaviour is described in `docs/audio.md` and `docs/music.md`.
 
@@ -29,6 +34,15 @@ Cross-cutting findings that changed many rows:
   `strtok` (empty cells collapse) and numbers with `atof` / `atoi` (numeric
   prefix), following each file's line structure. The parsers were rewritten to
   do the same instead of searching for headers and validating numbers.
+* **The tunnel echo** (second pass). `mmPlayer::Update` sets audio flag 0x80
+  and `Aud3DObjectManager::EchoOn(0.5)` with the player's car in a room
+  flagged underground, and every sound object then turns on the echo of its
+  samples at the start of its `UpdateAudio`: an `EchoEffect` per sample, a
+  duplicate DirectSound buffer that repeats the sample's queued play, stop,
+  volume and frequency changes once they are as old as the delay. The mixer
+  has effect voices for these duplicates, `SoundSlot` queues its changes like
+  `AudSoundBase`, and `Object3DManager::setTunnel` is the race's hook.
+  `MMDMusicManager::EchoOn` is never called: the music has no echo.
 
 ## SoundSlot.h / SoundSlot.cpp (AudSoundBase, audControl, audObject, audSound)
 
@@ -43,8 +57,28 @@ Cross-cutting findings that changed many rows:
 | `SoundSlot::setVolume` | `AudSoundBase::SetVolume`, `audObject::SetVolume` | fixed | was: clamped the volume alone and converted it to a gain; now the Angel volume goes to the mixer, which multiplies in the bus master and clamps the product (see `Mixer::computeTargets`) |
 | `SoundSlot::setPitch` | `AudSoundBase::SetFrequency`, `audObject::SetPitch` | fixed | the multiplier is now clamped to 0..2 before the rate clamp (ambient engines asking for 2.2 now play at 2) |
 | `SoundSlot::setPan` | `AudSoundBase::SetPan`, `audObject::SetPan` | fixed | now clamped to -1..1 (the pan offset at +0x80 is always 0) |
+| `SoundSlot::enableEcho` | `AudSoundBase::SetEffect(1)`, `SetEchoEffect` (both), `audFX::EnablePCEcho` | fixed | new: one EchoEffect per sample, made on the first call and kept (with its delay, last volume, pan and position) until the slot is reloaded |
+| `SoundSlot::disableEcho` | `AudSoundBase::DisableEffect(1)`, `DisableEchoEffect` | fixed | new |
+| `SoundSlot::setEchoDelay / setEchoAttenuation / setEchoFrequency` | `AudSoundBase::SetDelayTime / SetEchoAttenuation / SetEchoFrequency` | fixed | new; SetEchoFrequency only while the echo is on |
+| `SoundSlot::updateEcho` | `AudSoundBase::Update`, `UpdateEcho` | fixed | new |
+| `SoundSlot::setVolume / setPitch / setPan / playLoop / playOnce / stop` (echo) | `AudSoundBase::SetVolume / SetFrequency / SetPan / PlayLoop / PlayOnce / Stop` | fixed | with the echo on: QueueVolume(master × volume), QueueFrequency(the buffer's Hz), CalculatePan(the unclamped pan), QueuePlay(1 / 0) with the original's position, QueueStop. The Hz is rounded from OpenMM2's stored multiplier (MM2 keeps whole Hz) |
 | `SoundSlot::setEmitter` | — | openmm2 | DirectSound3D-style positioning; MM2's game sounds never use it |
 | `SoundSlot` move operations, `params`, `start` | — | openmm2 | glue to the mixer |
+
+## EchoEffect.h / EchoEffect.cpp (EchoEffect, audFX, EffectBase)
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `EchoEffect::enable` | `EchoEffect::Enable`, `EffectBase::CreateDSoundBuffer`, `audFX::EnablePCEcho` | fixed | new: a stopped effect voice with the original's volume (after the master), pan, pitch and position; the queue size is reset; the rate for SetFrequency is the sample's |
+| `EchoEffect::disable` | `EchoEffect::Disable` | fixed | new: queues emptied, the duplicate stopped (it keeps its position) |
+| `EchoEffect::setDelayTime` | `EchoEffect::SetDelayTime` | fixed | new: the first call after enable sets the delay and sizes each queue to delay × 180 (truncated to a short); every call queues a play when the original is playing a loop (`OriginalBufferPlaying(1)`) |
+| `EchoEffect::Queue::push / ripen`, `update` | `EchoEffect::Update`, `UpdateVolume / UpdatePitch / UpdatePlay / UpdateStop`, `QueueVolume / QueueFrequency / QueuePlay / QueueStop` | fixed | new: each update adds the frame time to every entry's age; once the oldest is as old as the delay it is applied and every entry at least that old is dropped (only the oldest of several applies); a push past the queue size restarts at entry 0. Volume, frequency, then play and stop (stop first when fewer stops than plays are queued) |
+| `EchoEffect::queuePlay` | `EchoEffect::QueuePlay` | fixed | new: the duplicate jumps to the original's position when the play is queued |
+| `EchoEffect::queueVolume / setVolume` | `EchoEffect::QueueVolume / SetVolume` | fixed | new: ftol(volume × attenuation × 10000 - 10000); DirectSound rejects values outside -10000..0 |
+| `EchoEffect::setFrequency` | `EchoEffect::SetFrequency` | fixed | new: sample rate × factor clamped to 100..100000 Hz |
+| `EchoEffect::calculatePan` | `EchoEffect::CalculatePan` | fixed | new: -0.25 × pan clamped to -1..1, at once |
+| `EchoEffect::stop` | `EchoEffect::Stop`, `audObject::StopPCEchoBuffer` | fixed | new |
+| — | `audManager::SetVolAllSounds`, `audControl::SetVolPCEchoBuffers` | deviation | when the SOUND FX slider moves MM2 sets every echo buffer to its control's volume × master; OpenMM2's echoes keep their last queued volume until the next one arrives (within the delay) |
 
 ## Object3D.h / Object3D.cpp (Aud3DObject, Aud3DObjectManager)
 
@@ -66,6 +100,10 @@ Cross-cutting findings that changed many rows:
 | `Object3DManager::holds / used / capacity` | `Aud3DObject` +0x44 | verified | |
 | `SlotHolder::acquireSlot` | `Aud3DObject::Update` / `AddTo3DMgr` | verified | asks only without a slot and within max distance; without a manager OpenMM2 lets every object sound (tools) |
 | `SlotHolder::releaseSlot / hasSlot / setManager` | `Aud3DObject::RemoveFrom3DMgr` | verified | |
+| `Object3DManager::echoOn / echoOff / echo / echoDelay` | `Aud3DObjectManager::EchoOn / EchoOff`, +0x24 / +0xa0 | fixed | new |
+| `Object3DManager::setTunnel` | `mmPlayer::Update` | fixed | new: EchoOn(0.5) on entering (not again while on), EchoOff on leaving; the race passes its tunnel flag (room flag 0x02 at the player's car) |
+| `tunnelEchoDelay` | the EchoOn methods reading +0xa0 | fixed | new; 0.5 s without a manager |
+| `Object3DManager::slotOf` | `Aud3DObject` +0x44 | fixed | new: the slot index a creature voice is chosen by |
 
 ## AudioTables.h / AudioTables.cpp, TextFields, AngelUnits (the loaders)
 
@@ -103,7 +141,7 @@ Cross-cutting findings that changed many rows:
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
 | `impactStrength` | `vehCarDamage::ApplyImpact`, `aiVehicleActive` | fixed | summed |z| + |y| + |x| in MM2's order |
-| `surfaceSoundIndex` | `vehWheel::GetSurfaceSound` | fixed | only -1 maps to 0 (other values pass through) |
+| `surfaceSoundIndex` | `vehWheel::GetSurfaceSound` | fixed | the material's sound as a short (+0x26); only -1 maps to 0, other values pass through; no material is 0 (the race). Second pass: checked against the asm, short truncation added |
 | `carAudioPath` | `vehCarAudio::Load` | verified | tools; loading now falls back to default.csv when the car's table does not load either |
 | `EngineSound::evaluate` | `vehEngineSampleWrapper::CalculateVolume`, `CalculatePitch`, `ParseCSVBuffer` | fixed | silencing now keeps the table slopes (only min / max become 0) |
 | `EngineSound::load` | `vehEngineAudio::AssignSounds` | verified | |
@@ -111,6 +149,7 @@ Cross-cutting findings that changed many rows:
 | `EngineSound::update3D` | `vehEngineSampleWrapper::UpdateRPM(rpm, volume, frequency, pan)` | fixed | as above with attenuation, doppler and pan |
 | `EngineSound::silence` | `vehEngineAudio::Silence`, `vehEngineSampleWrapper::Silence` | fixed | see evaluate |
 | `EngineSound::stop` | `vehEngineAudio::Stop` | verified | |
+| `EngineSound::echoOn / echoOff`, the echo update in `update` / `update3D` | `vehEngineAudio::EchoOn / EchoOff`, `vehEngineSampleWrapper::EchoOn / EchoOff`, the end of `UpdateRPM` (both) | fixed | new: every sample at the manager's delay and 0.96; each sample updates its echo after its play / stop step |
 | `CarAudioInputs::rpm` (idle floor removed) | `vehCarAudio::UpdateAudio3D` (+0x2c4) | fixed | OpenMM2 raised the RPM to idle; MM2 passes the engine's RPM as is |
 | `SurfaceSounds::skidInRange / skidVolumeFor` | `vehSurfaceAudioData::UpdateSkid` | verified | |
 | `SurfaceSounds::surfaceVolumeFor / surfacePitchFor` | `vehSurfaceAudioData::UpdateSurface`, `ParseCSVBuffer` | verified | |
@@ -123,6 +162,8 @@ Cross-cutting findings that changed many rows:
 | `SurfaceSounds::updateTireWobble` | `vehSurfaceAudio::UpdateTireWobble`, `SetWheelPointers` | fixed | clamps in MM2's order; NaN damage plays nothing |
 | `SurfaceSounds::silence` | `vehSurfaceAudio::UnAssignSounds` | fixed | new: a lost slot stops the surface and skids but lets thumps play out |
 | `SurfaceSounds::stop / skidPlaying / airborne` | `vehCarAudio::IsAirBorne` | verified | |
+| `SurfaceSounds::echoOn / echoOff / updateEcho` | `vehSurfaceAudio::EchoOn / EchoOff / UpdateEcho`, `vehSurfaceAudioData::EchoOn / EchoOff` | fixed | new: every entry's skids, then its surface sample; the update covers the current entry (+0) |
+| `SurfaceSounds::setTunnel` | the manager's echo flag read by `UpdateSurface` / `UpdateSkid` | fixed | new: the owner passes inputs' `inTunnel` or the manager's flag |
 | `ImpactSounds::volumeFor` | `AudImpactData::PlaySample` | verified | slope × force + min |
 | `ImpactSounds::load` | `AudImpactData::ReadCSV`, `AssignSounds` | fixed | the frequency column is set once at assignment (SetFrequency, clamped) |
 | `ImpactSounds::play` | `AudImpact::Play`, `AudImpactData::Play / PlaySample` | fixed | an audio id of -1 now plays nothing (was WALL); the raw id is kept |
@@ -137,14 +178,17 @@ Cross-cutting findings that changed many rows:
 | `SirenPlayer::explode` | `vehPoliceCarAudio::PlayExplosion` | fixed | DamageSiren now gets the car's doppler |
 | `SirenPlayer::silence / stopAll` | `vehPoliceCarAudio::UnAssignSounds` | fixed | an explosion now plays out when the slot is lost |
 | `SirenPlayer::copsPursuingPlayer / resetPursuitCount` | `vehPoliceCarAudio::GetNumCopsPursuingPlayer` | verified | |
+| `SirenPlayer::echoOn / echoOff / updateEcho` | `vehPoliceCarAudio::EchoOn / EchoOff / UpdateEcho` (the siren samples) | fixed | new; the explosion has no echo |
 | `PlayerCarAudio::load` | `vehCarAudioContainer` (mode 2), `vehCarAudio::Init / Load / SetNon3DParams`, `vehSemiCarAudio::Init`, `vehPoliceCarAudio::Init`, `mmGame::Init` | fixed | siren table: London's in London, SF's in every other city (was `<city>policesiren`); horn / clutch / semi volumes set like SetNon3DParams |
 | `PlayerCarAudio::updateHorn` | `mmGame::UpdateHorn`, `vehCarAudioContainer::PlayHorn / StopHorn` | verified | |
 | `PlayerCarAudio::update` | `vehCarAudio::UpdateAudioNon3D`, `vehSemiCarAudio::UpdateAudioNon3D / UpdateReverse / UpdateAirBlow`, `vehPoliceCarAudio::UpdateAudioNon3D` | fixed | MM2's call forms (PlayOnce / PlayLoop with -1); impacts first (they happen in the simulation) |
 | `PlayerCarAudio::stop / silenceEngine` | `vehCarAudioContainer::SilenceEngine` | verified | |
+| `PlayerCarAudio::updateEchoState / echoOn / echoOff / updateEcho` | `vehCarAudio::UpdateAudio`, `EchoOn / EchoOff / UpdateEcho`, `vehPoliceCarAudio::UpdateAudio / EchoOn / EchoOff / UpdateEcho`, `vehSemiCarAudio::UpdateAudio / EchoOn / EchoOff / UpdateEcho` | fixed | new: sirens or the semi's beeper and air brake first, then engine, surfaces, the horn 0.05 s behind at 0.997 of its rate (SetEchoFrequency), the clutch at the manager's delay. The police and semi variants skip the echo update on the frame the echo comes on. The car reads the manager through `CarAudioOptions::manager` |
 | `OpponentCarAudio::load` | `vehCarAudioContainer` (modes 0 / 1), `InitSemi`, `InitPolice` | fixed | positioned semis now get the reverse beeper and air brake; siren table by city as above. The `police` argument (an AI cop whose model is not in the list) is an OpenMM2 addition (deviation) |
 | `OpponentCarAudio::update` | `vehCarAudio::UpdateAudio3D` (both), `vehPoliceCarAudio::UpdateAudio3D` (both), `vehSemiCarAudio::UpdateAudio3D`, `aiPoliceOfficer::StartSiren / StopSiren / PerpEscapes` | fixed | StartSiren gets `sirenPursuingPlayer` (MM2 passes `IsPlayer` of the suspect; was always true); a past-max police car with its explosion playing keeps the previous update's values; network horn latched like the container and updated every frame; semi extras |
 | `OpponentCarAudio::update` (siren and explosion triggers) | `aiPoliceOfficer::StartSiren`, `StopSiren`, `PerpEscapes` | open | StartSiren / StopSiren follow `CarAudioInputs::siren` edges, as MM2's officer calls them. MM2 calls `PerpEscapes(true)` (PlayExplosion, then StopSiren) on every officer update while officer +0x968a is nonzero, so the explosion replays whenever it has finished; OpenMM2 explodes once on the rising edge of the cop's wreck state while its siren is on. The field's meaning belongs to the ai-vehicles audit; `wrecked` should mirror it |
-| `OpponentCarAudio::silence` | `vehCarAudio::UnAssignSounds` (and semi / police) | fixed | loops stop, impacts / thumps / explosion play out; the distance history is kept |
+| `OpponentCarAudio::silence` | `vehCarAudio::UnAssignSounds` (and semi / police) | fixed | the echo goes off first; loops stop, impacts / thumps / explosion play out; the distance history is kept |
+| `OpponentCarAudio::updateEchoState / echoOn / echoOff / updateEcho` | as for the player's car | fixed | new: only for a slot holder, before UpdateAudio3D; no clutch sample, a horn only for network cars |
 | `OpponentCarAudio::stop` | — | openmm2 | teardown |
 | `AmbientCarAudio::pitchFor` | `aiEngineAudio::CalculatePitch` | verified | |
 | `AmbientCarAudio::load` | `aiAmbientVehicleAudio::Init`, `LoadEngine`, `LoadHorn`, `LoadImpacts`, `aiEngineAudio::Load`, `vehHornAudio::Load` | fixed | the invented plural → singular name mapping is gone: MM2 opens `<model>_engine`, so `va_sedans_s` uses the default files |
@@ -153,27 +197,39 @@ Cross-cutting findings that changed many rows:
 | `AmbientCarAudio::impact` | `aiVehicleActive` impact, `vehHornAudio::PlayImpact`, `vehHornAudioTiming::Stop` | fixed | time-seeded draw; the stopped pattern rewinds; uses the stored attenuation |
 | `AmbientCarAudio::startPattern` | `vehHornAudioTiming::Play` | fixed | keeps the pattern's own beep index |
 | `AmbientCarAudio::updateHorn` | `vehHornAudio::Update`, `vehHornAudioTiming::Update` | verified | |
-| `AmbientCarAudio::silence` | `aiAmbientVehicleAudio::UnAssignSounds`, `vehHornAudio::Reset` | fixed | Reset idles without rewinding; impacts play out |
+| `AmbientCarAudio::silence` | `aiAmbientVehicleAudio::UnAssignSounds`, `vehHornAudio::Reset` | fixed | the echo goes off first; Reset idles without rewinding; impacts play out |
+| `AmbientCarAudio::echoOn / echoOff` and the echo step of `update` | `aiAmbientVehicleAudio::UpdateAudio / EchoOn / EchoOff / UpdateEcho`, `aiEngineAudio::EchoOn / EchoOff / UpdateEcho`, `vehHornAudio::EchoOn / EchoOff / UpdateEcho` | fixed | new: engine and horn at the manager's delay (the driver's AudCreature is not wired) |
 | `AmbientCarAudio::stop` | — | openmm2 | teardown |
 
-## Ambience.h / Ambience.cpp (Aud3DAmbObjContainer, Aud3DAmbientObject, mmRainAudio)
+## Ambience.h / Ambience.cpp (Aud3DAmbientObject, Aud3DAmbObjContainer, mmBridgeAudio, aiSubwayAudio, aiCableCarAudio, mmRainAudio)
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
-| `CityAmbience::nearestPoint` | `Aud3DObject::GetClosestPositionPtr`, `CalcPseudoDistToClosestHead` | verified | |
-| `CityAmbience::interval` | `Aud3DAmbientObject::PendOneShot` | fixed | time-seeded RandomizeNumber(low, high) |
-| `CityAmbience::Set::slotLost` | `Aud3DAmbientObject::UnAssignSounds` | fixed | no longer resets the distance history |
-| `CityAmbience::find / set / audible` | — | openmm2 | lookups |
-| `CityAmbience::loadSet` | `Aud3DAmbientObject::Load / ReadSoundData / SetSoundData` | fixed | wave sounds moved from `Bus::Ambient` (the music slider) to `Bus::Effects` (SOUND FX); priorities removed |
+| `AmbientObject::nearestPoint` | `Aud3DObject::GetClosestPositionPtr`, `CalcPseudoDistToClosestHead` | verified | |
+| `AmbientObject::load` | `Aud3DAmbientObject::Init / Load / ReadSoundData / SetSoundData` | fixed | second pass: one class for every ambient object (was CityAmbience's private set); per-object active flags from the file; sounds on SOUND FX |
+| `AmbientObject::interval` | `Aud3DAmbientObject::PendOneShot` | fixed | time-seeded RandomizeNumber(low, high) |
+| `AmbientObject::update` | `Aud3DAmbientObject::Update(speed)`, `Aud3DObject::Update` | fixed | the speed is stored for the samples' ranges; the slot request only within the audible area (the point nearest the listener for sets with points) |
+| `AmbientObject::updateAudio` | `Aud3DAmbientObject::UpdateAudio` (both) | fixed | second pass: the echo goes on and off with the tunnel; area 1 loses its slot above ground, area 2 underground; the echo update for areas 0 and 1; past max distance the slot goes; attenuation / pan / doppler for positional sets |
+| `AmbientObject::updateSoundData` | `Aud3DAmbientObject::UpdateSoundData`, `UpdateDoppler`, `UpdateLoop`, `UpdateOneShot` | fixed | only active samples; PlayLoop(-1, -1) |
+| `AmbientObject::playOneShot` (both) | `Aud3DAmbientObject::PlayOneShot` (both) | fixed | random volume and pan from time-seeded draws (equal within a second); types 2 and 3 at the object's values. The public one needs a slot (MM2 has no outside caller) |
+| `AmbientObject::activate / deactivate / active` | `Aud3DAmbientObject::ActivateSound / DeactivateSound` | fixed | new: deactivating a loop stops it, a one-shot plays out |
+| `AmbientObject::soundIndex` | `Aud3DAmbientObject::GetSoundIndex` | fixed | new: exact-case name |
+| `AmbientObject::slotLost / lose` | `Aud3DAmbientObject::UnAssignSounds` (both), `RemoveFrom3DMgr` | fixed | echo off, every playing sample stops; the distance history is kept |
+| `AmbientObject::echoOn / echoOff` | `Aud3DAmbientObject::EchoOn / EchoOff / UpdateEcho` (both) | fixed | new |
+| `AmbientObject::stop / samplePlaying / position` | — | openmm2 | teardown and queries |
 | `CityAmbience::load` | `Aud3DAmbObjContainer::Init`, `FileValid`, `CreateAmbientObject` | verified | |
-| `CityAmbience::playOneShot` | `Aud3DAmbientObject::PlayOneShot` | fixed | random volume and pan from time-seeded draws (equal within a second), PlayOnce(-1, -1) |
-| `CityAmbience::updateSet` | `Aud3DAmbientObject::Update`, `UpdateAudio` (both), `UpdateSoundData`, `UpdateDoppler`, `UpdateLoop`, `UpdateOneShot` | fixed | distance measured by each check (see Audio3D); PlayLoop(-1, -1) |
-| `CityAmbience::update` | `Aud3DAmbObjContainer::Update` | verified | |
-| `CityAmbience::playAt / setLoop` | `mmBridgeAudio`, `aiSubwayAudio`, `aiCableCarAudio`, `aiPedAudio` | open | approximations: MM2 makes each of these its own `Aud3DAmbientObject` (a slot, `ActivateSound` / `DeactivateSound` by sample; the subway switches sample 0 / 1 at a speed threshold). No caller in OpenMM2 yet |
-| `CityAmbience::stop` | — | openmm2 | teardown |
+| `CityAmbience::update` | `Aud3DAmbObjContainer::Update` | verified | every object with speed 0 (`Aud3DObjectManager::Update(0)`) |
+| `CityAmbience::set / object / audible / stop` | — | openmm2 | lookups, teardown |
+| `BridgeAudio::activate / deactivate` | `mmBridgeAudio::Activate / Deactivate` | fixed | new (replaces the `playAt` stand-in): -1 is samples 0 and 1. gizBridge activates both as the span starts to move and deactivates them when it stops; its simulation is not in OpenMM2 |
+| `SubwayAudio::update / activate / deactivate` | `aiSubwayAudio::Update / Activate / Deactivate` | fixed | new (replaces `setLoop`): from 1 m/s sample 0, below sample 1 ("NOTHING" in the retail file), then Update(0). aiSubway / gizTrain are not in OpenMM2 |
+| `CableCarAudio::load` | `aiCableCarAudio::aiCableCarAudio / Init`, `aiCableCarAudioData::aiCableCarAudioData / AssignSounds` | fixed | new: CABLECARGOBELL, CABLECARSTOP, CABLECAR, CABLECARSTART, STREETCABLE (assigned, never played); 0..100 m, priority 8 |
+| `CableCarAudio::nextState` | `aiCableCarAudioData::UpdateState` | fixed | new: 0.001 / 0.1 / 0.5 m/s |
+| `CableCarAudio::update / updatePlay` | `aiCableCarAudio::UpdateAudio` (both), `aiCableCarAudioData::UpdatePlay` | fixed | new: 0.98 × attenuation; the bell rings once per start at that volume without pan or doppler; the previous speed is taken after every update with a slot. aiCableCar is not in OpenMM2 |
+| `CableCarAudio::slotLost` | `aiCableCarAudio::UnAssignSounds`, `aiCableCarAudioData::Stop / UnAssignSounds` | fixed | new: the loop and the start sound stop |
+| `CableCarAudio::stop` | — | openmm2 | teardown |
 | `RainAudio::load` | `mmRainAudio::mmRainAudio` | fixed | sounds on `Bus::Effects` (SOUND FX) instead of the music slider's bus |
 | `RainAudio::shelter` | `mmRainAudio::ShelterOn / ShelterOff` | fixed | ShelterOff's ±20 pans are clamped by audObject::SetPan to hard left / right; OpenMM2 had assumed DirectSound rejected them and left the claps centred |
-| `RainAudio::update` | `mmRainAudio::Update`, `SetInterior` | verified | the "flash" state machine is MM2's, but nothing in MM2 reads it (no lightning is drawn; the old comment named a nonexistent mmSky::DoFlash). The `Process3D(false)` stop is not modelled (see report) |
+| `RainAudio::update` | `mmRainAudio::Update`, `SetInterior` | verified | the "flash" state machine is MM2's, but nothing in MM2 reads it (no lightning is drawn; the old comment named a nonexistent mmSky::DoFlash). The `Process3D(false)` stop is not modelled (see report). The race now passes the tunnel flag (shelter) and the hood / dash views (interior) |
 | `RainAudio::stop` | — | openmm2 | |
 
 ## Voices.h / Voices.cpp (AudSpeech, mmRaceSpeech, mmCNRSpeech, mmCCSpeech, AudCreature)
@@ -203,13 +259,32 @@ Cross-cutting findings that changed many rows:
 | `Announcer::update` | `AudSpeech::Update` | verified | every slot counts down; the first due one starts when nothing plays |
 | `Announcer::speaking / stop / reset` | `AudSpeech::IsPlaying / Stop / EmptyQueue` | verified | |
 | `CreatureVoice::advanceClock / resetGlobals` | `AudCreatureImpact::UpdateStatics` | fixed | the shared "last line" values start at 0 (zero-initialised globals), not -1 |
-| `CreatureVoice::load` | `AudCreatureAvoid / AudCreatureImpact` copies | fixed | lines are wave sounds on the SOUND FX bus (were on the commentary bus) |
+| `CreatureVoice::load` | `AudCreatureAvoid / AudCreatureImpact` copies | fixed | lines are wave sounds on the SOUND FX bus (were on the commentary bus); attenuation 1, pan 0 to start |
 | `CreatureVoice::eligible` | `AudCreatureAvoid::IsEligible` | verified | |
 | `CreatureVoice::avoid` | `AudCreature::PlayAvoidance`, `AudCreatureAvoid::QueuePlay` | fixed | time-seeded draw |
 | `CreatureVoice::impact` | `AudCreature::PlayImpact`, `AudCreatureImpact::QueuePlay` | fixed | time-seeded draw |
-| `CreatureVoice::playAvoid` | `AudCreatureAvoid::Play` | deviation | MM2 needs the owner (ambient car / pedestrian) to hold a sound slot (`UpdateNonVirtual`); OpenMM2 has no owner object and requires the creature to be within its own drop-off |
-| `CreatureVoice::update` | `AudCreatureAvoid::Update / UpdateAttenuation`, `AudCreatureImpact::Update / Play / UpdateAttenuation` | verified | the attenuation comes from the creature's own distance (see playAvoid) |
-| `CreatureVoice::speaking` | `AudCreature::IsPlaying` | verified | |
+| `CreatureVoice::playAvoid / playImpact` | `AudCreatureAvoid::Play`, `AudCreatureImpact::Play` | fixed | second pass: the container is asked for its slot (`UpdateNonVirtual`) and the line waits without one (was: the creature's own drop-off); without a container (tests) nothing is checked |
+| `CreatureVoice::update` | `AudCreature::Update`, `AudCreatureAvoid::Update`, `AudCreatureImpact::Update` | fixed | second pass: speed and frame time only; the 50 m test uses the squared distance the container last gave |
+| `CreatureVoice::updateAttenuation` | `AudCreature::UpdateAttenuation`, `AudCreatureAvoid / AudCreatureImpact::UpdateAttenuation` | fixed | new (was folded into update with the creature's own position) |
+| `CreatureVoice::setOwner / unassign` | `AudCreature::SetAud3DObjectPtr / UnAssignSounds` | fixed | new: queued lines are dropped, lines being said play out |
+| `CreatureVoice::speaking` | `AudCreature::IsPlaying`, `AudCreatureAvoid / AudCreatureImpact::SamplePlaying` | fixed | the chosen line of each block and the impact line only (was any line) |
+| `CreatureVoice::echoOn / echoOff / updateEcho` | `AudCreature::EchoOn / EchoOff / UpdateEcho`, `AudCreatureAvoid / AudCreatureImpact::EchoOn / EchoOff / UpdateEcho` | fixed | new: every line |
+| `CreatureVoice::stop` | — | openmm2 | teardown |
+
+## PedAudio.h / PedAudio.cpp (aiPedAudio, AudCreatureContainer)
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `PedestrianAudio::load` | `mmGame::Init`, `aiPedAudio::SetCSVCatString("")`, `LoadNumFemaleChoices / LoadNumMaleChoices`, `AudCreatureContainer::LoadNumFileChoices` | fixed | new: each sex's file number ftol(RandomizeNumber(1, n + 0.25)); 0 when the count file is missing |
+| `PedestrianAudio::voiceSet / creature` | `AudCreatureContainer::LoadVoices`, `AudCreature::Load / AddToHash`, the statics' voice table | fixed | new: a file is loaded once, with one AudCreature per manager slot; a missing file is looked for again each time |
+| `PedestrianAudio::isWoman` | `aiPedestrian_IsWoman`, `aiPedestrian_AreStringsEqual` | fixed | new: FEMALE, WOMAN, GIRL, Hooker anywhere, ignoring the case of a..z, with the search that does not back up after a mismatch |
+| `PedestrianAudio::update` | `aiMap::Update` → `AudCreatureContainer::UpdateStatics / UpdateVoices`, `aiPedestrian::Update` → `AudCreatureContainer::Update`, `aiPedestrian::Wander / Avoid` → `PlayAvoidanceReaction`, `Aud3DObjectManager::Update` → `AudCreatureContainer::UpdateAudio` | fixed | new, in that order. The speed given to the voices is the player's: aiMap reads it through the player vehicle's virtual at +8 (inferred to be its speed) |
+| `PedestrianAudio::Container::init` | `aiPedestrian::Init` (audio part), `aiPedAudio::LoadFemaleVoices / LoadMaleVoices("default", true)` | fixed | new: 0..40 m, priority 8, "%s_fpedvoice%s%d" / "%s_mpedvoice%s%d". Re-running it when a pool entry changes model is OpenMM2's |
+| `PedestrianAudio::Container::releaseWhenQuiet` | `AudCreatureContainer::Update` | fixed | new |
+| `PedestrianAudio::Container::avoid / impact`, `PedestrianAudio::impact` | `AudCreatureContainer::PlayAvoidanceReaction / PlayImpactReaction` | fixed | new; nothing in MM2 calls PlayImpactReaction for pedestrians |
+| `PedestrianAudio::Container::updateAudio` | `AudCreatureContainer::UpdateAudio` (both), `EchoOn / EchoOff / UpdateEcho` | fixed | new: the echo, then past 40 m the slot goes, else attenuation, pan and squared distance to the voice (the doppler shift MM2 works out is unused) |
+| `PedestrianAudio::Container::requestSlot / assign / unassign / lose` | `Aud3DObject::Update(NonVirtual)`, `AudCreatureContainer::AssignSounds / UnAssignSounds`, `RemoveFrom3DMgr` | fixed | new |
+| `PedestrianAudio::stop / audible / speaking` | — | openmm2 | teardown and queries |
 
 ## Mixer.h / Mixer.cpp
 
@@ -224,6 +299,9 @@ Cross-cutting findings that changed many rows:
 | `Mixer::setStereo / stereo` | `AudioOptions::SetStereoFX`, `AudManagerBase::SetStereoFlag / IsStereo` | fixed | new: mono centres every voice (MM2 skips its pan calls; surround only adds an EAX/3D flag) |
 | `Mixer::setBalance` | `MixerCTL::AssignWaveBalance` | inferred | MM2 sets the Windows wave mixer's balance; OpenMM2 attenuates the opposite channel linearly |
 | `Mixer::setMasterVolume` | — | openmm2 | OpenMM2's extra master level |
+| `Mixer::createEffectVoice / playEffect / haltEffect / position / setPosition` | `EffectBase::CreateDSoundBuffer`, `IDirectSoundBuffer::Play / Stop / GetCurrentPosition / SetCurrentPosition` | fixed | new: effect voices outside the 32-voice limit, never stolen, keeping their position while stopped; a non-looping one stops at 0 at its end (inferred from DirectSound) |
+| `Mixer::stopAll` (effect voices) | `audManager::StopAllSounds`, `audControl::StopPCEchoBuffers` | fixed | effect voices stop without being freed |
+| `Mixer::busMaster`, `VoiceParams::masterApplied` | `AudManagerBase::GetMasterSFXVolume`, `EchoEffect::QueueVolume` | fixed | new: the echo's volume already includes the master |
 | `Mixer::play / stop / stopAll / isPlaying / set* / pauseAll / activeVoices / streams / mix` | DirectSound | openmm2 | the software mixer (resampling, ramps, stream mixing) |
 | `Mixer::setDopplerFactor / setRolloffFactor / setListener` | — | openmm2 | DS3D model only |
 
@@ -243,7 +321,7 @@ Cross-cutting findings that changed many rows:
 | `MusicEngine::transitionTo` | `DMusicObject::SegmentSwitch` (both), `PlaySegment`, `SegmentWrapper::Play` | inferred | same-segment no-op is MM2's; the boundary handling is dmusic's (no composer) |
 | `MusicEngine::triggerMotif` | `DMusicObject::PlayMotif`, `SegmentWrapper::Play` | fixed | a jump while the motif still plays does nothing (SegmentWrapper::Play returns while playing); SetRepeats(1) |
 | `MusicEngine::startMotif / renderMotif`, `MusicMotif.c` | DirectMusic secondary segments | inferred | dmusic has no secondary segments or motifs |
-| `MusicEngine::setAmbience` | `mmGameMusicData::LoadAmbientSFX`, `MMDMusicManager::UpdateAmbientSFX` | open | plays the city segment; MM2 stops it while the camera is underground (audio flag 0x80) and restarts it outside. "underground" is a tool option MM2 never uses |
+| `MusicEngine::setAmbience` | `mmGameMusicData::LoadAmbientSFX`, `MMDMusicManager::UpdateAmbientSFX` | fixed | plays the city segment; the race now stops it ("") on entering a tunnel (audio flag 0x80, StopSegment(0)) and starts it again outside (PlaySegment). MM2 does this only in its ambient mode (music off), as one DirectMusic object plays either; OpenMM2 plays the ambience on its own stream. "underground" is a tool option MM2 never uses |
 | `MusicEngine::playSegment / preload / loadMotifStyle / render / stopAll`, `toString` | — | openmm2 | tools and dmusic glue |
 | `MusicPlayer::*` | — | openmm2 | threading, ring buffers |
 | `MusicPlayer::startRace` | `mmSingleRaceMusicData::LoadMusic` | fixed | pickSong |
@@ -260,7 +338,7 @@ Cross-cutting findings that changed many rows:
 | `MusicDirector::pause` | `mmPopup::PlayPauseMusic` | verified | |
 | `MusicDirector::resume` | `mmPopup::PlayReturnMusic` | fixed | switches to the previous segment whatever the current one (was only from Paused) |
 | `MusicDirector::finish` | `mmSingleRace::UpdateGame` StopSegment(0) | verified | the index stays, so idling after the finish brings in the idle segment |
-| `MusicDirector::damagedOut` | `mmSingleRace` / `mmSingleBlitz` StopSegment(1) | fixed | new: an ending on the next beat (dmusic: a stop on the beat; inferred) |
+| `MusicDirector::damagedOut` | `mmSingleRace` / `mmSingleBlitz` StopSegment(1) | fixed | new: an ending on the next beat (dmusic: a stop on the beat; inferred). The race calls it instead of `finish` when the session ended in a wreck (`Session::damagedOut`) |
 | `MusicDirector::results` | `mmPopup::ShowResults` | fixed | was attributed to ShowRoster and switched even when already in results; now SegmentSwitch's same-segment rule |
 | `MusicDirector::takeCommands / takeBigAir` | — | openmm2 | |
 
@@ -278,7 +356,7 @@ Cross-cutting findings that changed many rows:
 | --- | --- | --- | --- |
 | `AngelRandom::seed / number` | `Random::Seed`, `Random::Number` | fixed | new port (x87 product kept in double) |
 | `randomizeNumber` (both), `setRandomizeSeedSource` | `AudManagerBase::RandomizeNumber` | fixed | new; the seed source is replaceable for tests (deviation only when replaced) |
-| `CityAmbience` / `Announcer` / `CreatureVoice` are not driven by the race | `mmPlayer::Init`, `AudManager::InitSpeech`, `aiAmbientVehicleAudio` | open | see Missing / report: announcer, creatures, ambient traffic and pedestrians are not wired into `RaceScreen` |
+| Ambient traffic audio is not driven by the race | `aiAmbientVehicleAudio`, `aiVehicleSpline` | open | see Missing: the city ambience, announcer (session audit) and pedestrian voices are wired; the traffic cars still create no `AmbientCarAudio` |
 | `parseAmbientSoundSet` sample type clamp | `Aud3DAmbientObject::UpdateSoundData` (Abortf) | deviation | malformed data only |
 | `SirenPlayer::fluctuate` next clamp | `FluctuateSiren` | deviation | malformed data only |
 | `Audio3D::pan` zero pseudo distance | `CalcSinglePlayerPan` | deviation | MM2 divides by 0 |
@@ -289,7 +367,7 @@ Cross-cutting findings that changed many rows:
 | `MusicDirector` composed endings and fills | `IDirectMusicComposer::AutoTransition` | inferred | dmusic has no composer |
 | `Music` menu segment timing | MenuManager / UI music | inferred | not traced |
 | `MusicEngine::setState(Results)` Beat | `SegmentSwitch(results, END, BEAT)` | inferred | the END embellishment is not rendered |
-| `RainAudio` interior flag source | `mmPlayer::SetCamera` | inferred | the race passes `false`; MM2 uses the POV cameras (car view 1 and the bumper POV) |
+| `RainAudio` interior flag source | `mmPlayer::SetCamera` | verified | the race passes the hood and dash views (session audit) |
 | `Mixer` stream for the DirectMusic ambience on `Bus::Ambient` | `DMusicWaveBuffer::SetVolume` | inferred | follows the music slider (Context sets it) |
 | `MusicEngine` synth gain 0.5 | DirectMusic software synth | inferred | |
 | `MusicEngine::setAmbience("underground")` | — | deviation | a tool option; MM2 has the segment but never plays it |
@@ -300,15 +378,12 @@ Cross-cutting findings that changed many rows:
 
 | MM2 | What it does | Status |
 | --- | --- | --- |
-| `EchoEffect`, `AudSoundBase::SetEchoEffect / UpdateEcho`, `vehCarAudio::EchoOn / EchoOff / UpdateEcho` (and the engine, surface, police, semi, ambient object and creature variants), `MMDMusicManager::EchoOn / EchoOff` | Tunnel echo: with the camera in an underground room (`mmPlayer::Update`, room flag 2 → audio flag 0x80, `Aud3DObjectManager::EchoOn(0.5)`) every positioned sound replays its play / stop / volume / pan / pitch changes on a duplicate buffer 0.5 s later at 0.96 volume (the horn 0.05 s later at 0.997 pitch), and the music gets a delayed copy too | open: needs the tunnel state from the race (room flags) and a delayed-duplicate voice in the mixer; affects every tunnel |
-| Tunnel state consumers: `vehSurfaceAudio` tunnel entry, `mmRainAudio::ShelterOn/Off`, `Aud3DAmbientObject` audible areas, `MMDMusicManager::UpdateAmbientSFX` | already ported; the input `inTunnel` / `sheltered` is never set | open: session (room flag 2 of the camera's room) |
-| `aiAmbientVehicleAudio` wiring (`aiVehicleSpline::Init / Update`, `aiGoalAvoidPlayer::Reset` → `PlayAvoidanceHorn` + `PlayAvoidanceReaction`, `aiVehicleActive` impacts → `PlayImpactHorn` / `PlayImpactReaction`, `aiMap` → `UpdateStatics(player speed)`) | Ambient traffic engines, horns and their drivers' voices | open: `AmbientCarAudio` and `CreatureVoice` are ported but no traffic car creates them (ai-vehicles + session) |
-| `aiPedAudio`, `AudCreatureContainer` (`LoadVoices`, `LoadNumFileChoices`: one voice file per session drawn with RandomizeNumber(1, n + 0.25)) | Pedestrian screams and lines | open: no pedestrian owns a voice (ai-ambient-city + session) |
-| `mmBridgeAudio`, `aiSubwayAudio`, `aiCableCarAudio`, `aiCableCarAudioData`, `gizTrain` audio | Drawbridge, tube train, cable car and train sounds as their own ambient objects | open: owners not ported; `CityAmbience::playAt / setLoop` are stand-ins |
+| `aiAmbientVehicleAudio` wiring (`aiVehicleSpline::Init / Update`, `aiGoalAvoidPlayer::Reset` → `PlayAvoidanceHorn` + `PlayAvoidanceReaction`, `aiVehicleActive` impacts → `PlayImpactHorn` / `PlayImpactReaction`, `aiMap` → `UpdateStatics(player speed)`) | Ambient traffic engines, horns and their drivers' voices | open: `AmbientCarAudio` is ported (with its echo) but no traffic car creates one, and the drivers' `AudCreature` containers are not ported (ai-vehicles + session) |
+| The owners of `BridgeAudio`, `SubwayAudio`, `CableCarAudio` and the ferry's `AmbientObject` (`gizBridge`, `aiSubway`, `gizTrain`, `aiCableCar`, `gizFerry`) | Drawbridges, tube trains, trains, cable cars and ferries | the audio objects are ported; the simulations that would own and update them are not in OpenMM2 |
+| `MMDMusicManager::EchoOn / EchoOff` | An echo on the DirectMusic buffer | never called in build 3393: nothing to port |
 | `vehNitroCarAudio` | Nitro sound for every non-semi, non-police car when vehtypes.csv says "Always nitro" (FALSE in retail) | open, no effect on retail data |
 | `vehEngineSampleWrapper::ParseCSVBufferOld`, `CalculateVolumeOld` | The "Volume Divisor" engine table layout (volume = rpm / divisor below a cut RPM, divisor / rpm above, clamped) | open, no car table MM2 loads uses it |
 | `AudSoundBase` raw `PlayLoop` volume path | `PlayLoop` with an explicit volume bypasses the SOUND FX master | not ported (MM2 always passes -1) |
 | `Aud3DObjectManager::Process3D(false)` (results popup, `mmPopup`) | Removes every positioned object from its slot and stops the rain loop while popups show | open: session (popups) |
-| `mmGame::UpdateDMusic` ambient mode, `MMDMusicManager::UpdateAmbientSFX` | With music off and city sounds on, the ambience segment stops underground | open (needs the tunnel state) |
 | `Aud3DObjectManager::QueueInCopVoice / PlayCopVoice` | Called on a damage out; both are empty in build 3393 | nothing to port |
 | `mmAmbientAudio` | A city "walla" loop; never constructed | nothing to port |
