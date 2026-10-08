@@ -71,7 +71,15 @@ void Wheel::init(const WheelParams& p, const WheelGeometry& g, float m, bool wit
 }
 
 void Wheel::copyVars(const Wheel& o) {
+    // vehWheel::CopyVars copies every tune field but HandbrakeCoef and
+    // WobbleLimit: the right wheels keep the constructor's 1 and 0 whatever
+    // the tune file says (only WheelFront / WheelBack are loaded, into the
+    // left wheels).
+    const float handbrakeCoef = params.handbrakeCoef;
+    const float wobbleLimit = params.wobbleLimit;
     params = o.params;
+    params.handbrakeCoef = handbrakeCoef;
+    params.wobbleLimit = wobbleLimit;
     computeConstants();
 }
 

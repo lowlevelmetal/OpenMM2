@@ -88,9 +88,16 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     body.collider.handler = this;
     buildBound();
 
-    // Wheels (vehWheel::Init; the right wheels copy the left ones' tune).
-    for (std::size_t i = 0; i < 4; ++i)
-        wheels[i].init(i < 2 ? p.wheelFront : p.wheelBack, g.wheels[i], p.mass, true, centerOfGravity.z);
+    // Wheels (vehWheel::Init): the tune file's WheelFront / WheelBack are
+    // the left wheels'; the right ones start from the constructor's values
+    // and take the left ones' by vehWheel::CopyVars (all but HandbrakeCoef
+    // and WobbleLimit).
+    wheels[0].init(p.wheelFront, g.wheels[0], p.mass, true, centerOfGravity.z);
+    wheels[1].init(WheelParams{}, g.wheels[1], p.mass, true, centerOfGravity.z);
+    wheels[2].init(p.wheelBack, g.wheels[2], p.mass, true, centerOfGravity.z);
+    wheels[3].init(WheelParams{}, g.wheels[3], p.mass, true, centerOfGravity.z);
+    wheels[1].copyVars(wheels[0]);
+    wheels[3].copyVars(wheels[2]);
 
     engine.configure(p.engine);
     engine.pivot = g.enginePivot;

@@ -63,7 +63,9 @@ public:
     // the static load is mass * g/4 scaled by |z - cg.z| / |z| (vehCarSim's
     // CenterOfGravity z); without one it is mass * g / 4.
     void init(const WheelParams& p, const WheelGeometry& g, float mass, bool hasCar, float cgZ, int flags = 0);
-    // vehWheel::CopyVars (the right wheel of each axle copies the left one).
+    // vehWheel::CopyVars (the right wheel of each axle copies the left one):
+    // every tune field but HandbrakeCoef and WobbleLimit, which keep this
+    // wheel's own.
     void copyVars(const Wheel& other);
     void computeConstants();
     // vehWheel::SetNormalLoad: derives the spring, damper and tyre constants.

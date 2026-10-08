@@ -77,15 +77,20 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     body.resetCollider();
 
     // Wheels: vehWheel::Init without a vehCarSim (the body frame, a static
-    // load of Mass * 19.6 / 4); TWHL1 copies TWHL0's tune, TWHL3 TWHL2's.
+    // load of Mass * 19.6 / 4). The file's WheelFront / WheelBack are
+    // TWHL0's and TWHL2's; TWHL1 and TWHL3 take them by vehWheel::CopyVars,
+    // which keeps their own (constructor) HandbrakeCoef and WobbleLimit.
     // Each wheel has its own free drivetrain (vehDrivetrain::Init with the
     // tractor's vehCarSim, whose Mass sets the wheel inertia).
     for (std::size_t i = 0; i < 4; ++i) {
-        wheels[i].init(i < 2 ? p.wheelFront : p.wheelBack, g.wheels[i], p.mass, false, 0.0f);
+        const WheelParams wp = i == 0 ? p.wheelFront : (i == 2 ? p.wheelBack : WheelParams{});
+        wheels[i].init(wp, g.wheels[i], p.mass, false, 0.0f);
         drivetrains[i] = Drivetrain{};
         drivetrains[i].configure(p.drivetrain);
         drivetrains[i].addWheel(&wheels[i]);
     }
+    wheels[1].copyVars(wheels[0]);
+    wheels[3].copyVars(wheels[2]);
 
     // The joint at the two hitches, attached to both bodies' colliders.
     joint.init(j, &tractor.body.ics, &ics, carHitchOffset, trailerHitchOffset);
