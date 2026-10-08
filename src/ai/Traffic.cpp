@@ -1728,10 +1728,44 @@ void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
     }
     if (c.speed < cap)
         brakeFor();
-    // The lane distance from the car's free position (aiMap::DetermineRoadPosInfo
-    // on its road; inferred: the projection onto its lane).
-    if (const Lane* lane = laneOf(c.path, c.dir, c.lane))
-        c.roadDist = lane->line.project(c.transform.m3);
+    // The rail distance from where the car now is: its room
+    // (lvlLevel::FindRoomId from its last) and the room's first road or
+    // intersection (aiMap::MapComponentType). In an intersection, the
+    // drawn lane's whole length plus how far the car is past the road's end
+    // along its axis (XZ); on a road, aiMap::DetermineRoadPosInfo on that
+    // road (with the car's side; only the distance is kept, as coded); in
+    // neither, the same on the car's own road.
+    {
+        int id = c.path;
+        int type = kNoComponent;
+        if (m_map) {
+            c.mapRoom = m_map->findRoom(c.transform.m3, c.mapRoom);
+            type = m_map->mapComponentType(c.mapRoom, id);
+        }
+        const Vec3& pos = c.transform.m3;
+        if (type == kIntersectionComponent) {
+            const city::AiPath& road = m_net.source()->paths[static_cast<std::size_t>(c.path)];
+            const std::size_t n = road.center.size();
+            float past = 0.0f;
+            if (n > 0 && road.zAxis.size() >= n) {
+                if (c.dir == 1) {
+                    const Vec3& e = road.center[n - 1];
+                    const Vec3& z = road.zAxis[n - 1];
+                    past = -z.x * (pos.x - e.x) + -z.z * (pos.z - e.z);
+                } else {
+                    const Vec3& e = road.center[0];
+                    const Vec3& z = road.zAxis[0];
+                    past = (pos.x - e.x) * z.x + (pos.z - e.z) * z.z;
+                }
+            }
+            c.roadDist = laneLength(c.path, c.dir, c.drawLane) + past;
+        } else {
+            const int road = type == kRoadComponent ? id : c.path;
+            int vert = 0, lane = 0;
+            float lateral = 0.0f;
+            determineRoadPosInfo(pos, c.path, road, c.dir, vert, c.roadDist, lane, lateral);
+        }
+    }
     if (!detectPlayerZoneCollision(c, p) && !playerInFront(c, p)) {
         c.goal = AmbientGoal::RegainRail;
         c.goalTicks = 0;
@@ -1779,6 +1813,85 @@ bool Traffic::roadPosInfo(int path, const Mat34& m, int& vert, float& dist, int&
         return true;
     }
     return false;
+}
+
+void Traffic::pathRoadDistance(int path, const Vec3& pos, int lane, int side, int& vert, float& dist,
+                               float& lateral) const {
+    vert = 1;
+    const city::AiMap* map = m_net.source();
+    if (!map || path < 0 || static_cast<std::size_t>(path) >= map->paths.size())
+        return;
+    const city::AiPath& p = map->paths[static_cast<std::size_t>(path)];
+    const city::AiRoadSide& s = side == 1 ? p.right : p.left;
+    const int lanes = static_cast<int>(s.numLanes);
+    if (lanes < lane)
+        lane = lanes;
+    // The row: a lane in its own order (as aiPath keeps it), or the side's
+    // sidewalk row, whose lengths are the file's (3D, within 1e-4 m).
+    std::vector<Vec3> sidewalkRow;
+    std::vector<float> sidewalkCum;
+    const std::vector<Vec3>* row = nullptr;
+    const std::vector<float>* cum = nullptr;
+    if (lane < lanes) {
+        const Lane* l = laneOf(path, side, lane);
+        if (!l)
+            return;
+        row = &l->line.points;
+        cum = &l->line.distances;
+    } else {
+        if (static_cast<std::size_t>(lanes) >= s.polylines.size())
+            return;
+        sidewalkRow = s.polylines[static_cast<std::size_t>(lanes)];
+        sidewalkCum.assign(sidewalkRow.size(), 0.0f);
+        for (std::size_t i = 1; i < sidewalkRow.size(); ++i)
+            sidewalkCum[i] = sidewalkRow[i].dist(sidewalkRow[i - 1]) + sidewalkCum[i - 1];
+        row = &sidewalkRow;
+        cum = &sidewalkCum;
+    }
+    const int n = static_cast<int>(p.center.size());
+    if (static_cast<int>(row->size()) < n || static_cast<int>(cum->size()) < n ||
+        static_cast<int>(p.zAxis.size()) < n || static_cast<int>(p.xAxis.size()) < n)
+        return;
+    for (int i = 1; i < n; ++i) {
+        const auto k = static_cast<std::size_t>(i);
+        const Vec3& z = p.zAxis[k];
+        const Vec3 d = pos - (*row)[k];
+        const float along = (d.x * z.x + d.y * z.y) + d.z * z.z;
+        if (!(0.0f < along))
+            continue;
+        const Vec3& x = p.xAxis[k];
+        const Vec3 e = pos - p.center[k];
+        const float off = -((e.x * x.x + e.y * x.y) + e.z * x.z);
+        lateral = off;
+        if (std::abs(off) < p.halfWidth + 5.0f) {
+            vert = i;
+            dist = (*cum)[k] - along;
+            return;
+        }
+    }
+}
+
+void Traffic::determineRoadPosInfo(const Vec3& pos, int railPath, int path, int side, int& vert, float& dist,
+                                   int& lane, float& lateral) const {
+    const city::AiMap* map = m_net.source();
+    if (!map || path < 0 || static_cast<std::size_t>(path) >= map->paths.size() || railPath < 0 ||
+        static_cast<std::size_t>(railPath) >= map->paths.size())
+        return;
+    pathRoadDistance(path, pos, 0, side, vert, dist, lateral);
+    const city::AiRoadSide& counts = side == 1 ? map->paths[static_cast<std::size_t>(path)].right
+                                               : map->paths[static_cast<std::size_t>(path)].left;
+    const city::AiRoadSide& bounds = side == 1 ? map->paths[static_cast<std::size_t>(railPath)].right
+                                               : map->paths[static_cast<std::size_t>(railPath)].left;
+    lane = static_cast<int>(counts.numLanes) - 1;
+    const int rows = static_cast<int>(counts.numLanes) + static_cast<int>(counts.numSidewalks);
+    for (int l = 0; l < rows && 2 * l + 1 < static_cast<int>(bounds.params.size()); ++l) {
+        if (bounds.params[static_cast<std::size_t>(2 * l)] < lateral &&
+            lateral < bounds.params[static_cast<std::size_t>(2 * l + 1)]) {
+            lane = l;
+            break;
+        }
+    }
+    pathRoadDistance(path, pos, lane, side, vert, dist, lateral);
 }
 
 int Traffic::predictIntersectionPath(int node, const Mat34& m, bool freeway) const {

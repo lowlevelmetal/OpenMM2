@@ -280,6 +280,22 @@ private:
     // lateral bounds hold it (else lane 0) and its distance along that lane.
     // False ("Position is not on road segment") leaves the outputs alone.
     bool roadPosInfo(int path, const Mat34& m, int& vert, float& dist, int& lane, int& dir) const;
+    // aiPath::RoadDistance on `path`: from vertex 1 on, the first vertex of
+    // row `lane` of side `side` (the side's sidewalk row when `lane` is its
+    // lane count; higher lanes are clamped to it) that the position lies
+    // before along the section's z axis, with the position within the road's
+    // half width + 5 m of the centre line: `vert` that vertex, `lateral` the
+    // position's offset (along -x), `dist` the row's length to the vertex
+    // less how far before it the position is. `dist` and `lateral` are left
+    // alone when no vertex qualifies (`vert` is then 1).
+    void pathRoadDistance(int path, const Vec3& pos, int lane, int side, int& vert, float& dist,
+                          float& lateral) const;
+    // aiMap::DetermineRoadPosInfo: RoadDistance on lane 0, the lane (or
+    // sidewalk) whose lateral bounds hold that offset, read from the side
+    // `side` of `railPath` (the car's own road, as coded; the counts are
+    // `path`'s; none: the last lane), then RoadDistance again on it.
+    void determineRoadPosInfo(const Vec3& pos, int railPath, int path, int side, int& vert, float& dist,
+                              int& lane, float& lateral) const;
     // aiMap::PredictAmbIntersectionPath / PredictAmbFreewayIntersectionPath:
     // the road leaving `node` that best matches the heading of `m`.
     int predictIntersectionPath(int node, const Mat34& m, bool freeway) const;

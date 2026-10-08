@@ -241,3 +241,50 @@ TEST(ParityMm2Ai, PedestriansRestartAsTheyBegan) {
         EXPECT_FLOAT_EQ(peds.peds()[i].transform.m3.z, first[i].second.z);
     }
 }
+
+// aiGoalAvoidPlayer::Update: off its rail, the car's rail distance comes
+// from where it is (aiMap::DetermineRoadPosInfo, aiPath::RoadDistance on
+// its road): on a straight road, its distance along its lane.
+TEST(ParityMm2Ai, AvoidingCarKeepsItsRoadDistance) {
+    const auto map = square();
+    const auto net = ai::RoadNetwork::build(map, {});
+    ai::TrafficLights lights;
+    lights.build(net);
+    ai::TrafficSettings settings;
+    ai::Traffic traffic(net, lights, {sedan()}, settings, 1);
+    traffic.reset();
+    for (int i = 0; i < 30 * 4; ++i)
+        traffic.step(ai::kAiStepSeconds, kFarPlayer, 1);
+    // A car well inside a road, moving.
+    int id = -1;
+    for (const auto& c : traffic.cars()) {
+        const auto d = traffic.debug(c.id);
+        if (c.speed > 5.0f && !d.turning && !d.changingLane && d.s > 40.0f && d.s < 120.0f) {
+            id = c.id;
+            break;
+        }
+    }
+    ASSERT_GE(id, 0);
+    const ai::AmbientCar* car = nullptr;
+    for (const auto& c : traffic.cars())
+        if (c.id == id)
+            car = &c;
+    ASSERT_NE(car, nullptr);
+    const Vec3 ahead = car->transform.m3 - car->transform.m2 * 15.0f;
+    const ai::PlayerCar player = ai::PlayerCar::at(ahead, {});
+    bool avoided = false;
+    for (int i = 0; i < 30 && !avoided; ++i) {
+        traffic.step(ai::kAiStepSeconds, player, 1);
+        const auto d = traffic.debug(id);
+        if (d.goal == ai::AmbientGoal::AvoidPlayer) {
+            avoided = true;
+            for (const auto& c : traffic.cars()) {
+                if (c.id != id)
+                    continue;
+                const auto& lane = net.lanes()[static_cast<std::size_t>(d.lane)];
+                EXPECT_NEAR(d.s, lane.line.project(c.transform.m3), 0.5f);
+            }
+        }
+    }
+    EXPECT_TRUE(avoided);
+}

@@ -56,6 +56,9 @@ public:
     int findRoom(const Vec3& position, int hint) const;
     const std::vector<RoomComponent>& components(int room) const;
 
+    // aiMap::MapComponentType(room, &id): the room's first road or
+    // intersection (type 1 or 3, its id), else none with id = the room.
+    int mapComponentType(int room, int& id) const;
     // aiMap::MapComponent(pos, &id, &type, room): the room's first road or
     // intersection, else a shortcut road the position is on or next to
     // (IsPosOnRoad < 3), else none with id = the room. Returns the room.

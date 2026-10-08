@@ -129,6 +129,17 @@ void MapView::buildRooms() {
     }
 }
 
+int MapView::mapComponentType(int room, int& id) const {
+    for (const RoomComponent& c : components(room)) {
+        if (c.type == kIntersectionComponent || c.type == kRoadComponent) {
+            id = c.id;
+            return c.type;
+        }
+    }
+    id = room;
+    return kNoComponent;
+}
+
 int MapView::mapComponent(const Vec3& pos, int& id, int& type, int roomHint) const {
     const int room = findRoom(pos, roomHint);
     const auto& list = components(room);
