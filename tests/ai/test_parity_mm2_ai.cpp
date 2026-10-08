@@ -1,6 +1,7 @@
 // Parity checks for the AI from MM2's side (build 3393, MM2Recomp): what
 // aiMap::Reset does on a restart, the ambient cars' set-up draws and the
 // lights aiVehicleInstance::DrawGlow shows. See docs/parity/mm2/ai.md.
+#include "TestData.h"
 #include "ai/Driving.h"
 #include "ai/MapView.h"
 #include "ai/Pedestrians.h"
@@ -9,10 +10,12 @@
 #include "ai/Traffic.h"
 #include "ai/TrafficLights.h"
 #include "ai/World.h"
+#include "city/CityData.h"
 
 #include <gtest/gtest.h>
 
 #include <map>
+#include <string>
 #include <vector>
 
 using namespace mm2;
@@ -383,4 +386,26 @@ TEST(ParityMm2Ai, ExternalRailVehiclesShareTheObstacleMap) {
     traffic.reset();
     EXPECT_TRUE(traffic.intersectionVehicles(3).empty());
     EXPECT_TRUE(traffic.isExternal(entry));
+}
+
+// A network race has no AI map (its session carries none) and cruise and
+// Cops and Robbers no traffic: the world runs and resets with no race map
+// and an empty pool (aiMap::Init with density 0, aiMap::Reset).
+TEST(ParityMm2Ai, WorldWithoutARaceMapOrTraffic) {
+    MM2_REQUIRE_GAME_DATA();
+    auto c = city::loadCity(*test::gameData(), "london");
+    ASSERT_TRUE(c);
+    ai::Settings settings;
+    settings.trafficDensity = 0.0f;
+    std::string error;
+    auto world = ai::World::create(*c, *test::gameData(), settings, nullptr, &error);
+    ASSERT_TRUE(world) << error;
+    world->reset();
+    for (int i = 0; i < 30; ++i)
+        world->update(1.0f / 30.0f, {430, 0, -150}, {});
+    EXPECT_TRUE(world->cars().empty());
+    EXPECT_FALSE(world->peds().empty());
+    world->reset();
+    world->update(1.0f / 30.0f, {430, 0, -150}, {});
+    EXPECT_TRUE(world->cars().empty());
 }
