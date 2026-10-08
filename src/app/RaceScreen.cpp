@@ -1744,6 +1744,7 @@ private:
             d.time = static_cast<float>(m_time);
             if (m_cr->goldActive() || m_cr->goldCarrier() >= 0)
                 d.gold = m_cr->goldPosition();
+            d.goldOnMap = m_cr->goldPosition(); // mmHudMap::DrawCopsnRobbers
             const bool teams = m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
             const bool colours = m_result.config.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
             d.bases.push_back({colours ? "pt_blue" : "pt_bank", m_cr->set().bank});

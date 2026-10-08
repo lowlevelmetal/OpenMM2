@@ -227,11 +227,12 @@ float messageTop(bool top, bool second, bool viewAtTop);
 struct CrDisplay {
     bool enabled = false;
     std::optional<Vec3> gold; // the gold's place (drawn while not delivered)
+    Vec3 goldOnMap;           // the gold object's place, always shown on the map
     struct Base {
         std::string model; // pt_bank / pt_hideout, pt_blue / pt_red in Robber Teams
         Vec3 position;
     };
-    std::vector<Base> bases;
+    std::vector<Base> bases; // the bank (blue) first, then the hideout (red)
     std::optional<Vec3> arrowInterest; // mmArrow::SetInterest
     float time = 0.0f;                 // the powerup's spin (ElapsedTime)
     // mmCRHUD's readouts: the team totals (team 0 blue, team 1 red) or, in

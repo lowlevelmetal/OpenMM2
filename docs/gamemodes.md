@@ -413,6 +413,7 @@ fractions of the whole output.
 | HUD toggle | The "HUD Toggle" key is `mmHUD::ToggleExternalView`: it hides and shows the instrument cluster only. `mmHUD::Disable` (looking around from a point-of-view camera, the in-race menu) hides the dashboard with the readouts, and the messages in single player only | `mmGame::UpdateGameInput`, `mmHUD::ToggleExternalView`, `::Disable` |
 | Circuit lap rows | `mmWaypoints::Update` sets the row of the lap being driven every frame, so a live time shows under the completed laps | `mmWaypoints::Update`, `mmCircuitHUD::SetLapTime` |
 | Map police | Police cars show on the map only while they pursue | `mmHudMap::DrawCops` |
+| Map: Cops & Robbers | After the player: the gold (`GOLD_DOT`), the bank and the hideout (`BANK_DOT`, `HIDEOUT_DOT`), or in Robber Teams the blue and red bases (`BLUE_DOT`, `RED_DOT`) | `mmHudMap::DrawCopsnRobbers`, `::RegisterCopsnRobbers`, `mmMultiCR::InitHUD` |
 
 Defaults for a new player in MM2: map off, rotating map on, zoomed out,
 opponent icons on, mirror off (`mmStatePack`,

@@ -103,8 +103,18 @@ std::vector<std::string> wrapText(render::Overlay2D& ov, ui::TextRenderer& text,
     return lines;
 }
 
-// mmHudMap::DrawWaypoints: hudmap_square paint jobs.
-enum MapDot : int { kDotGreen = 2, kDotGrey = 3, kDotYellow = 4, kDotFinish = 5 };
+// mmHudMap::DrawIndicator's types: hudmap_square paint jobs.
+enum MapDot : int {
+    kDotRed = 0,
+    kDotBlue = 1,
+    kDotGreen = 2,
+    kDotGrey = 3,
+    kDotYellow = 4,
+    kDotFinish = 5,
+    kDotGold = 6,
+    kDotBank = 7,
+    kDotHideout = 8,
+};
 
 // mmTextNode colours (COLORREF from the Vector4 passed to SetFGColor).
 constexpr std::uint32_t kLabelColor = render::packColor(127, 255, 127); // (0.5, 1, 0.5)
@@ -910,6 +920,19 @@ void Hud::drawMap(const Session& session, const PlayerState& player, std::span<c
     }
     car(player.transform, hud::MapIcon::Outline, m_mapIconScale * 1.3f);
     car(player.transform, hud::MapIcon::Player, m_mapIconScale);
+
+    // mmHudMap::DrawCopsnRobbers (Cops and Robbers, after the player): the
+    // gold (GOLD_DOT, paint job 6), then the bank and the hideout
+    // (BANK_DOT 7, HIDEOUT_DOT 8), or in Robber Teams the blue and red
+    // bases (BLUE_DOT 1, RED_DOT 0), as mmMultiCR::InitHUD registers them.
+    if (m_cr.enabled) {
+        dot(m_cr.goldOnMap, kDotGold);
+        const bool robberTeams = m_cr.teams && !m_cr.copsVsRobbers;
+        if (m_cr.bases.size() >= 2) {
+            dot(m_cr.bases[0].position, robberTeams ? kDotBlue : kDotBank);
+            dot(m_cr.bases[1].position, robberTeams ? kDotRed : kDotHideout);
+        }
+    }
 
     m_device.setViewport({0, 0, static_cast<float>(scene.width), static_cast<float>(scene.height), 0, 1});
     m_device.setScissor(nullptr);
