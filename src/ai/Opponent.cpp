@@ -191,15 +191,36 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     m_touchingPlayer = false;
 
     if (m_held && !m_finished) {
+        // mmGameSingle::DisableRacers makes the car undrivable
+        // (vehCar::SetDrivable(0, 1)): aiVehiclePhysics::Forward only revs it
+        // (with its front-left wheel on the ground: throttle 1, no brakes,
+        // steering 0) and vehCar::PreUpdate holds it with the brakes on and
+        // the gearbox in neutral.
         m_mode = Mode::Held;
-        m_car.setInputs(0.0f, 1.0f, 0.0f, 1.0f);
+        if (m_car.wheels[0].hit)
+            m_car.setInputs(1.0f, 1.0f, 0.0f, m_car.handBrake);
+        else
+            m_car.setInputs(m_car.engine.throttle, 1.0f, m_car.steering, m_car.handBrake);
+        m_car.trans.setNeutral();
+        m_wasHeld = true;
         m_noProgressTime = 0.0f;
         return;
     }
+    if (m_wasHeld) {
+        // mmGameSingle::EnableRacers: vehCar::SetDrivable(1, 1) puts the
+        // gearbox in first (vehTransmission::SetForward).
+        m_wasHeld = false;
+        m_car.trans.setDrive();
+    }
 
+    // Fallen through the world (aiRouteRacer::DriveRoute): disabled. From then
+    // on aiRouteRacer::Update only calls Disabled, which sets the Stop state
+    // without driving: the car keeps its last inputs.
+    if (m_disabled) {
+        m_mode = Mode::Stopped;
+        return;
+    }
     const Vec3 pos = m_car.body.ics.matrix.m3;
-    if (pos.y < kFallenThroughWorld)
-        m_disabled = true;
 
     // OpenMM2 recovery (not in MM2): no progress for a long time, or fallen
     // out of the city, puts the car back on its line.
@@ -249,11 +270,14 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
 
     if (!m_finished && ctx.finalApproach && remaining <= kFinishRadius)
         finish();
-    // Disabled (aiRouteRacer::Disabled), or at the destination after the
-    // finish: aiVehiclePhysics::Stop.
-    if (m_disabled || (m_finished && (remaining < 2.5f || m_car.speed() < 1.0f)))
-        m_driver.setState(PhysicsDriver::State::Stop);
+    // The race being over changes nothing in MM2 (aiRouteRacer::Finished is
+    // only asked by the game): the car drives on to its destination, where
+    // CalcRoadSpeed holds it with the brakes.
     m_driver.driveRoute(dt, cars, ctx);
+    // aiRouteRacer::DriveRoute: below y = -200 the car has fallen through the
+    // world and is disabled from the next frame.
+    if (m_car.body.ics.matrix.m3.y < kFallenThroughWorld)
+        m_disabled = true;
 
     if (m_settings.speedLimit > 0.0f && m_driver.state() == PhysicsDriver::State::Forward) {
         // OpenMM2 hook for scripted cars (tests): hold a top speed.
