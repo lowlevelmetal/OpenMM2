@@ -15,6 +15,7 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <tuple>
 
 using namespace mm2;
 using namespace mm2::game::bangers;
@@ -310,4 +311,71 @@ TEST(ParityBangersRetail, PkgXrefsBecomeBangers) {
     city::Instance tree;
     tree.name = "cl10";
     EXPECT_TRUE(placeXrefs(tree, pkgXrefs(v, "cl10"), lib).empty());
+}
+
+namespace {
+
+// Three rooms along x (1: x < 100, 2: 100..200, 3: beyond), each next to the
+// following one.
+class StripRooms final : public phys::Level {
+public:
+    int findRoom(const Vec3& p, int) const override { return p.x < 100.0f ? 1 : (p.x < 200.0f ? 2 : 3); }
+    int touchedNeighbors(int*, int, int, const Vec3&, float) const override { return 0; }
+    int neighbors(int* out, int max, int room) const override {
+        int n = 0;
+        if (room > 1 && n < max)
+            out[n++] = room - 1;
+        if (room < 3 && n < max)
+            out[n++] = room + 1;
+        return n;
+    }
+    void collect(const int*, int, const Vec3&, float, phys::LevelBound& out) const override { out.clear(); }
+    void instances(int, std::vector<phys::Instance*>&) const override {}
+};
+
+} // namespace
+
+// dgBangerActiveManager::Update declares a knocked-over prop by its
+// CollisionType: 0x10 as a type-1 mover (all collisions), so
+// dgPhysManager::Update detaches it outside the player's rooms
+// (dgHitBangerInstance::Detach: it leaves its room and disappears); 0x40 as
+// a type-2 mover, which is never detached.
+TEST(ParityBangers, KnockedOverPropsAreDetachedOutsideTheActiveRooms) {
+    TempData t;
+    {
+        std::ofstream f(t.dir / "tune" / "banger" / "sp_held.dgbangerdata");
+        f << "type: a\ndgBangerData {\n  Size 0.4 2 0.4\n  Mass 20\n  CollisionPrim 1\n  CollisionType 64\n}\n";
+    }
+    vfs::Vfs files; // sees the file written after TempData mounted its folder
+    files.mount(std::make_shared<vfs::DirectoryFs>(t.dir));
+    BangerDataLibrary lib(files);
+    for (const auto& [model, x, gone] : {std::tuple{"sp_lamp", 250.0f, true}, std::tuple{"sp_lamp", 150.0f, false},
+                                         std::tuple{"sp_held", 250.0f, false}}) {
+        StripRooms level;
+        phys::World world;
+        world.setLevel(&level);
+        phys::Body player;
+        player.place(Mat34::translation({0.0f, 10.0f, 0.0f}));
+        player.declare(4, 0x1b);
+        world.add(&player);
+        BangerSet set(lib);
+        set.setWorld(&world);
+        const BangerData* d = lib.find(model);
+        ASSERT_TRUE(d);
+        set.ejectPart(*d, model, "", 0, Mat34::translation({x, 10.0f, 0.0f}), 0.0f);
+        ASSERT_EQ(set.activeCount(), 1);
+        set.update(1.0f / 60.0f); // declares the active for the next frame
+        world.advanceFixed(1.0f / 60.0f);
+        const auto& inst = set.instances().back();
+        if (gone) {
+            EXPECT_EQ(inst.state, BangerSet::State::Gone) << model << " at " << x;
+            EXPECT_EQ(inst.room, 0);
+            EXPECT_EQ(set.activeCount(), 0);
+        } else {
+            EXPECT_EQ(inst.state, BangerSet::State::Active) << model << " at " << x;
+            EXPECT_EQ(set.activeCount(), 1);
+        }
+        set.setWorld(nullptr);
+        world.remove(&player);
+    }
 }

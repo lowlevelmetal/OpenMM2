@@ -164,8 +164,19 @@ point (MM2 reads past its table); MM2 draws a decal only with its room
 * Reset (lvlLevel::ResetInstances): every prop back in place, hit instances
   and actives released.
 
-Not ported: `dgPhysManager::Update` detaches type-1 movers (CollisionType
-0x10 and 0x4 props, ragdolls) whose room is neither the room of the
-player's car (mover type 4), an opponent's or a network player's (type 3)
-nor a neighbour of one, so a knocked-over prop still moving vanishes when
-the cars leave it behind (OpenMM2's world has no mover types).
+Movers (`dgBangerActiveManager::Update`, `dgPhysManager::DeclareMover`):
+each active is declared by its data's CollisionType, checked in the order
+0x2 (updated by the manager without collisions), 0x40 (type 2, flags
+0x1b), 0x10 (type 1, 0x1b), 0x4 (type 1, 0x3: the city only); none of them
+leaves it undeclared. In the age mode (dgBangerDataManager +0x2a8a8, which
+mmGame::Init clears; `BangerSet::setAgeMode`) the active's age decides:
+(1, 0x1b) up to the second age, (1, 0x3) up to the first, then the
+manager's own update; with mmGame::Init's ages (6 and 30000 s) that is
+(1, 0x1b) for the first 6 s and the manager's update afterwards.
+`dgPhysManager::Update` detaches a type-1 mover whose room is neither the
+room of the player's car (type 4), an opponent's or a network player's
+(type 3) nor a neighbour of one: for a knocked-over prop that is
+`dgHitBangerInstance::Detach`, which detaches its active and takes it out of
+its room, so a prop still moving vanishes when the cars leave it behind. A
+prop still standing (`dgUnhitBangerInstance`) keeps lvlInstance's empty
+Detach.

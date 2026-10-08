@@ -450,9 +450,11 @@ private:
         m_player->sim().trans.automatic(m_result.config.automatic);
         m_player->controls().autoReverse = m_controlOptions.autoReverse;
         // The player's car collides with its polygonal bound (vehCar::Init
-        // with vehBound) and marks what it hits (dgPhysManager's PlayerInst).
+        // with vehBound) and marks what it hits (dgPhysManager's PlayerInst):
+        // mmGame::Update declares it each frame as the type-4 mover, whose
+        // room and neighbours keep knocked-over props simulated.
         m_player->sim().setPolygonalBound(true);
-        m_player->sim().body.player = true;
+        m_player->sim().body.declare(4, 0x1b);
         m_player->sim().options.weatherFriction = weatherFriction();
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
