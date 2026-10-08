@@ -152,8 +152,7 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
 CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
                            const city::CityData& city, const std::function<bool(std::string_view)>& isDynamic)
     : m_device(device), m_textures(textures), m_models(models), m_city(city), m_locator(city.psdl, city.info.mapName) {
-    // sdlPage16::Draw's primitives for every room and level of detail; the
-    // tunnels (not ported) from the CityMesh reconstruction, at every level.
+    // sdlPage16::Draw's primitives for every room and level of detail.
     std::unordered_map<std::string, std::uint32_t> slots;
     m_slotNames.emplace_back(); // 0: untextured
     auto slotOf = [&](int texture) -> std::uint32_t {
@@ -213,21 +212,6 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
                 p.height = prim.height;
                 room.lods[l].push_back(p);
             }
-        }
-        for (const auto& batch : city::buildRoomMesh(city.psdl, r).batches) {
-            if (batch.kind != city::SurfaceKind::Tunnel || batch.indices.empty())
-                continue;
-            const auto tunnelBase = static_cast<std::uint32_t>(m_streetVertices.size());
-            for (const auto& v : batch.vertices)
-                addVertex(v.position, v.uv, city::SdlShade::Room, 0);
-            Prim p;
-            p.first = static_cast<std::uint32_t>(m_streetIndices.size());
-            p.count = static_cast<std::uint32_t>(batch.indices.size());
-            p.slot = slotOf(batch.texture);
-            for (const auto i : batch.indices)
-                m_streetIndices.push_back(tunnelBase + i);
-            for (auto& lod : room.lods)
-                lod.push_back(p);
         }
     }
     m_buckets.resize(m_slotNames.size());

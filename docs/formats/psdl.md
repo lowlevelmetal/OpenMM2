@@ -227,8 +227,10 @@ following parts are *reconstructions*, not known original behaviour:
 - Low-detail textures are not used yet.
 
 MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
-detail, the drawn primitives coloured by `GetShadedColor`); compared with
-it (build 3393) the builder differs as follows, not yet ported:
+detail, the drawn primitives coloured by `GetShadedColor`). The renderer
+uses a port of it, `src/city/SdlDraw` (docs/rendering.md, "City"); CityMesh
+stays the geometry the physics probe, the minimap and the tools use, and it
+differs from what MM2 draws:
 
 - Levels of detail (road strips): 0 draws one strip from outer edge to
   outer edge with the group's third texture (road LOD) over every other
@@ -255,6 +257,26 @@ it (build 3393) the builder differs as follows, not yet ported:
   word indexes `sdlCommon::sm_LightTable`).
 - Fans and roofs: planar 8 m repeats, as the builder (MM2 subtracts the
   whole repeats at the first vertex, which wrap addressing ignores).
+- Tunnels (words: flags, height in 8.8, an unused word; a junction's ten
+  words add its first ceiling corner and three edge masks). A junction
+  (count 10, nothing when the height is 0): walls on the perimeter edges of
+  the first mask (u = max(1, length / height)), inner walls too with flag
+  0x4000 unless 0x4; with 0x8 a ceiling fan (third texture) at the highest
+  corner + height from the stored corner backwards; with 0x4 an apron 1 m
+  below the highest corner (sixth texture), its corners pushed out by
+  height x 0.333 beside a wall (0.25 m elsewhere), and on each walled edge
+  a railing face and top (fifth texture) whose ends the second and third
+  masks bevel (x 1.414). A strip tunnel follows the next attribute (past a
+  Texture attribute): a road, divided road or rectangle strip's outer
+  edges. 0x1/0x2 left/right walls (first/second texture; 0x4000 both sides;
+  0x2000 bulging out to height x 0.333 at a quarter and three quarters of
+  the height, capped by 0x10/0x20 and 0x40/0x80); 0x4 railings outside
+  them (fourth/fifth texture, ends pushed along the road by 0x200/0x400 and
+  0x800 — MM2's right-hand loop never reaches the last section, so 0x1000
+  does nothing there — and a deck between them, sixth texture); 0x8 a flat
+  ceiling, 0x100 an arch rising 1.5 m at the quarters and 2 m in the middle
+  (both third texture, `ArcMap` across). Walls take `WallMap` coordinates
+  (whole repeats of the height along the left edge). Drawn at every level.
 - `GetDrawnSDLPrims` (an untextured primitive list) is not called anywhere
   in the executable.
 

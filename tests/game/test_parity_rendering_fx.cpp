@@ -234,3 +234,35 @@ TEST(ParityRenderingFx, PedestrianMeshesFaceOutCounterClockwise) {
         EXPECT_GT(agree, total * 9 / 10) << name;
     }
 }
+
+TEST(ParityRenderingFx, SdlTunnelsDrawFiniteGeometry) {
+    // sdlPage16::Draw's Tunnel case: junction walls along the masked
+    // perimeter edges, strip tunnels along the next strip. Every retail
+    // tunnel builds triangles with finite corners at every level of detail.
+    MM2_REQUIRE_GAME_DATA();
+    for (const char* name : {"london", "sf"}) {
+        auto city = city::loadCity(*test::gameData(), name);
+        ASSERT_TRUE(city) << name;
+        int tunnels = 0, junctions = 0;
+        for (std::size_t r = 1; r < city->psdl.rooms.size(); ++r) {
+            bool has = false;
+            for (const auto& a : city->psdl.rooms[r].attributes) {
+                if (a.type != city::PsdlAttrType::Tunnel)
+                    continue;
+                has = true;
+                ++tunnels;
+                junctions += (a.subtype == 0 && !a.args.empty() && a.args[0] == 10);
+            }
+            if (!has)
+                continue;
+            const auto draw = city::buildSdlRoomDraw(city->psdl, r);
+            for (const auto& v : draw.vertices)
+                ASSERT_TRUE(std::isfinite(v.position.x) && std::isfinite(v.position.y) &&
+                            std::isfinite(v.position.z))
+                    << name << " room " << r;
+            EXPECT_FALSE(draw.lods[0].empty()) << name << " room " << r;
+        }
+        EXPECT_GT(tunnels, 50) << name;
+        EXPECT_GT(junctions, 0) << name;
+    }
+}
