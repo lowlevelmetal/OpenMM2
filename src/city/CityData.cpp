@@ -159,6 +159,15 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
         if (!c.aiMap)
             warn(std::format("{}.bai: {}", cityDir, err));
     }
+    // aiMap::ReadBinary: the shortcut roads of <city>_sup.bai (optional).
+    if (c.aiMap) {
+        if (auto b = bytesOf(cityDir + "_sup.bai", false)) {
+            if (auto shortcuts = parseShortcutBai(*b, &err))
+                addShortcuts(*c.aiMap, std::move(*shortcuts));
+            else
+                warn(std::format("{}_sup.bai: {}", cityDir, err));
+        }
+    }
 
     for (int i = 0; i < kTimesOfDay * kWeathers; ++i) {
         const std::string path = std::format("{}.lt{:02}", cityDir, i);

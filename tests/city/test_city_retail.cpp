@@ -181,17 +181,20 @@ TEST_P(RetailCity, AiMapMatchesPsdl) {
     ASSERT_TRUE(c.aiMap);
     const auto& map = *c.aiMap;
     EXPECT_TRUE(validateAiMap(map, c.psdl.roomCount()).empty());
-    // One AI path per PSDL road, sharing its rooms.
-    ASSERT_EQ(map.paths.size(), c.psdl.roads.size());
+    // One AI path per PSDL road, sharing its rooms, then the shortcut roads
+    // of <city>_sup.bai (70 London, 49 SF).
+    EXPECT_EQ(map.numShortcuts, GetParam() == std::string("london") ? 70u : 49u);
+    const std::size_t mainPaths = map.paths.size() - map.numShortcuts;
+    ASSERT_EQ(mainPaths, c.psdl.roads.size());
     std::size_t sharesRooms = 0;
-    for (std::size_t k = 0; k < map.paths.size(); ++k) {
+    for (std::size_t k = 0; k < mainPaths; ++k) {
         std::set<std::uint16_t> rooms(map.paths[k].rooms.begin(), map.paths[k].rooms.end());
         bool all = true;
         for (auto r : c.psdl.roads[k].rooms)
             all &= rooms.contains(PsdlRoad::roomId(r));
         sharesRooms += all;
     }
-    EXPECT_GT(sharesRooms, map.paths.size() * 9 / 10);
+    EXPECT_GT(sharesRooms, mainPaths * 9 / 10);
     // Intersections are in intersection rooms and list paths that end there.
     std::size_t inIntersectionRoom = 0, consistentEnds = 0;
     for (const auto& in : map.intersections) {
@@ -208,8 +211,10 @@ TEST_P(RetailCity, AiMapMatchesPsdl) {
     EXPECT_EQ(consistentEnds, listed);
     // Path ends: ends[0] is the intersection at the last section, ends[1] at
     // the first (measured 529/540 London, 374/379 SF; the rest are loops).
+    // (The hand-made shortcut roads' frames are rougher; not checked.)
     std::size_t ordered = 0;
-    for (const auto& p : map.paths) {
+    for (std::size_t k = 0; k < mainPaths; ++k) {
+        const auto& p = map.paths[k];
         const auto& a = map.intersections[p.ends[0].intersection].center;
         const auto& b = map.intersections[p.ends[1].intersection].center;
         ordered += p.center.back().dist(a) <= p.center.back().dist(b);
@@ -233,7 +238,7 @@ TEST_P(RetailCity, AiMapMatchesPsdl) {
             ASSERT_NEAR(p.centerLengths[i - 1], acc, 0.05f);
         }
     }
-    EXPECT_GT(ordered, map.paths.size() * 9 / 10);
+    EXPECT_GT(ordered, mainPaths * 9 / 10);
 }
 
 TEST_P(RetailCity, EnvironmentLoads) {

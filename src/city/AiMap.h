@@ -22,17 +22,19 @@ struct AiRoadSide {
     std::uint16_t numLanes = 0;
     std::uint16_t numTrams = 0;     // SF cable-car tracks
     std::uint16_t numTrains = 0;    // inferred from mm2hook field order
-    std::uint16_t numSidewalks = 0; // always 1 in retail data (inferred)
+    std::uint16_t numSidewalks = 0; // 1 in the main files, 0 in <city>_sup.bai
     std::uint16_t roadType = 0;     // mm2hook "AmbientType"; 0..3
     std::uint16_t unknown5 = 0, unknown6 = 0;
 
-    // numLanes + 1 arrays of (sections - 1) cumulative distances, each
-    // followed by one extra value (laneEndValues).
+    // numLanes + numSidewalks arrays of (sections - 1) cumulative distances,
+    // each followed by one extra value (laneEndValues).
     std::vector<std::vector<float>> laneLengths;
     std::vector<float> laneEndValues;
-    std::vector<float> laneExtras;  // numLanes values
+    std::vector<float> laneExtras;  // numLanes + numSidewalks - 1 values
     std::array<float, 10> params{}; // lateral layout, partly uninitialised in the files
-    // (3 + numLanes + numTrams + numTrains) polylines, one point per section.
+    // (numLanes + numSidewalks + numTrams + numTrains + 2) polylines, one point
+    // per section: the lanes, the sidewalk, the tram and train lines, the curb
+    // and the outer edge.
     std::vector<std::vector<Vec3>> polylines;
 };
 
@@ -87,9 +89,32 @@ struct AiMap {
     // wider than the second; likely the ambient-traffic spawn/cull sets.
     std::vector<std::vector<std::uint16_t>> roomPathsNear;
     std::vector<std::vector<std::uint16_t>> roomPathsIn;
+    // The last `numShortcuts` paths are the shortcut roads of
+    // <city>_sup.bai (see addShortcuts).
+    std::size_t numShortcuts = 0;
+    bool isShortcut(std::size_t path) const {
+        return path < paths.size() && path >= paths.size() - numShortcuts;
+    }
 };
 
 std::optional<AiMap> parseBai(std::span<const std::byte> data, std::string* error = nullptr);
+
+// <city>_sup.bai: "CAI1", a u16 count, then that many path records in the
+// main file's layout (aiMap::ReadBinary, aiPath::ReadShortcut). Every retail
+// record is a one-way 5 m road with one lane and no sidewalks.
+std::optional<std::vector<AiPath>> parseShortcutBai(std::span<const std::byte> data,
+                                                    std::string* error = nullptr);
+
+// aiMap::ReadBinary's shortcut pass: each road gets the next path id
+// (aiPath::ReadShortcut overwrites the file's), both sides closed to ambient
+// cars and pedestrians (road type 3), and joins its end intersections' path
+// lists (aiIntersection::AddRoad), which are then sorted by the direction of
+// each road from the intersection's centre and give every listed path its
+// index there again (aiIntersection::CreateRoadMap). MM2 first moves the
+// centre to the bound-sphere centre of the intersection's room; OpenMM2 keeps
+// the file's centre (inferred: the main files' lists are already sorted
+// round it).
+void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts);
 
 std::vector<std::string> validateAiMap(const AiMap& map, std::size_t roomCount);
 

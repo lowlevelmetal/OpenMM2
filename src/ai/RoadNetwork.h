@@ -109,6 +109,7 @@ struct Intersection {
 struct PathInfo {
     int id = 0;
     std::uint16_t flags = 0; // 0x1 divided, 0x2 alley, 0x4 freeway
+    bool shortcut = false;   // a shortcut road of <city>_sup.bai (racers and police only)
     float halfWidth = 0.0f;
     float speedLimit = 15.0f;
     bool hasException = false; // [Exceptions] entry of the race's AI map

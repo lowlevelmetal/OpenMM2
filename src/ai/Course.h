@@ -77,8 +77,12 @@ public:
                                        const std::optional<Vec3>& finish, bool loop, std::string* error = nullptr);
 
     // From a .opp driving line (see above). `circuit` closes the loop.
+    // `waypoints`, when given, are the intersections of the rows between the
+    // first and the last as the racer's driver takes them
+    // (Opponent::routeFromPath); otherwise each row's nearest intersection.
     static std::optional<Course> fromOpponentPath(const RoadNetwork& net, std::span<const city::OpponentPoint> rows,
-                                                  bool circuit, std::string* error = nullptr);
+                                                  bool circuit, std::string* error = nullptr,
+                                                  std::span<const int> waypoints = {});
 
     // Along one road from `start` to `finish` when both lie on it (no
     // intersection on the way: aiMap::CalcRoute finds no waypoints); else
@@ -167,7 +171,8 @@ struct RoadSpot {
     float distance = 1e9f; // XZ distance to the centre line
     bool onRoad = false;   // between the curbs (+1 m) or inside an intersection
 };
-RoadSpot locateOnRoads(const RoadNetwork& net, const Vec3& p);
+// `shortcuts` false leaves out the shortcut roads of <city>_sup.bai.
+RoadSpot locateOnRoads(const RoadNetwork& net, const Vec3& p, bool shortcuts = true);
 
 // Road edges of a path at section `k`: distances from the centre line to the
 // left and right curbs (left = the .bai left side, +x of the section frame).

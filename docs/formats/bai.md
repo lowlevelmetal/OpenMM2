@@ -2,8 +2,8 @@
 
 Parser: `src/city/AiMap.{h,cpp}`. Tool: `mm2tool baiinfo <source> <city> [path]`.
 Retail coverage: `london.bai` and `sf.bai` parse to their last byte (540
-paths / 328 intersections, 379 / 214). The editor files `<map>_sup.bai` use a
-different layout and are not loaded.
+paths / 328 intersections, 379 / 214), and so do the shortcut files
+`london_sup.bai` (70 roads) and `sf_sup.bai` (49); see Shortcut roads.
 
 The layout was derived empirically. Path starts were found by their headers,
 then a size model was fitted until every path ended exactly where the next
@@ -53,13 +53,15 @@ left-handed. `yAxis` is up. x is unit length except at 13 sharp bends. w ≈ -z.
 ### Side
 
 ```
-u16 numLanes, numTrams, numTrains, numSidewalks(always 1), roadType(0..3), unknown5, unknown6
-for each of numLanes + 1 entities:
-    f32 lengths[sections - 1]        cumulative distances
-    f32 endValue
-f32 laneExtras[numLanes]
+u16 numLanes, numTrams, numTrains, numSidewalks(1; 0 in _sup.bai), roadType(0..3)
+if numLanes + numSidewalks > 0:
+    u16 unknown5, unknown6           (the first length row's leading 0.0, see below)
+    for each of numLanes + numSidewalks entities:
+        f32 lengths[sections - 1]    cumulative distances
+        f32 endValue
+    f32 laneExtras[numLanes + numSidewalks - 1]
 f32 params[10]                       e.g. [-7.5, 3.75, 3.75, 7.5, <uninitialised>...]
-float3 polylines[3 + numLanes + numTrams + numTrains][sections]
+float3 polylines[numLanes + numSidewalks + numTrams + numTrains + 2][sections]
 ```
 
 The counts that drive the record size (lanes, trams, trains) are verified by
@@ -106,6 +108,40 @@ u32 paths[n]
 
 Every path listed by an intersection names that intersection in one of its
 ends (verified).
+
+## Shortcut roads (`city/<map>_sup.bai`)
+
+`aiMap::ReadBinary` opens `<map>_sup.bai` after the main file when it exists
+(MM2 quits on a bad magic): `"CAI1"`, `u16 count`, then `count` path records
+in the main file's layout. Every retail record is the same kind of road:
+file id 9000, flags 0, half width 2.5, speed 15, a first side with no lanes
+and no sidewalks, a second side with one lane and no sidewalks, both sides
+road type 3, both ends rule 3 (no control), road index 0. On loading
+(`aiPath::ReadShortcut`, then `aiIntersection::AddRoad` and `CreateRoadMap`
+for its end-1 and its end-0 intersection, in that order):
+
+* the road takes the next path id (main paths + k) and both side types are
+  forced to 3 (no ambient traffic, no pedestrians);
+* each end intersection lists it last, then sorts its list by
+  `atan2(dx, dz)` from its centre to each road's far end (the road's last
+  centre vertex when its end 0 is the intersection, else its first),
+  smallest first, and rewrites every listed road's index there. MM2 first
+  moves the centre to the bound-sphere centre of the intersection's room;
+  OpenMM2 keeps the file's centre (**inferred**: every main-file list is
+  already sorted round it);
+* `aiMap::MapRoadToRooms(road, 2)` lists it, as component type 2, for the
+  rooms of its centre vertices 1 to n - 2 and for every room its two curbs
+  cross, sampled trunc(section length) times per section (the second
+  side's curb first), except its end intersections' rooms.
+
+The racers and the police route over them (`DetRdSegBetweenInts`,
+`aiMap::CalcRoute`, `MapComponent`); ambient cars never drive them (road
+type bit 0) and pedestrians step over them when picking the next road
+round a corner (`aiPedestrian::GetRoadToRight` / `GetRoadToLeft`).
+Their second side's `params` hold the lane edges (±5, ±17, ±20) and
+uninitialised floats after them, so `aiPath::IsPosOnRoad` finds a point on
+the road within the lane edge and beyond everything else (never on a
+sidewalk).
 
 ## Room lists
 

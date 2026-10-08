@@ -84,13 +84,16 @@ std::unique_ptr<Opponent> Opponent::create(const MapView& map, phys::CarSim& car
                                            std::span<const city::OpponentPoint> path, std::span<const float> params,
                                            int laps, int selfId, int racerIndex, std::string* error,
                                            const phys::GroundQuery* world, std::string_view vehicle) {
-    auto course = Course::fromOpponentPath(map.net(), path, laps > 0, error);
+    // The course (progress and recovery) through the same waypoints as the
+    // driver.
+    RouteRegistration route = routeFromPath(map, path, laps);
+    auto course = Course::fromOpponentPath(map.net(), path, laps > 0, error, route.wayPoints);
     if (!course)
         return nullptr;
     OpponentSettings s = OpponentSettings::fromData(params, laps);
     s.world = world;
-    return std::make_unique<Opponent>(car, std::move(*course), s, selfId, &map,
-                                      routeFromPath(map, path, laps), racerIndex, vehicle);
+    return std::make_unique<Opponent>(car, std::move(*course), s, selfId, &map, std::move(route), racerIndex,
+                                      vehicle);
 }
 
 RouteRegistration Opponent::routeFromPath(const MapView& map, std::span<const city::OpponentPoint> path,
@@ -182,8 +185,14 @@ float Opponent::remainingDistance() const {
 
 void Opponent::trackProgress(float dt) {
     const Vec3 pos = m_car.body.ics.matrix.m3;
-    const float window = 30.0f + m_car.speed() * dt * 2.0f;
-    const float s = m_course.locate(pos, m_s, window, &m_lateral);
+    // Searched ahead only while the car drives forward (10 m back too while
+    // it backs up or stands), so that where the route turns back on itself
+    // (a shortcut road leaving an intersection beside the road that came
+    // in) the car is not placed on the way it came.
+    const float ahead = 30.0f + m_car.speed() * dt * 2.0f;
+    const bool forward = m_driver.state() != PhysicsDriver::State::Backup && m_car.speed() > 1.0f;
+    const float behind = forward ? 0.0f : 10.0f;
+    const float s = m_course.locate(pos, m_s + 0.5f * (ahead - behind), 0.5f * (ahead + behind), &m_lateral);
     float delta = s - m_s;
     if (m_course.loop()) {
         const float len = m_course.length();
@@ -298,8 +307,15 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     ctx.touchingPlayer = touching;
 
     // OpenMM2: the race is over for a car that comes within kFinishRadius of
-    // the end of its course on its last leg.
-    if (!m_finished && remaining <= m_lastLeg + 0.5f && remaining <= kFinishRadius)
+    // the end of its course on its last leg, or of its destination once its
+    // driver has passed the last waypoint of the last lap (as
+    // aiRouteRacer::Finished asks, the game's finish line aside).
+    const PhysicsDriver& d = m_driver;
+    const bool lastLeg = m_map && d.wayPointIndex() >= d.numWayPoints() && d.lap() >= d.numLaps();
+    const Vec3 toDest = m_route.destination - m_car.body.ics.matrix.m3;
+    const bool atDestination = toDest.x * toDest.x + toDest.z * toDest.z <= kFinishRadius * kFinishRadius;
+    const bool courseEnd = remaining <= m_lastLeg + 0.5f && remaining <= kFinishRadius;
+    if (!m_finished && (courseEnd || (lastLeg && atDestination)))
         finish();
     // The race being over changes nothing in MM2 (aiRouteRacer::Finished is
     // only asked by the game): the car drives on to its destination, where

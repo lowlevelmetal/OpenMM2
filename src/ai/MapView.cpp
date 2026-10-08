@@ -77,20 +77,56 @@ void MapView::buildRooms() {
         for (std::size_t i = 0; i < nodes.size(); ++i)
             add(1 + static_cast<int>(i), nodes[i].id, kIntersectionComponent);
         for (std::size_t p = 0; p < map->paths.size(); ++p)
-            add(1 + static_cast<int>(nodes.size() + p), static_cast<int>(p), kRoadComponent);
+            add(1 + static_cast<int>(nodes.size() + p), static_cast<int>(p),
+                map->isShortcut(p) ? kShortcutComponent : kRoadComponent);
         return;
     }
     // aiMap::ReadBinary: each road (aiMap::MapRoadToRooms, type 1) by the
     // rooms of its centre vertices 1 .. n - 2, then each intersection in its
-    // own room.
-    for (std::size_t p = 0; p < map->paths.size(); ++p) {
+    // own room, then each shortcut road (type 2).
+    auto centreRooms = [&](std::size_t p, int type) {
         const city::AiPath& path = map->paths[p];
         const int n = static_cast<int>(path.center.size());
         for (int v = 1; v < n - 1; ++v)
-            add(findRoom(path.center[static_cast<std::size_t>(v)], 0), static_cast<int>(p), kRoadComponent);
-    }
+            add(findRoom(path.center[static_cast<std::size_t>(v)], 0), static_cast<int>(p), type);
+    };
+    for (std::size_t p = 0; p < map->paths.size(); ++p)
+        if (!map->isShortcut(p))
+            centreRooms(p, kRoadComponent);
     for (const Intersection& node : m_net.intersections())
         add(node.room, node.id, kIntersectionComponent);
+    for (std::size_t p = 0; p < map->paths.size(); ++p) {
+        if (!map->isShortcut(p))
+            continue;
+        centreRooms(p, kShortcutComponent);
+        // A shortcut is also listed for every room its curbs cross, sampled
+        // about once a metre along each section (trunc of the section's
+        // centre length steps), the second side's curb first; its end
+        // intersections' rooms excepted.
+        const city::AiPath& path = map->paths[p];
+        const PathInfo* info = pathInfo(static_cast<int>(p));
+        int endRooms[2] = {-1, -1};
+        for (int e = 0; e < 2 && info; ++e)
+            if (const Intersection* node = intersection(info->intersection[e]))
+                endRooms[e] = node->room;
+        const int n = static_cast<int>(path.center.size());
+        for (const city::AiRoadSide* side : {&path.right, &path.left}) {
+            const std::vector<Vec3>& curb = pathBoundary(*side, 0);
+            if (static_cast<int>(curb.size()) < n)
+                continue;
+            for (int j = 0; j + 1 < n; ++j) {
+                const int steps = static_cast<int>(pathCenterLength(path, j, j + 1));
+                const Vec3& a = curb[static_cast<std::size_t>(j)];
+                const Vec3& b = curb[static_cast<std::size_t>(j + 1)];
+                for (int s = 0; s < steps; ++s) {
+                    const float t = static_cast<float>(s) / static_cast<float>(steps);
+                    const int room = findRoom(a + (b - a) * t, 0);
+                    if (room != endRooms[0] && room != endRooms[1])
+                        add(room, static_cast<int>(p), kShortcutComponent);
+                }
+            }
+        }
+    }
 }
 
 int MapView::mapComponent(const Vec3& pos, int& id, int& type, int roomHint) const {

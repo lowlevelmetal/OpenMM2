@@ -512,11 +512,16 @@ int Pedestrians::setNextRoad(const Ped& p, int node) const {
     int k = info.roadIndex[p.dir == 1 ? 0 : 1];
     if (k < 0)
         k = 0;
-    // GetRoadToRight/Left also step over the shortcut roads of <city>_sup.bai,
-    // which OpenMM2 does not load.
+    // GetRoadToRight/Left step over the shortcut roads of <city>_sup.bai.
     const bool right = p.dir == 1 ? p.side == 1 : p.side != 1;
-    k = right ? (k + 1 >= count ? k + 1 - count : k + 1) : (k - 1 < 0 ? k - 1 + count : k - 1);
-    return paths[static_cast<std::size_t>(k)];
+    for (int tries = 0; tries < count; ++tries) {
+        k = right ? (k + 1 >= count ? k + 1 - count : k + 1) : (k - 1 < 0 ? k - 1 + count : k - 1);
+        const int next = paths[static_cast<std::size_t>(k)];
+        if (next < 0 || static_cast<std::size_t>(next) >= m_net.paths().size() ||
+            !m_net.paths()[static_cast<std::size_t>(next)].shortcut)
+            return next;
+    }
+    return p.path;
 }
 
 // aiPedestrian::PickNextRdSeg: at the end of the sidewalk, round the corner,

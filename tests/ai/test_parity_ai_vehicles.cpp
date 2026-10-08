@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <tuple>
 #include <utility>
 
 using namespace mm2;
@@ -239,16 +240,24 @@ TEST(ParityAiTraffic, StopSourcesHoldsTheControlledRoads) {
     EXPECT_FALSE(traffic.alwaysStop(0));
 }
 
-// aiPath::InitRoadTurns on the retail roads: London has 55 sharp turns,
-// San Francisco 9, every one of two sections (a short section taken with
-// the next); none is a single vertex.
+// aiPath::InitRoadTurns on the retail roads: London's main roads have 55
+// sharp turns, San Francisco's 9, every one of two sections (a short
+// section taken with the next); none is a single vertex. The shortcut roads
+// have 67 (London; MM2 counts one more for road 578, whose record it never
+// fills) and 56 (SF).
 TEST(ParityAiRoads, RetailSharpTurns) {
     MM2_REQUIRE_GAME_DATA();
-    for (const auto& [name, total] : {std::pair{"london", 55}, std::pair{"sf", 9}}) {
+    for (const auto& [name, total, shortcutTurns] : {std::tuple{"london", 55, 67}, std::tuple{"sf", 9, 56}}) {
         const auto city = city::loadCity(*test::gameData(), name);
         ASSERT_TRUE(city && city->aiMap) << name;
-        int turns = 0, merged = 0;
-        for (const city::AiPath& p : city->aiMap->paths) {
+        int turns = 0, merged = 0, onShortcuts = 0;
+        const auto& paths = city->aiMap->paths;
+        for (std::size_t k = 0; k < paths.size(); ++k) {
+            const city::AiPath& p = paths[k];
+            if (city->aiMap->isShortcut(k)) {
+                onShortcuts += static_cast<int>(ai::initRoadTurns(p).size());
+                continue;
+            }
             for (const ai::SharpTurn& t : ai::initRoadTurns(p)) {
                 ++turns;
                 // A turn of two sections has a corner found by crossing the
@@ -263,6 +272,7 @@ TEST(ParityAiRoads, RetailSharpTurns) {
         }
         EXPECT_EQ(turns, total) << name;
         EXPECT_EQ(merged, total) << name;
+        EXPECT_EQ(onShortcuts, shortcutTurns) << name;
     }
 }
 
@@ -428,3 +438,4 @@ TEST(ParityAiPlanner, RoadTargetsFollowTheTurnCircles) {
     EXPECT_FLOAT_EQ(driver.target().x, nodes[1].pos.x);
     EXPECT_FLOAT_EQ(driver.target().z, nodes[1].pos.z);
 }
+

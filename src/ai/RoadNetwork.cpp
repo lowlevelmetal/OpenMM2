@@ -80,6 +80,7 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
         PathInfo& info = net.m_paths[p];
         info.id = static_cast<int>(p);
         info.flags = src.flags;
+        info.shortcut = map.isShortcut(p);
         info.halfWidth = src.halfWidth;
         info.xAxis = src.xAxis;
         info.sharpTurns = initRoadTurns(src);
@@ -132,7 +133,9 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
             info.sideFlags[static_cast<std::size_t>(sideIdx)] = side.roadType;
             // Direction +1 (second side) arrives at ends[0]; -1 at ends[1].
             const int arriveEnd = sideIdx == 1 ? 0 : 1;
-            for (int l = 0; l < side.numLanes; ++l) {
+            // (A shortcut road's lane row is all zeros in the files; ambient
+            // cars never drive one, so it gets no lane.)
+            for (int l = 0; l < side.numLanes && !info.shortcut; ++l) {
                 std::vector<Vec3> points;
                 if (reverse) {
                     const int k = other.numLanes - 1 - l;

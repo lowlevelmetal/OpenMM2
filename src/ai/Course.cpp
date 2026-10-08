@@ -27,16 +27,17 @@ Vec3 rightOf(const Vec3& dir) {
 }
 
 // Distance from the centre line to one side's curb at section `k`: the
-// side's curb polyline (after its lanes, trams, trains and sidewalk centre,
-// as RoadNetwork reads sidewalks), else its outermost lane + 2.5 m. With
-// `outer`, the polyline after the curb (the outer edge of the sidewalk).
+// side's curb polyline (after its lanes, sidewalk, trams and trains), else
+// its outermost lane + 2.5 m. With `outer`, the polyline after the curb (the
+// outer edge of the sidewalk).
 float curbOffset(const city::AiRoadSide& side, const Vec3& centre, const Vec3& xAxis, float fallback,
                  bool outer = false) {
-    const std::size_t base = static_cast<std::size_t>(side.numLanes + side.numTrams + side.numTrains);
+    const std::size_t base =
+        static_cast<std::size_t>(side.numLanes + side.numSidewalks + side.numTrams + side.numTrains);
     const std::vector<Vec3>* poly = nullptr;
     float extra = 0.0f;
-    const std::size_t which = base + (outer ? 2 : 1);
-    if (side.numSidewalks > 0 && which < side.polylines.size()) {
+    const std::size_t which = base + (outer ? 1 : 0);
+    if (which < side.polylines.size()) {
         poly = &side.polylines[which];
     } else if (side.numLanes > 0 && static_cast<std::size_t>(side.numLanes) <= side.polylines.size()) {
         poly = &side.polylines[static_cast<std::size_t>(side.numLanes) - 1];
@@ -68,27 +69,22 @@ float pathLength(const city::AiPath& p) {
     return len;
 }
 
-// Road joining two intersections (shortest if several), -1 if none.
+// Road joining two intersections, -1 if none: the first of `a`'s roads that
+// joins `b`, as the racers' driver picks it (aiMap::DetRdSegBetweenInts; a
+// shortcut road may come before a main road).
 int directPath(const RoadNetwork& net, int a, int b) {
     if (a < 0 || static_cast<std::size_t>(a) >= net.intersections().size())
         return -1;
-    int best = -1;
-    float bestLen = std::numeric_limits<float>::max();
     for (int p : net.intersections()[static_cast<std::size_t>(a)].paths) {
         if (p < 0 || static_cast<std::size_t>(p) >= net.paths().size())
             continue;
         const PathInfo& info = net.paths()[static_cast<std::size_t>(p)];
         const bool joins = (info.intersection[0] == a && info.intersection[1] == b) ||
                            (info.intersection[1] == a && info.intersection[0] == b);
-        if (!joins)
-            continue;
-        const float len = pathLength(net.source()->paths[static_cast<std::size_t>(p)]);
-        if (len < bestLen) {
-            bestLen = len;
-            best = p;
-        }
+        if (joins)
+            return p;
     }
-    return best;
+    return -1;
 }
 
 } // namespace
@@ -213,12 +209,14 @@ std::vector<int> findRoute(const RoadNetwork& net, int from, int to, std::span<c
     return route;
 }
 
-RoadSpot locateOnRoads(const RoadNetwork& net, const Vec3& p) {
+RoadSpot locateOnRoads(const RoadNetwork& net, const Vec3& p, bool shortcuts) {
     RoadSpot spot;
     const city::AiMap* map = net.source();
     if (!map)
         return spot;
     for (std::size_t pi = 0; pi < map->paths.size(); ++pi) {
+        if (!shortcuts && map->isShortcut(pi))
+            continue;
         const city::AiPath& path = map->paths[pi];
         const Aabb& b = net.paths()[pi].bounds;
         const float margin = path.halfWidth + 5.0f;
@@ -346,8 +344,10 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
     };
     // The end of the road under `p` to join the waypoints at `joinAt`
     // (-1: any), routing to it when it is not that intersection.
+    // (The main roads only: a shortcut road passing a grid place would take
+    // the course round its far end.)
     auto joinRoad = [&](const Vec3& p, int joinAt, std::vector<int>& route, bool fromRoad) -> std::optional<Partial> {
-        const RoadSpot spot = locateOnRoads(net, p);
+        const RoadSpot spot = locateOnRoads(net, p, false);
         if (spot.path < 0 || spot.distance > 30.0f)
             return std::nullopt;
         const PathInfo& info = net.paths()[static_cast<std::size_t>(spot.path)];
@@ -527,7 +527,8 @@ std::optional<Course> Course::build(const RoadNetwork& net, std::span<const int>
 }
 
 std::optional<Course> Course::fromOpponentPath(const RoadNetwork& net, std::span<const city::OpponentPoint> rows,
-                                               bool circuit, std::string* error) {
+                                               bool circuit, std::string* error,
+                                               std::span<const int> waypoints) {
     if (rows.size() < 2) {
         if (error)
             *error = "driving line has fewer than two points";
@@ -542,11 +543,13 @@ std::optional<Course> Course::fromOpponentPath(const RoadNetwork& net, std::span
     std::optional<Vec3> finish;
     for (std::size_t i = 1; i < rows.size(); ++i) {
         float d = 0.0f;
-        const int id = nearestIntersection(net, rows[i].position, &d);
+        int id = nearestIntersection(net, rows[i].position, &d);
         if (i + 1 == rows.size()) {
             finish = rows[i].position;
             if (d > 20.0f)
                 break;
+        } else if (i - 1 < waypoints.size()) {
+            id = waypoints[i - 1];
         }
         ids.push_back(id);
     }

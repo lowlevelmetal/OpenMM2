@@ -2,6 +2,8 @@
 
 #include "city/Reader.h"
 
+#include <algorithm>
+#include <cmath>
 #include <format>
 
 namespace mm2::city {
@@ -13,28 +15,36 @@ bool readSide(detail::Reader& r, std::size_t sections, AiRoadSide& s) {
     s.numTrains = r.u16();
     s.numSidewalks = r.u16();
     s.roadType = r.u16();
-    s.unknown5 = r.u16();
-    s.unknown6 = r.u16();
-    if (!r.ok() || s.numLanes > 64 || s.numTrams > 64 || s.numTrains > 64)
+    if (!r.ok() || s.numLanes > 64 || s.numTrams > 64 || s.numTrains > 64 || s.numSidewalks > 64)
         return false;
-    const std::size_t entities = s.numLanes + 1u;
-    const std::size_t lengths = sections - 1;
-    if ((entities * (lengths + 1) + s.numLanes + 10) * 4 > r.remaining())
-        return false;
-    s.laneLengths.assign(entities, {});
+    // One row of lengths per lane and sidewalk. (OpenMM2 reads the first
+    // length as two u16, unknown5 and unknown6; a side with no rows, as the
+    // shortcut roads' first side, has none.)
+    const std::size_t entities = static_cast<std::size_t>(s.numLanes) + s.numSidewalks;
+    s.unknown5 = s.unknown6 = 0;
+    s.laneLengths.clear();
     s.laneEndValues.clear();
-    for (auto& arr : s.laneLengths) {
-        arr.resize(lengths);
-        for (auto& v : arr)
+    s.laneExtras.clear();
+    if (entities > 0) {
+        s.unknown5 = r.u16();
+        s.unknown6 = r.u16();
+        const std::size_t lengths = sections - 1;
+        if ((entities * (lengths + 1) + (entities - 1) + 10) * 4 > r.remaining())
+            return false;
+        s.laneLengths.assign(entities, {});
+        for (auto& arr : s.laneLengths) {
+            arr.resize(lengths);
+            for (auto& v : arr)
+                v = r.f32();
+            s.laneEndValues.push_back(r.f32());
+        }
+        s.laneExtras.resize(entities - 1);
+        for (auto& v : s.laneExtras)
             v = r.f32();
-        s.laneEndValues.push_back(r.f32());
     }
-    s.laneExtras.resize(s.numLanes);
-    for (auto& v : s.laneExtras)
-        v = r.f32();
     for (auto& v : s.params)
         v = r.f32();
-    const std::size_t numPolylines = 3u + s.numLanes + s.numTrams + s.numTrains;
+    const std::size_t numPolylines = entities + s.numTrams + s.numTrains + 2u;
     if (numPolylines * sections * 12 > r.remaining())
         return false;
     s.polylines.assign(numPolylines, {});
@@ -59,6 +69,40 @@ void readEnd(detail::Reader& r, AiPathEnd& e) {
 
 } // namespace
 
+// One path record (aiPath::ReadBinary). Returns an error message, empty on
+// success.
+std::string readPath(detail::Reader& r, std::size_t k, AiPath& p) {
+    p.id = r.u16();
+    const std::uint16_t sections = r.u16();
+    p.flags = r.u16();
+    const std::uint16_t numRooms = r.u16();
+    if (!r.ok() || sections < 2 || numRooms > r.remaining() / 2)
+        return std::format("path {}: bad header", k);
+    p.rooms.resize(numRooms);
+    for (auto& room : p.rooms)
+        room = r.u16();
+    p.halfWidth = r.f32();
+    p.speedLimit = r.f32();
+    if (!readSide(r, sections, p.left) || !readSide(r, sections, p.right))
+        return std::format("path {}: truncated lane data", k);
+    p.unknown = r.u32();
+    p.centerLengths.resize(sections - 1u);
+    for (auto& v : p.centerLengths)
+        v = r.f32();
+    if (static_cast<std::size_t>(sections) * 60 > r.remaining())
+        return std::format("path {}: truncated section frames", k);
+    for (auto* arr : {&p.center, &p.xAxis, &p.yAxis, &p.zAxis, &p.wAxis}) {
+        arr->resize(sections);
+        for (auto& v : *arr)
+            v = r.vec3();
+    }
+    readEnd(r, p.ends[0]);
+    readEnd(r, p.ends[1]);
+    if (!r.ok())
+        return std::format("path {}: truncated", k);
+    return {};
+}
+
 std::optional<AiMap> parseBai(std::span<const std::byte> data, std::string* error) {
     auto fail = [&](std::string msg) -> std::optional<AiMap> {
         if (error)
@@ -73,37 +117,9 @@ std::optional<AiMap> parseBai(std::span<const std::byte> data, std::string* erro
 
     AiMap map;
     map.paths.resize(numPaths);
-    for (std::size_t k = 0; k < numPaths; ++k) {
-        auto& p = map.paths[k];
-        p.id = r.u16();
-        const std::uint16_t sections = r.u16();
-        p.flags = r.u16();
-        const std::uint16_t numRooms = r.u16();
-        if (!r.ok() || sections < 2 || numRooms > r.remaining() / 2)
-            return fail(std::format("path {}: bad header", k));
-        p.rooms.resize(numRooms);
-        for (auto& room : p.rooms)
-            room = r.u16();
-        p.halfWidth = r.f32();
-        p.speedLimit = r.f32();
-        if (!readSide(r, sections, p.left) || !readSide(r, sections, p.right))
-            return fail(std::format("path {}: truncated lane data", k));
-        p.unknown = r.u32();
-        p.centerLengths.resize(sections - 1u);
-        for (auto& v : p.centerLengths)
-            v = r.f32();
-        if (static_cast<std::size_t>(sections) * 60 > r.remaining())
-            return fail(std::format("path {}: truncated section frames", k));
-        for (auto* arr : {&p.center, &p.xAxis, &p.yAxis, &p.zAxis, &p.wAxis}) {
-            arr->resize(sections);
-            for (auto& v : *arr)
-                v = r.vec3();
-        }
-        readEnd(r, p.ends[0]);
-        readEnd(r, p.ends[1]);
-        if (!r.ok())
-            return fail(std::format("path {}: truncated", k));
-    }
+    for (std::size_t k = 0; k < numPaths; ++k)
+        if (std::string err = readPath(r, k, map.paths[k]); !err.empty())
+            return fail(std::move(err));
 
     map.intersections.resize(numIntersections);
     for (std::size_t k = 0; k < numIntersections; ++k) {
@@ -136,6 +152,86 @@ std::optional<AiMap> parseBai(std::span<const std::byte> data, std::string* erro
     if (!r.atEnd())
         return fail(std::format("{} unexpected trailing bytes", r.remaining()));
     return map;
+}
+
+std::optional<std::vector<AiPath>> parseShortcutBai(std::span<const std::byte> data, std::string* error) {
+    auto fail = [&](std::string msg) -> std::optional<std::vector<AiPath>> {
+        if (error)
+            *error = std::move(msg);
+        return std::nullopt;
+    };
+    detail::Reader r(data);
+    if (!r.magic("CAI1"))
+        return fail("not a BAI file (missing CAI1)");
+    const std::uint16_t count = r.u16();
+    if (!r.ok())
+        return fail("truncated header");
+    std::vector<AiPath> paths(count);
+    for (std::size_t k = 0; k < count; ++k)
+        if (std::string err = readPath(r, k, paths[k]); !err.empty())
+            return fail(std::move(err));
+    if (!r.atEnd())
+        return fail(std::format("{} unexpected trailing bytes", r.remaining()));
+    return paths;
+}
+
+void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts) {
+    // aiIntersection::CreateRoadMap: the list sorted by atan2(dx, dz) of each
+    // road's far-from-centre end (its last centre vertex when the road's
+    // end 0 is here, else its first), smallest first (a selection sort,
+    // swapping on strictly smaller keys); then every listed road's index at
+    // that end (its first place in the list; end 0 when that is here).
+    auto createRoadMap = [&](std::uint32_t node) {
+        if (node >= map.intersections.size())
+            return;
+        AiIntersection& in = map.intersections[node];
+        const std::size_t n = in.paths.size();
+        std::vector<float> key(n, 0.0f);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (in.paths[i] >= map.paths.size())
+                continue;
+            const AiPath& p = map.paths[in.paths[i]];
+            if (p.center.empty())
+                continue;
+            const Vec3& at = p.ends[0].intersection == node ? p.center.back() : p.center.front();
+            key[i] = std::atan2(at.x - in.center.x, at.z - in.center.z);
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            for (std::size_t j = i + 1; j < n; ++j) {
+                if (key[j] < key[i]) {
+                    std::swap(key[i], key[j]);
+                    std::swap(in.paths[i], in.paths[j]);
+                }
+            }
+        }
+        for (std::size_t i = 0; i < n; ++i) {
+            if (in.paths[i] >= map.paths.size())
+                continue;
+            AiPath& p = map.paths[in.paths[i]];
+            const auto first = static_cast<std::uint16_t>(
+                std::find(in.paths.begin(), in.paths.end(), in.paths[i]) - in.paths.begin());
+            if (p.ends[0].intersection == node)
+                p.ends[0].roadIndex = first;
+            else
+                p.ends[1].roadIndex = first;
+        }
+    };
+    const std::size_t first = map.paths.size();
+    map.numShortcuts += shortcuts.size();
+    for (std::size_t k = 0; k < shortcuts.size(); ++k) {
+        AiPath p = std::move(shortcuts[k]);
+        const std::size_t id = first + k;
+        p.id = static_cast<std::uint16_t>(id);
+        p.left.roadType = 3;
+        p.right.roadType = 3;
+        const std::uint32_t end1 = p.ends[1].intersection, end0 = p.ends[0].intersection;
+        map.paths.push_back(std::move(p));
+        for (const std::uint32_t node : {end1, end0}) {
+            if (node < map.intersections.size())
+                map.intersections[node].paths.push_back(static_cast<std::uint32_t>(id));
+            createRoadMap(node);
+        }
+    }
 }
 
 std::vector<std::string> validateAiMap(const AiMap& map, std::size_t roomCount) {
