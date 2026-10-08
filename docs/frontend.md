@@ -414,6 +414,10 @@ Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch".
   columns (names at x 0.05 / 0.5, keys at 0.25 / 0.7 of a text node at
   0.05, 0.075 of the screen, rows every 0.03 from 0.05), Resume Driving.
   F1 again or Escape closes it.
+* **PURoster** (F6 in a network race, no pause): the players as eight
+  rows across the card from 0.11, the local player first, the host as
+  " Name (Host)"; the host boots a player by picking the row (not
+  itself); Resume Driving and Escape close it.
 * **PUChat**: one 40-character text field, 0.75 of the screen wide and one
   line high, centred on the screen (PUMenuBase centres the card and ignores
   the position mmPopup passes), white-outlined.
@@ -422,7 +426,7 @@ OpenMM2 writes the options as the page closes (`openmm2.ini`); MM2 writes
 the driver's configuration when the game ends (`mmGame::BeDone`). The
 results are a frontend page (see Results above).
 `OPENMM2_POPUP_SCRIPT` drives the popup for screenshots:
-`open:<main|options|audio|control|graphics|keymap|quit|exit>`,
+`open:<main|options|audio|control|graphics|keymap|quit|roster|exit>`,
 `nav:<up|down|left|right|accept|back>`, `wait:<frames>`.
 
 ## Drivers and unlocks

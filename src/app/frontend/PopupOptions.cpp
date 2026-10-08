@@ -12,6 +12,7 @@
 #include <array>
 #include <cmath>
 #include <cstdlib>
+#include <format>
 
 namespace mm2::app::frontend {
 namespace popup {
@@ -160,6 +161,7 @@ std::unique_ptr<ui::Menu> PopupOptions::build(PopupPage page, const PopupOptions
     case PopupPage::Graphics: buildGraphics(*menu, host); break;
     case PopupPage::KeyMap: buildKeyMap(*menu, host); break;
     case PopupPage::Quit: buildQuit(*menu, host); break;
+    case PopupPage::Roster: buildRoster(*menu, host); break;
     }
     return menu;
 }
@@ -172,7 +174,8 @@ void PopupOptions::draw(PopupPage page, ui::UiFrame& f) const {
     const auto& s = m_ctx.game->strings;
     switch (page) {
     case PopupPage::Options:
-    case PopupPage::Quit: break;
+    case PopupPage::Quit:
+    case PopupPage::Roster: break;
     case PopupPage::Audio: popup::drawTitle(f, card, s.get(442, "Audio Options")); break;
     case PopupPage::Control: popup::drawTitle(f, card, s.get(448, "Control Options")); break;
     case PopupPage::Graphics: popup::drawTitle(f, card, s.get(460, "Graphics Options")); break;
@@ -454,6 +457,45 @@ void PopupOptions::buildQuit(ui::Menu& menu, const PopupOptionsHost& host) {
               back);
     menu.setInitialFocus(&lobby); // SetBstate(0)
     menu.onBack = back;
+}
+
+// PURoster (menu 10, "Roster", no title): F6 in a network race
+// (mmGame::UpdateDebugInput -> mmPopup::ShowRoster; the game is not
+// paused). Eight rows across the card from 0.11, 0.1 apart, type 2, with
+// the players (mmGameMulti::InitRoster: the local player first; the host as
+// " Name (Host)", string 501, the others " Name"; rows left over empty);
+// a row pressed by the host boots that player unless it is the host
+// itself (PURoster::BootButtonCB, mmGameMulti::BootPlayerCB). Resume
+// Driving and Escape close the popup (mmPopup::Update, menu 10).
+void PopupOptions::buildRoster(ui::Menu& menu, const PopupOptionsHost& host) {
+    const auto& s = m_ctx.game->strings;
+    const ui::Box card = popup::kCard;
+    const auto entries = host.roster ? host.roster() : std::vector<PopupOptionsHost::RosterEntry>{};
+    for (int i = 0; i < 8; ++i) {
+        std::string label;
+        std::optional<std::uint8_t> id;
+        if (i < static_cast<int>(entries.size())) {
+            const auto& e = entries[static_cast<std::size_t>(i)];
+            label = e.host ? std::format(" {} ({})", e.name, s.get(501, "Host")) : " " + e.name;
+            id = e.id;
+        }
+        addButton(menu, card, 0.0f, popup::kTitleBottom + 0.1f * static_cast<float>(i), 1.0f, popup::kButtonHeight,
+                  label, 2, [boot = host.boot, id] {
+                      if (boot && id)
+                          boot(*id);
+                  });
+    }
+    auto close = host.close;
+    auto& resume = addButton(menu, card, 0.5f, 0.9f, 0.5f, popup::kButtonHeight, s.get(473, "Resume Driving"), 1,
+                             [close] {
+                                 if (close)
+                                     close();
+                             });
+    menu.setInitialFocus(&resume);
+    menu.onBack = [close] {
+        if (close)
+            close();
+    };
 }
 
 // PUKey (menu 11, F1 in the race: mmGame::Update and UpdatePaused call

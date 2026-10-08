@@ -146,6 +146,12 @@ public:
         // mmGame::Update / UpdatePaused: F1 (mmPopup::ProcessKeymap).
         if (ctx.input.keyPressed(platform::Key::F1))
             processKeymap(ctx);
+        // mmGame::UpdateDebugInput: F6 in a network race shows the roster
+        // when no popup is up (mmPopup::ShowRoster; no pause).
+        if (ctx.input.keyPressed(platform::Key::F6) && multiplayer(ctx) && m_popup == Popup::None) {
+            m_popupPaused = false;
+            showPopupPage(ctx, frontend::PopupPage::Roster);
+        }
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
             if (ctx.nextScreen)
@@ -1878,6 +1884,23 @@ private:
                 ctx.netGame->leave();
             quitToMenu(ctx);
         };
+        host.roster = [&ctx] {
+            std::vector<frontend::PopupOptionsHost::RosterEntry> out;
+            if (!ctx.netGame)
+                return out;
+            const auto self = ctx.netGame->localId();
+            for (const auto& p : ctx.netGame->players())
+                if (p.id == self)
+                    out.push_back({p.id, p.name, p.host});
+            for (const auto& p : ctx.netGame->players())
+                if (p.id != self)
+                    out.push_back({p.id, p.name, p.host});
+            return out;
+        };
+        host.boot = [&ctx](std::uint8_t id) {
+            if (ctx.netGame && ctx.netGame->isHost() && id != ctx.netGame->localId())
+                ctx.netGame->kick(id);
+        };
         return host;
     }
 
@@ -1952,12 +1975,13 @@ private:
                 m_popup = Popup::ConfirmExit;
                 buildPopup(ctx);
             } else if (p == "options" || p == "audio" || p == "control" || p == "graphics" || p == "keymap" ||
-                       p == "quit") {
+                       p == "quit" || p == "roster") {
                 showPopupPage(ctx, p == "audio"      ? PopupPage::Audio
                                    : p == "control"  ? PopupPage::Control
                                    : p == "graphics" ? PopupPage::Graphics
                                    : p == "keymap"   ? PopupPage::KeyMap
                                    : p == "quit"     ? PopupPage::Quit
+                                   : p == "roster"   ? PopupPage::Roster
                                                      : PopupPage::Options);
             } else {
                 showPopupPage(ctx, std::nullopt);

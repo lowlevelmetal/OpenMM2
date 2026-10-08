@@ -35,6 +35,7 @@ enum class PopupPage : std::uint8_t {
     Audio = 6,    // PUAudioOptions
     Control = 7,  // PUControl
     Graphics = 8, // PUGraphics
+    Roster = 10,  // PURoster (F6 in a network race)
     KeyMap = 11,  // PUKey (F1)
 };
 
@@ -119,6 +120,15 @@ struct PopupOptionsHost {
     // (BeDone(0) / (2)).
     std::function<void()> quitToLobby;
     std::function<void()> endSession;
+    // PURoster's rows (mmGameMulti::InitRoster: the local player first,
+    // then the others) and the host's boot (mmGameMulti::BootPlayerCB).
+    struct RosterEntry {
+        std::uint8_t id = 0;
+        std::string name;
+        bool host = false;
+    };
+    std::function<std::vector<RosterEntry>()> roster;
+    std::function<void(std::uint8_t)> boot;
 };
 
 // The OPTIONS pages of the in-race popup.
@@ -141,6 +151,7 @@ private:
     void buildGraphics(ui::Menu& menu, const PopupOptionsHost& host);
     void buildKeyMap(ui::Menu& menu, const PopupOptionsHost& host);
     void buildQuit(ui::Menu& menu, const PopupOptionsHost& host);
+    void buildRoster(ui::Menu& menu, const PopupOptionsHost& host);
     void drawKeyMap(ui::UiFrame& f) const;
     void addOkCancel(ui::Menu& menu, const ui::Box& card, const PopupOptionsHost& host,
                      std::function<void()> cancel);
@@ -175,7 +186,7 @@ private:
 
 // OPENMM2_POPUP_SCRIPT drives the in-race popup for automated screenshots,
 // e.g. "wait:60;open:graphics;wait:2;nav:down": open:<main|options|audio|
-// control|graphics|keymap|quit|exit> opens the popup on that page, nav:<up|down|left|
+// control|graphics|keymap|quit|roster|exit> opens the popup on that page, nav:<up|down|left|
 // right|accept|back> presses a key, wait:<frames> waits.
 class PopupScript {
 public:
