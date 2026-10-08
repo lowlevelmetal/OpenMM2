@@ -24,6 +24,14 @@ void Collider::init(const Bound* b, const Mat34* m, InertialCS* inertia) {
     reset();
 }
 
+void Collider::initStatic(const Bound* b, const Mat34* m) {
+    // phCollider::Init(const phBound*, Matrix34*): Reset, then the collider
+    // counts as not moving.
+    init(b, m, nullptr);
+    maxMoved = 0.0f;
+    barelyMoved = true;
+}
+
 void Collider::reset() {
     // phColliderBase::Reset.
     lastMatrix = matrix ? *matrix : Mat34::identity();
@@ -52,7 +60,8 @@ void Collider::updateMtx() {
 
 void Collider::calcMaxMoved(float dt) {
     // phColliderBase::CalcMaxMoved: the bound's box swept by the angular
-    // velocity, plus the centre's (filtered) speed, over one sample.
+    // velocity, plus the centre's speed with the last push
+    // (GetCMFilteredVelocity), over one sample.
     if (!ics) {
         maxMoved = 0.0f;
         barelyMoved = false;
@@ -61,9 +70,9 @@ void Collider::calcMaxMoved(float dt) {
     const Vec3 w{std::abs(ics->angularVelocity.x), std::abs(ics->angularVelocity.y),
                  std::abs(ics->angularVelocity.z)};
     const Vec3& m = bound->boxMax;
-    maxMoved = (m.y + m.z) * w.x + (m.y + m.x) * w.z + (m.z + m.x) * w.y;
-    const Vec3 v = ics->filteredVelocity(ics->matrix.m3, dt > 0.0f ? 1.0f / dt : 0.0f);
-    maxMoved = std::sqrt(v.x * v.x + v.z * v.z + v.y * v.y) + maxMoved;
+    maxMoved = ((m.z + m.x) * w.y + (m.y + m.x) * w.z) + (m.y + m.z) * w.x;
+    const Vec3 v = ics->cmFilteredVelocity(dt > 0.0f ? 1.0f / dt : 0.0f);
+    maxMoved = std::sqrt((v.y * v.y + v.z * v.z) + v.x * v.x) + maxMoved;
     maxMoved = maxMoved * dt;
     barelyMoved = maxMoved < kBarelyMovedDistance;
 }

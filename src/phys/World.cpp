@@ -95,7 +95,9 @@ Aabb Body::aabb() const {
 World::World() {
     m_identity = Mat34::identity();
     m_levelBound.clear();
-    m_levelCollider.init(&m_levelBound, &m_identity, nullptr);
+    // dgPhysManager::Reset: the level's collider (phCollider::Init with the
+    // level's bound and an identity matrix).
+    m_levelCollider.initStatic(&m_levelBound, &m_identity);
     m_isectsA.resize(kMaxIntersections);
     m_isectsB.resize(kMaxIntersections);
     m_impacts.resize(kMaxImpacts);
@@ -116,9 +118,6 @@ void World::add(Body* body) {
             return;
         }
     }
-    const InertialCS defaults;
-    if (body->ics.gravity == defaults.gravity)
-        body->ics.gravity = {0.0f, -kGravity, 0.0f};
     Mover m;
     m.body = body;
     m_movers.push_back(std::move(m));
@@ -180,11 +179,14 @@ int World::advanceFixed(float frameDelta, float sampleStep, int maxSamples) {
 }
 
 int World::advanceOversampled(float frameDelta, float sampleStep, int maxSamples) {
-    // dgPhysManager::Update. (At least one sample: OpenMM2 guard for frames
-    // under a millisecond.)
+    // dgPhysManager::Update: a frame under a millisecond runs no sample (its
+    // time is lost, as in the original).
     beginFrame();
     int n = static_cast<int>(std::ceil(static_cast<double>((frameDelta - 0.001f) / sampleStep)));
-    n = std::max(1, std::min(n, maxSamples));
+    if (maxSamples < n)
+        n = maxSamples;
+    if (n <= 0)
+        return 0;
     const float dt = frameDelta / static_cast<float>(n);
     for (int i = 0; i < n; ++i)
         step(dt);
@@ -229,7 +231,9 @@ void World::step(float dt) {
             b->room = m_level->findRoom(b->position(), b->room);
         b->collider.joint = b->joint;
         b->collider.id = b->audioId;
-        b->collider.calcMaxMoved(dt);
+        // (MM2 computes a collider's barely-moved flag only when a traffic
+        // car leaves its rail, aiVehicleActive::Attach; every other mover
+        // keeps the false phColliderBase::Reset gave it.)
     }
 
     // dgPhysManager::GatherCollidables for movers that collide with the city
@@ -408,13 +412,13 @@ bool World::collideInstances(Instance& a, Instance& b) {
     if (entityA) {
         colA = &entityA->collider;
     } else {
-        m_tempA.init(boundA, &m_tempMatrixA, nullptr);
+        m_tempA.initStatic(boundA, &m_tempMatrixA);
         m_tempA.id = a.audioId;
     }
     if (entityB) {
         colB = &entityB->collider;
     } else {
-        m_tempB.init(boundB, &m_tempMatrixB, nullptr);
+        m_tempB.initStatic(boundB, &m_tempMatrixB);
         m_tempB.id = b.audioId;
     }
     if (boundB->type == BoundType::ForceSphere)

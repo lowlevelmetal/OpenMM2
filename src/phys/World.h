@@ -147,10 +147,8 @@ public:
 
     // Bodies are not owned. Update order is insertion order (deterministic;
     // MM2 updates its movers in the order they were declared each frame).
-    // add() sets the body's gravity to (0, -kGravity, 0) unless it was
-    // changed from the asInertialCS default. remove() may be called during
-    // a step (from impact callbacks); the body must stay alive until the
-    // step ends.
+    // remove() may be called during a step (from impact callbacks); the body
+    // must stay alive until the step ends.
     void add(Body* body);
     void remove(Body* body);
     bool contains(const Body* body) const;
