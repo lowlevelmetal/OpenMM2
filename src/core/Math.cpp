@@ -6,8 +6,20 @@ namespace mm2 {
 // because of the row-vector convention; positive angles rotate
 // counter-clockwise when looking down the axis toward the origin.
 
+namespace {
+
+// cos and sin as the x87 computes them (wide), rounded to float.
+float cosf32(float a) {
+    return static_cast<float>(std::cos(static_cast<double>(a)));
+}
+float sinf32(float a) {
+    return static_cast<float>(std::sin(static_cast<double>(a)));
+}
+
+} // namespace
+
 Mat34 Mat34::rotationX(float a) {
-    const float c = std::cos(a), s = std::sin(a);
+    const float c = cosf32(a), s = sinf32(a);
     Mat34 m;
     m.m1 = {0, c, s};
     m.m2 = {0, -s, c};
@@ -15,7 +27,7 @@ Mat34 Mat34::rotationX(float a) {
 }
 
 Mat34 Mat34::rotationY(float a) {
-    const float c = std::cos(a), s = std::sin(a);
+    const float c = cosf32(a), s = sinf32(a);
     Mat34 m;
     m.m0 = {c, 0, -s};
     m.m2 = {s, 0, c};
@@ -23,7 +35,7 @@ Mat34 Mat34::rotationY(float a) {
 }
 
 Mat34 Mat34::rotationZ(float a) {
-    const float c = std::cos(a), s = std::sin(a);
+    const float c = cosf32(a), s = sinf32(a);
     Mat34 m;
     m.m0 = {c, s, 0};
     m.m1 = {-s, c, 0};
@@ -31,12 +43,17 @@ Mat34 Mat34::rotationZ(float a) {
 }
 
 Mat34 Mat34::rotationAxis(const Vec3& k, float angle) {
-    const float c = std::cos(angle), s = std::sin(angle), t = 1.0f - c;
+    // Matrix34::MakeRotateUnitAxis: the transpose of Rodrigues' rotation. The
+    // diagonal adds the cosine as fcos left it (wider than a float); every
+    // product before it rounds to float.
+    const double c = std::cos(static_cast<double>(angle));
+    const float s = sinf32(angle);
+    const float t = static_cast<float>(1.0 - c);
+    const auto diagonal = [&](float v) { return static_cast<float>(static_cast<double>((v * v) * t) + c); };
     Mat34 m;
-    // Rows of transpose(Rodrigues rotation).
-    m.m0 = {c + t * k.x * k.x, t * k.x * k.y + s * k.z, t * k.x * k.z - s * k.y};
-    m.m1 = {t * k.x * k.y - s * k.z, c + t * k.y * k.y, t * k.y * k.z + s * k.x};
-    m.m2 = {t * k.x * k.z + s * k.y, t * k.y * k.z - s * k.x, c + t * k.z * k.z};
+    m.m0 = {diagonal(k.x), (k.y * k.x) * t + s * k.z, (k.z * k.x) * t - s * k.y};
+    m.m1 = {(k.y * k.x) * t - s * k.z, diagonal(k.y), (k.z * k.y) * t + s * k.x};
+    m.m2 = {(k.z * k.x) * t + s * k.y, (k.z * k.y) * t - s * k.x, diagonal(k.z)};
     return m;
 }
 
@@ -58,9 +75,15 @@ Mat34 Mat34::inverse() const {
 }
 
 void Mat34::normalize() {
-    m1 = m1.normalized();
-    m0 = m1.cross(m2).normalized();
-    m2 = m0.cross(m1);
+    // Matrix34::Normalize, in its summation order (the first length sums z,
+    // y, x; the others x, y, z).
+    m0 = {m2.z * m1.y - m2.y * m1.z, m2.x * m1.z - m2.z * m1.x, m2.y * m1.x - m1.y * m2.x};
+    const float l0 = (m0.z * m0.z + m0.y * m0.y) + m0.x * m0.x;
+    const float s0 = l0 == 0.0f ? 0.0f : 1.0f / std::sqrt(l0);
+    m0 = {s0 * m0.x, s0 * m0.y, s0 * m0.z};
+    m1 = {m2.y * m0.z - m0.y * m2.z, m0.x * m2.z - m0.z * m2.x, m0.y * m2.x - m0.x * m2.y};
+    m1 = m1 * m1.invMag();
+    m2 = m2 * m2.invMag();
 }
 
 Mat44 Mat44::perspective(float fovY, float aspect, float zNear, float zFar, bool zeroToOne) {

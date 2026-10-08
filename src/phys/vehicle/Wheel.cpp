@@ -285,18 +285,17 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     float upDotN = 0.0f;
     bool wall = false;
     RayHit isect;
-    if (env.ground && env.ground->probe(top, bottom, isect)) {
+    if (env.ground && env.ground->wheelProbe(top, bottom, isect, env.self, &probeCache)) {
         // dgPhysManager::Collide fills the wheel's lvlIntersection whenever
         // it hits, even when the checks below reject the contact
         // (vehCar::RequiresTerrainCollision reads its normal).
         intersection = isect;
         material = &env.ground->material(isect.material);
-        // OpenMM2: deep water (materials.mtl depth >= 1, e.g. deepwater 100)
-        // carries no wheel. vehWheel has no such test: it takes whatever
-        // dgPhysManager::Collide hits. OpenMM2's probe soup is the PSDL
-        // render mesh, not MM2's collision polygons, and how MM2's probe
-        // lets a car sink into deep water is not settled, so this stands in
-        // (inferred; see docs/physics.md).
+        // vehWheel takes whatever dgPhysManager::Collide hits. Its city
+        // polygons never include deep water (lvlSDL's Collect skips the
+        // deepwater fans, so cars sink into the Thames and the bay); the
+        // depth test does the same where OpenMM2 probes its own geometry
+        // instead (no level loaded: tests, simcar), and is a no-op otherwise.
         hit = material->depth < 1.0f;
     }
     if (hit) {

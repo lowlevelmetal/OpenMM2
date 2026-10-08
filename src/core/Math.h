@@ -75,17 +75,27 @@ struct Vec3 {
     constexpr Vec3& operator*=(float s) { return *this = *this * s; }
     constexpr bool operator==(const Vec3&) const = default;
 
+    // Left to right. MM2 has no one order for a dot product: its compiler
+    // inlined most of them, each summed its own way, and the out-of-line
+    // Vector3::Dot sums z, y, x (phys::age::dot); ports that must round as
+    // the original write the sum out.
     constexpr float dot(const Vec3& o) const { return x * o.x + y * o.y + z * o.z; }
+    // AGE: Vector3::Cross.
     constexpr Vec3 cross(const Vec3& o) const { return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x}; }
     constexpr Vec3 mul(const Vec3& o) const { return {x * o.x, y * o.y, z * o.z}; }
-    constexpr float mag2() const { return dot(*this); }
+    // AGE: Vector3::Mag2 / Mag / InvMag (0 for a zero vector) / Normalize.
+    constexpr float mag2() const { return (x * x + y * y) + z * z; }
     float mag() const { return std::sqrt(mag2()); }
     float invMag() const {
         const float m = mag();
         return m != 0.0f ? 1.0f / m : 0.0f;
     }
     Vec3 normalized() const { return *this * invMag(); }
-    float dist(const Vec3& o) const { return (*this - o).mag(); }
+    // AGE: Vector3::Dist (sums z, y, x).
+    float dist(const Vec3& o) const {
+        const Vec3 d = *this - o;
+        return std::sqrt((d.z * d.z + d.y * d.y) + d.x * d.x);
+    }
     constexpr float dist2(const Vec3& o) const { return (*this - o).mag2(); }
 
     static constexpr Vec3 zero() { return {0, 0, 0}; }
@@ -131,44 +141,79 @@ struct Mat34 {
         m.m3 = p;
         return m;
     }
+    // AGE: Matrix34::MakeRotateX / MakeRotateY / MakeRotateZ.
     static Mat34 rotationX(float a);
     static Mat34 rotationY(float a);
     static Mat34 rotationZ(float a);
     // Rotation of `angle` radians about the unit axis `axis`.
+    // AGE: Matrix34::MakeRotateUnitAxis.
     static Mat34 rotationAxis(const Vec3& axis, float angle);
 
     constexpr Vec3& row(int i) { return i == 0 ? m0 : (i == 1 ? m1 : (i == 2 ? m2 : m3)); }
     constexpr const Vec3& row(int i) const { return i == 0 ? m0 : (i == 1 ? m1 : (i == 2 ? m2 : m3)); }
 
-    // p * M (point, includes translation). AGE: Vector3::Dot.
-    constexpr Vec3 transform(const Vec3& p) const { return m0 * p.x + m1 * p.y + m2 * p.z + m3; }
+    // The products below sum their terms in the order of the AGE function
+    // each names (midtown2.exe build 3393), so ports of those calls round
+    // as the original did.
+
+    // p * M (point, includes translation). AGE: Vector3::Dot(const Vector3&,
+    // const Matrix34&) and Matrix34::Transform.
+    constexpr Vec3 transform(const Vec3& p) const {
+        return {((m1.x * p.y + m2.x * p.z) + m0.x * p.x) + m3.x,
+                ((m0.y * p.x + m1.y * p.y) + m2.y * p.z) + m3.y,
+                ((m0.z * p.x + m1.z * p.y) + m2.z * p.z) + m3.z};
+    }
     // v * M3x3 (direction). AGE: Vector3::Dot3x3.
-    constexpr Vec3 transformDir(const Vec3& v) const { return m0 * v.x + m1 * v.y + m2 * v.z; }
+    constexpr Vec3 transformDir(const Vec3& v) const {
+        return {(m2.x * v.z + m1.x * v.y) + m0.x * v.x, (m2.y * v.z + m0.y * v.x) + m1.y * v.y,
+                (m2.z * v.z + m0.z * v.x) + m1.z * v.y};
+    }
     // v * transpose(M3x3): world direction into local space for orthonormal M.
     // AGE: Vector3::Dot3x3Transpose.
-    constexpr Vec3 untransformDir(const Vec3& v) const { return {v.dot(m0), v.dot(m1), v.dot(m2)}; }
+    constexpr Vec3 untransformDir(const Vec3& v) const {
+        return {(m0.z * v.z + m0.y * v.y) + m0.x * v.x, (m1.z * v.z + m1.x * v.x) + m1.y * v.y,
+                (m2.z * v.z + m2.x * v.x) + m2.y * v.y};
+    }
     // Inverse transform of a point for orthonormal M.
     constexpr Vec3 untransform(const Vec3& p) const { return untransformDir(p - m3); }
 
-    // this = a * b (apply a, then b). AGE: Matrix34::Dot.
+    // this = a * b (apply a, then b). AGE: Matrix34::Dot(const Matrix34&,
+    // const Matrix34&).
     static constexpr Mat34 mul(const Mat34& a, const Mat34& b) {
-        return {b.transformDir(a.m0), b.transformDir(a.m1), b.transformDir(a.m2), b.transform(a.m3)};
+        Mat34 r;
+        r.m0 = {(a.m0.x * b.m0.x + a.m0.y * b.m1.x) + a.m0.z * b.m2.x,
+                (a.m0.y * b.m1.y + a.m0.z * b.m2.y) + a.m0.x * b.m0.y,
+                (a.m0.y * b.m1.z + a.m0.z * b.m2.z) + a.m0.x * b.m0.z};
+        r.m1 = {(a.m1.x * b.m0.x + a.m1.y * b.m1.x) + a.m1.z * b.m2.x,
+                (a.m1.y * b.m1.y + a.m1.z * b.m2.y) + a.m1.x * b.m0.y,
+                (a.m1.y * b.m1.z + a.m1.z * b.m2.z) + a.m1.x * b.m0.z};
+        r.m2 = {(a.m2.x * b.m0.x + a.m2.z * b.m2.x) + a.m2.y * b.m1.x,
+                (a.m2.y * b.m1.y + a.m2.z * b.m2.y) + a.m2.x * b.m0.y,
+                (a.m2.y * b.m1.z + a.m2.z * b.m2.z) + a.m2.x * b.m0.z};
+        r.m3 = {((a.m3.x * b.m0.x + a.m3.y * b.m1.x) + a.m3.z * b.m2.x) + b.m3.x,
+                ((a.m3.y * b.m1.y + a.m3.z * b.m2.y) + a.m3.x * b.m0.y) + b.m3.y,
+                ((a.m3.y * b.m1.z + a.m3.z * b.m2.z) + a.m3.x * b.m0.z) + b.m3.z};
+        return r;
     }
     constexpr Mat34 operator*(const Mat34& b) const { return mul(*this, b); }
 
     // Inverse for orthonormal rotation part (rigid transforms).
+    // AGE: Matrix34::FastInverse.
     constexpr Mat34 fastInverse() const {
         Mat34 r;
         r.m0 = {m0.x, m1.x, m2.x};
         r.m1 = {m0.y, m1.y, m2.y};
         r.m2 = {m0.z, m1.z, m2.z};
-        r.m3 = -r.transformDir(m3);
+        r.m3 = {-((m0.x * m3.x + m0.y * m3.y) + m0.z * m3.z), -((m1.x * m3.x + m1.y * m3.y) + m1.z * m3.z),
+                -((m2.x * m3.x + m2.y * m3.y) + m2.z * m3.z)};
         return r;
     }
     // General inverse (handles scale/shear). Returns identity if singular.
+    // OpenMM2 utility; MM2 code uses Matrix34::Inverse (phys/AgeMath.h).
     Mat34 inverse() const;
 
-    // Re-orthonormalize the basis (Gram-Schmidt, keeping m1 up as primary).
+    // Re-orthonormalises the basis keeping m2 (back) as the primary axis:
+    // m0 = |m1 x m2|, m1 = |m2 x m0|, m2 = |m2|. AGE: Matrix34::Normalize.
     void normalize();
 };
 
