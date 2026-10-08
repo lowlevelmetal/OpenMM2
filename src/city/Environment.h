@@ -35,7 +35,14 @@ struct LightingDef {
     Vec3 fill2Color;
     std::uint32_t ambient = 0; // packed ARGB (stored as a signed int)
 };
-std::optional<LightingDef> parseLighting(std::string_view text, std::string* error = nullptr);
+// cityTimeWeatherLighting's constructor: key light straight along x 30
+// degrees down, white; fill lights at +-120 degrees, 22.5 degrees down,
+// 0.75 and 0.5 grey; ambient 0xFF101010.
+LightingDef defaultLighting();
+// Reads a .ltNN file. As datParser::Load does, the fields it lacks keep the
+// values of `base` (the table it loads into); without one, LightingDef's.
+std::optional<LightingDef> parseLighting(std::string_view text, std::string* error = nullptr,
+                                         const LightingDef* base = nullptr);
 
 // city/<map>_fog.csv
 struct FogDef {

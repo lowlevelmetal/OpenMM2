@@ -38,7 +38,22 @@ std::optional<float> num(std::string_view s) {
 
 } // namespace
 
-std::optional<LightingDef> parseLighting(std::string_view text, std::string* error) {
+LightingDef defaultLighting() {
+    LightingDef l;
+    l.keyHeading = 0.0f;
+    l.keyPitch = -0.52359879f;
+    l.keyColor = {1.0f, 1.0f, 1.0f};
+    l.fill1Heading = 2.0943952f;
+    l.fill1Pitch = -0.39269909f;
+    l.fill1Color = {0.75f, 0.75f, 0.75f};
+    l.fill2Heading = -2.0943952f;
+    l.fill2Pitch = -0.39269909f;
+    l.fill2Color = {0.5f, 0.5f, 0.5f};
+    l.ambient = 0xFF101010u;
+    return l;
+}
+
+std::optional<LightingDef> parseLighting(std::string_view text, std::string* error, const LightingDef* base) {
     auto f = data::parseDat(text, error);
     if (!f)
         return std::nullopt;
@@ -47,7 +62,7 @@ std::optional<LightingDef> parseLighting(std::string_view text, std::string* err
         setError(error, "no lighting block");
         return std::nullopt;
     }
-    LightingDef l;
+    LightingDef l = base ? *base : LightingDef{};
     l.name = top->name;
     top->read("KeyHeading", l.keyHeading);
     top->read("KeyPitch", l.keyPitch);

@@ -295,3 +295,16 @@ TEST(ParityRenderingFx, LensFlaresFollowLtLensFlare) {
     EXPECT_NEAR(fx::spotIntensity({0, 0, 0}, {0, 0, 1}, {0, 0, 5}, 0.05f), 1.0f - 0.05f, 1e-6f);
     EXPECT_EQ(fx::spotIntensity({0, 0, 0}, {0, 0, -1}, {0, 0, 5}, 0.05f), 0.0f);
 }
+
+TEST(ParityRenderingFx, LightingFilesLoadOverThePreviousTable) {
+    // datParser::Load keeps the fields a .ltNN lacks; a missing file keeps
+    // the whole table (cityTimeWeatherLighting's constructor values first).
+    const auto base = city::defaultLighting();
+    EXPECT_EQ(base.ambient, 0xFF101010u);
+    EXPECT_NEAR(base.fill1Heading, 2.0943952f, 1e-6f);
+    const auto partial = city::parseLighting("type: a\nlt00 {\n\tKeyHeading 1.5\n}\n", nullptr, &base);
+    ASSERT_TRUE(partial);
+    EXPECT_FLOAT_EQ(partial->keyHeading, 1.5f);
+    EXPECT_FLOAT_EQ(partial->keyPitch, base.keyPitch);
+    EXPECT_EQ(partial->ambient, base.ambient);
+}
