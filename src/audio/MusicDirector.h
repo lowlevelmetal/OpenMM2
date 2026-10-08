@@ -2,8 +2,9 @@
 
 // When the in-game music changes, ported from MM2: mmGame::UpdateDMusic and
 // StartMusic, MMDMusicManager::UpdateMusic and MatchMusicToPlayerSpeed,
-// mmPopup::PlayPauseMusic / PlayReturnMusic / ShowRoster, and the race modes'
-// StopSegment at the finish. The segment indices mmSingleRaceMusicData and
+// mmPopup::PlayPauseMusic / PlayReturnMusic / ShowResults, and the race
+// modes' StopSegment at the finish and when the player's car is wrecked. The
+// segment indices mmSingleRaceMusicData and
 // mmSingleRoamMusicData::LoadMusic assign are kept as MusicStates. Pure logic:
 // the game feeds it every frame and passes the commands to a MusicPlayer.
 
@@ -41,10 +42,17 @@ public:
     // mmPopup::PlayPauseMusic / PlayReturnMusic.
     void pause();
     void resume();
-    // The race modes stop the music when the player finishes (StopSegment);
-    // the music logic keeps running.
+    // The race modes stop the music when the player finishes (StopSegment(0),
+    // at once); the music logic keeps running, so standing still for 5 s
+    // brings in the idle segment.
     void finish();
-    // mmPopup::ShowRoster: the results segment, on the next beat.
+    // mmSingleRace / mmSingleBlitz when the player's car is wrecked
+    // (StopSegment(1)): DirectMusic composes an ending on the next beat
+    // (AutoTransition to nothing, DMUS_COMMANDT_END, DMUS_COMPOSEF_BEAT);
+    // OpenMM2 stops on the next beat (inferred: dmusic has no composer).
+    void damagedOut();
+    // mmPopup::ShowResults: the results segment, on the next beat (race
+    // songs only).
     void results();
 
     std::vector<Command> takeCommands();

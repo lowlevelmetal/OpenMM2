@@ -1072,7 +1072,6 @@ private:
     static audio::game::CarAudioInputs carAudioInputs(const phys::CarSim& sim) {
         audio::game::CarAudioInputs in;
         in.rpm = sim.engine.rpm;
-        in.idleRpm = sim.params.engine.idleRPM;
         in.speed = sim.speed();
         in.gear = sim.trans.getCurrentGear();
         for (std::size_t i = 0; i < 4; ++i) {
@@ -1108,10 +1107,11 @@ private:
             m_impacts.clear();
             in.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
             in.transform = m_pose.body;
-            // vehSurfaceAudio::UpdateAir: ground within 33 m below ("big air").
+            // vehSurfaceAudio::UpdateAir: something 3 to 33 m below ("big air";
+            // its segments start 3 m down, so a closer surface is skipped).
             phys::RayHit hit;
             const Vec3 at = sim.modelMatrix().m3;
-            if (m_world && m_world->probe(at, at - Vec3{0, 33, 0}, hit))
+            if (m_world && m_world->probe(at - Vec3{0, 3, 0}, at - Vec3{0, 33, 0}, hit))
                 in.groundBelow = at.y - hit.position.y;
             m_carAudio.update(in, dt);
         }

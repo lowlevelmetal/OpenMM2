@@ -14,7 +14,6 @@
 
 #include <array>
 #include <optional>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -49,15 +48,13 @@ struct ImpactInput {
 };
 
 // vehCarDamage::ApplyImpact / aiVehicleActive: the impact strength handed to
-// AudImpact::Play.
+// AudImpact::Play, |z| + |y| + |x| summed in that order.
 float impactStrength(const Vec3& impulse);
 
 struct CarAudioInputs {
+    // vehEngine's current RPM (vehCarSim +0x2c4), passed to the engine samples
+    // as is.
     float rpm = 0.0f;
-    // vehEngine IdleRPM: the simulation may report 0 RPM at rest while the
-    // engine is running; the engine sound never drops below this.
-    float idleRpm = 800.0f;
-    bool engineRunning = true;
     float throttle = 0.0f; // 0..1
     float brake = 0.0f;    // 0..1
     float speed = 0.0f;    // m/s (vehCarSim speed)
@@ -66,6 +63,10 @@ struct CarAudioInputs {
     std::vector<ImpactInput> impacts; // impacts since the previous update
     bool horn = false;                // horn button held
     bool siren = false;               // police: siren on (AI police: pursuing)
+    // aiPoliceOfficer::StartSiren passes whether the suspect is the player
+    // (vehCarAudioContainer::IsPlayer); only those sirens count for the cop
+    // chase music.
+    bool sirenPursuingPlayer = true;
     bool wrecked = false;             // police: destroyed while pursuing (explosion)
     // vehSurfaceAudio::UpdateTireWobble: (damage - MedDamage) / (MaxDamage -
     // MedDamage) from vehCarDamage; the thumps start above 0.05.
@@ -73,7 +74,9 @@ struct CarAudioInputs {
     // Radius of the rear left wheel: one wobble thump per revolution.
     float wheelRadius = 0.3f;
     // Distance from the car down to the ground below it, if any within 33 m
-    // (vehSurfaceAudio::UpdateAir's probe; player only).
+    // (vehSurfaceAudio::UpdateAir's probe; player only). MM2 probes ten
+    // segments from 3 to 33 m below the car, so a surface closer than 3 m is
+    // skipped: the caller should report the first surface between 3 and 33 m.
     std::optional<float> groundBelow;
     Mat34 transform; // car placement (positioned cars)
     Vec3 velocity;
@@ -109,12 +112,20 @@ public:
     //            and min + rpm * (max - min) / (end - start) in between (the
     //            slope is applied to the whole RPM, not to rpm - start, so the
     //            pitch jumps at both ends of the range unless it starts at 0)
-    static Evaluation evaluate(const EngineSampleDef& def, float rpm);
+    // `silenced` is vehEngineSampleWrapper::Silence: min and max volume are 0
+    // but the fade slopes keep their table values (ParseCSVBuffer computed
+    // them once), so the fades still rise from 0 by up to max - min.
+    static Evaluation evaluate(const EngineSampleDef& def, float rpm, bool silenced = false);
 
     void load(Mixer& mixer, SoundBank& bank, const std::vector<EngineSampleDef>& samples, Bus bus);
-    // UpdateRPM: the cut-off test uses the table volume; positioned cars then
-    // scale volume and pitch by their attenuation and doppler factor.
-    void update(float rpm, float volumeScale = 1.0f, float pitchScale = 1.0f, float pan = 0.0f);
+    // vehEngineSampleWrapper::UpdateRPM(rpm): the player's car. A sample whose
+    // table volume is below 0.25 stops; the others get volume and frequency and
+    // loop.
+    void update(float rpm);
+    // UpdateRPM(rpm, volume, frequency, pan): positioned cars; the cut-off uses
+    // the table volume, then volume and pitch are scaled by the attenuation
+    // and the doppler factor.
+    void update3D(float rpm, float attenuation, float doppler, float pan);
     // vehEngineAudio::Silence: zero every sample's volume range (the engine
     // stops), or restore it.
     void silence(bool on);
@@ -144,6 +155,10 @@ public:
     // The positioned variant: volumes scaled by `attenuation`, pan applied,
     // no wobble pitch and no airborne tracking.
     void update3D(const CarAudioInputs& in, float dt, float attenuation, float pan);
+    // vehSurfaceAudio::UnAssignSounds (the car lost its sound slot): the
+    // current surface and skid sounds stop; a suspension or wobble thump plays
+    // out.
+    void silence();
     void stop();
 
     int currentSurface() const { return m_surface; }
@@ -244,10 +259,13 @@ public:
     // UpdateSiren(volume, frequency, pan): positioned cars. The siren never
     // drops below volume 0.75 however far away the car is.
     void update3D(float dt, float attenuation, float doppler, float pan);
-    // PlayExplosion: the explosion one-shot (only with a slot); the siren
-    // then drops in pitch and dies.
-    void explode(bool audible, float attenuation);
-    // UnAssignSounds: the sounds stop, the siren state stays.
+    // PlayExplosion: the explosion one-shot at the car's attenuation (only
+    // with a slot); the siren drops to half pitch (DamageSiren). Its callers
+    // stop the siren right after (aiPoliceOfficer::PerpEscapes), so in
+    // practice the siren just stops.
+    void explode(bool audible, float attenuation, float doppler = 1.0f);
+    // UnAssignSounds: the siren samples stop (an explosion plays out); the
+    // siren state stays.
     void silence();
     void stopAll();
 
@@ -255,6 +273,8 @@ public:
     int currentSample() const { return m_state != 0 ? m_current : -1; }
     bool explosionPlaying() const { return m_explosion.playing(); }
 
+    // FluctuateSiren keeps one timer for the whole siren.
+    float timer() const { return m_timer; }
     // vehPoliceCarAudio::s_iNumCopsPursuingPlayer: drives the cop chase music.
     static int copsPursuingPlayer();
     static void resetPursuitCount();
@@ -267,6 +287,7 @@ private:
     };
     void fluctuate(float dt);
     void damage(float attenuation, float doppler);
+    Sample& current() { return m_samples[static_cast<std::size_t>(m_current)]; }
 
     std::vector<Sample> m_samples;
     SoundSlot m_explosion;
@@ -283,7 +304,9 @@ private:
 
 struct CarAudioOptions {
     SurfaceWeather weather = SurfaceWeather::Dry;
-    std::string city = "london"; // police siren table: <city>policesiren.csv
+    // Police siren table: londonpolicesiren.csv in London, sfpolicesiren.csv in
+    // every other city (mmGame::Init, vehCarAudioContainer::SetSirenCSVName).
+    std::string city = "london";
     // Positioned cars share this (Aud3DObjectManager); null = every car sounds.
     Object3DManager* manager = nullptr;
     // A network player's car (vehCarAudioContainer mode 0) keeps its horn; AI
@@ -331,7 +354,8 @@ private:
 
 // vehCarAudio in 3D mode: another car, attenuated by distance (0..150 m) and
 // panned like every MM2 positioned sound, sounding only while it holds a slot
-// of the Object3DManager.
+// of the Object3DManager. Police (vehPoliceCarAudio) and semis
+// (vehSemiCarAudio) by shared/vehtypes.csv, as for the player.
 class OpponentCarAudio : private SlotHolder {
 public:
     bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view car, bool police,
@@ -356,10 +380,16 @@ private:
     ImpactSounds m_impacts;
     SoundSlot m_horn;
     std::optional<SirenPlayer> m_siren;
+    std::optional<SemiDef> m_semi;
+    SoundSlot m_reverseBeep, m_airBlow;
     Audio3D m_3d;
     int m_priority = 9;
-    float m_doppler = 1.0f; // last doppler factor (Aud3DObject +0x10)
+    // The last values UpdateAudio3D computed (Aud3DObject +0xc, +0x10, +4).
+    float m_attenuation = 0.0f;
+    float m_doppler = 1.0f;
+    float m_pan = 0.0f;
     bool m_hasHorn = false;
+    bool m_hornPressed = false; // vehCarAudioContainer +0: PlayHorn / StopHorn latch
     bool m_prevSiren = false;
     bool m_prevWrecked = false;
 };
@@ -370,23 +400,25 @@ private:
 // impacts; attenuated over 0..100 m.
 class AmbientCarAudio : private SlotHolder {
 public:
-    // `type` is the ambient vehicle name ("va_sedans_s"); files are looked up
-    // as aud/cardata/ambient/<type>_engine.csv and _horn.csv with a trailing
-    // plural "s" dropped from the model part when needed (va_sedans_s ->
-    // va_sedan_s; inferred), else default_engine.csv / default_horn.csv.
+    // `type` is the ambient vehicle name ("va_sedans_s"); files are
+    // aud/cardata/ambient/<type>_engine.csv and _horn.csv, else
+    // default_engine.csv / default_horn.csv (aiAmbientVehicleAudio::Init,
+    // aiEngineAudio::Load "%s_engine", vehHornAudio::Load "%s_horn"). The
+    // va_sedan_s files therefore go unused: the model is va_sedans_s.
     // Impacts come from aud/cardata/opponent/default_impacts.csv.
     bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view type,
               Object3DManager* manager = nullptr);
     void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Mat34& listener);
     void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Vec3& listener);
-    // vehHornAudio::PlayAvoidance: a random pattern, or (half the time)
-    // nothing; returns whether a pattern started. pattern >= 0 forces one.
+    // vehHornAudio::PlayAvoidance: RandomizeNumber(2 * last - 0.01) picks one
+    // of the patterns before the last (the long "stuck" blast is kept for
+    // impacts), or (about half the time) nothing; returns whether a pattern
+    // started. pattern >= 0 forces one.
     bool honk(int pattern = -1);
     // aiVehicleActive's impact: the impact sounds and vehHornAudio::PlayImpact.
     void impact(const ImpactInput& impact);
     void stop();
     bool audible() const { return hasSlot(); }
-    void seed(unsigned s) { m_rng.seed(s); }
 
     // aiEngineAudio::CalculatePitch for a car holding or gaining speed (the
     // band containing the speed; bands are inclusive and the last band is
@@ -409,15 +441,18 @@ private:
     SoundSlot m_engine, m_horn;
     ImpactSounds m_impacts;
     Audio3D m_3d;
-    float m_pan = 0.0f; // last pan (AudImpact +0x1c)
+    // The last attenuation and pan (AudImpact +0x18, +0x1c), used by impacts.
+    float m_attenuation = 1.0f, m_pan = 0.0f;
     float m_pitch = 0.0f;
     float m_speed = 0.0f, m_prevSpeed = 0.0f;
-    // vehHornAudioTiming of the current pattern.
+    // vehHornAudioTiming of the current pattern; every pattern keeps its own
+    // beep index (Reset idles a pattern without rewinding it).
     std::size_t m_pattern = 0;
-    std::size_t m_beep = 0;
+    std::vector<std::size_t> m_beeps;
     int m_hornState = 2; // 0 sounding, 1 pausing, 2 idle
     float m_hornTimer = 0;
-    std::mt19937 m_rng{4242};
+    // vehHornAudio::UpdateDoppler's stored attenuation, doppler and pan.
+    float m_hornAttenuation = 1.0f, m_hornDoppler = 1.0f, m_hornPan = 0.0f;
 };
 
 // Finds a file in aud/cardata/<folder>/ for a car, falling back to default.csv.

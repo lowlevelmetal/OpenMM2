@@ -13,8 +13,12 @@ namespace mm2::audio {
 
 // Finds and caches game sounds by the base names used in the data files
 // ("VWIDLE" -> aud/aud22/engines/vwidle.22k.wav or aud/aud11/vwidle.11k.wav).
-// The retail data ships most effects at 22 kHz and 11 kHz; the original's
-// audio quality option chose between them.
+// The retail data ships most effects at 22 kHz and 11 kHz. MM2 always loads
+// the 22 kHz files (InitAudioManager sets the default sub-path aud22 and
+// extension .22K) and the 11 kHz ones only for speech (subpath aud11); its
+// SOUND QUALITY option only stores a channel count that
+// AudManager::SetNumChannels ignores. Quality::Low (11 kHz first) is an
+// OpenMM2 choice the game does not use.
 class SoundBank {
 public:
     enum class Quality { Low, High }; // Low prefers 11 kHz files, High 22 kHz

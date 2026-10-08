@@ -9,7 +9,6 @@
 #include "audio/game/SoundSlot.h"
 
 #include <memory>
-#include <random>
 #include <string>
 #include <vector>
 
@@ -44,7 +43,6 @@ public:
     const AmbientSoundSet* set(std::string_view name) const;
     // Whether a background set currently holds a sound slot.
     bool audible(std::string_view name) const;
-    void seed(unsigned s) { m_rng.seed(s); }
 
     // Aud3DObject::GetClosestPositionPtr: the VECTORPOINTS entry with the
     // smallest |dx| + |dy| + |dz| to `p` (the first on ties); `p` itself when
@@ -86,7 +84,6 @@ private:
     SoundBank* m_bank = nullptr;
     Object3DManager* m_manager = nullptr;
     Mat34 m_listener = Mat34::identity();
-    std::mt19937 m_rng{1234};
 };
 
 // mmRainAudio: the rain loop (exterior, or interior while the camera is in
@@ -99,7 +96,8 @@ public:
     // mmRainAudio::Update / SetInterior; `sheltered` is the tunnel echo state.
     void update(bool raining, bool interior, bool sheltered, float dt);
     void stop();
-    // True on the update in which the sky should flash (13 s into each cycle).
+    // mmRainAudio +2: set for one update 13 s into each cycle. MM2 tracks it
+    // but nothing reads it: no lightning flash is drawn.
     bool lightningFlash() const { return m_flash; }
 
 private:

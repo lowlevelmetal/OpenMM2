@@ -5,6 +5,7 @@
 // vehHornAudioTiming). See docs/audio.md.
 #include "audio/game/CarAudio.h"
 
+#include "audio/AngelRandom.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
@@ -17,6 +18,8 @@ namespace {
 
 // vehSurfaceAudio::UpdateSurface: no rolling sound at or below 2 m/s.
 constexpr float kSurfaceMinSpeed = 2.0f;
+// vehSurfaceAudio::UpdateAir: the airborne probe covers 3 to 33 m below.
+constexpr float kAirProbeStart = 3.0f, kAirProbeEnd = 33.0f;
 // vehSemiCarAudio::UpdateAirBlow: the air brake hisses once the truck is
 // (almost) stopped.
 constexpr float kAirBlowMaxSpeed = 0.04f;
@@ -24,17 +27,30 @@ constexpr float kAirBlowMaxSpeed = 0.04f;
 constexpr float kSirenMinVolume = 0.75f;
 // vehPoliceCarAudio::UpdateExplosion.
 constexpr float kExplosionMinVolume = 0.85f;
+// vehPoliceCarAudio constructor: the explosion's volume (+0x140).
+constexpr float kExplosionVolume = 1.0f;
 // aiAmbientVehicleAudio::UpdateAudio: a speed drop above this per update is
 // a crash, not braking; the engine pitch then decays by 5% per update.
 constexpr float kAmbientSpeedDrop = 4.0f;
 // vehHornAudio::PlayImpact: RandomizeNumber(10) must reach 7.5.
 constexpr float kImpactHornChance = 7.5f;
+// vehSurfaceAudio::SetWheelPointers: the wobble distance is the rear left
+// wheel's circumference with this value of 2 pi.
+constexpr float kTwoPi = 6.28318f;
 
 // vehSemiCarAudio's air brake latch is a single global in MM2, shared by
 // every semi.
 bool g_airBlown = false;
 // vehPoliceCarAudio::s_iNumCopsPursuingPlayer.
 int g_copsPursuingPlayer = 0;
+
+// The clamps MM2 writes as "low if below, else high if above": when high is
+// below low a value above high gives high.
+float mm2Clamp(float v, float low, float high) {
+    if (!(low <= v))
+        return low;
+    return high < v ? high : v;
+}
 
 std::optional<CarAudioDef> loadCarDef(const vfs::Vfs& vfs, const std::string& path, std::string* error) {
     auto text = readText(vfs, path);
@@ -44,6 +60,14 @@ std::optional<CarAudioDef> loadCarDef(const vfs::Vfs& vfs, const std::string& pa
         return std::nullopt;
     }
     return parseCarAudio(*text, error);
+}
+
+// vehCarAudio::Init: Load(car), else Load("default").
+std::optional<CarAudioDef> loadCarOrDefault(const vfs::Vfs& vfs, std::string_view folder,
+                                            std::string_view car, std::string* error) {
+    if (auto def = loadCarDef(vfs, std::format("aud/cardata/{}/{}.csv", folder, str::lower(car)), error))
+        return def;
+    return loadCarDef(vfs, std::format("aud/cardata/{}/default.csv", folder), error);
 }
 
 template <class T, class Fn>
@@ -64,14 +88,24 @@ const char* surfaceFile(SurfaceWeather w) {
                                     : "aud/cardata/player/default_surfacedry.csv";
 }
 
+// mmGame::Init: "londonpolicesiren" in London, "sfpolicesiren" anywhere else.
+std::string sirenFile(std::string_view city) {
+    const char* table = str::iequals(city, "london") ? "london" : "sf";
+    return std::format("aud/cardata/player/{}policesiren.csv", table);
+}
+
 VehicleTypes loadVehicleTypes(const vfs::Vfs& vfs) {
     if (auto text = readText(vfs, "aud/cardata/shared/vehtypes.csv"))
         return parseVehicleTypes(*text);
     return {};
 }
 
-// vehCarAudio::Init loads suspension and tyre wobble for every car.
-void loadWheelExtras(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, SurfaceSounds& surfaces) {
+void loadSurfaces(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, SurfaceSounds& surfaces,
+                  SurfaceWeather w) {
+    auto parse = [](std::string_view s) { return parseSurfaceTable(s); };
+    if (auto t = loadTable<SurfaceTable>(vfs, surfaceFile(w), parse))
+        surfaces.load(mixer, bank, *t, Bus::Effects);
+    // vehCarAudio::Init loads suspension and tyre wobble for every car.
     if (auto d = loadTable<SuspensionDef>(vfs, "aud/cardata/player/suspensionaudio.csv", parseSuspension))
         surfaces.loadSuspension(mixer, bank, *d, Bus::Effects);
     if (auto d = loadTable<TireWobbleDef>(vfs, "aud/cardata/player/tirewobble.csv", parseTireWobble))
@@ -80,11 +114,20 @@ void loadWheelExtras(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, Surface
 
 int mm2Gear(int gear) { return gear + 1; } // MM2: 0 reverse, 1 neutral, 2 first
 
+int groundedWheels(const CarAudioInputs& in) {
+    int n = 0;
+    for (const auto& w : in.wheels)
+        n += w.onGround ? 1 : 0;
+    return n;
+}
+
 } // namespace
 
-float impactStrength(const Vec3& impulse) { return std::abs(impulse.x) + std::abs(impulse.y) + std::abs(impulse.z); }
+float impactStrength(const Vec3& impulse) {
+    return std::abs(impulse.z) + std::abs(impulse.y) + std::abs(impulse.x);
+}
 
-int surfaceSoundIndex(std::string_view, int mtlSound) { return std::max(mtlSound, 0); }
+int surfaceSoundIndex(std::string_view, int mtlSound) { return mtlSound == -1 ? 0 : mtlSound; }
 
 std::string carAudioPath(const vfs::Vfs& vfs, std::string_view folder, std::string_view car) {
     const std::string specific = std::format("aud/cardata/{}/{}.csv", folder, str::lower(car));
@@ -95,22 +138,25 @@ std::string carAudioPath(const vfs::Vfs& vfs, std::string_view folder, std::stri
 
 // --- EngineSound --------------------------------------------------------------------
 
-EngineSound::Evaluation EngineSound::evaluate(const EngineSampleDef& d, float rpm) {
+EngineSound::Evaluation EngineSound::evaluate(const EngineSampleDef& d, float rpm, bool silenced) {
     Evaluation e;
-    // ParseCSVBuffer precomputes the slopes (0 for an empty range).
+    // ParseCSVBuffer precomputes the slopes (0 for an empty range) from the
+    // table; Silence later zeroes only the minimum and maximum.
     const float inRange = d.fadeInEndRpm - d.fadeInStartRpm;
     const float outRange = d.fadeOutEndRpm - d.fadeOutStartRpm;
     const float inSlope = (d.maxVolume - d.minVolume) * (inRange != 0.0f ? 1.0f / inRange : 0.0f);
     const float outSlope = (d.maxVolume - d.minVolume) * (outRange != 0.0f ? 1.0f / outRange : 0.0f);
+    const float minVolume = silenced ? 0.0f : d.minVolume;
+    const float maxVolume = silenced ? 0.0f : d.maxVolume;
     // CalculateVolume.
     if (rpm <= d.fadeInStartRpm || d.fadeOutEndRpm <= rpm)
-        e.volume = d.minVolume;
+        e.volume = minVolume;
     else if (rpm < d.fadeInEndRpm)
-        e.volume = (rpm - d.fadeInStartRpm) * inSlope + d.minVolume;
+        e.volume = (rpm - d.fadeInStartRpm) * inSlope + minVolume;
     else if (rpm <= d.fadeOutStartRpm)
-        e.volume = d.maxVolume;
+        e.volume = maxVolume;
     else
-        e.volume = (d.fadeOutEndRpm - rpm) * outSlope + d.minVolume;
+        e.volume = (d.fadeOutEndRpm - rpm) * outSlope + minVolume;
     // CalculatePitch.
     const float pitchRange = d.pitchEndRpm - d.pitchStartRpm;
     const float pitchSlope = (d.maxPitch - d.minPitch) * (pitchRange != 0.0f ? 1.0f / pitchRange : 0.0f);
@@ -120,7 +166,7 @@ EngineSound::Evaluation EngineSound::evaluate(const EngineSampleDef& d, float rp
         e.pitch = d.maxPitch;
     else
         e.pitch = rpm * pitchSlope + d.minPitch;
-    e.audible = e.volume >= kSilentVolume;
+    e.audible = !(e.volume < kSilentVolume);
     return e;
 }
 
@@ -132,26 +178,45 @@ void EngineSound::load(Mixer& mixer, SoundBank& bank, const std::vector<EngineSa
     m_states.assign(samples.size(), {});
     m_silenced = false;
     for (std::size_t i = 0; i < samples.size(); ++i)
-        m_samples[i].load(mixer, bank, samples[i].wave, bus, 5);
+        m_samples[i].load(mixer, bank, samples[i].wave, bus);
 }
 
 void EngineSound::silence(bool on) { m_silenced = on; }
 
-void EngineSound::update(float rpm, float volumeScale, float pitchScale, float pan) {
+void EngineSound::update(float rpm) {
+    // vehEngineSampleWrapper::UpdateRPM(rpm).
     for (std::size_t i = 0; i < m_defs.size(); ++i) {
-        EngineSampleDef def = m_defs[i];
-        if (m_silenced)
-            def.minVolume = def.maxVolume = 0.0f; // vehEngineSampleWrapper::Silence
-        Evaluation e = evaluate(def, rpm);
+        const Evaluation e = evaluate(m_defs[i], rpm, m_silenced);
         m_states[i] = e;
-        // vehEngineSampleWrapper::UpdateRPM: the cut-off uses the table volume.
+        auto& s = m_samples[i];
         if (!e.audible) {
-            if (m_samples[i].playing())
-                m_samples[i].stop();
+            if (s.playing())
+                s.stop();
             continue;
         }
-        m_samples[i].setPan(pan);
-        m_samples[i].playLoop(e.volume * volumeScale, e.pitch * pitchScale);
+        s.setVolume(e.volume);
+        s.setPitch(e.pitch);
+        if (!s.playing())
+            s.playLoop();
+    }
+}
+
+void EngineSound::update3D(float rpm, float attenuation, float doppler, float pan) {
+    // vehEngineSampleWrapper::UpdateRPM(rpm, volume, frequency, pan).
+    for (std::size_t i = 0; i < m_defs.size(); ++i) {
+        const Evaluation e = evaluate(m_defs[i], rpm, m_silenced);
+        m_states[i] = e;
+        auto& s = m_samples[i];
+        if (!e.audible) {
+            if (s.playing())
+                s.stop();
+            continue;
+        }
+        s.setVolume(e.volume * attenuation);
+        s.setPitch(e.pitch * doppler);
+        s.setPan(pan);
+        if (!s.playing())
+            s.playLoop();
     }
 }
 
@@ -162,7 +227,9 @@ void EngineSound::stop() {
 
 // --- SurfaceSounds ------------------------------------------------------------------
 
-bool SurfaceSounds::skidInRange(const SkidSampleDef& skid, float slip) { return skid.min <= slip && slip <= skid.max; }
+bool SurfaceSounds::skidInRange(const SkidSampleDef& skid, float slip) {
+    return !(slip < skid.min || skid.max < slip);
+}
 
 float SurfaceSounds::skidVolumeFor(const SurfaceSoundDef& def, float slip) {
     return slip * (def.maxSkidVolume - def.minSkidVolume) + def.minSkidVolume;
@@ -189,10 +256,13 @@ void SurfaceSounds::load(Mixer& mixer, SoundBank& bank, const SurfaceTable& tabl
     for (std::size_t i = 0; i < table.surfaces.size(); ++i) {
         Entry& e = m_entries[i];
         e.def = table.surfaces[i];
-        e.surface.load(mixer, bank, e.def.wave, bus, 3);
+        // vehSurfaceAudioData::ParseCSVBuffer: NOSOUND (exact case) has no sample.
+        if (e.def.hasSurfaceSound())
+            e.surface.load(mixer, bank, e.def.wave, bus);
         e.skids.resize(e.def.skids.size());
         for (std::size_t k = 0; k < e.def.skids.size(); ++k)
-            e.skids[k].load(mixer, bank, e.def.skids[k].wave, bus, 3);
+            if (e.def.skids[k].wave != "NOSOUND")
+                e.skids[k].load(mixer, bank, e.def.skids[k].wave, bus);
     }
     m_tunnelIndex = table.tunnelIndex;
     m_surface = 0;
@@ -203,12 +273,12 @@ void SurfaceSounds::load(Mixer& mixer, SoundBank& bank, const SurfaceTable& tabl
 
 void SurfaceSounds::loadSuspension(Mixer& mixer, SoundBank& bank, const SuspensionDef& def, Bus bus) {
     m_suspensionDef = def;
-    m_suspension.load(mixer, bank, def.wave, bus, 2);
+    m_suspension.load(mixer, bank, def.wave, bus);
 }
 
 void SurfaceSounds::loadTireWobble(Mixer& mixer, SoundBank& bank, const TireWobbleDef& def, Bus bus) {
     m_wobbleDef = def;
-    m_wobble.load(mixer, bank, def.wave, bus, 2);
+    m_wobble.load(mixer, bank, def.wave, bus);
     m_wobbleDistance = 0.0f;
 }
 
@@ -247,7 +317,8 @@ bool SurfaceSounds::skidPlaying(int k) const {
 
 bool SurfaceSounds::surfaceChanged(const CarAudioInputs& in) const {
     // Either front wheel still on the current surface keeps it.
-    return in.wheels[0].surface != m_surface && in.wheels[1].surface != m_surface;
+    return surfaceSoundIndex({}, in.wheels[0].surface) != m_surface &&
+           surfaceSoundIndex({}, in.wheels[1].surface) != m_surface;
 }
 
 void SurfaceSounds::selectSurface(const CarAudioInputs& in, bool positioned) {
@@ -266,6 +337,11 @@ void SurfaceSounds::selectSurface(const CarAudioInputs& in, bool positioned) {
         m_surface = 0;
 }
 
+void SurfaceSounds::silence() {
+    stopSurface(m_surface);
+    stopSkid(m_surface);
+}
+
 void SurfaceSounds::stop() {
     for (auto& e : m_entries) {
         e.surface.stop();
@@ -278,29 +354,34 @@ void SurfaceSounds::stop() {
 }
 
 void SurfaceSounds::updateSurface(const CarAudioInputs& in, bool positioned, float attenuation, float pan) {
-    int grounded = 0;
-    for (const auto& w : in.wheels)
-        grounded += w.onGround ? 1 : 0;
+    const int grounded = groundedWheels(in);
     if (grounded < 2) {
         stopSurface(m_surface);
         if (positioned)
             return;
         if (grounded == 0) {
-            // UpdateAir: "big air" once the ground is 3 m or more below.
-            if (in.groundBelow && *in.groundBelow >= 3.0f && *in.groundBelow <= 33.0f)
+            // UpdateAir: "big air" once the probe from 3 to 33 m below finds
+            // something; nothing else clears it.
+            if (in.groundBelow && kAirProbeStart <= *in.groundBelow && *in.groundBelow <= kAirProbeEnd)
                 m_airborne = true;
         } else {
             m_airborne = false;
         }
         return;
     }
-    m_airborne = false;
-    if (in.speed > kSurfaceMinSpeed && !skidPlayingOn(m_surface)) {
+    if (!positioned)
+        m_airborne = false;
+    if (kSurfaceMinSpeed < in.speed && !skidPlayingOn(m_surface)) {
         selectSurface(in, positioned);
         Entry* e = entry(m_surface);
         if (e && e->surface.valid()) {
-            e->surface.setPan(pan);
-            e->surface.playLoop(surfaceVolumeFor(e->def, in.speed) * attenuation, surfacePitchFor(e->def, in.speed));
+            // vehSurfaceAudioData::UpdateSurface: frequency, volume, pan, play.
+            e->surface.setPitch(surfacePitchFor(e->def, in.speed));
+            e->surface.setVolume(surfaceVolumeFor(e->def, in.speed) * attenuation);
+            if (positioned)
+                e->surface.setPan(pan);
+            if (!e->surface.playing())
+                e->surface.playLoop();
             m_previous = m_surface;
             return;
         }
@@ -310,8 +391,11 @@ void SurfaceSounds::updateSurface(const CarAudioInputs& in, bool positioned, flo
 
 void SurfaceSounds::updateSkid(const CarAudioInputs& in, float attenuation, float pan) {
     float slip = 0.0f;
-    for (const auto& w : in.wheels)
-        slip = std::max(slip, w.slip);
+    if (0.0f < in.wheels[0].slip)
+        slip = in.wheels[0].slip;
+    for (std::size_t w = 1; w < in.wheels.size(); ++w)
+        if (slip < in.wheels[w].slip)
+            slip = in.wheels[w].slip;
     if (in.inTunnel) {
         m_surface = m_tunnelIndex;
     } else if (surfaceChanged(in)) {
@@ -321,7 +405,8 @@ void SurfaceSounds::updateSkid(const CarAudioInputs& in, float attenuation, floa
             m_surface = 0;
     }
     Entry* e = entry(m_surface);
-    if (slip > 0.0f) {
+    if (0.0f < slip) {
+        // vehSurfaceAudioData::UpdateSkid.
         if (e) {
             for (std::size_t k = 0; k < e->skids.size(); ++k) {
                 auto& s = e->skids[k];
@@ -330,8 +415,10 @@ void SurfaceSounds::updateSkid(const CarAudioInputs& in, float attenuation, floa
                         s.stop();
                     continue;
                 }
+                s.setVolume(skidVolumeFor(e->def, slip) * attenuation);
                 s.setPan(pan);
-                s.playLoop(skidVolumeFor(e->def, slip) * attenuation, 1.0f);
+                if (!s.playing())
+                    s.playLoop();
             }
         }
         m_skidding = true;
@@ -349,20 +436,16 @@ void SurfaceSounds::updateSuspension(const CarAudioInputs& in, bool positioned, 
     if (!m_suspensionDef || !m_suspension.valid())
         return;
     const auto& d = *m_suspensionDef;
-    float average = 0.0f;
-    int grounded = 0;
-    for (const auto& w : in.wheels) {
-        average += w.suspensionSpeed;
-        grounded += w.onGround ? 1 : 0;
-    }
-    average *= 0.25f;
-    if (std::abs(d.minVelocity) > average || grounded < 2 || m_suspension.playing())
+    const float average = (in.wheels[0].suspensionSpeed + in.wheels[1].suspensionSpeed +
+                           in.wheels[2].suspensionSpeed + in.wheels[3].suspensionSpeed) *
+                          0.25f;
+    if (!(std::abs(d.minVelocity) <= average) || groundedWheels(in) < 2 || m_suspension.playing())
         return;
-    const float inv = d.volumeDivisor != 0.0f ? 1.0f / d.volumeDivisor : 0.0f;
-    const float volume = std::clamp(average * inv, d.minVolume, std::max(d.minVolume, d.maxVolume));
+    const float volume = mm2Clamp(average * d.volumeScale, d.minVolume, d.maxVolume);
+    m_suspension.setVolume(volume * attenuation);
     if (positioned)
         m_suspension.setPan(pan);
-    m_suspension.playOnce(volume * attenuation);
+    m_suspension.playOnce();
 }
 
 void SurfaceSounds::updateTireWobble(const CarAudioInputs& in, float dt, bool positioned, float attenuation,
@@ -370,29 +453,32 @@ void SurfaceSounds::updateTireWobble(const CarAudioInputs& in, float dt, bool po
     if (!m_wobbleDef || !m_wobble.valid())
         return;
     float damage = in.tireWobble;
-    if (damage <= 0.05f)
+    if (!(0.0f <= damage))
         return;
-    damage = std::min(damage, 1.0f);
-    // One thump per revolution of the rear left wheel.
-    const float travelled = in.speed * dt + m_wobbleDistance;
-    const float circumference = in.wheelRadius * 6.28318f;
-    if (travelled < circumference) {
-        m_wobbleDistance = travelled;
-        return;
-    }
-    if (m_wobble.playing())
-        return; // the distance is not reset: the thump comes when the last one ends
-    const auto& d = *m_wobbleDef;
-    const float volume = std::clamp(damage, d.minVolume, std::max(d.minVolume, d.maxVolume));
-    const float inv = d.pitchDivisor != 0.0f ? 1.0f / d.pitchDivisor : 0.0f;
-    if (positioned) {
-        m_wobble.setPan(pan);
-        m_wobble.playOnce(volume * attenuation, m_wobble.pitch());
+    if (damage <= 1.0f) {
+        if (damage <= 0.05f)
+            return;
     } else {
-        const float pitch = std::clamp(in.speed * inv, d.minPitch, std::max(d.minPitch, d.maxPitch));
-        m_wobble.playOnce(volume, pitch);
+        damage = 1.0f;
     }
-    m_wobbleDistance = 0.0f;
+    // One thump per revolution of the rear left wheel.
+    float travelled = in.speed * dt + m_wobbleDistance;
+    if (in.wheelRadius * kTwoPi <= travelled) {
+        if (m_wobble.playing())
+            return; // the distance is not stored: the thump comes when the last one ends
+        const auto& d = *m_wobbleDef;
+        const float volume = mm2Clamp(damage, d.minVolume, d.maxVolume);
+        if (positioned) {
+            m_wobble.setVolume(volume * attenuation);
+            m_wobble.setPan(pan);
+        } else {
+            m_wobble.setVolume(volume);
+            m_wobble.setPitch(mm2Clamp(in.speed * d.pitchScale, d.minPitch, d.maxPitch));
+        }
+        m_wobble.playOnce();
+        travelled = 0.0f;
+    }
+    m_wobbleDistance = travelled;
 }
 
 void SurfaceSounds::update(const CarAudioInputs& in, float dt) {
@@ -429,39 +515,48 @@ void ImpactSounds::load(Mixer& mixer, SoundBank& bank, const ImpactTable& table,
         out.defs = b.samples;
         out.slots.resize(b.samples.size());
         out.volumes.assign(b.samples.size(), 0.0f);
-        for (std::size_t i = 0; i < b.samples.size(); ++i)
-            out.slots[i].load(mixer, bank, b.samples[i].wave, bus, 4);
+        for (std::size_t i = 0; i < b.samples.size(); ++i) {
+            out.slots[i].load(mixer, bank, b.samples[i].wave, bus);
+            // AudImpactData::AssignSounds sets the frequency once.
+            if (b.samples[i].frequency != 1.0f)
+                out.slots[i].setPitch(b.samples[i].frequency);
+        }
         m_bangers.push_back(std::move(out));
     }
     m_last = -1;
 }
 
 void ImpactSounds::play(const ImpactInput& impact, float attenuation, float pan) {
-    if (m_bangers.empty())
+    // AudImpact::Play(force, index): -1 plays nothing.
+    if (impact.audioId == -1 || m_bangers.empty())
         return;
-    int index = impact.audioId;
-    if (index < 0 || static_cast<std::size_t>(index) >= m_bangers.size())
-        index = 0;
-    m_last = index;
-    Banger& b = m_bangers[static_cast<std::size_t>(index)];
+    // The index is kept as given; GetAudImpactDataPtr maps an out-of-range one
+    // to the first banger.
+    m_last = impact.audioId;
+    const bool inRange = impact.audioId >= 0 && static_cast<std::size_t>(impact.audioId) < m_bangers.size();
+    const std::size_t index = inRange ? static_cast<std::size_t>(impact.audioId) : 0;
+    Banger& b = m_bangers[index];
     for (std::size_t i = 0; i < b.defs.size(); ++i) {
         const auto& d = b.defs[i];
         if (impact.force < d.minForce || d.maxForce < impact.force)
             continue;
+        // AudImpactData::PlaySample.
         auto& slot = b.slots[i];
         if (!slot.valid() || slot.playing())
             continue;
         const float volume = volumeFor(d, impact.force);
+        slot.setVolume(volume * attenuation);
         slot.setPan(pan);
-        slot.playOnce(volume * attenuation, d.frequency);
+        slot.playOnce();
         b.volumes[i] = volume;
     }
 }
 
 void ImpactSounds::updateAttenuation(float attenuation, float pan) {
-    if (m_last < 0 || static_cast<std::size_t>(m_last) >= m_bangers.size())
+    if (m_last == -1 || m_bangers.empty())
         return;
-    Banger& b = m_bangers[static_cast<std::size_t>(m_last)];
+    const std::size_t index = m_last < 0 || static_cast<std::size_t>(m_last) >= m_bangers.size() ? 0 : m_last;
+    Banger& b = m_bangers[index];
     for (std::size_t i = 0; i < b.slots.size(); ++i) {
         if (!b.slots[i].playing())
             continue;
@@ -487,16 +582,19 @@ void SirenPlayer::load(Mixer& mixer, SoundBank& bank, const SirenTable& table, B
     m_samples.resize(table.samples.size());
     for (std::size_t i = 0; i < table.samples.size(); ++i) {
         m_samples[i].def = table.samples[i];
-        m_samples[i].slot.load(mixer, bank, table.samples[i].wave, bus, 6);
+        m_samples[i].slot.load(mixer, bank, table.samples[i].wave, bus);
         m_samples[i].slot.setVolume(table.samples[i].volume); // AssignSounds
         m_samples[i].step = 0;
     }
-    m_explosion.load(mixer, bank, table.explosion, bus, 6);
+    m_explosion.load(mixer, bank, table.explosion, bus);
+    m_explosion.setVolume(kExplosionVolume);
     m_current = 0;
     m_state = 0;
     m_timer = 0;
     m_damaged = false;
     m_damageTime = 0.01f;
+    // ReadSirenData leaves the last sample's volume in +0x144.
+    m_volume = m_samples.empty() ? 0.0f : m_samples.back().def.volume;
     // Every vehPoliceCarAudio constructor resets the pursuit count.
     g_copsPursuingPlayer = 0;
 }
@@ -505,53 +603,62 @@ void SirenPlayer::start(bool pursuingPlayer, bool audible, float attenuation, fl
     if (m_state != 0 || m_samples.empty())
         return;
     m_state = pursuingPlayer ? 1 : 2;
-    Sample& s = m_samples[static_cast<std::size_t>(m_current)];
+    Sample& s = current();
     m_volume = s.def.volume;
     if (m_state == 1)
         ++g_copsPursuingPlayer;
-    if (audible && !s.slot.playing())
-        s.slot.playLoop(attenuation * s.def.volume, doppler);
+    if (audible && !s.slot.playing()) {
+        // The player's car passes attenuation 1 and frequency 1.
+        s.slot.setVolume(attenuation * s.def.volume);
+        s.slot.setPitch(doppler);
+        s.slot.playLoop();
+    }
 }
 
 void SirenPlayer::stop() {
     if (g_copsPursuingPlayer > 0 && m_state == 1)
         --g_copsPursuingPlayer;
     m_state = 0;
-    if (!m_samples.empty())
-        m_samples[static_cast<std::size_t>(m_current)].slot.stop();
+    if (!m_samples.empty() && current().slot.playing())
+        current().slot.stop();
 }
 
 void SirenPlayer::silence() {
     for (auto& s : m_samples)
-        s.slot.stop();
-    m_explosion.stop();
+        if (s.slot.playing())
+            s.slot.stop();
 }
 
 void SirenPlayer::stopAll() {
     stop();
     silence();
+    m_explosion.stop();
 }
 
 void SirenPlayer::fluctuate(float dt) {
+    // FluctuateSiren.
     if (m_samples.size() == 1)
         return;
-    Sample& s = m_samples[static_cast<std::size_t>(m_current)];
+    Sample& s = current();
     if (s.def.steps.empty())
         return;
     const SirenStep step = s.def.steps[s.step];
     if (step.playTime <= m_timer) {
-        s.step = (s.step + 1) % s.def.steps.size();
-        s.slot.stop();
+        if (++s.step >= s.def.steps.size())
+            s.step = 0;
+        if (s.slot.playing())
+            s.slot.stop();
+        // OpenMM2 keeps an out-of-range "next index" inside the table.
         m_current = std::clamp(step.next, 0, static_cast<int>(m_samples.size()) - 1);
-        Sample& next = m_samples[static_cast<std::size_t>(m_current)];
-        next.slot.playLoop(next.slot.volume(), next.slot.pitch());
+        current().slot.playLoop();
         m_timer = 0.0f;
     }
     m_timer += dt;
 }
 
 void SirenPlayer::damage(float attenuation, float doppler) {
-    Sample& s = m_samples[static_cast<std::size_t>(m_current)];
+    // DamageSiren.
+    Sample& s = current();
     float pitch;
     if (m_damageTime > 1.0f) {
         if (m_damageTime > 1.75f) {
@@ -576,60 +683,67 @@ void SirenPlayer::damage(float attenuation, float doppler) {
 }
 
 void SirenPlayer::update(float dt) {
+    // vehPoliceCarAudio::UpdateAudioNon3D: UpdateSiren() while the siren is on.
     if (m_state == 0 || m_samples.empty())
         return;
     m_dt = dt;
     fluctuate(dt);
-    // The player's car never explodes (only aiPoliceOfficer::PerpEscapes
-    // calls PlayExplosion); a non-positioned object's attenuation is 0.
+    // A non-positioned object's attenuation (+0xc) stays 0; the player's car
+    // never explodes anyway (only aiPoliceOfficer::PerpEscapes calls
+    // PlayExplosion).
     if (m_damaged)
         damage(0.0f, 1.0f);
-    if (m_state == 0)
-        return;
-    Sample& s = m_samples[static_cast<std::size_t>(m_current)];
-    if (!s.slot.playing())
-        s.slot.playLoop(s.slot.volume(), s.slot.pitch());
+    if (!current().slot.playing())
+        current().slot.playLoop();
 }
 
 void SirenPlayer::update3D(float dt, float attenuation, float doppler, float pan) {
+    // UpdateSiren(volume, frequency, pan), then UpdateExplosion. Its fading
+    // branch (+0x152) is unreachable: PerpEscapes sets the flag and the
+    // StopSiren that follows clears it.
     if (m_state == 0 || m_samples.empty())
         return;
     m_dt = dt;
     fluctuate(dt);
-    Sample& s = m_samples[static_cast<std::size_t>(m_current)];
+    Sample& s = current();
     if (!m_damaged) {
-        s.slot.setVolume(std::max(s.def.volume * attenuation, kSirenMinVolume));
+        float volume = s.def.volume * attenuation;
+        if (volume < kSirenMinVolume)
+            volume = kSirenMinVolume;
+        s.slot.setVolume(volume);
         s.slot.setPitch(doppler);
     } else {
         damage(attenuation, doppler);
-        if (m_state == 0)
-            return;
     }
-    s.slot.setPan(pan);
     if (!s.slot.playing())
-        s.slot.playLoop(s.slot.volume(), s.slot.pitch());
-    // UpdateExplosion.
+        s.slot.playLoop();
+    s.slot.setPan(pan);
     if (m_explosion.playing()) {
-        m_explosion.setVolume(std::max(attenuation, kExplosionMinVolume));
+        float volume = attenuation * kExplosionVolume;
+        if (volume < kExplosionMinVolume)
+            volume = kExplosionMinVolume;
+        m_explosion.setVolume(volume);
         m_explosion.setPan(pan);
     }
 }
 
-void SirenPlayer::explode(bool audible, float attenuation) {
-    if (audible && m_explosion.valid() && !m_explosion.playing())
-        m_explosion.playOnce(attenuation * 1.0f);
+void SirenPlayer::explode(bool audible, float attenuation, float doppler) {
+    // PlayExplosion.
+    if (audible && m_explosion.valid() && !m_explosion.playing()) {
+        m_explosion.setVolume(attenuation * kExplosionVolume);
+        m_explosion.playOnce();
+    }
     if (m_samples.empty())
         return;
-    m_volume = m_samples[static_cast<std::size_t>(m_current)].def.volume;
+    m_volume = current().def.volume;
     // The pursuit count drops here and again in the StopSiren that follows
     // (aiPoliceOfficer::PerpEscapes): MM2 counts an exploding cop twice.
     if (g_copsPursuingPlayer > 0 && m_state == 1)
         --g_copsPursuingPlayer;
-    if (audible && m_samples[static_cast<std::size_t>(m_current)].slot.valid()) {
+    if (audible && current().slot.valid()) {
         m_damaged = true;
         m_damageTime = 0.01f;
-        m_dt = 0.0f;
-        damage(attenuation, 1.0f);
+        damage(attenuation, doppler);
     } else {
         m_state = 0;
     }
@@ -640,21 +754,18 @@ void SirenPlayer::explode(bool audible, float attenuation) {
 bool PlayerCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view car,
                           const CarAudioOptions& options, std::string* error) {
     stop();
-    // vehCarAudio::Load falls back to default.csv.
-    auto def = loadCarDef(vfs, carAudioPath(vfs, "player", car), error);
+    auto def = loadCarOrDefault(vfs, "player", car, error);
     if (!def)
         return false;
     m_def = std::move(*def);
     m_engine.load(mixer, bank, m_def.engine, Bus::Engine);
-    m_horn.load(mixer, bank, m_def.horn, Bus::Effects, 5);
-    m_horn.setVolume(m_def.hornVolume); // SetNon3DParams
-    m_clutch.load(mixer, bank, m_def.clutch, Bus::Engine, 5);
+    m_horn.load(mixer, bank, m_def.horn, Bus::Effects);
+    m_clutch.load(mixer, bank, m_def.clutch, Bus::Engine);
+    // vehCarAudio::SetNon3DParams.
+    m_horn.setVolume(m_def.hornVolume);
+    m_horn.setPitch(1.0f);
     m_clutch.setVolume(m_def.clutchVolume);
-
-    if (auto t = loadTable<SurfaceTable>(vfs, surfaceFile(options.weather),
-                                         [](std::string_view s) { return parseSurfaceTable(s); }))
-        m_surfaces.load(mixer, bank, *t, Bus::Effects);
-    loadWheelExtras(vfs, bank, mixer, m_surfaces);
+    loadSurfaces(vfs, bank, mixer, m_surfaces, options.weather);
     if (auto t = loadTable<ImpactTable>(vfs, "aud/cardata/player/default_impacts.csv",
                                         [](std::string_view s) { return parseImpactTable(s); }))
         m_impacts.load(mixer, bank, *t, Bus::Effects);
@@ -668,16 +779,18 @@ bool PlayerCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, st
     if (types.isFreight(car)) {
         m_semi = loadTable<SemiDef>(vfs, "aud/cardata/shared/semidata.csv", parseSemiData);
         if (m_semi) {
-            m_reverseBeep.load(mixer, bank, m_semi->reverse, Bus::Effects, 4);
-            m_airBlow.load(mixer, bank, m_semi->airBlow, Bus::Effects, 4);
+            m_reverseBeep.load(mixer, bank, m_semi->reverse, Bus::Effects);
+            m_airBlow.load(mixer, bank, m_semi->airBlow, Bus::Effects);
             // vehSemiCarAudio::SetNon3DParams gives the air brake the reverse
             // beeper's volume.
             m_reverseBeep.setVolume(m_semi->reverseVolume);
+            m_reverseBeep.setPitch(1.0f);
             m_airBlow.setVolume(m_semi->reverseVolume);
+            m_airBlow.setPitch(1.0f);
         }
     } else if (types.isPolice(car)) {
-        const std::string path = std::format("aud/cardata/player/{}policesiren.csv", str::lower(options.city));
-        if (auto t = loadTable<SirenTable>(vfs, path, [](std::string_view s) { return parseSirenTable(s); })) {
+        if (auto t = loadTable<SirenTable>(vfs, sirenFile(options.city),
+                                           [](std::string_view s) { return parseSirenTable(s); })) {
             m_siren.emplace();
             m_siren->load(mixer, bank, *t, Bus::Effects);
         }
@@ -694,7 +807,7 @@ void PlayerCarAudio::updateHorn(bool pressed) {
     // container never plays a police car's horn.
     if (!pressed) {
         if (!m_siren && m_hornPressed && m_horn.playing())
-            m_horn.stop();
+            m_horn.stop(); // vehCarAudio::StopHorn
         m_hornPressed = false;
         return;
     }
@@ -705,55 +818,59 @@ void PlayerCarAudio::updateHorn(bool pressed) {
             else
                 m_siren->start(false);
         } else if (m_horn.valid() && !m_horn.playing()) {
-            m_horn.playLoop(m_def.hornVolume, 1.0f); // PlayHorn restarts from the beginning
+            m_horn.playLoop(); // vehCarAudio::PlayHorn
         }
     }
     m_hornPressed = true;
 }
 
 void PlayerCarAudio::update(const CarAudioInputs& in, float dt) {
-    // vehCarAudio::UpdateGear: the clutch sample plays whenever the gear
-    // changes into or out of reverse (MM2 gear 0). The first update counts as
-    // a change from "no gear" (-1), so starting in reverse plays it too.
-    const int gear = mm2Gear(in.gear);
-    if (m_clutch.valid() && ((m_prevGear == 0) != (gear == 0)))
-        m_clutch.playOnce(m_def.clutchVolume);
-    m_prevGear = gear;
-
-    const float rpm = in.engineRunning ? std::max(in.rpm, in.idleRpm) : 0.0f;
-    m_engine.update(rpm);
-    m_surfaces.update(in, dt);
+    // vehCarDamage::ApplyImpact plays the impacts during the simulation, before
+    // the audio update.
     for (const auto& impact : in.impacts)
         m_impacts.play(impact);
+
+    // vehCarAudio::UpdateAudioNon3D (or the police / semi variant).
+    // UpdateGear: the clutch sample plays whenever the gear changes into or out
+    // of reverse (MM2 gear 0). The first update counts as a change from "no
+    // gear" (-1), so starting in reverse plays it too.
+    const int gear = mm2Gear(in.gear);
+    if (m_clutch.valid() && ((m_prevGear == 0) != (gear == 0)))
+        m_clutch.playOnce();
+    m_prevGear = gear;
+
+    m_engine.update(in.rpm);
+    m_surfaces.update(in, dt);
 
     if (m_semi) {
         // vehSemiCarAudio::UpdateReverse.
         if (gear == 0) {
             if (!m_reverseBeep.playing())
-                m_reverseBeep.playLoop(m_semi->reverseVolume, 1.0f);
+                m_reverseBeep.playLoop();
         } else if (m_reverseBeep.playing()) {
             m_reverseBeep.stop();
         }
         // UpdateAirBlow: "braking" is vehSurfaceAudio::IsBrakeing, which tests
         // the front wheels' BrakeCoef tuning (> 0.5), not the pedal. Every
         // retail semi has 0.5, so the air brake never sounds.
-        const bool braking = in.wheels[0].brakeCoef > 0.5f && in.wheels[1].brakeCoef > 0.5f;
-        if (in.speed > kAirBlowMaxSpeed) {
+        const bool braking = 0.5f < in.wheels[0].brakeCoef && 0.5f < in.wheels[1].brakeCoef;
+        if (kAirBlowMaxSpeed < in.speed) {
             if (!braking)
                 g_airBlown = false;
         } else if (braking) {
             if (!g_airBlown) {
-                m_airBlow.playOnce(m_semi->reverseVolume);
+                m_airBlow.playOnce();
                 g_airBlown = true;
             }
         } else {
             g_airBlown = false;
         }
     }
-
-    updateHorn(in.horn);
     if (m_siren)
         m_siren->update(dt);
+
+    // mmGame::UpdateHorn follows the controls.
+    updateHorn(in.horn);
 }
 
 void PlayerCarAudio::stop() {
@@ -772,7 +889,7 @@ bool OpponentCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, 
                             const CarAudioOptions& options, std::string* error) {
     stop();
     setManager(options.manager);
-    auto def = loadCarDef(vfs, carAudioPath(vfs, "opponent", car), error);
+    auto def = loadCarOrDefault(vfs, "opponent", car, error);
     if (!def)
         return false;
     m_def = std::move(*def);
@@ -782,24 +899,29 @@ bool OpponentCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, 
     m_hasHorn = options.horn;
     m_horn = SoundSlot();
     if (m_hasHorn)
-        m_horn.load(mixer, bank, m_def.horn, Bus::Effects, 2);
-    if (auto t = loadTable<SurfaceTable>(vfs, surfaceFile(options.weather),
-                                         [](std::string_view s) { return parseSurfaceTable(s); }))
-        m_surfaces.load(mixer, bank, *t, Bus::Effects);
-    loadWheelExtras(vfs, bank, mixer, m_surfaces);
+        m_horn.load(mixer, bank, m_def.horn, Bus::Effects);
+    loadSurfaces(vfs, bank, mixer, m_surfaces, options.weather);
     if (auto t = loadTable<ImpactTable>(vfs, "aud/cardata/opponent/default_impacts.csv",
                                         [](std::string_view s) { return parseImpactTable(s); }))
         m_impacts.load(mixer, bank, *t, Bus::Effects);
 
-    // vehCarAudioContainer::InitPolice for vehtypes.csv's police list (the
-    // caller's flag also counts): the city's siren table from the player
-    // folder; aud/cardata/opponent/policesiren.csv is never used.
+    // vehCarAudioContainer: semis first, then police (InitPolice), for the
+    // names in vehtypes.csv. `police` is OpenMM2's flag for AI police cars
+    // whose model is not in the list; MM2 goes by the name alone.
     m_siren.reset();
+    m_semi.reset();
+    m_reverseBeep = SoundSlot();
+    m_airBlow = SoundSlot();
     const VehicleTypes types = loadVehicleTypes(vfs);
-    const bool isPolice = police || (!types.isFreight(car) && types.isPolice(car));
-    if (isPolice) {
-        const std::string path = std::format("aud/cardata/player/{}policesiren.csv", str::lower(options.city));
-        if (auto t = loadTable<SirenTable>(vfs, path, [](std::string_view s) { return parseSirenTable(s); })) {
+    if (types.isFreight(car)) {
+        m_semi = loadTable<SemiDef>(vfs, "aud/cardata/shared/semidata.csv", parseSemiData);
+        if (m_semi) {
+            m_reverseBeep.load(mixer, bank, m_semi->reverse, Bus::Effects);
+            m_airBlow.load(mixer, bank, m_semi->airBlow, Bus::Effects);
+        }
+    } else if (police || types.isPolice(car)) {
+        if (auto t = loadTable<SirenTable>(vfs, sirenFile(options.city),
+                                           [](std::string_view s) { return parseSirenTable(s); })) {
             m_siren.emplace();
             m_siren->load(mixer, bank, *t, Bus::Effects);
         }
@@ -808,19 +930,26 @@ bool OpponentCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, 
     m_priority = m_siren ? 7 : 9;
     m_3d = Audio3D();
     m_3d.setDropOffs(0.0f, kMaxDistance);
-    m_prevSiren = m_prevWrecked = false;
+    m_attenuation = 0.0f;
+    m_doppler = 1.0f;
+    m_pan = 0.0f;
+    m_hornPressed = m_prevSiren = m_prevWrecked = false;
     return true;
 }
 
 void OpponentCarAudio::silence() {
-    // vehCarAudio::UnAssignSounds: the sounds stop, the siren keeps its state.
+    // vehCarAudio::UnAssignSounds (and the semi / police variants): the horn,
+    // engine, surface and siren stop; impacts, thumps and an explosion play out.
     m_engine.stop();
-    m_surfaces.stop();
-    m_impacts.stop();
-    m_horn.stop();
+    m_surfaces.silence();
+    if (m_horn.playing())
+        m_horn.stop();
     if (m_siren)
         m_siren->silence();
-    m_3d.resetDistance();
+    if (m_reverseBeep.playing())
+        m_reverseBeep.stop();
+    if (m_airBlow.playing())
+        m_airBlow.stop();
 }
 
 void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Vec3& listener) {
@@ -831,7 +960,12 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Vec3& li
 
 void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& listener) {
     const Vec3 position = in.transform.m3;
-    m_3d.updateDistance(position, listener.m3);
+
+    // vehCarDamage::ApplyImpact during the simulation: only a car holding a
+    // slot has its AudImpact; the sounds use the last attenuation and pan.
+    if (hasSlot())
+        for (const auto& impact : in.impacts)
+            m_impacts.play(impact, m_attenuation, m_pan);
 
     // aiPoliceOfficer::StartSiren / StopSiren / PerpEscapes change the siren
     // state whether or not the car has a sound slot; only a car with a slot
@@ -841,12 +975,12 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
         if (in.siren && !m_prevSiren && !m_siren->on()) {
             m_priority = 10;
             m_3d.alwaysAudible = true;
-            m_siren->start(true, audible, m_3d.attenuation(), m_doppler);
+            m_siren->start(in.sirenPursuingPlayer, audible, m_attenuation, m_doppler);
             if (audible)
                 m_engine.stop(); // StartSiren silences a positioned car's engine
         }
         if (in.wrecked && !m_prevWrecked && m_siren->on()) {
-            m_siren->explode(audible, m_3d.attenuation());
+            m_siren->explode(audible, m_attenuation, m_doppler);
             m_siren->stop();
             m_priority = 7;
             m_3d.alwaysAudible = false;
@@ -859,40 +993,90 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
     m_prevSiren = in.siren;
     m_prevWrecked = in.wrecked;
 
-    // Aud3DObject::Update: ask for a slot while within the maximum distance.
-    if (!hasSlot() && !acquireSlot(m_3d.withinMaxDistance()))
-        return;
-    // vehCarAudio::UpdateAudio3D / vehPoliceCarAudio::UpdateAudio3D.
-    if (m_3d.pastMaxDistance() && !(m_siren && m_siren->explosionPlaying())) {
-        releaseSlot();
-        silence();
-        return;
-    }
-    const float attenuation = m_3d.attenuation();
-    const float pan = m_3d.pan(listener, position);
-    const float doppler = m_3d.doppler(1.0f / kDopplerSpeed, dt);
-    m_doppler = doppler;
-    m_impacts.updateAttenuation(attenuation, pan);
-    if (m_hasHorn && m_horn.valid()) {
-        // PlayHorn / StopHorn from the network state; UpdateAudio3D sets the
-        // volume, frequency and pan every update.
-        m_horn.setPan(pan);
-        if (in.horn)
-            m_horn.playLoop(attenuation * m_def.hornVolume, doppler);
-        else if (m_horn.playing())
-            m_horn.stop();
+    // A network player's horn: vehCarAudioContainer::PlayHorn / StopHorn,
+    // latched.
+    if (m_hasHorn) {
+        if (in.horn && !m_hornPressed) {
+            if (hasSlot() && m_horn.valid() && !m_horn.playing())
+                m_horn.playLoop();
+            m_hornPressed = true;
+        } else if (!in.horn && m_hornPressed) {
+            if (m_horn.playing())
+                m_horn.stop();
+            m_hornPressed = false;
+        }
     }
 
-    // Surfaces, then either the engine or the siren.
-    m_surfaces.update3D(in, dt, attenuation, pan);
-    if (m_siren && m_siren->on()) {
-        m_siren->update3D(dt, attenuation, doppler, pan);
+    // Aud3DObject::Update: ask for a slot while within the maximum distance.
+    if (!hasSlot() && !acquireSlot(m_3d.withinMaxDistance(position, listener.m3)))
+        return;
+
+    // vehCarAudio::UpdateAudio3D(doppler factor).
+    if (m_3d.pastMaxDistance(position, listener.m3)) {
+        // vehPoliceCarAudio::UpdateAudio3D keeps the slot (and the values of the
+        // last update) while an explosion plays.
+        if (!(m_siren && m_siren->explosionPlaying())) {
+            releaseSlot();
+            silence();
+            return;
+        }
     } else {
-        const float rpm = in.engineRunning ? std::max(in.rpm, in.idleRpm) : 0.0f;
-        m_engine.update(rpm, attenuation, doppler, pan);
+        // The 25 m "amplification" multiplies by 1 + 0.01 * a speed field nothing
+        // sets, i.e. by 1, and only for the horn and clutch: not ported.
+        m_attenuation = m_3d.attenuation();
+        m_pan = m_3d.pan(listener, position);
+        m_doppler = m_3d.doppler(1.0f / kDopplerSpeed, dt);
+        m_impacts.updateAttenuation(m_attenuation, m_pan);
+        if (m_hasHorn && m_horn.valid()) {
+            m_horn.setVolume(m_attenuation * m_def.hornVolume);
+            m_horn.setPitch(m_doppler);
+            m_horn.setPan(m_pan);
+        }
+        if (m_semi) {
+            // vehSemiCarAudio::UpdateAudio3D.
+            for (auto* s : {&m_reverseBeep, &m_airBlow})
+                s->setPan(m_pan);
+            m_reverseBeep.setVolume(m_attenuation * m_semi->reverseVolume);
+            m_reverseBeep.setPitch(m_doppler);
+            m_airBlow.setVolume(m_attenuation * m_semi->airBlowVolume);
+            m_airBlow.setPitch(m_doppler);
+        }
     }
-    for (const auto& impact : in.impacts)
-        m_impacts.play(impact, attenuation, pan);
+
+    // vehCarAudio / vehPoliceCarAudio::UpdateAudio3D(): surfaces, then the
+    // engine or (police with the siren on) the siren.
+    if (m_siren) {
+        m_surfaces.update3D(in, dt, m_attenuation, m_pan);
+        if (m_siren->on())
+            m_siren->update3D(dt, m_attenuation, m_doppler, m_pan);
+        else
+            m_engine.update3D(in.rpm, m_attenuation, m_doppler, m_pan);
+        return;
+    }
+    m_engine.update3D(in.rpm, m_attenuation, m_doppler, m_pan);
+    m_surfaces.update3D(in, dt, m_attenuation, m_pan);
+    if (m_semi) {
+        // vehSemiCarAudio::UpdateReverse / UpdateAirBlow.
+        const int gear = mm2Gear(in.gear);
+        if (gear == 0) {
+            if (!m_reverseBeep.playing())
+                m_reverseBeep.playLoop();
+        } else if (m_reverseBeep.playing()) {
+            m_reverseBeep.stop();
+        }
+        const bool braking = 0.5f < in.wheels[0].brakeCoef && 0.5f < in.wheels[1].brakeCoef;
+        if (kAirBlowMaxSpeed < in.speed) {
+            if (!braking)
+                g_airBlown = false;
+        } else if (braking) {
+            if (!g_airBlown) {
+                m_airBlow.playOnce();
+                g_airBlown = true;
+            }
+        } else {
+            g_airBlown = false;
+        }
+    }
 }
 
 void OpponentCarAudio::stop() {
@@ -900,7 +1084,8 @@ void OpponentCarAudio::stop() {
     m_engine.stop();
     m_surfaces.stop();
     m_impacts.stop();
-    m_horn.stop();
+    for (auto* s : {&m_horn, &m_reverseBeep, &m_airBlow})
+        s->stop();
     if (m_siren)
         m_siren->stopAll();
 }
@@ -920,7 +1105,7 @@ std::optional<float> AmbientCarAudio::pitchFor(const AmbientEngineDef& def, floa
     }
     for (std::size_t i = 0; i + 1 < def.bands.size(); ++i) {
         const SpeedBand& b = def.bands[i];
-        if (b.minSpeed <= speed && speed <= b.maxSpeed)
+        if (!(speed < b.minSpeed || b.maxSpeed < speed))
             return (speed - b.minSpeed) * slope(b) + b.minPitch;
     }
     return std::nullopt;
@@ -930,27 +1115,22 @@ bool AmbientCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, s
                            Object3DManager* manager) {
     stop();
     setManager(manager);
-    auto find = [&](std::string_view suffix) -> std::string {
-        const std::string t = str::lower(type);
-        std::vector<std::string> candidates = {std::format("aud/cardata/ambient/{}_{}.csv", t, suffix)};
-        // va_sedans_s -> va_sedan_s (the audio files use the singular; inferred).
-        if (auto us = t.rfind('_'); us != std::string::npos && us > 0 && t[us - 1] == 's')
-            candidates.push_back(std::format("aud/cardata/ambient/{}{}_{}.csv", t.substr(0, us - 1), t.substr(us), suffix));
-        candidates.push_back(std::format("aud/cardata/ambient/default_{}.csv", suffix));
-        for (const auto& c : candidates)
-            if (vfs.exists(c))
-                return c;
-        return {};
+    // aiAmbientVehicleAudio::Init: <type>_engine / <type>_horn, else default_.
+    auto find = [&](std::string_view suffix) {
+        const std::string specific = std::format("aud/cardata/ambient/{}_{}.csv", str::lower(type), suffix);
+        return vfs.exists(specific) ? specific : std::format("aud/cardata/ambient/default_{}.csv", suffix);
     };
+    m_engineDef = {};
     if (auto text = readText(vfs, find("engine")))
         if (auto def = parseAmbientEngine(*text))
             m_engineDef = std::move(*def);
+    m_hornDef.reset();
     if (auto text = readText(vfs, find("horn")))
         m_hornDef = parseHorn(*text);
-    m_engine.load(mixer, bank, m_engineDef.wave, Bus::Engine, 1);
+    m_engine.load(mixer, bank, m_engineDef.wave, Bus::Engine);
     m_horn = SoundSlot();
     if (m_hornDef)
-        m_horn.load(mixer, bank, m_hornDef->wave, Bus::Effects, 1);
+        m_horn.load(mixer, bank, m_hornDef->wave, Bus::Effects);
     if (auto t = loadTable<ImpactTable>(vfs, "aud/cardata/opponent/default_impacts.csv",
                                         [](std::string_view s) { return parseImpactTable(s); }))
         m_impacts.load(mixer, bank, *t, Bus::Effects);
@@ -958,37 +1138,46 @@ bool AmbientCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, s
     m_3d.setDropOffs(0.0f, kMaxDistance);
     m_pitch = 0.0f;
     m_speed = m_prevSpeed = 0.0f;
+    m_attenuation = 1.0f;
+    m_pan = 0.0f;
     m_hornState = 2;
-    m_beep = 0;
+    m_pattern = 0;
+    m_beeps.assign(m_hornDef ? m_hornDef->patterns.size() : 0, 0);
+    m_hornAttenuation = m_hornDoppler = 1.0f;
+    m_hornPan = 0.0f;
     return m_engine.valid();
 }
 
 void AmbientCarAudio::startPattern(std::size_t index) {
-    // vehHornAudioTiming::Play.
+    // vehHornAudio::UpdateDoppler with the stored values (nothing is set while
+    // the current pattern is idle), then vehHornAudioTiming::Play: the horn
+    // loops with whatever volume and frequency it had, from the pattern's
+    // current beep.
     m_pattern = index;
-    m_beep = 0;
     m_hornTimer = 0.0f;
     m_hornState = 0;
     if (m_horn.valid())
-        m_horn.playLoop(m_horn.volume(), m_horn.pitch());
+        m_horn.playLoop();
 }
 
 bool AmbientCarAudio::honk(int pattern) {
-    // Only a car holding a sound slot has its horn assigned.
-    if (!hasSlot() || !m_hornDef || m_hornDef->patterns.empty() || !m_horn.valid() || m_hornState != 2)
+    // vehHornAudio::PlayAvoidance: only a car holding a sound slot has its horn
+    // assigned, and only an idle horn honks.
+    if (!hasSlot() || !m_hornDef || !m_horn.valid() || m_hornState != 2)
         return false;
-    const std::size_t n = m_hornDef->patterns.size();
-    std::size_t choice;
+    // +0xc: the index of the last pattern.
+    const int last = static_cast<int>(m_hornDef->patterns.size()) - 1;
+    int choice;
     if (pattern >= 0) {
-        choice = std::min(static_cast<std::size_t>(pattern), n - 1);
+        choice = std::min(pattern, std::max(last, 0));
     } else {
-        // PlayAvoidance: RandomizeNumber(2n - 0.01); n or more means no honk.
-        std::uniform_real_distribution<float> u(0.0f, static_cast<float>(n * 2) - 0.01f);
-        choice = static_cast<std::size_t>(u(m_rng));
-        if (choice >= n)
+        choice = static_cast<int>(randomizeNumber(static_cast<float>(last * 2) - 0.01f));
+        if (last <= choice)
             return false;
     }
-    startPattern(choice);
+    if (choice < 0 || static_cast<std::size_t>(choice) >= m_hornDef->patterns.size())
+        return false;
+    startPattern(static_cast<std::size_t>(choice));
     return true;
 }
 
@@ -997,51 +1186,56 @@ void AmbientCarAudio::impact(const ImpactInput& impact) {
     // horn sounds assigned; they play with the last attenuation and pan.
     if (!hasSlot())
         return;
-    m_impacts.play(impact, m_3d.attenuation(), m_pan);
+    m_impacts.play(impact, m_attenuation, m_pan);
     // vehHornAudio::PlayImpact: the last pattern, one time in four.
     if (!m_hornDef || m_hornDef->patterns.empty() || !m_horn.valid() || impact.force < m_hornDef->stuckImpactForce)
         return;
-    std::uniform_real_distribution<float> u(0.0f, 10.0f);
-    if (u(m_rng) < kImpactHornChance)
+    if (randomizeNumber(10.0f) < kImpactHornChance)
         return;
     const std::size_t last = m_hornDef->patterns.size() - 1;
     if (m_hornState != 2) {
         if (m_pattern == last)
             return;
-        m_hornState = 2; // vehHornAudioTiming::Stop
-        m_beep = 0;
-        m_horn.stop();
+        // vehHornAudioTiming::Stop rewinds the interrupted pattern.
+        m_beeps[m_pattern] = 0;
+        m_hornState = 2;
+        if (m_horn.playing())
+            m_horn.stop();
     }
     startPattern(last);
 }
 
 void AmbientCarAudio::updateHorn(float dt) {
-    // vehHornAudioTiming::Update.
+    // vehHornAudioTiming::Update for the current pattern.
     if (!m_hornDef || m_hornDef->patterns.empty())
         return;
     const auto& beeps = m_hornDef->patterns[m_pattern].beeps;
+    std::size_t& beep = m_beeps[m_pattern];
+    const auto at = [&](std::size_t i) {
+        return i < beeps.size() ? beeps[i] : std::pair<float, float>{0.0f, 0.0f};
+    };
     if (m_hornState == 0) {
         m_hornTimer += dt;
-        if (m_beep >= beeps.size() || beeps[m_beep].first <= m_hornTimer) {
+        if (at(beep).first <= m_hornTimer) {
             m_horn.stop();
             m_hornTimer = 0.0f;
             m_hornState = 1;
             return;
         }
         if (!m_horn.playing())
-            m_horn.playLoop(m_horn.volume(), m_horn.pitch());
+            m_horn.playLoop();
         return;
     }
     if (m_hornState == 1) {
         m_hornTimer += dt;
-        if (m_beep >= beeps.size() || beeps[m_beep].second <= m_hornTimer) {
-            if (m_beep + 1 < beeps.size()) {
-                ++m_beep;
+        if (at(beep).second <= m_hornTimer) {
+            if (beep + 1 < beeps.size()) {
+                ++beep;
                 m_hornState = 0;
-                m_horn.playLoop(m_horn.volume(), m_horn.pitch());
+                m_horn.playLoop();
             } else {
                 m_hornState = 2;
-                m_beep = 0;
+                beep = 0;
                 if (m_horn.playing())
                     m_horn.stop();
             }
@@ -1054,13 +1248,13 @@ void AmbientCarAudio::updateHorn(float dt) {
 }
 
 void AmbientCarAudio::silence() {
-    // aiAmbientVehicleAudio::UnAssignSounds (vehHornAudio::Reset idles the pattern).
+    // aiAmbientVehicleAudio::UnAssignSounds: the engine and horn stop and the
+    // horn pattern goes idle (vehHornAudio::Reset keeps its beep index);
+    // impacts play out.
     m_engine.stop();
-    m_horn.stop();
-    m_impacts.stop();
+    if (m_horn.playing())
+        m_horn.stop();
     m_hornState = 2;
-    m_beep = 0;
-    m_3d.resetDistance();
 }
 
 void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Vec3& listener) {
@@ -1070,12 +1264,12 @@ void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3& ve
 }
 
 void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, float dt, const Mat34& listener) {
+    // aiVehicleSpline copies its (non-negative) speed into +0x80.
     m_speed = std::abs(speed);
-    m_3d.updateDistance(transform.m3, listener.m3);
-    if (!hasSlot() && !acquireSlot(m_3d.withinMaxDistance()))
+    if (!hasSlot() && !acquireSlot(m_3d.withinMaxDistance(transform.m3, listener.m3)))
         return;
     // aiAmbientVehicleAudio::UpdateAudio.
-    if (m_3d.pastMaxDistance()) {
+    if (m_3d.pastMaxDistance(transform.m3, listener.m3)) {
         releaseSlot();
         silence();
         return;
@@ -1083,31 +1277,37 @@ void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, f
     const float attenuation = m_3d.attenuation();
     const float pan = m_3d.pan(listener, transform.m3);
     const float doppler = m_3d.doppler(2.0f / kDopplerSpeed, dt);
+    m_attenuation = attenuation;
     m_pan = pan;
     // A drop of more than 4 m/s since the last update decays the engine
     // pitch from the previous speed instead of following the new one.
-    bool decaying = false;
+    const bool decaying = !(m_prevSpeed - m_speed <= kAmbientSpeedDrop);
     float pitchSpeed = m_speed;
-    if (m_prevSpeed - m_speed > kAmbientSpeedDrop) {
+    if (decaying) {
         m_prevSpeed *= 0.95f;
         pitchSpeed = m_prevSpeed;
-        decaying = true;
     }
-    // vehHornAudio::UpdateDoppler (the values also apply to the next pattern).
-    if (m_hornDef && m_horn.valid()) {
-        m_horn.setPan(pan);
+    // vehHornAudio::UpdateDoppler: stored; applied only while a pattern runs.
+    m_hornAttenuation = attenuation;
+    m_hornDoppler = doppler;
+    m_hornPan = pan;
+    if (m_hornDef && m_horn.valid() && m_hornState != 2) {
         m_horn.setVolume(attenuation * m_hornDef->volume);
         m_horn.setPitch(doppler * m_hornDef->pitch);
+        m_horn.setPan(pan);
     }
-    // aiEngineAudio::UpdateDoppler uses the pitch computed on the previous update.
+    // aiEngineAudio::UpdateDoppler uses the pitch computed on the previous
+    // update (0 at first: the buffer's lowest frequency, 100 Hz).
     if (m_engine.valid()) {
+        m_engine.setVolume(attenuation * m_engineDef.volume);
+        m_engine.setPitch(doppler * m_pitch);
         m_engine.setPan(pan);
-        m_engine.playLoop(attenuation * m_engineDef.volume, doppler * m_pitch);
+        if (!m_engine.playing())
+            m_engine.playLoop();
     }
     // aiEngineAudio::CalculatePitch: the slow-down curve while decaying or
     // slowing, else the speed bands.
-    const bool slowing = decaying || pitchSpeed < m_prevSpeed;
-    if (auto p = pitchFor(m_engineDef, pitchSpeed, slowing))
+    if (auto p = pitchFor(m_engineDef, pitchSpeed, decaying || pitchSpeed < m_prevSpeed))
         m_pitch = *p;
     m_impacts.updateAttenuation(attenuation, pan);
     if (!decaying)
@@ -1121,7 +1321,6 @@ void AmbientCarAudio::stop() {
     m_horn.stop();
     m_impacts.stop();
     m_hornState = 2;
-    m_beep = 0;
 }
 
 } // namespace mm2::audio::game

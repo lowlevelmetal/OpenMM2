@@ -144,7 +144,10 @@ TEST(MusicTables, ParsesRaceAndCruiseTables) {
         "EnemyStart,EnemyReturn,EnemyIdle,EnemyIdleCops,EnemyCops,Pause,Results1,GrooverStyle,BigAir,BigAir\r\n"
         "\r\n";
     auto songs = MusicTables::parseRace(race);
-    ASSERT_EQ(songs.size(), 1u);
+    // GetNumDMusicChoiceGroups counts lines: the blank one is a song without
+    // segments.
+    ASSERT_EQ(songs.size(), 2u);
+    EXPECT_TRUE(songs[1].start.empty());
     EXPECT_EQ(songs[0].start, "EnemyStart");
     EXPECT_EQ(songs[0].idleCops, "EnemyIdleCops");
     EXPECT_EQ(songs[0].cops, "EnemyCops");

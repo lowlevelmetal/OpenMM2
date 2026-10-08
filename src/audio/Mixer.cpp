@@ -1,5 +1,7 @@
 #include "audio/Mixer.h"
 
+#include "audio/AngelUnits.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -20,6 +22,8 @@ VoiceHandle makeHandle(std::size_t index, std::uint32_t generation) {
 Mixer::Mixer(int sampleRate, int maxVoices) : m_rate(sampleRate) {
     m_voices.resize(static_cast<std::size_t>(std::clamp(maxVoices, 1, static_cast<int>(kIndexMask))));
     m_bus.fill(1.0f);
+    m_busMaster.fill(1.0f);
+    m_busGain.fill(1.0f);
 }
 
 Mixer::Voice* Mixer::lookup(VoiceHandle h) {
@@ -36,16 +40,13 @@ std::size_t Mixer::pickSlot() {
     for (std::size_t i = 0; i < m_voices.size(); ++i)
         if (!m_voices[i].active)
             return i;
-    // Steal: lowest priority, then non-looping before looping, then oldest.
+    // Steal (audManager::MoveToActive): the lowest priority, then the oldest.
     std::size_t best = 0;
     for (std::size_t i = 1; i < m_voices.size(); ++i) {
         const Voice& a = m_voices[i];
         const Voice& b = m_voices[best];
         if (a.params.priority != b.params.priority) {
             if (a.params.priority < b.params.priority)
-                best = i;
-        } else if (a.params.loop != b.params.loop) {
-            if (!a.params.loop)
                 best = i;
         } else if (a.serial < b.serial) {
             best = i;
@@ -129,7 +130,20 @@ void Mixer::setListener(const Mat34& transform, const Vec3& velocity) {
 
 void Mixer::setBusVolume(Bus bus, float volume) {
     std::lock_guard lock(m_mutex);
-    m_bus[static_cast<std::size_t>(bus)] = std::max(volume, 0.0f);
+    const auto i = static_cast<std::size_t>(bus);
+    m_bus[i] = std::clamp(volume, 0.0f, 1.0f);
+    m_busMaster[i] = ageMasterVolume(m_bus[i]);
+    m_busGain[i] = ageVolumeToGain(m_busMaster[i]);
+}
+
+void Mixer::setStereo(bool stereo) {
+    std::lock_guard lock(m_mutex);
+    m_stereo = stereo;
+}
+
+bool Mixer::stereo() const {
+    std::lock_guard lock(m_mutex);
+    return m_stereo;
 }
 
 float Mixer::busVolume(Bus bus) const {
@@ -195,8 +209,12 @@ int Mixer::activeVoices() const {
 
 void Mixer::computeTargets(const Voice& v, float& gl, float& gr, double& rate) const {
     const VoiceParams& p = v.params;
-    float gain = p.volume * m_bus[static_cast<std::size_t>(p.bus)] * m_master;
-    float pan = p.pan;
+    const auto bus = static_cast<std::size_t>(p.bus);
+    // audObject::SetVolume: Angel volume times the master, clamped to 0..1.
+    float gain = p.angel ? ageVolumeToGain(std::clamp(p.volume * m_busMaster[bus], 0.0f, 1.0f))
+                         : p.volume * m_busGain[bus];
+    gain *= m_master;
+    float pan = m_stereo ? p.pan : 0.0f;
     float pitch = p.pitch;
 
     if (p.spatial) {
@@ -209,7 +227,7 @@ void Mixer::computeTargets(const Voice& v, float& gl, float& gr, double& rate) c
             gain *= minD / (minD + m_rolloff * (d - minD));
         if (dist > 1e-3f) {
             const Vec3 local = m_listener.untransformDir(rel) * (1.0f / dist);
-            pan = std::clamp(local.x, -1.0f, 1.0f);
+            pan = m_stereo ? std::clamp(local.x, -1.0f, 1.0f) : 0.0f;
             if (m_doppler > 0.0f) {
                 const Vec3 dir = rel * (1.0f / dist); // listener -> source
                 const float vl = m_listenerVel.dot(dir) * m_doppler;
@@ -294,7 +312,7 @@ void Mixer::mix(float* out, int frames) {
 
     m_streamScratch.resize(static_cast<std::size_t>(frames) * 2);
     for (auto& s : m_streams) {
-        const float gain = s.volume * m_bus[static_cast<std::size_t>(s.bus)] * m_master;
+        const float gain = s.volume * m_busGain[static_cast<std::size_t>(s.bus)] * m_master;
         std::fill(m_streamScratch.begin(), m_streamScratch.end(), 0.0f);
         s.source->render(m_streamScratch.data(), frames);
         if (gain <= 0.0f)

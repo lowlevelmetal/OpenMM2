@@ -1,3 +1,5 @@
+// MM2's AudSoundBase over one buffer, with the audObject / audSound clamps; see
+// SoundSlot.h.
 #include "audio/game/SoundSlot.h"
 
 #include "audio/game/AudioTables.h"
@@ -44,6 +46,8 @@ bool SoundSlot::load(Mixer& mixer, SoundBank& bank, std::string_view wave, Bus b
     m_bus = bus;
     m_priority = priority;
     m_buffer.reset();
+    m_volume = 0.0f;
+    m_pitch = 1.0f;
     m_pan = 0.0f;
     if (wave.empty() || str::iequals(wave, "NOSOUND"))
         return false;
@@ -53,7 +57,8 @@ bool SoundSlot::load(Mixer& mixer, SoundBank& bank, std::string_view wave, Bus b
 
 VoiceParams SoundSlot::params(bool loop, const Emitter3D* emitter) const {
     VoiceParams p;
-    p.volume = ageVolumeToGain(m_volume);
+    p.volume = m_volume; // Angel volume: the mixer applies the bus master (audObject::SetVolume)
+    p.angel = true;
     p.pitch = m_pitch;
     p.pan = agePanToMixer(m_pan);
     p.loop = loop;
@@ -64,32 +69,42 @@ VoiceParams SoundSlot::params(bool loop, const Emitter3D* emitter) const {
     return p;
 }
 
-void SoundSlot::playLoop(float volume, float pitch, const Emitter3D* emitter) {
-    if (!m_buffer || !m_mixer)
-        return;
-    m_volume = volume;
-    m_pitch = clampPitch(pitch, m_buffer->sampleRate);
-    if (m_voice && m_looping && m_mixer->isPlaying(m_voice)) {
-        m_mixer->setVolume(m_voice, ageVolumeToGain(m_volume));
+void SoundSlot::start(bool loop, const Emitter3D* emitter) {
+    if (m_voice && m_mixer && m_mixer->isPlaying(m_voice)) {
+        // audSound::Play does nothing to a buffer that is playing; the new
+        // volume and frequency were applied to it above.
+        m_mixer->setVolume(m_voice, m_volume);
         m_mixer->setPitch(m_voice, m_pitch);
         m_mixer->setPan(m_voice, agePanToMixer(m_pan));
         if (emitter)
             m_mixer->setEmitter(m_voice, *emitter);
         return;
     }
-    stop();
-    m_voice = m_mixer->play(m_buffer, params(true, emitter));
-    m_looping = true;
+    m_voice = m_mixer->play(m_buffer, params(loop, emitter));
+    m_looping = loop;
+}
+
+void SoundSlot::playLoop(float volume, float pitch, const Emitter3D* emitter) {
+    if (!m_buffer || !m_mixer)
+        return;
+    // audSound::SetVolume passes (v - 1) * 10000 to DirectSound, which rejects
+    // values outside -10000..0 and keeps the buffer's volume.
+    if (-1.0f < volume && 0.0f <= volume && volume <= 1.0f)
+        m_volume = volume;
+    // audSound::SetPitch: only the buffer frequency range applies.
+    if (-1.0f < pitch)
+        m_pitch = clampPitch(pitch, m_buffer->sampleRate);
+    start(true, emitter);
 }
 
 void SoundSlot::playOnce(float volume, float pitch, const Emitter3D* emitter) {
     if (!m_buffer || !m_mixer)
         return;
-    stop();
-    m_volume = volume;
-    m_pitch = clampPitch(pitch, m_buffer->sampleRate);
-    m_voice = m_mixer->play(m_buffer, params(false, emitter));
-    m_looping = false;
+    if (-1.0f < volume)
+        m_volume = volume;
+    if (-1.0f < pitch)
+        m_pitch = clampPitch(std::clamp(pitch, 0.0f, 2.0f), m_buffer->sampleRate);
+    start(false, emitter);
 }
 
 void SoundSlot::stop() {
@@ -103,21 +118,21 @@ bool SoundSlot::playing() const { return m_voice && m_mixer && m_mixer->isPlayin
 void SoundSlot::setVolume(float volume) {
     m_volume = volume;
     if (m_voice && m_mixer)
-        m_mixer->setVolume(m_voice, ageVolumeToGain(volume));
+        m_mixer->setVolume(m_voice, m_volume);
 }
 
 void SoundSlot::setPitch(float pitch) {
     if (!m_buffer)
         return;
-    m_pitch = clampPitch(pitch, m_buffer->sampleRate);
+    m_pitch = clampPitch(std::clamp(pitch, 0.0f, 2.0f), m_buffer->sampleRate);
     if (m_voice && m_mixer)
         m_mixer->setPitch(m_voice, m_pitch);
 }
 
 void SoundSlot::setPan(float pan) {
-    m_pan = pan;
+    m_pan = std::clamp(pan, -1.0f, 1.0f);
     if (m_voice && m_mixer)
-        m_mixer->setPan(m_voice, agePanToMixer(pan));
+        m_mixer->setPan(m_voice, agePanToMixer(m_pan));
 }
 
 void SoundSlot::setEmitter(const Emitter3D& emitter) {
