@@ -320,6 +320,8 @@ public:
     // The planner's state, for tests and diagnostics.
     int windowRoad(int slot) const { return m_roads[slot]; }
     bool windowForward(int slot) const { return m_roadDir[slot]; }
+    // aiVehiclePhysics::FrontBumperDistance.
+    float frontBumper() const { return m_frontBumper; }
     int wayPointIndex() const { return m_wayPtIdx; }
     int lap() const { return m_curLap; }
     int numRoutes() const { return m_numRoutes; }

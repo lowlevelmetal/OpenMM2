@@ -326,6 +326,15 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
         EXPECT_TRUE(r.driver) << o.pathFile << ": " << error;
         if (!r.driver)
             continue;
+        // As RaceScreen: aiMap::SetWaypoints' finish line for
+        // aiRouteRacer::Finished (checkpoint races: the last checkpoint,
+        // circuits: the first).
+        const auto mode = setup.config.mode;
+        if (!setup.checkpoints.empty() &&
+            (mode == game::GameMode::Checkpoint || mode == game::GameMode::Circuit)) {
+            const auto& cp = mode == game::GameMode::Circuit ? setup.checkpoints.front() : setup.checkpoints.back();
+            r.driver->setFinishLine(cp.position, cp.headingDeg);
+        }
         if (debugLevel() == 1)
             printCourse(r, o.pathFile);
         run.racers.push_back(std::move(r));

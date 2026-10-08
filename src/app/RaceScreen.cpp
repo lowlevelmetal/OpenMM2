@@ -796,6 +796,15 @@ private:
                                                   static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
                     opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
+                // aiMap::SetWaypoints: the line aiRouteRacer::Finished tests
+                // (mmSingleRace: the last checkpoint; mmSingleCircuit: the first).
+                const auto& cps = m_session->checkpoints();
+                const auto mode = m_result.config.mode;
+                if (opp.driver && !cps.empty() &&
+                    (mode == game::GameMode::Checkpoint || mode == game::GameMode::Circuit)) {
+                    const auto& cp = mode == game::GameMode::Circuit ? cps.front() : cps.back();
+                    opp.driver->setFinishLine(cp.position, cp.headingDeg);
+                }
                 else
                     log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
             }
