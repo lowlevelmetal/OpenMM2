@@ -374,9 +374,17 @@ the race (`mmRecord`, shown by `Dialog_HallOfFame`). OpenMM2 stores them in
 **Per-driver view settings** (`mmPlayerConfig::GetViewSettings` /
 `SetViewSettings`): the selected car camera, wide angle and dashboard are
 kept with the driver and restored at the next race; a new driver starts on
-the near camera with both off. MM2 keeps a new driver's name as typed and
-refuses only an empty one (`mmInterface::PlayerCreate`); OpenMM2 trims
-surrounding spaces, which its INI files cannot keep.
+the near camera with both off. A driver's name is kept as typed, spaces
+included; only an empty one is refused (`mmInterface::PlayerCreate`). The
+INI files store names quoted so the spaces survive.
+
+**New drivers** (`mmPlayerData::Reset`, `mmInterface::PlayerSetState`,
+`PlayerFillStats`): in MM2 a new driver has no last car until a race
+starts, so the driver panel shows string 64 ("---") as LAST RACE and LAST
+VEHICLE, and the menus start in cruise on vpbug. A profile without a car
+reports it with `Profile::hasLastRace`, and `Profile::selectedVehicle`
+gives vpbug for it; the menus still store the first listed car when they
+create a driver (see docs/parity/camera-props.md).
 
 ## Automation
 

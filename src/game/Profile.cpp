@@ -26,6 +26,11 @@ constexpr int kMaxRaces = 32;
 
 RaceMask bit(int i) { return i >= 0 && i < kMaxRaces ? RaceMask{1} << i : RaceMask{0}; }
 
+// Driver names are kept as typed (mmInterface::PlayerCreate), and IniFile
+// trims values but strips one pair of surrounding quotes, so names and the
+// values that start with one are written quoted.
+std::string quotedValue(std::string_view v) { return std::format("\"{}\"", v); }
+
 // MM2 names its two cities in the progress code: mmInterface::CitySetupCB
 // gates races only in "sf" and "london", mmInterface::PlayerResolveCars locks
 // the rewards of those two, and mmInterface::PlayerFillStats adds up their
@@ -153,8 +158,8 @@ bool Profile::load(const std::filesystem::path& path) {
 bool Profile::save() const {
     IniFile ini;
     ini.parse("; OpenMM2 driver profile\n");
-    ini.set("Driver", "Name", name);
-    ini.set("Driver", "NetName", netName);
+    ini.set("Driver", "Name", quotedValue(name));
+    ini.set("Driver", "NetName", quotedValue(netName));
     ini.setInt("Driver", "Order", order);
     ini.set("Prefs", "Vehicle", vehicle);
     ini.setInt("Prefs", "Color", vehicleColor);
@@ -201,10 +206,8 @@ std::vector<Profile> ProfileStore::list() const {
 
 std::optional<Profile> ProfileStore::create(std::string_view rawName, CreateError* error) {
     // mmInterface::PlayerCreate takes the name as typed and refuses only an
-    // empty one. The INI files trim values, so OpenMM2 trims the name (and
-    // refuses one of spaces only) to keep what is stored and what is listed
-    // the same.
-    const std::string name(str::trim(rawName));
+    // empty one (a name of spaces is a driver); it is stored quoted.
+    const std::string name(rawName);
     auto fail = [&](CreateError e) -> std::optional<Profile> {
         if (error)
             *error = e;
@@ -262,7 +265,7 @@ std::string ProfileStore::lastUsed() const {
 void ProfileStore::setLastUsed(std::string_view name) {
     IniFile ini;
     ini.load(m_dir / "players.ini");
-    ini.set("Players", "Last", name);
+    ini.set("Players", "Last", quotedValue(name));
     ini.save(m_dir / "players.ini");
 }
 
@@ -340,7 +343,7 @@ bool HallOfFame::save(const std::filesystem::path& path) const {
     // Times are written in full (MM2 stores the float), so a reloaded record
     // compares as the original did.
     auto format = [](const HallEntry& e) {
-        return std::format("{}|{}|{}|{}|{}", e.driver, e.vehicle, e.time, e.score, e.passed ? 1 : 0);
+        return quotedValue(std::format("{}|{}|{}|{}|{}", e.driver, e.vehicle, e.time, e.score, e.passed ? 1 : 0));
     };
     for (const auto& [section, t] : m_tables) {
         ini.set("Index", section, "1");

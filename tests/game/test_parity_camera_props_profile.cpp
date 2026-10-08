@@ -203,3 +203,55 @@ TEST(ParityProfile, DriverCreationLimits) {
     EXPECT_TRUE(store.create("ACE"));
     std::filesystem::remove_all(dir);
 }
+
+// mmInterface::PlayerCreate keeps the name as typed (only an empty one is
+// refused); the stored files keep the spaces.
+TEST(ParityProfile, DriverNamesKeepTheirSpaces) {
+    const auto dir = tempDir("openmm2_parity_spaces");
+    ProfileStore store(dir);
+    ASSERT_TRUE(store.create(" Ace "));
+    ASSERT_TRUE(store.create("   "));
+    EXPECT_FALSE(store.create(" Ace "));
+    ASSERT_TRUE(store.create("Ace")); // a different driver
+    const auto list = store.list();
+    ASSERT_EQ(list.size(), 3u);
+    EXPECT_EQ(list[0].name, " Ace ");
+    EXPECT_EQ(list[0].netName, " Ace ");
+    EXPECT_EQ(list[1].name, "   ");
+    EXPECT_EQ(list[2].name, "Ace");
+    store.setLastUsed(" Ace ");
+    EXPECT_EQ(store.lastUsed(), " Ace ");
+
+    HallOfFame hof;
+    hof.submit(Difficulty::Amateur, "london", "blitz", 0, {" Ace ", "vpbug", 61.25f, 100, true});
+    ASSERT_TRUE(hof.save(dir / "records.ini"));
+    HallOfFame back;
+    ASSERT_TRUE(back.load(dir / "records.ini"));
+    const auto* t = back.table(Difficulty::Amateur, "london", "blitz", 0);
+    ASSERT_TRUE(t);
+    EXPECT_EQ(t->byTime[0].driver, " Ace ");
+    std::filesystem::remove_all(dir);
+}
+
+// A new driver has no last car until a race starts (mmPlayerData::Reset):
+// PlayerFillStats then shows "---" for LAST RACE and LAST VEHICLE, and
+// PlayerSetState starts the menus on vpbug in cruise.
+TEST(ParityProfile, NewDriverHasNoLastRace) {
+    const auto dir = tempDir("openmm2_parity_lastrace");
+    ProfileStore store(dir);
+    auto p = store.create("Newbie");
+    ASSERT_TRUE(p);
+    EXPECT_FALSE(p->hasLastRace());
+    EXPECT_EQ(p->selectedVehicle(), "vpbug");
+    EXPECT_EQ(p->mode, GameMode::Cruise);
+    Profile loaded;
+    ASSERT_TRUE(loaded.load(p->file));
+    EXPECT_FALSE(loaded.hasLastRace());
+    loaded.vehicle = "vpcab";
+    ASSERT_TRUE(loaded.save());
+    Profile again;
+    ASSERT_TRUE(again.load(p->file));
+    EXPECT_TRUE(again.hasLastRace());
+    EXPECT_EQ(again.selectedVehicle(), "vpcab");
+    std::filesystem::remove_all(dir);
+}

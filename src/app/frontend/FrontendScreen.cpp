@@ -173,7 +173,7 @@ void Frontend::configFromProfile() {
     if (!profile)
         return;
     const game::Profile& p = *profile;
-    config.vehicle = p.vehicle;
+    config.vehicle = p.selectedVehicle(); // PlayerSetState: vpbug before the first race
     config.vehicleColor = p.vehicleColor;
     config.automatic = p.automatic;
     config.difficulty = p.difficulty;

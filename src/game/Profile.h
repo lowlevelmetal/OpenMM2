@@ -52,8 +52,12 @@ struct Profile {
     int order = 0; // creation sequence: MM2 lists drivers in the order they were created
 
     // Last choices in the menus: MM2's last car, paint job, event and city,
-    // saved when a race starts (mmInterface::BeDone).
-    std::string vehicle = "vpbug";
+    // saved when a race starts (mmInterface::BeDone). A new driver has no
+    // car yet (mmPlayerData::Reset leaves it empty): the driver record then
+    // shows string 64 ("---") as LAST RACE and LAST VEHICLE
+    // (mmInterface::PlayerFillStats) and the menus select vpbug
+    // (mmInterface::PlayerSetState); see hasLastRace / selectedVehicle.
+    std::string vehicle;
     int vehicleColor = 0;
     bool automatic = true;
     Difficulty difficulty = Difficulty::Amateur;
@@ -72,6 +76,13 @@ struct Profile {
 
     // Records keyed as in the file format above.
     std::map<std::string, RaceRecord> races;
+
+    // mmInterface::PlayerSetState's fallback when the driver has no car.
+    static constexpr std::string_view kDefaultVehicle = "vpbug";
+    // Whether the driver has started a race: PlayerFillStats tests the car.
+    bool hasLastRace() const { return !vehicle.empty(); }
+    // The car the menus start on (PlayerSetState).
+    std::string selectedVehicle() const { return vehicle.empty() ? std::string(kDefaultVehicle) : vehicle; }
 
     static std::string raceKey(std::string_view city, std::string_view mode, int index);
     const RaceRecord* record(std::string_view city, std::string_view mode, int index) const;
@@ -98,8 +109,8 @@ public:
     std::vector<Profile> list() const; // in creation order
     // Fails on an empty name, an exact (case-sensitive) duplicate or when
     // kMaxDrivers exist (mmInterface::PlayerCreate, mmPlayerDirectory::
-    // AddPlayer). Unlike MM2, surrounding spaces are trimmed (the INI files
-    // cannot keep them), so a name of spaces only counts as empty.
+    // AddPlayer). The name is kept as typed, spaces included: a name of
+    // spaces only is a driver, as in MM2 (the INI file stores it quoted).
     std::optional<Profile> create(std::string_view name, CreateError* error = nullptr);
     bool remove(const Profile& p);
     std::string lastUsed() const;          // name of the last selected driver
