@@ -894,6 +894,8 @@ private:
                 for (auto& o : m_opponents)
                     if (o.sessionIndex == static_cast<std::size_t>(e.index) && o.driver)
                         o.driver->finish();
+            } else if (e.type == EventType::Sound) {
+                playGameSound(ctx, static_cast<game::session::GameSound>(e.index), e.value);
             }
         }
         if (auto* music = ctx.music(); music && m_musicDirector) {
@@ -929,6 +931,32 @@ private:
             else
                 ctx.nextScreen = makeFrontendScreen(ctx, m_result);
         }
+    }
+
+    // The modes' and mmWaypoints' 2D sounds (AudSoundBase): `mode` 0 plays
+    // once (the timer warning only when it is not still playing), 1 loops,
+    // -1 stops.
+    void playGameSound(Context& ctx, game::session::GameSound sound, float mode) {
+        if (!ctx.mixer || !m_bank)
+            return;
+        const std::string name = game::session::gameSoundName(sound);
+        auto it = m_gameSounds.find(name);
+        if (it == m_gameSounds.end()) {
+            audio::game::SoundSlot slot;
+            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects);
+            it = m_gameSounds.emplace(name, std::move(slot)).first;
+        }
+        auto& slot = it->second;
+        if (!slot.valid())
+            return;
+        const float volume =
+            game::session::gameSoundVolume(sound, m_result.config.mode == game::GameMode::CrashCourse);
+        if (mode < 0.0f)
+            slot.stop();
+        else if (mode > 0.0f)
+            slot.playLoop(volume, 1.0f);
+        else if (sound != game::session::GameSound::TimerWarning || !slot.playing())
+            slot.playOnce(volume);
     }
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
@@ -1846,6 +1874,7 @@ private:
     bool m_carAudioOk = false;
     audio::Mixer* m_ctxMixer = nullptr;
     std::vector<audio::game::ImpactInput> m_impacts;
+    std::map<std::string, audio::game::SoundSlot> m_gameSounds; // the session's sounds by name
     phys::PedalInput m_lastPedals;
     std::unique_ptr<audio::MusicDirector> m_musicDirector;
     bool m_musicFinished = false, m_musicResults = false;

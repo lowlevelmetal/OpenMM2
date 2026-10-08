@@ -336,3 +336,31 @@ TEST(ParitySession, EvadeTurnsTheMapOnDuringItsFirstLine) {
         EXPECT_FALSE(blitz->wantsMap());
     }
 }
+
+TEST(ParitySession, ModesPlayTheirSounds) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    auto s = paritySession(GameMode::Blitz, 0);
+    ASSERT_TRUE(s);
+    RaceRun r(*s);
+    r.countdown();
+    auto sounds = [&](GameSound g) {
+        int n = 0;
+        for (const auto& e : r.events)
+            n += e.type == EventType::Sound && e.index == static_cast<int>(g) && e.value == 0.0f;
+        return n;
+    };
+    // mmSingleBlitz::UpdateGame: "Startracelow" with each countdown line,
+    // "Startracehigh" with "Go!".
+    EXPECT_EQ(sounds(GameSound::StartRaceLow), 2);
+    EXPECT_EQ(sounds(GameSound::StartRaceHigh), 1);
+    const auto& cps = s->checkpoints();
+    for (std::size_t i = 1; i < cps.size() && s->phase() == Phase::Racing; ++i)
+        r.driveTo(cps[i].position, 30.0f);
+    r.ticks(3);
+    // mmWaypoints::DisplayHUDMessage plays "Waypoint" for every Blitz checkpoint;
+    // the win plays "Endofracetag".
+    EXPECT_EQ(sounds(GameSound::Waypoint), static_cast<int>(cps.size()) - 1);
+    EXPECT_EQ(sounds(GameSound::EndOfRaceTag), 1);
+    EXPECT_STREQ(gameSoundName(GameSound::DamageLose), "Damgelose");
+}

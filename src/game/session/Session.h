@@ -188,6 +188,10 @@ private:
     void setMessage(std::uint32_t id, std::string_view fallback, float seconds, bool top);
     void setMessage2(std::string text);
     void push(EventType t, int index = -1, float value = 0.0f) { m_events.push_back({t, index, value}); }
+    // AudSoundBase::PlayOnce / PlayLoop on the mode's sound (`mode` 0 once, 1 loop).
+    void sound(GameSound s, float mode = 0.0f) { push(EventType::Sound, static_cast<int>(s), mode); }
+    void stopTimerWarning();
+    bool lastEvent() const { return m_lessonEvent == static_cast<int>(m_setup.lessonEvents.size()) - 1; }
 
     void resetRace();
     void beginEvent(int index);
@@ -262,6 +266,7 @@ private:
     bool m_timeUp = false;
     float m_warnAcc = 1.0f;
     bool m_warnBeeped = false, m_warnLoop = false;
+    bool m_warnActive = false; // the warning sound was started (+0x76E8)
 
     // Penalties: a wrecked car held, then repaired.
     float m_penaltyLeft = 0.0f;

@@ -91,7 +91,50 @@ enum class EventType : std::uint8_t {
     PlayerDamageLimits,  // value = MaxDamage for the player (MedDamage value / 2, ImpactThreshold 0)
     OpponentDamageLimits,// index = opponent, value = MaxDamage (MedDamage value / 2)
     SessionOver,         // results can be shown
+    Sound,               // index = GameSound; value: 0 play once, 1 loop, -1 stop
 };
+
+// The modes' 2D sounds (the AudSoundBase handles their InitGameObjects load)
+// and mmWaypoints' checkpoint sounds.
+enum class GameSound : std::uint8_t {
+    StartRaceLow,  // "Startracelow": the countdown lines
+    StartRaceHigh, // "Startracehigh": "Go"
+    EndOfRaceTag,  // "Endofracetag": won
+    YouLose,       // "Youlose": lost, time up
+    DamageLose,    // "Damgelose": wrecked or in the water (Blitz, checkpoint race, crash course)
+    MessageNote,   // "Messagenote": circuit penalty, an opponent finishing
+    TimerWarning,  // "Timerwarning": the last 10 s
+    Waypoint,      // "Waypoint": a checkpoint cleared
+    LastWaypoint,  // "Lastwaypoint": a circuit lap completed
+};
+
+inline const char* gameSoundName(GameSound s) {
+    switch (s) {
+    case GameSound::StartRaceLow: return "Startracelow";
+    case GameSound::StartRaceHigh: return "Startracehigh";
+    case GameSound::EndOfRaceTag: return "Endofracetag";
+    case GameSound::YouLose: return "Youlose";
+    case GameSound::DamageLose: return "Damgelose";
+    case GameSound::MessageNote: return "Messagenote";
+    case GameSound::TimerWarning: return "Timerwarning";
+    case GameSound::Waypoint: return "Waypoint";
+    case GameSound::LastWaypoint: return "Lastwaypoint";
+    }
+    return "";
+}
+
+// AudSoundBase::SetVolume after each load (Angel volume); mmWaypoints::Init
+// sets 0.95 for its two sounds, InitStatic (the crash course) 0.91.
+inline float gameSoundVolume(GameSound s, bool crashCourse) {
+    switch (s) {
+    case GameSound::EndOfRaceTag:
+    case GameSound::YouLose:
+    case GameSound::DamageLose: return 0.925f;
+    case GameSound::Waypoint:
+    case GameSound::LastWaypoint: return crashCourse ? 0.91f : 0.95f;
+    default: return 0.9f;
+    }
+}
 
 struct Event {
     EventType type{};
