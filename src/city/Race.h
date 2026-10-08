@@ -19,8 +19,6 @@ struct CityInfo {
     std::string raceDir;       // race/<raceDir>/
     int blitzCount = 0, circuitCount = 0, checkpointCount = 0;
     std::vector<std::string> blitzNames, circuitNames, checkpointNames;
-    int mustPlace = 0;
-    int unlockGroup = 0;
 };
 CityInfo parseCityInfo(std::string_view text);
 
@@ -83,6 +81,7 @@ struct AiMapConfig {
     std::optional<float> copChaseDistance;
     std::optional<int> ambientLaneChanges;
     std::optional<int> driveOnLeft; // [Ambients Drive On The Left]
+    std::optional<int> pedPool;     // [Ped Pool] (aiCityData)
     std::vector<AiRoadException> exceptions;
     std::vector<AiPoliceInit> police;
     std::vector<AiOpponentInit> opponents;

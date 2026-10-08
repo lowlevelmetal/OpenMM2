@@ -315,16 +315,20 @@ TurnType solveTurnType(const RoadNetwork& net, const RailLink& from, int nextPat
     // The next road's first segment in its direction of travel.
     const std::size_t n = to.center.size();
     const Vec3 v = nextDir == 1 ? to.center[1] - to.center[0] : to.center[n - 2] - to.center[n - 1];
-    // The current road's right and forward vectors at its arrival end.
-    Vec3 right, forward;
+    // The current road's right and forward vectors at its arrival end (the
+    // sums in MM2's order).
+    float side, ahead;
     if (from.dir == 1) {
-        right = -cur.xAxis.back();
-        forward = -cur.zAxis.back();
+        const Vec3 right = -cur.xAxis.back(), forward = -cur.zAxis.back();
+        side = v.x * right.x + v.y * right.y + v.z * right.z;
+        ahead = forward.x * v.x + v.y * forward.y + v.z * forward.z;
     } else {
-        right = cur.xAxis.front();
-        forward = cur.zAxis.front();
+        const Vec3& right = cur.xAxis.front();
+        const Vec3& forward = cur.zAxis.front();
+        side = v.x * right.x + v.z * right.z + v.y * right.y;
+        ahead = v.x * forward.x + v.z * forward.z + v.y * forward.y;
     }
-    const float angle = std::atan2(v.dot(right), v.dot(forward));
+    const float angle = std::atan2(side, ahead);
     if (angle > 0.5f)
         return TurnType::Right;
     if (angle < -0.5f)

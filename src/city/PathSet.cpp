@@ -34,6 +34,18 @@ std::optional<PathSet> parsePathSet(std::span<const std::byte> data, std::string
             pt.position = r.vec3();
             pt.extra = r.u32();
         }
+        // dgPath::Load reads (flags, position) per point and then the
+        // trailer bytes: type, spacing x 0.25 (0: 5 m), two unused.
+        path.flags.clear();
+        if (numPoints > 0) {
+            path.flags.push_back(path.unknown);
+            for (std::size_t k = 0; k + 1 < path.points.size(); ++k)
+                path.flags.push_back(path.points[k].extra);
+            const std::uint32_t trailer = path.points.back().extra;
+            path.type = static_cast<std::uint8_t>(trailer & 0xFF);
+            const float spacing = static_cast<float>((trailer >> 8) & 0xFF) * 0.25f;
+            path.spacing = spacing == 0.0f ? 5.0f : spacing;
+        }
     }
     if (!r.ok())
         return fail("truncated path set");

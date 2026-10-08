@@ -129,12 +129,19 @@ struct PsdlRoom {
 // file. These are the roads the AI map (.bai) was generated from: the counts
 // match and each .bai path lists the same rooms.
 struct PsdlRoad {
-    std::uint8_t flags = 0;
-    std::uint8_t unknown1 = 0;
-    std::uint16_t propRule = 0;
-    // Prop spacing values per side (fractions along the road, inferred).
+    // The road's flag word (lvlAiRoad +0): bit 1 blocked (lvlAiMap::IsBlocked),
+    // 2 closed to pedestrians (IsPedBlocked), 3 divided (IsDivided), 4 alley
+    // (IsAlley), 5 freeway (IsFreeway); bits 10-11 and 16-17 the intersection
+    // type at either end (GetIntersectionType 0 and 1). Other bits unread by
+    // lvlAiMap (OpenMM2's prop placement reads bit 6).
+    std::uint32_t flags = 0;
+    // One value per lane on each side (the counts are lvlAiMap::GetNumLanes'
+    // lane counts); fractions in (0,1), use inferred.
     std::vector<float> leftValues, rightValues;
-    std::uint8_t unknown2 = 0, unknown3 = 0;
+    // Per end, the stop light / sign type (lvlAiRoad +10/+11;
+    // lvlAiMap::GetStopLightType masks it with 0x15 and GetStopLightName picks
+    // the prop by it).
+    std::array<std::uint8_t, 2> stopLights{};
     // Corner vertices of the intersections at each end (4 each).
     std::array<std::uint16_t, 4> startCrossroads{};
     std::array<std::uint16_t, 4> endCrossroads{};

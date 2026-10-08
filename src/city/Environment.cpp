@@ -30,11 +30,10 @@ std::vector<std::string_view> words(std::string_view line) {
     return out;
 }
 
+// A number as MM2's loaders read one (atof / sscanf "%f"): the numeric prefix
+// of the word, nothing when it has none.
 std::optional<float> num(std::string_view s) {
-    auto d = str::parseDouble(s);
-    if (!d)
-        return std::nullopt;
-    return static_cast<float>(*d);
+    return detail::scanFloat(s);
 }
 
 } // namespace
@@ -74,11 +73,12 @@ std::optional<std::vector<FogDef>> parseFogTable(std::string_view text, std::str
             return std::nullopt;
         }
         FogDef fog;
-        fog.r = static_cast<std::uint8_t>(t.cellInt(r, 0));
-        fog.g = static_cast<std::uint8_t>(t.cellInt(r, 1));
-        fog.b = static_cast<std::uint8_t>(t.cellInt(r, 2));
-        fog.start = t.cellFloat(r, 3);
-        fog.end = t.cellFloat(r, 4);
+        fog.r = static_cast<std::uint8_t>(detail::cAtoi(row[0]));
+        fog.g = static_cast<std::uint8_t>(detail::cAtoi(row[1]));
+        fog.b = static_cast<std::uint8_t>(detail::cAtoi(row[2]));
+        // lvlSky::AutoInit reads the fog distances with atoi too.
+        fog.start = static_cast<float>(detail::cAtoi(row[3]));
+        fog.end = static_cast<float>(detail::cAtoi(row[4]));
         if (row.size() > 5)
             fog.description = row[5];
         out.push_back(std::move(fog));

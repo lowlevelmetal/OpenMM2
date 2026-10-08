@@ -5,43 +5,57 @@
 #include "core/StringUtil.h"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 
 namespace mm2::ai {
 namespace {
 
 constexpr float kFrameSeconds = 0.03333f; // pedAnimation::Load: sequence duration = frames x 0.03333
+constexpr float kHalfTurn = 3.14f;        // aiPedestrian turns round by adding 3.14
+constexpr float kFarAway = 1.0e9f;        // aiPedestrian::Update: no player yet
+constexpr float kNoHit = 9999.0f;         // the Detect* functions' "nothing ahead"
 
-float dotXZ(const Vec3& a, const Vec3& b) {
-    return a.x * b.x + a.z * b.z;
+// v scaled by 1 / sqrt(m2), where the caller sums m2 in MM2's order; zero
+// stays zero.
+Vec3 scaledUnit(const Vec3& v, float m2) {
+    const float k = m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2);
+    return v * k;
 }
 
-float distXZ2(const Vec3& a, const Vec3& b) {
-    return (a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.z - b.z);
-}
-
-Vec3 normalized3(const Vec3& v) {
-    const float m2 = v.mag2();
-    return m2 > 0.0f ? v * (1.0f / std::sqrt(m2)) : Vec3{};
-}
-
-// The pedestrian's matrix for heading h: forward (sin h, 0, cos h) is -Z.
+// The matrix aiPedestrian builds from its heading h (Reset, end of Update):
+// m0 = (-cos h, 0, sin h), m1 = up, m2 = (-sin h, 0, -cos h), so it faces
+// (sin h, 0, cos h).
 Mat34 frameOf(float h, const Vec3& pos) {
-    Mat34 m = Mat34::rotationY(h + kPi);
+    const float c = std::cos(h), s = std::sin(h);
+    Mat34 m;
+    m.m0 = {-c, 0.0f, s};
+    m.m1 = {0.0f, 1.0f, 0.0f};
+    m.m2 = {-s, 0.0f, -c};
     m.m3 = pos;
     return m;
 }
 
-float headingOf(const Vec3& v) {
-    return std::atan2(v.x, v.z);
-}
-
+// aiPedestrian::ComputeCurve: the Hermite basis applied to (p0, p1, t0, t1),
+// summed in MM2's order.
 void hermite(float p0, float p1, float m0, float m1, float out[4]) {
-    out[0] = 2.0f * p0 - 2.0f * p1 + m0 + m1;
-    out[1] = -3.0f * p0 + 3.0f * p1 - 2.0f * m0 - m1;
+    out[0] = ((2.0f * p0 + m1 * 1.0f) + m0 * 1.0f) + p1 * -2.0f;
+    out[1] = ((-3.0f * p0 + 3.0f * p1) + -2.0f * m0) + -1.0f * m1;
     out[2] = m0;
     out[3] = p0;
+}
+
+// The heading change of aiPedestrian's steering (Wander, PreCrossStreet,
+// WaitCrossStreet, CrossStreet): towards the target by at most 0.15 rad.
+float turnTowards(float heading, float angle) {
+    const float a = -angle;
+    if (kPedTurnRate < a)
+        return kPedTurnRate + heading;
+    if (-kPedTurnRate <= a)
+        return a + heading;
+    return heading - kPedTurnRate;
 }
 
 } // namespace
@@ -49,7 +63,8 @@ void hermite(float p0, float p1, float m0, float m1, float out[4]) {
 Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types,
                          const PedSettings& settings, std::uint64_t seed)
     : m_net(network), m_types(std::move(types)), m_settings(settings), m_rng(seed) {
-    // The sequences the AI asks for, by name (aiPedestrian::Init).
+    // The sequences the AI asks for, by name (aiPedestrian::Init). LDIVE and
+    // RDIVE are looked up too but no retail table has them.
     for (const auto& t : m_types) {
         Seqs s;
         auto f = [&](std::string_view n) { return t.table.find(n); };
@@ -76,24 +91,54 @@ Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> ty
         s.runWalk = f("RUN_WALK");
         m_seqs.push_back(s);
     }
-    // Sidewalk geometry per road side (aiPath::SidewalkVertice: the row after
-    // the lanes; the curb is the second last polyline).
+    // Sidewalk geometry per road side (aiPath::SidewalkVertice: the vertex row
+    // after the lanes; the curb is the second last polyline). On a road that
+    // aiPath::ReverseDirection reverses (drive on the left, two-way), each
+    // side's lane rows become the other side's, reversed in point and lane
+    // order, the sidewalk row stays, and every row's lengths are recomputed
+    // as 3D distances; elsewhere the lengths are the file's.
     const city::AiMap* map = m_net.source();
     m_walks.resize(m_net.paths().size());
     for (std::size_t p = 0; p < m_net.paths().size() && map; ++p) {
         const city::AiPath& src = map->paths[p];
+        const bool reversed = m_net.driveOnLeft() && src.left.numLanes != 0;
         for (int s = 0; s < 2; ++s) {
             const city::AiRoadSide& side = s == 0 ? src.left : src.right;
+            const city::AiRoadSide& other = s == 0 ? src.right : src.left;
             Walk& w = m_walks[p][static_cast<std::size_t>(s)];
-            if (side.numSidewalks == 0 || static_cast<std::size_t>(side.numLanes) >= side.polylines.size() ||
-                side.polylines.size() < 3)
+            const std::size_t lanes = side.numLanes;
+            if (side.numSidewalks == 0 || lanes >= side.polylines.size() || side.polylines.size() < 3)
                 continue;
-            w.points = side.polylines[static_cast<std::size_t>(side.numLanes)];
+            // The vertex rows MM2 holds: lanes, then the sidewalk.
+            std::vector<std::vector<Vec3>> rows(lanes + 1);
+            for (std::size_t r = 0; r <= lanes; ++r)
+                rows[r] = side.polylines[r];
+            // Inferred: ReverseDirection only behaves on roads whose sides have
+            // as many lanes (every retail one); others keep their own rows.
+            const bool swap = reversed && other.numLanes == side.numLanes;
+            if (swap)
+                for (std::size_t r = 0; r < lanes; ++r)
+                    rows[r].assign(other.polylines[lanes - 1 - r].rbegin(), other.polylines[lanes - 1 - r].rend());
+            w.rowCum.resize(lanes + 1);
+            for (std::size_t r = 0; r <= lanes; ++r) {
+                auto& cum = w.rowCum[r];
+                cum.assign(rows[r].size(), 0.0f);
+                // (Recomputed too when the file has no lengths for the row,
+                // e.g. a synthetic map; the retail lengths match to 1e-4 m.)
+                if (reversed || r >= side.laneLengths.size() || side.laneLengths[r].size() + 1 < cum.size()) {
+                    for (std::size_t i = 1; i < rows[r].size(); ++i) {
+                        const Vec3 d = rows[r][i] - rows[r][i - 1];
+                        cum[i] = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z) + cum[i - 1];
+                    }
+                } else {
+                    for (std::size_t i = 1; i < cum.size(); ++i)
+                        cum[i] = side.laneLengths[r][i - 1];
+                }
+            }
+            w.points = rows[lanes];
+            w.cum = w.rowCum[lanes];
             w.curb = side.polylines[side.polylines.size() - 2];
-            w.cum.assign(w.points.size(), 0.0f);
-            for (std::size_t i = 1; i < w.points.size(); ++i)
-                w.cum[i] = w.cum[i - 1] + w.points[i].dist(w.points[i - 1]);
-            const std::size_t k = static_cast<std::size_t>(side.numLanes) * 2;
+            const std::size_t k = lanes * 2;
             if (k + 1 < side.params.size()) {
                 w.inner = side.params[k];
                 w.outer = side.params[k + 1];
@@ -104,10 +149,11 @@ Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> ty
                     w.sidewalk = id;
         }
     }
-    m_onPath.resize(m_net.paths().size());
+    m_pathHead.assign(m_net.paths().size(), -1);
     m_pathActive.assign(m_net.paths().size(), 0);
-    // aiMap::Init: trunc(pool x density) pedestrians, types and clothing
-    // drawn per pedestrian (aiPedestrian::Init).
+    m_activeNext.assign(m_net.paths().size(), -1);
+    // aiMap::Init: trunc(pool x density) pedestrians, type drawn per
+    // pedestrian, then aiPedestrian::Init draws its clothing variant.
     const int count = m_types.empty() ? 0
                                       : std::max(0, static_cast<int>(static_cast<float>(m_settings.pool) *
                                                                      m_settings.density));
@@ -117,6 +163,8 @@ Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> ty
         for (std::size_t t = 0; t < m_types.size(); ++t)
             if (str::iequals(m_types[t].name, name))
                 allowed.push_back(static_cast<int>(t));
+    // OpenMM2: no listed type loads, use every type (MM2 would leave the
+    // pedestrians uninitialised).
     if (allowed.empty())
         for (std::size_t t = 0; t < m_types.size(); ++t)
             allowed.push_back(static_cast<int>(t));
@@ -125,8 +173,10 @@ Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> ty
         const int variants = m_types[static_cast<std::size_t>(p.type)].variants;
         p.variant = static_cast<int>(m_rng.frand() * static_cast<float>(variants - 1));
     }
+    // aiMap::Reset: every pedestrian into the pool in index order, so the
+    // last one is taken first.
     for (int i = 0; i < count; ++i)
-        m_pool.push_back(i);
+        poolAdd(i);
 }
 
 // --- Geometry -------------------------------------------------------------------
@@ -154,6 +204,11 @@ float Pedestrians::cumAt(int path, int side, int i) const {
     return cum[static_cast<std::size_t>(std::clamp(i, 0, static_cast<int>(cum.size()) - 1))];
 }
 
+// aiPath::SidewalkSubSectionLength: negative indices count as 0.
+float Pedestrians::subLength(int path, int side, int a, int b) const {
+    return cumAt(path, side, std::max(b, 0)) - cumAt(path, side, std::max(a, 0));
+}
+
 Vec3 Pedestrians::axisX(int path, int i) const {
     const auto& x = m_net.source()->paths[static_cast<std::size_t>(path)].xAxis;
     return x.empty() ? Vec3{} : x[static_cast<std::size_t>(std::clamp(i, 0, static_cast<int>(x.size()) - 1))];
@@ -169,28 +224,69 @@ Vec3 Pedestrians::axisW(int path, int i) const {
     return w.empty() ? Vec3{} : w[static_cast<std::size_t>(std::clamp(i, 0, static_cast<int>(w.size()) - 1))];
 }
 
-// aiPath::Index on the sidewalk row.
+// aiPath::Index on the sidewalk row: the first vertex whose cumulative length
+// reaches `dist` (within 1e-5), `dist` clamped to the row.
 int Pedestrians::sidewalkIndex(int path, int side, float dist) const {
     const auto& cum = walk(path, side).cum;
     const int n = static_cast<int>(cum.size());
     if (n < 2)
         return 1;
-    dist = clampf(dist, 0.0f, cum.back());
+    const float total = cum[static_cast<std::size_t>(n - 1)] - cum[0];
+    if (0.0f <= dist) {
+        if (total < dist)
+            dist = total;
+    } else {
+        dist = 0.0f;
+    }
     for (int i = 1; i < n; ++i)
-        if (dist <= cum[static_cast<std::size_t>(i)] + 1e-5f)
+        if (dist <= cum[static_cast<std::size_t>(i)] + 1e-05f)
             return i;
     return n - 1;
 }
 
-// aiPath::GetHeading: along the sidewalk segment holding `dist`, in `dir`.
-float Pedestrians::headingAt(const Ped& p, float dist, int dir) const {
-    const int i = sidewalkIndex(p.path, p.side, dist);
-    const Vec3 d = (sv(p.path, p.side, i) - sv(p.path, p.side, i - 1)) * static_cast<float>(dir);
-    return headingOf(d);
+// aiPath::GetHeading(dist, row, dir): the segment is found on the cumulative
+// lengths of vertex row `row` of side `dir` (not necessarily the sidewalk:
+// Anticipate and AvoidObstacle pass row 0, the first lane), and the heading
+// is that of side `dir`'s sidewalk segment there, in the direction `dir`.
+float Pedestrians::getHeading(int path, float dist, int row, int dir) const {
+    const Walk& w = walk(path, dir);
+    if (w.rowCum.empty() || w.points.size() < 2)
+        return 0.0f;
+    // MM2 reads past the side's rows when `row` is beyond them (a one-way
+    // road's empty side); OpenMM2 uses the sidewalk row then.
+    const auto& cum = w.rowCum[static_cast<std::size_t>(std::min<std::size_t>(row, w.rowCum.size() - 1))];
+    const int n = static_cast<int>(std::min(cum.size(), w.points.size()));
+    if (n < 2)
+        return 0.0f;
+    const float total = cum[static_cast<std::size_t>(n - 1)] - cum[0];
+    if (0.0f <= dist) {
+        if (total < dist)
+            dist = total;
+    } else {
+        dist = 0.0f;
+    }
+    for (int i = 1; i < n; ++i) {
+        if (dist <= cum[static_cast<std::size_t>(i)]) {
+            const Vec3& a = w.points[static_cast<std::size_t>(i - 1)];
+            const Vec3& b = w.points[static_cast<std::size_t>(i)];
+            return dir == 1 ? std::atan2(b.x - a.x, b.z - a.z) : std::atan2(a.x - b.x, a.z - b.z);
+        }
+    }
+    return 0.0f;
+}
+
+// The intersection a crossing pedestrian is at: where its previous road
+// ended (MM2 recomputes it from the previous road and direction each time).
+int Pedestrians::crossedNode(const Ped& p) const {
+    if (p.prevPath < 0)
+        return -1;
+    return m_net.paths()[static_cast<std::size_t>(p.prevPath)].intersection[p.prevDir == 1 ? 0 : 1];
 }
 
 // --- Animation (pedAnimationInstance) ---------------------------------------
 
+// pedAnimation::Load: a sequence lasts last - first + 1 frames, at most as many
+// as its .anim has; it plays from frame 0 of the .anim.
 int Pedestrians::frameCount(const Ped& p, State s) const {
     if (!s)
         return 1;
@@ -201,6 +297,7 @@ int Pedestrians::frameCount(const Ped& p, State s) const {
     return frames;
 }
 
+// pedAnimation::Load: the CSV distances over the unclamped duration.
 float Pedestrians::fwdSpeed(const Ped&, State s) const {
     if (!s)
         return 0.0f;
@@ -215,7 +312,8 @@ float Pedestrians::latSpeed(const Ped&, State s) const {
     return s->sideDistance / (frames * kFrameSeconds);
 }
 
-// Start: at once, from frame 0; the sequence's own next is queued.
+// pedAnimationInstance::Start: at once, from frame 0; the sequence's own next
+// is queued.
 void Pedestrians::startSeq(Ped& p, State s) {
     if (!s)
         return;
@@ -224,15 +322,77 @@ void Pedestrians::startSeq(Ped& p, State s) {
     p.queued = m_types[static_cast<std::size_t>(p.type)].table.find(s->next);
 }
 
+// --- Lists (aiPath, aiMap) ------------------------------------------------------
+
+// aiPath::AddPedestrian: at the head of the road's list.
+void Pedestrians::pathAdd(int path, int idx) {
+    m_peds[static_cast<std::size_t>(idx)].next = m_pathHead[static_cast<std::size_t>(path)];
+    m_pathHead[static_cast<std::size_t>(path)] = idx;
+}
+
+// aiPath::RemovePedestrian.
+void Pedestrians::pathRemove(int path, int idx) {
+    int* link = &m_pathHead[static_cast<std::size_t>(path)];
+    while (*link >= 0 && *link != idx)
+        link = &m_peds[static_cast<std::size_t>(*link)].next;
+    if (*link == idx)
+        *link = m_peds[static_cast<std::size_t>(idx)].next;
+}
+
+// aiMap::AddPedestrian: at the head of the pool.
+void Pedestrians::poolAdd(int idx) {
+    Ped& p = m_peds[static_cast<std::size_t>(idx)];
+    p.active = false;
+    p.next = m_poolHead;
+    m_poolHead = idx;
+}
+
+// aiMap::RemovePedestrian.
+void Pedestrians::poolRemove(int idx) {
+    int* link = &m_poolHead;
+    while (*link >= 0 && *link != idx)
+        link = &m_peds[static_cast<std::size_t>(*link)].next;
+    if (*link == idx)
+        *link = m_peds[static_cast<std::size_t>(idx)].next;
+}
+
+// Off its road and onto `path` (RemovePedestrian, then AddPedestrian).
+void Pedestrians::moveToPath(Ped& p, int path) {
+    const int id = static_cast<int>(&p - m_peds.data());
+    pathRemove(p.path, id);
+    p.path = path;
+    pathAdd(path, id);
+}
+
 // --- Curves (aiPedestrian::CalcCurve, SolvePosition, SolveTargetPoint) ----
 
 void Pedestrians::calcCurve(Ped& p, int a, int b, float lateral) {
     const int n = sections(p.path);
     lateral = clampf(lateral, -kPedMaxLateral, kPedMaxLateral);
-    auto P = [&](int k) { return sv(p.path, p.side, k) - axisX(p.path, k) * lateral; };
+    auto P = [&](int k) { return axisX(p.path, k) * -lateral + sv(p.path, p.side, k); };
     Vec3 p0, p1, t0, t1;
-    float len = cumAt(p.path, p.side, b) - cumAt(p.path, p.side, a);
-    if (b == 0 || b == n) {
+    if (b == n - 1) {
+        const float len = subLength(p.path, p.side, a, b);
+        p.invLen = 1.0f / len;
+        p0 = P(a);
+        p1 = P(n - 1);
+        t0 = axisW(p.path, a) * len;          // aiPath::SubSectionDir
+        t1 = (-axisZ(p.path, n - 1)) * len;   // aiPath::IntersectionEntryVector
+    } else if (b == 1) {
+        const float len = subLength(p.path, p.side, a, 1);
+        p.invLen = 1.0f / len;
+        p0 = P(0);
+        p1 = P(1);
+        t0 = (-axisZ(p.path, 0)) * len; // aiPath::IntersectionExitVector
+        t1 = axisW(p.path, 1) * len;
+    } else if (b != 0 && b != n) {
+        const float len = subLength(p.path, p.side, a, b);
+        p.invLen = 1.0f / len;
+        p0 = P(a);
+        p1 = P(b);
+        t0 = axisW(p.path, a) * len;
+        t1 = axisW(p.path, b) * len;
+    } else {
         // The corner between two roads: a straight line, no lateral offset.
         const int np = sections(p.prevPath);
         const Vec3 w = p.prevDir == 1 ? sv(p.prevPath, p.prevSide, np - 1) : sv(p.prevPath, p.prevSide, 0);
@@ -244,33 +404,18 @@ void Pedestrians::calcCurve(Ped& p, int a, int b, float lateral) {
             p1 = w;
         }
         t0 = t1 = p1 - p0;
-        const float d = (p1 - p0).mag();
-        p.invLen = p.path == p.prevPath || d == 0.0f ? 1.0f : 1.0f / d;
-    } else {
-        if (b == n - 1) {
-            p0 = P(a);
-            p1 = P(n - 1);
-            t0 = axisW(p.path, a) * len;
-            t1 = axisZ(p.path, n - 1) * -len;
-        } else if (b == 1) {
-            p0 = P(0);
-            p1 = P(1);
-            t0 = axisZ(p.path, 0) * -len;
-            t1 = axisW(p.path, 1) * len;
-        } else {
-            p0 = P(a);
-            p1 = P(b);
-            t0 = axisW(p.path, a) * len;
-            t1 = axisW(p.path, b) * len;
-        }
-        p.invLen = len != 0.0f ? 1.0f / len : 1.0f;
+        float d = std::sqrt(t0.x * t0.x + t0.y * t0.y + t0.z * t0.z);
+        if (p.prevPath == p.path)
+            d = 1.0f;
+        // OpenMM2 guard: MM2 divides by a zero length too.
+        p.invLen = d != 0.0f ? 1.0f / d : 1.0f;
     }
     hermite(p0.x, p1.x, t0.x, t1.x, p.curve[0]);
     hermite(p0.z, p1.z, t0.z, t1.z, p.curve[1]);
 }
 
 Vec3 Pedestrians::solvePosition(const Ped& p, float t) const {
-    auto f = [&](const float k[4]) { return ((k[0] * t + k[1]) * t + k[2]) * t + k[3]; };
+    auto f = [&](const float k[4]) { return ((t * k[0] + k[1]) * t + k[2]) * t + k[3]; };
     return {f(p.curve[0]), p.position.y, f(p.curve[1])};
 }
 
@@ -279,107 +424,119 @@ void Pedestrians::solveTargetPoint(Ped& p, float d) {
     float t;
     if (p.idx == 0)
         t = d * p.invLen;
-    else if (p.idx < n)
-        t = (d - cumAt(p.path, p.side, p.idx - 1)) * p.invLen;
+    else if (p.idx != n)
+        t = (d - subLength(p.path, p.side, 0, p.idx - 1)) * p.invLen;
     else
-        t = (d - cumAt(p.path, p.side, n - 1)) * p.invLen;
+        t = (d - subLength(p.path, p.side, 0, n - 1)) * p.invLen;
     p.target = solvePosition(p, t);
     p.target.y = p.position.y;
 }
 
 // aiPedestrian::RoadDistance: the distance along the sidewalk, moving on to
-// the next vertex (and its curve) once the pedestrian has passed it.
+// the next vertex (and its curve, at the pedestrian's offset there) once the
+// pedestrian has passed it.
 float Pedestrians::roadDistance(Ped& p) {
     const int n = sections(p.path);
     const int np = sections(p.prevPath);
     auto lateralAt = [&](int k) {
-        return clampf(dotXZ(sv(p.path, p.side, k) - p.position, axisX(p.path, k)), -kPedMaxLateral,
-                      kPedMaxLateral);
+        const Vec3 d = sv(p.path, p.side, k) - p.position;
+        const Vec3 x = axisX(p.path, k);
+        return clampf(d.x * x.x + d.y * x.y + d.z * x.z, -kPedMaxLateral, kPedMaxLateral);
     };
     if (p.dir == 1) {
         const Vec3 v = sv(p.path, p.side, p.idx);
         Vec3 w, u;
         if (p.idx == 0) {
             w = p.prevDir == 1 ? sv(p.prevPath, p.prevSide, np - 1) : sv(p.prevPath, p.prevSide, 0);
-            u = normalized3(w - v);
+            const Vec3 e = w - v;
+            u = scaledUnit(e, e.x * e.x + e.z * e.z + e.y * e.y);
         } else {
             u = axisZ(p.path, p.idx);
         }
-        const float s = dotXZ(p.position - v, u);
+        const float s = (p.position.x - v.x) * u.x + (p.position.z - v.z) * u.z;
         if (s <= 0.0f) {
             ++p.idx;
             if (p.idx < n) {
                 p.lateral = lateralAt(p.idx - 1);
                 calcCurve(p, p.idx - 1, p.idx, p.lateral);
-                return cumAt(p.path, p.side, p.idx - 1) - s;
+                return subLength(p.path, p.side, 0, p.idx - 1) - s;
             }
             p.idx = n - 1;
             p.lateral = lateralAt(p.idx);
             calcCurve(p, p.idx - 1, p.idx, p.lateral);
-            return cumAt(p.path, p.side, p.idx) - s;
+            return subLength(p.path, p.side, 0, p.idx) - s;
         }
         if (p.idx != 0)
-            return cumAt(p.path, p.side, p.idx) - s;
-        return dotXZ(w - sv(p.path, p.side, 0), u) - s;
+            return subLength(p.path, p.side, 0, p.idx) - s;
+        const Vec3 v0 = sv(p.path, p.side, 0);
+        return ((w.x - v0.x) * u.x + (w.z - v0.z) * u.z) - s;
     }
     if (p.idx == n) {
         // MM2 picks the other road's point the opposite way round from
         // CalcCurve here.
         const Vec3 v = sv(p.path, p.side, n - 1);
         const Vec3 w = p.prevDir == 1 ? sv(p.prevPath, p.prevSide, 0) : sv(p.prevPath, p.prevSide, np - 1);
-        const Vec3 u = normalized3(w - v);
-        const float s = dotXZ(p.position - v, u);
+        const Vec3 e = w - v;
+        const Vec3 u = scaledUnit(e, e.y * e.y + e.x * e.x + e.z * e.z);
+        const float s = (p.position.x - v.x) * u.x + (p.position.z - v.z) * u.z;
         if (s < 0.0f) {
-            p.idx = n - 1;
+            --p.idx;
             calcCurve(p, p.idx - 1, p.idx, p.lateral);
         }
-        return cumAt(p.path, p.side, p.idx - 1) + s;
+        return subLength(p.path, p.side, 0, p.idx - 1) + s;
     }
     const Vec3 v = sv(p.path, p.side, p.idx - 1);
-    const float s = dotXZ(p.position - v, axisZ(p.path, p.idx));
+    const Vec3 z = axisZ(p.path, p.idx);
+    const float s = (p.position.x - v.x) * z.x + (p.position.z - v.z) * z.z;
     if (s < 0.0f)
-        return cumAt(p.path, p.side, p.idx - 1) - s;
+        return subLength(p.path, p.side, 0, p.idx - 1) - s;
     --p.idx;
     if (p.idx > 0) {
         p.lateral = lateralAt(p.idx);
         calcCurve(p, p.idx - 1, p.idx, p.lateral);
-        return cumAt(p.path, p.side, p.idx) - s;
+        return subLength(p.path, p.side, 0, p.idx) - s;
     }
     p.idx = 0;
     return -s;
 }
 
 // aiPedestrian::SetNextRoad: the next road round the intersection on the
-// pedestrian's side (GetRoadToRight / GetRoadToLeft).
-int Pedestrians::setNextRoad(Ped& p, int node) const {
+// pedestrian's side (GetRoadToRight / GetRoadToLeft), counted from this
+// road's place in the list of the end it walks towards.
+int Pedestrians::setNextRoad(const Ped& p, int node) const {
     const auto& paths = m_net.intersections()[static_cast<std::size_t>(node)].paths;
     const int count = static_cast<int>(paths.size());
     if (count == 0)
         return p.path;
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(p.path)];
-    int k = info.intersection[0] == node ? info.roadIndex[0] : info.roadIndex[1];
+    int k = info.roadIndex[p.dir == 1 ? 0 : 1];
     if (k < 0)
         k = 0;
+    // GetRoadToRight/Left also step over the shortcut roads of <city>_sup.bai,
+    // which OpenMM2 does not load.
     const bool right = p.dir == 1 ? p.side == 1 : p.side != 1;
-    k = right ? (k + 1) % count : (k - 1 + count) % count;
+    k = right ? (k + 1 >= count ? k + 1 - count : k + 1) : (k - 1 < 0 ? k - 1 + count : k - 1);
     return paths[static_cast<std::size_t>(k)];
 }
 
 // aiPedestrian::PickNextRdSeg: at the end of the sidewalk, round the corner,
 // or (only at lit intersections with a walk phase) across the next road or
-// back across this one; turn round when the way on is closed.
+// back across this one; turn round when the way on is closed or unpopulated.
 int Pedestrians::pickNextRoad(Ped& p) {
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(p.path)];
     const int node = info.intersection[p.dir == 1 ? 0 : 1];
     if (node < 0) {
+        // OpenMM2 guard: every retail road end has an intersection.
         p.dir = -p.prevDir;
-        p.heading += 3.14f;
+        p.side = p.prevSide;
+        p.cross = 0;
+        p.heading += kHalfTurn;
         return p.path;
     }
-    p.crossNode = node;
     int choice = 0;
     if (m_lights && m_lights->hasLights(node) && m_lights->cycleAt(node) != LightCycle::Rotate)
-        choice = static_cast<int>(m_rng.next() & 0x7FFF) % 3;
+        choice = m_rng.irand() % 3;
+    // aiPedestrian::UpcomingAccident: a car out of normal driving there.
     if (m_accident && m_accident(node, -1))
         choice = 0;
     p.crossChoice = choice;
@@ -407,45 +564,34 @@ int Pedestrians::pickNextRoad(Ped& p) {
     p.dir = -p.prevDir;
     p.side = p.prevSide;
     p.cross = 0;
-    p.heading += 3.14f;
+    p.heading += kHalfTurn;
     return p.path;
 }
 
 void Pedestrians::solveRoadSegment(Ped& p, float dist) {
     const int n = sections(p.path);
     const bool off =
-        p.dir == 1 ? (p.idx >= 1 && dist > cumAt(p.path, p.side, n - 1)) : (p.idx < n && dist < 0.0f);
+        p.dir == 1 ? (p.idx >= 1 && dist > subLength(p.path, p.side, 0, n - 1)) : (p.idx < n && dist < 0.0f);
     if (!off)
         return;
     p.prevSide = p.side;
     p.prevDir = p.dir;
     const int next = pickNextRoad(p);
-    const int id = static_cast<int>(&p - m_peds.data());
-    std::erase(m_onPath[static_cast<std::size_t>(p.path)], id);
-    p.prevPath = p.path;
-    p.path = next;
-    m_onPath[static_cast<std::size_t>(next)].push_back(id);
+    const int from = p.path;
+    moveToPath(p, next);
+    p.prevPath = from;
     p.idx = p.dir == 1 ? 0 : sections(next);
-    roadDistance(p);
+    p.dist = roadDistance(p);
     calcCurve(p, p.idx - 1, p.idx, p.lateral);
 }
 
-// Turns the pedestrian towards `target` by at most 0.15 rad. aiPedestrian::
-// AvoidObstacle turns the other way for small angles, as coded.
-void Pedestrians::steer(Ped& p, const Vec3& target, bool avoidQuirk) {
-    const Mat34 m = frameOf(p.heading, p.position);
-    const Vec3 d = target - p.position;
-    const float a = std::atan2(dotXZ(d, m.m0), -dotXZ(d, m.m2));
-    if (!avoidQuirk) {
-        p.heading += clampf(-a, -kPedTurnRate, kPedTurnRate);
-        return;
-    }
-    if (a > kPedTurnRate)
-        p.heading -= kPedTurnRate;
-    else if (a < -kPedTurnRate)
-        p.heading += kPedTurnRate;
-    else
-        p.heading += a;
+// Wander, PreCrossStreet, WaitCrossStreet and CrossStreet turn towards their
+// target by at most 0.15 rad, measured in the matrix of the last update.
+void Pedestrians::steer(Ped& p, const Vec3& target) {
+    const Mat34 m = frameOf(p.frameHeading, p.position);
+    const float dz = target.z - p.position.z, dx = target.x - p.position.x;
+    const float angle = std::atan2(dz * m.m0.z + dx * m.m0.x, -(dz * m.m2.z + dx * m.m2.x));
+    p.heading = turnTowards(p.heading, angle);
 }
 
 // --- Population (aiMap::AdjustPedestrians, aiPedestrian::Reset) ------------
@@ -454,95 +600,114 @@ void Pedestrians::reset(int idx, int path, int side) {
     Ped& p = m_peds[static_cast<std::size_t>(idx)];
     const Walk& w = walk(path, side);
     p.active = true;
+    p.lost = false;
     p.path = p.prevPath = path;
     p.wall = false;
     p.side = p.prevSide = side;
-    const int n = static_cast<int>(w.points.size());
-    const float dist = m_rng.frand() * (w.cum.back() - w.cum.front());
+    const int lanes = static_cast<int>(w.rowCum.size()) - 1;
+    const float dist = m_rng.frand() * subLength(path, side, 0, sections(path) - 1);
+    p.dist = dist;
     p.lateral = ((w.outer - w.inner) * 0.5f - 0.5f) * std::sin(m_rng.frand() * 6.2831f);
     p.idx = sidewalkIndex(path, side, dist);
     p.dir = p.prevDir = m_rng.frand() < 0.5f ? 1 : -1;
-    p.heading = headingAt(p, dist, p.dir);
-    const float seg = w.cum[static_cast<std::size_t>(p.idx)] - w.cum[static_cast<std::size_t>(p.idx - 1)];
-    const float t = seg > 0.0f ? (dist - w.cum[static_cast<std::size_t>(p.idx - 1)]) / seg : 0.0f;
-    p.position = lerp(w.points[static_cast<std::size_t>(p.idx - 1)],
-                      w.points[static_cast<std::size_t>(std::min(p.idx, n - 1))], t);
+    // (MM2 turns the old heading round here for direction +1; it is
+    // overwritten at once.)
+    p.heading = getHeading(path, dist, lanes, p.dir);
+    const float t = (dist - subLength(path, side, 0, p.idx - 1)) / subLength(path, side, p.idx - 1, p.idx);
+    const Vec3 a = sv(path, side, p.idx - 1), b = sv(path, side, p.idx);
+    p.position = {(b.x - a.x) * t + a.x, (b.y - a.y) * t + a.y, (b.z - a.z) * t + a.z};
     calcCurve(p, p.idx - 1, p.idx, p.lateral);
-    const Vec3 xz = solvePosition(p, (dist - w.cum[static_cast<std::size_t>(p.idx - 1)]) * p.invLen);
+    const float before = subLength(path, side, 0, p.idx - 1);
+    p.invLen = 1.0f / subLength(path, side, p.idx - 1, p.idx);
+    const Vec3 xz = solvePosition(p, (dist - before) * p.invLen);
     p.position.x = xz.x;
     p.position.z = xz.z;
+    // The ground 5 m up and down, in the road's first room.
     Vec3 hit;
     if (m_probe && m_probe(p.position + Vec3{0, 5, 0}, p.position - Vec3{0, 5, 0}, hit))
         p.position.y = hit.y;
-    else if (w.sidewalk >= 0)
+    else if (!m_probe && w.sidewalk >= 0)
         p.position.y = m_net.sidewalks()[static_cast<std::size_t>(w.sidewalk)].centre.pointAt(dist).y;
     p.reaction = p.cross = 0;
     p.lastReaction = p.lastCross = -1;
-    p.reversingAtDive = false;
-    p.sideDist0 = 0.0f;
-    m_onPath[static_cast<std::size_t>(path)].push_back(idx);
+    pathAdd(path, idx);
+    p.frameHeading = p.heading;
     startSeq(p, seqs(p).walk);
     p.frame = static_cast<int>(m_rng.frand() * static_cast<float>(frameCount(p, seqs(p).walk)));
-    solveTargetPoint(p, dist + static_cast<float>(p.dir) * kPedLookAhead);
+    solveTargetPoint(p, static_cast<float>(p.dir) * kPedLookAhead + dist);
+    p.reversingAtDive = false;
+    p.sideDist0 = 0.0f;
 }
 
-void Pedestrians::clearPath(int path) {
-    for (int idx : m_onPath[static_cast<std::size_t>(path)]) {
-        m_peds[static_cast<std::size_t>(idx)].active = false;
-        m_pool.push_back(idx);
+// aiMap::ClearPeds: the road's pedestrians back to the pool, its head first.
+void Pedestrians::clearPeds(int path) {
+    int idx = m_pathHead[static_cast<std::size_t>(path)];
+    while (idx >= 0) {
+        const int next = m_peds[static_cast<std::size_t>(idx)].next;
+        pathRemove(path, idx);
+        poolAdd(idx);
+        idx = next;
     }
-    m_onPath[static_cast<std::size_t>(path)].clear();
-    m_pathActive[static_cast<std::size_t>(path)] = 0;
 }
 
-void Pedestrians::adjust(int oldRoom, int newRoom) {
-    const city::AiMap* map = m_net.source();
-    if (!map)
-        return;
-    static const std::vector<std::uint16_t> kNone;
-    auto list = [&](int room) -> const std::vector<std::uint16_t>& {
-        if (room < 0 || static_cast<std::size_t>(room) >= map->roomPathsIn.size())
-            return kNone;
-        return map->roomPathsIn[static_cast<std::size_t>(room)];
-    };
-    std::vector<int> added;
-    if (m_populateAll) {
-        for (std::size_t p = 0; p < m_net.paths().size(); ++p)
-            added.push_back(static_cast<int>(p));
-    } else {
-        const auto& from = list(oldRoom);
-        const auto& to = list(newRoom);
-        for (auto p : from)
-            if (std::ranges::find(to, p) == to.end() && p < m_net.paths().size() && m_pathActive[p])
-                clearPath(p);
-        for (auto p : to)
-            if (std::ranges::find(from, p) == from.end() && p < m_net.paths().size())
-                added.push_back(p);
-    }
-    std::vector<int> fresh;
-    for (int p : added) {
-        if (m_pathActive[static_cast<std::size_t>(p)])
+// aiMap::AdjustPedestrians for the player leaving the room with road list
+// `from` for the room with `to` (the .bai's second per-room lists).
+void Pedestrians::adjust(const std::vector<std::uint16_t>& from, const std::vector<std::uint16_t>& to) {
+    const std::size_t pathCount = m_net.paths().size();
+    // Roads that drop out return their pedestrians and leave the populated
+    // list (aiPath::RemPedPlayer: the only player left).
+    for (auto p : from) {
+        if (std::ranges::find(to, p) != to.end() || p >= pathCount || !m_pathActive[p])
             continue;
-        m_pathActive[static_cast<std::size_t>(p)] = 1;
+        clearPeds(p);
+        int* link = &m_activeHead;
+        while (*link >= 0 && *link != p)
+            link = &m_activeNext[static_cast<std::size_t>(*link)];
+        if (*link == p)
+            *link = m_activeNext[p];
+        m_activeNext[p] = -1;
+        m_pathActive[p] = 0;
+    }
+    // New roads join the head of the populated list (aiPath::AddPedPlayer).
+    std::vector<int> fresh;
+    for (auto p : to) {
+        if (std::ranges::find(from, p) != from.end() || p >= pathCount || m_pathActive[p])
+            continue;
+        m_pathActive[p] = 1;
+        m_activeNext[p] = m_activeHead;
+        m_activeHead = p;
         fresh.push_back(p);
     }
-    // Round robin over the new roads, one pedestrian per open sidewalk side
-    // (side -1 first) per lap, while the pool lasts; a single new road gets
-    // one lap.
-    int placed;
-    do {
-        placed = 0;
-        for (int p : fresh) {
-            for (int side : {-1, 1}) {
-                if (m_pool.empty() || !walk(p, side).open)
-                    continue;
-                const int idx = m_pool.back();
-                m_pool.pop_back();
-                reset(idx, p, side);
-                ++placed;
-            }
+    // Dealt round the new roads from the pool's head, one pedestrian per open
+    // side (side -1 first) per road, until the pool runs dry or the turn
+    // comes back to the road where one was last placed.
+    const int count = static_cast<int>(fresh.size());
+    int ped = m_poolHead;
+    int k = 0, last = 0;
+    if (ped < 0)
+        return;
+    while (count != 0) {
+        const int path = fresh[static_cast<std::size_t>(k)];
+        int cur = ped;
+        if (walk(path, -1).open) {
+            cur = m_peds[static_cast<std::size_t>(ped)].next;
+            poolRemove(ped);
+            reset(ped, path, -1);
+            last = k;
         }
-    } while (!m_pool.empty() && placed > 0 && fresh.size() > 1);
+        ped = cur;
+        if (ped >= 0 && walk(path, 1).open) {
+            const int next = m_peds[static_cast<std::size_t>(ped)].next;
+            poolRemove(ped);
+            reset(ped, path, 1);
+            last = k;
+            ped = next;
+        }
+        if (++k == count)
+            k = 0;
+        if (last == k || ped < 0)
+            return;
+    }
 }
 
 void Pedestrians::populateAll() {
@@ -552,111 +717,161 @@ void Pedestrians::populateAll() {
 // --- Reactions -------------------------------------------------------------------
 
 // aiPedestrian::DetectPlayerForwardCollision: ahead of the car (behind it
-// in reverse), between a quarter of its length and 20 m, within its half
+// in reverse gear), between a quarter of its length and 20 m, within its half
 // width + 2 m.
 bool Pedestrians::forwardCollision(const Ped& p, const PlayerCar& c, float& along) const {
-    along = 9999.0f;
+    along = kNoHit;
     if (!(c.speed() > 0.0f))
         return false;
     const Vec3 rel = p.position - c.transform.m3;
     const Vec3 fwd = c.reversing ? c.transform.m2 : -c.transform.m2;
     const Vec3 lat = c.reversing ? -c.transform.m0 : c.transform.m0;
     const float a = fwd.dot(rel);
-    if (c.length * 0.25f < a && a < 20.0f && std::abs(lat.dot(rel)) < c.width * 0.5f + 2.0f) {
-        along = a;
-        return true;
+    if (c.length * 0.25f < a && a < 20.0f) {
+        const float side = lat.dot(rel);
+        const float half = c.width * 0.5f + 2.0f;
+        if (-half < side && side < half) {
+            along = a;
+            return true;
+        }
     }
     return false;
 }
 
 // aiPedestrian::DetectPlayerAnticipate: the same up to 35 m, within the half
-// width + 4 m.
+// width + 4 m (measured along -m0 whatever the gear).
 bool Pedestrians::anticipateCollision(const Ped& p, const PlayerCar& c, float& along) const {
-    along = 9999.0f;
+    along = kNoHit;
     if (!(c.speed() > 0.0f))
         return false;
     const Vec3 rel = p.position - c.transform.m3;
     const Vec3 fwd = c.reversing ? c.transform.m2 : -c.transform.m2;
     const float a = fwd.dot(rel);
-    if (c.length * 0.25f < a && a < 35.0f && std::abs((-c.transform.m0).dot(rel)) < c.width * 0.5f + 4.0f) {
-        along = a;
-        return true;
+    if (c.length * 0.25f < a && a < 35.0f) {
+        const float side = (-c.transform.m0).dot(rel);
+        const float half = c.width * 0.5f + 4.0f;
+        if (-half < side && side < half) {
+            along = a;
+            return true;
+        }
     }
     return false;
 }
 
 // aiPedestrian::DetectPlayerCollision: the car within 6 m ahead of the
-// pedestrian, within its radius either side.
+// pedestrian, within its radius either side (in the matrix of the last
+// update).
 bool Pedestrians::playerCollision(const Ped& p, const PlayerCar& c, float& ahead) const {
     if (!c.valid)
         return false;
-    const Mat34 m = frameOf(p.heading, p.position);
-    const Vec3 d = c.transform.m3 - p.position;
-    ahead = dotXZ(d, -m.m2);
-    const float side = dotXZ(d, m.m0);
+    const Mat34 m = frameOf(p.frameHeading, p.position);
+    const float dx = c.transform.m3.x - p.position.x;
+    const float dz = c.transform.m3.z - p.position.z;
+    const float fwd = -m.m2.x * dx + -m.m2.z * dz;
+    const float side = dx * m.m0.x + dz * m.m0.z;
     const float r = c.radius;
-    return -r < ahead && ahead < 6.0f && -r < side && side < r;
+    if (-r < fwd && fwd < kPedLookAhead && -r < side && side < r) {
+        ahead = fwd;
+        return true;
+    }
+    return false;
 }
 
+// The wall probe of Anticipate and Avoid: from 2 m on the road side to 10 m
+// on the building side, 1 m up.
 bool Pedestrians::wallProbe(Ped& p) {
     p.wall = false;
     if (!m_probe)
         return false;
-    const Vec3 x = axisX(p.path, std::clamp(p.idx, 0, sections(p.path) - 1));
+    const Vec3 x = axisX(p.path, p.idx);
     const float s = p.side == 1 ? 1.0f : -1.0f;
-    const Vec3 base = p.position + Vec3{0, 1, 0};
+    const Vec3 up{0, 1, 0};
     Vec3 hit;
-    if (m_probe(base + x * (2.0f * s), base - x * (10.0f * s), hit)) {
+    if (m_probe(p.position + x * (2.0f * s) + up, p.position - x * (10.0f * s) + up, hit)) {
         p.wall = true;
         p.wallHit = hit;
     }
     return p.wall;
 }
 
-// Backed against the wall it ran to: 0.2 m out from it, facing the road.
+// Anticipate: backed against the wall it ran to, 0.2 m out from it, facing the
+// road.
 void Pedestrians::backupAt(Ped& p) {
-    const Vec3 x = axisX(p.path, std::clamp(p.idx, 0, sections(p.path) - 1));
-    const float s = p.side == 1 ? 1.0f : -1.0f;
-    p.position.x = p.wallHit.x + x.x * 0.2f * s;
-    p.position.z = p.wallHit.z + x.z * 0.2f * s;
-    p.heading = headingOf(x * s);
+    const Vec3 x = axisX(p.path, p.idx);
+    if (p.side == 1) {
+        p.position.x = x.x * 0.2f + p.wallHit.x;
+        p.position.z = x.z * 0.2f + p.wallHit.z;
+        p.heading = std::atan2(x.x, x.z);
+    } else {
+        p.position.x = p.wallHit.x - x.x * 0.2f;
+        p.position.z = p.wallHit.z - x.z * 0.2f;
+        p.heading = std::atan2(-x.x, -x.z);
+    }
     startSeq(p, seqs(p).backup);
 }
 
-// aiPedestrian::AvoidObstacle: step round an obstacle on the walkway, or turn
-// back when it blocks the walkway's whole width.
+// aiPedestrian::AvoidObstacle: step round an obstacle on the walkway (to the
+// side with room within the 1.5 m half width), or turn back when it blocks
+// the whole width. For small angles it turns the wrong way, as coded.
 void Pedestrians::avoidObstacle(Ped& p, const Vec3& obstacle, float radius) {
-    const int n = sections(p.path);
-    int i = p.idx == n ? n - 1 : p.idx;
+    int n = sections(p.path);
+    int i = p.idx == n ? p.idx - 1 : p.idx;
     Vec3 d = p.dir == 1 ? -axisX(p.path, i) : axisX(p.path, i);
-    const float pedLat = dotXZ(p.position - sv(p.path, p.side, i), d);
-    const float obsLat = dotXZ(obstacle - sv(p.path, p.side, i), d);
+    const Vec3 v = sv(p.path, p.side, i);
+    const float pedLat = (p.position.x - v.x) * d.x + (p.position.z - v.z) * d.z;
+    const float obsLat = (obstacle.x - v.x) * d.x + (obstacle.z - v.z) * d.z;
     float r = radius;
-    if (obsLat + radius > 1.5f && obsLat - radius < -1.5f) {
-        if (0 < p.idx && p.idx < n) {
-            p.dir = -p.dir;
-            p.heading = headingAt(p, roadDistance(p), p.dir);
-        } else {
-            const int path = p.path, side = p.side, dir = p.dir;
-            p.path = p.prevPath;
-            p.dir = -p.prevDir;
-            p.side = p.prevSide;
-            p.prevPath = path;
-            p.prevSide = side;
-            p.prevDir = dir;
-            p.heading += 3.14f;
-            p.idx = p.dir == 1 ? 0 : sections(p.path);
-            i = p.idx == sections(p.path) ? sections(p.path) - 1 : p.idx;
-            d = p.dir == 1 ? -axisX(p.path, i) : axisX(p.path, i);
-            roadDistance(p);
-            calcCurve(p, p.idx - 1, p.idx, p.lateral);
+    if (obsLat + radius <= kPedMaxLateral || -kPedMaxLateral <= obsLat - radius) {
+        if (pedLat <= obsLat) {
+            if (!(obsLat - radius < -kPedMaxLateral))
+                r = -radius;
+        } else if (!(obsLat + radius <= kPedMaxLateral)) {
+            r = -radius;
         }
-    } else if (pedLat > obsLat) {
-        r = obsLat + radius <= 1.5f ? radius : -radius;
+    } else if (p.idx == 0 || n <= p.idx) {
+        // On a corner: back onto the previous road, turned round. MM2 parks
+        // the old previous side (an int) in the radius argument's slot and
+        // later loads that slot as the float offset: +1 reads as the smallest
+        // denormal (the target is the obstacle itself), -1 as a NaN, which
+        // turns the heading and then the position into NaN: the pedestrian
+        // is gone until its road is cleared (OpenMM2: `lost`).
+        const int oldPrevSide = p.prevSide, oldPrevDir = p.prevDir, oldPrevPath = p.prevPath;
+        r = std::bit_cast<float>(static_cast<std::int32_t>(oldPrevSide));
+        if (std::isnan(r))
+            p.lost = true;
+        p.prevSide = p.side;
+        p.prevDir = p.dir;
+        const int from = p.path;
+        p.side = oldPrevSide;
+        p.dir = -oldPrevDir;
+        moveToPath(p, oldPrevPath);
+        p.prevPath = from;
+        p.heading += kHalfTurn;
+        n = sections(p.path);
+        p.idx = p.dir == 1 ? 0 : n;
+        i = p.idx == n ? p.idx - 1 : p.idx;
+        d = p.dir == 1 ? -axisX(p.path, i) : axisX(p.path, i);
+        p.dist = roadDistance(p);
+        calcCurve(p, p.idx - 1, p.idx, p.lateral);
     } else {
-        r = obsLat - radius >= -1.5f ? -radius : radius;
+        // Turned round where it is, heading taken from row 0 (the first lane's
+        // lengths) at the last road distance; `d` keeps the old direction.
+        p.dir = -p.dir;
+        p.heading = getHeading(p.path, p.dist, 0, p.dir);
     }
-    steer(p, obstacle + d * r, true);
+    if (p.lost)
+        return;
+    p.target = d * r + obstacle;
+    const Mat34 m = frameOf(p.frameHeading, p.position);
+    const Vec3 t = p.target - p.position;
+    const float angle = std::atan2((t.z * m.m0.z + t.y * m.m0.y) + t.x * m.m0.x,
+                                   -((t.z * m.m2.z + t.y * m.m2.y) + t.x * m.m2.x));
+    if (kPedTurnRate < angle)
+        p.heading -= kPedTurnRate;
+    else if (-kPedTurnRate <= angle)
+        p.heading = angle + p.heading;
+    else
+        p.heading = kPedTurnRate + p.heading;
 }
 
 void Pedestrians::wander(Ped& p, const PlayerCar& c) {
@@ -674,12 +889,15 @@ void Pedestrians::wander(Ped& p, const PlayerCar& c) {
         p.lastReaction = p.reaction;
         p.lastCross = p.cross;
     }
-    const float dist = roadDistance(p);
-    float ahead = 9999.0f;
-    bool player = false;
-    if (c.valid && distXZ2(c.transform.m3, p.position) < 36.0f)
-        player = playerCollision(p, c, ahead);
-    if (player && ahead < 9999.0f) {
+    p.dist = roadDistance(p);
+    float ahead = kNoHit;
+    // Within 6 m of the player (squared XZ distance from the start of the
+    // update).
+    if (c.valid && sq(c.transform.m3.z - p.position.z) + sq(c.transform.m3.x - p.position.x) < 36.0f)
+        playerCollision(p, c, ahead);
+    // MM2 checks the props here too (DetectBangerCollision); OpenMM2 has no
+    // obstacle map of them yet.
+    if (ahead < kNoHit) {
         // aiPedestrian::AvoidPlayer: round the car at its radius + 1 m.
         avoidObstacle(p, c.transform.m3, c.radius + 1.0f);
         if (p.seq == s.stand)
@@ -689,17 +907,16 @@ void Pedestrians::wander(Ped& p, const PlayerCar& c) {
     }
     if (p.seq == s.stand)
         queueSeq(p, s.standWalk);
-    solveTargetPoint(p, dist + static_cast<float>(p.dir) * kPedLookAhead);
+    solveTargetPoint(p, static_cast<float>(p.dir) * kPedLookAhead + p.dist);
     steer(p, p.target);
-    solveRoadSegment(p, dist);
+    solveRoadSegment(p, p.dist);
 }
 
 void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
     const Seqs& s = seqs(p);
     const int n = sections(p.path);
-    const bool entering = p.reaction != p.lastReaction || p.cross != p.lastCross;
-    p.lastReaction = p.reaction;
-    p.lastCross = p.cross;
+    // Anticipate looks at the reaction only (not the crossing state).
+    const bool entering = p.reaction != p.lastReaction;
     auto queueBrace = [&] {
         if (p.seq == s.walk || p.seq == s.standWalk)
             queueSeq(p, s.walkAntic);
@@ -710,18 +927,20 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
         p.heading = std::atan2(c.transform.m3.x - p.position.x, c.transform.m3.z - p.position.z);
     };
     if (p.idx == 0 || p.idx == n) {
-        if (entering)
+        if (entering) {
             queueBrace();
+            p.lastReaction = p.reaction;
+        }
         faceCar();
         return;
     }
     wallProbe(p);
     if (entering) {
         const Vec3 x = axisX(p.path, p.idx);
-        const float sgn = p.side == 1 ? 1.0f : -1.0f;
         if (p.wall) {
-            if (std::sqrt(distXZ2(p.position, p.wallHit)) >= 1.25f) {
-                p.heading = headingOf(x * -sgn); // to the buildings
+            if (std::sqrt(sq(p.position.z - p.wallHit.z) + sq(p.position.x - p.wallHit.x)) >= 1.25f) {
+                // To the buildings.
+                p.heading = p.side == 1 ? std::atan2(-x.x, -x.z) : std::atan2(x.x, x.z);
                 startSeq(p, s.run);
             } else {
                 backupAt(p);
@@ -731,16 +950,18 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
                 // Run along the road the way the car is going.
                 startSeq(p, s.run);
                 const auto& centre = m_net.source()->paths[static_cast<std::size_t>(p.path)].center;
+                const Vec3 along = centre[static_cast<std::size_t>(p.idx)] - centre[static_cast<std::size_t>(p.idx - 1)];
                 const Vec3 travel = c.reversing ? c.transform.m2 : -c.transform.m2;
-                const int i = std::clamp(p.idx, 1, static_cast<int>(centre.size()) - 1);
-                const Vec3 along = centre[static_cast<std::size_t>(i)] - centre[static_cast<std::size_t>(i - 1)];
-                const int newDir = along.dot(travel) > 0.0f ? 1 : -1;
+                const float dot = along.x * travel.x + (along.y * travel.y + along.z * travel.z);
+                const int newDir = dot > 0.0f ? 1 : -1;
                 if (newDir != p.dir) {
                     p.dir = newDir;
-                    const float dist = roadDistance(p);
-                    p.heading = headingAt(p, dist, p.dir);
+                    p.dist = roadDistance(p);
+                    // Heading from row 0 at the new distance; as coded,
+                    // direction +1 then faces back (Wander turns it round).
+                    p.heading = getHeading(p.path, p.dist, 0, p.dir);
                     if (p.dir == 1)
-                        p.heading += 3.14f; // as coded: it faces back; Wander turns it round
+                        p.heading = p.heading <= 0.0f ? p.heading + kHalfTurn : p.heading - kHalfTurn;
                 }
             } else {
                 startSeq(p, s.walkAntic);
@@ -748,6 +969,7 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
         } else {
             queueBrace();
         }
+        p.lastReaction = p.reaction;
     }
     if (p.wall) {
         if (p.seq == s.run && p.position.dist(p.wallHit) < 1.25f)
@@ -764,56 +986,63 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
 void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
     const Seqs& s = seqs(p);
     const int n = sections(p.path);
-    const bool entering = p.reaction != p.lastReaction || p.cross != p.lastCross;
-    p.lastReaction = p.reaction;
-    p.lastCross = p.cross;
+    // Avoid looks at the reaction only (not the crossing state).
+    const bool entering = p.reaction != p.lastReaction;
     const bool onSegment = p.idx != 0 && p.idx != n;
+    // On a corner MM2 neither probes nor clears the wall flag.
     if (onSegment)
         wallProbe(p);
-    else
-        p.wall = false;
     auto axes = [&](Vec3& a, Vec3& b) {
         a = p.reversingAtDive ? -c.transform.m0 : c.transform.m0;
         b = p.reversingAtDive ? -c.transform.m2 : c.transform.m2;
     };
-    if (entering) {
-        if (!p.wall) {
-            // Dive, facing against the car's way, to the side it steers away
-            // from or, going straight, away from its centre line.
-            p.reversingAtDive = c.reversing;
-            Vec3 a, b;
-            axes(a, b);
-            p.heading = std::atan2(b.x, b.z);
-            p.sideDist0 = a.dot(p.position - c.transform.m3);
-            bool right;
-            if (c.steering > 0.85f)
-                right = true;
-            else if (c.steering < -0.85f)
-                right = false;
-            else
-                right = !(p.sideDist0 > 0.0f);
-            const bool walking = p.seq == s.walk;
-            startSeq(p, right ? (walking ? s.walkRDive : s.anticRDive)
-                              : (walking ? s.walkLDive : s.anticLDive));
+    const Vec3 rel = p.position - c.transform.m3;
+    if (entering && (!onSegment || !p.wall)) {
+        // Dive, facing against the car's way, to the side it steers away
+        // from or, going straight, away from its centre line.
+        p.reversingAtDive = c.reversing;
+        Vec3 a, b;
+        axes(a, b);
+        p.heading = std::atan2(b.x, b.z);
+        p.sideDist0 = onSegment ? a.x * rel.x + a.y * rel.y + a.z * rel.z
+                                : a.y * rel.y + a.z * rel.z + a.x * rel.x;
+        bool right;
+        if (c.steering > 0.85f)
+            right = true;
+        else if (c.steering < -0.85f)
+            right = false;
+        else
+            right = !(0.0f < p.sideDist0);
+        const bool walking = p.seq == s.walk;
+        startSeq(p, right ? (walking ? s.walkRDive : s.anticRDive) : (walking ? s.walkLDive : s.anticLDive));
+        p.scream = true;
+        p.lastReaction = p.reaction;
+    } else if (entering) {
+        const Vec3 x = axisX(p.path, p.idx);
+        if (p.position.dist(p.wallHit) >= 1.25f) {
+            p.heading = std::atan2(-x.x, -x.z); // as coded, whatever the side
             p.scream = true;
+            startSeq(p, s.run);
         } else {
-            const Vec3 x = axisX(p.path, p.idx);
-            if (p.position.dist(p.wallHit) >= 1.25f) {
-                p.heading = headingOf(-x); // as coded, whatever the side
-                p.scream = true;
-                startSeq(p, s.run);
-            } else {
-                p.heading = headingOf(x);
-                p.position.x = p.wallHit.x + x.x * 0.2f;
-                p.position.z = p.wallHit.z + x.z * 0.2f;
-                startSeq(p, s.backup);
-            }
+            // Unlike Anticipate, whatever the side.
+            p.heading = std::atan2(x.x, x.z);
+            p.position.x = x.x * 0.2f + p.wallHit.x;
+            p.position.z = x.z * 0.2f + p.wallHit.z;
+            startSeq(p, s.backup);
         }
+        p.lastReaction = p.reaction;
     }
     if (onSegment) {
         if (p.seq == s.run) {
-            if (p.wall && p.position.dist(p.wallHit) < 1.25f)
-                backupAt(p);
+            // MM2 measures from this update's probe point (left over from the
+            // probe when nothing was hit).
+            if (p.wall && p.position.dist(p.wallHit) < 1.25f) {
+                const Vec3 x = axisX(p.path, p.idx);
+                p.heading = std::atan2(x.x, x.z);
+                p.position.x = x.x * 0.2f + p.wallHit.x;
+                p.position.z = x.z * 0.2f + p.wallHit.z;
+                startSeq(p, s.backup);
+            }
             return;
         }
         if (p.seq == s.backup)
@@ -822,13 +1051,13 @@ void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
     // Keep up with the dive: faster sideways when behind schedule.
     Vec3 a, b;
     axes(a, b);
-    const float now = a.dot(p.position - c.transform.m3);
+    const float now = onSegment ? a.x * rel.x + a.y * rel.y + a.z * rel.z : a.y * rel.y + a.z * rel.z + a.x * rel.x;
     const float v = latSpeed(p, p.seq) * kFrameSeconds;
     const float f = static_cast<float>(p.frame);
     if (p.seq == s.lDiveGround || p.seq == s.rDiveGround) {
         if (std::abs(now) < std::abs(f * v + p.sideDist0 + 2.54f))
             latScale = 5.0f;
-    } else if (f > 12.0f && std::abs(now) < std::abs(f * v + p.sideDist0)) {
+    } else if (p.frame > 12 && std::abs(now) < std::abs(f * v + p.sideDist0)) {
         latScale = 3.0f;
     }
     p.heading = std::atan2(b.x, b.z);
@@ -843,9 +1072,10 @@ Vec3 Pedestrians::curbPoint(int path, int side, bool atEnd) const {
         return {};
     if (atEnd)
         return curb.back() - axisZ(path, static_cast<int>(curb.size()) - 1) * 2.5f;
-    return curb.front() + axisZ(path, 0) * 2.5f;
+    return axisZ(path, 0) * 2.5f + curb.front();
 }
 
+// PreCrossStreet's near curb point and WaitCrossStreet's far one.
 void Pedestrians::crossTargets(const Ped& p, Vec3& nearSide, Vec3& farSide) const {
     int road, side;
     bool atEnd;
@@ -855,63 +1085,60 @@ void Pedestrians::crossTargets(const Ped& p, Vec3& nearSide, Vec3& farSide) cons
         atEnd = p.prevDir == 1;
     } else {
         road = p.path;
-        const bool nodeAtEnd = m_net.paths()[static_cast<std::size_t>(road)].intersection[0] == p.crossNode;
-        if (p.prevDir == p.prevSide) {
+        const bool nodeAtEnd = m_net.paths()[static_cast<std::size_t>(road)].intersection[0] == crossedNode(p);
+        if (p.prevDir == p.prevSide)
             side = nodeAtEnd ? -1 : 1;
-            atEnd = nodeAtEnd;
-        } else {
+        else
             side = !nodeAtEnd ? -1 : 1;
-            atEnd = nodeAtEnd;
-        }
+        atEnd = nodeAtEnd;
     }
     nearSide = curbPoint(road, side, atEnd);
     farSide = curbPoint(road, -side, atEnd);
 }
 
 // aiPedestrian::Accident: a car out of normal driving in the intersection
-// being crossed or near the ends of this road.
+// being crossed or near this road's end.
 bool Pedestrians::accident(const Ped& p) const {
-    return m_accident && m_accident(p.crossNode, p.path);
+    return m_accident && m_accident(crossedNode(p), p.path);
 }
 
+// Back to the sidewalk it came from, turned round (PreCrossStreet,
+// WaitCrossStreet, CrossStreet).
 void Pedestrians::abortCrossing(Ped& p) {
     p.dir = -p.prevDir;
-    p.heading += 3.14f;
+    p.heading += kHalfTurn;
     p.side = p.prevSide;
     p.cross = 0;
-    const int id = static_cast<int>(&p - m_peds.data());
-    std::erase(m_onPath[static_cast<std::size_t>(p.path)], id);
-    p.path = p.prevPath;
-    m_onPath[static_cast<std::size_t>(p.path)].push_back(id);
+    moveToPath(p, p.prevPath);
     p.idx = p.dir == 1 ? 0 : sections(p.path);
     queueSeq(p, seqs(p).walk);
 }
 
 void Pedestrians::preCross(Ped& p, const PlayerCar& c) {
-    Vec3 nearSide, farSide;
-    crossTargets(p, nearSide, farSide);
     if (p.cross != p.lastCross || p.reaction != p.lastReaction) {
-        p.lastCross = p.cross;
-        p.lastReaction = p.reaction;
+        Vec3 nearSide, farSide;
+        crossTargets(p, nearSide, farSide);
         p.target = nearSide;
         queueSeq(p, seqs(p).walk);
+        p.lastReaction = p.reaction;
+        p.lastCross = p.cross;
     }
     steer(p, p.target);
     float ahead;
     if (c.speed() < 1.0f && playerCollision(p, c, ahead))
         abortCrossing(p);
-    else if (distXZ2(p.position, p.target) < 1.0f)
+    else if (sq(p.target.z - p.position.z) + sq(p.target.x - p.position.x) < 1.0f)
         p.cross = 2;
 }
 
 void Pedestrians::waitCross(Ped& p, const PlayerCar& c) {
-    Vec3 nearSide, farSide;
-    crossTargets(p, nearSide, farSide);
     if (p.cross != p.lastCross || p.reaction != p.lastReaction) {
-        p.lastCross = p.cross;
-        p.lastReaction = p.reaction;
+        Vec3 nearSide, farSide;
+        crossTargets(p, nearSide, farSide);
         p.target = farSide;
         queueSeq(p, m_rng.frand() < 0.5f ? seqs(p).stand : seqs(p).stand2);
+        p.lastReaction = p.reaction;
+        p.lastCross = p.cross;
     }
     steer(p, p.target);
     float ahead;
@@ -919,48 +1146,63 @@ void Pedestrians::waitCross(Ped& p, const PlayerCar& c) {
         abortCrossing(p);
         return;
     }
-    if (distXZ2(p.position, p.target) < 1.0f) {
+    if (sq(p.target.z - p.position.z) + sq(p.target.x - p.position.x) < 1.0f)
         p.cross = 1;
-        return;
-    }
-    // Across once the lights' pedestrian phase shows WALK.
-    if (m_lights && m_lights->walkPhaseAt(p.crossNode) &&
-        m_lights->firstLightAt(p.crossNode) == LightState::Walk)
+    // Across once the lights' pedestrian phase shows WALK (light 0 of the
+    // set; this can override the line above).
+    const int node = crossedNode(p);
+    if (m_lights && m_lights->walkPhaseAt(node) && m_lights->firstLightAt(node) == LightState::Walk)
         p.cross = 3;
 }
 
 void Pedestrians::crossStreet(Ped& p, const PlayerCar& c) {
     if (p.cross != p.lastCross || p.reaction != p.lastReaction) {
-        p.lastCross = p.cross;
-        p.lastReaction = p.reaction;
         queueSeq(p, seqs(p).walk);
+        p.lastReaction = p.reaction;
+        p.lastCross = p.cross;
     }
     steer(p, p.target);
-    if (m_lights && m_lights->firstLightAt(p.crossNode) == LightState::WalkEnd)
+    const int node = crossedNode(p);
+    if (m_lights && m_lights->hasLights(node) && m_lights->firstLightAt(node) == LightState::WalkEnd)
         queueSeq(p, seqs(p).run);
     float ahead;
     if (c.speed() < 1.0f && playerCollision(p, c, ahead))
         abortCrossing(p);
-    else if (distXZ2(p.position, p.target) < 1.5f)
+    else if (sq(p.target.z - p.position.z) + sq(p.target.x - p.position.x) < 1.5f)
         p.cross = 0;
 }
 
 // --- Update -------------------------------------------------------------------
 
+// aiPedestrian::Update. (MM2 also hands a pedestrian with an attached
+// physics entity over to it; nothing attaches one in OpenMM2.)
 void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
     Ped& p = m_peds[static_cast<std::size_t>(idx)];
+    if (!p.active || p.path < 0)
+        return;
+    if (p.lost) {
+        // With a NaN position and heading nothing else changes in MM2.
+        animate(p, dt);
+        return;
+    }
     const Seqs& s = seqs(p);
     p.scream = false;
-    const float d2 = c.valid ? distXZ2(p.position, c.transform.m3) : 1e9f;
+    // The nearest player's squared XZ distance (a single player here).
+    const float d2 = c.valid ? sq(p.position.z - c.transform.m3.z) + sq(p.position.x - c.transform.m3.x) : kFarAway;
     const float speed = c.valid ? c.speed() : 0.0f;
     float latScale = 1.0f;
     if (p.seq == s.backup) {
         // Out of the corner once the car has gone by.
-        const Vec3 m = normalized3(c.velocity);
-        if ((p.position - c.transform.m3).dot(m) < 0.0f && sq(2.0f * c.radius) < d2) {
-            p.reaction = 0;
-            p.lateral = 1.5f * std::sin(m_rng.frand() * 6.2831f);
-            calcCurve(p, p.idx - 1, p.idx, p.lateral);
+        if (c.valid) {
+            // aiVehiclePlayer::Update: the unit direction of the car's motion.
+            const Vec3& v = c.velocity;
+            const Vec3 m = scaledUnit(v, v.z * v.z + v.y * v.y + v.x * v.x);
+            const float r = c.radius;
+            if ((p.position - c.transform.m3).dot(m) < 0.0f && (r + r) * (r + r) < d2) {
+                p.reaction = 0;
+                p.lateral = std::sin(m_rng.frand() * 6.2831f) * kPedMaxLateral;
+                calcCurve(p, p.idx - 1, p.idx, p.lateral);
+            }
         }
     } else if ((p.seq == s.run && p.reaction == static_cast<int>(p.wall)) || p.seq == s.anticLDive ||
                p.seq == s.anticRDive || p.seq == s.walkLDive || p.seq == s.walkRDive ||
@@ -968,22 +1210,23 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
                p.seq == s.groundStandR) {
         // Busy: keep the reaction.
     } else {
-        float along;
-        p.reaction = 0;
+        int reaction = 0;
         if (d2 < sq(kPedAwareRadius)) {
-            const float inv = speed > 0.001f ? 1.0f / speed : 0.0f;
+            // aiPedestrian::TimeToCollision: (distance - 2) / speed, with
+            // aiVehiclePlayer's inverse speed (0 below 0.001 m/s).
+            const float inv = 0.001f < speed ? 1.0f / speed : 0.0f;
+            float along;
             if (forwardCollision(p, c, along)) {
                 const float ttc = (along - 2.0f) * inv;
-                if (speed >= 1.0f && ttc < 0.75f)
-                    p.reaction = 2;
-                else if (speed >= 1.0f && ttc < 2.3f)
-                    p.reaction = 1;
+                if (1.0f <= speed)
+                    reaction = ttc < 0.75f ? 2 : ttc < 2.3f ? 1 : 0;
             } else if (anticipateCollision(p, c, along)) {
                 const float ttc = (along - 2.0f) * inv;
-                if (speed >= 1.0f && ttc < 2.3f)
-                    p.reaction = 1;
+                if (1.0f <= speed && ttc < 2.3f)
+                    reaction = 1;
             }
         }
+        p.reaction = reaction;
     }
     switch (p.reaction) {
     case 1:
@@ -992,8 +1235,11 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
     case 2:
         avoid(p, c, latScale);
         break;
-    default:
+    case 0:
         switch (p.cross) {
+        case 0:
+            wander(p, c);
+            break;
         case 1:
             preCross(p, c);
             break;
@@ -1004,16 +1250,27 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
             crossStreet(p, c);
             break;
         default:
-            wander(p, c);
             break;
         }
         break;
+    default:
+        break;
     }
-    // Move by the current sequence's speeds, free of the path.
+    if (p.lost) {
+        animate(p, dt);
+        return;
+    }
+    // The matrix from the new heading; move by the current sequence's speeds,
+    // free of the path.
+    p.frameHeading = p.heading;
     const Mat34 m = frameOf(p.heading, p.position);
-    p.position -= m.m2 * (dt * fwdSpeed(p, p.seq)) + m.m0 * (dt * latScale * latSpeed(p, p.seq));
-    // Ground: a probe 2 m up and down, taken when within 0.5 m (MM2 keeps
-    // flat roads' first curb height beyond 50 m of the player).
+    const float fwd = fwdSpeed(p, p.seq) * dt;
+    const float lat = latScale * latSpeed(p, p.seq) * dt;
+    p.position.x -= fwd * m.m2.x + lat * m.m0.x;
+    p.position.y -= fwd * m.m2.y + lat * m.m0.y;
+    p.position.z -= fwd * m.m2.z + lat * m.m0.z;
+    // Ground: a probe 2 m up and down, taken when within 0.5 m; flat roads
+    // keep the first curb's height beyond 50 m of the player.
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(p.path)];
     if ((info.flags & 0x8) && d2 > 2500.0f && !walk(p.path, 1).curb.empty()) {
         p.position.y = walk(p.path, 1).curb.front().y;
@@ -1023,34 +1280,77 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
             std::abs(hit.y - p.position.y) < 0.5f)
             p.position.y = hit.y;
     } else if (const int w = walk(p.path, p.side).sidewalk; w >= 0) {
+        // OpenMM2 without the game's collision: the sidewalk line's height.
         const auto& line = m_net.sidewalks()[static_cast<std::size_t>(w)].centre;
         p.position.y = line.pointAt(line.project(p.position)).y;
     }
     p.target.y = p.position.y;
-    // Animation: one frame per 1/30 s; at the end the queued sequence starts.
-    p.frame += static_cast<int>(dt * kPedAnimFps + 0.5f);
-    if (p.frame >= frameCount(p, p.seq))
-        startSeq(p, p.queued ? p.queued : p.seq);
+    animate(p, dt);
+}
+
+// pedAnimationInstance::PreUpdate and Update: the frame clock advances by
+// dt x 30 frames per pedestrian update, the whole frames go to this
+// pedestrian, the fraction stays for the next one; at the end of the sequence
+// the queued one starts.
+void Pedestrians::animate(Ped& p, float dt) {
+    m_animClock += dt * kPedAnimFps;
+    const float whole = std::floor(m_animClock);
+    const int step = static_cast<int>(whole);
+    m_animClock -= whole;
+    if (frameCount(p, p.seq) <= 1) {
+        if (step != 0)
+            startSeq(p, p.queued ? p.queued : p.seq);
+    } else {
+        p.frame += step;
+        if (frameCount(p, p.seq) <= p.frame)
+            startSeq(p, p.queued ? p.queued : p.seq);
+    }
+}
+
+// aiPath::UpdatePedestrians: down the road's list from its head. A pedestrian
+// that moves to another road takes the walk on into that road's list (its
+// new neighbours update now, the rest of this road waits), as in MM2; it stops
+// on reaching this road's head again.
+void Pedestrians::updateRoad(int path, float dt, const PlayerCar& player) {
+    int idx = m_pathHead[static_cast<std::size_t>(path)];
+    // OpenMM2 guard against a walk that never ends.
+    std::size_t guard = 4 * m_peds.size() + 4;
+    while (idx >= 0 && guard-- > 0) {
+        update(idx, dt, player);
+        idx = m_peds[static_cast<std::size_t>(idx)].next;
+        if (idx == m_pathHead[static_cast<std::size_t>(path)])
+            break;
+    }
 }
 
 void Pedestrians::step(float dt, const PlayerCar& player, int room) {
+    const city::AiMap* map = m_net.source();
+    static const std::vector<std::uint16_t> kNone;
+    auto list = [&](int r) -> const std::vector<std::uint16_t>& {
+        if (!map || r < 0 || static_cast<std::size_t>(r) >= map->roomPathsIn.size())
+            return kNone;
+        return map->roomPathsIn[static_cast<std::size_t>(r)];
+    };
     if (!m_started) {
+        // aiMap::Reset: the player's first room.
         m_started = true;
         m_room = room;
-        adjust(0, room);
-        m_populateAll = false;
+        if (m_populateAll) {
+            std::vector<std::uint16_t> all;
+            for (std::size_t p = 0; p < m_net.paths().size(); ++p)
+                all.push_back(static_cast<std::uint16_t>(p));
+            adjust(kNone, all);
+            m_populateAll = false;
+        } else {
+            adjust(list(0), list(room));
+        }
     } else if (room != 0 && room != m_room) {
-        adjust(m_room, room);
+        // aiMap::Update: the player entered another room.
+        adjust(list(m_room), list(room));
         m_room = room;
     }
-    std::vector<int> order;
-    for (std::size_t path = 0; path < m_onPath.size(); ++path)
-        if (m_pathActive[path])
-            for (int idx : m_onPath[path])
-                order.push_back(idx);
-    for (int idx : order)
-        if (m_peds[static_cast<std::size_t>(idx)].active && m_peds[static_cast<std::size_t>(idx)].path >= 0)
-            update(idx, dt, player);
+    for (int path = m_activeHead; path >= 0; path = m_activeNext[static_cast<std::size_t>(path)])
+        updateRoad(path, dt, player);
     publish();
 }
 
@@ -1058,7 +1358,7 @@ void Pedestrians::publish() {
     m_public.clear();
     for (std::size_t i = 0; i < m_peds.size(); ++i) {
         const Ped& p = m_peds[i];
-        if (!p.active || !p.seq)
+        if (!p.active || p.lost || !p.seq)
             continue;
         Pedestrian out;
         out.id = static_cast<int>(i);

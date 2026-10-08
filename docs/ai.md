@@ -236,14 +236,24 @@ MM2's pedestrians (build 3393, **MM2** unless marked):
   woman), the winter models in snow; clothing variant trunc(frand x
   (variants - 1)).
 * **Placement** (`aiMap::AdjustPedestrians`): per PSDL room, like the
-  traffic but with the second per-room road list; the pool is dealt round
-  the newly listed roads, one per open sidewalk side (side flag bit 1 clear)
-  per lap; roads that drop out of the list return their pedestrians. A
-  pedestrian starts at a random point of its sidewalk, walking either way,
-  with a lateral offset ((outer - inner) / 2 - 0.5) x sin(frand x 2pi)
-  (the side's lateral parameters), clamped to 1.5 m.
+  traffic but with the second per-room road list; the pool (a list, the
+  last pedestrian first) is dealt round the newly listed roads from the
+  pool's head, one per open sidewalk side (side flag bit 1 clear, side -1
+  first), stopping when the pool runs dry or the turn comes back to the road
+  where one was last placed (so a single open road gets one lap); roads that
+  drop out of the list return their pedestrians (`ClearPeds`, the road's
+  newest first). A pedestrian starts at a random point of its sidewalk,
+  walking either way, with a lateral offset ((outer - inner) / 2 - 0.5) x
+  sin(frand x 2pi) (the side's lateral parameters), clamped to 1.5 m.
+* **Update order** (`aiMap::Update`, `aiPath::UpdatePedestrians`): the
+  populated roads newest first, each road's pedestrians newest first. A
+  pedestrian that moves to another road during its update takes the walk on
+  into that road's list (those pedestrians update now, the rest of its old
+  road waits a frame), as MM2's loop does.
 * **Animation** (`pedAnimation`, `pedAnimationInstance`): 30 frames per
-  second, whole frames, from frame 0 of the `.anim`; a sequence's speeds are
+  second, whole frames, from frame 0 of the `.anim`; one frame clock is
+  shared by all pedestrians (`PreUpdate`: each update adds dt x 30 and takes
+  the whole frames, leaving the fraction to the next pedestrian); a sequence's speeds are
   its CSV forward and side distances over frames x 0.03333 s (WALK: man
   2.11 m/s, woman 1.63 m/s); the root's straight-line drift over the clip is
   taken out of the pose; at the end of a sequence the queued one starts
@@ -282,7 +292,15 @@ MM2's pedestrians (build 3393, **MM2** unless marked):
     when behind; a voice (`scream`).
   * A slow car within 6 m ahead on the walkway: step round it at its radius
     + 1 m, or turn back when it fills the walkway (`AvoidObstacle`; for small
-    angles it turns the wrong way, as coded).
+    angles it turns the wrong way, as coded). On a corner it turns back onto
+    its previous road but keeps its old direction as the previous one, so the
+    corner line it then walks runs to that road's far end; and MM2 reads the
+    previous side (an int) as the float offset: +1 gives the obstacle itself
+    as the target, -1 a NaN that takes the pedestrian's heading and position
+    with it (OpenMM2 hides it until its road is cleared).
+  * Steering uses the matrix of the last update (rebuilt from the heading
+    only at the end of `Update`), and turning round mid-sidewalk takes the
+    heading from the first lane's lengths (`aiPath::GetHeading` row 0).
 * Pedestrians are not collidable: cars drive through them (no ragdoll in
   MM2). They ignore each other and other cars.
 

@@ -41,12 +41,14 @@ float3   sphereCenter
 f32      sphereRadius
 u32      roadCount
 road[roadCount]:
-    u8   flags
-    u8   unknown
-    u16  propRule                               inferred name
-    u8   leftCount, rightCount
-    f32  leftValues[leftCount], rightValues[rightCount]   fractions in (0,1); inferred prop spacing
-    u8   unknown2, unknown3                     values 0/1/128/129 (two bit flags)
+    u32  flags                                  lvlAiRoad +0: bit 1 blocked, 2 no pedestrians,
+                                                3 divided, 4 alley, 5 freeway (lvlAiMap::Is*);
+                                                bits 10-11 / 16-17 intersection type at each end
+                                                (lvlAiMap::GetIntersectionType)
+    u8   leftCount, rightCount                  lanes per side (lvlAiMap::GetNumLanes)
+    f32  leftValues[leftCount], rightValues[rightCount]   one per lane, fractions in (0,1); use inferred
+    u8   stopLights[2]                          per end: stop light / sign type, masked with 0x15
+                                                (lvlAiMap::GetStopLightType); values 0/1/128/129
     u16  startCrossroads[4], endCrossroads[4]   corner vertices of the end intersections (verified)
     u8   roomCountOfRoad
     i16  rooms[roomCountOfRoad]                 negative = negated room id (SF only, 23 roads)
@@ -80,6 +82,24 @@ Names follow mm2hook's `RoomFlags`; the observed use differs for 0x04.
 | 0x80 | Instance      | building blocks with landmarks, some roads |
 
 The twelve London rooms flagged 0x46 have no attributes. They are water.
+
+### Room lookup (cityLevel::FindRoomId)
+
+`city::RoomLocator` follows MM2 (build 3393): the caller's last room if
+the position is inside its perimeter (`sdlPage16::PointInPerimeter`, XZ),
+else the highest-numbered neighbour across its perimeter edges that holds
+it, else `FullProbe`: a 64 x 64 grid over the extent of all perimeters,
+each room listed (in id order) in the cells its perimeter bounds overlap,
+cells indexed by truncation, and the *last* room of the cell that holds the
+position wins. A Warp (0x40) room also needs the height inside its span
+(`cityLevel::Load`): subterranean rooms reach from -1000 to their highest
+perimeter point plus 7 m (or plus the height of a leading tunnel attribute,
+after an optional texture), other rooms from 1 m below their lowest
+perimeter point to 1000. An ordinary room that a warp room overlaps (an end
+or the 0.33, 0.66, 0.5, 0.16 or 0.86 point of any of the warp room's
+perimeter edges inside it) lists it as a warp and does not claim positions
+inside the warp room's perimeter and span. London adds four hand-made
+warps: rooms 597, 599, 600 and 1297 to room 382.
 
 ## Attributes
 
@@ -205,6 +225,38 @@ following parts are *reconstructions*, not known original behaviour:
 - Tunnel walls rise `height1` (or `max(height1, height2)` with a ceiling). Railings
   are double-sided.
 - Low-detail textures are not used yet.
+
+MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
+detail, the drawn primitives coloured by `GetShadedColor`); compared with
+it (build 3393) the builder differs as follows, not yet ported:
+
+- Levels of detail (road strips): 0 draws one strip from outer edge to
+  outer edge with the group's third texture (road LOD) over every other
+  section; 1 the same strip over every section with the outer edges lowered
+  0.15 m; 2 and 3 draw the sidewalks (second texture) and the road (first)
+  separately, and only level 3 raises the curb line by 0.15 m and adds the
+  curb faces, at half brightness. The builder raises curbs to the outer
+  vertex height.
+- Road and rectangle strips: `ArcMap` texture coordinates: t is 1 at the
+  curbs and 0 at the road's centre line (the texture mirrored about it),
+  s the distance along the strip scaled to a whole number of repeats of
+  about the strip's average width and run back and forth (each segment's s
+  added while the running value is not positive, subtracted while it is).
+- Sidewalk strips: planar 4 m texture repeats (x / 4 and z / 4, offset by
+  the whole repeats at the first vertex); curb end caps are half-bright
+  triangles.
+- Crosswalks: texture (1, 0) and (0, 0) on the first pair, v = the length
+  over the width on the second pair. Road fans, crosswalks and roofs are
+  only drawn when they are not above the camera.
+- Facades: u and v are the stored repeats read *unsigned*, v 0 at the
+  bottom and the repeat at the top. Slivers: u = round(length x density),
+  v = (vertex height - top) x density. Both are back-face culled and
+  coloured by the light of the last FacadeBound attribute (its first
+  word indexes `sdlCommon::sm_LightTable`).
+- Fans and roofs: planar 8 m repeats, as the builder (MM2 subtracts the
+  whole repeats at the first vertex, which wrap addressing ignores).
+- `GetDrawnSDLPrims` (an untextured primitive list) is not called anywhere
+  in the executable.
 
 ## Collision polygons (sdlPage16::Collect)
 

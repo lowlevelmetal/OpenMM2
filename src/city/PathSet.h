@@ -16,14 +16,24 @@ namespace mm2::city {
 
 struct PathSetPoint {
     Vec3 position;
-    std::uint32_t extra = 0; // mm2hook dgPathPoint::unk; often uninitialised
+    // The 4 bytes stored after the position. dgPath::Load reads each point's
+    // flags word *before* its position, so this is the next point's flags,
+    // and for the last point the path's trailer (type, spacing, 2 unused
+    // bytes). See PathSetPath::flags, type and spacing for MM2's reading.
+    std::uint32_t extra = 0;
 };
 
 struct PathSetPath {
     std::string name;          // model name, may carry a prefix such as "open:"
-    std::uint32_t count2 = 0;  // mm2hook NumPoints2
-    std::uint32_t unknown = 0; // mm2hook Unk1 (type/spacing packed?), unknown
+    std::uint32_t count2 = 0;  // the word after the point count (dgPath +0x2c)
+    std::uint32_t unknown = 0; // the first point's flags word (dgPath::Load)
     std::vector<PathSetPoint> points;
+    // dgPath::Load: each point's flags word, read before its position.
+    std::vector<std::uint32_t> flags;
+    // dgPath::Load: the trailer's type byte, and its spacing byte in quarter
+    // metres (0 means 5 m).
+    std::uint8_t type = 0;
+    float spacing = 5.0f;
 };
 
 struct PathSet {

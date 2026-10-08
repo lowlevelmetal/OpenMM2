@@ -1,7 +1,7 @@
 #pragma once
 
-// Pedestrians, after MM2's aiPedestrian and aiMap::AdjustPedestrians
-// (build 3393, MM2Recomp; documentation only).
+// Pedestrians, after MM2's aiPedestrian, pedAnimationInstance and
+// aiMap::AdjustPedestrians (build 3393, MM2Recomp; documentation only).
 //
 // A fixed pool ([Ped Pool] x density) is spread over the sidewalks of the
 // roads listed for the player's PSDL room. Each pedestrian walks its road's
@@ -11,6 +11,10 @@
 // lit intersections with a pedestrian phase, crosses a road. It braces,
 // runs or dives out of the player's way. The animation states and speeds
 // come from anim/pedmodel_*.csv, played at 30 frames per second.
+//
+// The bookkeeping is MM2's: each road keeps a list of its pedestrians and the
+// pool is a list too, both with the newest entry first; the roads populated
+// for the player form a list, newest first, and that is the update order.
 
 #include "ai/PlayerCar.h"
 #include "ai/Random.h"
@@ -96,22 +100,25 @@ private:
         State run = nullptr, backup = nullptr, backupWalk = nullptr, runWalk = nullptr;
     };
     struct Ped {
-        bool active = false;
+        bool active = false; // on a road (else in the pool)
+        bool lost = false;   // MM2 left it with a NaN position (AvoidObstacle); hidden until reset
+        int next = -1;       // next in its road's list or in the pool (aiPedestrian +0x98)
         int type = 0, variant = 0;
         int path = -1, prevPath = -1;
         int dir = 1, prevDir = 1;
         int side = 1, prevSide = 1;
         int crossChoice = 0;
-        int crossNode = -1; // the intersection being crossed
-        int idx = 1;        // end vertex of the current sidewalk segment; 0 or n on a corner
+        int idx = 1; // end vertex of the current sidewalk segment; 0 or n on a corner
         int reaction = 0, lastReaction = -1;
         int cross = 0, lastCross = -1;
         bool reversingAtDive = false;
         bool wall = false;
         Vec3 wallHit;
-        float heading = 0.0f; // forward = (sin h, 0, cos h)
+        float heading = 0.0f;      // forward = (sin h, 0, cos h)
+        float frameHeading = 0.0f; // the heading of MM2's stored matrix (rebuilt by Reset and Update)
         float lateral = 0.0f;
         float invLen = 1.0f;
+        float dist = 0.0f; // the last RoadDistance (aiPedestrian +0x2c)
         float sideDist0 = 0.0f;
         float curve[2][4] = {};
         Vec3 position, target;
@@ -123,8 +130,12 @@ private:
 
     // Sidewalk geometry of (path, side): side -1 is the file's first side.
     struct Walk {
-        std::vector<Vec3> points; // sidewalk line, in section order
-        std::vector<float> cum;   // cumulative lengths, from 0
+        std::vector<Vec3> points; // sidewalk vertex row (aiPath::SidewalkVertice), in section order
+        std::vector<float> cum;   // its cumulative lengths, from 0
+        // Cumulative lengths of every vertex row of the side (lanes, then the
+        // sidewalk), as aiPath keeps them: the file's, or recomputed by
+        // aiPath::ReverseDirection on drive-on-the-left roads.
+        std::vector<std::vector<float>> rowCum;
         std::vector<Vec3> curb;
         float inner = 0.0f, outer = 0.0f; // lateral extent (side params)
         bool open = false;               // pedestrians allowed (side flag bit 1 clear)
@@ -134,11 +145,13 @@ private:
     int sections(int path) const;
     Vec3 sv(int path, int side, int i) const;
     float cumAt(int path, int side, int i) const;
+    float subLength(int path, int side, int a, int b) const;
     Vec3 axisX(int path, int i) const;
     Vec3 axisZ(int path, int i) const;
     Vec3 axisW(int path, int i) const;
     int sidewalkIndex(int path, int side, float dist) const;
-    float headingAt(const Ped& p, float dist, int dir) const;
+    float getHeading(int path, float dist, int row, int dir) const;
+    int crossedNode(const Ped& p) const;
 
     void startSeq(Ped& p, State s);
     void queueSeq(Ped& p, State s) { if (s) p.queued = s; }
@@ -147,10 +160,19 @@ private:
     float latSpeed(const Ped& p, State s) const;
     const Seqs& seqs(const Ped& p) const { return m_seqs[static_cast<std::size_t>(p.type)]; }
 
-    void adjust(int oldRoom, int newRoom);
-    void clearPath(int path);
+    // aiPath / aiMap lists.
+    void pathAdd(int path, int idx);
+    void pathRemove(int path, int idx);
+    void poolAdd(int idx);
+    void poolRemove(int idx);
+    void moveToPath(Ped& p, int path);
+
+    void adjust(const std::vector<std::uint16_t>& from, const std::vector<std::uint16_t>& to);
+    void clearPeds(int path);
     void reset(int idx, int path, int side);
+    void updateRoad(int path, float dt, const PlayerCar& player);
     void update(int idx, float dt, const PlayerCar& player);
+    void animate(Ped& p, float dt);
 
     // aiPedestrian helpers.
     void calcCurve(Ped& p, int a, int b, float lateral);
@@ -159,8 +181,8 @@ private:
     float roadDistance(Ped& p);
     void solveRoadSegment(Ped& p, float dist);
     int pickNextRoad(Ped& p);
-    int setNextRoad(Ped& p, int node) const;
-    void steer(Ped& p, const Vec3& target, bool avoidQuirk = false);
+    int setNextRoad(const Ped& p, int node) const;
+    void steer(Ped& p, const Vec3& target);
     bool wallProbe(Ped& p);
     void backupAt(Ped& p);
 
@@ -190,9 +212,12 @@ private:
     PedSettings m_settings;
     Random m_rng;
     std::vector<Ped> m_peds;
-    std::vector<int> m_pool;
-    std::vector<std::vector<int>> m_onPath; // pedestrians per road
-    std::vector<std::uint8_t> m_pathActive;
+    int m_poolHead = -1;                // aiMap +0x88
+    std::vector<int> m_pathHead;        // first pedestrian of each road (aiPath +0x20)
+    std::vector<std::uint8_t> m_pathActive; // road populated for the player (aiMap::FindPedAppRoad)
+    std::vector<int> m_activeNext;      // the populated roads' list (aiMap +0x180, aiPath +0x34)
+    int m_activeHead = -1;
+    float m_animClock = 0.0f; // pedAnimationInstance::PreUpdate's frame accumulator
     std::vector<std::array<Walk, 2>> m_walks;
     std::vector<Pedestrian> m_public;
     const TrafficLights* m_lights = nullptr;

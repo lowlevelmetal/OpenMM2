@@ -129,7 +129,7 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     if (config)
         net.exceptions = config->exceptions;
     world->m_network = std::make_unique<RoadNetwork>(RoadNetwork::build(*city.aiMap, net));
-    world->m_rooms = std::make_unique<city::RoomLocator>(city.psdl);
+    world->m_rooms = std::make_unique<city::RoomLocator>(city.psdl, city.info.mapName);
     world->m_lights.build(*world->m_network);
 
     TrafficSettings traffic;
@@ -161,11 +161,8 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     PedSettings peds;
     peds.density = settings.pedestrianDensity;
     peds.pool = settings.maxPeds >= 0 ? settings.maxPeds : kDefaultPedPool;
-    if (settings.maxPeds < 0 && cityConfig) {
-        for (const auto& sec : cityConfig->sections)
-            if (str::iequals(sec.name, "Ped Pool") && !sec.lines.empty())
-                peds.pool = static_cast<int>(str::parseDouble(sec.lines.front()).value_or(kDefaultPedPool));
-    }
+    if (settings.maxPeds < 0 && cityConfig && cityConfig->pedPool)
+        peds.pool = *cityConfig->pedPool; // aiCityData: sscanf "%d", default 100
     std::vector<std::pair<std::string, std::string>> names;
     if (config && !config->pedNames.empty())
         names = config->pedNames;
@@ -212,8 +209,14 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
 }
 
 void World::step(const PlayerCar& player) {
-    m_traffic->step(kAiStepSeconds, player, roomAt(player.transform.m3));
-    m_peds->step(kAiStepSeconds, player, roomAt(player.transform.m3));
+    // aiMap::Update: the player's room from the room it was last in (MM2
+    // keeps that in aiVehiclePlayer; inferred equivalent: the last room
+    // found); 0 off every room leaves the populations alone.
+    const int room = roomAt(player.transform.m3, m_playerRoom);
+    if (room != 0)
+        m_playerRoom = room;
+    m_traffic->step(kAiStepSeconds, player, room);
+    m_peds->step(kAiStepSeconds, player, room);
     m_lights.update(kAiStepSeconds);
     updateSignals();
 }
