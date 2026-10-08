@@ -411,9 +411,11 @@ void CityRenderer::drawStreets(bool alphaPass) {
                 call.state.blend = render::BlendMode::Alpha;
             }
         }
-        // The render state's culling is off (walls facing away were left
-        // out above).
-        call.state.cull = render::CullMode::None;
+        // The render state's default culling (rglOpenPipe, cityLevel::Load:
+        // clockwise faces culled, OpenMM2's counter-clockwise front faces as
+        // for models); sdlPage16::Draw's strips and fans face up and out.
+        call.state.cull = render::CullMode::Back;
+        call.state.frontFace = render::FrontFace::CounterClockwise;
         m_device.draw(call);
         ++m_stats.drawCalls;
     }
