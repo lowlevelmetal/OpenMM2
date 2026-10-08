@@ -22,6 +22,9 @@ struct WorldTexture {
     std::uint32_t width = 0, height = 0;
     std::uint32_t flags = 0;    // .tex flag word (MM2's texture environment)
     bool translucent = false;   // some texels have alpha < 255
+    // The image format carries alpha, which is what makes MM2 draw a texture
+    // alpha blended and tested (gfxTexture::Create's alpha bit).
+    bool alphaFormat = false;
 };
 
 // Loads textures by base name ("cw_apt_brk"), looking for texture/<name>.tex
@@ -68,6 +71,14 @@ private:
         float rate = 30.0f;
         WorldTexture current;
     };
+    struct LoadedImage {
+        asset::Image image;
+        std::uint32_t flags = 0;
+        bool alphaFormat = false;
+        std::size_t generatedLevels = 0; // mip levels to generate below the top
+    };
+    // gfxLoadImageAll's lookup of one name (no variants, no darkening).
+    std::optional<LoadedImage> readImage(const std::string& name, bool mipmaps) const;
     std::optional<WorldTexture> load(const std::string& name, bool darken, bool mipmaps);
     // The variant to load for `name` and whether to darken it.
     std::optional<WorldTexture> loadVariant(const std::string& name, bool mipmaps);

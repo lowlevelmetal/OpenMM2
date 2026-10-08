@@ -39,10 +39,11 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
             flags |= render::DrawFlag::Texture0;
             call.textures[0] = {tex->handle, tex->sampler};
         }
-        const bool translucent = (tex && tex->translucent) || call.constants.color.w < 0.999f;
+        // modStatic::Draw: a material whose diffuse alpha is not 1 or whose
+        // texture format has alpha switches alpha blending on, and the render
+        // state ties ALPHATESTENABLE to it.
+        const bool translucent = (tex && tex->alphaFormat) || call.constants.color.w < 0.999f;
         if (translucent) {
-            // Translucent materials blend and alpha test together (the
-            // render state ties ALPHABLENDENABLE and ALPHATESTENABLE).
             flags |= render::DrawFlag::AlphaTest;
             call.constants.alphaRef = options.alphaRef;
             call.state.blend = render::BlendMode::Alpha;

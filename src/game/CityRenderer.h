@@ -107,7 +107,7 @@ private:
     };
 
     void drawSky(const Camera& camera, const Environment& env);
-    void drawRoom(std::size_t room, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail);
+    void drawStreets(std::size_t room, const Frustum& frustum, bool alphaPass);
     void drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail);
     void drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth);
     void resolve(InstanceDraw& inst);

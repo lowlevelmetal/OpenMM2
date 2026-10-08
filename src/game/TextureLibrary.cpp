@@ -54,21 +54,15 @@ void TextureLibrary::release(const std::string& name) {
 }
 
 std::optional<asset::Image> TextureLibrary::image(std::string_view nameIn) {
-    // The same choice as loadVariant, without uploading.
+    // The same choice as loadVariant, without uploading (top level only).
     const std::string name = str::lower(nameIn);
     auto read = [&](const std::string& n, bool darken) -> std::optional<asset::Image> {
-        std::optional<asset::Image> img;
-        if (auto bytes = m_vfs.readAll("texture/" + n + ".tex")) {
-            if (auto tex = asset::parseTex(*bytes))
-                img = std::move(tex->image);
-        } else if (auto tga = m_vfs.readAll("texture/" + n + ".tga")) {
-            img = asset::decodeTga(*tga);
-        }
-        if (!img || img->empty())
+        auto loaded = readImage(n, false);
+        if (!loaded)
             return std::nullopt;
         if (darken)
-            darkenImage(*img);
-        return img;
+            darkenImage(loaded->image);
+        return std::move(loaded->image);
     };
     if (m_rain)
         if (auto t = read(name + "_fa", m_night))
@@ -113,46 +107,95 @@ std::optional<WorldTexture> TextureLibrary::loadVariant(const std::string& name,
     return load(name, m_night, mipmaps);
 }
 
-std::optional<WorldTexture> TextureLibrary::load(const std::string& name, bool darken, bool mipmaps) {
-    std::optional<asset::Image> image;
-    std::uint32_t flags = 0;
-    std::string path = "texture/" + name + ".tex";
-    if (auto bytes = m_vfs.readAll(path)) {
+std::optional<TextureLibrary::LoadedImage> TextureLibrary::readImage(const std::string& name, bool mipmaps) const {
+    // gfxLoadImageAll: texture/<name>.tex, then .tga, then .bmp (a file that
+    // fails to load falls through to the next), then jpg/<name>.jpg.
+    LoadedImage out;
+    const std::string base = "texture/" + name;
+    if (auto bytes = m_vfs.readAll(base + ".tex")) {
         std::string error;
         if (auto tex = asset::parseTex(*bytes, &error)) {
-            flags = tex->header.flags;
-            image = std::move(tex->image);
+            // gfxLoadTexImage: the file's levels as stored (bottom row first,
+            // the way the game's UVs expect), the flag word as the texture
+            // environment; PA8, P8A8, PA4, ARGB1555 and RGBA8888 have alpha.
+            out.image = std::move(tex->image);
+            out.flags = tex->header.flags;
+            const auto format = static_cast<std::uint16_t>(tex->header.format);
+            out.alphaFormat = format == 2 || format == 6 || format == 14 || format == 16 || format == 18;
+            if (!out.image.empty())
+                return out;
         } else {
-            log::warn("texture {}: {}", path, error);
+            log::warn("texture {}.tex: {}", base, error);
         }
-    } else {
-        path = "texture/" + name + ".tga";
-        if (auto tga = m_vfs.readAll(path))
-            image = asset::decodeTga(*tga);
     }
-    if (!image || image->empty())
+    // The other loaders store the picture's top row first (gfxLoadTargaImage
+    // and gfxLoadBmpImage write bottom-up files upwards; JPEG is top-down),
+    // the opposite of asset::Image's row order, so their rows are flipped.
+    auto flipped = [](asset::Image img) {
+        for (auto& level : img.levels) {
+            const std::size_t row = std::size_t{level.width} * 4;
+            for (std::uint32_t y = 0; y < level.height / 2; ++y)
+                std::swap_ranges(level.rgba.begin() + static_cast<std::ptrdiff_t>(y * row),
+                                 level.rgba.begin() + static_cast<std::ptrdiff_t>((y + 1) * row),
+                                 level.rgba.begin() + static_cast<std::ptrdiff_t>((level.height - 1 - y) * row));
+        }
+        return img;
+    };
+    if (auto bytes = m_vfs.readAll(base + ".tga")) {
+        if (auto img = asset::decodeTga(*bytes); img && !img->empty()) {
+            out.image = flipped(std::move(*img));
+            // 32-bit Targas become RGBA8888 images, others RGB888.
+            out.alphaFormat = bytes->size() > 16 && std::to_integer<int>((*bytes)[16]) == 32;
+            // gfxLoadTargaImage: a square image gets a full generated chain.
+            out.generatedLevels = mipmaps && out.image.width() == out.image.height() ? 99 : 0;
+            return out;
+        }
+    }
+    if (auto bytes = m_vfs.readAll(base + ".bmp")) {
+        if (auto img = asset::decodeImageFile(base + ".bmp", *bytes); img && !img->empty()) {
+            out.image = flipped(std::move(*img));
+            return out;
+        }
+    }
+    if (auto bytes = m_vfs.readAll("jpg/" + name + ".jpg")) {
+        if (auto img = asset::decodeImageFile("jpg/" + name + ".jpg", *bytes); img && !img->empty()) {
+            out.image = flipped(std::move(*img));
+            // gfxLoadJPEGImage: one generated level below the picture when
+            // mipmaps are asked for.
+            out.generatedLevels = mipmaps ? 1 : 0;
+            return out;
+        }
+    }
+    return std::nullopt;
+}
+
+std::optional<WorldTexture> TextureLibrary::load(const std::string& name, bool darken, bool mipmaps) {
+    auto loaded = readImage(name, mipmaps);
+    if (!loaded)
         return std::nullopt;
+    asset::Image& image = loaded->image;
+    const std::uint32_t flags = loaded->flags;
 
     // The mip levels (gfxGetTexture with mipmaps asked for; without, the top
     // level only). A .tex brings its own levels, as many as the file has: a
     // partial chain stays partial and a single level has no mipmaps
-    // (gfxLoadTexImage). A Targa gets a full chain generated when it is
-    // square and none otherwise (gfxLoadTargaImage creates the levels only
-    // for square images, gfxImage::GenerateMipmaps averages 2 x 2 texels).
-    // The night darkening comes after, on every level (gfxPrepareImage).
-    const std::uint32_t width = image->width(), height = image->height();
-    if (!path.ends_with(".tex") && mipmaps && width == height) {
-        auto mips = render::buildMipChain(render::Image{width, height, image->levels[0].rgba});
-        image->levels.resize(1);
-        for (std::size_t i = 1; i < mips.size(); ++i)
-            image->levels.push_back({mips[i].width, mips[i].height, std::move(mips[i].pixels)});
+    // (gfxLoadTexImage). Other formats get generated levels averaging 2 x 2
+    // texels (gfxImage::GenerateMipmaps): a full chain for a square Targa,
+    // one level for a JPEG. The night darkening comes after, on every level
+    // (gfxPrepareImage).
+    const std::uint32_t width = image.width(), height = image.height();
+    if (loaded->generatedLevels > 0) {
+        auto mips = render::buildMipChain(render::Image{width, height, image.levels[0].rgba});
+        image.levels.resize(1);
+        for (std::size_t i = 1; i < mips.size() && i <= loaded->generatedLevels; ++i)
+            image.levels.push_back({mips[i].width, mips[i].height, std::move(mips[i].pixels)});
     }
     if (darken)
-        darkenImage(*image);
-    const std::size_t levels = mipmaps ? std::min<std::size_t>(image->levels.size(), render::mipCount(width, height)) : 1;
+        darkenImage(image);
+    const std::size_t levels = mipmaps ? std::min<std::size_t>(image.levels.size(), render::mipCount(width, height)) : 1;
     std::vector<render::TextureData> data;
     for (std::size_t i = 0; i < levels; ++i)
-        data.push_back({image->levels[i].rgba.data(), 0});
+        data.push_back({image.levels[i].rgba.data(), 0});
 
     WorldTexture t;
     render::TextureDesc desc;
@@ -164,7 +207,8 @@ std::optional<WorldTexture> TextureLibrary::load(const std::string& name, bool d
     t.width = width;
     t.height = height;
     t.flags = flags;
-    t.translucent = image->hasTranslucency();
+    t.translucent = image.hasTranslucency();
+    t.alphaFormat = loaded->alphaFormat;
     // gfxRenderState::DoFlush: the texture environment's clamp bits (a Targa
     // has none, so it repeats).
     t.sampler.addressU = (flags & kTexEnvClampU) ? render::AddressMode::Clamp : render::AddressMode::Wrap;

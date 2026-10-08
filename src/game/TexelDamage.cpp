@@ -62,10 +62,15 @@ TexelDamage::TexelDamage(render::Device& device, TextureLibrary& textures, const
         t.handle = m_device.createTexture(desc, data);
         t.width = layer.width;
         t.height = layer.height;
-        if (const WorldTexture* base = m_textures.get(cleanName))
+        // gfxTexture::Clone keeps the texture environment (address modes and
+        // the alpha-format bit) of the texture it copies.
+        if (const WorldTexture* base = m_textures.get(cleanName)) {
             t.sampler = base->sampler;
-        else if (const WorldTexture* dmg = m_textures.get(damageName))
+            t.alphaFormat = base->alphaFormat;
+        } else if (const WorldTexture* dmg = m_textures.get(damageName)) {
             t.sampler = dmg->sampler;
+            t.alphaFormat = dmg->alphaFormat;
+        }
         t.translucent = clean->hasTranslucency();
         layer.handle = t.handle;
         m_textures.adopt(layer.name, t);

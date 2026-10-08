@@ -367,47 +367,49 @@ void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, cons
     ++m_stats.instancesDrawn;
 }
 
-void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail) {
+void CityRenderer::drawStreets(std::size_t r, const Frustum& frustum, bool alphaPass) {
     Room& room = m_rooms[r];
-    if (room.batches.empty() && room.instances.empty())
+    if (room.batches.empty() || !frustum.intersects(room.bounds))
         return;
-    // Instances can stick out of their room's street geometry; test them separately.
-    if (frustum.intersects(room.bounds)) {
+    if (!alphaPass)
         ++m_stats.roomsDrawn;
-        for (const auto& b : room.batches) {
-            render::DrawCall call;
-            call.vertices = {m_vertices, 0};
-            call.indices = {m_indices, 0};
-            call.indexType = render::IndexType::U32;
-            call.count = b.indexCount;
-            call.first = b.firstIndex;
-            call.constants.color = {1, 1, 1, 1};
-            // Street geometry is unlit: the vertex colours carry its shading.
-            call.constants.flags = render::DrawFlag::Fog | render::DrawFlag::VertexColor;
-            // Looked up per frame so day/night texture sets can switch live.
-            if (const WorldTexture* tex = b.textureName.empty() ? nullptr : m_textures.get(b.textureName)) {
-                call.constants.flags |= render::DrawFlag::Texture0;
-                // The texture's own address modes (gfxRenderState::DoFlush):
-                // facades and most street textures repeat both ways, the road
-                // textures (flags 0x18006) clamp V.
-                call.textures[0] = {tex->handle, tex->sampler};
-                if (tex->translucent) {
-                    // Textures with alpha blend and alpha test (GREATER 100).
-                    call.constants.flags |= render::DrawFlag::AlphaTest;
-                    call.constants.alphaRef = 101.0f / 255.0f;
-                    call.state.blend = render::BlendMode::Alpha;
-                }
+    for (const auto& b : room.batches) {
+        // Looked up per frame so day/night texture sets can switch live.
+        const WorldTexture* tex = b.textureName.empty() ? nullptr : m_textures.get(b.textureName);
+        // vglEndBatch draws the textures whose format has no alpha first, with
+        // alpha blending (and so the alpha test) off, then the others alpha
+        // blended and tested (GREATER 100).
+        if ((tex && tex->alphaFormat) != alphaPass)
+            continue;
+        render::DrawCall call;
+        call.vertices = {m_vertices, 0};
+        call.indices = {m_indices, 0};
+        call.indexType = render::IndexType::U32;
+        call.count = b.indexCount;
+        call.first = b.firstIndex;
+        call.constants.color = {1, 1, 1, 1};
+        // Street geometry is unlit: the vertex colours carry its shading.
+        call.constants.flags = render::DrawFlag::Fog | render::DrawFlag::VertexColor;
+        if (tex) {
+            call.constants.flags |= render::DrawFlag::Texture0;
+            // The texture's own address modes (gfxRenderState::DoFlush):
+            // facades and most street textures repeat both ways, the road
+            // textures (flags 0x18006) clamp V.
+            call.textures[0] = {tex->handle, tex->sampler};
+            if (alphaPass) {
+                call.constants.flags |= render::DrawFlag::AlphaTest;
+                call.constants.alphaRef = 101.0f / 255.0f;
+                call.state.blend = render::BlendMode::Alpha;
             }
-            // Street geometry is built with counter-clockwise front faces
-            // (railings are emitted double-sided).
-            call.state.cull = std::getenv("OPENMM2_DEBUG_NOCULL_CITY") ? render::CullMode::None : render::CullMode::Back;
-            call.state.frontFace = render::FrontFace::CounterClockwise;
-            m_device.draw(call);
-            ++m_stats.drawCalls;
         }
+        // Street geometry is built with counter-clockwise front faces
+        // (railings are emitted double-sided); sdlPage16::Draw skips the
+        // walls facing away itself (sdlCommon::BACKFACE).
+        call.state.cull = std::getenv("OPENMM2_DEBUG_NOCULL_CITY") ? render::CullMode::None : render::CullMode::Back;
+        call.state.frontFace = render::FrontFace::CounterClockwise;
+        m_device.draw(call);
+        ++m_stats.drawCalls;
     }
-    for (std::size_t i : room.instances)
-        drawInstance(m_instances[i], frustum, camera, detail);
 }
 
 void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Environment& env,
@@ -440,9 +442,17 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
                 m_roomMarks[r] = 1;
         }
     }
-    for (std::size_t r = 1; r < m_rooms.size(); ++r)
+    // cityLevel::DrawRooms: the street geometry of every visible room in one
+    // batch (opaque textures, then those with alpha), then the static
+    // instances room by room from the last room in the list to the first.
+    for (bool alphaPass : {false, true})
+        for (std::size_t r = 1; r < m_rooms.size(); ++r)
+            if (m_roomMarks[r])
+                drawStreets(r, frustum, alphaPass);
+    for (std::size_t r = m_rooms.size(); r-- > 1;)
         if (m_roomMarks[r])
-            drawRoom(r, frustum, camera.transform, detail);
+            for (std::size_t i : m_rooms[r].instances)
+                drawInstance(m_instances[i], frustum, camera.transform, detail);
 }
 
 } // namespace mm2::game

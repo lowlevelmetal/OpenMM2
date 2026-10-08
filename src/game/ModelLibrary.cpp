@@ -16,21 +16,6 @@ std::uint32_t argbToRgba(std::uint32_t argb) {
 
 int lodRank(asset::Lod l) { return l == asset::Lod::None ? 0 : static_cast<int>(l); }
 
-// modShader::Load of a float-colour material: each colour channel below
-// 0.05 becomes 0, above 0.95 becomes 1, anything between is floored to a
-// 32nd. (Byte-colour materials are used as stored.)
-float quantizeChannel(float c) {
-    if (c < 0.05f)
-        return 0.0f;
-    if (0.95f < c)
-        return 1.0f;
-    return static_cast<float>(std::floor(static_cast<double>(c * 32.0f))) * 0.03125f;
-}
-
-Vec4 quantizeColor(const Vec4& c) {
-    return {quantizeChannel(c.x), quantizeChannel(c.y), quantizeChannel(c.z), quantizeChannel(c.w)};
-}
-
 } // namespace
 
 const GpuMesh* GpuModel::find(std::string_view part, asset::Lod lod) const {
@@ -54,7 +39,9 @@ const std::vector<asset::PkgMaterial>& GpuModel::materials(int paintjob) const {
     static const std::vector<asset::PkgMaterial> none;
     if (paintjobs.empty())
         return none;
-    const auto i = static_cast<std::size_t>(std::clamp(paintjob, 0, static_cast<int>(paintjobs.size()) - 1));
+    // vehCarModel::Init and lvlSky::Init take the paint job modulo the
+    // number of shader sets.
+    const auto i = static_cast<std::size_t>(std::max(paintjob, 0)) % paintjobs.size();
     return paintjobs[i];
 }
 
@@ -99,13 +86,6 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
     auto model = std::make_unique<GpuModel>();
     model->name = str::lower(nameIn);
     model->paintjobs = pkg.paintjobs;
-    if (!(pkg.shaderType & 0x80))
-        for (auto& paintjob : model->paintjobs)
-            for (auto& m : paintjob) {
-                m.diffuse = quantizeColor(m.diffuse);
-                m.specular = quantizeColor(m.specular);
-                m.emissive = quantizeColor(m.emissive);
-            }
     model->offset = pkg.offset;
     model->xrefs = pkg.xrefs;
     for (const auto& mesh : pkg.meshes) {
