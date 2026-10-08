@@ -14,8 +14,10 @@ using namespace mm2::city;
 
 namespace {
 
-const CityData& loadedCity(const std::string& name) {
-    static std::map<std::string, CityData> cache;
+// Takes the name by value so the returned reference never looks tied to a
+// temporary argument (GetParam() is a const char*).
+const CityData& loadedCity(std::string_view name) {
+    static std::map<std::string, CityData, std::less<>> cache;
     auto it = cache.find(name);
     if (it == cache.end()) {
         std::string err;
@@ -133,9 +135,10 @@ TEST_P(RetailCity, MeshIsWellFormed) {
                 ASSERT_NEAR(v.normal.mag(), 1.0f, 1e-3f);
                 ASSERT_TRUE(std::isfinite(v.uv.x) && std::isfinite(v.uv.y));
             }
-            if (b.kind == SurfaceKind::Road || b.kind == SurfaceKind::Roof || b.kind == SurfaceKind::Sidewalk)
+            if (b.kind == SurfaceKind::Road || b.kind == SurfaceKind::Roof || b.kind == SurfaceKind::Sidewalk) {
                 for (const auto& v : b.vertices)
                     ASSERT_GE(v.normal.y, 0.0f) << surfaceKindName(b.kind) << " room " << r;
+            }
         }
     }
     // Only geometry-less rooms (water, warps) may be empty.
