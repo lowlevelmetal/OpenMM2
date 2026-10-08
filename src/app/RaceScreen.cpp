@@ -133,17 +133,21 @@ public:
         m_ff.stopAll(); // mmInput::StopAllFF
     }
 
-    bool usesScene() const override { return m_city != nullptr; }
+    // The loading picture covers the screen until the race is loaded.
+    bool usesScene() const override { return m_city != nullptr && m_state == State::Running; }
 
     void update(Context& ctx, double dt) override {
         m_time += dt;
         m_frameDt = static_cast<float>(dt);
         if (m_state == State::ShowLoading) {
-            m_state = State::Load; // draw the loading screen once before blocking
+            // BeginPhase: the loading picture with the bar at 10 %, drawn
+            // once before the loading blocks.
+            m_state = State::Load;
+            m_loadPercent = 10;
             return;
         }
         if (m_state == State::Load) {
-            load(ctx);
+            loadStep(ctx);
             return;
         }
         // GameLoop: AudManager::Update before the game's update, with the
@@ -539,6 +543,16 @@ public:
             auto& ov = *ctx.overlay;
             ov.begin(ctx.display.uiScale);
             ui::drawImage(ov, m_ui.get(m_loadingImage), 0, 0, 640, 480);
+            // ProgressCB in the race phase: a flat bar at (0.55 W, 0.896 H),
+            // 0.02 H tall, percent x 0.01 x 0.4234375 W long (each value
+            // truncated), in 0xFF0D2CBA as a 16-bit surface keeps it
+            // (ProgressRect; a 32-bit one would get white).
+            if (m_loadPercent > 0) {
+                constexpr float w = 640.0f, h = 480.0f;
+                const float x = std::trunc(w * 0.55f), y = std::trunc(h * 0.896f), bh = std::trunc(h * 0.02f);
+                const float bw = std::trunc(static_cast<float>(m_loadPercent) * 0.01f * (w * 0.4234375f));
+                ov.rect(x, y, bw, bh, render::packColor(8, 44, 184));
+            }
             ov.end();
         }
     }
@@ -546,8 +560,37 @@ public:
 private:
     enum class State { ShowLoading, Load, Running };
 
-    void load(Context& ctx) {
-        const auto t0 = std::chrono::steady_clock::now();
+    // The race loads over several frames so that the loading picture can show
+    // its progress bar between the parts (lvlProgress::UpdateTask ->
+    // ProgressCB): mmGame::Init's 10, cityLevel::Load's steps up to 100,
+    // then aiMap::Init's own run from 10 to 100. The values OpenMM2 shows
+    // after each of its parts are inferred from where MM2's would stand.
+    void loadStep(Context& ctx) {
+        switch (m_loadStep++) {
+        case 0: loadCityPart(ctx); return;
+        case 1: loadLevelPart(ctx); return;
+        case 2:
+            createSession(ctx);
+            loadVehicle(ctx); // places the camera behind the car
+            m_loadPercent = 100;
+            return;
+        case 3:
+            loadAi(ctx);
+            m_loadPercent = 50;
+            return;
+        case 4:
+            loadEffects(ctx);
+            loadPedestrianProps(ctx);
+            spawnOpponents(ctx);
+            spawnPolice(ctx);
+            m_loadPercent = 100;
+            return;
+        default: loadFinish(ctx); return;
+        }
+    }
+
+    void loadCityPart(Context& ctx) {
+        m_loadStart = std::chrono::steady_clock::now();
         std::string error;
         auto city = city::loadCity(ctx.game->vfs, m_result.config.city, &error);
         if (!city) {
@@ -568,6 +611,10 @@ private:
             m_bangerData->scaleMass("sp_barricadeconcl_f", 26.0f);
             m_bangerData->scaleMass("sp_barricadeconcr_f", 26.0f);
         }
+        m_loadPercent = 30;
+    }
+
+    void loadLevelPart(Context& ctx) {
         // cityLevel::Load: gfxTexReduceSize = 32 << the Texture Quality
         // option (gfxTextureQuality) while the city loads, no limit after.
         const int textureQuality =
@@ -609,13 +656,10 @@ private:
         m_ff.configure(m_gameInput.controller(), m_controlOptions);
         m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
         m_ff.start();
-        createSession(ctx);
-        loadVehicle(ctx); // places the camera behind the car
-        loadAi(ctx);
-        loadEffects(ctx);
-        loadPedestrianProps(ctx);
-        spawnOpponents(ctx);
-        spawnPolice(ctx);
+        m_loadPercent = 70;
+    }
+
+    void loadFinish(Context& ctx) {
         // Every vehCar::Init builds a vehSiren, whose constructor sets the
         // light glow scales to 0.2 / 0.6; aiMap::Init ends with
         // aiVehicleManager::Init, which sets 0.2 / 0.95 (network cars set up
@@ -663,7 +707,7 @@ private:
             }
         }
         m_state = State::Running;
-        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+        const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_loadStart).count();
         log::info("race: loaded {} in {:.2f} s", m_result.config.city, seconds);
     }
 
@@ -3242,6 +3286,9 @@ private:
     ui::TextureCache m_ui;
     ui::TextRenderer m_text;
     std::string m_loadingImage;
+    int m_loadStep = 0;    // the next part of the loading (loadStep)
+    int m_loadPercent = 0; // the loading bar's value (ProgressCB)
+    std::chrono::steady_clock::time_point m_loadStart;
     game::RaceResult m_result;
     State m_state = State::ShowLoading;
     double m_time = 0.0;
