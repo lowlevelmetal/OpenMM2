@@ -78,6 +78,10 @@ public:
     void setEnvironment(const Environment& env);
     // lvlSky::Update: turns the sky.
     void update(float dt);
+    // The TEXTURED SKY option (mmGame::SetLevelGraphics calls
+    // cityLevel::EnableSky, which sets the flag lvlSky::Draw checks): off,
+    // the dome is not drawn and the clear colour shows.
+    void setSkyEnabled(bool on) { m_skyEnabled = on; }
 
     // Call inside a scene pass after setFrameConstants().
     void draw(const Camera& camera, const Frustum& frustum, const Environment& env, const DetailSettings& detail);
@@ -155,6 +159,7 @@ private:
     std::vector<InstanceDraw> m_instances;
     std::vector<std::uint8_t> m_roomMarks;
     const GpuModel* m_sky = nullptr;
+    bool m_skyEnabled = true;
     float m_skyAngle = 0.0f;
     int m_lastRoom = 0; // cityLevel's sm_LastPvsRoom
     // This frame's cloud shadow texture and flag mask (Environment).

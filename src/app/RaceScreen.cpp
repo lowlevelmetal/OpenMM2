@@ -494,6 +494,8 @@ private:
             m_envOptions.cloudShadows = static_cast<int>(std::clamp(clouds, 0LL, 2LL));
         }
         applyEnvironment();
+        // mmGame::SetLevelGraphics: cityLevel::EnableSky by TEXTURED SKY.
+        m_cityRenderer->setSkyEnabled(ctx.settings.ini.getBool("Graphics", "TexturedSky", true));
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
         m_yaw = 0.0f;
         m_pitch = -0.15f;
@@ -1893,9 +1895,9 @@ private:
     }
 
     // The in-race GRAPHICS OPTIONS (PUGraphics) as mmGame's callbacks apply
-    // them: FarClipCB (the far plane), SetLevelGraphics (lighting quality,
-    // cloud shadows, environment maps) and lvlLevel::SetObjectDetail. The
-    // TEXTURED SKY toggle is stored only, as on the options page.
+    // them: FarClipCB (the far plane), SetLevelGraphics (the sky, lighting
+    // quality, cloud shadows, environment maps) and
+    // lvlLevel::SetObjectDetail.
     void applyGraphicsOptions(Context& ctx) {
         const auto& ini = ctx.settings.ini;
         m_objectDetail = std::clamp(static_cast<int>(ini.getInt("Graphics", "ObjectDetail", 3)), 0, 3);
@@ -1905,6 +1907,8 @@ private:
             static_cast<float>(std::clamp(ini.getDouble("Graphics", "FarClip", 1000.0), 100.0, 1000.0));
         m_envOptions.cloudShadows = static_cast<int>(std::clamp(ini.getInt("Graphics", "CloudShadows", 2), 0LL, 2LL));
         applyEnvironment();
+        if (m_cityRenderer)
+            m_cityRenderer->setSkyEnabled(ini.getBool("Graphics", "TexturedSky", true));
         auto update = [&](game::VehicleRenderer* r) {
             if (r)
                 setupVehicleRenderer(ctx, *r);

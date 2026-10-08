@@ -361,7 +361,8 @@ void PopupOptions::buildControl(ui::Menu& menu, const PopupOptionsHost& host) {
 // (645) as text toggles. Rows at 0.11, 0.385 and 0.66 (each 0.075 + 0.2
 // below the last). Every change applies at once (mmGame::FarClipCB,
 // mmGame::SetLevelGraphics, lvlLevel::SetObjectDetail); CANCEL keeps it
-// (PUGraphics::CancelAction is empty).
+// (PUGraphics::CancelAction is empty). TEXTURED SKY off stops the sky dome
+// (cityLevel::EnableSky sets the flag lvlSky::Draw checks).
 void PopupOptions::buildGraphics(ui::Menu& menu, const PopupOptionsHost& host) {
     Context& ctx = m_ctx;
     const auto& s = ctx.game->strings;

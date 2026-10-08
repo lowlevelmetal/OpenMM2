@@ -391,8 +391,9 @@ Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch".
     and Lighting Quality (1-3, snapped like the options page's) on the left,
     Cloud Shadows and the Vehicle Reflections and Textured Sky toggles
     (label box plus ON / OFF) on the right, rows 0.11, 0.385, 0.66. Changes
-    apply to the running race at once (the sky toggle is stored only);
-    Cancel keeps them, as `PUGraphics::CancelAction` is empty.
+    apply to the running race at once; Cancel keeps them, as
+    `PUGraphics::CancelAction` is empty. Textured Sky off stops drawing the
+    sky dome (`cityLevel::EnableSky` sets the flag `lvlSky::Draw` checks).
 * **PUKey** (F1): the actions the controller uses and their keys in two
   columns (names at x 0.05 / 0.5, keys at 0.25 / 0.7 of a text node at
   0.05, 0.075 of the screen, rows every 0.03 from 0.05), Resume Driving.

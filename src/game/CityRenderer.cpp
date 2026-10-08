@@ -511,7 +511,8 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
     ++m_frame;
     m_cloudMask = env.cloudMask;
     m_cloud = m_cloudMask && !env.cloudMap.empty() ? m_textures.cloudMap(env.cloudMap) : nullptr;
-    drawSky(camera, env);
+    if (m_skyEnabled)
+        drawSky(camera, env);
 
     const Vec3 eye = camera.position();
     // cityLevel::Draw: the camera's room (cityLevel::FindRoomId from the
