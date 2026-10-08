@@ -320,8 +320,10 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
         // it from being attached), and 0x20, the wheels' mask, is on all but
         // the terrain-bound ones with record flag 0x400.
         // lvlMultiRoomInstance's stand-ins answer IsCollidable false and
-        // IsTerrainCollidable once per gather.
-        si->collidable = (inst.flags & kInstTerrainLocal) != 0;
+        // IsTerrainCollidable once per gather. A terrain-bound instance is an
+        // lvlLandmark (record flag 0x100 without 0x200), whose IsCollidable
+        // answers false too: movers gather it through their city flag only.
+        si->collidable = false;
         si->terrainCollidable = true;
         si->wheelCollidable = !(inst.flags & kInstTerrainLocal) || !(inst.flags & kInstNoWheels);
         si->multiRoom = false;
