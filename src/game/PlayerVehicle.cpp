@@ -215,6 +215,32 @@ void SimVehicle::reset(const Mat34& model) {
     m_controls.reset();
 }
 
+void SimVehicle::setResetPos(const Vec3& position, float rotation) {
+    m_sim.setResetPos(position);
+    m_sim.resetRotation = rotation;
+}
+
+void SimVehicle::setResetPos(const Mat34& spawn) {
+    setResetPos(spawn.m3, phys::resetRotationOf(spawn));
+}
+
+void SimVehicle::reset() {
+    m_sim.reset();
+    if (m_trailer)
+        m_trailer->reset();
+    m_controls.reset();
+}
+
+void SimVehicle::respawnAt(const Mat34& at) {
+    const Vec3 savedPos = m_sim.resetPos();
+    const float savedRotation = m_sim.resetRotation;
+    setResetPos(at);
+    reset();
+    // SetResetPos(the saved reset position): CenterOfGravity is added again.
+    m_sim.setResetPos(savedPos);
+    m_sim.resetRotation = savedRotation;
+}
+
 VehiclePose SimVehicle::trailerPose() const {
     VehiclePose pose;
     if (!m_trailer)

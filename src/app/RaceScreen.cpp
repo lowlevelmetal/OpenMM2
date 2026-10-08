@@ -607,10 +607,13 @@ private:
             setupVehicleRenderer(ctx, *m_trailer);
         }
         auto [pos, heading] = spawnPoint(ctx);
+        // mmGame::FindGroundPos drops only the multiplayer race grids onto the
+        // road; every other start is used as the race data gives it.
+        bool findGround = !m_session;
         if (m_session) {
             const Mat34 sp = m_session->playerSpawn();
             pos = sp.m3;
-            heading = std::atan2(sp.m2.x, sp.m2.z);
+            heading = phys::resetRotationOf(sp);
             // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitMyPlayer: the
             // player's start slot on the grid behind the start
             // (mmGameMulti::StartXYZ; the slot is NetStartArray's, here the
@@ -621,26 +624,31 @@ private:
                 const bool longVehicle = m_player->sim().body.radius() > 6.0f || m_player->trailerModel();
                 pos += Mat34::rotationY(heading).transformDir(
                     game::session::multiplayerGridOffset(ctx.netGame->localId(), longVehicle));
+                findGround = true;
             }
         }
-        // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading".
+        // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading" (dropped onto
+        // the ground below it).
         if (const char* sp = std::getenv("OPENMM2_DEBUG_SPAWN")) {
             const auto parts = str::split(sp, ',');
             if (parts.size() == 4) {
                 auto f = [&](int i) { return static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)); };
                 pos = {f(0), f(1), f(2)};
                 heading = f(3);
+                findGround = true;
             }
         }
-        m_spawn = Mat34::rotationY(heading);
-        m_spawn.m3 = pos;
-        // Drop the spawn point onto the surface below it (mmGame::FindGroundPos
-        // probes as the wheels do, lvlSDL::CollideProbe).
+        // mmGame::FindGroundPos: dgPhysManager::Collide with the wheels' probe
+        // mask from 7.5 m above to 15 m below; the point itself on a miss.
         phys::RayHit hit;
-        if (m_world->wheelProbe(pos + Vec3{0, 5, 0}, pos - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            m_spawn.m3 = hit.position;
+        if (findGround &&
+            m_world->wheelProbe(pos + Vec3{0, 7.5f, 0}, pos - Vec3{0, 15.0f, 0}, hit, nullptr, nullptr))
+            pos = hit.position;
         m_player->addTo(*m_world);
-        m_player->reset(m_spawn);
+        // The modes' InitGameObjects / InitMyPlayer: vehCarSim::SetResetPos at
+        // the start, the reset rotation, vehCar::Reset.
+        m_player->setResetPos(pos, heading);
+        m_player->reset();
         m_pose = m_player->pose();
         std::vector<std::string> missing;
         // mmPlayer::Init: the dashboard eye depends on the screen's shape.
@@ -690,9 +698,12 @@ private:
             log::warn("race: no race rules: {}", error);
     }
 
-    // Loads an AI-driven car onto the ground at `spawn`.
+    // Loads an AI-driven car at `spawn`: aiRouteRacer::Init (its route's
+    // first point) and aiPoliceOfficer::Reset (its post) set the reset
+    // position and rotation there, with no drop onto the ground, and
+    // vehCar::Reset places it.
     std::unique_ptr<game::SimVehicle> loadAiCar(Context& ctx, const std::string& vehicle, std::string_view tune,
-                                                Mat34& spawn) {
+                                                const Mat34& spawn) {
         std::string error;
         auto car = game::SimVehicle::load(ctx.game->vfs, vehicle, &error, tune);
         if (!car) {
@@ -706,10 +717,8 @@ private:
         if (vehicle == m_result.config.vehicle)
             car->sim().setPolygonalBound(true);
         car->addTo(*m_world);
-        phys::RayHit hit;
-        if (m_world->wheelProbe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            spawn.m3 = hit.position;
-        car->reset(spawn);
+        car->setResetPos(spawn);
+        car->reset();
         return car;
     }
 
@@ -775,8 +784,10 @@ private:
             if (!opp.sim)
                 continue;
             opp.spawn = spawn;
+            // aiVehiclePhysics::Init: vehCar::Init's paint job is the racer's
+            // id (its index) & 3.
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
-                                                                    opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
+                                                                    opp.sim->model(), static_cast<int>(i) & 3);
             setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
             opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
@@ -822,7 +833,8 @@ private:
             const auto& p = posts[i];
             Cop cop;
             Mat34 post = p.spawn;
-            // vpcop has a pursuit tune (vpcop_cop.vehcarsim); other cars use their base tune.
+            // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
+            // (MM2 never loads vpcop_cop.vehCarSim).
             cop.sim = loadAiCar(ctx, p.vehicle, {}, post);
             if (!cop.sim)
                 continue;
@@ -830,9 +842,14 @@ private:
             settings.seed += i;
             cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings,
                                         p.vehicle);
-            // vpcop paint job 0 is the California livery (vpcop_ca_*), 1 the
-            // London one (vpcop_ln_*); picked by city (inferred).
-            const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
+            // aiVehiclePhysics::Init: the paint job is the officer's id (its
+            // index) & 3, except for vpcop: 1 (the London livery, vpcop_ln_*)
+            // when the AI map has no cable cars, else 0 (California,
+            // vpcop_ca_*). OpenMM2 has no cable cars yet; of the retail cities
+            // only San Francisco has them.
+            int livery = static_cast<int>(i & 3);
+            if (str::iequals(p.vehicle, "vpcop"))
+                livery = str::iequals(m_result.config.city, "sf") ? 0 : 1;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
             setupVehicleRenderer(ctx, *cop.renderer);
@@ -1222,7 +1239,14 @@ private:
                     m_hud->options().opponentIcons = true;
             }
             if (e.type == EventType::Respawn) {
-                m_player->reset(m_session->respawnTransform());
+                // Without waypoints mmGame::HitWaterHandler is mmPlayer::Reset
+                // (back to the reset position); with them mmSingleCircuit /
+                // mmGameMulti::HitWaterHandler reset the car at the last
+                // checkpoint and put the reset position back.
+                if (m_session->setup().checkpoints.empty())
+                    m_player->reset();
+                else
+                    m_player->respawnAt(m_session->respawnTransform());
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 if (m_vehicle)
@@ -1232,13 +1256,15 @@ private:
                 // The race starts over (mmGame::Reset): every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
                 phys::setElasticityCap(phys::kElasticityCap);
-                m_player->reset(m_spawn);
+                // mmPlayer::Reset, aiVehiclePhysics::Reset: vehCar::Reset at
+                // the reset positions.
+                m_player->reset();
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
                 if (m_vehicle)
                     m_vehicle->resetDamage();
                 for (auto& o : m_opponents) {
-                    o.sim->reset(o.spawn);
+                    o.sim->reset();
                     if (o.fx)
                         o.fx->reset();
                     o.renderer->resetDamage();
@@ -2446,7 +2472,7 @@ private:
         // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
         if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
-            m_player->reset(m_spawn);
+            m_player->reset();
     }
 
     // The driving inputs of the chosen controller (mmInput::SetDefaultConfig's
@@ -2891,7 +2917,6 @@ private:
     std::unique_ptr<game::VehicleRenderer> m_trailer;
     game::VehiclePose m_pose;
     game::VehiclePose m_trailerPose;
-    Mat34 m_spawn;
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
