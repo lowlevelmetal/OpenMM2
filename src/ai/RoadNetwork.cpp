@@ -231,8 +231,10 @@ RoadNetwork RoadNetwork::build(const city::AiMap& map, const NetworkOptions& opt
             }
             // One light per path end here with a traffic light, in the
             // intersection's path order (aiTrafficLightSet ctor; the light
-            // indices are handed out the same way by SetFourWay).
-            const int end = atEnd0 ? 0 : (info.intersection[1] == node.id ? 1 : -1);
+            // indices are handed out the same way by SetFourWay). Both take
+            // end 1 when the path's end-1 intersection is this one, else end
+            // 0, so a loop road (both ends here) gets its end-1 light only.
+            const int end = info.intersection[1] == node.id ? 1 : (atEnd0 ? 0 : -1);
             if (end < 0 || src.ends[static_cast<std::size_t>(end)].vehicleRule != 1)
                 continue;
             const auto& e = src.ends[static_cast<std::size_t>(end)];

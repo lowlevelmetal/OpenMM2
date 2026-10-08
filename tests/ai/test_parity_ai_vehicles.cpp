@@ -138,3 +138,28 @@ TEST(ParityAiDriving, BlockingCornersUseTheBumperDistances) {
     car.right = {-1, 0, 0};
     EXPECT_NEAR(ai::blockingDistance(car, {0, 0, 0}, {0, 0, -50}, 9.2f, 2.0f), 19.0f, 1e-3f);
 }
+
+// aiTrafficLightSet's constructor and SetFourWay take a path's end-1 rule,
+// light position and light index when the path's end-1 intersection is the
+// light set's intersection, else end 0's: a loop road with lights at both
+// ends gets the end-1 light, controlling the lanes that arrive at end 1.
+TEST(ParityAiLights, ALoopRoadTakesItsEndOneLight) {
+    city::AiMap map = squareBlock();
+    city::AiPath& loop = map.paths[0];
+    loop.ends[0].intersection = loop.ends[1].intersection = 0;
+    loop.ends[0].vehicleRule = loop.ends[1].vehicleRule = 1;
+    loop.ends[0].trafficLightPos = {1, 0, 0};
+    loop.ends[0].trafficLightAxis = {1, 0, 1};
+    loop.ends[1].trafficLightPos = {2, 0, 0};
+    loop.ends[1].trafficLightAxis = {3, 0, 0};
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    ASSERT_EQ(net.lights().size(), 1u);
+    const ai::TrafficLightSite& site = net.lights().front();
+    EXPECT_EQ(site.path, 0);
+    EXPECT_FLOAT_EQ(site.position.x, 2.0f);
+    EXPECT_FLOAT_EQ(site.axis.x, 1.0f);
+    // The lanes arriving at end 1 ride the first side (direction -1).
+    const ai::Lane& lane = net.lanes()[static_cast<std::size_t>(site.lane)];
+    EXPECT_EQ(lane.side, 0);
+    EXPECT_EQ(lane.lightSlot, 0);
+}
