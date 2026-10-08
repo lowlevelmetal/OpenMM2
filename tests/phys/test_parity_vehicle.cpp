@@ -133,6 +133,24 @@ TEST(VehicleParity, HeldCarRunsNoSplash) {
     EXPECT_GT(free.car->modelMatrix().m3.y, y0 + 0.5f);
 }
 
+// vehCar::PreUpdate's hold (brake on, neutral) with the throttle down: the
+// clutch is open, so the engine revs freely up to MaxRPM (its torque tapers
+// to zero there) and the car stays put.
+TEST(VehicleParity, ThrottleInNeutralRevsTheEngineOnly) {
+    Rig r;
+    r.run(30);
+    r.car->trans.setNeutral();
+    r.run(180, 1.0f, 1.0f);
+    const float rpm = r.car->engine.rpm;
+    r.run(60, 1.0f, 1.0f);
+    EXPECT_EQ(r.car->trans.currentGear, Transmission::kNeutral);
+    EXPECT_FALSE(r.car->drivetrains[2].attached());
+    EXPECT_GT(rpm, r.car->engine.optRPM);
+    EXPECT_GT(r.car->engine.rpm, rpm);
+    EXPECT_LE(r.car->engine.rpm, r.car->engine.maxRPM);
+    EXPECT_LT(r.car->speed(), 0.05f);
+}
+
 // vehCarSim::SetResetPos + Reset: the body at the position plus
 // CenterOfGravity, so the model origin is offset by CG + R * CG.
 TEST(VehicleParity, ResetAtPlacesTheBodyAtPositionPlusCenterOfGravity) {
