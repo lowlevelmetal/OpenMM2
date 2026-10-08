@@ -59,6 +59,23 @@ float toFloat(std::string_view s, float fallback) {
 
 } // namespace
 
+Material lvlMaterialDefault() {
+    Material m;
+    m.name = "default";
+    m.elasticity = 0.5f;
+    m.friction = 1.0f;
+    m.effect = "none";
+    m.sound = -1;
+    m.drag = 0.0f;
+    m.width = 1.0f;
+    m.height = 0.0f;
+    m.depth = 0.0f;
+    m.ptxIndex[0] = m.ptxIndex[1] = -1;
+    m.ptxThreshold[0] = 0.25f;
+    m.ptxThreshold[1] = 0.5f;
+    return m;
+}
+
 std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::string* error) {
     std::vector<Material> out;
     Reader r(text);
@@ -73,7 +90,7 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
             break;
         if (tok != "mtl")
             continue; // other sections of a .bnd file
-        Material m;
+        Material m = lvlMaterialDefault();
         m.name = std::string(r.next());
         if (r.next() != "{")
             return fail("expected '{' after material name");
@@ -98,7 +115,9 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
             else if (key == "effect")
                 m.effect = std::string(val(0));
             else if (key == "sound")
-                m.sound = static_cast<int>(toFloat(val(0), static_cast<float>(m.sound)));
+                // lvlMaterial::Load: "none" (its first four letters) is 0,
+                // anything else is read with atoi.
+                m.sound = val(0).starts_with("none") ? 0 : static_cast<int>(toFloat(val(0), 0.0f));
             else if (key == "drag")
                 m.drag = toFloat(val(0), m.drag);
             else if (key == "width")
@@ -121,13 +140,11 @@ std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::
 }
 
 MaterialTable::MaterialTable() {
-    m_materials.push_back(Material{});
+    m_materials.push_back(lvlMaterialDefault());
 }
 
 void MaterialTable::add(const Material& m) {
-    if (const int i = find(m.name); i >= 0)
-        m_materials[static_cast<std::size_t>(i)] = m;
-    else
+    if (find(m.name) < 0)
         m_materials.push_back(m);
 }
 

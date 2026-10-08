@@ -96,7 +96,8 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
     // a new name), then the new names of the bound files (lvlMaterialMgr::Load:
     // "default" in a bound file is the built-in one). The level's polygons
     // and the objects' bounds use these. OpenMM2's MaterialTable (m_materials,
-    // "_default" first) serves the wheels' probe geometry.
+    // the default material first, see phys::MaterialTable) serves the
+    // wheels' probe geometry.
     m_manager.push_back(phys::defaultBoundMaterial());
     auto managerIndex = [this](std::string_view name) -> int {
         for (std::size_t i = 0; i < m_manager.size(); ++i)
@@ -284,7 +285,7 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
             if (batch.indices.empty())
                 continue;
             phys::SoupGeometry g;
-            std::string material = "_default";
+            std::string material = "default"; // lvlMaterialMgr entry 0
             if (const auto* name = city.psdl.texture(batch.texture); name && !name->empty())
                 if (auto it = byTexture.find(str::lower(*name)); it != byTexture.end())
                     material = it->second;
@@ -311,7 +312,7 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
         for (int i = 0; i < poly->numMaterials(); ++i)
             g.materialNames.push_back(poly->material(i).name);
         if (g.materialNames.empty())
-            g.materialNames.push_back("_default");
+            g.materialNames.push_back("default");
         for (const auto& pg : poly->polygons) {
             phys::SoupGeometry::Poly p;
             const int n = pg.vertexCount();
