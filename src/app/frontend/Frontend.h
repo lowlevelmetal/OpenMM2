@@ -44,6 +44,10 @@ public:
     virtual void drawBelow(Frontend&, ui::UiFrame&) {} // after background, before widgets
     virtual void drawAbove(Frontend&, ui::UiFrame&) {} // after widgets
     virtual void onEnter(Frontend&) {}                 // when it becomes the top page again
+    // The menu's PreSetup turns the description label off: no help picture
+    // on entering it until the focus moves (MainMenu, OptionsMenu,
+    // AudioOptions, GraphicsOptions, ControlSetup).
+    bool helpOffOnEntry = false;
     // A page with 3D content (the garage's car): its background is drawn in
     // the scene pass under the 3D, as MM2's camera underlay is, and
     // drawScene() adds the 3D after it.

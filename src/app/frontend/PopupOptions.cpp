@@ -163,6 +163,15 @@ std::unique_ptr<ui::Menu> PopupOptions::build(PopupPage page, const PopupOptions
     case PopupPage::Quit: buildQuit(*menu, host); break;
     case PopupPage::Roster: buildRoster(*menu, host); break;
     }
+    // MenuManager::EnablePU / Switch unlight every widget, and in popup mode
+    // UIMenu::Enable lights none: a page opens with nothing lit and the
+    // keyboard position on widget 0, which on the titled pages is the title
+    // label (the first Down then lights Cancel, and Enter does nothing).
+    const bool titled = page == PopupPage::Audio || page == PopupPage::Control || page == PopupPage::Graphics;
+    if (titled)
+        menu->park();
+    else
+        menu->unlight();
     return menu;
 }
 

@@ -157,6 +157,7 @@ public:
 
         addNavStrip(fe, *this);
         menu.setInitialFocus(&crash); // MainMenu::MainMenu: SetFocusWidget after DVRCC
+        helpOffOnEntry = true;        // MainMenu::PreSetup turns the description label off
         // Escape asks to quit (mmInterface::Update, main menu back); the
         // Escape key's own sound plays only in the in-game popups.
         menu.onBack = [&fe] { fe.askQuit(); };

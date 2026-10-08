@@ -2410,6 +2410,7 @@ private:
                 ctx.quit = true;
             });
             menu.setInitialFocus(locked ? &restart : &resume);
+            menu.unlight(); // MenuManager::EnablePU: nothing lit on entry
             menu.onBack = [this, &ctx] {
                 if (!popupLocked(ctx)) {
                     closePopup(ctx, true);

@@ -547,6 +547,16 @@ public:
     void setInitialFocus(const Widget* w);
     // Back to the initial widget (MM2 resets focus every time a page is entered).
     void resetFocus();
+    // Keeps the keyboard position but lights nothing until the next key or
+    // the mouse (MenuManager::CloseDialog, the popups' EnablePU).
+    void unlight() { m_highlight = false; }
+    // No keyboard position and nothing lit: the next Up / Down / Tab lights
+    // the initial widget and Enter does nothing (a popup page whose widget 0
+    // is its title label).
+    void park();
+    // The help picture stays off until the focus moves to another widget
+    // (the menus whose PreSetup turns the description label off).
+    void hideHelpUntilFocusMoves() { m_helpHidden = true; }
     // Moves a widget to the end of the focus order.
     void moveToEnd(const Widget* w);
     std::vector<const Widget*> widgetsInGroup(int group) const;
@@ -560,6 +570,8 @@ private:
     int m_focus = -1;
     int m_initial = -1;
     bool m_highlight = true; // false after the mouse left every widget
+    bool m_parked = false;
+    bool m_helpHidden = false;
 };
 
 } // namespace mm2::ui

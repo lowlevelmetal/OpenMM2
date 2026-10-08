@@ -51,6 +51,9 @@ public:
         : m_savedSettings(fe.ctx.settings), m_savedDisplay(fe.ctx.display), m_savedAutomatic(fe.config.automatic) {
         menuId = id;
         menu.background = background;
+        // AudioOptions / GraphicsOptions / ControlSetup::PreSetup end by
+        // turning the description label off.
+        helpOffOnEntry = id != menu_id::kControlCustom;
         const Vec2 def = fe.layout.position(id, 0, {347, 379});
         const Vec2 can = fe.layout.position(id, 1, kBack);
         const Vec2 dn = fe.layout.position(id, 2, kNext);
@@ -111,6 +114,7 @@ public:
     explicit OptionsPage(Frontend& fe) {
         menuId = menu_id::kOptions;
         menu.background = "jpg/opt_bk.jpg";
+        helpOffOnEntry = true; // OptionsMenu::PreSetup turns the description label off
         auto add = [&](int index, const char* sprite, Vec2 code, const char* help, std::function<void()> fn) {
             const Vec2 p = fe.layout.position(menu_id::kOptions, index, code);
             auto& b = menu.add<ui::SpriteButton>(SpriteSheet{sprite, 4}, p.x, p.y, std::move(fn));
@@ -778,8 +782,10 @@ public:
             f.text.draw(f.overlay, font, ctx.game->strings.get(controls::info(a).stringId), box.x, y,
                         ui::style::kRecordText);
             const std::string text = controls::describe(set[static_cast<std::size_t>(a)], strings);
-            f.text.draw(f.overlay, font, text, box.x + 125, y,
-                        selected ? ui::style::kValueTextFocus : ui::style::kRecordText);
+            // UIControlWidget::Init: the binding centred in the row's right
+            // half (text effects 3).
+            f.text.draw(f.overlay, font, text, box.x + box.w * 0.75f, y,
+                        selected ? ui::style::kValueTextFocus : ui::style::kRecordText, ui::Align::Center);
         }
         // The VSWidget 10 px right of the list, as tall as the rows, hidden
         // while every row fits (UICWArray::SetVScrollVals); the list's focus

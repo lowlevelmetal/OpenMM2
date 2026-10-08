@@ -34,6 +34,8 @@ Frontend::Frontend(Context& c)
 }
 
 void Frontend::push(std::unique_ptr<Page> page) {
+    if (page->helpOffOnEntry)
+        page->menu.hideHelpUntilFocusMoves();
     m_pages.push_back(std::move(page));
     topChanged();
 }
@@ -41,12 +43,23 @@ void Frontend::push(std::unique_ptr<Page> page) {
 void Frontend::pop() {
     if (m_pages.empty())
         return;
+    const bool dialog = m_pages.back()->dialog;
     m_graveyard.push_back(std::move(m_pages.back()));
     m_pages.pop_back();
     if (!m_pages.empty()) {
-        // MM2 resets the focus every time a menu is entered (UIMenu::Enable).
-        m_pages.back()->menu.resetFocus();
-        m_pages.back()->onEnter(*this);
+        // MM2 resets the focus every time a menu is entered (UIMenu::Enable);
+        // closing a dialog only hands the focus back (MenuManager::
+        // CloseDialog): the page keeps its keyboard position with nothing
+        // lit (OpenDialog unlit it).
+        Page& page = *m_pages.back();
+        if (dialog) {
+            page.menu.unlight();
+        } else {
+            page.menu.resetFocus();
+            if (page.helpOffOnEntry)
+                page.menu.hideHelpUntilFocusMoves();
+        }
+        page.onEnter(*this);
     }
     topChanged();
 }

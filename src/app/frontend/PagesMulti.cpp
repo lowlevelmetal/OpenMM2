@@ -157,7 +157,6 @@ public:
     explicit SessionsPage(Frontend& fe) {
         menuId = menu_id::kNetSelect;
         menu.background = "jpg/sess_bk.jpg";
-        menu.defaultHelp = "jpg/mn_mp.jpg";
         m_netName = netName(fe);
         // mmInterface::Switch(10): no locked car or paint job online.
         fe.unlockedNetCar();
@@ -201,8 +200,9 @@ public:
         };
         auto& host = menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_hst.tga", 4}, kColumnX, 98,
                                                 [&fe] { fe.push(makeHostOptionsDialog(fe)); });
-        host.help = "jpg/lobb_srv.jpg";
-        auto& join = menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_jn.tga", 4}, kColumnX, 167, [this, &fe] {
+        // NetSelectMenu::FocusDescription has pictures for the provider lamps
+        // only.
+        menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_jn.tga", 4}, kColumnX, 167, [this, &fe] {
             // A session picked in the list joins directly; otherwise ask for an
             // address ("leave blank to search for available sessions").
             const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
@@ -211,9 +211,11 @@ public:
             else
                 fe.push(makeAddressDialog(fe));
         });
-        join.help = "jpg/mn_mp.jpg";
+        // The session list in NetSelectMenu's text scroll box (289,243,
+        // 329 x 131; MM2's rows are 10 to the box, OpenMM2's are its list
+        // rows).
         m_list = &menu.add<ui::ListBox>(
-            Box{298, 246, 306, 163}, [this, &fe] { return rows(fe); }, [this] { return m_selected; },
+            Box{289, 243, 329, 131}, [this, &fe] { return rows(fe); }, [this] { return m_selected; },
             [this](int i) { m_selected = i; });
         m_list->onDoubleClick = [this, &fe] {
             const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
@@ -239,11 +241,18 @@ public:
             fe.ctx.netGame->startLanScan();
     }
 
+    // NetSelectMenu::EnableSearchLabel: "Looking for games..." (657) in the
+    // description box at (40,396) while the sessions are enumerated,
+    // blinking between dark grey (0.1) and yellow every 0.75 s
+    // (UILabel::Update, flags 1). OpenMM2 searches all the time: the label
+    // shows while the search has found nothing (inferred).
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
-        const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
-        if (list.empty())
-            f.text.drawWrapped(f.overlay, ui::style::smallFont(), "Looking for games...", 306, 256, 290,
-                               ui::style::kValueTextDisabled); // string 657
+        const NetGame* net = fe.ctx.netGame.get();
+        if (!net || !net->scanning() || !net->lanSessions().empty())
+            return;
+        const bool yellow = static_cast<long long>(fe.time / 0.75) % 2 != 0;
+        f.text.draw(f.overlay, ui::style::smallFont(), fe.ctx.game->strings.get(657, "Looking for games..."), 40, 396,
+                    yellow ? ui::style::kValueText : render::packColor(26, 26, 26));
     }
 
 private:

@@ -983,9 +983,20 @@ Widget* Menu::focused() const {
                                                                           : nullptr;
 }
 
+void Menu::park() {
+    setFocus(-1);
+    m_parked = true;
+    m_highlight = false;
+}
+
 void Menu::setFocus(int index) {
+    if (index >= 0)
+        m_parked = false;
     if (index == m_focus)
         return;
+    // Only a move from one widget to another brings the help picture back.
+    if (m_focus >= 0 && index >= 0)
+        m_helpHidden = false;
     if (Widget* old = focused())
         old->focusChanged(false);
     m_focus = index;
@@ -1092,7 +1103,7 @@ void Menu::step(int dir) {
 
 void Menu::update(UiFrame& f) {
     const NavInput& nav = f.nav;
-    if (!focused() || !focused()->focusable())
+    if ((!focused() || !focused()->focusable()) && !m_parked)
         resetFocus();
     Widget* cur = focused();
     Widget* hovered = nullptr;
@@ -1184,7 +1195,7 @@ void Menu::drawContent(UiFrame& f, bool active) {
             w->draw(f, w.get() == cur);
     // The description picture follows the focus (MM2 FocusDescription
     // callbacks): nothing when the focused widget has none.
-    if (active) {
+    if (active && !m_helpHidden) {
         std::string helpPic = cur ? cur->helpPicture() : std::string();
         if (helpPic.empty())
             helpPic = defaultHelp;

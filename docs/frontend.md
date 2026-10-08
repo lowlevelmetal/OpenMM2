@@ -337,7 +337,11 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   Control restore, Customize restores its bindings and skips the Control
   page, and Graphics keeps its changes (`GraphicsOptions::CancelAction` is
   empty; the display mode changes only on DONE). Sub-pages have no PREV.
-  Help pictures are per widget, none otherwise.
+  Help pictures are per widget, none otherwise; on entering the options
+  menu or an option page (and the main menu) none shows until the focus
+  moves, as their PreSetup turns the description off. Closing a dialog
+  leaves the page's focus where it was, unlit (`MenuManager::CloseDialog`);
+  in-race popup pages open with nothing lit (`EnablePU`).
 * **Graphics** (`gfx_bk`): toggles sky/reflections/pedestrians at x 40,
   y 62/89/116 (SMART RENDERING, `gfx_port`, is created hidden and stays on);
   DISPLAY/RENDERER/RESOLUTION at 404,66/104/139 hold OpenMM2's window mode,
