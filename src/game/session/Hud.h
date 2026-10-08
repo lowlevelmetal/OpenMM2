@@ -237,6 +237,14 @@ public:
     // "Opponent Position" (mmGame::UpdateGameInput, SetIconsState).
     void toggleOpponentIcons() { m_options.opponentIcons = !m_options.opponentIcons; }
 
+    // mmHUD::PostChatMessage: the chat node's five lines scroll up, the new
+    // one last, and the node shows again; mmHUD::Update hides it 15 s after
+    // the last line.
+    void postChat(std::string line);
+    void updateChat(float dt);
+    const std::array<std::string, 5>& chatLines() const { return m_chat; }
+    bool chatShown() const { return m_chatShown; }
+
 private:
     void drawStands(const Session& session);
     void drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips);
@@ -250,6 +258,7 @@ private:
     // `second`: the SetMessage2 line, in its own one-line node under the message.
     void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
+    void drawChat(render::Overlay2D& ov, ui::TextRenderer& text);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;
     float px(float pixels) const { return pixels * m_options.pixelSize; }
@@ -273,6 +282,9 @@ private:
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;
+    std::array<std::string, 5> m_chat; // mmHUD's chat node (+0x8b0)
+    bool m_chatShown = false;
+    float m_chatTime = 0.0f;
 };
 
 } // namespace mm2::game::session

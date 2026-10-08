@@ -63,6 +63,12 @@ struct SessionOptions {
     std::string playerName;
 };
 
+// The game's cheat flag (bCheating): mmGame::SendChatMessage's "/blubber"
+// sets it, and only mmStatePack::SetDefaults (the game's start) clears it.
+// While it is set no finish is registered (the modes' RegisterFinish).
+bool cheating();
+void setCheating(bool on);
+
 class Session {
 public:
     static std::unique_ptr<Session> create(const RaceConfig& config, const city::CityData& city,

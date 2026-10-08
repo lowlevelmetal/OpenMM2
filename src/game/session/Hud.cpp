@@ -973,6 +973,40 @@ void Hud::drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, co
                   ui::Align::Center);
 }
 
+void Hud::postChat(std::string line) {
+    for (std::size_t i = 0; i + 1 < m_chat.size(); ++i)
+        m_chat[i] = std::move(m_chat[i + 1]);
+    m_chat.back() = std::move(line);
+    m_chatShown = true;
+    m_chatTime = 0.0f;
+}
+
+void Hud::updateChat(float dt) {
+    m_chatTime += dt;
+    if (m_chatTime > 15.0f)
+        m_chatShown = false;
+}
+
+void Hud::drawChat(render::Overlay2D& ov, ui::TextRenderer& text) {
+    // mmHUD::mmHUD: a text node at (0, 0.65) of the screen, 0.75 wide and
+    // 0.25 tall, five lines 0.05 apart in font string 61, white (the text
+    // node's default); the shadow is inferred to match the messages'.
+    if (!m_chatShown)
+        return;
+    const render::UiLayout& l = ov.layout();
+    const float w = l.right - l.left, h = l.bottom - l.top;
+    const ui::FontSpec f = font(61, "Gill Sans MT, 8, 16, 0, 400");
+    const float shadow = px(1.0f);
+    for (std::size_t i = 0; i < m_chat.size(); ++i) {
+        if (m_chat[i].empty())
+            continue;
+        const float x = l.left, y = l.top + (0.65f + 0.05f * static_cast<float>(i)) * h;
+        (void)w;
+        text.draw(ov, f, m_chat[i], x + shadow, y + shadow, kShadowColor, ui::Align::Left);
+        text.draw(ov, f, m_chat[i], x, y, render::packColor(255, 255, 255), ui::Align::Left);
+    }
+}
+
 void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art,
                       const Session& session, const PlayerState& player) {
     ov.begin(m_options.uiScale);
@@ -1003,6 +1037,7 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
         drawMessage(ov, text, session.message());
         // SetMessage2: the line under the message.
         drawMessage(ov, text, session.message2(), true);
+        drawChat(ov, text); // the chat node sits with the messages
     }
     ov.end();
 }

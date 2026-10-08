@@ -214,7 +214,8 @@ std::string Frontend::raceName(const game::RaceConfig& cfg) const {
 }
 
 std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& result) {
-    if (!profile)
+    // The modes' RegisterFinish do nothing while bCheating is set.
+    if (!profile || result.cheated)
         return std::nullopt;
     game::RaceConfig defaults = result.config;
     applyRaceDefaults(defaults);

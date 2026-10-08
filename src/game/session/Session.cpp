@@ -106,6 +106,13 @@ float dist2(const Vec3& a, const Vec3& b) { return a.dist2(b); }
 
 } // namespace
 
+namespace {
+bool g_cheating = false;
+}
+
+bool cheating() { return g_cheating; }
+void setCheating(bool on) { g_cheating = on; }
+
 std::unique_ptr<Session> Session::create(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
                                          const Strings& strings, std::string* error, const SessionOptions& options) {
     std::uint32_t seed = options.seed;
@@ -1512,6 +1519,7 @@ MusicHint Session::musicHint() const {
 RaceResult Session::result() const {
     RaceResult r;
     r.config = m_setup.config;
+    r.cheated = cheating();
     r.ended = m_phase == Phase::PostRace || m_phase == Phase::Done;
     r.finished = m_resultFinished;
     r.won = m_resultWon;

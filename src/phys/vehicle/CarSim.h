@@ -201,6 +201,9 @@ public:
     // CarSimOptions::polygonalBound).
     void setPolygonalBound(bool polygonal);
     const Bound* bound() const { return m_bound.get(); }
+    // phBound::SetElasticity on the car's bound (mmGame::SendChatMessage's
+    // "/blubber" sets 4 on the player's).
+    void setBoundElasticity(float elasticity);
     // Half the size of the collision bound's box (model space), for the AI.
     Vec3 halfExtents() const;
 

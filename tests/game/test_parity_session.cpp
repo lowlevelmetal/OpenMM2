@@ -537,3 +537,16 @@ TEST(ParitySession, FinishesRegisterUnderTheTableSettings) {
     played.weather = played.weather == Weather::Rain ? Weather::Clear : Weather::Rain;
     EXPECT_FALSE(Progress::recordable(played, defaults));
 }
+
+// mmGame::SendChatMessage's "/blubber" sets bCheating, which only the game's
+// start clears; a race result then registers nothing.
+TEST(ParitySession, CheatingMarksTheResult) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    auto s = paritySession(GameMode::Blitz, 0);
+    ASSERT_TRUE(s);
+    EXPECT_FALSE(s->result().cheated);
+    setCheating(true);
+    EXPECT_TRUE(s->result().cheated);
+    setCheating(false);
+}

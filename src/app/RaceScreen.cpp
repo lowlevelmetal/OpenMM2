@@ -125,7 +125,16 @@ public:
                 return;
         } else if (ctx.input.keyPressed(platform::Key::Escape)) {
             openPopup(ctx, true);
+        } else if (!m_flyCamera && m_bindings.pressed(ctx.input, controls::Action::EnterChat)) {
+            openChat(ctx);
         }
+        if (m_textInput && m_popup != Popup::Chat) {
+            ctx.input.stopTextInput(ctx.window());
+            m_textInput = false;
+        }
+        postIncomingChat(ctx);
+        if (m_hud)
+            m_hud->updateChat(static_cast<float>(dt));
         if (multiplayer(ctx)) {
             ctx.netGame->update();
             if (ctx.netGame->takeReturnToLobby() || !ctx.netGame->inSession()) {
@@ -284,7 +293,7 @@ public:
             // enables it again.
             m_hud->options().visible =
                 (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
-                m_popup == Popup::None; // mmPopup::ProcessEscape: mmHUD::Disable
+                (m_popup == Popup::None || m_popup == Popup::Chat); // mmPopup::ProcessEscape: mmHUD::Disable
             std::vector<game::session::MapBlip> blips;
             // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
             for (const auto& o : m_opponents)
@@ -295,8 +304,8 @@ public:
                     blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
             m_hud->setViewProjection(frame.view * frame.proj);
             m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
-            // mmPopup::ProcessEscape deactivates the map.
-            if (m_popup == Popup::None)
+            // mmPopup::ProcessEscape deactivates the map (the chat line does not).
+            if (m_popup == Popup::None || m_popup == Popup::Chat)
                 m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
         dev.endScene();
@@ -383,6 +392,7 @@ private:
             m_hud->options().opponentIcons = true;
         m_hud->preload(&m_ui);
         if (m_session) {
+            phys::setElasticityCap(phys::kElasticityCap); // mmGame::Reset
             m_session->start();
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -905,7 +915,9 @@ private:
                     m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
-                // The race starts over (mmGame::Reset): every car to its start.
+                // The race starts over (mmGame::Reset): every car to its start,
+                // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
+                phys::setElasticityCap(phys::kElasticityCap);
                 m_player->reset(m_spawn);
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
@@ -1068,6 +1080,8 @@ private:
         if (!m_profile || !m_session)
             return;
         game::RaceResult result = m_session->result();
+        if (result.cheated)
+            return; // RegisterFinish registers nothing while bCheating is set
         game::RaceConfig defaults = result.config;
         game::session::applyRaceTableDefaults(defaults, m_session->setup().race);
         if (!game::Progress::recordable(result.config, defaults))
@@ -1086,6 +1100,55 @@ private:
             }
         }
         m_announcer.playResults(place, m_result.config.opponents);
+    }
+
+    // mmPopup::ProcessChat ("Enter Chat Msg"): the chat line pops up without
+    // pausing the game.
+    void openChat(Context& ctx) {
+        m_popup = Popup::Chat;
+        m_popupPaused = false;
+        m_chatText.clear();
+        ctx.input.startTextInput(ctx.window());
+        m_textInput = true;
+        buildPopup(ctx);
+    }
+
+    // The game's SendChatMessage. mmGame (single player) only checks for the
+    // "/blubber" cheat: the cheat flag, the elasticity cap 4 and elasticity 4
+    // on the player's bound. mmGameMulti::ParseChatMessage keeps "/rc ..."
+    // (debug commands) to itself, sends "/wav ..." without posting it, and
+    // sends and posts anything else (OpenMM2's session echoes the line back
+    // and the race posts it then).
+    void sendChatMessage(Context& ctx, const std::string& text) {
+        if (!multiplayer(ctx)) {
+            if (text.starts_with("/blubber")) {
+                game::session::setCheating(true);
+                phys::setElasticityCap(phys::kBlubberElasticityCap);
+                if (m_player)
+                    m_player->sim().setBoundElasticity(phys::kBlubberElasticityCap);
+            }
+            return;
+        }
+        if (text.size() > 4 && text.starts_with("/rc"))
+            return;
+        ctx.netGame->sendChat(text);
+    }
+
+    // mmGameMulti's chat message (0x1f8): "name: text" on the HUD; the
+    // player's own lines (echoed by the session) as typed.
+    void postIncomingChat(Context& ctx) {
+        if (!multiplayer(ctx) || !m_hud)
+            return;
+        const auto& lines = ctx.netGame->chat();
+        if (m_chatSeen > lines.size())
+            m_chatSeen = 0;
+        for (std::size_t i = m_chatSeen; i < lines.size(); ++i) {
+            const auto& line = lines[i];
+            if (line.system || line.text.starts_with("/wav"))
+                continue;
+            m_hud->postChat(line.from == ctx.netGame->localId() ? line.text : std::format("{}: {}", line.name, line.text));
+        }
+        m_chatSeen = lines.size();
     }
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
@@ -1153,7 +1216,23 @@ private:
         auto at = [&](float x, float y, float w) {
             return ui::Box{card.x + x * card.w, card.y + y * card.h, w * card.w, 0.075f * card.h};
         };
-        if (m_popup == Popup::Main) {
+        if (m_popup == Popup::Chat) {
+            // PUChat (mmPopup::Init: x 0, y 0.99 - the popup line height, 0.75
+            // wide): one text field of up to 40 characters, no title, no label.
+            const float lineHeight = 0.05f; // MenuManager's popup line height (inferred)
+            auto& entry = menu.add<ui::TextEntry>(
+                ui::Box{0.0f, (0.99f - lineHeight) * 480.0f, 0.75f * 640.0f, lineHeight * 480.0f}, &m_chatText, 40);
+            entry.onCommit = [this, &ctx] {
+                // mmPopup::ChatCB: an empty line just closes it.
+                const std::string text = m_chatText;
+                closePopup();
+                if (!text.empty())
+                    sendChatMessage(ctx, text);
+            };
+            menu.setInitialFocus(&entry);
+            entry.beginEdit();
+            menu.onBack = [this] { closePopup(); };
+        } else if (m_popup == Popup::Main) {
             auto& restart = menu.add<ui::TextButton>(
                 at(0.0f, 0.125f, 1.0f), crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"),
                 [this] {
@@ -1211,8 +1290,10 @@ private:
         auto& ov = *ctx.overlay;
         ov.begin(ctx.display.uiScale);
         // The popup card (MenuManager::AdjustPopupCard); its shade is inferred.
+        // The chat line has none.
         const ui::Box card = popupCard();
-        ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
+        if (m_popup != Popup::Chat)
+            ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
         const ui::NavInput none;
         ui::UiFrame f{ov, m_ui, m_text, none, m_time};
         // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none,
@@ -2038,7 +2119,7 @@ private:
     // single player.
     bool m_paused = false;
     // The in-race popup (mmPopup).
-    enum class Popup : std::uint8_t { None, Main, ConfirmExit };
+    enum class Popup : std::uint8_t { None, Main, ConfirmExit, Chat };
     Popup m_popup = Popup::None;
     std::unique_ptr<ui::Menu> m_popupMenu;
     std::vector<std::unique_ptr<ui::Menu>> m_popupGraveyard;
@@ -2049,6 +2130,9 @@ private:
     game::PlayerCameras m_cams;
     game::RearViewMirror m_mirror;       // mmMirror: on / off and its camera (drawn by the renderer)
     std::optional<game::Profile> m_profile; // the driver, for the view settings and rewards
+    std::string m_chatText;                  // PUChat's text field
+    std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
+    bool m_textInput = false;                // SDL text input on for the chat line
     std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)
     const vfs::Vfs* m_vfs = nullptr;
     std::unique_ptr<ai::World> m_ai;

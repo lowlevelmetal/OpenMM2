@@ -234,6 +234,11 @@ Vec3 CarSim::halfExtents() const {
     return (hi - lo) * 0.5f;
 }
 
+void CarSim::setBoundElasticity(float elasticity) {
+    if (m_bound)
+        m_bound->setElasticity(elasticity);
+}
+
 void CarSim::setPolygonalBound(bool polygonal) {
     options.polygonalBound = polygonal;
     buildBound();
