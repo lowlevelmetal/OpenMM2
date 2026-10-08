@@ -127,11 +127,20 @@ public:
         }
     }
 
+    // The slot `client` holds, or -1.
+    int slotOf(const Client* client) const;
+
 private:
     std::vector<Client*> m_slots;
     bool m_echo = false;
     float m_echoDelay = 0.0f;
 };
+
+// The delay the sound objects' EchoOn reads from the manager (+0xa0); the
+// tunnel delay when there is no manager or its echo is off.
+inline float tunnelEchoDelay(const Object3DManager* manager) {
+    return manager && manager->echo() ? manager->echoDelay() : kTunnelEchoDelay;
+}
 
 // A client's slot bookkeeping: with no manager an object has a slot while it
 // is within its maximum distance. The manager must outlive its clients.

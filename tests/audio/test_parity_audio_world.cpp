@@ -7,6 +7,7 @@
 #include "audio/EchoEffect.h"
 #include "audio/Mixer.h"
 #include "audio/SoundBank.h"
+#include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
 #include "audio/game/SoundSlot.h"
@@ -229,5 +230,116 @@ TEST(AudioParityWorld, PlayerCarEchoesInTunnels) {
     manager.setTunnel(false);
     car.update(in, 0.02f);
     EXPECT_EQ(mixer.activeVoices(), 4);
+    car.stop();
+}
+
+TEST(AudioParityWorld, BridgeSoundsFollowActivate) {
+    TempData data({{"aud/ambient/drawbridge.csv",
+                    "Min distance,Max distance,3D priority,audible area\n0,150,12,0\n"
+                    "sample name,sample volume,sample type,oneshot time limit low,"
+                    "oneshot time limit high,active,min speed,max speed,doppler\n"
+                    "bridgemove,1,0,0,0,0,0,999999,1\nbridgebell,0.95,2,0,0,0,0,999999,1\n"}},
+                  {"bridgemove", "bridgebell"});
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    BridgeAudio bridge;
+    ASSERT_TRUE(bridge.load(data.vfs, bank, mixer, "drawbridge"));
+    bridge.setPosition({20, 0, 0});
+    const Mat34 listener = Mat34::identity();
+    // Both samples start inactive: the object holds a slot but is silent.
+    bridge.update(listener, 0.0f, 0.02f);
+    EXPECT_TRUE(bridge.audible());
+    EXPECT_EQ(mixer.activeVoices(), 0);
+    // gizBridge: Activate(-1) when the span starts to move.
+    bridge.activate(-1);
+    bridge.update(listener, 0.0f, 0.02f);
+    EXPECT_TRUE(bridge.samplePlaying(0)); // the moving loop
+    EXPECT_TRUE(bridge.samplePlaying(1)); // the bell (an interval of 0: again once it ends)
+    // Deactivate(-1) when it stops: the loop stops at once, the bell plays out.
+    bridge.deactivate(-1);
+    EXPECT_FALSE(bridge.samplePlaying(0));
+    EXPECT_TRUE(bridge.samplePlaying(1));
+    bridge.update(listener, 0.0f, 0.02f);
+    EXPECT_FALSE(bridge.samplePlaying(0));
+    // Out of range the object gives up its slot and its sounds.
+    bridge.setPosition({200, 0, 0});
+    bridge.update(listener, 0.0f, 0.02f);
+    EXPECT_FALSE(bridge.audible());
+    EXPECT_EQ(mixer.activeVoices(), 0);
+}
+
+TEST(AudioParityWorld, SubwaySwitchesSamplesAtOneMetrePerSecond) {
+    TempData data({{"aud/ambient/subwaycar.csv",
+                    "Min distance,Max distance,3D priority,audible area\n0,150,12,1\n"
+                    "sample name,sample volume,sample type,oneshot time limit low,"
+                    "oneshot time limit high,active,min speed,max speed,doppler\n"
+                    "LondonTube,0.98,0,0,0,1,0,999999,1\nNOTHING,0.98,0,0,0,1,0,999999,1\n"}},
+                  {"londontube"});
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    Object3DManager manager;
+    SubwayAudio train;
+    ASSERT_TRUE(train.load(data.vfs, bank, mixer, "subwaycar", &manager));
+    train.setPosition({30, 0, 0});
+    const Mat34 listener = Mat34::identity();
+    // Audible area 1: only underground (the tunnel echo state).
+    train.update(listener, 10.0f, 0.02f);
+    EXPECT_FALSE(train.audible());
+    manager.setTunnel(true);
+    train.update(listener, 10.0f, 0.02f);
+    EXPECT_TRUE(train.audible());
+    EXPECT_TRUE(train.echoOn());
+    EXPECT_TRUE(train.samplePlaying(0));
+    // Below 1 m/s: the loop is deactivated (and stops), sample 1 activated.
+    train.update(listener, 0.5f, 0.02f);
+    EXPECT_TRUE(train.stopped());
+    EXPECT_FALSE(train.active(0));
+    EXPECT_TRUE(train.active(1));
+    EXPECT_FALSE(train.samplePlaying(0));
+    train.update(listener, 1.0f, 0.02f);
+    EXPECT_FALSE(train.stopped());
+    EXPECT_TRUE(train.samplePlaying(0));
+    // Back above ground the set loses its slot.
+    manager.setTunnel(false);
+    train.update(listener, 10.0f, 0.02f);
+    EXPECT_FALSE(train.audible());
+    EXPECT_FALSE(train.samplePlaying(0));
+}
+
+TEST(AudioParityWorld, CableCarStatesFollowItsSpeed) {
+    using S = CableCarAudio::State;
+    // aiCableCarAudioData::UpdateState(speed, previous speed).
+    EXPECT_EQ(CableCarAudio::nextState(S::Running, 0.0f, 0.0005f, false), S::Stopped);
+    EXPECT_EQ(CableCarAudio::nextState(S::Stopped, 0.1f, 0.05f, false), S::Starting);
+    EXPECT_EQ(CableCarAudio::nextState(S::Running, 0.5f, 0.6f, false), S::Stopping);
+    EXPECT_EQ(CableCarAudio::nextState(S::Starting, 2.0f, 2.0f, true), S::Starting);
+    EXPECT_EQ(CableCarAudio::nextState(S::Starting, 2.0f, 2.0f, false), S::Running);
+    EXPECT_EQ(CableCarAudio::nextState(S::Stopping, 0.3f, 0.3f, false), S::Stopping);
+
+    TempData data({}, {"cablecargobell", "cablecarstop", "cablecar", "cablecarstart", "streetcable"}, 2205);
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    CableCarAudio car;
+    ASSERT_TRUE(car.load(bank, mixer));
+    const Mat34 listener = Mat34::identity();
+    const Vec3 at{10, 0, 0};
+    car.update(listener, at, 0.0f, 0.02f);
+    EXPECT_TRUE(car.audible());
+    EXPECT_EQ(car.state(), S::Stopped);
+    EXPECT_EQ(mixer.activeVoices(), 0);
+    // Setting off: the start sound and the bell.
+    car.update(listener, at, 0.2f, 0.02f);
+    EXPECT_EQ(car.state(), S::Starting);
+    EXPECT_EQ(mixer.activeVoices(), 2);
+    // Once the start sound is over (0.1 s here) the running loop takes over.
+    std::vector<float> scratch(2 * 9600);
+    mixer.mix(scratch.data(), 9600);
+    car.update(listener, at, 3.0f, 0.02f);
+    EXPECT_EQ(car.state(), S::Running);
+    EXPECT_EQ(mixer.activeVoices(), 1);
+    // Slowing to 0.5 m/s: the loop stops and the stop sound plays.
+    car.update(listener, at, 0.5f, 0.02f);
+    EXPECT_EQ(car.state(), S::Stopping);
+    EXPECT_EQ(mixer.activeVoices(), 1);
     car.stop();
 }

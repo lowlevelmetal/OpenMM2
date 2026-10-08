@@ -53,11 +53,6 @@ bool inTunnel(const CarAudioInputs& in, const Object3DManager* manager) {
     return in.inTunnel || (manager && manager->echo());
 }
 
-// The echo delay EchoOn reads from Aud3DObjectManager +0xa0.
-float echoDelay(const Object3DManager* manager) {
-    return manager && manager->echo() ? manager->echoDelay() : kTunnelEchoDelay;
-}
-
 // SetEffect(1), SetDelayTime(delay), SetEchoAttenuation(0.96): the EchoOn
 // of one sample.
 void sampleEchoOn(SoundSlot& s, float delay) {
@@ -927,7 +922,7 @@ void PlayerCarAudio::updateEchoState(bool tunnel, float dt) {
         // the update that turns the echo on.
         if (!m_echo) {
             if (tunnel)
-                echoOn(echoDelay(m_manager));
+                echoOn(tunnelEchoDelay(m_manager));
         } else {
             if (!tunnel)
                 echoOff();
@@ -937,7 +932,7 @@ void PlayerCarAudio::updateEchoState(bool tunnel, float dt) {
     }
     // vehCarAudio::UpdateAudio.
     if (!m_echo && tunnel)
-        echoOn(echoDelay(m_manager));
+        echoOn(tunnelEchoDelay(m_manager));
     else if (m_echo && !tunnel)
         echoOff();
     if (m_echo)
@@ -1129,7 +1124,7 @@ void OpponentCarAudio::updateEchoState(bool tunnel, float dt) {
         // vehPoliceCarAudio / vehSemiCarAudio::UpdateAudio.
         if (!m_echo) {
             if (tunnel)
-                echoOn(echoDelay(manager()));
+                echoOn(tunnelEchoDelay(manager()));
         } else {
             if (!tunnel)
                 echoOff();
@@ -1138,7 +1133,7 @@ void OpponentCarAudio::updateEchoState(bool tunnel, float dt) {
         return;
     }
     if (!m_echo && tunnel)
-        echoOn(echoDelay(manager()));
+        echoOn(tunnelEchoDelay(manager()));
     else if (m_echo && !tunnel)
         echoOff();
     if (m_echo)
@@ -1508,7 +1503,7 @@ void AmbientCarAudio::update(float speed, const Mat34& transform, const Vec3&, f
     // UpdateAudio(doppler factor).
     const bool tunnel = inTunnel || (manager() && manager()->echo());
     if (!m_echo && tunnel)
-        echoOn(echoDelay(manager()));
+        echoOn(tunnelEchoDelay(manager()));
     else if (m_echo && !tunnel)
         echoOff();
     if (m_echo) {
