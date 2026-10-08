@@ -41,26 +41,27 @@ game's UVs directly. `encodePng` flips for display.
 
 ### Flags
 
-Low bits match the Angel engine's `agiTexParameters` flags in Open1560
-(`Alpha = 0x1`, `WrapU = 0x2`, `WrapV = 0x4`, `KeepLoaded = 0x8`,
-`NoMipMaps = 0x10`, `Chromakey = 0x40`). Evidence from texture names:
+MM2's loader (`gfxLoadTexImage`) keeps the word as the image's texture
+environment and `gfxTexture::Create` copies it to the texture. The renderer
+(`gfxRenderState::DoFlush`) reads two bits of it: **0x1 clamps U** and
+**0x10000 clamps V**; without them the texture repeats. Nothing in the
+renderer reads 0x2, 0x4 or 0x8000 (Open1560's MM1 `agiTexParameters` names
+0x1/0x2/0x4 Alpha/WrapU/WrapV; MM2 does not use that meaning). Whether a
+texture is drawn in the alpha pass comes from its pixel format instead
+(`gfxTexture::Create` sets its own bit 0x20000 for formats with alpha).
 
-| Bits | Count | Typical textures | Reading |
-|------|------:|------------------|---------|
-| 0x2 | 1533 | building facades | WrapU (facades tile horizontally) |
-| 0x6 | 10 | `s_concrt`, `s_steps`, `s_groundbrick01` | WrapU + WrapV |
-| 0x7 | 5 | `decal_zigzag*` | Alpha + WrapU + WrapV |
-| 0x8006 / 0x18006 | 153 | `r1_*`, `r2_*` road surfaces | wrap both + unknown high bits |
-| 0x10001 | 940 | car paint, trees, cut-out cards | Alpha + 0x10000 |
-| 0x18001 | 278 | car rears, dashboards | Alpha + 0x8000 + 0x10000 |
-| 0x8000 | 44 | `fxpt*` particles, steering wheel | unknown |
-| 0x10000 | 35 | skies, fences | unknown |
-| 0 | 639 | mixed | — |
-
-The 0x1 bit does not track texel alpha: many 0x10001 car textures are opaque
-P8. It probably marks materials drawn in the alpha pass. 0x8000 and 0x10000
-have no counterpart in MM1; their meaning is unknown (candidates: no LOD
-reduction, clamp, colour-key). Treat as unknown until observed in game.
+| Bits | Count | Typical textures | MM2 address modes |
+|------|------:|------------------|-------------------|
+| 0x2 | 1533 | building facades | repeat both |
+| 0x6 | 10 | `s_concrt`, `s_steps`, `s_groundbrick01` | repeat both |
+| 0x7 | 5 | `decal_zigzag*` | clamp U |
+| 0x8006 | 95 | `r_alley`, `rinter_*`, `rxwalk*`, `s_grass` | repeat both |
+| 0x18006 | 58 | `r1_*`, `r2_*`, `r4_*`, `r6_*` road surfaces | clamp V |
+| 0x10001 | 940 | car paint, trees, cut-out cards | clamp both |
+| 0x18001 | 278 | car rears, dashboards | clamp both |
+| 0x8000 | 44 | `fxpt*` particles, steering wheel | repeat both |
+| 0x10000 | 35 | skies, fences | clamp V |
+| 0 | 639 | mixed | repeat both |
 
 ## Placeholder data
 

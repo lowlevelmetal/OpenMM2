@@ -3,6 +3,9 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace mm2::game {
 namespace {
 
@@ -12,6 +15,21 @@ std::uint32_t argbToRgba(std::uint32_t argb) {
 }
 
 int lodRank(asset::Lod l) { return l == asset::Lod::None ? 0 : static_cast<int>(l); }
+
+// modShader::Load of a float-colour material: each colour channel below
+// 0.05 becomes 0, above 0.95 becomes 1, anything between is floored to a
+// 32nd. (Byte-colour materials are used as stored.)
+float quantizeChannel(float c) {
+    if (c < 0.05f)
+        return 0.0f;
+    if (0.95f < c)
+        return 1.0f;
+    return static_cast<float>(std::floor(static_cast<double>(c * 32.0f))) * 0.03125f;
+}
+
+Vec4 quantizeColor(const Vec4& c) {
+    return {quantizeChannel(c.x), quantizeChannel(c.y), quantizeChannel(c.z), quantizeChannel(c.w)};
+}
 
 } // namespace
 
@@ -81,6 +99,13 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
     auto model = std::make_unique<GpuModel>();
     model->name = str::lower(nameIn);
     model->paintjobs = pkg.paintjobs;
+    if (!(pkg.shaderType & 0x80))
+        for (auto& paintjob : model->paintjobs)
+            for (auto& m : paintjob) {
+                m.diffuse = quantizeColor(m.diffuse);
+                m.specular = quantizeColor(m.specular);
+                m.emissive = quantizeColor(m.emissive);
+            }
     model->offset = pkg.offset;
     model->xrefs = pkg.xrefs;
     for (const auto& mesh : pkg.meshes) {
@@ -90,8 +115,15 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         gm.bounds = mesh.bounds();
         std::vector<render::Vertex3D> vertices;
         std::vector<std::uint16_t> indices;
+        float radius2 = 0.0f;
         for (const auto& section : mesh.sections) {
             for (const auto& packet : section.packets) {
+                for (const auto& v : packet.vertices) {
+                    const float d2 = v.position.z * v.position.z + v.position.y * v.position.y +
+                                     v.position.x * v.position.x;
+                    if (radius2 < d2)
+                        radius2 = d2;
+                }
                 GpuMesh::Draw d;
                 d.firstIndex = static_cast<std::uint32_t>(indices.size());
                 d.indexCount = static_cast<std::uint32_t>(packet.indices.size());
@@ -117,6 +149,7 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         }
         if (vertices.empty() || indices.empty())
             continue;
+        gm.radius = std::sqrt(radius2);
         gm.vertices = m_device.createBuffer(render::BufferKind::Vertex, vertices.size() * sizeof(render::Vertex3D),
                                             vertices.data());
         gm.indices = m_device.createBuffer(render::BufferKind::Index, indices.size() * sizeof(std::uint16_t),

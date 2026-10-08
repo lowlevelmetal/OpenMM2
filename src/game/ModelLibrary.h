@@ -28,6 +28,9 @@ struct GpuMesh {
     };
     std::vector<Draw> draws;
     Aabb bounds;
+    // modGetStatic's radius: the largest distance of a vertex from the
+    // model's origin.
+    float radius = 0.0f;
 };
 
 struct GpuModel {

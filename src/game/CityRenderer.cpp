@@ -55,6 +55,15 @@ std::uint32_t argbToRgba(std::uint32_t argb) {
 
 } // namespace
 
+std::string sdlTextureName(std::string_view name) {
+    // lvlSDL::LoadBinary: a name ending in '-', '0' and three more characters
+    // is a movie frame ("s_thames-0009"); the texture is looked up by its base
+    // name, which gfxGetTextureMovie turns into the frame sequence.
+    if (name.size() > 5 && name[name.size() - 5] == '-' && name[name.size() - 4] == '0')
+        return std::string(name.substr(0, name.size() - 5));
+    return std::string(name);
+}
+
 const GpuMesh* findFilledLod(const GpuModel& model, std::string_view part, asset::Lod lod) {
     for (int l = static_cast<int>(lod); l <= static_cast<int>(asset::Lod::VeryLow); ++l)
         for (const auto& m : model.meshes)
@@ -65,6 +74,14 @@ const GpuMesh* findFilledLod(const GpuModel& model, std::string_view part, asset
         if (m.lod == asset::Lod::None && str::iequals(m.part, part))
             return &m;
     return nullptr;
+}
+
+float geomRadius(const GpuModel& model, std::string_view part) {
+    float radius = 0.0f;
+    for (const auto& m : model.meshes)
+        if (str::iequals(m.part, part) && radius < m.radius)
+            radius = m.radius;
+    return radius;
 }
 
 Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather weatherIn,
@@ -145,7 +162,7 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
             b.indexCount = static_cast<std::uint32_t>(batch.indices.size());
             b.kind = batch.kind;
             if (const auto* name = city.psdl.texture(batch.texture); name && !name->empty())
-                b.textureName = name;
+                b.textureName = sdlTextureName(*name);
             const auto base = static_cast<std::uint32_t>(m_streetVertices.size());
             for (const auto& v : batch.vertices) {
                 render::Vertex3D rv{};
@@ -278,7 +295,7 @@ void CityRenderer::resolve(InstanceDraw& inst) {
     inst.gpu = m_models.get(inst.model);
     if (inst.gpu) {
         inst.worldBounds = transformBounds(inst.gpu->bounds, inst.transform);
-        inst.radius = (inst.gpu->bounds.max - inst.gpu->bounds.min).mag() * 0.5f;
+        inst.radius = geomRadius(*inst.gpu, "");
     }
 }
 
@@ -326,14 +343,12 @@ void CityRenderer::drawRoom(std::size_t r, const Frustum& frustum, const Mat34& 
             // Street geometry is unlit: the vertex colours carry its shading.
             call.constants.flags = render::DrawFlag::Fog | render::DrawFlag::VertexColor;
             // Looked up per frame so day/night texture sets can switch live.
-            if (const WorldTexture* tex = b.textureName ? m_textures.get(*b.textureName) : nullptr) {
+            if (const WorldTexture* tex = b.textureName.empty() ? nullptr : m_textures.get(b.textureName)) {
                 call.constants.flags |= render::DrawFlag::Texture0;
-                // Street geometry tiles its textures by repeat counts (facades,
-                // slivers, roads) whatever the texture's wrap flags say; with
-                // clamping, repeated facades smear their edge rows.
-                render::SamplerDesc sampler = tex->sampler;
-                sampler.addressU = sampler.addressV = render::AddressMode::Wrap;
-                call.textures[0] = {tex->handle, sampler};
+                // The texture's own address modes (gfxRenderState::DoFlush):
+                // facades and most street textures repeat both ways, the road
+                // textures (flags 0x18006) clamp V.
+                call.textures[0] = {tex->handle, tex->sampler};
                 if (tex->translucent) {
                     // Textures with alpha blend and alpha test (GREATER 100).
                     call.constants.flags |= render::DrawFlag::AlphaTest;

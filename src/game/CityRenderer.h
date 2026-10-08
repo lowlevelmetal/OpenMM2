@@ -88,7 +88,7 @@ private:
     struct Batch {
         std::uint32_t firstIndex = 0;
         std::uint32_t indexCount = 0;
-        const std::string* textureName = nullptr; // PSDL texture slot, null = untextured
+        std::string textureName; // PSDL texture (sdlTextureName), empty = untextured
         city::SurfaceKind kind{};
     };
     struct Room {
@@ -133,5 +133,13 @@ private:
 // lvlInstance::GetGeomSet: a missing level of detail takes the next less
 // detailed one (VL -> L -> M -> H); a missing VL draws nothing.
 const GpuMesh* findFilledLod(const GpuModel& model, std::string_view part, asset::Lod lod);
+
+// lvlInstance::GetGeomSet's radius of a part: the largest distance of a
+// vertex from the model origin over its levels of detail (modGetStatic).
+float geomRadius(const GpuModel& model, std::string_view part);
+
+// lvlSDL::LoadBinary: the name a PSDL texture is looked up by (a movie
+// frame name "<base>-0NNN" becomes "<base>").
+std::string sdlTextureName(std::string_view name);
 
 } // namespace mm2::game

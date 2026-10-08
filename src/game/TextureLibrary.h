@@ -16,16 +16,18 @@ namespace mm2::game {
 // flipping happens anywhere in 3D rendering.
 struct WorldTexture {
     render::TextureHandle handle;
+    // The address modes come from the .tex flag word (0x1 clamps U, 0x10000
+    // clamps V, as gfxRenderState::DoFlush applies the texture environment).
     render::SamplerDesc sampler;
     std::uint32_t width = 0, height = 0;
-    std::uint32_t flags = 0;    // .tex flags (asset::TexFlags)
+    std::uint32_t flags = 0;    // .tex flag word (MM2's texture environment)
     bool translucent = false;   // some texels have alpha < 255
-    bool alphaFlag = false;     // .tex Alpha flag set
 };
 
 // Loads textures by base name ("cw_apt_brk"), looking for texture/<name>.tex
-// and then .tga. Animated textures (tune/<name>.movie + texture/<name>-NNNN)
-// cycle through their frames at the rate given in the .movie file.
+// and then .tga (gfxLoadImageAll's order for the formats the 3D world uses).
+// A missing texture with frames texture/<name>-0001... is a texture movie
+// (gfxGetTextureMovie), cycling at the rate tune/<name>.movie gives.
 class TextureLibrary {
 public:
     TextureLibrary(render::Device& device, const vfs::Vfs& vfs);
@@ -33,8 +35,10 @@ public:
     TextureLibrary(const TextureLibrary&) = delete;
     TextureLibrary& operator=(const TextureLibrary&) = delete;
 
-    // Null when the texture does not exist (logged once).
-    const WorldTexture* get(std::string_view name);
+    // gfxGetTexture(name, mipmaps). Null when the texture does not exist
+    // (logged once). Without `mipmaps` the texture has its top level only
+    // (asParticles::SetTexture by name asks for none).
+    const WorldTexture* get(std::string_view name, bool mipmaps = true);
 
     // MM2's texture variant handler (InstallTextureVariantHandler), active
     // in game: in rain a texture loads as "<name>_fa" when that exists (wet
@@ -64,9 +68,9 @@ private:
         float rate = 30.0f;
         WorldTexture current;
     };
-    std::optional<WorldTexture> load(const std::string& name, bool darken);
+    std::optional<WorldTexture> load(const std::string& name, bool darken, bool mipmaps);
     // The variant to load for `name` and whether to darken it.
-    std::optional<WorldTexture> loadVariant(const std::string& name);
+    std::optional<WorldTexture> loadVariant(const std::string& name, bool mipmaps);
     void clear();
 
     render::Device& m_device;

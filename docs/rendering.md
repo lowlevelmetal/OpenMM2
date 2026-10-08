@@ -14,11 +14,12 @@ decisions: levels of detail, distances, textures, states and order.
 | Topic | Behaviour | Evidence |
 |---|---|---|
 | Orientation | `.tex` rows are uploaded in file order (bottom row first) and the game's UVs are used unchanged | verified: road markings, facades, car bodies and signs appear upright |
-| Wrap | models: `.tex` flags 0x2 / 0x4 select repeat in U / V, otherwise clamp; TGA/JPG repeat. Street (PSDL) geometry always repeats | verified: facades repeat their textures vertically although the textures lack flag 0x4; with clamping they smear |
-| Mipmaps | file mip levels when the chain is complete, otherwise generated with a box filter | — |
-| Animated textures | `tune/<name>.movie` gives `rate N` (frames per second); frames are `texture/<name>-0001.tex` and onwards | verified for s_ocean, s_thames, s_water, s_pond |
+| Wrap | the `.tex` flag word is the texture environment: 0x1 clamps U, 0x10000 clamps V, everything else repeats (car paint 0x10001 clamps both ways, skies and fences 0x10000 clamp V, the road textures 0x18006 clamp V, facades 0x00002 repeat). Targa textures repeat. Street geometry uses its textures' modes like everything else | MM2 (`gfxRenderState::DoFlush`; 0x2, 0x4 and 0x8000 are not read by the renderer) |
+| Mipmaps | a `.tex` brings its own levels, as many as the file has (a partial chain stays partial, one level means no mipmaps); a square Targa gets a full chain averaged 2 × 2, a non-square one none; textures asked for without mipmaps (rain particles) get the top level only | MM2 (`gfxGetTexture`, `gfxLoadTexImage`, `gfxLoadTargaImage`, `gfxImage::GenerateMipmaps`) |
+| Animated textures | a texture that does not exist but has frames `texture/<name>-0001.tex`, `-0002`, ... (at most 128) plays them at `tune/<name>.movie`'s `rate N` frames per second (30 without the file); PSDL names ending in `-0NNN` are looked up by their base name | MM2 (`gfxGetTextureMovie`, `gfxTextureMovie::Update`, `lvlSDL::LoadBinary`); verified for s_ocean, s_thames, s_water, s_pond |
+| Material colours | float-colour PKG materials are snapped as they load: below 0.05 to 0, above 0.95 to 1, otherwise down to a 32nd; byte-colour ones are used as stored | MM2 (`modShader::Load`) |
 | Variants | in game every texture load goes through the variant handler: in rain `<name>_fa` when it exists (82 wet roads and decals), at night (time 3 only) `<name>_ni` when it exists (lit windows, shop fronts, lamps); at night every texture that is not a `_ni` one is darkened, each channel halved on every mip level (cars, sky and `_fa` textures included) | MM2 (`InstallTextureVariantHandler`: the `gfxLoadImage`/`gfxPrepareImage` wrappers) |
-| Untextured materials | at night their diffuse colour is halved | MM2 (`modShader::Load`) |
+| Untextured materials | at night the diffuse colour of materials that name no texture is halved | MM2 (`modShader::Load`) |
 | Alpha | everything is drawn with alpha test GREATER 100; materials and textures with alpha blend and test together | MM2 (`cityLevel::DrawRooms` render states; ALPHABLENDENABLE and ALPHATESTENABLE share a byte) |
 
 ## Environment
@@ -43,7 +44,7 @@ decisions: levels of detail, distances, textures, states and order.
 |---|---|---|
 | Camera room | the PSDL room under the camera; outside every room the last one found stays | MM2 (`cityLevel::Draw`, sm_LastPvsRoom; MM2 tests ordinary rooms in XZ only) |
 | Visibility | the CPVS row of the camera room; OpenMM2 falls back to every room within the far plane before the camera has ever been inside the city or without a PVS | MM2 (PVS path); the fallback is an OpenMM2 debug convenience |
-| City objects | `city/<map>.inst` instances, LOD by lvlInstance::IsVisible (below) with no distance limit beyond the far plane; a missing LOD takes the next less detailed one (VL → L → M → H) and a missing VL draws nothing; PKG xrefs drawn with their parent | MM2 (`lvlInstance::IsVisible`, `GetGeomSet`); the radius is the model's bounding box half-diagonal (inferred) |
+| City objects | `city/<map>.inst` instances, LOD by lvlInstance::IsVisible (below) with no distance limit beyond the far plane; a missing LOD takes the next less detailed one (VL → L → M → H) and a missing VL draws nothing; PKG xrefs drawn with their parent | MM2 (`lvlInstance::IsVisible`, `GetGeomSet`); the radius is the farthest vertex from the model origin over its levels of detail (`modGetStatic`) |
 | Object LOD | d = view depth − radius: H up to Med, M up to Low, L up to VLow, VL beyond; dynamic objects (cars, bangers) are not drawn deeper than NoDraw. Object Detail 0–3: Med 20/30/40/70, Low 70/90/100/130, VLow 150/175/200/200, NoDraw 200/250/300/300 m | MM2 (`cityLevel::SetObjectDetail`) |
 
 Not ported yet: street LODs (`sm_SDLMedThresh` 50, `LowThresh` 100,

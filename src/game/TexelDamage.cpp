@@ -2,7 +2,6 @@
 
 #include "core/Log.h"
 #include "core/StringUtil.h"
-#include "render/ImageUtil.h"
 
 #include <algorithm>
 #include <format>
@@ -51,15 +50,13 @@ TexelDamage::TexelDamage(render::Device& device, TextureLibrary& textures, const
         layer.damage.levels = {damage->levels[0]};
         layer.live = layer.clean.levels[0].rgba;
         layer.name = std::format("{}#{}#{}", cleanName, tag, s);
-        render::Image img{layer.width, layer.height, layer.live};
-        const auto mips = render::buildMipChain(img);
-        std::vector<render::TextureData> data;
-        for (const auto& m : mips)
-            data.push_back({m.pixels.data(), 0});
+        // gfxTexture::Clone: a single-level surface (no mipmaps), copied from
+        // the top level.
+        const std::vector<render::TextureData> data{{layer.live.data(), 0}};
         render::TextureDesc desc;
         desc.width = layer.width;
         desc.height = layer.height;
-        desc.mipLevels = static_cast<std::uint32_t>(mips.size());
+        desc.mipLevels = 1;
         desc.debugName = layer.name;
         WorldTexture t;
         t.handle = m_device.createTexture(desc, data);
@@ -126,10 +123,7 @@ void TexelDamage::stamp(Layer& layer, int x, int y, bool large) {
 }
 
 void TexelDamage::upload(Layer& layer) {
-    const auto mips = render::buildMipChain(render::Image{layer.width, layer.height, layer.live});
-    for (std::size_t m = 0; m < mips.size(); ++m)
-        m_device.updateTexture(layer.handle, static_cast<std::uint32_t>(m), {0, 0, mips[m].width, mips[m].height},
-                               mips[m].pixels.data());
+    m_device.updateTexture(layer.handle, 0, {0, 0, layer.width, layer.height}, layer.live.data());
 }
 
 void TexelDamage::apply(const Vec3& point, float radius) {
