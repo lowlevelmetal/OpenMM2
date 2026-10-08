@@ -763,14 +763,41 @@ private:
 
 class HostSettingsPage final : public Page {
 public:
+    // MM2 `HostRaceMenu` (menu 11) on `RaceMenuBase::Init` with the
+    // multiplayer widgets: creation order and tune/widget.csv positions by
+    // index (0 DONE, 1-5 the race types, 6-8 race name and arrows, 9 laps,
+    // 10-15 the Cops & Robbers lamps, 16-18 limit value and arrows, 19-21
+    // gold mass and arrows, 22-24 locale, 25-27 time, 28-30 weather, 31
+    // pedestrian density). The code positions are the fallbacks; those of
+    // the laps roller, gold mass box, time box and density slider are not in
+    // the table and are inferred from host_bk.
     explicit HostSettingsPage(Frontend& fe) : m_cfg(fe.ctx.netGame->raceConfig()) {
         menuId = menu_id::kHostRace;
         menu.background = "jpg/host_bk.jpg";
+        constexpr int id = menu_id::kHostRace;
+        const auto& s = fe.ctx.game->strings;
         m_goldMass = fe.ctx.netGame->goldMass();
         if (m_cfg.mode == GameMode::CrashCourse)
             m_cfg.mode = GameMode::Cruise;
+        // HostRaceMenu keeps one index for the time limit and one for the
+        // points limit (LimitInc/LimitDec, 0..3), both 0 at first.
+        for (int i = 0; i < 4; ++i) {
+            if (kTimeLimits[i] == static_cast<int>(m_cfg.timeLimitMinutes))
+                m_timeIndex = i;
+            if (kPointLimits[i] == m_cfg.pointLimit)
+                m_pointIndex = i;
+        }
 
-        // Race types (positions matched on host_bk).
+        // 0: DONE (host_dn, id 1000), created before the menu's widgets. The
+        // settings apply when the menu is left, by DONE or Escape alike
+        // (mmInterface::Update, host race menu): there is no CANCEL.
+        const Vec2 dn = fe.layout.position(id, 0, kNext);
+        auto& done = menu.add<ui::SpriteButton>(SpriteSheet{"texture/host_dn.tga", 4}, dn.x, dn.y,
+                                                [this, &fe] { apply(fe); });
+        done.sound = "Selectionmade";
+        menu.onBack = [this, &fe] { apply(fe); };
+
+        // 1-5: race types.
         const struct {
             GameMode mode;
             const char* sprite;
@@ -781,28 +808,33 @@ public:
                      {GameMode::Checkpoint, "texture/cp_m.tga", 105, "jpg/race_cp.jpg"},
                      {GameMode::Circuit, "texture/circt_m.tga", 132, "jpg/race_cir.jpg"},
                      {GameMode::CopsAndRobbers, "texture/cops_m.tga", 159, "jpg/race_cop.jpg"}};
-        for (const auto& l : lamps) {
-            const GameMode m = l.mode;
-            auto& item = menu.add<ui::LampItem>(SpriteSheet{l.sprite, 5}, kLampX, l.y, [this, m] { return m_cfg.mode == m; },
+        for (int i = 0; i < 5; ++i) {
+            const GameMode m = lamps[i].mode;
+            const Vec2 p = fe.layout.position(id, 1 + i, {kLampX, lamps[i].y});
+            auto& item = menu.add<ui::LampItem>(SpriteSheet{lamps[i].sprite, 5}, p.x, p.y,
+                                                [this, m] { return m_cfg.mode == m; },
                                                 [this, &fe, m] { selectMode(fe, m); });
-            item.help = l.help;
+            item.help = lamps[i].help;
         }
 
-        // Race name and laps (host_rnm / host_lap panels).
+        // 6-8: race name (host_rnm panel) and its clamping arrows.
         m_raceName = &menu.add<ui::ValueBox>(
-            Box{kBoxX, 62, kBoxWide, kBoxH}, [this, &fe] { return raceNames(fe); },
+            fe.layout.widget(id, 6, {404, 64, 205, 24}), [this, &fe] { return raceNames(fe); },
             [this] { return std::max(0, m_cfg.raceIndex); }, [this](int i) { m_cfg.raceIndex = i; });
-        m_laps = &menu.add<ui::ValueBox>(
-            Box{kBoxX, 100, kBoxSmall, kBoxH},
-            [] {
+        m_raceArrows = arrows(fe, 7, {609, 60}, {609, 78}, *m_raceName);
+
+        // 9: LAPS (host_lap panel), a roller like the race menu's.
+        m_laps = &menu.add<ui::Roller>(
+            fe.layout.widget(id, 9, {418, 98, 60, 32}),
+            [&fe] {
                 std::vector<std::string> v;
-                for (int i = 1; i <= 10; ++i)
-                    v.push_back(std::to_string(i));
+                for (std::uint32_t i = 0; i < 10; ++i)
+                    v.push_back(fe.ctx.game->strings.get(590 + i, std::to_string(i + 1)));
                 return v;
             },
-            [this] { return std::max(0, m_cfg.laps - 1); }, [this](int i) { m_cfg.laps = i + 1; });
+            [this] { return std::clamp(m_cfg.laps - 1, 0, 9); }, [this](int i) { m_cfg.laps = i + 1; });
 
-        // Cops & Robbers (host_cr panel at 266,44).
+        // 10-15: Cops & Robbers type and limit lamps (host_cr panel at 266,44).
         const struct {
             game::CopsAndRobbersMode mode;
             const char* sprite;
@@ -811,12 +843,13 @@ public:
         } crModes[] = {{game::CopsAndRobbersMode::FreeForAll, "texture/free_cr.tga", 57, "jpg/host_ffa.jpg"},
                        {game::CopsAndRobbersMode::CopsVsRobbers, "texture/cpsvr_cr.tga", 79, "jpg/host_cvr.jpg"},
                        {game::CopsAndRobbersMode::RobberTeams, "texture/robrs_cr.tga", 101, "jpg/host_rt.jpg"}};
-        for (const auto& c : crModes) {
-            const auto mode = c.mode;
-            auto& item = menu.add<ui::LampItem>(SpriteSheet{c.sprite, 5}, 395, c.y,
+        for (int i = 0; i < 3; ++i) {
+            const auto mode = crModes[i].mode;
+            const Vec2 p = fe.layout.position(id, 10 + i, {395, crModes[i].y});
+            auto& item = menu.add<ui::LampItem>(SpriteSheet{crModes[i].sprite, 5}, p.x, p.y,
                                                 [this, mode] { return m_cfg.copsAndRobbers == mode; },
                                                 [this, mode] { m_cfg.copsAndRobbers = mode; });
-            item.help = c.help;
+            item.help = crModes[i].help;
             m_crItems.push_back(&item);
         }
         const struct {
@@ -827,15 +860,19 @@ public:
         } limits[] = {{0, "texture/none_cr.tga", 137, "jpg/host_n.jpg"},
                       {1, "texture/time_cr.tga", 159, "jpg/host_t.jpg"},
                       {2, "texture/point_cr.tga", 181, "jpg/host_p.jpg"}};
-        for (const auto& l : limits) {
-            const int limit = l.limit;
-            auto& item = menu.add<ui::LampItem>(SpriteSheet{l.sprite, 5}, 395, l.y, [this, limit] { return limitKind() == limit; },
+        for (int i = 0; i < 3; ++i) {
+            const int limit = limits[i].limit;
+            const Vec2 p = fe.layout.position(id, 13 + i, {395, limits[i].y});
+            auto& item = menu.add<ui::LampItem>(SpriteSheet{limits[i].sprite, 5}, p.x, p.y,
+                                                [this, limit] { return limitKind() == limit; },
                                                 [this, limit] { setLimit(limit); });
-            item.help = l.help;
+            item.help = limits[i].help;
             m_crItems.push_back(&item);
         }
+
+        // 16-18: LIMIT VALUE and its clamping arrows (strings 510-513 or 514-517).
         m_limitValue = &menu.add<ui::ValueBox>(
-            Box{522, 167, 88, 27},
+            fe.layout.widget(id, 16, {526, 171, 81, 19}),
             [this, &fe] {
                 const auto& st = fe.ctx.game->strings;
                 std::vector<std::string> v;
@@ -847,9 +884,13 @@ public:
                 }
                 return v;
             },
-            [this] { return limitIndex(); }, [this](int i) { setLimitIndex(i); });
+            [this] { return limitKind() == 2 ? m_pointIndex : m_timeIndex; },
+            [this](int i) { setLimitIndex(i); });
+        m_limitArrows = arrows(fe, 17, {610, 163}, {610, 181}, *m_limitValue);
+
+        // 19-21: GOLD MASS (strings 506-508) and its clamping arrows.
         m_goldBox = &menu.add<ui::ValueBox>(
-            Box{399, 223, 128, 27},
+            fe.layout.widget(id, 19, {404, 223, 123, 24}),
             [&fe] {
                 std::vector<std::string> v;
                 for (std::uint32_t i = 0; i < 3; ++i)
@@ -858,10 +899,13 @@ public:
             },
             [this] { return m_goldMass; }, [this](int i) { m_goldMass = i; });
         m_goldBox->help = "jpg/host_gm.jpg";
+        m_goldArrows = arrows(fe, 20, {530, 220}, {530, 238}, *m_goldBox);
 
-        // Environment (painted boxes on host_bk).
-        menu.add<ui::ValueBox>(
-            Box{kBoxX, 273, kBoxWide, kBoxH},
+        // 22-24: RACE LOCALE; 25-27: TIME (629-632); 28-30: WEATHER (625-628:
+        // the menu offers no snow, RaceMenuBase::IncWeather stops at 3); all
+        // with clamping arrows.
+        auto& city = menu.add<ui::ValueBox>(
+            fe.layout.widget(id, 22, {404, 275, 205, 24}),
             [&fe] {
                 std::vector<std::string> v;
                 for (const auto& c : fe.cities)
@@ -873,30 +917,27 @@ public:
                 m_cfg.city = fe.cities[static_cast<std::size_t>(i)].mapName;
                 clampRace(fe);
             });
-        menu.add<ui::ValueBox>(
-            Box{kBoxX, 311, kBoxMid, kBoxH}, [] { return std::vector<std::string>{"Morning", "Noon", "Evening", "Night"}; },
+        arrows(fe, 23, {607, 271}, {607, 289}, city);
+        auto& time = menu.add<ui::ValueBox>(
+            fe.layout.widget(id, 25, {404, 311, 123, 24}),
+            [t = std::vector<std::string>{s.get(629, "Morning"), s.get(630, "Noon"), s.get(631, "Evening"),
+                                          s.get(632, "Night")}] { return t; },
             [this] { return static_cast<int>(m_cfg.timeOfDay); },
             [this](int i) { m_cfg.timeOfDay = static_cast<game::TimeOfDay>(i); });
-        // Multiplayer adds snow (string 411 "Weather: Snowing").
-        menu.add<ui::ValueBox>(
-            Box{kBoxX, 346, kBoxMid, 27},
-            [] { return std::vector<std::string>{"Clear", "Cloudy", "Foggy", "Raining", "Snowing"}; },
-            [this] { return static_cast<int>(m_cfg.weather); },
+        arrows(fe, 26, {528, 308}, {528, 326}, time);
+        auto& weather = menu.add<ui::ValueBox>(
+            fe.layout.widget(id, 28, {404, 347, 123, 21}),
+            [w = std::vector<std::string>{s.get(625, "Clear"), s.get(626, "Cloudy"), s.get(627, "Foggy"),
+                                          s.get(628, "Raining")}] { return w; },
+            [this] { return std::min(static_cast<int>(m_cfg.weather), 3); },
             [this](int i) { m_cfg.weather = static_cast<game::Weather>(i); });
-        menu.add<ui::Slider>(Box{472, 381, 139, 31}, [this] { return m_cfg.pedestrianDensity; },
-                             [this](float v) { m_cfg.pedestrianDensity = v; });
+        arrows(fe, 29, {528, 342}, {528, 360}, weather);
 
-        addBack(fe, *this, "texture/opt_can.tga");
-        auto& done = menu.add<ui::SpriteButton>(SpriteSheet{"texture/host_dn.tga", 4}, kNext.x, kNext.y, [this, &fe] {
-            if (fe.ctx.netGame) {
-                fe.ctx.netGame->setGoldMass(m_goldMass);
-                fe.ctx.netGame->setRaceConfig(m_cfg);
-            }
-            // Remember the host's choices for the next session.
-            fe.config.mode = m_cfg.mode;
-            fe.config.city = m_cfg.city;
-            fe.pop();
-        });
+        // 31: PEDESTRIAN DENSITY (multiplayer has no traffic or cop slider).
+        menu.add<ui::Slider>(
+            fe.layout.widget(id, 31, {472, 381, 139, 31}), [this] { return m_cfg.pedestrianDensity; },
+            [this](float v) { m_cfg.pedestrianDensity = v; });
+
         addNavStrip(fe, *this);
         clampRace(fe);
         menu.focus(&done);
@@ -911,11 +952,14 @@ public:
         const bool race = m_cfg.mode == GameMode::Blitz || m_cfg.mode == GameMode::Checkpoint ||
                           m_cfg.mode == GameMode::Circuit;
         m_raceName->visible = race;
+        m_raceArrows.show(race);
         m_laps->visible = m_cfg.mode == GameMode::Circuit;
         for (auto* item : m_crItems)
             item->visible = cr;
         m_limitValue->visible = cr && limitKind() != 0;
+        m_limitArrows.show(m_limitValue->visible);
         m_goldBox->visible = cr;
+        m_goldArrows.show(cr);
     }
 
     // The panels go under the widgets: their value boxes and lamps sit on them.
@@ -942,6 +986,39 @@ public:
     }
 
 private:
+    // The roller_up / roller_down buttons beside a box (clamping).
+    struct Arrows {
+        ui::SpriteButton* up = nullptr;
+        ui::SpriteButton* down = nullptr;
+        void show(bool on) const {
+            up->visible = on;
+            down->visible = on;
+        }
+    };
+    Arrows arrows(Frontend& fe, int upIndex, Vec2 upCode, Vec2 downCode, ui::ValueBox& box) {
+        const Vec2 u = fe.layout.position(menu_id::kHostRace, upIndex, upCode);
+        const Vec2 d = fe.layout.position(menu_id::kHostRace, upIndex + 1, downCode);
+        Arrows a;
+        a.up = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/roller_up.tga", 3}, u.x, u.y,
+                                           [&box] { ui::stepOption(box, -1, false); });
+        a.down = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/roller_down.tga", 3}, d.x, d.y,
+                                             [&box] { ui::stepOption(box, 1, false); });
+        return a;
+    }
+
+    // DONE or Escape: the settings go to the session (mmInterface::Switch to
+    // the lobby sends them) and the menu returns to the lobby.
+    void apply(Frontend& fe) {
+        if (fe.ctx.netGame) {
+            fe.ctx.netGame->setGoldMass(m_goldMass);
+            fe.ctx.netGame->setRaceConfig(m_cfg);
+        }
+        // Remember the host's choices for the next session.
+        fe.config.mode = m_cfg.mode;
+        fe.config.city = m_cfg.city;
+        fe.pop();
+    }
+
     std::vector<std::string> raceNames(Frontend& fe) const {
         std::vector<std::string> names;
         for (const auto* r : fe.racesFor(m_cfg.mode, m_cfg.city))
@@ -971,38 +1048,34 @@ private:
 
     int limitKind() const { return m_cfg.timeLimitMinutes > 0 ? 1 : (m_cfg.pointLimit > 0 ? 2 : 0); }
 
+    // HostRaceMenu::SetLimit / GetLimit: the kind picks which of the two
+    // remembered indices applies.
     void setLimit(int kind) {
-        m_cfg.timeLimitMinutes = kind == 1 ? static_cast<float>(kTimeLimits[1]) : 0.0f;
-        m_cfg.pointLimit = kind == 2 ? kPointLimits[1] : 0;
-    }
-
-    int limitIndex() const {
-        if (limitKind() == 2) {
-            for (int i = 0; i < 4; ++i)
-                if (kPointLimits[i] == m_cfg.pointLimit)
-                    return i;
-        } else {
-            for (int i = 0; i < 4; ++i)
-                if (kTimeLimits[i] == static_cast<int>(m_cfg.timeLimitMinutes))
-                    return i;
-        }
-        return 0;
+        m_cfg.timeLimitMinutes = kind == 1 ? static_cast<float>(kTimeLimits[m_timeIndex]) : 0.0f;
+        m_cfg.pointLimit = kind == 2 ? kPointLimits[m_pointIndex] : 0;
     }
 
     void setLimitIndex(int i) {
         i = std::clamp(i, 0, 3);
-        if (limitKind() == 2)
+        if (limitKind() == 2) {
+            m_pointIndex = i;
             m_cfg.pointLimit = kPointLimits[i];
-        else
+        } else {
+            m_timeIndex = i;
             m_cfg.timeLimitMinutes = static_cast<float>(kTimeLimits[i]);
+        }
     }
 
     game::RaceConfig m_cfg;
     int m_goldMass = 1;
+    int m_timeIndex = 0, m_pointIndex = 0;
     ui::ValueBox* m_raceName = nullptr;
-    ui::ValueBox* m_laps = nullptr;
+    Arrows m_raceArrows;
+    ui::Roller* m_laps = nullptr;
     ui::ValueBox* m_limitValue = nullptr;
+    Arrows m_limitArrows;
     ui::ValueBox* m_goldBox = nullptr;
+    Arrows m_goldArrows;
     std::vector<ui::Widget*> m_crItems;
 };
 

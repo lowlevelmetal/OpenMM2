@@ -502,8 +502,11 @@ private:
         return !fe.profile || fe.progress.variantUnlocked(*fe.profile, fe.config.vehicle, fe.config.vehicleColor);
     }
 
-    // Entering with a locked car moves to the last unlocked car picked this
-    // session, else the first unlocked one in list order.
+    // VehicleSelectBase::PreSetup / SetLastUnlockedVehicle: entering with a
+    // locked car or paint job (CurrentVehicleIsLocked) moves to the last
+    // unlocked car picked this session, else the first unlocked one in list
+    // order, with that car's remembered paint job. Coming back from the
+    // showcase does not (SetShowcaseFlag): the page is not rebuilt then.
     void enterWithUnlockedCar(Frontend& fe) {
         const auto& cars = fe.ctx.game->catalog.vehicles();
         if (cars.empty())
@@ -511,7 +514,7 @@ private:
         if (vehicleIndex(fe) < 0)
             fe.config.vehicle = cars.front().baseName;
         auto& session = garageSession();
-        if (!carUnlocked(fe)) {
+        if (!carUnlocked(fe) || !paintUnlocked(fe)) {
             std::string car = session.lastUnlocked;
             if (car.empty() || !fe.profile || !fe.progress.vehicleUnlocked(*fe.profile, car)) {
                 car.clear();
@@ -548,8 +551,13 @@ private:
     }
 
     // aud/aud22/<car>_select.22k.wav at 0.91 when a car is picked or the
-    // garage is entered (VehicleSelectBase).
-    void playSelectSound(Frontend& fe) const { fe.playSound(fe.config.vehicle + "_select", 0.91f); }
+    // garage is entered, unless it is still playing (VehicleSelectBase::
+    // PreSetup, GetCarTitle).
+    void playSelectSound(Frontend& fe) const {
+        const std::string name = fe.config.vehicle + "_select";
+        if (!fe.soundPlaying(name))
+            fe.playSound(name, 0.91f);
+    }
 
     // MM2 draws the selected car in 3D here (viewport 32,55 608x192, field of
     // view 0.6 rad, camera 0.18 rad above the car at its UIDist, the car
