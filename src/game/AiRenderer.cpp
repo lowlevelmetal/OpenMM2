@@ -132,6 +132,7 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
         opts.fog = false;
         opts.blend = render::BlendMode::Add;
         opts.depthWrite = false;
+        opts.alphaRef = 1.0f / 255.0f; // the default alpha test (alpha not 0)
         drawGpuMesh(m_device, m_textures, *glow, model->materials(0), world, opts);
         drawGpuMesh(m_device, m_textures, *walk, model->materials(0), world, opts);
     }

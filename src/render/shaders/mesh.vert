@@ -54,9 +54,10 @@ void main() {
     vColor = color;
     vUv0 = aUv0;
     if ((draw.flags & kEnvMap1) != 0u) {
-        // Sphere map from the view-space normal (D3DTSS_TCI_CAMERASPACENORMAL style).
-        vec3 n = normalize(mat3(frame.view) * worldNormal);
-        vUv1 = vec2(n.x, -n.y) * 0.5 + 0.5;
+        // modShader::BeginEnvMap: D3DTSS_TCI_CAMERASPACENORMAL taken back to
+        // world space by the camera matrix, then u = 0.5 + 0.5 x and
+        // v = 0.5 - 0.5 y of the world-space normal.
+        vUv1 = vec2(worldNormal.x, -worldNormal.y) * 0.5 + 0.5;
     } else {
         vUv1 = aUv1;
     }

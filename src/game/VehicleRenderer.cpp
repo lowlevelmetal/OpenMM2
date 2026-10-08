@@ -422,6 +422,10 @@ void VehicleRenderer::drawShadow(const VehiclePose& pose) {
     shadow.depthWrite = false;
     shadow.depthBias = true;
     shadow.blend = render::BlendMode::Alpha;
+    // The shadow pass comes after cityLevel::DrawRooms has put the alpha
+    // test back to its default (alpha not 0), not the GREATER 100 of the
+    // object passes.
+    shadow.alphaRef = 1.0f / 255.0f;
     drawPart("SHADOW", asset::Lod::High, *m, shadow, false);
 }
 
@@ -453,6 +457,8 @@ void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
     glow.fog = false;
     glow.blend = render::BlendMode::Add;
     glow.depthWrite = false;
+    // The glow pass runs with the default alpha test (alpha not 0).
+    glow.alphaRef = 1.0f / 255.0f;
     if (m_traffic) {
         // Tail lights while braking or stopped, and again with the light flag.
         if (pose.brakeLights)
