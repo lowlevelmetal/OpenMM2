@@ -17,22 +17,24 @@ constexpr float kHermite[4][4] = {
     {1.0f, 0.0f, 0.0f, 0.0f},
 };
 
-// The x and y rows of gizPathspline::Compute, summed in its order.
+// The x and y rows of gizPathspline::Compute, summed in its order (the
+// asm's: p1, t0, t1, then p0 for three coefficients; t1, t0, p1, p0 for the
+// t^2 one).
 Vec4 coefficientsXY(float p0, float p1, float t0, float t1) {
     const auto& h = kHermite;
-    return {((h[0][0] * p0 + t1 * h[0][3]) + t0 * h[0][2]) + p1 * h[0][1],
-            ((h[1][0] * p0 + h[1][1] * p1) + h[1][2] * t0) + h[1][3] * t1,
-            ((h[2][0] * p0 + t1 * h[2][3]) + t0 * h[2][2]) + h[2][1] * p1,
-            ((h[3][0] * p0 + t1 * h[3][3]) + t0 * h[3][2]) + h[3][1] * p1};
+    return {((p1 * h[0][1] + t0 * h[0][2]) + t1 * h[0][3]) + h[0][0] * p0,
+            ((h[1][3] * t1 + h[1][2] * t0) + h[1][1] * p1) + h[1][0] * p0,
+            ((h[2][1] * p1 + t0 * h[2][2]) + t1 * h[2][3]) + h[2][0] * p0,
+            ((p1 * h[3][1] + t0 * h[3][2]) + t1 * h[3][3]) + h[3][0] * p0};
 }
 
-// The z row: the first coefficient through Vector4::Dot, the others as above.
+// The z row: the t^3 coefficient through Vector4::Dot (p0, p1, t0, t1 in
+// turn), the others as above.
 Vec4 coefficientsZ(float p0, float p1, float t0, float t1) {
     const auto& h = kHermite;
-    return {((h[0][0] * p0 + h[0][1] * p1) + h[0][2] * t0) + h[0][3] * t1,
-            ((h[1][0] * p0 + h[1][1] * p1) + h[1][2] * t0) + h[1][3] * t1,
-            ((h[2][0] * p0 + t1 * h[2][3]) + t0 * h[2][2]) + h[2][1] * p1,
-            ((h[3][0] * p0 + t1 * h[3][3]) + t0 * h[3][2]) + h[3][1] * p1};
+    Vec4 k = coefficientsXY(p0, p1, t0, t1);
+    k.x = ((p0 * h[0][0] + p1 * h[0][1]) + t0 * h[0][2]) + t1 * h[0][3];
+    return k;
 }
 
 float distance(const Vec3& a, const Vec3& b) {
