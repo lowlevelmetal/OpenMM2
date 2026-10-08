@@ -29,6 +29,8 @@ Frontend::Frontend(Context& c)
     for (const auto& info : cities)
         races.push_back(city::listRaces(c.game->vfs, info));
     hallOfFame.load(store.dir() / "records.ini");
+    // mmStatePack::SetDefaults: the current city starts as San Francisco.
+    config.city = "sf";
 }
 
 void Frontend::push(std::unique_ptr<Page> page) {
@@ -179,7 +181,10 @@ void Frontend::configFromProfile() {
     config.vehicleColor = p.vehicleColor;
     config.automatic = p.automatic;
     config.difficulty = p.difficulty;
-    config.city = cityIndex(p.city) >= 0 ? cities[static_cast<std::size_t>(cityIndex(p.city))].mapName : "london";
+    // A city the game no longer has keeps the current one
+    // (Dialog_City2::SetCurrentCity).
+    if (cityIndex(p.city) >= 0)
+        config.city = cities[static_cast<std::size_t>(cityIndex(p.city))].mapName;
     config.mode = p.mode == game::GameMode::CopsAndRobbers ? game::GameMode::Cruise : p.mode;
     config.raceIndex = config.mode == game::GameMode::Cruise ? -1 : std::max(0, p.raceIndex);
     // mmInterface::PlayerSetState restores the event, city and car; the

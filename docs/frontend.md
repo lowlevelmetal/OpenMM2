@@ -116,7 +116,7 @@ nothing ever reads it back (`MArray::RetrieveMenuData` has no callers).
 
 | Background | Screen (menu id) | Notes |
 |---|---|---|
-| `splash.jpg` | loading | MM2's loading bar (`ProgressRect`): a flat `#0D2CBA` bar at 349,448, 10 px tall, percent × 640 / 284 whole pixels wide (225 at 100 %); MM2 reports 20, 30, 35, 40, 50, 55 ... 95, 97, 99 and 100 % while the frontend loads and then shows the main menu by itself. OpenMM2 has already loaded and shows one step per frame (pacing **inferred**). `pbar_act`/`pbar_inact` are unused. |
+| `splash.jpg` | loading | MM2's loading bar (`ProgressRect`): a flat `#0D2CBA` bar at 349,448, 10 px tall, percent × 640 / 284 whole pixels wide (225 at 100 %); `BeginPhase` reports 10 % once the picture is up, then MM2 reports 20, 30, 35, 40, 50, 55 ... 95, 97, 99 and 100 % while the frontend loads and then shows the main menu by itself. OpenMM2 has already loaded and shows one step per frame (pacing **inferred**). `pbar_act`/`pbar_inact` are unused. |
 | `main_bk.jpg` | main menu (1) | see below |
 | `newp_dlg.jpg` | Create a New Driver (17) | name (72,89, 18 characters), Amateur / Professional (`checkbox.tga`), DONE right, CANCEL left |
 | `drec_dlg.jpg` | Driver Record (19) | see below |
@@ -188,11 +188,14 @@ Next Lesson, Race Menu / Back to School and Exit to Windows from 440,75,
 48 px apart (the popup button height, 0.1 of the screen), in the popups'
 colours (white, focused yellow-green, disabled grey). The lesson line is
 **inferred**. Next is offered
-when the next checkpoint race exists and is open, for blitz and circuit
-unless it was the last race, and for lessons other than 2, 6 and from 10 on
-(`NextRaceAvailable`); it loads the next race's defaults (an unpassed
-lesson in the school car). Race Menu / Back to School return to the race
-menu or the Crash Course page (`mmInterface::ShowMain`).
+when the next checkpoint race exists and is open for the driver (never
+without one), for blitz and circuit unless it was the last race, and for
+lessons other than 2, 6 and from 10 on (`NextRaceAvailable`); it loads the
+next race's defaults, keeping the pedestrian density for checkpoint and
+blitz races (`NextRace`), and an unpassed lesson in the school car with the
+same paint job. Race Menu / Back to School return to the race menu or the
+Crash Course page (`mmInterface::ShowMain`); Exit to Windows ends the game
+at once, without `quit_dlg`.
 
 ### Race setup, garage, showcase and Crash Course
 
@@ -520,7 +523,8 @@ the race (`mmRecord`, shown by `Dialog_HallOfFame`). OpenMM2 stores them in
 **Per-driver view settings** (`mmPlayerConfig::GetViewSettings` /
 `SetViewSettings`): the selected car camera, wide angle and dashboard are
 kept with the driver and restored at the next race; a new driver starts on
-the near camera with both off. A driver's name is kept as typed, spaces
+the near camera with both off. A new driver gets the current city, San
+Francisco until another is chosen (`mmStatePack::SetDefaults`). A driver's name is kept as typed, spaces
 included; only an empty one is refused (`mmInterface::PlayerCreate`). The
 INI files store names quoted so the spaces survive.
 

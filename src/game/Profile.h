@@ -61,7 +61,9 @@ struct Profile {
     int vehicleColor = 0;
     bool automatic = true;
     Difficulty difficulty = Difficulty::Amateur;
-    std::string city = "london";
+    // mmInterface::PlayerCreate gives a new driver the current city, which
+    // mmStatePack::SetDefaults starts as San Francisco.
+    std::string city = "sf";
     GameMode mode = GameMode::Cruise;
     int raceIndex = 0;
 

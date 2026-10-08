@@ -49,10 +49,11 @@ std::string controllerName(Frontend& fe) {
 
 // splash.jpg with MM2's loading bar (ProgressCB -> ProgressRect): a flat
 // #0D2CBA bar at (349,448), 10 px tall and percent * 640 / 284 px wide in
-// whole pixels (225 px at 100 %). mmInterface::mmInterface reports 20, 30,
-// 35, 40, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 97, 99 and 100 % while the
-// frontend loads (lvlProgress::UpdateTask; BeginTask's 0 draws nothing) and
-// then shows the main menu. OpenMM2 has already loaded, so it shows one step
+// whole pixels (225 px at 100 %). BeginPhase reports 10 % once the picture
+// is up, then mmInterface::mmInterface 20, 30, 35, 40, 50, 55, 60, 65, 70,
+// 75, 80, 85, 90, 95, 97, 99 and 100 % while the frontend loads
+// (lvlProgress::UpdateTask; BeginTask's 0 draws nothing) and then shows the
+// main menu. OpenMM2 has already loaded, so it shows one step
 // per frame (pacing inferred).
 class LoadingPage final : public Page {
 public:
@@ -71,8 +72,8 @@ public:
     }
 
 private:
-    static constexpr std::array<int, 17> kSteps = {20, 30, 35, 40, 50, 55, 60, 65, 70,
-                                                   75, 80, 85, 90, 95, 97, 99, 100};
+    static constexpr std::array<int, 18> kSteps = {10, 20, 30, 35, 40, 50, 55, 60, 65,
+                                                   70, 75, 80, 85, 90, 95, 97, 99, 100};
     int m_step = -1;
 };
 

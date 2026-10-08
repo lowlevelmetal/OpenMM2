@@ -53,7 +53,9 @@ public:
             crash ? s.get(654, "Next Lesson") : s.get(493, "Next Race"), [this, &fe] { nextRace(fe); }, w);
         next.enabled = hasNextRace(fe);
         add(crash ? s.get(496, "Back to School") : s.get(497, "Race Menu"), [&fe] { fe.pop(); }, w);
-        add(s.get(498, "Exit to Windows"), [&fe] { fe.askQuit(); }, lastW);
+        // PUResults' exit ends the game at once (mmPopup::Update, as PUMain's
+        // Exit to Windows): no question.
+        add(s.get(498, "Exit to Windows"), [&fe] { fe.ctx.quit = true; }, lastW);
         menu.setInitialFocus(&restart);
         menu.onBack = [&fe] { fe.pop(); };
     }
@@ -132,8 +134,10 @@ private:
         const int count = static_cast<int>(fe.racesFor(cfg.mode, cfg.city).size());
         switch (cfg.mode) {
         case GameMode::Checkpoint:
-            return cfg.raceIndex + 1 < count &&
-                   fe.progress.raceOpen(fe.profile ? &*fe.profile : nullptr, cfg.city, "race", cfg.raceIndex + 1);
+            // mmSingleRace::NextRaceAvailable asks the driver's progress:
+            // without a driver there is no next race.
+            return fe.profile && cfg.raceIndex + 1 < count &&
+                   fe.progress.raceOpen(&*fe.profile, cfg.city, "race", cfg.raceIndex + 1);
         case GameMode::Blitz:
         case GameMode::Circuit: return cfg.raceIndex + 1 < count;
         case GameMode::CrashCourse:
@@ -147,12 +151,16 @@ private:
         fe.config = m_result.config;
         ++fe.config.raceIndex;
         fe.applyRaceDefaults(fe.config);
+        // mmSingleRace::NextRace and mmSingleBlitz::NextRace set the next
+        // race's environment but not its pedestrian density, which stays.
+        if (fe.config.mode == GameMode::Checkpoint || fe.config.mode == GameMode::Blitz)
+            fe.config.pedestrianDensity = m_result.config.pedestrianDensity;
         if (fe.config.mode == GameMode::CrashCourse) {
+            // mmSingleStunt::NextRace: a lesson not yet passed in the school
+            // car, which keeps the paint job.
             const auto* rec = fe.profile ? fe.profile->record(fe.config.city, "crash", fe.config.raceIndex) : nullptr;
-            if (!rec || !rec->passed) {
+            if (!rec || !rec->passed)
                 fe.config.vehicle = schoolCar(fe.config.city);
-                fe.config.vehicleColor = 0;
-            }
         }
         fe.startRace();
     }

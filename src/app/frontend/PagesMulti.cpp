@@ -334,6 +334,12 @@ private:
             cfg.raceIndex = std::max(cfg.raceIndex, 0);
         if (cfg.laps <= 0)
             cfg.laps = 3;
+        // HostRaceMenu (RaceMenuBase::Init(1)) has no traffic, cop or
+        // opponent settings, and mmGameMulti::Init runs the network games
+        // without traffic, police or racers: the session carries none.
+        cfg.trafficDensity = 0.0f;
+        cfg.copDensity = 0.0f;
+        cfg.opponents = 0;
         cfg.multiplayer = true;
         game::NetHostOptions opts;
         opts.password = std::string(str::trim(m_password));
@@ -794,10 +800,10 @@ private:
 
     // What the joiners' ready depends on: the host's race settings.
     static std::string settingsKey(const game::RaceConfig& c, int goldMass) {
-        return std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", c.city, static_cast<int>(c.mode), c.raceIndex,
-                           c.laps, static_cast<int>(c.timeOfDay), static_cast<int>(c.weather),
+        return std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", c.city, static_cast<int>(c.mode), c.raceIndex, c.laps,
+                           static_cast<int>(c.timeOfDay), static_cast<int>(c.weather),
                            static_cast<int>(c.copsAndRobbers), c.timeLimitMinutes, c.pointLimit, goldMass,
-                           c.trafficDensity, c.pedestrianDensity, c.copDensity);
+                           c.pedestrianDensity);
     }
 
     // NetArena::LoadRaceMap: "<city>_map" + dgGameModeNames[mode] with the
