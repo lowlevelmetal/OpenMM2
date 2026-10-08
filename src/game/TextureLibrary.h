@@ -75,6 +75,10 @@ public:
     // Names a texture during the city's load: it takes the current limit.
     void declare(std::string_view name);
 
+    // vglSetCloudMap: the cloud shadow texture made from `name` (its colour
+    // black, its alpha inverted, no mipmaps). Null when it does not exist.
+    const WorldTexture* cloudMap(std::string_view name);
+
 private:
     struct Animation {
         std::vector<WorldTexture> frames;

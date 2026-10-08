@@ -38,6 +38,7 @@ decisions: levels of detail, distances, textures, states and order.
 | Far plane | the Far Clip option (100–1000 m); OpenMM2's Visibility slider maps 0–1 to that range | MM2 (`PUGraphics::FixClip`); the slider mapping is inferred |
 | Sky | `city/<map>.sky` "model yOffset yScale speed" (retail `sky_dome_l 0 0.95 0.005`): the dome at (camera x, camera y × yScale + yOffset, camera z), turning about Y at `speed` rad/s, unlit, unfogged, no depth; its 16 paint jobs are time of day × weather (texture letters: a dawn, n noon, d dusk, m midnight; c clear, p partly cloudy, f fog, r rain) | MM2 (`lvlSky::AutoInit`, `Update`, `DrawHat`); paint jobs verified by viewing the sky textures |
 | Light flag | evening, night or fog: car lights on (see below) | MM2 (`mmGame::InitWeather`) |
+| Cloud shadows | the Cloud Shadows option (0 none, 1 low, 2 high; default high) picks the .tex flag bit that receives them (vglCloudMapEnable 0, 4, 2: low shades textures with flag 0x4, such as the roads' 0x18006, high those with 0x2, the roads and the facades' 0x00002). The map is `shadmap_day` in the morning and at noon, `shadmap_nite` in the evening and at night, made black with its alpha inverted (vglSetCloudMap). Each opaque street texture with the bit is drawn again with it at ((x + y), (y + z)) / 128 in world space, and each city object's packets with the bit and no alpha format at those coordinates of their model-space positions, alpha blended and tested above 0, fogged | MM2 (`mmGame::SetLevelGraphics`, `cityLevel::Load`, `vglSetCloudMap`, `vglEndBatch`, `cityLevel::Update`'s `vglSetOffset`, `lvlFixedAny::Draw`, `modStatic::DrawOrthoMapped`, `gfxPacket::OrthoMap`). The .tex bits 0x2 and 0x4 are read only by this |
 | Lamp glows | at night only (time 3) | MM2 (`mmGame::InitWeather` → `dgBangerManager::InitGlow`), see bangers.md |
 
 ## City
@@ -58,9 +59,11 @@ decisions: levels of detail, distances, textures, states and order.
 Not ported: `gfxTexture::sm_LOD` (3 − the street level), which only limits
 the mip levels Direct3D's texture manager keeps resident (`MarkHigherUse`,
 `SetLOD`; a texture's limit only ever drops to the most detailed level it has
-been drawn at). Not ported yet: cloud shadows (`shadmap_day`/`shadmap_nite` in a second
-pass with UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts and
-the room flood fill used without a PVS.
+been drawn at). Not ported yet: the room flood fill used without a PVS. No
+retail city model has the `refl`, `mask`, `nonrandom` or `opaque` parts
+lvlFixedAny::Init looks for (it draws `mask` with the model, `refl` in
+DrawRooms' reflected-parts pass, and widens the radius over them), so they
+are not drawn.
 
 ## Wide angle
 

@@ -300,6 +300,43 @@ const WorldTexture* TextureLibrary::get(std::string_view nameIn, bool mipmaps) {
     return slot ? &*slot : nullptr;
 }
 
+const WorldTexture* TextureLibrary::cloudMap(std::string_view nameIn) {
+    const std::string name = str::lower(nameIn);
+    const std::string key = "#cloud#" + name;
+    if (auto it = m_textures.find(key); it != m_textures.end())
+        return it->second ? &*it->second : nullptr;
+    // gfxLoadImage (with the variant handler), then every texel black with
+    // its alpha inverted, and gfxTexture::Create without mipmaps.
+    std::optional<WorldTexture> t;
+    if (auto picture = image(name)) {
+        auto& level = picture->levels.front();
+        for (std::size_t i = 0; i + 3 < level.rgba.size(); i += 4) {
+            level.rgba[i] = level.rgba[i + 1] = level.rgba[i + 2] = 0;
+            level.rgba[i + 3] = static_cast<std::uint8_t>(~level.rgba[i + 3]);
+        }
+        const auto flags = readImage(name, false).transform([](const LoadedImage& l) { return l.flags; });
+        render::TextureDesc desc;
+        desc.width = level.width;
+        desc.height = level.height;
+        desc.mipLevels = 1;
+        desc.debugName = key;
+        const render::TextureData data{level.rgba.data(), 0};
+        WorldTexture w;
+        w.handle = m_device.createTexture(desc, std::span<const render::TextureData>(&data, 1));
+        w.width = level.width;
+        w.height = level.height;
+        w.flags = flags.value_or(0);
+        w.alphaFormat = true;
+        using render::AddressMode;
+        w.sampler.addressU = (w.flags & asset::TexFlags::ClampU) ? AddressMode::Clamp : AddressMode::Wrap;
+        w.sampler.addressV = (w.flags & asset::TexFlags::ClampV) ? AddressMode::Clamp : AddressMode::Wrap;
+        w.sampler.filter = render::Filter::Bilinear;
+        t = w;
+    }
+    auto& slot = m_textures[key] = t;
+    return slot ? &*slot : nullptr;
+}
+
 void TextureLibrary::declare(std::string_view nameIn) {
     if (m_sizeLimit > 0 && !nameIn.empty())
         m_sizeLimits[str::lower(nameIn)] = m_sizeLimit;

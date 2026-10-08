@@ -445,6 +445,9 @@ private:
                 static_cast<int>(std::clamp(ctx.settings.ini.getInt("Graphics", "LightingQuality", 3), 0LL, 3LL));
             m_envOptions.farClip = static_cast<float>(
                 std::clamp(ctx.settings.ini.getDouble("Graphics", "FarClip", 1000.0), 100.0, 1000.0));
+            // mmGame::SetLevelGraphics: vglCloudMapEnable by CLOUD SHADOWS.
+            const auto clouds = ctx.settings.ini.getInt("Graphics", "CloudShadows", 2);
+            m_envOptions.cloudShadows = static_cast<int>(std::clamp(clouds, 0LL, 2LL));
         }
         applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
