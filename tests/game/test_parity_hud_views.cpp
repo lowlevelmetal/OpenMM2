@@ -2,10 +2,18 @@
 // mmViewMgr::SetViewSetting's coupling of the HUD map's modes with the
 // camera, the wide angle and the dashboard, mmHudMap::SetMapMode's 3D view
 // placement and mmHUD::Update's message placement.
+#include "TestData.h"
+#include "city/CityData.h"
 #include "game/CamPlayer.h"
+#include "game/Strings.h"
 #include "game/session/Hud.h"
+#include "game/session/Session.h"
+#include "vfs/GameSource.h"
 
 #include <gtest/gtest.h>
+
+#include <cstdlib>
+#include <memory>
 
 using namespace mm2;
 using namespace mm2::game;
@@ -144,4 +152,74 @@ TEST(HudViewsParity, MessagePlacement) {
     // move to the top.
     EXPECT_FLOAT_EQ(messageTop(false, false, false), 0.05f);
     EXPECT_FLOAT_EQ(messageTop(true, true, false), 0.1f);
+}
+
+TEST(HudViewsParity, IconDrawOrder) {
+    using session::hud::iconDrawOrder;
+    // mmIcons::Cull: pass k draws place k + 1, and places above 7 in the
+    // first pass; each icon once.
+    const std::vector<int> places{3, 1, 10, 2};
+    EXPECT_EQ(iconDrawOrder(places, 4), (std::vector<std::size_t>{1, 2, 3, 0}));
+    // A place past the passes (and under 8) is never drawn: three opponents
+    // behind the player are 2nd, 3rd and 4th, and the last one's icon goes.
+    const std::vector<int> behind{2, 3, 4};
+    EXPECT_EQ(iconDrawOrder(behind, 3), (std::vector<std::size_t>{0, 1}));
+    // Eight network slots: everything placed 10 draws in slot order.
+    const std::vector<int> unplaced{10, 10, 9};
+    EXPECT_EQ(iconDrawOrder(unplaced, 8), (std::vector<std::size_t>{0, 1, 2}));
+}
+
+TEST(HudViewsParity, IconColours) {
+    using namespace session::hud;
+    // opp_icon cells: 1-4 on the first row, 5-8 on the second, the gold "$" (9).
+    EXPECT_EQ(iconDigitCell(1), (Vec2{0.0f, 0.0f}));
+    EXPECT_EQ(iconDigitCell(4), (Vec2{3.0f, 0.0f}));
+    EXPECT_EQ(iconDigitCell(5), (Vec2{0.0f, 1.0f}));
+    EXPECT_EQ(iconDigitCell(9), (Vec2{0.0f, 2.0f}));
+    // mmGame::mmGame's net player colours; mmHudMap's slot + 4 map colours,
+    // the last two past MM2's table.
+    EXPECT_EQ(netIconColor(0), 0xFF0000EFu);
+    EXPECT_EQ(netIconColor(7), 0xFFFF0390u);
+    EXPECT_EQ(mapIconColor(0 + 4), 0xFFEF0000u);
+    EXPECT_EQ(mapIconColor(5 + 4), 0xFFFF0390u);
+    EXPECT_EQ(mapIconColor(6 + 4), 0x40F051ECu);
+}
+
+TEST(HudViewsParity, OpponentPlacesForTheIcons) {
+    // mmSingleRace::UpdateScore: each opponent's place for its icon.
+    MM2_REQUIRE_GAME_DATA();
+    auto src = vfs::probeGameSource(std::getenv("OPENMM2_GAME_DATA"));
+    auto london = city::loadCity(*test::gameData(), "london");
+    ASSERT_TRUE(src && london);
+    const Strings strings = Strings::load(*src);
+    RaceConfig cfg;
+    cfg.mode = GameMode::Checkpoint;
+    cfg.city = "london";
+    cfg.raceIndex = 0;
+    cfg.opponents = 3;
+    std::string error;
+    auto s = session::Session::create(cfg, *london, *test::gameData(), strings, &error);
+    ASSERT_TRUE(s) << error;
+    EXPECT_EQ(s->opponentPlace(0), 10); // before the first update
+    const auto& cps = s->checkpoints();
+    ASSERT_GE(cps.size(), 3u);
+    session::PlayerState player;
+    player.transform = s->playerSpawn();
+    std::vector<session::OpponentState> opps(3);
+    for (auto& o : opps)
+        o.transform = s->playerSpawn();
+    s->start();
+    for (int i = 0; i < 400 && s->phase() == session::Phase::Countdown; ++i)
+        s->update(1.0f / 30.0f, player, opps);
+    ASSERT_EQ(s->phase(), session::Phase::Racing);
+    // Opponent 2 clears the first checkpoint; opponent 1 is level with the
+    // player but nearer the next one; opponent 0 sits with the player.
+    opps[2].transform.m3 = cps[1].position;
+    s->update(1.0f / 30.0f, player, opps);
+    opps[1].transform.m3 = lerp(s->playerSpawn().m3, cps[1].position, 0.5f);
+    s->update(1.0f / 30.0f, player, opps);
+    EXPECT_EQ(s->opponentPlace(2), 1);
+    EXPECT_EQ(s->opponentPlace(1), 2);
+    EXPECT_EQ(s->opponentPlace(0), 3); // level with the player: not behind it
+    EXPECT_EQ(s->position(), 3);
 }

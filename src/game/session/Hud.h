@@ -85,13 +85,23 @@ struct DashParams {
 };
 std::optional<DashParams> loadDashParams(const vfs::Vfs& vfs, const std::string& car);
 
-// Other cars shown on the map and marked by the opponent icons.
+// Other cars shown on the map and marked by the opponent icons (mmGame's
+// OppIconInfo for the opponents and the network players; aiMap's police).
 struct MapBlip {
     Mat34 transform;
     // Ambient traffic is accepted but not drawn (MM2's map shows only the
     // player, opponents and police). Police should be passed while they
-    // chase (mmHudMap::DrawCops).
-    enum class Kind : std::uint8_t { Opponent, Police, Ambient, Teammate } kind = Kind::Opponent;
+    // chase (mmHudMap::DrawCops). Remote: a network player.
+    enum class Kind : std::uint8_t { Opponent, Police, Ambient, Remote } kind = Kind::Opponent;
+    // mmIcons (OppIconInfo): the place shown on the icon (1-8 the digits of
+    // opp_icon, 9 its gold "$", the Cops and Robbers carrier; 10 none) and
+    // the icon's colour (0xAARRGGBB; violet for single-player opponents).
+    int place = 10;
+    std::uint32_t iconColor = 0xFFB400FFu;
+    // Network players: their slot in mmGameMulti's players (the map colours
+    // them with IconType slot + 4) and their name (mmIcons' labels).
+    int slot = 0;
+    std::string name;
 };
 
 // mmHudMap map modes 0-3: "Map Toggle" cycles Off, Small, Split;
@@ -174,12 +184,26 @@ bool checkReadoutShown(GameMode mode, const LessonEvent* lesson);
 enum class MapIcon : std::uint8_t {
     Outline = 0,  // black, behind the player's arrow
     Police = 1,   // red
-    Teammate = 3, // green (OpenMM2 multiplayer; MM2 colours network players by index)
     Player = 5,   // yellow
     Opponent = 7, // violet (single player)
+    // Network players use slot + 4 (mmHudMap::DrawOpponents): red, yellow,
+    // orange, violet, cyan, pink, then two values past the end of MM2's
+    // ten-entry table (the bytes that follow it).
 };
-// The icon's colour as 0xAARRGGBB (the table DrawIcon indexes).
+// The icon's colour as 0xAARRGGBB (the table DrawIcon indexes; 0 .. 11).
 std::uint32_t mapIconColor(MapIcon icon);
+std::uint32_t mapIconColor(int iconType);
+// mmGame::mmGame: the opponent icons' colours of the network players by
+// slot (blue, green, red, yellow, orange, violet, cyan, pink); Cops and
+// Robbers team games paint them red or blue (mmMultiCR::GameMessage).
+std::uint32_t netIconColor(int slot);
+// mmIcons::Cull draws the icons in passes 0 .. slots - 1: pass k draws the
+// icons not drawn yet whose place is k + 1 or above 7. Returns the indices
+// in drawing order (icons placed past `slots` and below 8 are not drawn).
+std::vector<std::size_t> iconDrawOrder(std::span<const int> places, int slots);
+// The opp_icon.tex cell of a place 1 .. 9 (4 x 4 cells of 0.25): column
+// (place - 1) % 4, row (place - 1) / 4.
+Vec2 iconDigitCell(int place);
 
 // mmHudMap::GetNextMapMode (game/CamPlayer.h).
 using game::nextMapMode;
@@ -286,7 +310,10 @@ private:
                      float y);
     void drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y);
     void drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
-    void drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
+    // mmIcons::Cull's labels (network games only): the players' names.
+    void drawIconLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
+    void drawCardQuad(const std::array<Vec3, 4>& corners, const std::array<Vec2, 4>& uvs,
+                      const WorldTexture& texture);
     // `second`: the SetMessage2 line, in its own one-line node under the message.
     void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
@@ -312,6 +339,8 @@ private:
     std::optional<MapMode> m_mapModeApplied; // snaps zoom and icon size on change
     Mat44 m_viewProj;
     bool m_viewProjValid = false;
+    std::vector<MapBlip> m_labelBlips; // the network players' labels (drawIcons -> drawIconLabels)
+    Vec3 m_labelEye;
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;

@@ -347,12 +347,45 @@ bool checkReadoutShown(GameMode mode, const LessonEvent* lesson) {
              (lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy));
 }
 
-std::uint32_t mapIconColor(MapIcon icon) {
-    // mmHudMap's IconType colour table (0xAARRGGBB).
-    static constexpr std::array<std::uint32_t, 10> kTable{0xFF000000u, 0xFFFF0000u, 0xFF0000EFu, 0xFF00EF00u,
-                                                          0xFFEF0000u, 0xFFFFFF00u, 0xFFFF5A00u, 0xFFB400FFu,
-                                                          0xFF00FFFFu, 0xFFFF0390u};
-    return kTable[static_cast<std::size_t>(icon) % kTable.size()];
+std::uint32_t mapIconColor(MapIcon icon) { return mapIconColor(static_cast<int>(icon)); }
+
+std::uint32_t mapIconColor(int iconType) {
+    // mmHudMap's IconType colour table (0xAARRGGBB). DrawOpponents gives the
+    // seventh and eighth network slots types 10 and 11, past the table's ten
+    // entries: MM2 reads the bytes that follow it (the 7.51 icon divisor and
+    // the start of the "hudmap_%s" name), kept here as colours.
+    static constexpr std::array<std::uint32_t, 12> kTable{
+        0xFF000000u, 0xFFFF0000u, 0xFF0000EFu, 0xFF00EF00u, 0xFFEF0000u, 0xFFFFFF00u,
+        0xFFFF5A00u, 0xFFB400FFu, 0xFF00FFFFu, 0xFFFF0390u, 0x40F051ECu, 0x6D647568u};
+    return kTable[static_cast<std::size_t>(std::clamp(iconType, 0, 11))];
+}
+
+std::uint32_t netIconColor(int slot) {
+    // mmGame::mmGame fills the eight OppIconInfo colours from this table;
+    // single player then paints every opponent violet (mmGame::Init).
+    static constexpr std::array<std::uint32_t, 8> kTable{0xFF0000EFu, 0xFF00EF00u, 0xFFEF0000u, 0xFFFFFF00u,
+                                                         0xFFFF5A00u, 0xFFB400FFu, 0xFF00FFFFu, 0xFFFF0390u};
+    return kTable[static_cast<std::size_t>(std::clamp(slot, 0, 7))];
+}
+
+std::vector<std::size_t> iconDrawOrder(std::span<const int> places, int slots) {
+    std::vector<std::size_t> order;
+    std::vector<char> drawn(places.size(), 0);
+    for (int pass = 0; pass < slots; ++pass) {
+        for (std::size_t i = 0; i < places.size(); ++i) {
+            if (drawn[i] || !(places[i] == pass + 1 || places[i] > 7))
+                continue;
+            drawn[i] = 1;
+            order.push_back(i);
+        }
+    }
+    return order;
+}
+
+Vec2 iconDigitCell(int place) {
+    // C division and remainder (place - 1 is never negative for 1 .. 9).
+    const int i = place - 1;
+    return {static_cast<float>(i % 4), static_cast<float>(i / 4)};
 }
 
 } // namespace hud
@@ -561,16 +594,31 @@ void Hud::drawStands(const Session& session) {
 }
 
 void Hud::drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips) {
+    m_labelBlips.clear();
     if (!m_options.opponentIcons)
         return;
-    // mmIcons::Cull: a triangle card facing the camera, pointing down: the
-    // corners (0, 4), (s/2, 2s + 4), (-s/2, 2s + 4) for an icon size s,
-    // drawn over everything. Opponents have size 2: 2 m wide and 4 m tall
-    // with the tip 4 m above the car.
+    // mmIcons::Cull: a triangle card facing the camera (gfxRenderState::
+    // SetCard), pointing down: the corners (0, 4), (s/2, 2s + 4),
+    // (-s/2, 2s + 4) for an icon size s, drawn over everything. Opponents
+    // have size 2: 2 m wide and 4 m tall with the tip 4 m above the car.
     const Mat34& cam = camera.transform;
     auto card = [&](const Vec3& p, float size, std::uint32_t argb) {
         const Vec3 top = p + cam.m1 * (2.0f * size + 4.0f);
         drawTriangle(p + cam.m1 * 4.0f, top + cam.m0 * (0.5f * size), top - cam.m0 * (0.5f * size), argb);
+    };
+    // Places 1 .. 9 add opp_icon's digit (or the "$") on a 2 x 2 quad from
+    // (-1, 2.5) to (1, 4.5); the 4 m lift is added before the size scales
+    // it here (unlike the triangle's), so at size 2 the number floats
+    // 13 to 17 m up, above the triangle.
+    const WorldTexture* digits = m_textures.get("opp_icon");
+    auto digit = [&](const Vec3& p, float size, int place) {
+        if (!digits || place < 1 || place >= 10)
+            return;
+        const Vec2 cell = hud::iconDigitCell(place);
+        auto at = [&](float x, float y) { return p + cam.m0 * (x * size) + cam.m1 * ((y + 4.0f) * size); };
+        auto uv = [&](float u, float v) { return Vec2{(cell.x + u) * 0.25f, (cell.y + v) * 0.25f}; };
+        drawCardQuad({at(1.0f, 2.5f), at(1.0f, 4.5f), at(-1.0f, 2.5f), at(-1.0f, 4.5f)},
+                     {uv(1.0f, 0.0f), uv(1.0f, 1.0f), uv(0.0f, 0.0f), uv(0.0f, 1.0f)}, *digits);
     };
     if (session.mode() == GameMode::Blitz) {
         // mmSingleBlitz::InitHUD / Update: cyan cards 5 m above the
@@ -586,10 +634,61 @@ void Hud::drawIcons(const Session& session, const Camera& camera, std::span<cons
         }
         return;
     }
-    // Opponents (registered for every single-player mode): violet.
-    for (const auto& b : blips)
-        if (b.kind == MapBlip::Kind::Opponent)
-            card(b.transform.m3, 2.0f, 0xFFB400FFu);
+    // The opponents (every single-player mode registers them) or the
+    // network players (mmGameMulti::RegisterMapNetObjects, eight slots),
+    // drawn by place (hud::iconDrawOrder).
+    std::vector<const MapBlip*> icons;
+    std::vector<int> places;
+    for (const auto& b : blips) {
+        if (b.kind == MapBlip::Kind::Opponent || b.kind == MapBlip::Kind::Remote) {
+            icons.push_back(&b);
+            places.push_back(b.place);
+        }
+    }
+    const int slots = session.multiplayer() ? 8 : std::min(static_cast<int>(icons.size()), 10);
+    for (const std::size_t i : hud::iconDrawOrder(places, slots)) {
+        card(icons[i]->transform.m3, 2.0f, icons[i]->iconColor);
+        digit(icons[i]->transform.m3, 2.0f, icons[i]->place);
+    }
+    // The labels are drawn in the 2D pass, network games only.
+    if (session.multiplayer()) {
+        m_labelEye = cam.m3;
+        for (const MapBlip* b : icons)
+            if (b->kind == MapBlip::Kind::Remote && !b->name.empty())
+                m_labelBlips.push_back(*b);
+    }
+}
+
+void Hud::drawCardQuad(const std::array<Vec3, 4>& corners, const std::array<Vec2, 4>& uvs,
+                       const WorldTexture& texture) {
+    // vglBegin(5): a strip of the four corners, white, textured, alpha
+    // blended over everything (the icons' z buffer is off).
+    render::Vertex3D v[6]{};
+    static constexpr int kStrip[6] = {0, 1, 2, 2, 1, 3};
+    for (int i = 0; i < 6; ++i) {
+        const auto k = static_cast<std::size_t>(kStrip[i]);
+        v[i].position[0] = corners[k].x;
+        v[i].position[1] = corners[k].y;
+        v[i].position[2] = corners[k].z;
+        v[i].normal[1] = 1.0f;
+        v[i].color = 0xFFFFFFFFu;
+        v[i].uv0[0] = uvs[k].x;
+        v[i].uv0[1] = uvs[k].y;
+    }
+    render::DrawCall call;
+    call.vertices =
+        m_device.uploadTransient(render::BufferKind::Vertex, std::span<const render::Vertex3D>(v));
+    call.count = 6;
+    call.constants.world = Mat44::identity();
+    call.constants.color = {1.0f, 1.0f, 1.0f, 1.0f};
+    call.constants.flags = render::DrawFlag::VertexColor | render::DrawFlag::Texture0;
+    call.constants.alphaRef = 0.02f;
+    call.textures[0] = {texture.handle, texture.sampler};
+    call.state.blend = render::BlendMode::Alpha;
+    call.state.cull = render::CullMode::None;
+    call.state.depthTest = false;
+    call.state.depthWrite = false;
+    m_device.draw(call);
 }
 
 void Hud::drawArrow(const Session& session, const Camera& camera) {
@@ -801,11 +900,13 @@ void Hud::drawMap(const Session& session, const PlayerState& player, std::span<c
     for (const auto& b : blips)
         if (b.kind == MapBlip::Kind::Police)
             car(b.transform, hud::MapIcon::Police, m_mapIconScale);
+    // DrawOpponents: violet in single player, IconType slot + 4 for the
+    // network players.
     for (const auto& b : blips) {
         if (b.kind == MapBlip::Kind::Opponent)
             car(b.transform, hud::MapIcon::Opponent, m_mapIconScale);
-        else if (b.kind == MapBlip::Kind::Teammate)
-            car(b.transform, hud::MapIcon::Teammate, m_mapIconScale);
+        else if (b.kind == MapBlip::Kind::Remote)
+            car(b.transform, static_cast<hud::MapIcon>(std::clamp(b.slot, 0, 7) + 4), m_mapIconScale);
     }
     car(player.transform, hud::MapIcon::Outline, m_mapIconScale * 1.3f);
     car(player.transform, hud::MapIcon::Player, m_mapIconScale);
@@ -991,38 +1092,57 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
     }
 }
 
-void Hud::drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session) {
-    // mmSingleBlitz::InitHUD registers every checkpoint's number ("%d") with
-    // mmIcons as a label in font string 48, cyan; mmIcons::Cull draws each
-    // label whose point (2 m above the icon) is in front of the camera,
-    // centred over it with its bottom there, nearest first.
-    if (!m_viewProjValid)
+void Hud::drawIconLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session) {
+    // mmIcons::Cull, network games only (single-player Blitz registers its
+    // checkpoint numbers as labels too, but they are never drawn): each
+    // player's name (mmGameMulti::RegisterMapNetObjects, font string 48)
+    // whose point 2 m above the car is within 300 m of the view (distance
+    // squared under 90000, mmGame::Init) and in front of it, centred over
+    // the point with its bottom there, in the player's icon colour with a
+    // one-pixel 0x101010 outline (mmText::CreateFitBitmap), clipped to the
+    // 3D view and drawn in order of depth, nearest first.
+    if (!m_viewProjValid || !session.multiplayer() || m_labelBlips.empty())
         return;
     const render::UiLayout& l = ov.layout();
-    const render::Extent2D out = m_device.outputExtent(); // the scene fills the output
+    const render::Rect view = sceneRect(m_device.sceneExtent()); // the scene fills the output
     const ui::FontSpec f = font(48, "Gill Sans MT, 10, 16, 0, 400");
     struct Label {
         Vec2 at;
         float depth;
-        std::size_t index;
+        const MapBlip* blip;
     };
     std::vector<Label> labels;
-    const auto& cps = session.checkpoints();
-    for (std::size_t i = 1; i < cps.size(); ++i) {
-        const Vec3 p = cps[i].position + Vec3{0.0f, 5.0f + 2.0f, 0.0f};
+    for (const MapBlip& b : m_labelBlips) {
+        const Vec3 p = b.transform.m3 + Vec3{0.0f, 2.0f, 0.0f};
+        if (!(m_labelEye.dist2(p) < 90000.0f))
+            continue;
         const Vec4 c = m_viewProj.transform(Vec4{p.x, p.y, p.z, 1.0f});
         if (!(c.w > 0.0f))
             continue;
         const float inv = 1.0f / c.w;
-        const Vec2 pixel{(c.x * inv * 0.5f + 0.5f) * static_cast<float>(out.width),
-                         (0.5f - c.y * inv * 0.5f) * static_cast<float>(out.height)};
-        labels.push_back({l.toVirtual(pixel), c.z * inv, i});
+        const Vec2 pixel{static_cast<float>(view.x) + (c.x * inv * 0.5f + 0.5f) * static_cast<float>(view.width),
+                         static_cast<float>(view.y) + (0.5f - c.y * inv * 0.5f) * static_cast<float>(view.height)};
+        labels.push_back({l.toVirtual(pixel), c.z * inv, &b});
     }
     std::ranges::sort(labels, {}, &Label::depth);
+    const Vec2 v0 = l.toVirtual({static_cast<float>(view.x), static_cast<float>(view.y)});
+    const Vec2 v1 = l.toVirtual({static_cast<float>(view.x) + static_cast<float>(view.width),
+                                 static_cast<float>(view.y) + static_cast<float>(view.height)});
     const float lineHeight = static_cast<float>(f.size2);
-    for (const auto& lb : labels)
-        text.draw(ov, f, std::format("{}", lb.index), lb.at.x, lb.at.y - lineHeight, render::packColor(0, 255, 255),
-                  ui::Align::Center);
+    const float o = px(1.0f);
+    for (const auto& lb : labels) {
+        const float y = lb.at.y - lineHeight;
+        if (lb.at.y <= v0.y || y >= v1.y || lb.at.x <= v0.x || lb.at.x >= v1.x)
+            continue; // CopyClippedBitmap (whole labels outside the view)
+        const std::uint32_t argb = lb.blip->iconColor;
+        auto channel = [&](int shift) { return static_cast<std::uint8_t>((argb >> shift) & 0xFFu); };
+        const std::uint32_t colour = render::packColor(channel(16), channel(8), channel(0));
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                text.draw(ov, f, lb.blip->name, lb.at.x + o * static_cast<float>(dx), y + o * static_cast<float>(dy),
+                          render::packColor(0x10, 0x10, 0x10), ui::Align::Center);
+        text.draw(ov, f, lb.blip->name, lb.at.x, y, colour, ui::Align::Center);
+    }
 }
 
 void Hud::drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art) {
@@ -1108,8 +1228,8 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
 
     if (m_options.visible)
         drawReadouts(ov, text, session);
-    if (m_options.opponentIcons && mode == GameMode::Blitz)
-        drawCheckpointLabels(ov, text, session);
+    if (m_options.opponentIcons)
+        drawIconLabels(ov, text, session);
     // mmHUD::mmHUD puts the message nodes under the container mmHUD::Disable
     // hides in single player, and directly under the HUD in multiplayer.
     if (m_options.visible || session.multiplayer()) {

@@ -277,7 +277,7 @@ public:
         if (letterbox)
             clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
         dev.beginScene(clear);
-        std::vector<game::session::MapBlip> blips = hudBlips();
+        std::vector<game::session::MapBlip> blips = hudBlips(ctx);
         // mmGameManager::Cull draws the full-screen map before the level.
         const bool hudShown = m_hud && m_session && m_player && !m_flyCamera;
         const bool mapShown = hudShown && (m_popup == Popup::None || m_popup == Popup::Chat);
@@ -350,12 +350,42 @@ public:
                     (m_popup == Popup::None || m_popup == Popup::Chat);
     }
 
-    // The other cars for the HUD's map and icons.
-    std::vector<game::session::MapBlip> hudBlips() const {
-        std::vector<game::session::MapBlip> blips;
-        // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
-        for (const auto& o : m_opponents)
-            blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent});
+    // The other cars for the HUD's map and icons (mmGame's OppIconInfo).
+    std::vector<game::session::MapBlip> hudBlips(Context& ctx) const {
+        using game::session::MapBlip;
+        std::vector<MapBlip> blips;
+        // mmHudMap and mmIcons follow the cars' phInertialCS matrices; the
+        // icons show the opponents' places (mmSingleRace / mmSingleCircuit
+        // ::UpdateScore).
+        for (std::size_t i = 0; i < m_opponents.size(); ++i) {
+            MapBlip b{m_opponents[i].sim->sim().body.ics.matrix, MapBlip::Kind::Opponent};
+            if (m_session)
+                b.place = m_session->opponentPlace(i);
+            blips.push_back(std::move(b));
+        }
+        // The network players (mmGameMulti::RegisterMapNetObjects): slot =
+        // player id, coloured by slot, or red / blue by team in Cops and
+        // Robbers team games, the gold carrier marked "$" (place 9,
+        // mmMultiCR::OppStealGold). Their race places (mmGameMulti::
+        // UpdateScore) are not tracked: no numbers.
+        if (multiplayer(ctx)) {
+            for (const auto& rc : ctx.netGame->remoteCars()) {
+                if (!rc.hasState)
+                    continue;
+                MapBlip b{rc.transform, MapBlip::Kind::Remote};
+                b.slot = rc.id;
+                b.name = rc.name;
+                b.iconColor = game::session::hud::netIconColor(rc.id);
+                if (m_cr) {
+                    if (m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll)
+                        b.iconColor = m_cr->teamOf(rc.id) == game::session::CrTeam::Robber ? 0xFFEF0000u
+                                                                                         : 0xFF0000EFu;
+                    if (m_cr->goldCarrier() == rc.id)
+                        b.place = 9;
+                }
+                blips.push_back(std::move(b));
+            }
+        }
         // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
         for (const auto& c : m_cops)
             if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
