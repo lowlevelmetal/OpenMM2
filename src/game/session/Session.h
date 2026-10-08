@@ -147,6 +147,13 @@ public:
     int lap() const; // current lap, 1-based (circuit)
     int laps() const { return m_setup.laps; }
     int position() const { return m_rank; }
+    // Checkpoint races and circuits: an opponent's place as its icon shows
+    // it (mmSingleRace / mmSingleCircuit::UpdateScore write it into the
+    // opponent's OppIconInfo); 10 (no number) before the first update and in
+    // the other modes.
+    int opponentPlace(std::size_t index) const {
+        return index < m_opponentPlaces.size() ? m_opponentPlaces[index] : 10;
+    }
     int racerCount() const { return static_cast<int>(m_opponents.size()) + 1; }
 
     float raceTime() const { return m_raceTime; }
@@ -269,6 +276,7 @@ private:
     std::vector<char> m_oppEnabled;
     int m_finishers = 0;
     int m_rank = 1;
+    std::vector<int> m_opponentPlaces; // OppIconInfo places (hud-views)
 
     Phase m_phase = Phase::Countdown;
     Stage m_stage = Stage::Intro;

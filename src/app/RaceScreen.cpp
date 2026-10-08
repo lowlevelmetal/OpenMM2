@@ -284,21 +284,29 @@ public:
         render::Device& dev = ctx.device();
         render::ClearValues clear;
         clear.color = m_env.clearColor;
-        // mmPlayer::SetWideFOV: the wide-angle view is letterboxed to 66% of
-        // the screen height, 18% down, on black.
-        const bool letterbox = !m_flyCamera && m_cams.wideAngle();
+        const auto extent = dev.sceneExtent();
+        render::Rect band{0, 0, extent.width, extent.height};
+        // The 3D view (gfxPipeline::VP) on black: letterboxed to 66% of the
+        // height, 18% down, for the wide angle (mmPlayer::SetWideFOV), the
+        // top half with the split map, the small map's place with the
+        // full-screen map (mmHudMap::SetMapMode; Hud::sceneRect).
+        syncHudView();
+        if (m_hud && !m_flyCamera)
+            band = m_hud->sceneRect(extent);
+        const bool letterbox = band != render::Rect{0, 0, extent.width, extent.height};
         if (letterbox)
             clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
         dev.beginScene(clear);
-
-        const auto extent = dev.sceneExtent();
-        render::Rect band{0, 0, extent.width, extent.height};
+        std::vector<game::session::MapBlip> blips = hudBlips(ctx);
+        // mmGameManager::Cull draws the full-screen map before the level.
+        const bool hudShown = m_hud && m_session && m_player && !m_flyCamera;
+        const bool mapShown = hudShown && (m_popup == Popup::None || m_popup == Popup::Chat);
+        const bool fullMap = mapShown && m_cams.mapMode() == game::MapMode::FullScreen;
+        if (fullMap)
+            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         if (letterbox) {
-            const auto h = static_cast<float>(extent.height);
-            band.y = static_cast<std::int32_t>(h * 0.18f);
-            band.height = static_cast<std::uint32_t>(h * 0.66f);
-            dev.setViewport({0.0f, static_cast<float>(band.y), static_cast<float>(band.width),
-                             static_cast<float>(band.height)});
+            dev.setViewport({static_cast<float>(band.x), static_cast<float>(band.y),
+                             static_cast<float>(band.width), static_cast<float>(band.height)});
             dev.setScissor(&band);
             render::ClearValues sky;
             sky.color = m_env.clearColor;
@@ -326,36 +334,85 @@ public:
             game::fx::drawLensFlares(dev, *m_textures, flares);
             dev.setFrameConstants(frame);
         }
+        if (m_hud && m_session && m_player) {
+            // The arrow, icons, stands and dash are drawn in the 3D view.
+            m_hud->setViewProjection(frame.view * frame.proj);
+            m_hud->setDashFrame(frame, Mat44::perspective(proj.fovY, proj.aspect, 0.01f, m_camera.farPlane, true));
+            // mmDashView turns the wheel by the recorded steering (mmPlayer +0x2264).
+            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_steerApplied, blips);
+        }
         if (letterbox) {
             dev.setScissor(nullptr);
-            dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
+            dev.setViewport(
+                {0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
         }
-        if (m_hud && m_session && m_player) {
-            m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
-            // mmGame::UpdateGameInput: looking around from a point-of-view
-            // camera disables the HUD (mmHUD::Disable), straight ahead
-            // enables it again.
-            m_hud->options().visible =
-                (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
-                (m_popup == Popup::None || m_popup == Popup::Chat); // mmPopup::ProcessEscape: mmHUD::Disable
-            std::vector<game::session::MapBlip> blips;
-            // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
-            for (const auto& o : m_opponents)
-                blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent});
-            // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
-            for (const auto& c : m_cops)
-                if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
-                    blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
-            m_hud->setViewProjection(frame.view * frame.proj);
-            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
-            // mmPopup::ProcessEscape deactivates the map (the chat line does not).
-            if (m_popup == Popup::None || m_popup == Popup::Chat)
-                m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
-        }
+        // mmPopup::ProcessEscape deactivates the map (the chat line does not).
+        if (mapShown && !fullMap)
+            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         // mmGameManager::Update declares the mirror after the dashboard and
         // the HUD map.
         drawMirror(ctx, frame);
         dev.endScene();
+    }
+
+    // The HUD's view options from the cameras' view settings (mmViewMgr):
+    // the map's mode, the wide angle and the dashboard.
+    void syncHudView() {
+        if (!m_hud)
+            return;
+        auto& o = m_hud->options();
+        o.mapMode = m_cams.mapMode();
+        o.wideAngle = !m_flyCamera && m_cams.wideAngle();
+        o.dashActive = !m_flyCamera && m_cams.dashboard();
+        o.dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
+        // mmGame::UpdateGameInput: looking around from a point-of-view
+        // camera disables the HUD (mmHUD::Disable), straight ahead enables
+        // it again. mmPopup::ProcessEscape disables it too.
+        o.visible = (m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f) &&
+                    (m_popup == Popup::None || m_popup == Popup::Chat);
+    }
+
+    // The other cars for the HUD's map and icons (mmGame's OppIconInfo).
+    std::vector<game::session::MapBlip> hudBlips(Context& ctx) const {
+        using game::session::MapBlip;
+        std::vector<MapBlip> blips;
+        // mmHudMap and mmIcons follow the cars' phInertialCS matrices; the
+        // icons show the opponents' places (mmSingleRace / mmSingleCircuit
+        // ::UpdateScore).
+        for (std::size_t i = 0; i < m_opponents.size(); ++i) {
+            MapBlip b{m_opponents[i].sim->sim().body.ics.matrix, MapBlip::Kind::Opponent};
+            if (m_session)
+                b.place = m_session->opponentPlace(i);
+            blips.push_back(std::move(b));
+        }
+        // The network players (mmGameMulti::RegisterMapNetObjects): slot =
+        // player id, coloured by slot, or red / blue by team in Cops and
+        // Robbers team games, the gold carrier marked "$" (place 9,
+        // mmMultiCR::OppStealGold). Their race places (mmGameMulti::
+        // UpdateScore) are not tracked: no numbers.
+        if (multiplayer(ctx)) {
+            for (const auto& rc : ctx.netGame->remoteCars()) {
+                if (!rc.hasState)
+                    continue;
+                MapBlip b{rc.transform, MapBlip::Kind::Remote};
+                b.slot = rc.id;
+                b.name = rc.name;
+                b.iconColor = game::session::hud::netIconColor(rc.id);
+                if (m_cr) {
+                    if (m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll)
+                        b.iconColor = m_cr->teamOf(rc.id) == game::session::CrTeam::Robber ? 0xFFEF0000u
+                                                                                         : 0xFF0000EFu;
+                    if (m_cr->goldCarrier() == rc.id)
+                        b.place = 9;
+                }
+                blips.push_back(std::move(b));
+            }
+        }
+        // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
+        for (const auto& c : m_cops)
+            if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
+                blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
+        return blips;
     }
 
     // The level as lvlLevel::Draw draws it for one view: the city, traffic,
@@ -1263,8 +1320,8 @@ private:
         m_session->setStartSignal(!multiplayer(ctx) || ctx.netGame->secondsToStart() <= 2.5);
         m_session->update(dt, m_playerState, opps, cops);
         // mmSingleStunt::UpdateEvade turns the map on during its first line.
-        if (m_hud && m_session->wantsMap() && m_hud->options().mapMode == game::session::MapMode::Off)
-            m_hud->cycleMap();
+        if (m_hud && m_session->wantsMap() && m_cams.mapMode() == game::MapMode::Off)
+            m_cams.cycleMap();
         // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
             m_result.config.mode != game::GameMode::Cruise)
@@ -1785,6 +1842,7 @@ private:
             d.time = static_cast<float>(m_time);
             if (m_cr->goldActive() || m_cr->goldCarrier() >= 0)
                 d.gold = m_cr->goldPosition();
+            d.goldOnMap = m_cr->goldPosition(); // mmHudMap::DrawCopsnRobbers
             const bool teams = m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
             const bool colours = m_result.config.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
             d.bases.push_back({colours ? "pt_blue" : "pt_bank", m_cr->set().bank});
@@ -1796,6 +1854,26 @@ private:
             d.redScore = m_cr->score(game::session::CrTeam::Robber);
             d.playerScore = m_cr->playerScore(m_crSelf);
             d.timeLeft = m_cr->timeRemaining();
+            // mmCRHUD::SetName (red on team 1), AddPlayer / SetScore /
+            // ActivateRosterGold for the others, ActivateGold while the
+            // player carries the gold.
+            d.playerName = ctx.netGame->player(static_cast<std::uint8_t>(m_crSelf))
+                               ? ctx.netGame->player(static_cast<std::uint8_t>(m_crSelf))->name
+                               : std::string();
+            d.playerRed = teams && m_crMyTeam == game::session::CrTeam::Robber;
+            d.carryingGold = m_cr->goldCarrier() == m_crSelf;
+            for (const auto& p : ctx.netGame->players()) {
+                if (p.id == m_crSelf)
+                    continue;
+                game::session::CrDisplay::RosterEntry r;
+                r.name = p.name;
+                r.score = m_cr->playerScore(p.id);
+                r.color = game::session::hud::netIconColor(p.id);
+                if (teams)
+                    r.color = m_cr->teamOf(p.id) == game::session::CrTeam::Robber ? 0xFFEF0000u : 0xFF0000EFu;
+                r.gold = m_cr->goldCarrier() == p.id;
+                d.roster.push_back(std::move(r));
+            }
             m_hud->setCopsAndRobbers(std::move(d));
         }
     }
@@ -2582,17 +2660,18 @@ private:
         if (m_hud) {
             auto& hud = *m_hud;
             if (pressed(Action::MapToggle)) {
-                hud.cycleMap();
+                m_cams.cycleMap();
                 viewChanged = true;
             }
             if (pressed(Action::FullScreenMap)) {
                 // In single player the full-screen map pauses the game and
                 // leaving it resumes (mmReplayManager flags 0x1c / 0x1d).
                 if (!multiplayer(ctx))
-                    m_paused = hud.options().mapMode != game::session::MapMode::FullScreen;
-                hud.toggleFullScreenMap();
+                    m_paused = m_cams.mapMode() != game::MapMode::FullScreen;
+                m_cams.toggleFullScreenMap();
                 viewChanged = true;
             }
+            hud.options().mapMode = m_cams.mapMode();
             if (pressed(Action::MapZoom)) {
                 hud.toggleMapZoom();
                 viewChanged = true;
@@ -2627,8 +2706,10 @@ private:
         if (pressed(Action::Dashboard))
             m_cams.toggleDashboard();
         // mmViewMgr::SetViewSetting(9), input event 0x1E: the rear-view mirror.
-        if (pressed(Action::RearViewMirror))
+        if (pressed(Action::RearViewMirror)) {
             m_mirror.toggle();
+            m_cams.setViewSetting(game::ViewSetting::Mirror);
+        }
         if (m_player) {
             auto& trans = m_player->sim().trans;
             auto& pedals = m_player->controls();
@@ -2681,12 +2762,15 @@ private:
     void loadViewSettings(Context& ctx) {
         auto& o = m_hud->options();
         const auto& ini = ctx.settings.ini;
-        o.mapMode = static_cast<game::session::MapMode>(std::clamp(ini.getInt("HUD", "MapMode", 0), 0LL, 2LL));
+        // mmHudMap::Reset applies the kept map mode (the map and the 3D
+        // view's place, not the rest of SetViewSetting).
+        m_cams.setMapMode(static_cast<game::MapMode>(std::clamp(ini.getInt("HUD", "MapMode", 0), 0LL, 2LL)));
+        o.mapMode = m_cams.mapMode();
         o.rotatingMap = ini.getBool("HUD", "RotatingMap", o.rotatingMap);
         o.zoomedIn = ini.getBool("HUD", "MapZoomIn", o.zoomedIn);
         o.opponentIcons = ini.getBool("HUD", "OpponentIcons", o.opponentIcons);
         o.cluster = ini.getBool("HUD", "Cluster", o.cluster);
-        m_hudMapBeforeFull = o.mapMode;
+        m_hudMapBeforeFull = m_cams.mapMode();
     }
 
     void saveViewSettings(Context& ctx) {
@@ -2694,9 +2778,10 @@ private:
         auto& ini = ctx.settings.ini;
         // The full-screen map is not kept (mmPlayerConfig keeps the mode it
         // was opened from).
-        const auto mode = o.mapMode == game::session::MapMode::FullScreen ? m_hudMapBeforeFull : o.mapMode;
-        if (o.mapMode != game::session::MapMode::FullScreen)
-            m_hudMapBeforeFull = o.mapMode;
+        const auto current = m_cams.mapMode();
+        const auto mode = current == game::MapMode::FullScreen ? m_hudMapBeforeFull : current;
+        if (current != game::MapMode::FullScreen)
+            m_hudMapBeforeFull = current;
         ini.setInt("HUD", "MapMode", static_cast<int>(mode));
         ini.setBool("HUD", "RotatingMap", o.rotatingMap);
         ini.setBool("HUD", "MapZoomIn", o.zoomedIn);

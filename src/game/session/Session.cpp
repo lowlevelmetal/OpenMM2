@@ -746,6 +746,37 @@ void Session::updateRank(const PlayerState& player, std::span<const OpponentStat
             ++rank;
     }
     m_rank = rank;
+
+    // The second half of UpdateScore: each opponent's place for its icon.
+    // A finished opponent keeps its finishing place; otherwise 1 + the other
+    // opponents with more waypoints passed, or finished, or level and nearer
+    // its own next waypoint (its count modulo the waypoints), + the player
+    // when ahead the same way.
+    m_opponentPlaces.assign(m_opponents.size(), 10);
+    if (mode() != GameMode::Checkpoint && mode() != GameMode::Circuit)
+        return;
+    for (std::size_t i = 0; i < m_opponents.size(); ++i) {
+        const Racer& r = m_opponents[i];
+        if (r.finished) {
+            m_opponentPlaces[i] = r.place;
+            continue;
+        }
+        const Vec3 next = m_checkpoints[static_cast<std::size_t>(r.count % n)].position;
+        const float own = i < opponents.size() ? dist2(opponents[i].transform.m3, next) : 0.0f;
+        int place = 1;
+        for (std::size_t j = 0; j < m_opponents.size(); ++j) {
+            if (j == i)
+                continue;
+            const Racer& o = m_opponents[j];
+            if (r.count < o.count || o.finished)
+                ++place;
+            else if (r.count == o.count && j < opponents.size() && dist2(opponents[j].transform.m3, next) < own)
+                ++place;
+        }
+        if (r.count < m_wp.count || (m_wp.count == r.count && dist2(player.transform.m3, next) < own))
+            ++place;
+        m_opponentPlaces[i] = place;
+    }
 }
 
 // --- Hazards (mmGame::Update) ------------------------------------------------------
