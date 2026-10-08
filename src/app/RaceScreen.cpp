@@ -524,6 +524,8 @@ private:
         if (m_session) {
             phys::setElasticityCap(phys::kElasticityCap); // mmGame::Reset
             m_session->start();
+            if (m_player)
+                m_player->sim().damage.enabled = m_session->playerDamageEnabled();
             setupCopsAndRobbers(ctx);
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -1209,8 +1211,10 @@ private:
         ps.damage01 = sim.damage.damage;
         // mmPlayer::IsMaxDamaged: CurrentDamage strictly past MaxDamage.
         ps.wrecked = sim.damage.maxDamaged();
-        if (const auto level = waterLevelAt(ps.transform.m3))
-            ps.inWater = ps.transform.m3.y < *level;
+        // mmGame::Update reads the vehSplash active flag, which vehCar::Update
+        // latches once the model origin goes under a water room's level and
+        // only vehCar::Reset clears: a car that floats back up stays "in".
+        ps.inWater = sim.splash.active();
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
@@ -1253,6 +1257,8 @@ private:
         // message; OpenMM2 shares the start time instead.
         m_session->setStartSignal(!multiplayer(ctx) || ctx.netGame->secondsToStart() <= 2.5);
         m_session->update(dt, m_playerState, opps, cops);
+        // DisableRacers / EnableRacers: the player's vehCarDamage switch.
+        m_player->sim().damage.enabled = m_session->playerDamageEnabled();
         // mmSingleStunt::UpdateEvade turns the map on during its first line.
         if (m_hud && m_session->wantsMap() && m_hud->options().mapMode == game::session::MapMode::Off)
             m_hud->cycleMap();
@@ -1304,9 +1310,8 @@ private:
                 }
                 for (auto& c : m_cops)
                     c.driver->reset();
-                // lvlLevel::ResetInstances: every prop back in its place.
-                if (m_bangers)
-                    m_bangers->reset();
+                // (lvlLevel::ResetInstances' props: integration's
+                // BangerSet::reset at the top of this branch.)
                 // mmGame::Reset: StartMusic again (the music a wreck or the
                 // finish stopped comes back).
                 if (m_musicDirector) {
@@ -2530,6 +2535,16 @@ private:
             pedals.steering = m_steering.filter(analog ? clampf(*analog, -1.0f, 1.0f) : keyTarget, dt);
         m_steering.setSpeed(m_player->sim().speed());
         m_analogSteering.setSpeed(m_player->sim().speed(), m_controlOptions.sensitivity);
+        // mmGame::UpdateSteeringBrakes reads the inputs back from
+        // mmReplayManager's frame buffer, as bytes (live play too).
+        {
+            const auto q =
+                controls::replayQuantize(pedals.steering, pedals.accelerator, pedals.brake, pedals.handbrake);
+            pedals.steering = q.steering;
+            pedals.accelerator = q.throttle;
+            pedals.brake = q.brakes;
+            pedals.handbrake = q.handbrake;
+        }
         // Countdown: the car is held until "Go!" (and during wreck
         // penalties, and after a wreck or a multiplayer finish), and until
         // the shared start time in multiplayer.

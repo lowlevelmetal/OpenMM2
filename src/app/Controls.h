@@ -150,4 +150,15 @@ private:
 // the axis to the full range.
 float applyDeadZone(float value, float deadZone);
 
+// The player's driving inputs as mmGame::UpdateSteeringBrakes reads them
+// back from mmReplayManager's frame buffer, which mmReplayManager::Update
+// fills every frame before the game runs (live play too, not only replays):
+// the steering truncated to a signed byte of 127ths, the throttle, brakes
+// and handbrake to bytes of 255ths (GetSteering / GetThrottle / GetBrakes /
+// GetHandBrakes).
+struct ReplayInputs {
+    float steering = 0.0f, throttle = 0.0f, brakes = 0.0f, handbrake = 0.0f;
+};
+ReplayInputs replayQuantize(float steering, float throttle, float brakes, float handbrake);
+
 } // namespace mm2::app::controls

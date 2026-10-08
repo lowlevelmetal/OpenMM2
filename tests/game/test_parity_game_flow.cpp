@@ -258,6 +258,32 @@ TEST(GameFlowParity, WaterLossKeepsTheCameraAndTheMusic) {
     }
 }
 
+// mmGameSingle::DisableRacers / EnableRacers: no player damage before "Go!";
+// UpdateJump never calls EnableRacers, so a jump lesson has none at all.
+TEST(GameFlowParity, PlayerDamageIsOffUntilGoAndInJumpLessons) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    auto blitz = flowSession(GameMode::Blitz, 0);
+    ASSERT_TRUE(blitz);
+    EXPECT_FALSE(blitz->playerDamageEnabled());
+    FlowRun run(*blitz);
+    ASSERT_EQ(blitz->phase(), Phase::Racing);
+    EXPECT_TRUE(blitz->playerDamageEnabled());
+    blitz->restart();
+    EXPECT_FALSE(blitz->playerDamageEnabled());
+
+    auto jump = flowSession(GameMode::CrashCourse, 0);
+    ASSERT_TRUE(jump);
+    FlowRun jumpRun(*jump);
+    ASSERT_EQ(jump->phase(), Phase::Racing);
+    EXPECT_FALSE(jump->playerDamageEnabled());
+
+    auto cruise = flowSession(GameMode::Cruise, -1);
+    ASSERT_TRUE(cruise);
+    EXPECT_TRUE(cruise->playerDamageEnabled());
+}
+
 // mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand
 // hidden; the race-over flag is set (Escape then shows the results).
 TEST(GameFlowParity, JumpLessonTimeUpHidesTheFinishWithoutTheCamera) {

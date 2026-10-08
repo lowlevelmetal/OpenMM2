@@ -220,6 +220,8 @@ void Session::resetRace() {
     m_endHold = PlayerHold::None;
     m_damagedOut = m_engineSilenced = false; // the modes' Reset: SilenceEngine(0)
     m_postRaceCam = m_musicStop = false;
+    // DisableRacers: the player takes no damage before "Go!".
+    m_playerDamage = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers;
     m_resultFinished = m_resultWon = false;
     m_resultPosition = 0;
     m_resultTime = 0.0f;
@@ -458,9 +460,13 @@ void Session::go() {
         m_clockRunning = m_hasClock;
         // Every Update* but UpdateJump enables the event's cars at "Go"
         // (UpdateJump only for a later event, in state 0; no retail jump
-        // lesson has cars).
-        if (lesson->type != LessonType::Jump)
+        // lesson has cars). EnableRacers also turns the held player's damage
+        // on; UpdateJump only makes the car drivable, so a jump lesson is
+        // driven without damage.
+        if (lesson->type != LessonType::Jump) {
             enableLessonOpponents();
+            m_playerDamage = true;
+        }
         if (lesson->type == LessonType::Destroy && !m_opponents.empty()) {
             const int target = lessonOpponentOffset();
             if (target < static_cast<int>(m_opponents.size()))
@@ -470,6 +476,7 @@ void Session::go() {
         setMessage(modeText(mode(), multiplayer()).go, "Go!", kStep, true);
         m_clockRunning = m_hasClock;
         std::fill(m_oppEnabled.begin(), m_oppEnabled.end(), 1);
+        m_playerDamage = true; // mmGameSingle / mmGameMulti::EnableRacers
     }
     push(EventType::CountdownGo);
     sound(GameSound::StartRaceHigh);
@@ -1068,7 +1075,8 @@ void Session::updateRace(float dt, const PlayerState& player) {
             setMessage(place0 < 8 ? mt.place + static_cast<std::uint32_t>(place0) : mt.loaf,
                        std::format("You finished #{}", m_resultPosition), 5.0f, true);
             // mmSingleCircuit::ProgressCheck: top three, professionals first.
-            m_musicStop = true; // StopSegment(0)
+            m_musicStop = true;     // StopSegment(0)
+            m_playerDamage = false; // the circuit finish: EnableDamage = 0
             endRace(true, m_resultPosition < (pro ? 2 : 4), kPostRace);
         }
         break;

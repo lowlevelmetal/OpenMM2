@@ -202,4 +202,26 @@ float applyDeadZone(float value, float deadZone) {
     return sign(value) * std::min(1.0f, (a - deadZone) / (1.0f - deadZone));
 }
 
+ReplayInputs replayQuantize(float steering, float throttle, float brakes, float handbrake) {
+    // mmReplayManager::Update: value x 127 (steering) or x 255, truncated
+    // towards zero (__ftol), the low byte stored (signed for the steering).
+    auto steerByte = [](float v) {
+        return static_cast<std::int8_t>(static_cast<std::uint8_t>(static_cast<int>(static_cast<double>(v) * 127.0) & 0xff));
+    };
+    auto pedalByte = [](float v) {
+        return static_cast<std::uint8_t>(static_cast<int>(static_cast<double>(v) * 255.0) & 0xff);
+    };
+    // GetSteering / GetThrottle / ...: the byte times 1/127 or 1/255 (the
+    // float constants 0.007874016 and 0.003921569), rounded once to float.
+    constexpr float kSteer = 0.007874015718698502f;
+    constexpr float kPedal = 0.003921568859368563f;
+    auto read = [](double b, float k) { return static_cast<float>(b * static_cast<double>(k)); };
+    ReplayInputs r;
+    r.steering = read(steerByte(steering), kSteer);
+    r.throttle = read(pedalByte(throttle), kPedal);
+    r.brakes = read(pedalByte(brakes), kPedal);
+    r.handbrake = read(pedalByte(handbrake), kPedal);
+    return r;
+}
+
 } // namespace mm2::app::controls

@@ -132,6 +132,11 @@ public:
     bool engineSilenced() const { return m_engineSilenced; }
     // AI racers may drive (mmGameSingle::EnableRacers at "Go!").
     bool racersReleased() const { return m_released; }
+    // The player's vehCarDamage EnableDamage (+0x2D): DisableRacers (the race
+    // modes' and the crash course's Reset) turns it off until EnableRacers at
+    // "Go!", which a Jump lesson never calls; the circuit finish turns it off
+    // again. Cruise and Cops and Robbers keep it on.
+    bool playerDamageEnabled() const { return m_playerDamage; }
     // Opponents taking part (all in races; the current crash course event's
     // "numopp" cars, mmSingleStunt::EnableRacers).
     bool opponentActive(std::size_t index) const;
@@ -334,6 +339,7 @@ private:
     PlayerHold m_endHold = PlayerHold::None; // set by endRace
     bool m_damagedOut = false, m_engineSilenced = false;
     bool m_postRaceCam = false, m_musicStop = false;
+    bool m_playerDamage = true;
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;
