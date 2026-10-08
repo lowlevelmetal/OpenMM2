@@ -63,7 +63,9 @@ generated assembly or C.
 ## Manifest
 
 Lines as of the start of the audit. Classes as above; `-` means
-OpenMM2-only with no audit area.
+OpenMM2-only with no audit area. The OpenMM2-only check reclassified the
+files whose area reads `openmm2-only` from O to M; their game behaviour is
+audited in [openmm2-only.md](openmm2-only.md).
 
 | File | Lines | Class | Area |
 | --- | ---: | --- | --- |
@@ -92,11 +94,11 @@ OpenMM2-only with no audit area.
 | `src/ai/VehicleData.h` | 46 | P | ai-vehicles |
 | `src/ai/World.cpp` | 238 | P | ai-ambient-city |
 | `src/ai/World.h` | 113 | P | ai-ambient-city |
-| `src/app/App.cpp` | 216 | O | - |
+| `src/app/App.cpp` | 216 | M | openmm2-only |
 | `src/app/App.h` | 11 | O | - |
 | `src/app/CommandLine.cpp` | 111 | O | - |
 | `src/app/CommandLine.h` | 38 | O | - |
-| `src/app/Context.cpp` | 61 | O | - |
+| `src/app/Context.cpp` | 61 | M | openmm2-only |
 | `src/app/Context.h` | 103 | O | - |
 | `src/app/GameData.cpp` | 153 | O | - |
 | `src/app/GameData.h` | 37 | O | - |
@@ -188,8 +190,8 @@ OpenMM2-only with no audit area.
 | `src/core/Math.h` | 257 | M | phys-core |
 | `src/core/Paths.cpp` | 92 | O | - |
 | `src/core/Paths.h` | 24 | O | - |
-| `src/core/StringUtil.cpp` | 135 | O | - |
-| `src/core/StringUtil.h` | 35 | O | - |
+| `src/core/StringUtil.cpp` | 135 | M | openmm2-only |
+| `src/core/StringUtil.h` | 35 | M | openmm2-only |
 | `src/data/DatFile.cpp` | 275 | F | formats |
 | `src/data/DatFile.h` | 63 | F | formats |
 | `src/data/PeResources.cpp` | 200 | F | formats |
@@ -365,14 +367,14 @@ OpenMM2-only with no audit area.
 | `src/phys/vehicle/VehicleGeometry.h` | 56 | P | vehicle |
 | `src/phys/vehicle/Wheel.cpp` | 657 | P | vehicle |
 | `src/phys/vehicle/Wheel.h` | 176 | P | vehicle |
-| `src/platform/Clock.cpp` | 41 | O | - |
-| `src/platform/Clock.h` | 36 | O | - |
+| `src/platform/Clock.cpp` | 41 | M | openmm2-only |
+| `src/platform/Clock.h` | 36 | M | openmm2-only |
 | `src/platform/Dialogs.cpp` | 137 | O | - |
 | `src/platform/Dialogs.h` | 42 | O | - |
 | `src/platform/ImGuiPlatform.cpp` | 27 | O | - |
 | `src/platform/ImGuiPlatform.h` | 26 | O | - |
-| `src/platform/Input.cpp` | 230 | O | - |
-| `src/platform/Input.h` | 131 | O | - |
+| `src/platform/Input.cpp` | 230 | M | openmm2-only |
+| `src/platform/Input.h` | 131 | M | openmm2-only |
 | `src/platform/Platform.cpp` | 100 | O | - |
 | `src/platform/Platform.h` | 54 | O | - |
 | `src/platform/Window.cpp` | 257 | O | - |
@@ -384,12 +386,12 @@ OpenMM2-only with no audit area.
 | `src/render/HandleTable.h` | 58 | O | - |
 | `src/render/ImGuiRenderer.cpp` | 165 | O | - |
 | `src/render/ImGuiRenderer.h` | 31 | O | - |
-| `src/render/ImageUtil.cpp` | 94 | O | - |
-| `src/render/ImageUtil.h` | 29 | O | - |
+| `src/render/ImageUtil.cpp` | 94 | M | openmm2-only |
+| `src/render/ImageUtil.h` | 29 | M | openmm2-only |
 | `src/render/Overlay2D.cpp` | 101 | O | - |
 | `src/render/Overlay2D.h` | 57 | O | - |
-| `src/render/Projection.cpp` | 75 | O | - |
-| `src/render/Projection.h` | 50 | O | - |
+| `src/render/Projection.cpp` | 75 | M | openmm2-only |
+| `src/render/Projection.h` | 50 | M | openmm2-only |
 | `src/render/Renderer.cpp` | 116 | O | - |
 | `src/render/Renderer.h` | 40 | O | - |
 | `src/render/ShaderBlobs.h` | 29 | O | - |
@@ -423,8 +425,8 @@ OpenMM2-only with no audit area.
 | `src/vfs/DirectoryFs.cpp` | 63 | O | - |
 | `src/vfs/DirectoryFs.h` | 37 | O | - |
 | `src/vfs/FileSystem.h` | 35 | O | - |
-| `src/vfs/GameSource.cpp` | 283 | O | - |
-| `src/vfs/GameSource.h` | 66 | O | - |
+| `src/vfs/GameSource.cpp` | 283 | M | openmm2-only |
+| `src/vfs/GameSource.h` | 66 | M | openmm2-only |
 | `src/vfs/IsoImage.cpp` | 290 | O | - |
 | `src/vfs/IsoImage.h` | 56 | O | - |
 | `src/vfs/Vfs.cpp` | 62 | M | formats |
