@@ -31,7 +31,8 @@ void Weather::update(float dt, const Mat34& camera) {
 void Weather::draw(render::Device& device, TextureLibrary& textures, ParticleRenderer& cards, const Mat34& camera) {
     if (!m_ok || !m_system.count())
         return;
-    cards.draw(device, camera, m_system, textures.get(EffectLibrary::rainSheet().texture));
+    // asParticles::SetTexture by name asks gfxGetTexture for no mipmaps.
+    cards.draw(device, camera, m_system, textures.get(EffectLibrary::rainSheet().texture, false));
 }
 
 } // namespace mm2::game::fx

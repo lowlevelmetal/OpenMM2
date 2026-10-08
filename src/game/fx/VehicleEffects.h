@@ -50,6 +50,7 @@ public:
 
     VehicleEffects(const EffectLibrary& library, const VehicleFxSetup& setup);
 
+    // vehCar::Reset's effects part (see VehicleEffects.cpp).
     void reset();
     // Runs the original per-frame updates at a fixed 60 Hz (FixedTicker).
     void update(float dt, const phys::CarSim& car, const VehicleFxContext& context = {});

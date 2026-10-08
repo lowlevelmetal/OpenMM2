@@ -54,6 +54,7 @@ public:
     // asParticles::Init(count, framesWide, framesHigh, ...). The original
     // quartered the count in software rendering only.
     void init(int maxParticles, int framesWide, int framesHigh);
+    // asParticles::Reset: drops every particle and the birth matrix.
     void reset();
 
     // Rule spewed by update() (asParticles' own rule); blasts may name another.

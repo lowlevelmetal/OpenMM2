@@ -41,18 +41,18 @@ VehicleEffects::VehicleEffects(const EffectLibrary& library, const VehicleFxSetu
     reset();
 }
 
+// vehCar::Reset's share: the four lvlTrackManager::Reset, vehWheelPtx::Reset
+// (only its two spew fractions: wheel particles in flight carry on) and
+// vehCarDamage::Reset (ClearDamage: the smoke, its fraction and frame, the
+// impact list, and the pending texel damage). Sparks and shards in flight
+// carry on too.
 void VehicleEffects::reset() {
     for (auto& t : m_tracks)
         t.reset();
-    m_wheelPtx.reset();
     m_wheelFraction = {};
-    // vehCarDamage::ClearDamage.
     m_smoke.reset();
     m_smokeFraction = 0.0f;
     m_smokeRule.texFrameStart = m_smokeRule.texFrameEnd = 0;
-    m_ticker.reset();
-    m_sparks.reset();
-    m_shards.reset();
     m_damagePoint.reset();
     m_impacts.clear();
 }
@@ -64,9 +64,10 @@ void VehicleEffects::impact(const phys::CarImpact& impact, const phys::CarSim& c
     if (!impact.damaging)
         return;
     const float mph = car.speedMph();
-    // Sparks: 16 x impact x frame seconds of them (at most the pool's 64).
+    // Sparks: 16 x the impact's running total x frame seconds of them (at
+    // most the pool's 64). The frame time is the fixed 1/60 s step.
     if (15.0f < mph)
-        m_sparks.radialBlast(static_cast<int>(16.0f * impact.value * FixedTicker::kStep), impact.position,
+        m_sparks.radialBlast(static_cast<int>(16.0f * impact.total * FixedTicker::kStep), impact.position,
                              impact.normal);
     // fxShardManager::EmitShards gets the impact's running total.
     m_shards.emit(impact.position, impact.total, car.speed(), car.body.ics.matrix);

@@ -58,6 +58,13 @@ physics reproduces (`World::advanceFixed`).
 * **Shadows** (asMeshCardInfo::DrawShadows, flag 0x10): a flat card on the
   Height plane while the particle is more than 1 cm above it, drawn before
   the cards, colour halved with red and blue swapped (as the original does).
+* **Render state**: particles, sparks and shards are drawn from lvlLevel's
+  late draw callbacks, after `cityLevel::DrawRooms` has switched fog off for
+  the glow pass: unfogged, unlit, normal alpha blending with the default alpha
+  test (alpha not 0), no depth writes. Tyre tracks are drawn earlier (with the
+  shadows) and are fogged.
+* **asParticles::Reset** drops the particles and the birth matrix; the spew
+  fraction carries over.
 
 ## Wheel particles (vehWheelPtx)
 
@@ -152,8 +159,10 @@ body's share of the two masses, exceeds ImpactThreshold, at 10 mph or more
 unless the other party is a vehicle. Then:
 
 * **Sparks** (`asLineSparks`, `fx/LineSparks`), above 15 mph: ftol(16 ×
-  impact × frame seconds) of them, at most 64 per car, born within 5 cm of
-  the contact, flying 4–5 m/s along the contact normal and 6–7 m/s across it.
+  the impact's running total × frame seconds) of them, at most 64 per car,
+  born within 5 cm of the contact, flying 4–5 m/s along the contact normal
+  and 6–7 m/s across it (across axes t = normal × Y, or normal × X for a
+  near-vertical normal, and t × normal).
   They update in steps of at least 1/30 s: gravity 20 m/s², a bounce off
   y = 0 keeping 80%, and an age byte falling 650 per second from 192–255
   that picks the colour column of `texture/spark.tga` (8×8 ramps, 24-bit
@@ -164,7 +173,10 @@ unless the other party is a vehicle. Then:
   (±0.3, 0.15–0.3, 0.02–0.2) × car speed sideways/up/back in the body frame,
   tumbling at 10.8–54 rad/s about a random axis, falling at 20 m/s², for
   1.8 s. Each is a 0.1 m right triangle showing a random 0.3 × 0.3 patch of
-  the paint job's material of its index, both sides drawn.
+  a paint job material, both sides drawn: `fxShardManager::Draw` steps
+  through the materials but starts again at 0 after 16 / (materials per paint
+  job) of them, so shard i shows material i only with more than 16 materials,
+  material 0 alone with 9–16 (the Mustang), and alternates 0 and 1 with 6–8.
 * **Texel damage** at the first such impact point of the frame (see
   rendering.md).
 * **Parts breaking off** (`vehBreakableMgr::Impact`): with an impact of
