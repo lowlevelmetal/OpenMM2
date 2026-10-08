@@ -54,7 +54,7 @@ private:
 // less `threshold` (0 below it).
 float spotIntensity(const Vec3& position, const Vec3& direction, const Vec3& eye, float threshold);
 
-// ltLensFlare::DrawBegin / DrawEnd: the queued cards added (ONE/ONE) over the
+// ltLensFlare::DrawBegin / ltLensFlare::DrawEnd: the queued cards added (ONE/ONE) over the
 // whole screen with texture lt_flare, unlit, without depth.
 void drawLensFlares(render::Device& device, TextureLibrary& textures, std::span<const LensFlareQuad> quads);
 

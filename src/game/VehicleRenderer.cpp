@@ -469,7 +469,8 @@ void VehicleRenderer::addLightGlow(fx::ParticleRenderer& cards, const Vec3& posi
 }
 
 void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
-    // vehCarModel::DrawGlow / aiVehicleInstance::DrawGlow: lighting off, no
+    // vehCarModel::DrawGlow / aiVehicleInstance::DrawGlow (between
+    // ltLight::DrawGlowBegin and ltLight::DrawGlowEnd): lighting off, no
     // fog, no depth writes, added (ONE/ONE), the high LOD light parts.
     MeshDrawOptions glow;
     glow.lighting = false;
