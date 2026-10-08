@@ -134,6 +134,13 @@ public:
     // In a multiplayer session: the garage's car and paint job become the
     // local player's (mmInterface::ChangePlayerData) and the driver's.
     void applyLobbyCar();
+    // Entering multiplayer: a locked car becomes vpbug with paint job 0, a
+    // locked paint job paint job 0 (mmInterface::GetUnlockedCar /
+    // GetUnlockedColor).
+    void unlockedNetCar();
+    // A network race starting (mmInterface::MultiStartGame calls BeDone):
+    // the lobby's car and the session's event become the driver's last.
+    void saveNetEvent();
 
     void update(double dt);
     void draw();

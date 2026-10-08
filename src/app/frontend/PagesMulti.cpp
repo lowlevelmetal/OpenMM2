@@ -159,6 +159,8 @@ public:
         menu.background = "jpg/sess_bk.jpg";
         menu.defaultHelp = "jpg/mn_mp.jpg";
         m_netName = netName(fe);
+        // mmInterface::Switch(10): no locked car or paint job online.
+        fe.unlockedNetCar();
         NetGame& net = ensureNetGame(fe);
         std::string error;
         if (!net.startLanScan(&error))

@@ -249,9 +249,43 @@ std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& resul
     return reward;
 }
 
+void Frontend::unlockedNetCar() {
+    // mmInterface::Switch (MULTIPLAYER, the lobby), LobbySwitch and ShowMain
+    // after a network race: the car's lock (mmVehInfo +0xf4), then the paint
+    // job's (+0x108 bit). OpenMM2 checks on entering the sessions page and
+    // on leaving the lobby's garage (a race unlocks, never locks).
+    if (!profile)
+        return;
+    if (!progress.vehicleUnlocked(*profile, config.vehicle)) {
+        config.vehicle = "vpbug";
+        config.vehicleColor = 0;
+    } else if (!progress.variantUnlocked(*profile, config.vehicle, config.vehicleColor)) {
+        config.vehicleColor = 0;
+    }
+}
+
+void Frontend::saveNetEvent() {
+    // BeDone for the host and every joiner: the lobby's car and paint job
+    // and the session's mode, race and city (copied into the state pack by
+    // mmInterface::GetSessionData), so the main menu shows the network event
+    // as LAST RACE afterwards.
+    if (!profile || !ctx.netGame)
+        return;
+    const game::RaceConfig cfg = ctx.netGame->raceConfig();
+    const game::NetCar car = ctx.netGame->localCar();
+    game::Profile& p = *profile;
+    p.vehicle = car.vehicle;
+    p.vehicleColor = car.color;
+    p.city = cfg.city;
+    p.mode = cfg.mode;
+    p.raceIndex = cfg.raceIndex;
+    saveProfile();
+}
+
 void Frontend::applyLobbyCar() {
     if (!ctx.netGame || !ctx.netGame->inSession())
         return;
+    unlockedNetCar();
     game::NetCar car = ctx.netGame->localCar();
     car.vehicle = config.vehicle;
     car.color = config.vehicleColor;
@@ -867,6 +901,7 @@ public:
         if (ctx.netGame) {
             ctx.netGame->update();
             if (ctx.netGame->takeRaceStart()) {
+                m_fe.saveNetEvent();
                 ctx.nextScreen = makeRaceScreen(ctx, ctx.netGame->raceConfig());
                 return;
             }
