@@ -410,7 +410,9 @@ the screen, or 0.9 x 0.8 centred for the control and graphics pages and
 the label, type 2 (rows) centres it, type 0 (the results) centres it
 vertically only. Titles use GetFont 32 at the card's top-left;
 slider and drop-down labels GetFont 16, 16 pixels above their control.
-Focus moves play "Moveselector", buttons "Selectionmade", sliders "Switch",
+Up, Down and Tab play "Moveselector" and Escape and Enter "Selectionmade"
+whatever the focus does (`MenuManager::ScanGlobalKeys`), buttons
+"Selectionmade", sliders "Switch",
 drop-downs "Selectionmade" when opened with Enter, on every key in the open
 list and on a mouse pick, and PUChat "Moveselector" for every character
 typed and on Enter.
@@ -419,7 +421,8 @@ typed and on Enter.
   (read-only in network games), Options, Quit to Race Menu / Back to
   School and Exit to Windows across the card at 0.125, 0.25, 0.375, 0.5.
   Once a single-player race is over (`mmPopup::Lock`) Resume Driving is
-  off and the focus starts on Restart. Exit to Windows ends the game at
+  off and the focus starts on Restart. F4 on PUMain restarts the race
+  (`ScanGlobalKeys` state 6; not in network games). Exit to Windows ends the game at
   once (`mmPopup::Update` id 0xe): nothing switches to PUExit's question
   (menu 3), which build 3393 never shows. For the host of a network race, Quit opens **PUQuit**: Quit to Lobby
   (everyone back to the lobby), End Session and Cancel at 0.35, 0.45,

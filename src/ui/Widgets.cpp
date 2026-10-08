@@ -1012,6 +1012,14 @@ void Menu::update(UiFrame& f) {
     if (cur && cur->modal())
         return;
 
+    // MenuManager::ScanGlobalKeys in the popups: Escape and Enter play
+    // Selectionmade before the widget acts, Up, Down and Tab Moveselector,
+    // whatever the focus then does (MenuManager::PlaySound, heard only while
+    // a popup is up).
+    if (popupSounds && (nav.back || nav.accept))
+        f.play("Selectionmade", 0.75f);
+    if (popupSounds && (nav.up || nav.down || nav.tabNext))
+        f.play("Moveselector", 0.75f);
     if (nav.back) {
         // MenuManager::ScanGlobalKeys: Escape on the navigation strip moves
         // the focus back to the page and then backs the page up as well.
@@ -1029,8 +1037,6 @@ void Menu::update(UiFrame& f) {
         step(-1);
     if (nav.down || nav.tabNext)
         step(1);
-    if (popupSounds && focused() != cur)
-        f.play("Moveselector", 0.75f); // MenuManager::PlaySound(0)
     cur = focused();
     if (!cur)
         return;
