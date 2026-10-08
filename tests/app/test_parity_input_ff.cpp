@@ -349,3 +349,44 @@ TEST(ParityInputFF, ReplayRecordsTheInputsAsBytes) {
     in.steering = -1.0f;
     EXPECT_FLOAT_EQ(replayQuantize(in).steering, -127.0f * 0.007874016f);
 }
+
+TEST(ParityInputFF, CaptureReaderFollowsPollStates) {
+    CaptureReader r;
+    InputFrame f;
+    f.mouseButtons = 1; // the click that started the capture
+    r.begin(f);
+    EXPECT_EQ(r.poll(f, Controller::Keyboard).kind, Captured::Kind::None); // waits for the release
+    f.mouseButtons = 0;
+    EXPECT_EQ(r.poll(f, Controller::Keyboard).kind, Captured::Kind::None);
+    // Two keys at once are not taken; one is.
+    f.keysPressed = {Key::A, Key::B};
+    EXPECT_EQ(r.poll(f, Controller::Keyboard).kind, Captured::Kind::None);
+    f.keysPressed = {Key::G};
+    const Captured k = r.poll(f, Controller::Keyboard);
+    EXPECT_EQ(k.kind, Captured::Kind::Key);
+    EXPECT_EQ(k.value, static_cast<int>(Key::G));
+    // The right mouse button alone; both together are not taken.
+    f.keysPressed.clear();
+    f.mouseButtons = 3;
+    EXPECT_EQ(r.poll(f, Controller::Keyboard).kind, Captured::Kind::None);
+    f.mouseButtons = 2;
+    const Captured m = r.poll(f, Controller::Keyboard);
+    EXPECT_EQ(m.kind, Captured::Kind::Mouse);
+    EXPECT_EQ(m.value, 2);
+    // Joystick controls only for the joystick types: the lowest button,
+    // then an axis 0.125 from where it rested.
+    InputFrame j = joyFrame(0.1f, 0.0f, 0b1100u);
+    CaptureReader rj;
+    rj.begin(joyFrame(0.1f, 0.0f));
+    EXPECT_EQ(rj.poll(j, Controller::Keyboard).kind, Captured::Kind::None);
+    const Captured b = rj.poll(j, Controller::Joystick);
+    EXPECT_EQ(b.kind, Captured::Kind::JoyButton);
+    EXPECT_EQ(b.value, 3);
+    j.joy.buttons = 0;
+    j.joy.x = 0.2f;
+    EXPECT_EQ(rj.poll(j, Controller::Wheel).kind, Captured::Kind::None);
+    j.joy.y = -0.5f;
+    const Captured a = rj.poll(j, Controller::Wheel);
+    EXPECT_EQ(a.kind, Captured::Kind::JoyAxis);
+    EXPECT_EQ(a.value, component::kJoyYUp);
+}

@@ -78,6 +78,27 @@ JoystickFrame readJoystick(const platform::Input& in, Controller c, float deadZo
 // platform::Input::mousePosition().
 InputFrame readFrame(const platform::Input& in, Controller c, float deadZone, float width, float height);
 
+// mmInput::CaptureState / PollStates for the customize page: what the
+// player pressed to bind a slot.
+class CaptureReader {
+public:
+    // CaptureState(1): the joystick's axes rest where they are now
+    // (mmJaxis::ResetCapture); a mouse button still held from the click
+    // that started the capture is waited out (UICWArray::Update).
+    void begin(const InputFrame& f);
+    // PollStates: one newly pressed key (none when several went down
+    // together; Escape cancels and F1-F10 are refused by the page), else a
+    // mouse button alone (left 1, right 2; not both), else for the joystick
+    // types the lowest of the first sixteen joystick buttons, else an axis
+    // that moved 0.125 from rest (X and Y by halves, Z, Rz).
+    Captured poll(const InputFrame& f, Controller c);
+
+private:
+    float m_restX = 0.0f, m_restY = 0.0f, m_restZ = 0.0f, m_restR = 0.0f;
+    bool m_waitRelease = false;
+    bool m_mouseLatch = false; // the latch PollStates keeps for the mouse
+};
+
 // mmReplayManager::Update records the inputs every frame and the game
 // drives the car with the recorded values: the steering as a signed byte
 // (x 127, truncated, read back x 1/127), the pedals as bytes (x 255).

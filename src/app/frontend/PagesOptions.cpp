@@ -7,6 +7,7 @@
 // mmPlayerConfig); OpenMM2 keeps them in openmm2.ini so that they apply
 // before a driver is chosen.
 #include "app/Controls.h"
+#include "app/GameInput.h"
 #include "app/frontend/Frontend.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
@@ -679,36 +680,48 @@ private:
 
 // --- Customize controls ----------------------------------------------------------------------
 
-// MM2's 34 action slots in list order with their keyboard defaults
-// (mmInput::SetDefaultConfig, device 1) are app::controls' table, which the
-// race reads too. Bindings are stored as [Controls] Bind.<string id> =
-// <key name>.
-using ActionSlot = controls::ActionInfo;
-using controls::bindKey;
+// MM2's 34 action slots and the five controllers' binding sets
+// (mmInput::SetDefaultConfig) are app::controls' tables, which the race
+// reads too. Bindings are stored as [Controls] Bind.<string id> (the
+// keyboard's set) or Bind.<controller>.<string id> = <key name, "Mouse
+// Left", "Joy Button 3", ...>.
+using controls::Action;
 using controls::kUnbound;
 using platform::Key;
 
-Key binding(Context& ctx, const ActionSlot& a) { return controls::boundKey(ctx.settings.ini, a); }
+controls::Controller boundController(Context& ctx) {
+    return static_cast<controls::Controller>(static_cast<int>(controller(ctx)));
+}
+
+// The joystick as the race reads it, for the wheel's defaults and capture.
+controls::InputFrame inputFrame(Context& ctx, controls::Controller c) {
+    const auto size = ctx.window().size();
+    const float deadZone = iniFloat(ctx, "Controls", "DeadZone", ControlDefaults::kDeadZone, 0.0f, 0.33f);
+    return controls::readFrame(ctx.input, c, deadZone, static_cast<float>(size.width),
+                               static_cast<float>(size.height));
+}
+
+controls::BindingSet boundSet(Context& ctx, controls::Controller c, const controls::JoystickFrame& joy) {
+    return controls::loadBindings(ctx.settings.ini, c, joy.present ? joy.numButtons : -1);
+}
 
 // The action list (MM2's "CW Array", UICWArray): two columns, the action in
-// white and its key, red while it is focused or waiting for a key; 20 px
-// rows, 15 visible, scrolling with the arrows. Enter or a click waits for a
-// key; Escape cancels.
+// white and its control (mmIODev::GetDescription), red while it is focused
+// or waiting for a control; 20 px rows, 15 visible, scrolling with the
+// arrows. It lists the slots the chosen controller reads and may rebind
+// (mmInput::Init; UICWArray::Redraw). Enter or a click waits for a key, a
+// mouse button or a joystick control (mmInput::PollStates); Escape cancels.
 class BindingList final : public ui::Widget {
 public:
     static constexpr int kRows = 15;
     static constexpr float kRowH = 20.0f;
 
-    BindingList(Frontend& fe, Box b) : m_fe(fe) {
-        box = {b.x, b.y, b.w, kRowH * kRows};
-        for (const auto& a : controls::actions())
-            if (a.keyboard)
-                m_actions.push_back(&a);
-    }
+    BindingList(Frontend& fe, Box b) : m_fe(fe) { box = {b.x, b.y, b.w, kRowH * kRows}; }
 
-    // Opens the dialogs for a refused or duplicate key.
-    std::function<void(const ActionSlot&, Key)> onRefused;
-    std::function<void(const ActionSlot&, Key, const ActionSlot&)> onDuplicate;
+    // Opens the dialogs for a refused control (xasn_dlg) or one another
+    // listed action uses (ctrl_dlg; `force` binds it anyway).
+    std::function<void()> onRefused;
+    std::function<void(std::function<void()> force)> onDuplicate;
     std::function<void()> onEscape;
 
     bool modal() const override { return m_active || m_capturing || m_swallow; }
@@ -720,19 +733,25 @@ public:
 
     void draw(ui::UiFrame& f, bool focused) override {
         Context& ctx = m_fe.ctx;
+        listActions();
         const auto font = ui::style::valueFont();
+        const controls::Controller c = boundController(ctx);
+        const controls::BindingSet set = boundSet(ctx, c, inputFrame(ctx, c).joy);
+        const auto strings = [&ctx](std::uint32_t id, const char* fallback) {
+            return ctx.game->strings.get(id, fallback);
+        };
         m_scroll = std::clamp(m_scroll, 0, std::max(0, static_cast<int>(m_actions.size()) - kRows));
         for (int i = 0; i < kRows; ++i) {
             const int idx = m_scroll + i;
             if (idx >= static_cast<int>(m_actions.size()))
                 break;
-            const ActionSlot& a = *m_actions[static_cast<std::size_t>(idx)];
+            const Action a = m_actions[static_cast<std::size_t>(idx)];
             const float y = box.y + kRowH * static_cast<float>(i) + 2;
             const bool selected = idx == m_selected && (focused || m_capturing);
-            f.text.draw(f.overlay, font, ctx.game->strings.get(a.stringId), box.x, y, ui::style::kRecordText);
-            const Key k = binding(ctx, a);
-            const std::string key = k == Key::Unknown ? ctx.game->strings.get(271, "UNDEFINED") : platform::keyName(k);
-            f.text.draw(f.overlay, font, key, box.x + 125, y,
+            f.text.draw(f.overlay, font, ctx.game->strings.get(controls::info(a).stringId), box.x, y,
+                        ui::style::kRecordText);
+            const std::string text = controls::describe(set[static_cast<std::size_t>(a)], strings);
+            f.text.draw(f.overlay, font, text, box.x + 125, y,
                         selected ? ui::style::kValueTextFocus : ui::style::kRecordText);
         }
         // Scroll bar arrows (UIVScrollBar) right of the list: the arrow frame
@@ -746,7 +765,7 @@ public:
 
     bool activate(ui::UiFrame&) override {
         m_active = true;
-        m_capturing = true;
+        startCapture();
         return true;
     }
 
@@ -758,7 +777,7 @@ public:
         if (hovered && nav.mousePressed) {
             m_active = true;
             select(rowAt(nav.mouse.y));
-            m_capturing = true;
+            startCapture();
         } else if (nav.mousePressed && scrollArrow(nav.mouse) != 0) {
             m_active = true;
             m_scroll += scrollArrow(nav.mouse);
@@ -769,14 +788,14 @@ public:
             select(m_selected + (nav.up ? -1 : 1));
         } else if (nav.accept) {
             m_active = true;
-            m_capturing = true;
+            startCapture();
         }
     }
 
     void modalInput(ui::UiFrame& f) override {
         const ui::NavInput& nav = f.nav;
         if (m_swallow) {
-            // The key that ended a capture must not also act on the page.
+            // The control that ended a capture must not also act on the page.
             m_swallow = false;
             return;
         }
@@ -790,7 +809,7 @@ public:
                 m_scroll += scrollArrow(nav.mouse);
             } else if (box.contains(nav.mouse)) {
                 select(rowAt(nav.mouse.y));
-                m_capturing = true;
+                startCapture();
             }
             return;
         }
@@ -801,7 +820,7 @@ public:
         if (nav.down)
             select(m_selected + 1);
         if (nav.accept)
-            m_capturing = true;
+            startCapture();
         if (nav.tabNext)
             m_active = false; // the menu moves the focus on
         if (nav.back && onEscape)
@@ -813,6 +832,17 @@ public:
     }
 
 private:
+    void listActions() {
+        // UICWArray::Redraw: the slots the controller reads and does not fix.
+        const controls::Controller c = boundController(m_fe.ctx);
+        m_actions.clear();
+        for (std::size_t i = 0; i < controls::kActionCount; ++i)
+            if (controls::slotListed(c, static_cast<Action>(i)))
+                m_actions.push_back(static_cast<Action>(i));
+        if (!m_actions.empty())
+            m_selected = std::clamp(m_selected, 0, static_cast<int>(m_actions.size()) - 1);
+    }
+
     int rowAt(float y) const { return m_scroll + static_cast<int>((y - box.y) / kRowH); }
 
     // -1 / +1 when `p` is on the scroll bar's up / down arrow.
@@ -826,42 +856,77 @@ private:
     }
 
     void select(int i) {
-        m_selected = std::clamp(i, 0, static_cast<int>(m_actions.size()) - 1);
+        listActions();
+        m_selected = std::clamp(i, 0, std::max(0, static_cast<int>(m_actions.size()) - 1));
         if (m_selected < m_scroll)
             m_scroll = m_selected;
         if (m_selected >= m_scroll + kRows)
             m_scroll = m_selected - kRows + 1;
     }
 
+    // UICWArray::EnterCapture / mmInput::CaptureState(1).
+    void startCapture() {
+        m_capturing = true;
+        const controls::Controller c = boundController(m_fe.ctx);
+        m_reader.begin(inputFrame(m_fe.ctx, c));
+    }
+
+    // UICWArray::CheckCapture.
     void capture() {
         Context& ctx = m_fe.ctx;
-        const auto& keys = ctx.input.keysPressedThisFrame();
-        if (keys.empty())
-            return;
-        const Key k = keys.front();
-        m_capturing = false;
-        m_swallow = true;
-        if (k == Key::Escape)
-            return;
-        const ActionSlot& a = *m_actions[static_cast<std::size_t>(m_selected)];
-        // F1-F10 are reserved (xasn_dlg).
-        if (k >= Key::F1 && k <= Key::F10) {
-            if (onRefused)
-                onRefused(a, k);
+        listActions();
+        if (m_actions.empty()) {
+            m_capturing = false;
             return;
         }
-        // A key another listed action uses: ctrl_dlg (mmInput::BuildCaptureIO).
-        for (const auto* other : m_actions)
-            if (other != &a && binding(ctx, *other) == k) {
-                if (onDuplicate)
-                    onDuplicate(a, k, *other);
+        const controls::Controller c = boundController(ctx);
+        const controls::InputFrame frame = inputFrame(ctx, c);
+        const controls::Captured what = m_reader.poll(frame, c);
+        if (what.kind == controls::Captured::Kind::None)
+            return;
+        m_capturing = false;
+        m_swallow = true;
+        if (what.kind == controls::Captured::Kind::Key) {
+            const auto k = static_cast<Key>(what.value);
+            if (k == Key::Escape)
+                return; // ResetCapture
+            // F1-F10 are reserved (xasn_dlg).
+            if (k >= Key::F1 && k <= Key::F10) {
+                if (onRefused)
+                    onRefused();
                 return;
             }
-        ctx.settings.ini.set("Controls", bindKey(a.stringId), platform::keyName(k));
+        }
+        const Action slot = m_actions[static_cast<std::size_t>(m_selected)];
+        const controls::BindingSet before = boundSet(ctx, c, frame.joy);
+        auto set = std::make_shared<controls::BindingSet>(before);
+        auto rebinder = std::make_shared<controls::Rebinder>(*set, c);
+        // Writes the slots the capture changed (mmInput::AssignIO also
+        // unbinds the others that used the control).
+        auto store = [&ctx, c, before, set] {
+            for (std::size_t i = 0; i < controls::kActionCount; ++i)
+                if ((*set)[i] != before[i])
+                    controls::storeBinding(ctx.settings.ini, c, static_cast<Action>(i), (*set)[i]);
+        };
+        switch (rebinder->capture(slot, what)) {
+        case controls::CaptureResult::Assigned: store(); break;
+        case controls::CaptureResult::Duplicate:
+            if (onDuplicate)
+                onDuplicate([rebinder, slot, store] {
+                    rebinder->forceAssign(slot); // UICWArray::ForceCapture
+                    store();
+                });
+            break;
+        case controls::CaptureResult::Rejected:
+            if (onRefused)
+                onRefused();
+            break;
+        }
     }
 
     Frontend& m_fe;
-    std::vector<const ActionSlot*> m_actions;
+    std::vector<Action> m_actions;
+    controls::CaptureReader m_reader;
     int m_selected = 0;
     int m_scroll = 0;
     bool m_active = false;
@@ -876,19 +941,15 @@ public:
         auto& list =
             menu.add<BindingList>(fe, fe.layout.widget(menu_id::kControlCustom, 3, {50, 62, 250, 20}));
         list.onEscape = [this, &fe] { cancel(fe); };
-        list.onRefused = [&fe](const ActionSlot&, Key) {
+        list.onRefused = [&fe] {
             fe.dialog("jpg/xasn_dlg.jpg", kRefusedDialog, {{"texture/dlg_done.tga", {296, 38}, {}}});
         };
-        list.onDuplicate = [&fe](const ActionSlot& a, Key k, const ActionSlot& other) {
-            // OK assigns the key anyway and leaves the other action unbound;
-            // CANCEL keeps the old binding.
-            auto& ini = fe.ctx.settings.ini;
+        list.onDuplicate = [&fe](std::function<void()> force) {
+            // OK assigns the control anyway and leaves the other action
+            // unbound (ControlCustom::VerifyBadAssignment); CANCEL keeps the
+            // old binding.
             fe.dialog("jpg/ctrl_dlg.jpg", kControlWarningDialog,
-                      {{"texture/dlg_ok.tga", {180, 176},
-                        [&ini, id = a.stringId, otherId = other.stringId, k] {
-                            ini.set("Controls", bindKey(id), platform::keyName(k));
-                            ini.set("Controls", bindKey(otherId), kUnbound);
-                        }},
+                      {{"texture/dlg_ok.tga", {180, 176}, std::move(force)},
                        {"texture/dlg_can.tga", {18, 176}, {}}});
         };
         finish(fe);
@@ -897,6 +958,7 @@ public:
 
 protected:
     void resetDefaults(Frontend& fe) override {
+        // UICWArray::DefaultCFG: every controller's set back to its defaults.
         auto& ini = fe.ctx.settings.ini;
         for (const auto& k : ini.keys("Controls"))
             if (k.starts_with("Bind."))

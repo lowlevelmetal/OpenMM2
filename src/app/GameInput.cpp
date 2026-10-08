@@ -163,6 +163,56 @@ InputFrame readFrame(const platform::Input& in, Controller c, float deadZone, fl
     return f;
 }
 
+void CaptureReader::begin(const InputFrame& f) {
+    // mmJoyMan::SetCapture(1): Poll, then mmJaxis::ResetCapture on X, Y, Z
+    // and Rz.
+    m_restX = f.joy.x;
+    m_restY = f.joy.y;
+    m_restZ = f.joy.z;
+    m_restR = f.joy.r;
+    m_waitRelease = f.mouseButtons != 0;
+    m_mouseLatch = false;
+}
+
+Captured CaptureReader::poll(const InputFrame& f, Controller c) {
+    // UICWArray::Update: nothing is captured until the mouse button that
+    // started the capture is up.
+    if (m_waitRelease) {
+        m_waitRelease = (f.mouseButtons & 3u) != 0;
+        return {};
+    }
+    // mmInput::PollSuperQ: exactly one key went down.
+    if (f.keysPressed.size() == 1)
+        return {Captured::Kind::Key, static_cast<int>(f.keysPressed.front())};
+    if (f.keysPressed.size() > 1)
+        return {};
+    // The mouse's buttons (eqEventHandler: left 1, right 2, middle 4), not
+    // both at once, reported every other frame while held (the latch).
+    const std::uint32_t mouse = f.mouseButtons;
+    if (mouse != 0 && mouse != 3 && !m_mouseLatch) {
+        m_mouseLatch = true;
+        return {Captured::Kind::Mouse, static_cast<int>(mouse)};
+    }
+    m_mouseLatch = false;
+    const bool joystickType = c == Controller::Joystick || c == Controller::GamePad || c == Controller::Wheel;
+    if (!joystickType || !f.joy.present)
+        return {};
+    // mmJoyMan::PollJoyButtons / GetOneButton.
+    for (int b = 0; b < 16; ++b)
+        if ((f.joy.buttons >> b) & 1u)
+            return {Captured::Kind::JoyButton, b + 1};
+    // mmJoystick::Update while capturing, then mmJoyMan::PollJoyAxes.
+    if (const int m = axisCaptured(m_restX, f.joy.x); m != 0)
+        return {Captured::Kind::JoyAxis, m == 1 ? component::kJoyXRight : component::kJoyXLeft};
+    if (const int m = axisCaptured(m_restY, f.joy.y); m != 0)
+        return {Captured::Kind::JoyAxis, m == 1 ? component::kJoyYDown : component::kJoyYUp};
+    if (axisCaptured(m_restZ, f.joy.z) != 0)
+        return {Captured::Kind::JoyAxis, component::kJoyZ};
+    if (axisCaptured(m_restR, f.joy.r) != 0)
+        return {Captured::Kind::JoyAxis, component::kJoyR};
+    return {};
+}
+
 phys::PedalInput replayQuantize(const phys::PedalInput& in) {
     // mmReplayManager::Update stores ftol(steering x 127) in a signed byte
     // and ftol(pedal x 255) in bytes; GetSteering / GetThrottle / GetBrakes
