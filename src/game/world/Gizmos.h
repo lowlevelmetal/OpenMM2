@@ -167,7 +167,7 @@ public:
     // gizBridge: lift speed (radians per second), open angle, and the
     // seconds a timed bridge stays down / up (its static tuning).
     static constexpr float kLiftSpeed = 0.05f;
-    static constexpr float kGoalAngle = 0.471238881f;
+    static constexpr float kGoalAngle = 0.471238941f; // 0.15 pi
     static constexpr float kDownInterval = 10.0f;
     static constexpr float kUpInterval = 10.0f;
     // gizBridgeMgr::CheckProximity: 100 m, squared.
