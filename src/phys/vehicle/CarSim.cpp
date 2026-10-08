@@ -250,9 +250,13 @@ void CarSim::setInputs(float throttle, float brakeInput, float steer, float hand
 }
 
 Mat34 CarSim::modelMatrix() const {
-    // vehCarSim::SetWorldMatrix.
+    // vehCarSim::SetWorldMatrix: the body matrix moved by R * CenterOfGravity
+    // (summed in its order).
     Mat34 m = body.ics.matrix;
-    m.m3 = m.m3 + m.transformDir(centerOfGravity);
+    const Vec3& cg = centerOfGravity;
+    m.m3 = {((m.m1.x * cg.y + m.m2.x * cg.z) + cg.x * m.m0.x) + m.m3.x,
+            ((m.m1.y * cg.y + m.m0.y * cg.x) + m.m2.y * cg.z) + m.m3.y,
+            ((m.m1.z * cg.y + m.m0.z * cg.x) + m.m2.z * cg.z) + m.m3.z};
     return m;
 }
 
@@ -310,7 +314,7 @@ void CarSim::beforeIntegrate(Body& b, float, const World&) {
     // vehCarSim::Update: forward speed, then the wheel inputs.
     const Vec3& v = ics.linearVelocity;
     const Vec3& z = ics.matrix.m2;
-    m_speed = std::abs(z.x * v.x + z.y * v.y + z.z * v.z);
+    m_speed = std::abs((z.z * v.z + z.y * v.y) + z.x * v.x);
     m_speedMph = m_speed * kMetersPerSecondToMph;
     const float steer = sssFactor(m_speed) * steering;
     const float front = handBrake < 0.0f ? -handBrake : 0.0f;
@@ -417,7 +421,7 @@ void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Colli
         share = other->ics->mass;
         share = share / (body.ics.mass + share);
     }
-    const float j2 = impulse.z * impulse.z + impulse.y * impulse.y + impulse.x * impulse.x;
+    const float j2 = (impulse.x * impulse.x + impulse.y * impulse.y) + impulse.z * impulse.z;
     const float value = std::sqrt(j2) * 1.0f * share;
     for (CarDamage::ImpactInfo& e : damage.impacts) {
         if (e.other != other)
@@ -443,9 +447,13 @@ void CarSim::insertImpact(const Impact& impact, const Vec3& impulse, const Colli
         if (e.other)
             continue;
         e.other = other;
-        // The point in the car's model space (the world matrix's inverse).
-        const Mat34 inverse = modelMatrix().fastInverse();
-        e.localPosition = inverse.transform(impact.position);
+        // The point in the car's model space (the world matrix's inverse,
+        // applied in InsertImpact's order).
+        const Mat34 inv = modelMatrix().fastInverse();
+        const Vec3& p = impact.position;
+        e.localPosition = {((inv.m2.x * p.z + inv.m1.x * p.y) + inv.m0.x * p.x) + inv.m3.x,
+                           ((inv.m2.y * p.z + inv.m1.y * p.y) + inv.m0.y * p.x) + inv.m3.y,
+                           ((inv.m2.z * p.z + inv.m1.z * p.y) + inv.m0.z * p.x) + inv.m3.z};
         e.position = impact.position;
         e.normal = impact.normal;
         e.impulse = impulse;

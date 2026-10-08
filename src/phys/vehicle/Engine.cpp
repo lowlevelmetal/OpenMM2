@@ -125,8 +125,11 @@ void Engine::update(float dt, Transmission& trans, Drivetrain& primary, Inertial
         } else {
             axis = {0.0f, 0.0f, -(t * angInertia)};
         }
-        const Vec3 local{axis.x * ics.inertia.x, axis.y * ics.inertia.y, axis.z * ics.inertia.z};
-        ics.applyTorque(frame.transformDir(local));
+        const Vec3 l{axis.x * ics.inertia.x, axis.y * ics.inertia.y, axis.z * ics.inertia.z};
+        // Summed in vehEngine::Update's order.
+        ics.applyTorque({(l.z * frame.m2.x + l.y * frame.m1.x) + l.x * frame.m0.x,
+                         (l.z * frame.m2.y + l.y * frame.m1.y) + l.x * frame.m0.y,
+                         (l.z * frame.m2.z + l.y * frame.m1.z) + l.x * frame.m0.z});
     }
 }
 

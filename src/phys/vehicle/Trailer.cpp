@@ -47,8 +47,11 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     // Init places the trailer from the tractor's model matrix; reset() (as
     // vehCar::Reset does) places it from the tractor's InertialCS.
     const Mat34 model = tractor.modelMatrix();
+    const Vec3& o = originOffset;
     ics.matrix = model;
-    ics.matrix.m3 = model.transform(originOffset);
+    ics.matrix.m3 = {((model.m2.x * o.z + model.m1.x * o.y) + model.m0.x * o.x) + model.m3.x,
+                     ((model.m2.y * o.z + model.m0.y * o.x) + model.m1.y * o.y) + model.m3.y,
+                     ((model.m2.z * o.z + model.m0.z * o.x) + model.m1.z * o.y) + model.m3.z};
 
     // The collider's bound: the trailer instance's geometry bound
     // (bound/<car>_trailer_bound.bnd through lvlInstance::GetBound, with the
@@ -165,9 +168,9 @@ void Trailer::reset() {
     const Mat34& t = m_tractor->body.ics.matrix;
     ics.matrix = t;
     const Vec3& o = originOffset;
-    ics.matrix.m3 = {((o.x * t.m0.x + t.m2.x * o.z) + t.m1.x * o.y) + t.m3.x,
-                     ((t.m2.y * o.z + t.m0.y * o.x) + t.m1.y * o.y) + t.m3.y,
-                     ((t.m2.z * o.z + t.m0.z * o.x) + t.m1.z * o.y) + t.m3.z};
+    ics.matrix.m3 = {((t.m1.x * o.y + t.m2.x * o.z) + o.x * t.m0.x) + t.m3.x,
+                     ((t.m1.y * o.y + t.m0.y * o.x) + t.m2.y * o.z) + t.m3.y,
+                     ((t.m1.z * o.y + t.m0.z * o.x) + t.m2.z * o.z) + t.m3.z};
     joint.reset();
     for (Drivetrain& d : drivetrains)
         d.reset();

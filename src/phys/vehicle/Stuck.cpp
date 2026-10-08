@@ -41,7 +41,7 @@ bool Stuck::update(InertialCS& ics, float dt, const Inputs& in) {
     const Vec3& pos = ics.matrix.m3;
     const auto moved2 = [&] {
         const float dx = impactPosition.x - pos.x, dy = impactPosition.y - pos.y, dz = impactPosition.z - pos.z;
-        return dx * dx + dy * dy + dz * dz;
+        return (dz * dz + dy * dy) + dx * dx; // vehStuck::Update's order
     };
     if (moveThreshSqr < moved2())
         reset();

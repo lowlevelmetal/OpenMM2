@@ -23,8 +23,9 @@ void Aero::update(InertialCS& ics, float forwardSpeed, float dt, float invDt) co
     const Vec3& w = ics.angularVelocity;
 
     // Angular damping about the body axes: constant, linear and quadratic.
-    const float l[3] = {m.m0.x * w.x + w.y * m.m0.y + m.m0.z * w.z, m.m1.x * w.x + m.m1.z * w.z + m.m1.y * w.y,
-                        m.m2.x * w.x + m.m2.z * w.z + m.m2.y * w.y};
+    // (The sums follow vehAero::Update's order.)
+    const float l[3] = {(m.m0.z * w.z + m.m0.y * w.y) + m.m0.x * w.x, (m.m1.y * w.y + m.m1.z * w.z) + m.m1.x * w.x,
+                        (m.m2.y * w.y + m.m2.z * w.z) + m.m2.x * w.x};
     const float c[3] = {params.angCDamp.x, params.angCDamp.y, params.angCDamp.z};
     const float v1[3] = {params.angVelDamp.x, params.angVelDamp.y, params.angVelDamp.z};
     const float v2[3] = {params.angVel2Damp.x, params.angVel2Damp.y, params.angVel2Damp.z};
@@ -42,8 +43,8 @@ void Aero::update(InertialCS& ics, float forwardSpeed, float dt, float invDt) co
         if (std::abs(ww[i]) < 1.0f)
             t[i] = std::abs(ww[i]) * t[i];
     const float tx = t[0] * ics.inertia.x, ty = t[1] * ics.inertia.y, tz = t[2] * ics.inertia.z;
-    ics.applyTorque({ty * m.m1.x + tx * m.m0.x + tz * m.m2.x, tx * m.m0.y + ty * m.m1.y + tz * m.m2.y,
-                     tx * m.m0.z + ty * m.m1.z + tz * m.m2.z});
+    ics.applyTorque({(tx * m.m0.x + ty * m.m1.x) + tz * m.m2.x, (tz * m.m2.y + ty * m.m1.y) + tx * m.m0.y,
+                     (tz * m.m2.z + ty * m.m1.z) + tx * m.m0.z});
 
     // Drag against the velocity, scaled by the forward speed; downforce
     // along the car's up axis.
