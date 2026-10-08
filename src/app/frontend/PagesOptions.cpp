@@ -72,6 +72,8 @@ protected:
     void finish(Frontend& fe) { addNavStrip(fe, *this, NavOptions::Cancel, [this, &fe] { stripOptions(fe); }); }
 
     virtual void resetDefaults(Frontend& fe) = 0;
+    // CANCEL (id 500) and Escape (mmInterface::Update): the settings the page
+    // was entered with again.
     virtual void cancel(Frontend& fe) {
         restore(fe);
         fe.pop();
@@ -84,6 +86,7 @@ protected:
         fe.config.automatic = m_savedAutomatic;
         fe.ctx.applyAudioSettings();
     }
+    // DONE (id 0x1f5, mmInterface::Update, after the page's DoneAction).
     virtual void done(Frontend& fe) {
         if (fe.profile && fe.profile->automatic != fe.config.automatic) {
             fe.profile->automatic = fe.config.automatic;
@@ -99,6 +102,8 @@ protected:
 
 private:
     void askDefaults(Frontend& fe) {
+        // DEFAULTS (id 0x1f6, mmInterface::Update): odef_dlg, whose OK runs
+        // the page's ResetDefaultAction.
         // odef_dlg: "Are you sure you want to restore the original settings?"
         fe.dialog("jpg/odef_dlg.jpg", menu_id::kDefaults,
                   {{"texture/dlg_ok.tga", {180, 176}, [this, &fe] { resetDefaults(fe); }},
@@ -255,6 +260,7 @@ public:
     }
 
 protected:
+    // GraphicsOptions::ResetDefaultAction.
     void resetDefaults(Frontend& fe) override {
         m_pending = render::DisplaySettings{};
         m_pending.backend = fe.ctx.display.backend;
@@ -272,6 +278,7 @@ protected:
     // DoneAction, changes only on DONE.
     void stripOptions(Frontend& fe) override { fe.pop(); }
 
+    // GraphicsOptions::DoneAction: the display mode changes here.
     void done(Frontend& fe) override {
         Context& ctx = fe.ctx;
         m_pending.sanitize();
@@ -589,8 +596,8 @@ public:
         // 7-8: STEERING SENSITIVITY, CONTROLLER DEAD ZONE.
         m_sensitivity = &addSlider(fe, 7, {450, 108, 186, 29}, "Sensitivity", ControlDefaults::kSensitivity, 0.5f,
                                    2.0f, "jpg/ctl_tss.jpg");
-        // The dead-zone picture is not named in the recovered list; ctl_dd's
-        // text describes it (inferred).
+        // The dead-zone picture is ctl_dd (ControlSetup::FocusDescription,
+        // index 9).
         m_deadZone = &addSlider(fe, 8, {450, 142, 186, 29}, "DeadZone", ControlDefaults::kDeadZone, 0.0f, 0.33f,
                                 "jpg/ctl_dd.jpg");
 
@@ -783,13 +790,14 @@ public:
                         ui::style::kRecordText);
             const std::string text = controls::describe(set[static_cast<std::size_t>(a)], strings);
             // UIControlWidget::Init: the binding centred in the row's right
-            // half (text effects 3).
+            // half (text effects 3); red while capturing
+            // (UIControlWidget::EnableField; OpenMM2 also while selected).
             f.text.draw(f.overlay, font, text, box.x + box.w * 0.75f, y,
                         selected ? ui::style::kValueTextFocus : ui::style::kRecordText, ui::Align::Center);
         }
-        // The VSWidget 10 px right of the list, as tall as the rows, hidden
-        // while every row fits (UICWArray::SetVScrollVals); the list's focus
-        // lights its band (UICWArray::Switch).
+        // The VSWidget (VSWidget::Cull) 10 px right of the list, as tall as
+        // the rows, hidden while every row fits (UICWArray::SetVScrollVals);
+        // the list's focus lights its band (UICWArray::Switch).
         if (scrolls()) {
             placeBar(f);
             m_bar.draw(f, focused || m_active);
@@ -804,7 +812,8 @@ public:
 
     // Called every frame while the list has the focus but not the keyboard
     // (the mouse went elsewhere): take the keyboard back on a click, the
-    // mouse returning, or an arrow key.
+    // mouse returning, or an arrow key. A press on a row starts its capture
+    // (UICWArray::Action).
     void mouse(ui::UiFrame& f, bool hovered) override {
         const ui::NavInput& nav = f.nav;
         if (hovered && nav.mousePressed) {
@@ -929,7 +938,8 @@ private:
         m_reader.begin(inputFrame(m_fe.ctx, c));
     }
 
-    // UICWArray::CheckCapture.
+    // UICWArray::CheckCapture, then UICWArray::AcceptCapture (or
+    // ResetCapture for Escape).
     void capture() {
         Context& ctx = m_fe.ctx;
         listActions();
@@ -1001,15 +1011,17 @@ public:
         auto& list =
             menu.add<BindingList>(fe, fe.layout.widget(menu_id::kControlCustom, 3, {50, 62, 250, 20}));
         list.onEscape = [this, &fe] { cancel(fe); };
-        // xasn_dlg: Dialog_Message::Init(100, "dlg_ok") in
+        // xasn_dlg (dialog 0x20, which mmInterface::Update opens after
+        // ControlCustom::BadAssignCB): Dialog_Message::Init(100, "dlg_ok") in
         // mmInterface::mmInterface, one OK button.
         list.onRefused = [&fe] {
             fe.dialog("jpg/xasn_dlg.jpg", kRefusedDialog, {{"texture/dlg_ok.tga", {296, 38}, {}}});
         };
         list.onDuplicate = [&fe](std::function<void()> force) {
-            // OK assigns the control anyway and leaves the other action
-            // unbound (ControlCustom::VerifyBadAssignment); CANCEL keeps the
-            // old binding.
+            // ctrl_dlg (Dialog_ControlAssign, dialog 0x15): OK assigns the
+            // control anyway and leaves the other action unbound
+            // (ControlCustom::VerifyBadAssignment); CANCEL keeps the old
+            // binding (ControlCustom::CancelBadAssignment).
             fe.dialog("jpg/ctrl_dlg.jpg", kControlWarningDialog,
                       {{"texture/dlg_ok.tga", {180, 176}, std::move(force)},
                        {"texture/dlg_can.tga", {18, 176}, {}}});
@@ -1062,6 +1074,7 @@ public:
         menu.setInitialFocus(&d);
     }
 
+    // The credits' clock starts when the page is entered (AboutMenu::PreSetup).
     void update(Frontend&, double dt) override { m_time += dt; }
 
 private:

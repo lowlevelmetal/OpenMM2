@@ -148,7 +148,8 @@ SpriteButton::SpriteButton(SpriteSheet sheet_, float x, float y, std::function<v
 }
 
 void SpriteButton::draw(UiFrame& f, bool focused) {
-    // UIBMButton::GetHitArea: one frame's rectangle.
+    // UIBMButton::GetHitArea: one frame's rectangle. The frame follows the
+    // button's state (UIBMButton::Switch, drawn by UIBMButton::Cull).
     const Vec2 size = spriteFrameSize(f, sheet);
     box.w = size.x;
     box.h = size.y;
@@ -166,6 +167,8 @@ void SpriteButton::draw(UiFrame& f, bool focused) {
                     !enabled && sheet.frames < 4 ? render::packColor(120, 120, 120) : 0xFFFFFFFFu);
 }
 
+// UIBMButton::Action on Enter: the button's sound (UIBMButton::PlaySound),
+// then its callback.
 bool SpriteButton::activate(UiFrame& f) {
     if (!enabled)
         return false;
@@ -204,6 +207,8 @@ LampItem::LampItem(SpriteSheet sheet_, float x, float y, std::function<bool()> o
 }
 
 void LampItem::draw(UiFrame& f, bool focused) {
+    // UIBMButton::Update re-reads the lit state every frame; UIBMButton::Switch
+    // and UIBMButton::Cull pick and draw the frame.
     const Vec2 size = spriteFrameSize(f, sheet);
     box.w = size.x;
     box.h = size.y;
@@ -215,6 +220,8 @@ void LampItem::draw(UiFrame& f, bool focused) {
     drawSpriteFrame(f, sheet, frame, box.x, box.y);
 }
 
+// UIBMButton::Action on Enter or Space: the lamp's sound and its callback,
+// which flips it (UIBMButton::DoToggle) or selects it (UIBMButton::MexOn).
 bool LampItem::activate(UiFrame& f) {
     if (!enabled || readOnly)
         return false;
@@ -306,6 +313,7 @@ std::vector<ValueBox::Cell> ValueBox::listCells(std::size_t count) const {
 bool ValueBox::activate(UiFrame& f) {
     if (!enabled || readOnly || options().empty())
         return false;
+    // UITextDropdown::SetSliderFocus: the open list takes all input.
     m_open = true;
     m_hover = std::max(0, get());
     // UITextDropdown::Action: opening with Enter plays
@@ -321,6 +329,7 @@ bool ValueBox::adjust(UiFrame&, int) {
 }
 
 void ValueBox::mouse(UiFrame& f, bool hovered) {
+    // UITextDropdown::Action: a press inside the box opens the list.
     if (hovered && f.nav.mousePressed && !m_open)
         activate(f);
 }
@@ -383,8 +392,10 @@ void ValueBox::drawPopup(UiFrame& f) {
     if (!m_open)
         return;
     const auto opts = options();
-    // mmDropDown draws its entries in the TextDropWidget's font (the
-    // popups' label font there) and always in yellow.
+    // mmDropDown::Update draws its entries in the TextDropWidget's font (the
+    // popups' label font there) and always in yellow, the locked ones olive
+    // (mmDropDown::SetDisabledColors), the highlight outlined
+    // (mmDropDown::SetHighlight).
     const FontSpec font = popup ? style::popupSmallFont() : style::valueFont();
     for (const auto& c : listCells(opts.size())) {
         f.overlay.rect(c.box.x, c.box.y, c.box.w, c.box.h, rgba(0, 0, 0));
@@ -435,13 +446,16 @@ TextButton::TextButton(Box b, std::string text, std::function<void()> click)
 }
 
 void TextButton::draw(UiFrame& f, bool focused) {
+    // UIButton::Switch: colour 3 when focused, else 0; colour 5 when it
+    // cannot be used (UIButton::SetReadOnly).
     const std::uint32_t color = !enabled ? style::kPopupDisabled : (focused ? style::kPopupFocus : style::kPopupText);
     if (type < 0) {
         f.text.draw(f.overlay, font, label, box.x, box.y, color);
         return;
     }
-    // mmTextNode::RenderText: DT_VCENTER for every type, DT_CENTER for types
-    // 1 and 2, the white-pen rectangle for type 1.
+    // UIButton::SetType's effects as mmTextNode::RenderText draws them:
+    // DT_VCENTER for every type, DT_CENTER for types 1 and 2, the white-pen
+    // rectangle for type 1.
     const float lh = f.text.lineHeight(f.overlay, font);
     const float y = box.y + (box.h - lh) * 0.5f;
     if (type == 1 || type == 2)
@@ -452,6 +466,7 @@ void TextButton::draw(UiFrame& f, bool focused) {
         outline(f.overlay, box, rgba(255, 255, 255));
 }
 
+// UIButton::Action: Enter, or a click (TextButton::mouse).
 bool TextButton::activate(UiFrame& f) {
     if (!enabled)
         return false;
@@ -475,7 +490,8 @@ TextToggle::TextToggle(Box b, std::string text, std::function<bool()> on, std::f
 
 void TextToggle::draw(UiFrame& f, bool focused) {
     // UIButton::Switch colours the label (3 focused, else 0); the ON/OFF
-    // text node keeps the default white.
+    // text node `stateWidth` wide (UIToggleButton2::Init) keeps the default
+    // white and shows the state (UIToggleButton2::DrawOn / DrawOff).
     const std::uint32_t color = !enabled ? style::kPopupDisabled : (focused ? style::kPopupFocus : style::kPopupText);
     const float lh = f.text.lineHeight(f.overlay, font);
     const float y = box.y + (box.h - lh) * 0.5f;
@@ -507,6 +523,7 @@ void TextToggle::mouse(UiFrame& f, bool hovered) {
 
 TextBox::TextBox(Box b, std::function<std::string()> t, Align a) : text(std::move(t)), align(a) { box = b; }
 
+// Drawn like a UILabel (UILabel::Init: its font, colour and alignment).
 void TextBox::draw(UiFrame& f, bool) {
     const std::string s = text ? text() : std::string();
     const float lh = f.text.lineHeight(f.overlay, font);
@@ -528,6 +545,8 @@ Roller::Roller(Box b, std::function<std::vector<std::string>()> opts, std::funct
 }
 
 void Roller::draw(UiFrame& f, bool focused) {
+    // UITextRoller2::Switch: the value in colour 3 when focused, else 0.
+    // UITextRoller2::Cull: the arrows only while writable.
     const auto opts = options();
     const int cur = get ? get() : -1;
     const std::string text = cur >= 0 && cur < static_cast<int>(opts.size()) ? opts[static_cast<std::size_t>(cur)] : "";
@@ -549,6 +568,7 @@ bool Roller::adjust(UiFrame& f, int dir) {
     const int n = static_cast<int>(options().size());
     const int last = maxIndex >= 0 ? std::min(maxIndex, n - 1) : n - 1;
     const int next = std::clamp(get() + dir, 0, std::max(0, last));
+    // UITextRoller2::Inc / Dec: "Switch" on every step, also at a limit.
     f.play("Switch", 0.85f);
     if (next != get())
         set(next);
@@ -557,7 +577,8 @@ bool Roller::adjust(UiFrame& f, int dir) {
 
 void Roller::mouse(UiFrame& f, bool hovered) {
     // UITextRoller2::Action: the pressed arrow shows until the button is
-    // released.
+    // released. UITextRoller2::EvalMouseXY: a press on the up arrow steps
+    // up, on the down arrow down.
     if (f.nav.mouseReleased)
         m_clicked = 0;
     if (!hovered || !f.nav.mousePressed || readOnly)
@@ -607,6 +628,8 @@ void Slider::draw(UiFrame& f, bool focused) {
         f.text.draw(f.overlay, style::popupSmallFont(), label, box.x, box.y, style::kPopupText);
     const float trackX = box.x + kArrowW;
     const float trackW = 2.0f * static_cast<float>(segments());
+    // mmSlider::UpdatePosition: the bar fills the whole part of the fraction
+    // x (segments + 1) segments.
     const float frac = max > min ? std::clamp((get() - min) / (max - min), 0.0f, 1.0f) : 0.0f;
     const float filled =
         std::min(trackW, 2.0f * std::floor(frac * static_cast<float>(segments() + 1)));
@@ -624,9 +647,10 @@ void Slider::draw(UiFrame& f, bool focused) {
                      (trackW - filled) / static_cast<float>(off.width));
         return;
     }
-    // The bitmaps are read in 6-row bands: 0 unfocused, 1 focused, 2 disabled;
-    // black is transparent. The empty part is the band's first row of
-    // slider_inactl (the band reading is inferred from mmSlider).
+    // mmSlider::LoadBitmap, mmSlider::Cull: the bitmaps are read in 6-row
+    // bands: 0 unfocused, 1 focused, 2 disabled; black is transparent. The
+    // empty part is the band's first row of slider_inactl (the band reading
+    // is inferred from mmSlider).
     const int band = !enabled ? 2 : (focused ? 1 : 0);
     const UiTexture& on = f.textures.getColorKeyed("texture/slider_actl.tga");
     const UiTexture& off = f.textures.getColorKeyed("texture/slider_inactl.tga");
@@ -645,6 +669,8 @@ void Slider::draw(UiFrame& f, bool focused) {
 bool Slider::adjust(UiFrame& f, int dir) {
     if (!enabled || readOnly)
         return true;
+    // UISlider::Action: Left mmSlider::Dec, Right mmSlider::Inc, then
+    // "Switch", also at a limit.
     set(std::clamp(get() + step() * static_cast<float>(dir), min, max));
     f.play("Switch", 0.85f);
     m_clicked = 0;
@@ -672,7 +698,8 @@ void Slider::mouse(UiFrame& f, bool hovered) {
         adjust(f, 1);
         m_clicked = 1;
     } else {
-        // A click on the track sets the value where it lands (no dragging).
+        // A click on the track sets the value where it lands (no dragging;
+        // mmSlider::SetValue).
         set(std::clamp(min + (max - min) * (mx - trackX) / trackW, min, max));
         f.play("Switch", 0.85f);
         m_clicked = 0;
@@ -772,9 +799,9 @@ bool ListBox::activate(UiFrame&) {
 TextEntry::TextEntry(Box b, std::string* v, std::size_t maxLen) : value(v), maxLength(maxLen) { box = b; }
 
 void TextEntry::draw(UiFrame& f, bool focused) {
-    // UITextField::ToggleField: an opaque black card behind red text while
-    // editing, nothing behind yellow text otherwise (the frame around the
-    // field is painted on the backgrounds).
+    // UITextField::ToggleField: an opaque black card (Card2D::Cull) behind
+    // red text while editing, nothing behind yellow text otherwise (the frame
+    // around the field is painted on the backgrounds).
     const FontSpec font = popup ? style::popupSmallFont() : style::valueFont();
     const float lh = f.text.lineHeight(f.overlay, font);
     const bool active = focused && m_editing;
@@ -804,14 +831,16 @@ void TextEntry::beginEdit() {
 }
 
 void TextEntry::focusChanged(bool focused) {
-    // UITextField: focus is editing; the first key replaces the text.
+    // UITextField::Switch / ToggleField: focus is editing; the first key
+    // replaces the text.
     m_editing = focused;
     m_fresh = focused;
 }
 
 void TextEntry::modalInput(UiFrame& f) {
     for (char c : f.nav.text) {
-        // Printable ASCII and UTF-8 continuation bytes; the fonts cover Latin-1.
+        // No control characters (UITextField::IsValidChar). Printable ASCII
+        // and UTF-8 continuation bytes; the fonts cover Latin-1.
         if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F)
             continue;
         if (m_fresh) {
@@ -965,10 +994,12 @@ bool ScrollBar::mouse(UiFrame& f, bool press) {
 
 Picture::Picture(Box b, std::function<std::string()> p) : path(std::move(p)) { box = b; }
 
+// UIIcon::Switch only records the focus: a focus stop with no highlight.
 bool Picture::focusable() const {
     return focusStop && Widget::focusable() && path && !path().empty();
 }
 
+// UIIcon::Cull; the picture can change at any time (UIIcon::LoadBitchmap).
 void Picture::draw(UiFrame& f, bool) {
     const std::string p = path ? path() : std::string();
     if (p.empty())
@@ -989,6 +1020,9 @@ void Menu::park() {
     m_highlight = false;
 }
 
+// Moves the keyboard position, also between the page and the strip
+// (MenuManager::SwitchFocus): the old widget is unlit (UIMenu::ClearSelected),
+// the new one lit (UIMenu::SetSelected).
 void Menu::setFocus(int index) {
     if (index >= 0)
         m_parked = false;
@@ -1015,6 +1049,7 @@ void Menu::focus(const Widget* w) {
     }
 }
 
+// UIMenu::SetFocusWidget.
 void Menu::setInitialFocus(const Widget* w) {
     for (std::size_t i = 0; i < m_widgets.size(); ++i)
         if (m_widgets[i].get() == w)
@@ -1061,6 +1096,7 @@ bool Menu::modalActive() const {
     return w && w->modal();
 }
 
+// UIMenu::FindTheFirstFocusWidget, within one group.
 int Menu::firstFocusable(int group) const {
     for (std::size_t i = 0; i < m_widgets.size(); ++i)
         if (m_widgets[i]->group == group && m_widgets[i]->focusable())
@@ -1101,6 +1137,10 @@ void Menu::step(int dir) {
     }
 }
 
+// One frame of the menu's input (MenuManager::CheckInput, UIMenu::CheckInput):
+// a capturing widget first, then the mouse (MenuManager::MouseAction,
+// UIMenu::MouseHitCheck, MenuManager::NotifyMouseSelect), then the keys
+// (UIMenu::ScanInput, UIMenu::KeyboardAction).
 void Menu::update(UiFrame& f) {
     const NavInput& nav = f.nav;
     if ((!focused() || !focused()->focusable()) && !m_parked)
@@ -1203,13 +1243,15 @@ void Menu::draw(UiFrame& f) {
     drawContent(f);
 }
 
+// UIMenu::Update; an inactive menu lights nothing (UIMenu::ClearWidgets).
 void Menu::drawContent(UiFrame& f, bool active) {
     const Widget* cur = active && m_highlight ? focused() : nullptr;
     for (auto& w : m_widgets)
         if (w->visible)
             w->draw(f, w.get() == cur);
     // The description picture follows the focus (MM2 FocusDescription
-    // callbacks): nothing when the focused widget has none.
+    // callbacks, UIBMLabel::SetBitmapName; drawn by UIBMLabel::Update):
+    // nothing when the focused widget has none.
     if (active && !m_helpHidden) {
         std::string helpPic = cur ? cur->helpPicture() : std::string();
         if (helpPic.empty())

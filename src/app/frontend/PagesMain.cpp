@@ -113,7 +113,9 @@ public:
         });
 
         // DRIVER: a drop-down of the drivers in creation order with roller
-        // arrows that wrap (MainMenu::DecPlayer / IncPlayer).
+        // arrows that wrap (MainMenu::DecPlayer / IncPlayer). A pick loads
+        // the driver (MainMenu::TDPickCB -> mmInterface::PlayerLoadCB); the
+        // box follows the loaded one (MainMenu::SetPlayerPick).
         const Box nameBox = fe.layout.widget(menu_id::kMain, 4, {177, 128, 205, 24});
         m_driver = &menu.add<ui::ValueBox>(
             nameBox, [this] { return m_names; },
@@ -151,7 +153,7 @@ public:
         // is never called).
         button(10, "texture/main_rpl.tga", {267, 430}, "jpg/mn_rpl.jpg", [] {})->visible = false;
         button(11, "texture/race_rec.tga", {264, 388}, "jpg/mn_rec.jpg", [&fe] {
-            fe.playSound("UIrecords", 0.84f);
+            fe.playSound("UIrecords", 0.84f); // MenuManager::PlayRecordsSound
             fe.push(makeRaceRecordsDialog(fe));
         });
 
@@ -222,6 +224,7 @@ private:
         }
     }
 
+    // mmInterface::RefreshDriverList (MainMenu::AddPlayer / RemovePlayer).
     void refresh(Frontend& fe) {
         m_names.clear();
         for (const auto& p : fe.store.list())
@@ -229,7 +232,8 @@ private:
     }
 
     // DVRDEL (mmInterface::Update): the only driver cannot be deleted
-    // (lstp_dlg); otherwise delp_dlg, YES first.
+    // (lstp_dlg, dialog 0x1e); otherwise delp_dlg (0x1c), YES first; YES is
+    // MainMenu::DeleteCB.
     void askDelete(Frontend& fe) {
         if (!fe.profile)
             return;
@@ -240,7 +244,8 @@ private:
         fe.dialog("jpg/delp_dlg.jpg", menu_id::kDeleteDriver,
                   {{"texture/dlg_yes.tga", {180, 176},
                     [this, &fe] {
-                        // mmInterface::PlayerRemove: the oldest remaining driver is loaded.
+                        // mmInterface::PlayerRemoveCB / PlayerRemove: the oldest remaining
+                        // driver is loaded.
                         fe.store.remove(*fe.profile);
                         fe.profile.reset();
                         refresh(fe);
@@ -258,7 +263,8 @@ private:
 // --- Create a New Driver (newp_dlg) ------------------------------------------------------
 
 // MM2 `Dialog_NewPlayer` (dialog 17): name field, Amateur / Professional
-// radio boxes, OK (dlg_done, right) and Cancel (dlg_can, left).
+// radio boxes, OK (dlg_done, right) and Cancel (dlg_can, left). A new dialog
+// each time opens empty and on Amateur (Dialog_NewPlayer::PreSetup).
 class NewDriverDialog final : public Page {
 public:
     explicit NewDriverDialog(Frontend& fe) {
@@ -292,7 +298,9 @@ public:
     }
 
 private:
-    // mmInterface::PlayerCreateCB / PlayerCreate.
+    // DONE or Enter in the field (Dialog_NewPlayer::EnterNewPlayer, then
+    // mmInterface::PlayerCreateCB / PlayerCreate); the duplicate-name notice
+    // (dialog 0x1d) reopens this dialog (mmInterface::Update).
     void create(Frontend& fe) {
         const std::string name = m_name;
         const game::Difficulty difficulty = m_difficulty;
@@ -328,7 +336,10 @@ private:
 
 // The shared parts of MM2's Dialog_DriverRec (19) and Dialog_HallOfFame (20):
 // a 540x460 picture centred at (50,10), mode and city check boxes, DONE.
-// Both open on Blitz in San Francisco (DEFAULT_CITY).
+// Both open on Blitz in San Francisco (DEFAULT_CITY). The mode boxes are
+// Dialog_DriverRec::SetSortState / Dialog_HallOfFame::SetSortState, the city
+// boxes Dialog_DriverRec::SetCityState / Dialog_HallOfFame::SortByCity; each
+// change, like opening (the dialogs' PreSetup), shows the list from the top.
 class RecordDialog : public Page {
 public:
     enum class Table { AmateurTimes, ProTimes, ProPoints };
@@ -422,13 +433,18 @@ public:
             f.text.draw(f.overlay, font, s.get(344, "POINTS"), x + 378, 72, white);
         const auto races = fe.racesFor(m_mode, m_city);
         const std::string mode = game::modeKey(m_mode);
+        // Rebuilt every frame (Dialog_DriverRec::ResetDriverRecord, then
+        // mmInterface::PlayerFillRecords; on a city change PlayerSwitchCityCB),
+        // the rows where UICompositeScroll::Redraw and
+        // mmCompDRecord::SetPosition put them.
         const float top = 10.0f + 0.1674f * 460.0f, rowH = 0.0374583f * 480.0f;
         for (std::size_t i = 0; i < races.size() && i < 12; ++i) {
             const float y = top + rowH * static_cast<float>(i);
             const int index = static_cast<int>(i);
             const auto* rec = fe.profile->record(m_city, mode, index);
-            // lock.tga frames (mmInterface::PlayerFillRecords, mmCompDRecord::
-            // Cull): open, locked (only checkpoint races lock), passed.
+            // lock.tga frames (mmCompDRecord::LoadBitmap; mmInterface::
+            // PlayerFillRecords, mmCompDRecord::Cull): open, locked (only
+            // checkpoint races lock), passed.
             const int status = rec && rec->passed ? 2 : (fe.progress.raceOpen(&*fe.profile, m_city, mode, index) ? 0 : 1);
             ui::drawSpriteFrame(f, {"texture/lock.tga", 3, true}, status, x, y - 3);
             f.text.draw(f.overlay, font, fit(fe, f, font, races[i]->name, kWideColumn, 664), x + 18, y,
@@ -543,7 +559,7 @@ public:
     }
 
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
-        m_scroll = m_list->firstRow(f);
+        m_scroll = m_list->firstRow(f); // UICompositeScroll::SetPosition
         const auto& s = fe.ctx.game->strings;
         const auto font = ui::style::valueFont();
         const auto white = ui::style::kRecordText;
@@ -557,6 +573,11 @@ public:
         f.text.draw(f.overlay, font, s.get(353, "DRIVER"), driverX, 72, white);
         f.text.draw(f.overlay, font, points ? s.get(349, "SCORE") : s.get(350, "TIME"), valueX, 72, white);
         f.text.draw(f.overlay, font, s.get(355, "VEHICLE"), vehicleX, 72, white);
+        // Rebuilt every frame (Dialog_HallOfFame::ResetRaceRecord) with the
+        // chosen mode and table only (mmCompRaceRecord::SelectIfRaceType), the
+        // rows where UICompositeScroll::Redraw and
+        // mmCompRaceRecord::SetPosition put them. No passed picture:
+        // mmCompRaceRecord::Update never draws it.
         struct Row {
             std::string race, driver, value, vehicle;
         };

@@ -52,12 +52,14 @@ inline constexpr ui::Box kWideCard{32.0f, 48.0f, 576.0f, 384.0f};
 inline constexpr ui::Box kKeyCard{32.0f, 24.0f, 576.0f, 432.0f};
 
 // The card behind the popup menus (MenuManager::Init's Card2D, drawn by
-// Card2D::Cull): dark blue (16, 31, 93) at alpha 0x80.
+// Card2D::Cull): dark blue (16, 31, 93) at alpha 0x80 (Card2D::Init's 127,
+// which MenuManager::Init overwrites).
 std::uint32_t cardColor();
-// The card of a page (MenuManager::AdjustPopupCard with the menu's
-// dimensions).
+// The card of a page (MenuManager::AdjustPopupCard: Card2D::SetDimensions
+// with the menu's UIMenu::GetDimensions).
 ui::Box cardFor(PopupPage page);
-// A box in fractions of `card` (UIMenu::ScaleWidget), in 640x480 pixels.
+// A box in fractions of `card` (UIMenu::ScaleWidget with the card as
+// MenuManager::GetScale), in 640x480 pixels.
 ui::Box at(const ui::Box& card, float x, float y, float w, float h);
 
 // PUMenuBase's fields: the button height 0.1, the widget height 0.075, the

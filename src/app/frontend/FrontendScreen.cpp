@@ -33,6 +33,9 @@ Frontend::Frontend(Context& c)
     config.city = "sf";
 }
 
+// Enters a page (MenuManager::Switch, MenuManager::Disable / Enable) or opens
+// a dialog over it (MenuManager::OpenDialog). The stack stands in for
+// MenuManager::SetPreviousMenu / GetPreviousMenu.
 void Frontend::push(std::unique_ptr<Page> page) {
     if (page->helpOffOnEntry)
         page->menu.hideHelpUntilFocusMoves();
@@ -40,6 +43,8 @@ void Frontend::push(std::unique_ptr<Page> page) {
     topChanged();
 }
 
+// Back to the previous menu (MenuManager::GetPreviousMenu) or out of a dialog
+// (MenuManager::CloseDialog).
 void Frontend::pop() {
     if (m_pages.empty())
         return;
@@ -64,6 +69,7 @@ void Frontend::pop() {
     topChanged();
 }
 
+// A switch to a menu that is not stacked on this one (MenuManager::Switch).
 void Frontend::replace(std::unique_ptr<Page> page) {
     if (!m_pages.empty()) {
         m_graveyard.push_back(std::move(m_pages.back()));
@@ -104,6 +110,7 @@ void Frontend::topChanged() {
         const char* sound;
         float volume;
     };
+    // The sounds MenuManager::AllocateMenuSwitchAudio gives the menus.
     static constexpr SwitchSound kSounds[] = {
         {menu_id::kMain, "Selectionmade", 0.87f},  {menu_id::kOptions, "UIoptions", 0.9f},
         {menu_id::kAudio, "UIoptions", 0.9f},      {menu_id::kGraphics, "UIoptions", 0.9f},
@@ -176,6 +183,8 @@ std::vector<const city::RaceDefinition*> Frontend::racesFor(game::GameMode mode,
     return out;
 }
 
+// mmInterface::PlayerLoadCB / PlayerLoad: the driver becomes the last one
+// used and its state is applied (configFromProfile).
 void Frontend::selectProfile(const std::string& name) {
     for (auto& p : store.list()) {
         if (p.name == name) {
@@ -196,13 +205,15 @@ void Frontend::configFromProfile() {
     if (!profile)
         return;
     const game::Profile& p = *profile;
+    // The car and paint job by name (VehicleSelectBase::AllSetCar).
     config.vehicle = p.selectedVehicle(); // PlayerSetState: vpbug before the first race
     config.vehicleColor = p.vehicleColor;
     config.automatic = p.automatic;
     tcpAddress = p.address;
     config.difficulty = p.difficulty;
-    // A city the game no longer has keeps the current one
-    // (Dialog_City2::SetCurrentCity).
+    // The driver's city becomes the current one (Dialog_City2::SetCurrentCity,
+    // through Dialog_City2::DoneCB); a city the game no longer has keeps the
+    // current one.
     if (cityIndex(p.city) >= 0)
         config.city = cities[static_cast<std::size_t>(cityIndex(p.city))].mapName;
     config.mode = p.mode == game::GameMode::CopsAndRobbers ? game::GameMode::Cruise : p.mode;
@@ -331,6 +342,8 @@ void Frontend::startRace() {
         pop();
         return;
     }
+    // mmInterface::BeDone: the driver's car, paint job, transmission, city,
+    // event and TCP/IP address are saved.
     if (profile) {
         game::Profile& p = *profile;
         p.vehicle = config.vehicle;
@@ -368,7 +381,9 @@ void Frontend::update(double dt) {
 }
 
 void Frontend::drawPage(Page& p, ui::UiFrame& f, bool active) {
-    // A page with 3D has its background drawn in the scene pass.
+    // The page's background (UIMenu::AssignBackground, shown by
+    // MenuManager::CheckBG / SetBackgroundImage); a page with 3D has its
+    // background drawn in the scene pass.
     if (!p.menu.background.empty() && !p.drawsScene())
         ui::drawImage(f.overlay, textures.get(p.menu.background), 0, 0, 640, 480);
     if (!p.dialogPicture.empty()) {
@@ -438,6 +453,10 @@ Showroom& Frontend::showroom() {
 
 // --- Common widgets ------------------------------------------------------------------------
 
+// The navigation strip (uiNavBar::uiNavBar: OPTIONS, HELP, MINIMISE, EXIT in
+// tune/widget.csv's order); the buttons do what mmInterface::Update does for
+// strip ids 100-103. Pages without it stand in for mmInterface::Switch's
+// DisableNavBar.
 void addNavStrip(Frontend& fe, Page& page, NavOptions options, std::function<void()> cancel) {
     using namespace layout;
     const auto before = page.menu.widgetsInGroup(1); // a PREV added earlier
@@ -450,7 +469,8 @@ void addNavStrip(Frontend& fe, Page& page, NavOptions options, std::function<voi
         return b;
     };
     // OPTIONS is a 5-frame toggle that is never disabled: lit on the options
-    // menu, CANCEL on an option sub-page, otherwise it opens the options.
+    // menu (mmInterface::Switch, uiNavBar::OptionActive), CANCEL on an option
+    // sub-page, otherwise it opens the options.
     std::function<void()> onOptions;
     switch (options) {
     case NavOptions::Open: onOptions = [&fe] { fe.push(makeOptionsPage(fe)); }; break;
@@ -460,11 +480,12 @@ void addNavStrip(Frontend& fe, Page& page, NavOptions options, std::function<voi
     auto& opt = add({"texture/mnav_opt.tga", 5}, 0, kNavOptions, std::move(onOptions));
     if (options == NavOptions::Lit)
         opt.lit = [] { return true; };
-    // HELP: MM2 minimises and runs WinHelp on MM2HELP.HLP (MenuManager::Help);
-    // OpenMM2 shows a short message instead.
+    // HELP: MM2 minimises and runs WinHelp on MM2HELP.HLP (uiNavBar::Help,
+    // MenuManager::Help); OpenMM2 shows a short message instead.
     add({"texture/mnav_hlp.tga", 3}, 1, kNavHelp, [&fe] {
         fe.message("Use the arrow keys or the mouse to choose, Enter to select and Escape to go back.");
     });
+    // MINIMISE (uiNavBar::Minimize), EXIT.
     add({"texture/mnav_sto.tga", 3}, 2, kNavMinimize, [&fe] { SDL_MinimizeWindow(fe.ctx.window().sdl()); });
     add({"texture/mnav_ext.tga", 3}, 3, kNavExit, [&fe] { fe.askQuit(); });
     // PREV, if the page has one, comes last in the strip's focus order.
@@ -472,6 +493,10 @@ void addNavStrip(Frontend& fe, Page& page, NavOptions options, std::function<voi
         page.menu.moveToEnd(w);
 }
 
+// PREV (strip id 104, nav-bar widget 4) or a page's own back button. PREV is
+// shown on the pages that have a previous menu (uiNavBar::Update, TurnOnPrev;
+// TurnOffPrev elsewhere); the hot spots the option and network menus move it
+// to (UIMenu::AddHotSpot, uiNavBar::SetPrevPos) are its own (290, 415).
 ui::SpriteButton& addBack(Frontend& fe, Page& page, const char* sprite) {
     const bool prev = std::string_view(sprite) == "texture/mnav_prv.tga";
     const Vec2 p = prev ? fe.layout.position(menu_id::kNavBar, 4, layout::kBack) : layout::kBack;
@@ -491,7 +516,8 @@ Vec2 pictureSize(Frontend& fe, const std::string& picture) {
     return t ? Vec2{static_cast<float>(t.width), static_cast<float>(t.height)} : Vec2{400, 76};
 }
 
-// MM2 Dialog_Message: a picture with one or two buttons.
+// MM2 Dialog_Message: a picture with one or two buttons (Dialog_Message::Init
+// loads the buttons' bitmaps and kills the second one in a one-button dialog).
 class PictureDialog final : public Page {
 public:
     PictureDialog(Frontend& fe, std::string picture, int id, std::vector<Frontend::DialogButton> buttons) {
@@ -851,6 +877,7 @@ public:
     FrontendScreen(Context& ctx, const game::RaceResult* result)
         : m_fe(ctx), m_script(scriptOnce()) {
         ctx.input.startTextInput(ctx.window());
+        // mmInterface::PlayUIMusic.
         if (auto* music = ctx.music()) {
             music->setAmbience("");
             music->playMenu();

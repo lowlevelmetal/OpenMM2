@@ -61,6 +61,8 @@ const char* modeHelp(GameMode m) {
     }
 }
 
+// The passed masks (RaceMenu::SetBlitzMask / SetCheckpointMask /
+// SetCircuitMask), from the driver's records.
 bool racePassed(Frontend& fe, const game::RaceConfig& cfg) {
     if (!fe.profile)
         return true; // no driver: nothing is locked
@@ -70,13 +72,17 @@ bool racePassed(Frontend& fe, const game::RaceConfig& cfg) {
 
 // --- Races (Single Race Menu, menu 7) ---------------------------------------------------
 
+// RaceMenu::RaceMenu on RaceMenuBase::RaceMenuBase (the city's race tables are
+// Frontend::racesFor).
 class RacesPage final : public Page {
 public:
     explicit RacesPage(Frontend& fe) {
         menuId = menu_id::kRace;
         menu.background = "jpg/race_bk.jpg";
         auto& cfg = fe.config;
-        // A crash course or Cops & Robbers event left over becomes cruise.
+        // A crash course or Cops & Robbers event left over becomes cruise
+        // (RaceMenuBase::PreSetup for a crash course; mmInterface::Switch ->
+        // RaceMenuBase::SyncRaceState for Cops & Robbers).
         if (cfg.mode == GameMode::CrashCourse || cfg.mode == GameMode::CopsAndRobbers || !modeAvailable(fe, cfg.mode)) {
             cfg.mode = GameMode::Cruise;
             cfg.raceIndex = -1;
@@ -107,7 +113,8 @@ public:
             m_modes[i] = m;
         }
 
-        // 4-6: RACE NAME and its arrows (clamping, stopping at locked races).
+        // 4-6: RACE NAME and its arrows (clamping, stopping at locked races:
+        // RaceMenuBase::DecRaceName / IncRaceName).
         m_raceName = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 4, {404, 66, 205, 24}),
             [&fe] {
@@ -127,7 +134,8 @@ public:
         };
         m_raceArrows = addArrows(fe, *this, id, 5, {609, 60}, {609, 78}, *m_raceName, false);
 
-        // 7-8: LAPS (1-10) and OPPONENTS (1 up to the race's count), circuits only.
+        // 7-8: LAPS (1-10) and OPPONENTS (1 up to the race's count), circuits
+        // only (RaceMenuBase::LapsCallback, AICallback).
         m_laps = &menu.add<ui::Roller>(
             fe.layout.widget(id, 7, {418, 98, 60, 32}), [&fe] { return stringRange(fe, 590, 10); },
             [&fe] { return std::clamp(fe.config.laps - 1, 0, 9); }, [&fe](int i) { fe.config.laps = i + 1; });
@@ -135,7 +143,8 @@ public:
             fe.layout.widget(id, 8, {418, 133, 60, 32}), [&fe] { return stringRange(fe, 590, 8); },
             [&fe] { return std::clamp(fe.config.opponents - 1, 0, 7); }, [&fe](int i) { fe.config.opponents = i + 1; });
 
-        // 9-11: RACE LOCALE, every city (San Francisco first), clamping arrows.
+        // 9-11: RACE LOCALE, every city (San Francisco first), clamping arrows
+        // (RaceMenuBase::IncLocale / DecLocale).
         m_city = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 9, {404, 210, 205, 24}),
             [&fe] {
@@ -147,7 +156,9 @@ public:
             [&fe] { return fe.cityIndex(fe.config.city); }, [this, &fe](int i) { selectCity(fe, i); });
         addArrows(fe, *this, id, 10, {610, 203}, {610, 221}, *m_city, false);
 
-        // 12-14: TIME OF DAY (strings 629-632); 15-17: WEATHER (625-628).
+        // 12-14: TIME OF DAY (strings 629-632); 15-17: WEATHER (625-628); the
+        // arrows clamp (RaceMenuBase::IncTime / DecTime, IncWeather /
+        // DecWeather).
         m_time = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 12, {404, 249, 123, 24}),
             [t = stringRange(fe, 629, 4)] { return t; }, [&fe] { return static_cast<int>(fe.config.timeOfDay); },
@@ -230,7 +241,9 @@ private:
         return m == GameMode::Cruise || !fe.racesFor(m, fe.config.city).empty();
     }
 
-    // A race that is out of range or locked moves to the first open one.
+    // A race that is out of range or locked moves to the first open one (the
+    // open mask of RaceMenu::SetProgressMask, which RaceMenuBase::SetStateRace
+    // makes the RACE NAME list's disabled mask).
     void validateRace(Frontend& fe) {
         auto& cfg = fe.config;
         if (cfg.mode == GameMode::Cruise) {
@@ -271,7 +284,9 @@ private:
         m_help = modeHelp(fe.config.mode);
     }
 
-    // Visibility and the environment lock (RaceMenuBase::SetRW): outside
+    // Visibility (RaceMenuBase::WidgetOnOff, per mode as in
+    // RaceMenuBase::ChangeLocalVals) and the environment lock
+    // (RaceMenuBase::SetRW): outside
     // cruise the environment is read-only until the race has been passed, and
     // a circuit's traffic always is; laps and opponents only exist for
     // circuits and are read-only until it is passed.
@@ -366,6 +381,7 @@ std::string carDescription(Frontend& fe, const std::string& car, bool carLocked,
     return pic;
 }
 
+// VehShowcase::PreSetup's <car>_show; OpenMM2 falls back to <car>.jpg.
 std::string showPicture(Frontend& fe, const std::string& car) {
     for (const auto& c : {car + "_show", car})
         if (fe.ctx.game->vfs.exists("jpg/" + c + ".jpg"))
@@ -394,14 +410,16 @@ public:
         const auto& cars = fe.ctx.game->catalog.vehicles();
         enterWithUnlockedCar(fe);
 
-        // 0: the LOCKED sign (locked.tga, black transparent).
+        // 0: the LOCKED sign (locked.tga, black transparent), on while the car
+        // or its paint job is locked (VehicleSelectBase::LockColor).
         const Vec2 sign = fe.layout.position(id, 0, {200, 160});
         menu.add<ui::Custom>([this, &fe, sign](ui::UiFrame& f) {
             if (!carUnlocked(fe) || !paintUnlocked(fe))
                 ui::drawImage(f.overlay, fe.textures.getColorKeyed("texture/locked.tga"), sign.x, sign.y);
         });
 
-        // 2-4: CAR COLOR and its arrows (wrapping).
+        // 2-4: CAR COLOR and its arrows (wrapping; VehicleSelectBase::ColorCB,
+        // IncColor / DecColor).
         m_colorBox = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 2, {404, 315, 205, 19}),
             [&fe] {
@@ -432,7 +450,7 @@ public:
 
         // 9-12: read-only bars for horsepower, top speed, durability and mass;
         // each runs from half the smallest to 1.1 x the largest value of all
-        // cars (VehicleSelectBase).
+        // cars (VehicleSelectBase::LoadStats, AssignVehicleStats, FillStats).
         using Stat = int game::VehicleInfo::*;
         const Stat stats[] = {&game::VehicleInfo::horsepower, &game::VehicleInfo::topSpeedMph,
                               &game::VehicleInfo::durability, &game::VehicleInfo::massLb};
@@ -455,7 +473,8 @@ public:
             bar.readOnly = true;
         }
 
-        // 13: VEHICLE SHOWCASE.
+        // 13: VEHICLE SHOWCASE; veh_tsc while it has the focus
+        // (VehicleSelectBase::FocusDescription).
         const Vec2 show = fe.layout.position(id, 13, {347, 379});
         auto& showButton = menu.add<ui::SpriteButton>(SpriteSheet{"texture/veh_show.tga", 4}, show.x, show.y,
                                                       [this, &fe] {
@@ -464,7 +483,8 @@ public:
                                                       });
         showButton.help = "jpg/veh_tsc.jpg";
 
-        // 14-16: TRANSMISSION, "Manual|Automatic" (633, 634), clamping arrows.
+        // 14-16: TRANSMISSION, "Manual|Automatic" (633, 634), clamping arrows
+        // (VehicleSelectBase::IncTrans / DecTrans).
         const auto& s = fe.ctx.game->strings;
         m_transmission = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 14, {404, 348, 123, 21}),
@@ -542,6 +562,8 @@ private:
                 return static_cast<int>(i);
         return -1;
     }
+    // VehicleSelectBase::CurrentVehicleIsLocked: the car (mmVehInfo +0xf4) or
+    // its paint job (a +0x108 bit).
     bool carUnlocked(Frontend& fe) const {
         return !fe.profile || fe.progress.vehicleUnlocked(*fe.profile, fe.config.vehicle);
     }
@@ -585,6 +607,8 @@ private:
             session.lastUnlocked = fe.config.vehicle;
     }
 
+    // VehicleSelectBase::SetPick, from the VEHICLES box (TDPickCB) and its
+    // wrapping arrows (IncCar / DecCar, CarMod).
     void pickVehicle(Frontend& fe, int i) {
         const auto& cars = fe.ctx.game->catalog.vehicles();
         auto& session = garageSession();
@@ -614,7 +638,8 @@ private:
 
 // --- Vehicle showcase (menu 9) -----------------------------------------------------------------
 
-// VehShowcase: the car's spec sheet with a DONE arrow; no navigation strip.
+// VehShowcase (VehShowcase::VehShowcase, PreSetup): the car's spec sheet with
+// a DONE arrow; no navigation strip.
 class ShowcasePage final : public Page {
 public:
     ShowcasePage(Frontend& fe, std::string vehicle) {

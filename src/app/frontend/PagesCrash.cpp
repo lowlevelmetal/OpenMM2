@@ -17,6 +17,8 @@ using game::GameMode;
 
 constexpr int kLessons = 13;
 
+// CrashCourseIntro::CrashCourseIntro: LONDON and SAN FRANCISCO; picking one
+// switches to that city's course (mmInterface::Update, case 0x28).
 class CrashIntroPage final : public Page {
 public:
     explicit CrashIntroPage(Frontend& fe) {
@@ -139,8 +141,9 @@ public:
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
         if (!fe.profile)
             return;
-        // ccStatus: a tick for a passed lesson, a cross for one attempted and
-        // failed, nothing for one never driven.
+        // ccStatus (LoadBitmap, SetStatus, Cull): a tick for a passed lesson,
+        // a cross for one attempted and failed, nothing for one never driven
+        // (the grades of mmInterface::PlayerFillCrashRecords).
         for (int i = 0; i < kLessons; ++i) {
             const auto* rec = fe.profile->record(m_city, "crash", i);
             if (!rec)

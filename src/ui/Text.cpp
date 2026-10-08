@@ -50,6 +50,7 @@ TextRenderer::Entry* TextRenderer::entry(const render::Overlay2D& overlay, const
     return stored.atlas ? &stored : nullptr;
 }
 
+// mmTextNode::GetTextDimensions (for this and lineHeight).
 float TextRenderer::measure(const render::Overlay2D& overlay, const FontSpec& font, std::string_view text) {
     Entry* e = entry(overlay, font);
     return e ? e->atlas->measure(text) / e->pixelScale : 0.0f;
@@ -60,6 +61,8 @@ float TextRenderer::lineHeight(const render::Overlay2D& overlay, const FontSpec&
     return e ? e->atlas->lineHeight() / e->pixelScale : static_cast<float>(font.size2);
 }
 
+// Stands in for mmTextNode::RenderText and mmTextNode::Cull (GDI text drawn
+// into a bitmap and copied to the screen); the widgets draw the text effects.
 float TextRenderer::draw(render::Overlay2D& overlay, const FontSpec& font, std::string_view text, float x, float y,
                          std::uint32_t color, Align align) {
     Entry* e = entry(overlay, font);
@@ -84,6 +87,7 @@ float TextRenderer::draw(render::Overlay2D& overlay, const FontSpec& font, std::
     return width;
 }
 
+// mmTextNode::RenderText with DT_WORDBREAK (text effect 0x20).
 float TextRenderer::drawWrapped(render::Overlay2D& overlay, const FontSpec& font, std::string_view text, float x,
                                 float y, float width, std::uint32_t color, Align align) {
     Entry* e = entry(overlay, font);

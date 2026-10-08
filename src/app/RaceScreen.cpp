@@ -2187,6 +2187,7 @@ private:
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
 
+    // buildPopup enables the page (MenuManager::EnablePU).
     void openPopup(Context& ctx, bool pause, Popup page = Popup::Main) {
         m_popup = page;
         // ProcessEscape: pauses unless the game already is (the full-screen
@@ -2232,7 +2233,7 @@ private:
         buildPopup(ctx);
     }
 
-    // mmPopup::DisablePU(returnMusic) (mmInput::Flush).
+    // mmPopup::DisablePU(returnMusic) (MenuManager::DisablePU, mmInput::Flush).
     void closePopup(Context& ctx, bool returnMusic) {
         m_popup = Popup::None;
         m_gameInput.flush();
@@ -2590,6 +2591,7 @@ private:
             frontend::injectKey(ctx, step.key);
     }
 
+    // MenuManager::CheckInput while the popup is up.
     void updatePopup(Context& ctx, double dt) {
         if (!m_popupMenu)
             return;

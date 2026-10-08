@@ -133,9 +133,9 @@ public:
     virtual ~Widget() = default;
 
     Box box;
-    bool visible = true;
-    bool enabled = true;
-    bool readOnly = false; // shown but skipped by focus (MM2 read-only widgets)
+    bool visible = true;   // uiWidget::TurnOn / TurnOff
+    bool enabled = true;   // uiWidget::Enable / Disable
+    bool readOnly = false; // shown but skipped by focus (uiWidget::SetReadOnly)
     int group = 0;         // 0 = the page, 1 = the navigation strip
     std::string help;      // help picture shown while focused ("jpg/mn_sp.jpg")
     std::function<std::string()> helpFn; // dynamic help picture (overrides `help`)
@@ -154,11 +154,12 @@ public:
     virtual void mouse(UiFrame&, bool /*hovered*/) {}
     // Called when the widget gains or loses keyboard focus.
     virtual void focusChanged(bool /*focused*/) {}
-    // True while the widget wants all input (open dropdown, text entry).
+    // True while the widget wants all input (open dropdown, text entry;
+    // MenuManager::RegisterWidgetFocus).
     virtual bool modal() const { return false; }
-    // Input routed to a modal widget.
+    // Input routed to a modal widget (uiWidget::CaptureAction).
     virtual void modalInput(UiFrame&) {}
-    // Drawn after all widgets (drop-down lists).
+    // Drawn after all widgets (drop-down lists; MenuManager::DeclareLastDrawn).
     virtual void drawPopup(UiFrame&) {}
 
     std::string helpPicture() const { return helpFn ? helpFn() : help; }
@@ -517,6 +518,7 @@ class Menu {
 public:
     explicit Menu(std::string bg = {}) : background(std::move(bg)) {}
 
+    // Appends a widget; creation order is the focus order (UIMenu::AddWidget).
     template <class W, class... Args>
     W& add(Args&&... args) {
         auto w = std::make_unique<W>(std::forward<Args>(args)...);

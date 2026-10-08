@@ -487,11 +487,14 @@ void NetGame::setGoldMass(int index) {
     setRaceConfig(m_impl->hostConfig);
 }
 
+// mmInterface::BootPlayerCB: the host only, never itself.
 void NetGame::kick(std::uint8_t playerId) {
     if (isHost() && playerId != localId())
         m_impl->session->kick(playerId, "You have been ejected");
 }
 
+// mmInterface::MultiAllReady over the roster's ready flags
+// (NetArena::GetStatus).
 bool NetGame::everyoneReady(bool allowAlone) const {
     int others = 0;
     for (const auto& p : players()) {
@@ -650,6 +653,7 @@ std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gam
 
 // --- Helpers -----------------------------------------------------------------------------
 
+// NetArena::AddGameChatLine.
 void NetGame::addSystemLine(std::string text) {
     m_chat.push_back({net::kInvalidPlayerId, {}, std::move(text), true});
     while (m_chat.size() > kMaxChatLines)

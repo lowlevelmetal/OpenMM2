@@ -76,6 +76,8 @@ void MenuLayout::parseWidgets(std::string_view csv) {
     }
 }
 
+// MenuManager::InitCommonStuff: WArray::Init (room for 300 rows; OpenMM2
+// keeps every row), then WArray::Read.
 MenuLayout MenuLayout::load(const vfs::Vfs& vfs) {
     MenuLayout l;
     if (auto b = vfs.readAll("tune/widget.csv"))

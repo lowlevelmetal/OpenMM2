@@ -185,6 +185,8 @@ public:
         }
         // NetSelectMenu::NetSelectMenu: the NET NAME field takes 12 characters.
         auto& name = menu.add<ui::TextEntry>(Box{kBoxX, 66, kBoxWide, kBoxH}, &m_netName, 12);
+        // NetSelectMenu::NetNameCB -> mmInterface::NetNameCB: the driver's net
+        // name.
         name.onCommit = [this, &fe] {
             const auto trimmed = std::string(str::trim(m_netName));
             m_netName = trimmed.empty() ? netName(fe) : trimmed;
@@ -198,13 +200,15 @@ public:
                 ensureNetGame(fe).startLanScan();
             }
         };
+        // HOST (NetSelectMenu::HostCB): the host options dialog.
         auto& host = menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_hst.tga", 4}, kColumnX, 98,
                                                 [&fe] { fe.push(makeHostOptionsDialog(fe)); });
         // NetSelectMenu::FocusDescription has pictures for the provider lamps
         // only.
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_jn.tga", 4}, kColumnX, 167, [this, &fe] {
-            // A session picked in the list joins directly; otherwise ask for an
-            // address ("leave blank to search for available sessions").
+            // JOIN (NetSelectMenu::JoinCB): a session picked in the list joins
+            // directly; otherwise ask for an address ("leave blank to search
+            // for available sessions").
             const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
             if (m_selected >= 0 && m_selected < static_cast<int>(list.size()))
                 joinListed(fe, list[static_cast<std::size_t>(m_selected)]);
@@ -217,6 +221,8 @@ public:
         m_list = &menu.add<ui::ListBox>(
             Box{289, 243, 329, 131}, [this, &fe] { return rows(fe); }, [this] { return m_selected; },
             [this](int i) { m_selected = i; });
+        // A double click joins the session (NetSelectMenu::JoinCallback joins
+        // on the pick).
         m_list->onDoubleClick = [this, &fe] {
             const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
             if (m_selected >= 0 && m_selected < static_cast<int>(list.size()))
@@ -335,6 +341,8 @@ public:
     }
 
 private:
+    // DONE (mmInterface::Update, dialog 36): mmInterface::CreateSession, then
+    // the lobby.
     void host(Frontend& fe) {
         NetGame& net = ensureNetGame(fe);
         game::RaceConfig cfg = fe.config;
@@ -516,8 +524,8 @@ void ConnectingDialog::update(Frontend& fe, double) {
 
 // --- Chat entry ----------------------------------------------------------------------------
 
-// The lobby's message line: Enter sends, Escape stops typing. Typing starts
-// with Enter or a click.
+// The lobby's message line (NetArena::ChatEntry, NetArena::RetrieveChatLine):
+// Enter sends, Escape stops typing. Typing starts with Enter or a click.
 class ChatEntry final : public ui::Widget {
 public:
     ChatEntry(Box b, std::function<void(const std::string&)> send) : m_send(std::move(send)) { box = b; }
@@ -577,10 +585,11 @@ private:
 
 class LobbyPage final : public Page {
 public:
-    // NetArena (menu 12), widgets in its creation order at their
+    // NetArena::NetArena (menu 12), widgets in its creation order at their
     // tune/widget.csv places: 0 the chat entry, 1 the roster (drawn), 2
     // SELECT VEHICLE, 3 HOST SETTINGS (host only), 4 / 5 the team buttons, 6
-    // GO / READY, 7 the race map, 8 EJECT (host only).
+    // GO / READY, 7 the race map, 8 EJECT (host only). The host's and the
+    // joiners' buttons are NetArena::SetHost's.
     explicit LobbyPage(Frontend& fe) {
         menuId = menu_id::kNetArena;
         NetGame& net = *fe.ctx.netGame;
@@ -614,7 +623,8 @@ public:
         }
 
         // Team choice for team games (YOUR TEAM:): MM2's lobb_red (team 1)
-        // and lobb_blu (team 0), whose pictures SetTeamWidgets swaps.
+        // and lobb_blu (team 0), whose pictures SetTeamWidgets swaps; a pick
+        // is NetArena::TeamCallback.
         const Vec2 t1 = l.position(id, 4, {474, 238}), t0 = l.position(id, 5, {474, 207});
         m_team1 = &menu.add<ui::LampItem>(SpriteSheet{"texture/lobb_rob.tga", 5}, t1.x, t1.y,
                                           [&fe] { return fe.ctx.netGame && fe.ctx.netGame->localCar().team == 1; },
@@ -684,6 +694,7 @@ public:
             net.setReady(false);
         m_settingsKey = settings;
 
+        // NetArena::SetTeamWidgets: the team buttons in the team games only.
         const bool cr = cfg.mode == GameMode::CopsAndRobbers;
         const bool teams = cr && cfg.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
         const bool robberTeams = cfg.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
@@ -699,6 +710,7 @@ public:
             if (car.team != team)
                 setTeam(fe, team);
         }
+        // NetArena::SetMyStatus / EnablePlayButton: a joiner's READY button.
         if (!net.isHost())
             m_go->sheet.path = net.localReady() ? "texture/lobb_rdy.tga" : "texture/lobb_nr.tga";
         m_mapPath = mapPicture(fe, cfg);
@@ -741,7 +753,7 @@ public:
         // the team games (NetArena::ShowRosterTeam), the name at +26 cut to
         // "%.6s..." when wider than 0.09 of the screen
         // (NetArena::AddRosterName) and the car at +26 + a third of the
-        // width (mmCompRoster::SetSubwidgetGeometry, Cull).
+        // width (mmCompRoster::SetSubwidgetGeometry, SetPosition, Cull).
         {
             Vec4 clip{271, 65, 361, 121};
             f.overlay.setClip(&clip);
@@ -774,7 +786,7 @@ public:
             f.overlay.setClip(nullptr);
         }
 
-        // YOU panel.
+        // YOU panel (NetArena::PostPlayerInfo).
         {
             const auto car = cfg.vehicle;
             float y = 214;
@@ -1055,7 +1067,8 @@ public:
             m_crItems.push_back(&item);
         }
 
-        // 16-18: LIMIT VALUE and its clamping arrows (strings 510-513 or 514-517).
+        // 16-18: LIMIT VALUE and its clamping arrows (strings 510-513 or
+        // 514-517; HostRaceMenu::LimitInc / LimitDec).
         m_limitValue = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 16, {526, 171, 81, 19}),
             [this, &fe] {
@@ -1073,7 +1086,8 @@ public:
             [this](int i) { setLimitIndex(i); });
         m_limitArrows = arrows(fe, 17, {610, 163}, {610, 181}, *m_limitValue);
 
-        // 19-21: GOLD MASS (strings 506-508) and its clamping arrows.
+        // 19-21: GOLD MASS (strings 506-508) and its clamping arrows
+        // (HostRaceMenu::MassInc / MassDec).
         m_goldBox = &menu.add<ui::ValueBox>(
             fe.layout.widget(id, 19, {404, 223, 123, 24}),
             [&fe] {
@@ -1137,6 +1151,10 @@ public:
             fe.pop();
             return;
         }
+        // HostRaceMenu::SetCRWidgets / SetLimitControl: the Cops & Robbers
+        // widgets in Cops & Robbers only, LIMIT VALUE only with a limit.
+        // Nothing is read-only (RaceMenuBase::SetRW: multiplayer settings are
+        // always editable).
         const bool cr = m_cfg.mode == GameMode::CopsAndRobbers;
         const bool race = m_cfg.mode == GameMode::Blitz || m_cfg.mode == GameMode::Checkpoint ||
                           m_cfg.mode == GameMode::Circuit;
@@ -1196,7 +1214,10 @@ private:
     }
 
     // DONE or Escape: the settings go to the session (mmInterface::Switch to
-    // the lobby sends them) and the menu returns to the lobby.
+    // the lobby sends them; mmInterface::SetCRStateData reads
+    // HostRaceMenu::GetLimitVal and GetGoldMassVal) and the menu returns to
+    // the lobby. OpenMM2 sends named fields instead of
+    // HostRaceMenu::EncodeCRData's packed value.
     void apply(Frontend& fe) {
         if (fe.ctx.netGame) {
             fe.ctx.netGame->setGoldMass(m_goldMass);
@@ -1272,6 +1293,7 @@ private:
         m_cfg.pointLimit = kind == 2 ? kPointLimits[m_pointIndex] : 0;
     }
 
+    // HostRaceMenu::LimitInc / LimitDec.
     void setLimitIndex(int i) {
         i = std::clamp(i, 0, 3);
         if (limitKind() == 2) {
@@ -1300,8 +1322,8 @@ private:
 
 class EjectDialog final : public Page {
 public:
-    // Dialog_Eject (menu 42): picking a player boots them at once and takes
-    // the name off the list (Dialog_Eject::BootButtonCB,
+    // Dialog_Eject::Dialog_Eject (menu 42): picking a player boots them at
+    // once and takes the name off the list (Dialog_Eject::BootButtonCB,
     // mmInterface::BootPlayerCB); DONE (dlg_done, 280,288) closes it. The
     // list's place is inferred.
     explicit EjectDialog(Frontend& fe) {
@@ -1335,6 +1357,7 @@ private:
         return ids;
     }
 
+    // mmInterface::MultiFillRoster: every player but the host.
     static std::vector<std::string> names(Frontend& fe) {
         std::vector<std::string> v;
         for (auto id : others(fe))

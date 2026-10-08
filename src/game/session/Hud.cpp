@@ -1064,6 +1064,8 @@ void Hud::drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Sess
     const bool circuit = mode == GameMode::Circuit;
     const ui::FontSpec labelFont = circuit ? font(258, "Gill Sans MT, 16, 22, 0, 700")
                                            : font(253, "Gill Sans MT, 16, 22, 0, 700");
+    // The numbers: mmWPHUD's and mmCircuitHUD's constructors pre-render their
+    // digits in this font (mmNumberFont::LoadLocFont); OpenMM2 draws text.
     const ui::FontSpec numberFont = circuit ? font(256, "Gill Sans MT, 16, 22, 0, 700")
                                             : font(251, "Gill Sans MT, 16, 22, 0, 700");
     auto row = [&](float yFrac, const std::string& label, const std::string& value) {
@@ -1226,9 +1228,9 @@ void Hud::drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::Text
     // (+0.05) and the roster from +0.1: per row the "$" (string 268,
     // yellow) at the left for the gold carrier, the name at 16 / 640 (font
     // string 263) in the player's colour and its score 0.025 under it,
-    // rows 0.0625 apart. The numbers are yellow Gill Sans MT (mmNumberFont
-    // with 0xffff00), 20 pixels for the totals and the player's score, 16
-    // for the roster.
+    // rows 0.0625 apart. The numbers are yellow Gill Sans MT (mmNumberFont::
+    // LoadFont with 0xffff00), 20 pixels for the totals and the player's
+    // score, 16 for the roster.
     const render::UiLayout& l = ov.layout();
     const float w = l.right - l.left, h = l.bottom - l.top;
     const ui::FontSpec labelFont = font(262, "Gill Sans MT, 12, 20, 0, 700");

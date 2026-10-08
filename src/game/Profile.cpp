@@ -455,7 +455,8 @@ RaceMask Progress::openMask(const Profile* p, std::string_view cityName, std::st
     const RaceMask passed = passedMask(*p, cityName, mode);
     auto all = [&](RaceMask bits) { return (passed & bits) == bits; };
     if (mode == "race") {
-        // mmPlayerData::ResolveCheckpointProgress: groups of three.
+        // mmPlayerData::ResolveCheckpointProgress: groups of three (the
+        // menu's mask, RaceMenu::SetProgressMask).
         RaceMask open = 0x7;
         if (all(0x7))
             open |= 0x38;
@@ -480,6 +481,8 @@ RaceMask Progress::openMask(const Profile* p, std::string_view cityName, std::st
             open |= 0x800;
         return open;
     }
+    // Blitz and circuit races are never locked: RaceMenuBase::RaceMenuBase
+    // sets their masks to all ones.
     return ~RaceMask{0};
 }
 
