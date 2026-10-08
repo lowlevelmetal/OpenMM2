@@ -511,6 +511,14 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
         // Full throttle under 50 m/s: 3 % more momentum a frame.
         if (m_driver.throttle() == 1.0f && m_car.speed() < 50.0f)
             ics.linearMomentum = ics.linearMomentum * perFrame(1.03f, dt);
+        // A cop in a room with lvlRoomInfo flag 4 (deep water) drops out:
+        // PerpEscapes, then out of action until it is reset.
+        const int room = m_car.body.room;
+        if (m_waterRooms && room > 0 && static_cast<std::size_t>(room) < m_waterRooms->size() &&
+            (*m_waterRooms)[static_cast<std::size_t>(room)] != 0) {
+            escape(force);
+            m_pursuit = kOutOfAction;
+        }
     }
 
     DriveContext ctx = context();
@@ -542,8 +550,11 @@ PoliceSquad::PoliceSquad(const RoadNetwork& net) : m_net(net) {}
 
 PoliceCar& PoliceSquad::add(phys::CarSim& car, const Mat34& post, int selfId, const PoliceSettings& settings) {
     m_cars.push_back(std::make_unique<PoliceCar>(m_net, car, post, selfId, settings));
+    m_cars.back()->setWaterRooms(&m_waterRooms);
     return *m_cars.back();
 }
+
+void PoliceSquad::setWaterRooms(std::vector<std::uint8_t> rooms) { m_waterRooms = std::move(rooms); }
 
 void PoliceSquad::update(float dt, std::span<const TrackedCar> cars, const phys::GroundQuery* los, bool active) {
     for (auto& c : m_cars)

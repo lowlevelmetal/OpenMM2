@@ -1,6 +1,7 @@
 // A session in the city.
 #include "app/Screens.h"
 #include "city/CityData.h"
+#include "city/SdlCollect.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "asset/VehicleModel.h"
@@ -595,6 +596,8 @@ private:
         if (m_session->setup().aiMap)
             chaseDistance = m_session->setup().aiMap->copChaseDistance;
         m_police = std::make_unique<ai::PoliceSquad>(m_ai->network());
+        if (m_cityLevel)
+            m_police->setWaterRooms(city::waterRooms(m_city->psdl, m_cityLevel->textureMaterials()));
         for (std::size_t i = 0; i < count; ++i) {
             const auto& p = posts[i];
             Cop cop;

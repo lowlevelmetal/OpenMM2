@@ -129,6 +129,11 @@ public:
     enum class Reason : std::uint8_t { None, PlayerInView, OpponentInView };
     Reason lastReason() const { return m_reason; }
 
+    // Rooms with lvlRoomInfo flag 4 (city::waterRooms), indexed by room id;
+    // a cop whose car is in one drops out (aiPoliceOfficer::Update). Null or
+    // empty: no such rooms. Not owned.
+    void setWaterRooms(const std::vector<std::uint8_t>* rooms) { m_waterRooms = rooms; }
+
 private:
     static constexpr int kBlock = 6, kMirror = 7; // aiPoliceOfficer 0x977e
     static constexpr int kOutOfAction = 12;      // aiPoliceOfficer 0x977a after a wreck
@@ -155,6 +160,7 @@ private:
 
     Mode m_mode = Mode::Parked;
     Reason m_reason = Reason::None;
+    const std::vector<std::uint8_t>* m_waterRooms = nullptr;
     int m_pursuit = 0;     // 0 watching, 1 apprehend, 2 follow, 5 not pursued (as 1), 12 out of action
     int m_lastPursuit = -1;
     int m_apprehend = 3;
@@ -194,6 +200,8 @@ public:
     const std::vector<std::unique_ptr<PoliceCar>>& cars() const { return m_cars; }
     PoliceForce& force() { return m_force; }
     bool anySiren() const;
+    // Rooms with lvlRoomInfo flag 4 (city::waterRooms), for every cop.
+    void setWaterRooms(std::vector<std::uint8_t> rooms);
 
     // aiMap::Init: of `count` [Police] entries the first
     // trunc(count * clamp(density, 0, 1)) are placed. Cruise passes the
@@ -204,6 +212,7 @@ private:
     const RoadNetwork& m_net;
     PoliceForce m_force;
     std::vector<std::unique_ptr<PoliceCar>> m_cars;
+    std::vector<std::uint8_t> m_waterRooms;
 };
 
 } // namespace mm2::ai

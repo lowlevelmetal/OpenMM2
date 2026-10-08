@@ -124,4 +124,12 @@ std::vector<std::uint8_t> sdlTextureMaterials(const Psdl& psdl,
 // wood 9.
 int sdlMaterialIndex(std::span<const PhysMaterial> materials, std::string_view name);
 
+// The rooms cityLevel::Load gives lvlRoomInfo flag 4 (mm2hook calls it Water):
+// a room whose first attribute is a Texture attribute selecting a texture of
+// the material with table value 2 (lvlMaterialMgr entry 1, "deepwater" with
+// the retail materials.mtl). Indexed by room id; 1 for such rooms, else 0.
+// The other lvlRoomInfo flags are not derived here. `textureMaterials` is
+// lvlSDL's texture -> material table (sdlTextureMaterials).
+std::vector<std::uint8_t> waterRooms(const Psdl& psdl, std::span<const std::uint8_t> textureMaterials);
+
 } // namespace mm2::city

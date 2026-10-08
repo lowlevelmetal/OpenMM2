@@ -73,6 +73,8 @@ public:
     phys::MaterialTable takeMaterials() { return m_materials; }
     // The probe geometry (wheels, line of sight, spawning).
     phys::PolygonSoup takeProbeSoup() { return std::move(m_soup); }
+    // lvlSDL's texture -> material table (city::sdlTextureMaterials).
+    const std::vector<std::uint8_t>& textureMaterials() const { return m_textureMaterials; }
 
     void addSource(const InstanceSource* source) { m_sources.push_back(source); }
     void removeSource(const InstanceSource* source);

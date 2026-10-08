@@ -1138,4 +1138,21 @@ int sdlMaterialIndex(std::span<const PhysMaterial> materials, std::string_view n
     return 0;
 }
 
+std::vector<std::uint8_t> waterRooms(const Psdl& psdl, std::span<const std::uint8_t> textureMaterials) {
+    // cityLevel::Load, per room: when the room's attribute list starts with a
+    // Texture attribute, the texture value (subtype << 8 | its word) indexes
+    // lvlSDL's texture -> material table; a value of 2 sets lvlRoomInfo flag 4.
+    std::vector<std::uint8_t> water(psdl.rooms.size(), 0);
+    for (std::size_t room = 1; room < psdl.rooms.size(); ++room) {
+        const auto& attrs = psdl.rooms[room].attributes;
+        if (attrs.empty() || attrs.front().type != PsdlAttrType::Texture)
+            continue;
+        const int texture = attrs.front().textureBase() + 1;
+        if (texture >= 0 && static_cast<std::size_t>(texture) < textureMaterials.size() &&
+            textureMaterials[static_cast<std::size_t>(texture)] == 2)
+            water[room] = 1;
+    }
+    return water;
+}
+
 } // namespace mm2::city
