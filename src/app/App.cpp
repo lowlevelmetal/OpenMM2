@@ -160,7 +160,8 @@ int run(const CommandLine& cl) {
         // on every start unless started with -nomovie (OpenMM2: --skip-intro
         // or [Game] SkipIntro). It did not play it in a window (only when
         // inWindow was false); OpenMM2 draws the movie itself and plays it in
-        // every window mode.
+        // every window mode, except when started with the original's -window
+        // or -max (parseCommandLine).
         const bool intro = !cl.skipIntro && !ctx.settings.ini.getBool("Game", "SkipIntro", false) && !cl.frames;
         screen = intro ? makeIntroScreen(ctx) : makeFrontendScreen(ctx);
     } else {
