@@ -14,7 +14,7 @@
 //   s->start();
 //   every frame:
 //     s->update(dt, playerState, opponentStates, policeStates);
-//     if (s->playerHeld()) brake fully, ignore throttle;
+//     s->playerHold(): undrivable (brakes, neutral) or braked after the finish;
 //     if (!s->racersReleased() || !s->opponentActive(i)) hold AI car i;
 //     for (auto e : s->takeEvents()) ... (Respawn, Restart, DamageReset, damage limits, audio)
 //     if (s->finished()) show results with s->result();
@@ -42,6 +42,13 @@ enum class Phase : std::uint8_t {
     Racing,
     PostRace,  // finished, failed or wrecked; results follow after a delay
     Done,      // show the results
+};
+
+// What the game does to the player's car.
+enum class PlayerHold : std::uint8_t {
+    None,        // it drives
+    Undrivable,  // vehCar::SetDrivable(0, 1): brakes on, gearbox in neutral, the throttle revs
+    FinishBrake, // mmPlayer +0x2258: the race is over, brakes on with the wheel turned full left
 };
 
 struct SessionOptions {
@@ -95,8 +102,11 @@ public:
 
     Phase phase() const { return m_phase; }
     bool finished() const { return m_phase == Phase::Done; }
-    // The player's car must stay braked (countdown, wreck penalties).
-    bool playerHeld() const;
+    // What the game does to the player's car: undrivable before "Go!", during
+    // wreck penalties and after some endings (a wreck, any multiplayer
+    // finish), braked by mmPlayer +0x2258 after the others.
+    PlayerHold playerHold() const;
+    bool playerHeld() const { return playerHold() == PlayerHold::Undrivable; }
     // AI racers may drive (mmGameSingle::EnableRacers at "Go!").
     bool racersReleased() const { return m_released; }
     // Opponents taking part (all in races; the current crash course event's
@@ -224,9 +234,9 @@ private:
     // `latch`: the event sets the original's "race over" flag (+0x7c) before
     // moving on to the next event, so it stays set for the rest of the lesson.
     void lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay, bool latch);
-    void lessonFailed(float delay = 5.0f);
+    void lessonFailed(float delay = 5.0f, PlayerHold hold = PlayerHold::FinishBrake);
     void playerFinished();
-    void endRace(bool finished, bool won, float delay);
+    void endRace(bool finished, bool won, float delay, PlayerHold hold = PlayerHold::FinishBrake);
     int lessonOpponentOffset() const;
     WaypointRule rule() const;
     // mmPlayer::IsMaxDamaged, except in the frame a repair is on its way
@@ -254,8 +264,13 @@ private:
     float m_wait = 0.0f;
     bool m_started = false;
     bool m_released = false;
-    float m_raceTime = 0.0f;
+    float m_raceTime = 0.0f; // mmHUD's race timer (+0xA54), stopped at the player's finish
     bool m_raceClock = false;
+    // mmHUD's other timer (+0xA24), started and stopped with the race timer
+    // by StartTimers / StopTimers but not at the player's finish: the
+    // opponents' finish times.
+    float m_hudTime = 0.0f;
+    bool m_hudClock = false;
     float m_lapStart = 0.0f, m_lastLap = 0.0f, m_bestLap = 0.0f;
     std::vector<float> m_lapTimes;
 
@@ -282,6 +297,7 @@ private:
     // Result.
     bool m_resultFinished = false;
     bool m_resultWon = false;
+    PlayerHold m_endHold = PlayerHold::None; // set by endRace
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;

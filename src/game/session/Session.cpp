@@ -198,6 +198,8 @@ void Session::resetRace() {
     m_released = false;
     m_raceTime = 0.0f;
     m_raceClock = false;
+    m_hudTime = 0.0f;
+    m_hudClock = false;
     m_lapStart = m_lastLap = m_bestLap = 0.0f;
     m_lapTimes.clear();
     m_timeUp = false;
@@ -207,6 +209,7 @@ void Session::resetRace() {
     m_waterTimer = 0.0f;
     m_waterHandled = false;
     m_postWait = 0.0f;
+    m_endHold = PlayerHold::None;
     m_resultFinished = m_resultWon = false;
     m_resultPosition = 0;
     m_resultTime = 0.0f;
@@ -305,15 +308,14 @@ void Session::restart() {
         start();
 }
 
-bool Session::playerHeld() const {
-    if (!m_started)
-        return true;
-    if (m_phase == Phase::Countdown)
-        return true;
-    // mmPlayer::Update brakes the car once the race is over (+0x2258).
+PlayerHold Session::playerHold() const {
+    // mmGameSingle::DisableRacers (and mmGameMulti's) until "Go!".
+    if (!m_started || m_phase == Phase::Countdown)
+        return PlayerHold::Undrivable;
     if (m_phase == Phase::PostRace || m_phase == Phase::Done)
-        return true;
-    return m_penaltyHeld && m_penaltyLeft > 0.0f;
+        return m_endHold;
+    // The wreck penalties: SetDrivable(0, 1), then (1, 1) when repaired.
+    return m_penaltyHeld && m_penaltyLeft > 0.0f ? PlayerHold::Undrivable : PlayerHold::None;
 }
 
 // --- Countdown ---------------------------------------------------------------------
@@ -422,6 +424,8 @@ void Session::go() {
     m_released = true;
     m_raceTime = 0.0f;
     m_raceClock = true;
+    m_hudTime = 0.0f; // mmHUD::StartTimers, ResetTimers
+    m_hudClock = true;
     m_lapStart = 0.0f;
     if (const LessonEvent* lesson = currentLesson()) {
         const LessonText lt = lessonText(lesson->type);
@@ -689,11 +693,12 @@ void Session::updateOpponents(std::span<const OpponentState> opponents) {
         if (!r.finished && s.finished) {
             r.finished = true;
             r.place = ++m_finishers;
-            r.finishTime = m_raceTime;
+            r.finishTime = m_hudTime; // mmTimer::GetTime on mmHUD's +0xA24 timer
             push(EventType::OpponentFinished, static_cast<int>(i), static_cast<float>(r.place));
             if (m_phase == Phase::Racing) {
-                if (mode() == GameMode::Circuit && !multiplayer())
-                    sound(GameSound::MessageNote); // mmSingleCircuit::UpdateOpponentStatus
+                // Handle 4 (circuit) / 5 (race): "Messagenote" in both.
+                if (!multiplayer())
+                    sound(GameSound::MessageNote);
                 // FinishMessage(opponent, place): "Opponent N" / "finished Nth".
                 setMessage(13 + static_cast<std::uint32_t>(std::min<std::size_t>(i, 7)),
                            std::format("Opponent {}", i + 1), 5.0f, false);
@@ -775,14 +780,14 @@ void Session::hitWater() {
         // mmSingleBlitz / mmSingleRace::HitWaterHandler: the race is lost.
         m_wp.stopped = true;
         sound(GameSound::DamageLose);
-        endRace(false, false, kWaterLoseDelay);
+        endRace(false, false, kWaterLoseDelay, PlayerHold::None);
         break;
     case GameMode::Circuit: respawnAtLastCheckpoint(); break;
     case GameMode::CrashCourse:
         // mmSingleStunt::HitWaterHandler.
         if (!m_lessonDone) {
             sound(GameSound::DamageLose);
-            lessonFailed(kWaterLoseDelay);
+            lessonFailed(kWaterLoseDelay, PlayerHold::None);
         }
         break;
     default: break;
@@ -813,6 +818,8 @@ void Session::respawnAtLastCheckpoint() {
 void Session::updateClock(float dt) {
     if (m_raceClock)
         m_raceTime += dt;
+    if (m_hudClock)
+        m_hudTime += dt;
     if (m_clockRunning) {
         // mmTimer counting down stops at 0.
         m_clock -= dt;
@@ -871,12 +878,24 @@ float Session::lapTime() const { return m_raceTime - m_lapStart; }
 
 // --- Race modes --------------------------------------------------------------------
 
-void Session::endRace(bool finished, bool won, float delay) {
+void Session::endRace(bool finished, bool won, float delay, PlayerHold hold) {
     if (m_phase == Phase::PostRace || m_phase == Phase::Done)
         return;
     m_phase = Phase::PostRace;
+    // The single-player modes set mmPlayer +0x2258 at most endings and make
+    // the car undrivable at a wreck; the multiplayer ones brake it with the
+    // throttle tapering off for the wait, then call SetDrivable(0, 1)
+    // (mmMultiRace / mmMultiCircuit / mmMultiBlitz::UpdateGame state 4;
+    // OpenMM2 makes it undrivable at once).
+    m_endHold = multiplayer() ? PlayerHold::Undrivable : hold;
     m_postWait = delay;
+    // The finish stops only the race timer (mmTimer::Stop); a lost race
+    // stops both (mmHUD::StopTimers in mmSingleRace's wreck state and
+    // HitWaterHandler), so opponents still finishing get a time that keeps
+    // counting after the player's own finish.
     m_raceClock = false;
+    if (!finished)
+        m_hudClock = false;
     m_clockRunning = false;
     m_penaltyLeft = 0.0f;
     m_resultFinished = finished;
@@ -977,7 +996,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
             setMessage(mt.wreck, "Game over!", 5.0f, false);
-            endRace(false, false, kPostRace);
+            endRace(false, false, kPostRace, PlayerHold::Undrivable);
         }
         break;
     case GameMode::Circuit:
@@ -1009,7 +1028,7 @@ void Session::updateRace(float dt, const PlayerState& player) {
             push(EventType::Wrecked);
             sound(GameSound::DamageLose);
             setMessage(mt.wreck, "Game over!", 5.0f, false);
-            endRace(false, false, kPostRace);
+            endRace(false, false, kPostRace, PlayerHold::Undrivable);
         }
         break;
     default: break;
@@ -1033,7 +1052,7 @@ bool Session::copPursuit(const PlayerState& player, std::span<const OpponentStat
     return false;
 }
 
-void Session::lessonFailed(float delay) {
+void Session::lessonFailed(float delay, PlayerHold hold) {
     // Several failures can come in one frame (UpdateCorner and UpdateFrogger
     // go on checking after one): report the lesson failed once.
     const bool alreadyFailed = (m_phase == Phase::PostRace || m_phase == Phase::Done) && !m_resultWon;
@@ -1041,7 +1060,7 @@ void Session::lessonFailed(float delay) {
     m_wp.stopped = true;
     if (!alreadyFailed)
         push(EventType::LessonFailed, m_lessonEvent);
-    endRace(false, false, delay);
+    endRace(false, false, delay, hold);
 }
 
 void Session::lessonPassedOrNext(std::uint32_t passMessage, float seconds, bool top, float delay, bool latch) {
@@ -1109,7 +1128,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             sound(GameSound::DamageLose);
             push(EventType::Wrecked);
             setMessage(615, "Game over!", 5.0f, false);
-            lessonFailed();
+            lessonFailed(5.0f, PlayerHold::Undrivable);
         }
         break;
     case LessonType::Collide: // UpdateCollide (no retail lesson; nothing is recorded)
@@ -1223,7 +1242,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
         if (wrecked(player)) {
             push(EventType::Wrecked);
             setMessage(240, "Game over!", 5.0f, true);
-            lessonFailed();
+            lessonFailed(5.0f, PlayerHold::None); // UpdateCorner sets no hold here
         }
         break;
     }
@@ -1252,7 +1271,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             push(EventType::Wrecked);
             sound(GameSound::YouLose);
             setMessage(230, "You scraped the paint!", 5.0f, false);
-            lessonFailed();
+            lessonFailed(5.0f, PlayerHold::None); // nor does UpdateFrogger
             if (passed) {
                 m_resultFinished = m_resultWon = false;
                 m_postWait = kPostRace;
@@ -1299,7 +1318,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             sound(GameSound::DamageLose);
             push(EventType::Wrecked);
             setMessage(245, "Game over!", 5.0f, false);
-            lessonFailed();
+            lessonFailed(5.0f, PlayerHold::Undrivable);
         }
         break;
     case LessonType::Destroy: // UpdateStop
@@ -1400,6 +1419,11 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
         updateRank(player, opponents);
         if (updateHazards(dt, player))
             return;
+    } else if (m_phase == Phase::PostRace) {
+        // The race just ended: UpdateOpponentStatus still ends this
+        // UpdateGame, so an opponent finishing in the same frame is placed
+        // behind the player now.
+        updateOpponents(opponents);
     }
     if (m_phase == Phase::Racing || m_phase == Phase::Countdown) {
         updateClock(dt);

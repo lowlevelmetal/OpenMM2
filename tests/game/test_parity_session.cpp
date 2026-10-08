@@ -364,3 +364,72 @@ TEST(ParitySession, ModesPlayTheirSounds) {
     EXPECT_EQ(sounds(GameSound::EndOfRaceTag), 1);
     EXPECT_STREQ(gameSoundName(GameSound::DamageLose), "Damgelose");
 }
+
+TEST(ParitySession, OpponentsFinishingLaterGetTheRunningTime) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    RaceConfig cfg;
+    cfg.mode = GameMode::Checkpoint;
+    cfg.city = "london";
+    cfg.raceIndex = 0;
+    cfg.opponents = 3;
+    std::string error;
+    auto s = Session::create(cfg, parityRetail()->london, *test::gameData(), parityRetail()->strings, &error);
+    ASSERT_TRUE(s) << error;
+    ASSERT_FALSE(s->opponents().empty());
+    RaceRun r(*s);
+    r.countdown();
+    EXPECT_EQ(s->playerHold(), PlayerHold::None);
+    const auto& cps = s->checkpoints();
+    for (std::size_t i = 1; i < cps.size() && s->phase() == Phase::Racing; ++i)
+        r.driveTo(cps[i].position, 40.0f);
+    ASSERT_EQ(s->phase(), Phase::PostRace);
+    // mmSingleRace::UpdateGame: the finish sets mmPlayer +0x2258.
+    EXPECT_EQ(s->playerHold(), PlayerHold::FinishBrake);
+    const float playerTime = s->result().timeSeconds;
+    // UpdateOpponentStatus goes on after the player's finish, and the time
+    // is mmHUD's other timer, which the finish does not stop.
+    r.ticks(60);
+    r.opponents[0].finished = true;
+    r.tick();
+    const auto res = s->result();
+    ASSERT_EQ(res.standings.size(), 2u);
+    EXPECT_EQ(res.standings[0].opponent, -1);
+    EXPECT_EQ(res.standings[1].opponent, 0);
+    EXPECT_EQ(res.standings[1].place, 2);
+    EXPECT_NEAR(res.standings[1].timeSeconds, playerTime + 61.0f * r.dt, 0.05f);
+    EXPECT_FLOAT_EQ(res.timeSeconds, playerTime);
+}
+
+TEST(ParitySession, EndingsHoldThePlayersCarAsTheModesDo) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    {
+        // DisableRacers before "Go!"; a wreck ends the race with
+        // vehCar::SetDrivable(0, 1) (mmSingleRace::UpdateGame state 3).
+        auto s = paritySession(GameMode::Checkpoint, 0);
+        ASSERT_TRUE(s);
+        RaceRun r(*s);
+        s->start();
+        EXPECT_EQ(s->playerHold(), PlayerHold::Undrivable);
+        r.countdown();
+        EXPECT_EQ(s->playerHold(), PlayerHold::None);
+        r.player.wrecked = true;
+        r.tick();
+        ASSERT_EQ(s->phase(), Phase::PostRace);
+        EXPECT_EQ(s->playerHold(), PlayerHold::Undrivable);
+        EXPECT_TRUE(s->playerHeld());
+    }
+    {
+        // mmSingleRace::HitWaterHandler only switches the state.
+        auto s = paritySession(GameMode::Checkpoint, 0);
+        ASSERT_TRUE(s);
+        RaceRun r(*s);
+        r.countdown();
+        r.player.inWater = true;
+        for (int i = 0; i < 400 && s->phase() == Phase::Racing; ++i)
+            r.tick();
+        ASSERT_EQ(s->phase(), Phase::PostRace);
+        EXPECT_EQ(s->playerHold(), PlayerHold::None);
+    }
+}

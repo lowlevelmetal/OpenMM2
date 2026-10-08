@@ -890,13 +890,12 @@ private:
                         o.sim->sim().damage.params.maxDamage = e.value;
                         o.sim->sim().damage.params.medDamage = e.value * 0.5f;
                     }
-            } else if (e.type == EventType::OpponentFinished) {
-                for (auto& o : m_opponents)
-                    if (o.sessionIndex == static_cast<std::size_t>(e.index) && o.driver)
-                        o.driver->finish();
             } else if (e.type == EventType::Sound) {
                 playGameSound(ctx, static_cast<game::session::GameSound>(e.index), e.value);
             }
+            // OpponentFinished needs nothing: the game only asks
+            // aiRouteRacer::Finished (OpponentState::finished), and the car
+            // drives on to its destination.
         }
         if (auto* music = ctx.music(); music && m_musicDirector) {
             using game::session::Phase;
@@ -1468,12 +1467,13 @@ private:
         }
         const float keySteer = m_keySteer.update(keyTarget, dt);
         pedals.steering = analog ? clampf(*analog, -1.0f, 1.0f) : keySteer;
-        // Countdown: the car is held until "Go!" (and during false-start
-        // penalties), and until the shared start time in multiplayer.
-        // mmPlayer +0x2258: once the race is over the car brakes with the
-        // wheel turned full left (CarSim applies it for the player).
-        const bool over = m_session && (m_session->phase() == game::session::Phase::PostRace ||
-                                        m_session->phase() == game::session::Phase::Done);
+        // Countdown: the car is held until "Go!" (and during wreck
+        // penalties, and after a wreck or a multiplayer finish), and until
+        // the shared start time in multiplayer.
+        // mmPlayer +0x2258: after the other endings the car brakes with the
+        // wheel turned full left (CarSim applies it for the player); after
+        // the water it is left alone.
+        const bool over = m_session && m_session->playerHold() == game::session::PlayerHold::FinishBrake;
         m_player->sim().raceFinished = over;
         if (over) {
             pedals = {};
