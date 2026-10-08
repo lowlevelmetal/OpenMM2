@@ -624,8 +624,9 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             using game::GameMode;
             using CR = game::CopsAndRobbersMode;
             c.mode = rest == "blitz" ? GameMode::Blitz : rest == "circuit" ? GameMode::Circuit
-                   : rest == "race" ? GameMode::Checkpoint : rest.starts_with("cr") ? GameMode::CopsAndRobbers
-                                                                                    : GameMode::Cruise;
+                   : rest == "race" ? GameMode::Checkpoint
+                   : rest == "cr" || rest == "crteams" || rest == "crffa" ? GameMode::CopsAndRobbers
+                                                                         : GameMode::Cruise;
             c.copsAndRobbers = rest == "crteams" ? CR::RobberTeams : rest == "crffa" ? CR::FreeForAll : CR::CopsVsRobbers;
             c.raceIndex = c.mode == GameMode::Cruise || c.mode == GameMode::CopsAndRobbers ? -1 : 0;
             if (c.mode == GameMode::CopsAndRobbers)
