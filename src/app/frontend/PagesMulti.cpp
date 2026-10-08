@@ -298,7 +298,11 @@ public:
         menuId = kHostDialog;
         origin = centredOrigin(fe, "jpg/host_dlg.jpg", {400, 330});
         const auto& l = fe.layout;
-        auto& pw = menu.add<ui::TextEntry>(l.widget(kHostDialog, 0, {72, 91, 203, 22}, origin), &m_password, 24);
+        // Dialog_Host::PreSetup / Clear: the last accepted password and
+        // player count come back; Cancel drops what was typed.
+        m_password = s_lastPassword;
+        m_maxPlayers = s_lastMaxPlayers;
+        auto& pw = menu.add<ui::TextEntry>(l.widget(kHostDialog, 0, {72, 91, 203, 22}, origin), &m_password, 25);
         pw.onCommit = [] {};
         menu.add<ui::Roller>(
             l.widget(kHostDialog, 1, {248, 156, 60, 32}, origin),
@@ -351,9 +355,15 @@ private:
             net.startLanScan();
             return;
         }
+        s_lastPassword = m_password;
+        s_lastMaxPlayers = m_maxPlayers;
         fe.replace(makeLobbyPage(fe));
     }
 
+    // The dialog object lives as long as the game (mmInterface::mmInterface
+    // creates it once): its last accepted values.
+    static inline std::string s_lastPassword;
+    static inline int s_lastMaxPlayers = 8;
     std::string m_password;
     int m_maxPlayers = 8;
     std::string m_error;
@@ -709,29 +719,41 @@ public:
             f.text.draw(f.overlay, font, cityName(fe, cfg.city), 36, 396 + (34 - step) * 0.5f, ui::style::kRecordText);
         }
 
-        // PLAYERS panel: name, car, ready.
+        // PLAYERS panel: the roster's rows (mmCompRoster in NetArena's
+        // composite scroll at 274,64, 355 wide): the "ready" icon at the
+        // row's x + 2 while ready (the host is: mmInterface::CreatePlayer),
+        // the team dot (blue_dot team 0, red_dot team 1) 2 px right of it in
+        // the team games (NetArena::ShowRosterTeam), the name at +26 cut to
+        // "%.6s..." when wider than 0.09 of the screen
+        // (NetArena::AddRosterName) and the car at +26 + a third of the
+        // width (mmCompRoster::SetSubwidgetGeometry, Cull).
         {
             Vec4 clip{271, 65, 361, 121};
             f.overlay.setClip(&clip);
+            const ui::UiTexture& ready = f.textures.get("texture/ready.tga");
+            const bool teams =
+                cfg.mode == GameMode::CopsAndRobbers && cfg.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
+            constexpr float rowX = 274, rowW = 355;
             float y = 68;
             for (const auto& p : net.players()) {
                 const bool me = p.id == net.localId();
                 const std::uint32_t color = me ? ui::style::kValueTextFocus : ui::style::kValueText;
+                if (p.ready || p.host)
+                    ui::drawImage(f.overlay, ready, rowX + 2, y);
+                if (teams) {
+                    const ui::UiTexture& dot =
+                        f.textures.get(p.team == 0 ? "texture/blue_dot.tga" : "texture/red_dot.tga");
+                    ui::drawImage(f.overlay, dot, rowX + 2 + static_cast<float>(ready.width) + 2.0f, y);
+                }
                 std::string name = p.name;
-                if (p.host)
-                    name += " (Host)";
-                f.text.draw(f.overlay, small, name, 278, y, color);
+                if (f.text.measure(f.overlay, small, name) > 0.09f * 640.0f)
+                    name = name.substr(0, 6) + "...";
+                f.text.draw(f.overlay, small, name, rowX + 26, y, color);
                 // Cops vs. Robbers fixes the cars by team (see NetGame::raceConfig).
                 const bool cvr = cfg.mode == GameMode::CopsAndRobbers &&
                                  cfg.copsAndRobbers == game::CopsAndRobbersMode::CopsVsRobbers;
-                std::string car = vehicleName(fe, cvr ? (p.team == 0 ? "vpcop" : "vpmustang99") : p.car);
-                if (cfg.mode == GameMode::CopsAndRobbers && cfg.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll) {
-                    const bool rt = cfg.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
-                    car = std::string(p.team == 0 ? (rt ? "BLUE" : "COPS") : (rt ? "RED" : "ROBBERS")) + "  " + car;
-                }
-                f.text.draw(f.overlay, small, car, 420, y, color);
-                const std::string state = p.host ? "" : (p.ready ? "Ready" : "...");
-                f.text.draw(f.overlay, small, state, 626, y, p.ready ? ui::style::kHelpText : color, ui::Align::Right);
+                const std::string car = vehicleName(fe, cvr ? (p.team == 0 ? "vpcop" : "vpmustang99") : p.car);
+                f.text.draw(f.overlay, small, car, rowX + 26 + rowW / 3.0f, y, color);
                 y += lh;
             }
             f.overlay.setClip(nullptr);
@@ -1285,6 +1307,9 @@ bool frontendHostSession(Frontend& fe, const std::string& password) {
         cfg.mode = GameMode::Cruise;
     if (cfg.laps <= 0)
         cfg.laps = 3;
+    cfg.trafficDensity = 0.0f; // as HostOptionsDialog::host
+    cfg.copDensity = 0.0f;
+    cfg.opponents = 0;
     net.stopLanScan();
     std::string error;
     game::NetHostOptions opts;
