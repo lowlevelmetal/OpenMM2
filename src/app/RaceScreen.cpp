@@ -220,10 +220,27 @@ public:
         render::Device& dev = ctx.device();
         render::ClearValues clear;
         clear.color = m_env.clearColor;
+        // mmPlayer::SetWideFOV: the wide-angle view is letterboxed to 66% of
+        // the screen height, 18% down, on black.
+        const bool letterbox = !m_flyCamera && m_cams.wideAngle();
+        if (letterbox)
+            clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
         dev.beginScene(clear);
 
         const auto extent = dev.sceneExtent();
-        const float aspect = extent.height ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
+        render::Rect band{0, 0, extent.width, extent.height};
+        if (letterbox) {
+            const auto h = static_cast<float>(extent.height);
+            band.y = static_cast<std::int32_t>(h * 0.18f);
+            band.height = static_cast<std::uint32_t>(h * 0.66f);
+            dev.setViewport({0.0f, static_cast<float>(band.y), static_cast<float>(band.width),
+                             static_cast<float>(band.height)});
+            dev.setScissor(&band);
+            render::ClearValues sky;
+            sky.color = m_env.clearColor;
+            dev.clear(sky);
+        }
+        const float aspect = band.height ? static_cast<float>(band.width) / static_cast<float>(band.height) : 1.0f;
         const auto proj = render::computeProjection(m_camera.horizontalFov, aspect, ctx.display.fovMode,
                                                     ctx.display.maxAspect);
         m_camera.farPlane = m_env.farClip;
@@ -235,6 +252,10 @@ public:
         const game::Frustum frustum(frame.view * frame.proj);
         const bool playerBody = m_flyCamera || m_cams.display() == game::CarDisplay::Body;
         drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
+        if (letterbox) {
+            dev.setScissor(nullptr);
+            dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
+        }
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
             // mmGame::UpdateGameInput: looking around from a point-of-view

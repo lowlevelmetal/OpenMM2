@@ -61,6 +61,12 @@ been drawn at). Not ported yet: cloud shadows (`shadmap_day`/`shadmap_nite` in a
 pass with UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts and
 the room flood fill used without a PVS.
 
+## Wide angle
+
+| Topic | Behaviour | Evidence |
+|---|---|---|
+| Letterbox | in wide-angle mode the scene is cleared to black and the level drawn in the band from trunc(0.18 x height) down, trunc(0.66 x height) tall, the full width, with the projection's aspect that of the band (MM2's perspective there is 70 degrees vertical; OpenMM2's FOV modes still apply). The HUD and the mirror are drawn over the whole screen | MM2 (`mmPlayer::SetWideFOV`: `gfxViewport::SetWindow(0, 0.18 h, w, 0.66 h)`, `Perspective(70, window aspect, near, far)`) |
+
 ## Rear-view mirror
 
 | Topic | Behaviour | Evidence |
