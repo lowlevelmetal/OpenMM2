@@ -607,6 +607,19 @@ void TrafficBodies::beforeStep() {
         r.collidable = !r.lost;
         r.room = level ? level->findRoom(r.position(), r.room) : 0;
     }
+    // The AI's DeclareMover for the cars off their rails without a body
+    // (aiGoalAvoidPlayer / aiGoalRegainRail: 0x0a, aiGoalCollision for a
+    // wreck: 0x08): they collide with the instances round them this frame.
+    // (A car with a body is declared (2, 0x1b) above, which holds these
+    // flags.)
+    for (const ai::AmbientCar& c : cars) {
+        if (c.moverFlags == 0 || c.id < 0)
+            continue;
+        RailCar* r = static_cast<std::size_t>(c.id) < m_railCars.size() ? m_railCars[static_cast<std::size_t>(c.id)].get()
+                                                                       : nullptr;
+        if (r && !r->active && r->collidable && r->room != 0)
+            m_world.declareInstance(r, 2, c.moverFlags);
+    }
     m_roomList.clear();
     for (auto& r : m_railCars) {
         if (!r)

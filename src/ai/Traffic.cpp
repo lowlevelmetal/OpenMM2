@@ -1770,6 +1770,9 @@ void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
         c.goal = AmbientGoal::RegainRail;
         c.goalTicks = 0;
     }
+    // dgPhysManager::DeclareMover(instance, 2, 0x0a): off its rail it
+    // collides with the city and the instances round it.
+    c.moverFlags = 0x0a;
 }
 
 // aiGoalRegainRail::Reset: a curve of up to 30 m from where the car is back
@@ -2070,6 +2073,7 @@ void Traffic::updateRegainRail(int idx, float dt, const PlayerCar& p) {
         c.goalTicks = 0;
         c.signal = TurnSignal::None; // hazards off
     }
+    c.moverFlags = 0x0a; // DeclareMover(instance, 2, 0x0a), as aiGoalAvoidPlayer
 }
 
 // --- Physics hand-over ---------------------------------------------------------
@@ -2197,8 +2201,10 @@ void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
                 resetReactTicks(q.front());
         }
     }
-    for (auto& c : m_cars)
+    for (auto& c : m_cars) {
         c.horn = false;
+        c.moverFlags = 0; // declared afresh by this step's updates
+    }
     // aiPath::UpdateAmbients for each populated road (most recently
     // populated first), direction -1 then +1, each lane list from its front:
     // a car is updated in the list of its logical lane, once a frame (the
@@ -2245,6 +2251,10 @@ void Traffic::updateCar(int idx, float dt, const PlayerCar& player) {
         if (c.goalTicks == 0)
             c.signal = TurnSignal::Hazard; // aiGoalCollision::Reset
         ++c.goalTicks;
+        // aiGoalCollision::Update: a wreck (flag 2) is declared (2, 0x08), so
+        // whatever drives into it collides with it.
+        if (c.wreck)
+            c.moverFlags = 0x08;
         break;
     case AmbientGoal::RegainRail:
         updateRegainRail(idx, dt, player);
@@ -2427,6 +2437,7 @@ void Traffic::publish() {
         a.goal = c.goal;
         a.physical = c.physical;
         a.wreck = c.wreck;
+        a.moverFlags = c.moverFlags;
         m_public.push_back(std::move(a));
     }
 }

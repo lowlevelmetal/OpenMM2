@@ -166,7 +166,24 @@ void World::add(Body* body) {
     }
     Mover m;
     m.body = body;
+    m.instance = body;
     m_movers.push_back(std::move(m));
+}
+
+void World::declareInstance(Instance* instance, int type, unsigned flags) {
+    // DeclareMover: an instance already declared this frame ORs the flags.
+    for (Mover& m : m_pendingInstances) {
+        if (m.instance == instance) {
+            m.flags |= flags;
+            return;
+        }
+    }
+    (void)type; // type 2: a plain mover (types above 2 make rooms active)
+    Mover m;
+    m.instance = instance;
+    m.transient = true;
+    m.flags = flags;
+    m_pendingInstances.push_back(std::move(m));
 }
 
 void World::addNewMover(Body* body) {
@@ -393,7 +410,21 @@ void World::beginFrame() {
             std::ranges::find(m_activeRooms, room) == m_activeRooms.end())
             m_activeRooms.push_back(room);
     };
+    // Last frame's instances without a body leave the table (it is reset
+    // after every frame); this frame's join it after the bodies (OpenMM2's
+    // order: MM2 lists them as the AI declares them, before the racers).
+    if (!m_stepping)
+        std::erase_if(m_movers, [](const Mover& m) { return m.transient; });
+    for (Mover& m : m_pendingInstances)
+        m_movers.push_back(std::move(m));
+    m_pendingInstances.clear();
     for (Mover& m : m_movers) {
+        if (!m.body) {
+            m.active = live(m) && taken < kMaxMovers && (!m_level || m.instance->room != 0);
+            if (m.active)
+                ++taken;
+            continue;
+        }
         Body& b = *m.body;
         // A body placed outside the room bookkeeping finds its room first
         // (MM2's owners move their instances into a room when they place
@@ -420,7 +451,7 @@ void World::beginFrame() {
     const bool stepping = m_stepping;
     m_stepping = true;
     for (Mover& m : m_movers) {
-        if (!m.active || m.body->moverType != 1 || !m_level)
+        if (!m.active || !m.body || m.body->moverType != 1 || !m_level)
             continue;
         if (std::ranges::find(m_activeRooms, m.body->room) != m_activeRooms.end())
             continue;
@@ -432,7 +463,7 @@ void World::beginFrame() {
         std::erase_if(m_movers, [](const Mover& m) { return m.removed; });
     for (Mover& m : m_movers)
         if (running(m))
-            m.body->hitByPlayer = false;
+            m.instance->hitByPlayer = false;
 }
 
 int World::advanceFixed(float frameDelta, float sampleStep, int maxSamples) {
@@ -511,8 +542,7 @@ void World::step(float dt) {
     // or its objects.
     for (Mover& m : m_movers) {
         m.collidables.clear();
-        if (running(m) && !m.fresh && m.body->collisionBound &&
-            (m.body->collideTerrain || m.body->collideInstances))
+        if (running(m) && !m.fresh && m.instance->bound(0) && (collidesTerrain(m) || collidesInstances(m)))
             gatherCollidables(m);
     }
 
@@ -520,15 +550,17 @@ void World::step(float dt) {
     // gathered instances. Movers that collisions set in motion are appended
     // (fresh) and wait for the next sample.
     for (std::size_t i = 0; i < m_movers.size(); ++i) {
-        if (!running(m_movers[i]) || m_movers[i].fresh || !m_movers[i].body->collisionBound)
+        if (!running(m_movers[i]) || m_movers[i].fresh || !m_movers[i].instance->bound(0))
             continue;
         Body* a = m_movers[i].body;
-        if (a->collideTerrain)
+        // (An instance without a body has no collider of its own against the
+        // city: static against static, nothing to do.)
+        if (a && a->collideTerrain)
             collideTerrain(*a);
-        if (a->collideMovers) {
+        if (a && a->collideMovers) {
             for (std::size_t j = i + 1; j < m_movers.size(); ++j) {
                 Body* b = m_movers[j].body;
-                if (!running(m_movers[j]) || m_movers[j].fresh || !b->collideMovers || !b->collisionBound)
+                if (!running(m_movers[j]) || m_movers[j].fresh || !b || !b->collideMovers || !b->collisionBound)
                     continue;
                 // Colliders sharing an unbroken joint (a tractor and its
                 // trailer) do not collide.
@@ -538,12 +570,12 @@ void World::step(float dt) {
                     collideInstances(*a, *b);
             }
         }
-        if (a->collideTerrain || a->collideInstances) {
+        if (collidesTerrain(m_movers[i]) || collidesInstances(m_movers[i])) {
             // The list may not survive the calls (new movers reallocate).
             std::vector<Instance*> list = m_movers[i].collidables;
             for (Instance* c : list)
                 if (running(m_movers[i]))
-                    collideInstances(*m_movers[i].body, *c);
+                    collideInstances(*m_movers[i].instance, *c);
         }
     }
 
@@ -592,7 +624,9 @@ void World::gatherCollidables(Mover& mover) {
     // dgPhysManager::GatherCollidables: the instances of the mover's room
     // and of the neighbours its sphere touches (instances listed in several
     // rooms only from the mover's own), whose spheres touch the mover's.
-    Body& self = *mover.body;
+    Instance& self = *mover.instance;
+    const bool terrain = collidesTerrain(mover);
+    const bool others = collidesInstances(mover) || collidesMovers(mover);
     if (!m_level || self.room == 0)
         return;
     int rooms[1 + kMaxNeighbors];
@@ -604,8 +638,7 @@ void World::gatherCollidables(Mover& mover) {
         for (Instance* inst : m_roomScratch) {
             if (inst == &self)
                 continue;
-            const bool wanted = ((self.collideInstances || self.collideMovers) && inst->collidable) ||
-                                (self.collideTerrain && inst->terrainCollidable);
+            const bool wanted = (others && inst->collidable) || (terrain && inst->terrainCollidable);
             if (!wanted || (k != 0 && inst->multiRoom) || !trivialCollide(self, *inst))
                 continue;
             // An instance listed in several of the rooms is gathered once

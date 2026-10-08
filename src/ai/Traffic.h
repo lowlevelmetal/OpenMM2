@@ -85,6 +85,11 @@ struct AmbientCar {
     AmbientGoal goal = AmbientGoal::RandomDrive;
     bool physical = false; // handed over to the physics simulation
     bool wreck = false;    // can never regain its rail (aiVehicleInstance flag 0x02)
+    // dgPhysManager::DeclareMover flags of the car's rail instance (no
+    // body) from its last update: 0x0a while avoiding the player or
+    // regaining its rail (aiGoalAvoidPlayer / aiGoalRegainRail::Update),
+    // 0x08 for a wreck (aiGoalCollision::Update); 0 not declared.
+    unsigned moverFlags = 0;
 };
 
 struct TrafficSettings {
@@ -252,6 +257,7 @@ private:
         TurnSignal signal = TurnSignal::None;
         bool horn = false;
         bool physical = false;
+        unsigned moverFlags = 0; // DeclareMover of the rail instance this step
         bool fitted = false; // +0xe8
         Mat34 transform;
     };
