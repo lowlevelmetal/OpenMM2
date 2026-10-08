@@ -111,8 +111,17 @@ inline constexpr std::uint32_t kHelpText = 0xFF00FFFFu;          // yellow
 FontSpec valueFont(); // string 560 "Arial Bold, 16, 16": every frontend text widget
 FontSpec smallFont(); // string 559 "Arial Bold, 14, 14"
 FontSpec titleFont(); // string 251 "Gill Sans MT, 16, 22": race titles
-// In-game popups (MenuManager's second font set, GetFont 20 = string 569).
-FontSpec popupFont(); // "Arial Bold, 16, 20"
+// In-game popups (MenuManager's second font set, MenuManager::Init with a
+// camera: GetFont 12, 14, 16, 20, 24, 32 = strings 566, 567, 568, 569, 570,
+// 571).
+FontSpec popupFont();       // GetFont 20, string 569 "Arial Bold, 16, 20" (PUExit's question, results text)
+FontSpec popupButtonFont(); // GetFont 24, string 570 "Arial Bold, 16, 24": PUMenuBase buttons
+FontSpec popupSmallFont();  // GetFont 16, string 568 "Arial Bold, 14, 16": slider and drop-down labels and values
+FontSpec popupTitleFont();  // GetFont 32, string 571 "Arial Bold, 20, 32": PUMenuBase::CreateTitle
+// MenuManager's popup line height (MenuManager::InitCommonStuff: the height
+// of the 16-point label font over 480), in 640x480 pixels: the space a
+// UISlider or UITextDropdown label takes above its control.
+inline constexpr float kPopupLineHeight = 16.0f;
 inline constexpr std::uint32_t kPopupText = 0xFFFFFFFFu;      // white (popup colours 0, 1)
 inline constexpr std::uint32_t kPopupFocus = 0xFF21FFEEu;     // (0.933, 1, 0.129)
 inline constexpr std::uint32_t kPopupDisabled = 0xFF595959u;  // (0.35, 0.35, 0.35), colour 5
@@ -215,6 +224,14 @@ public:
     // Options that cannot be picked (locked races); drawn olive in the list.
     std::function<bool(int)> optionEnabled;
     bool showArrow = true;
+    // In MM2's in-game popups (MenuManager in popup mode) the drop-down uses
+    // drop_arrow2, draws its value in the popup's label font and colours
+    // with a white outline round the box (TextDropWidget::Init's text
+    // effects 0x15), and its label `labelHeight` above the box
+    // (UITextDropdown::Init with a label).
+    bool popup = false;
+    std::string label;
+    float labelHeight = style::kPopupLineHeight;
 
     bool isOptionEnabled(int i) const { return !optionEnabled || optionEnabled(i); }
 
@@ -244,6 +261,33 @@ public:
     void mouse(UiFrame& f, bool hovered) override;
     std::string label;
     std::function<void()> onClick;
+    // MM2 UIButton::SetType, as mmTextNode::RenderText draws its effects:
+    // 1 centres the label in the box and outlines the box with a white
+    // rectangle (the popups' OK, Cancel, Previous Menu and Resume Driving),
+    // 2 centres the label (PUMain's and PUOptions' rows), 0 centres it
+    // vertically only (PUExit's Yes and No). -1 (OpenMM2's results page)
+    // draws it from the box's top-left corner.
+    int type = -1;
+    FontSpec font = style::popupFont();
+};
+
+// Text toggle of the in-game popups (UIToggleButton2, UIMenu::AddToggle2):
+// the label centred in an outlined box (UIButton type 1) and "ON" or "OFF"
+// (strings 607, 606) centred in the `stateWidth` right of that box. Enter or
+// a click flips it and plays "Selectionmade"; Space does nothing (the
+// widget's action takes only Enter and the mouse).
+class TextToggle : public Widget {
+public:
+    TextToggle(Box box, std::string label, std::function<bool()> isOn, std::function<void()> flip);
+    void draw(UiFrame& f, bool focused) override;
+    bool activate(UiFrame& f) override;
+    void mouse(UiFrame& f, bool hovered) override;
+    std::string label;
+    std::string onText = "ON", offText = "OFF";
+    float stateWidth = 0.0f; // the ON/OFF part, inside the box at its right
+    FontSpec font = style::popupSmallFont();
+    std::function<bool()> isOn;
+    std::function<void()> flip;
 };
 
 // Read-only text in a box (driver name, totals).
@@ -296,11 +340,20 @@ public:
     std::function<float()> get;
     std::function<void(float)> set;
     float min, max;
+    // A UISlider with its label above (MM2's popups, UISlider::Init with a
+    // negative label mode): the label at the box's top in the popup's label
+    // font, the slider row `labelHeight` below it; the box covers both.
+    std::string label;
+    float labelHeight = 0.0f;
+    // mmSlider::LoadBitmap's balance arrows (slider_lbal / slider_rbal),
+    // which the popup's BALANCE slider asks for.
+    bool balance = false;
 
     int segments() const;
     float step() const;
 
 private:
+    float rowY() const { return box.y + labelHeight; }
     int m_clicked = 0; // arrow last clicked with the mouse (-1 left, +1 right)
 };
 
@@ -344,6 +397,10 @@ public:
     std::string* value;
     std::size_t maxLength;
     std::function<void()> onCommit;
+    // In MM2's in-game popups (PUChat): the popup's label font and colours
+    // (white, yellow-green while editing) and a white outline round the
+    // field (text effects 0x45).
+    bool popup = false;
 
 private:
     bool m_editing = false;

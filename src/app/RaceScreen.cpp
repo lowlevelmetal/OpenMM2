@@ -1,6 +1,7 @@
 // A session in the city.
 #include "app/Controls.h"
 #include "app/Screens.h"
+#include "app/frontend/PopupOptions.h"
 #include "city/CityData.h"
 #include "city/RoomInfo.h"
 #include "core/Log.h"
@@ -140,6 +141,7 @@ public:
         }
         // mmPopup: Escape opens the main menu (pausing a single-player game,
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
+        stepPopupScript(ctx); // OPENMM2_POPUP_SCRIPT automation (its keys reach the popup this frame)
         m_popupGraveyard.clear();
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
@@ -1757,24 +1759,35 @@ private:
         // and y 0.1-0.9 of the screen. PUMain's buttons sit at 0.125, 0.25,
         // 0.375 and 0.5 of it, "Resume Driving" (PUMenuBase::AddExit) at
         // x 0.5, y 0.9; PUExit's question at 0.2 and Yes / No at 0.7.
+        // PUMenuBase buttons are 0.1 of the card high (+0xa4) in GetFont 24.
         const auto& s = ctx.game->strings;
         const bool crash = m_result.config.mode == game::GameMode::CrashCourse;
         const bool net = multiplayer(ctx);
         if (m_popupMenu)
             m_popupGraveyard.push_back(std::move(m_popupMenu));
+        if (m_popup == Popup::Options) {
+            // PUOptions and its pages (frontend::PopupOptions).
+            if (!m_popupOptions)
+                m_popupOptions = std::make_unique<frontend::PopupOptions>(ctx);
+            m_popupMenu = m_popupOptions->build(m_popupPage, popupOptionsHost(ctx));
+            return;
+        }
         m_popupMenu = std::make_unique<ui::Menu>();
         auto& menu = *m_popupMenu;
         menu.popupSounds = true;
-        const ui::Box card = popupCard();
-        auto at = [&](float x, float y, float w) {
-            return ui::Box{card.x + x * card.w, card.y + y * card.h, w * card.w, 0.075f * card.h};
-        };
+        const ui::Box card = frontend::popup::kCard;
+        auto button = [&](float x, float y, float w, float h, std::string label, int type, std::function<void()> fn)
+            -> ui::TextButton& { return frontend::popup::addButton(menu, card, x, y, w, h, std::move(label), type, std::move(fn)); };
         if (m_popup == Popup::Chat) {
-            // PUChat (mmPopup::Init: x 0, y 0.99 - the popup line height, 0.75
-            // wide): one text field of up to 40 characters, no title, no label.
-            const float lineHeight = 0.05f; // MenuManager's popup line height (inferred)
+            // PUChat (mmPopup::mmPopup: 0.75 wide, the popup line height
+            // high, which PUMenuBase::PUMenuBase centres on the screen; the
+            // x and y mmPopup passes are unused): one text field of up to
+            // 40 characters filling it, no title, no label.
+            const float lineHeight = ui::style::kPopupLineHeight;
             auto& entry = menu.add<ui::TextEntry>(
-                ui::Box{0.0f, (0.99f - lineHeight) * 480.0f, 0.75f * 640.0f, lineHeight * 480.0f}, &m_chatText, 40);
+                ui::Box{(1.0f - 0.75f) * 0.5f * 640.0f, 240.0f - lineHeight * 0.5f, 0.75f * 640.0f, lineHeight},
+                &m_chatText, 40);
+            entry.popup = true;
             entry.onCommit = [this, &ctx] {
                 // mmPopup::ChatCB: an empty line just closes it.
                 const std::string text = m_chatText;
@@ -1786,34 +1799,34 @@ private:
             entry.beginEdit();
             menu.onBack = [this] { closePopup(); };
         } else if (m_popup == Popup::Main) {
-            auto& restart = menu.add<ui::TextButton>(
-                at(0.0f, 0.125f, 1.0f), crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"),
-                [this] {
-                    // mmReplayManager's reset flag: the race starts over.
-                    closePopup();
-                    m_resultsShown = false;
-                    if (m_session)
-                        m_session->restart();
-                });
+            // PUMain: Resume Driving first (AddExit, type 1), then the rows
+            // across the card (type 2).
+            auto& resume = button(0.5f, 0.9f, 0.5f, 0.1f, s.get(473, "Resume Driving"), 1, [this] { closePopup(); });
+            auto& restart = button(0.0f, 0.125f, 1.0f, 0.1f,
+                                   crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"), 2, [this] {
+                                       // mmReplayManager's reset flag: the race starts over.
+                                       closePopup();
+                                       m_resultsShown = false;
+                                       if (m_session)
+                                           m_session->restart();
+                                   });
             // PUMain::RestartRO: no restart in a network game.
             restart.enabled = !net;
-            // The in-race option pages (PUOptions, PUAudioOptions,
-            // PUControl, PUGraphics) are not ported.
-            menu.add<ui::TextButton>(at(0.0f, 0.25f, 1.0f), s.get(466, "Options"), [] {}).enabled = false;
-            menu.add<ui::TextButton>(at(0.0f, 0.375f, 1.0f),
-                                     crash ? s.get(656, "Back to School") : s.get(468, "Quit to Race Menu"),
-                                     [this, &ctx] { quitToMenu(ctx); });
-            menu.add<ui::TextButton>(at(0.0f, 0.5f, 1.0f), s.get(469, "Exit to Windows"), [this, &ctx] {
+            // mmPopup::Update, PUMain id 0xb: the OPTIONS pages (menu 5).
+            button(0.0f, 0.25f, 1.0f, 0.1f, s.get(466, "Options"), 2,
+                   [this, &ctx] { showPopupPage(ctx, frontend::PopupPage::Options); });
+            button(0.0f, 0.375f, 1.0f, 0.1f, crash ? s.get(656, "Back to School") : s.get(468, "Quit to Race Menu"), 2,
+                   [this, &ctx] { quitToMenu(ctx); });
+            button(0.0f, 0.5f, 1.0f, 0.1f, s.get(469, "Exit to Windows"), 2, [this, &ctx] {
                 m_popup = Popup::ConfirmExit;
                 buildPopup(ctx);
             });
-            auto& resume = menu.add<ui::TextButton>(at(0.5f, 0.9f, 0.5f), s.get(473, "Resume Driving"),
-                                                    [this] { closePopup(); });
             menu.setInitialFocus(&resume);
             menu.onBack = [this] { closePopup(); };
         } else {
-            auto& yes = menu.add<ui::TextButton>(at(0.2f, 0.7f, 0.2f), s.get(458, "Yes"), [&ctx] { ctx.quit = true; });
-            auto& no = menu.add<ui::TextButton>(at(0.6f, 0.7f, 0.2f), s.get(459, "No"), [this, &ctx] {
+            // PUExit: Yes and No at 0.2 and 0.6, y 0.7, 0.2 x 0.2, type 0.
+            auto& yes = button(0.2f, 0.7f, 0.2f, 0.2f, s.get(458, "Yes"), 0, [&ctx] { ctx.quit = true; });
+            auto& no = button(0.6f, 0.7f, 0.2f, 0.2f, s.get(459, "No"), 0, [this, &ctx] {
                 m_popup = Popup::Main;
                 buildPopup(ctx);
             });
@@ -1826,14 +1839,99 @@ private:
         }
     }
 
-    static ui::Box popupCard() { return {0.2f * 640.0f, 0.1f * 480.0f, 0.6f * 640.0f, 0.8f * 480.0f}; }
+    // mmPopup::Update's switches between PUMain and the OPTIONS pages, and
+    // what those pages change in the running race.
+    void showPopupPage(Context& ctx, std::optional<frontend::PopupPage> page) {
+        m_popup = page ? Popup::Options : Popup::Main;
+        if (page)
+            m_popupPage = *page;
+        buildPopup(ctx);
+    }
+
+    frontend::PopupOptionsHost popupOptionsHost(Context& ctx) {
+        frontend::PopupOptionsHost host;
+        host.graphicsChanged = [this, &ctx] { applyGraphicsOptions(ctx); };
+        host.controlsChanged = [this, &ctx] { applyControlOptions(ctx); };
+        host.show = [this, &ctx](std::optional<frontend::PopupPage> page) { showPopupPage(ctx, page); };
+        return host;
+    }
+
+    // The in-race GRAPHICS OPTIONS (PUGraphics) as mmGame's callbacks apply
+    // them: FarClipCB (the far plane), SetLevelGraphics (lighting quality,
+    // cloud shadows, environment maps) and lvlLevel::SetObjectDetail. The
+    // TEXTURED SKY toggle is stored only, as on the options page.
+    void applyGraphicsOptions(Context& ctx) {
+        const auto& ini = ctx.settings.ini;
+        m_objectDetail = std::clamp(static_cast<int>(ini.getInt("Graphics", "ObjectDetail", 3)), 0, 3);
+        m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
+        m_envOptions.lightQuality = static_cast<int>(std::clamp(ini.getInt("Graphics", "LightingQuality", 3), 0LL, 3LL));
+        m_envOptions.farClip =
+            static_cast<float>(std::clamp(ini.getDouble("Graphics", "FarClip", 1000.0), 100.0, 1000.0));
+        m_envOptions.cloudShadows = static_cast<int>(std::clamp(ini.getInt("Graphics", "CloudShadows", 2), 0LL, 2LL));
+        applyEnvironment();
+        auto update = [&](game::VehicleRenderer* r) {
+            if (r)
+                setupVehicleRenderer(ctx, *r);
+        };
+        update(m_vehicle.get());
+        update(m_trailer.get());
+        for (auto& o : m_opponents)
+            update(o.renderer.get());
+        for (auto& c : m_cops)
+            update(c.renderer.get());
+        for (auto& [id, rv] : m_remotes) {
+            update(rv.renderer.get());
+            update(rv.trailer.get());
+        }
+    }
+
+    // The in-race CONTROL OPTIONS (PUControl): mmInput::Init with the chosen
+    // controller, which falls back to the keyboard when a joystick type is
+    // chosen without a joystick ("Default config invalid: no such device"),
+    // and the sensitivity and dead zone mmInput reads.
+    void applyControlOptions(Context& ctx) {
+        m_controlOptions = controls::Options::load(ctx.settings.ini);
+        using controls::Controller;
+        const bool stick = !ctx.input.joysticks().empty() || !ctx.input.gamepads().empty();
+        if (m_controlOptions.controller != Controller::Mouse && m_controlOptions.controller != Controller::Keyboard &&
+            !stick)
+            m_controlOptions.controller = Controller::Keyboard;
+    }
+
+    // OPENMM2_POPUP_SCRIPT: opens popup pages and presses keys in the race.
+    void stepPopupScript(Context& ctx) {
+        if (!m_popupScript || !m_popupScript->active())
+            return;
+        const auto step = m_popupScript->step();
+        if (!step.open.empty()) {
+            if (m_popup == Popup::None || m_popup == Popup::Chat)
+                openPopup(ctx, true);
+            using frontend::PopupPage;
+            const std::string& p = step.open;
+            if (p == "exit") {
+                m_popup = Popup::ConfirmExit;
+                buildPopup(ctx);
+            } else if (p == "options" || p == "audio" || p == "control" || p == "graphics") {
+                showPopupPage(ctx, p == "audio"     ? PopupPage::Audio
+                                   : p == "control" ? PopupPage::Control
+                                   : p == "graphics" ? PopupPage::Graphics
+                                                     : PopupPage::Options);
+            } else {
+                showPopupPage(ctx, std::nullopt);
+            }
+        }
+        if (step.key != platform::Key::Unknown)
+            frontend::injectKey(ctx, step.key);
+    }
 
     void updatePopup(Context& ctx, double dt) {
         if (!m_popupMenu)
             return;
+        if (!m_popupSounds)
+            m_popupSounds = std::make_unique<frontend::PopupSounds>(ctx);
         const render::UiLayout layout = render::computeUiLayout(ctx.device().outputExtent(), ctx.display.uiScale);
         const ui::NavInput nav = m_nav.read(ctx.input, layout, dt);
-        ui::UiFrame f{*ctx.overlay, m_ui, m_text, nav, m_time};
+        ui::UiFrame f{*ctx.overlay, m_ui, m_text, nav, m_time, m_popupSounds->fn()};
         m_popupMenu->update(f); // a button may replace or close it (see m_popupGraveyard)
     }
 
@@ -1842,18 +1940,24 @@ private:
             return;
         auto& ov = *ctx.overlay;
         ov.begin(ctx.display.uiScale);
-        // The popup card (MenuManager::AdjustPopupCard); its shade is inferred.
-        // The chat line has none.
-        const ui::Box card = popupCard();
-        if (m_popup != Popup::Chat)
-            ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
         const ui::NavInput none;
         ui::UiFrame f{ov, m_ui, m_text, none, m_time};
+        // The popup card (MenuManager::AdjustPopupCard, Card2D::Cull). The
+        // chat line has none (its text field draws its own).
+        const ui::Box card = frontend::popup::kCard;
+        if (m_popup == Popup::Options && m_popupOptions)
+            m_popupOptions->draw(m_popupPage, f);
+        else if (m_popup != Popup::Chat)
+            frontend::popup::drawCard(ov, card);
         // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none,
-        // and PUExit only names its menu (UIMenu::AssignName).
-        if (m_popup == Popup::ConfirmExit)
-            m_text.draw(ov, ui::style::popupFont(), ctx.game->strings.get(457, "Do you want to exit the game?"),
-                        card.x + card.w * 0.5f, card.y + 0.2f * card.h, ui::style::kPopupText, ui::Align::Center);
+        // and PUExit only names its menu (UIMenu::AssignName); its question
+        // is a label (0, 0.2, 1 x 0.2, GetFont 20) centred both ways.
+        if (m_popup == Popup::ConfirmExit) {
+            const ui::Box q = frontend::popup::at(card, 0.0f, 0.2f, 1.0f, 0.2f);
+            const auto font = ui::style::popupFont();
+            m_text.draw(ov, font, ctx.game->strings.get(457, "Do you want to exit the game?"), q.x + q.w * 0.5f,
+                        q.y + (q.h - m_text.lineHeight(ov, font)) * 0.5f, ui::style::kPopupText, ui::Align::Center);
+        }
         m_popupMenu->drawContent(f);
         ov.end();
     }
@@ -2902,9 +3006,14 @@ private:
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.
     bool m_paused = false;
-    // The in-race popup (mmPopup).
-    enum class Popup : std::uint8_t { None, Main, ConfirmExit, Chat };
+    // The in-race popup (mmPopup). Options: one of the OPTIONS pages
+    // (m_popupPage, frontend::PopupOptions).
+    enum class Popup : std::uint8_t { None, Main, ConfirmExit, Chat, Options };
     Popup m_popup = Popup::None;
+    frontend::PopupPage m_popupPage = frontend::PopupPage::Options;
+    std::unique_ptr<frontend::PopupOptions> m_popupOptions;
+    std::unique_ptr<frontend::PopupSounds> m_popupSounds;
+    std::optional<frontend::PopupScript> m_popupScript = frontend::PopupScript::fromEnvironment();
     std::unique_ptr<ui::Menu> m_popupMenu;
     std::vector<std::unique_ptr<ui::Menu>> m_popupGraveyard;
     ui::NavReader m_nav;

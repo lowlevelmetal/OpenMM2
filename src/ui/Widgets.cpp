@@ -42,6 +42,9 @@ FontSpec valueFont() { return {"Arial Bold", 16, 16, 0, 400}; }
 FontSpec smallFont() { return {"Arial Bold", 14, 14, 0, 400}; }
 FontSpec titleFont() { return {"Gill Sans MT", 16, 22, 0, 700}; }
 FontSpec popupFont() { return {"Arial Bold", 16, 20, 0, 400}; }
+FontSpec popupButtonFont() { return {"Arial Bold", 16, 24, 0, 400}; }
+FontSpec popupSmallFont() { return {"Arial Bold", 14, 16, 0, 400}; }
+FontSpec popupTitleFont() { return {"Arial Bold", 20, 32, 0, 400}; }
 } // namespace style
 
 // --- Input -----------------------------------------------------------------------
@@ -239,16 +242,25 @@ void ValueBox::draw(UiFrame& f, bool focused) {
     const auto opts = options();
     const int cur = m_open ? m_hover : (get ? get() : -1);
     const std::string text = cur >= 0 && cur < static_cast<int>(opts.size()) ? opts[static_cast<std::size_t>(cur)] : "";
-    const std::uint32_t color = focused || m_open ? style::kValueTextFocus : style::kValueText;
-    const FontSpec font = style::valueFont();
+    // UITextDropdown::Switch: colour 3 while focused, else colour 0
+    // (MenuManager::GetFGColor: red / yellow in the menus, yellow-green /
+    // white in the popups).
+    const bool hot = focused || m_open;
+    const std::uint32_t color = popup ? (hot ? style::kPopupFocus : style::kPopupText)
+                                      : (hot ? style::kValueTextFocus : style::kValueText);
+    const FontSpec font = popup ? style::popupSmallFont() : style::valueFont();
+    if (popup && !label.empty())
+        f.text.draw(f.overlay, font, label, box.x, box.y - labelHeight, style::kPopupText);
     const float lh = f.text.lineHeight(f.overlay, font);
     const Vec4 clip{box.x, box.y, box.w, box.h};
     f.overlay.setClip(&clip);
     f.text.draw(f.overlay, font, text, box.x + 5, box.y + (box.h - lh) * 0.5f, color);
     f.overlay.setClip(nullptr);
+    if (popup)
+        outline(f.overlay, box, rgba(255, 255, 255)); // text effect 4: a white-pen rectangle
     if (showArrow && enabled && !readOnly)
-        drawSpriteFrame(f, {"texture/drop_arrow.tga", 3}, m_open ? 2 : (focused ? 1 : 0), box.x + box.w - 21,
-                        box.y + 1);
+        drawSpriteFrame(f, {popup ? "texture/drop_arrow2.tga" : "texture/drop_arrow.tga", 3},
+                        m_open ? 2 : (focused ? 1 : 0), box.x + box.w - 21, box.y + 1);
 }
 
 std::vector<ValueBox::Cell> ValueBox::listCells(std::size_t count) const {
@@ -344,7 +356,9 @@ void ValueBox::drawPopup(UiFrame& f) {
     if (!m_open)
         return;
     const auto opts = options();
-    const FontSpec font = style::valueFont();
+    // mmDropDown draws its entries in the TextDropWidget's font (the
+    // popups' label font there) and always in yellow.
+    const FontSpec font = popup ? style::popupSmallFont() : style::valueFont();
     for (const auto& c : listCells(opts.size())) {
         f.overlay.rect(c.box.x, c.box.y, c.box.w, c.box.h, rgba(0, 0, 0));
         const Vec4 clip{c.box.x, c.box.y, c.box.w, c.box.h};
@@ -394,9 +408,21 @@ TextButton::TextButton(Box b, std::string text, std::function<void()> click)
 }
 
 void TextButton::draw(UiFrame& f, bool focused) {
-    const FontSpec font = style::popupFont();
     const std::uint32_t color = !enabled ? style::kPopupDisabled : (focused ? style::kPopupFocus : style::kPopupText);
-    f.text.draw(f.overlay, font, label, box.x, box.y, color);
+    if (type < 0) {
+        f.text.draw(f.overlay, font, label, box.x, box.y, color);
+        return;
+    }
+    // mmTextNode::RenderText: DT_VCENTER for every type, DT_CENTER for types
+    // 1 and 2, the white-pen rectangle for type 1.
+    const float lh = f.text.lineHeight(f.overlay, font);
+    const float y = box.y + (box.h - lh) * 0.5f;
+    if (type == 1 || type == 2)
+        f.text.draw(f.overlay, font, label, box.x + box.w * 0.5f, y, color, Align::Center);
+    else
+        f.text.draw(f.overlay, font, label, box.x, y, color);
+    if (type == 1)
+        outline(f.overlay, box, rgba(255, 255, 255));
 }
 
 bool TextButton::activate(UiFrame& f) {
@@ -409,6 +435,43 @@ bool TextButton::activate(UiFrame& f) {
 }
 
 void TextButton::mouse(UiFrame& f, bool hovered) {
+    if (hovered && f.nav.mouseReleased)
+        activate(f);
+}
+
+// --- TextToggle ----------------------------------------------------------------------------
+
+TextToggle::TextToggle(Box b, std::string text, std::function<bool()> on, std::function<void()> f)
+    : label(std::move(text)), isOn(std::move(on)), flip(std::move(f)) {
+    box = b;
+}
+
+void TextToggle::draw(UiFrame& f, bool focused) {
+    // UIButton::Switch colours the label (3 focused, else 0); the ON/OFF
+    // text node keeps the default white.
+    const std::uint32_t color = !enabled ? style::kPopupDisabled : (focused ? style::kPopupFocus : style::kPopupText);
+    const float lh = f.text.lineHeight(f.overlay, font);
+    const float y = box.y + (box.h - lh) * 0.5f;
+    const Box labelBox{box.x, box.y, box.w - stateWidth, box.h};
+    f.text.draw(f.overlay, font, label, labelBox.x + labelBox.w * 0.5f, y, color, Align::Center);
+    outline(f.overlay, labelBox, rgba(255, 255, 255));
+    const bool on = isOn && isOn();
+    f.text.draw(f.overlay, font, on ? onText : offText, labelBox.x + labelBox.w + stateWidth * 0.5f, y,
+                style::kPopupText, Align::Center);
+}
+
+bool TextToggle::activate(UiFrame& f) {
+    // UIToggleButton2::Action: Enter toggles (DoToggle), then UIButton::Action
+    // plays MenuManager::PlaySound(1) and calls the callback.
+    if (!enabled || readOnly)
+        return false;
+    if (flip)
+        flip();
+    f.play("Selectionmade", 0.75f);
+    return true;
+}
+
+void TextToggle::mouse(UiFrame& f, bool hovered) {
     if (hovered && f.nav.mouseReleased)
         activate(f);
 }
@@ -506,12 +569,16 @@ float Slider::step() const {
 }
 
 void Slider::draw(UiFrame& f, bool focused) {
+    // UISlider's label (colour 0, white in the popups) does not change with
+    // the focus; the bar's band does.
+    if (!label.empty())
+        f.text.draw(f.overlay, style::popupSmallFont(), label, box.x, box.y, style::kPopupText);
     const float trackX = box.x + kArrowW;
     const float trackW = 2.0f * static_cast<float>(segments());
     const float frac = max > min ? std::clamp((get() - min) / (max - min), 0.0f, 1.0f) : 0.0f;
     const float filled =
         std::min(trackW, 2.0f * std::floor(frac * static_cast<float>(segments() + 1)));
-    const float barY = box.y + kBarTop;
+    const float barY = rowY() + kBarTop;
     if (readOnly) {
         // Read-only sliders (the garage's statistics): slider_roactl, 11 px,
         // the rest a 1 px slider_roinactl line (its height is inferred).
@@ -537,8 +604,10 @@ void Slider::draw(UiFrame& f, bool focused) {
         drawRows(f, off, band * 6, 1, trackX + filled, barY, trackW - filled, 1.0f,
                  (trackW - filled) / static_cast<float>(off.width));
     const int base = !enabled ? 4 : (focused ? 1 : 0);
-    drawSpriteFrame(f, {"texture/slider_larr.tga", 5}, enabled && m_clicked < 0 ? 2 : base, box.x, box.y);
-    drawSpriteFrame(f, {"texture/slider_rarr.tga", 5}, enabled && m_clicked > 0 ? 2 : base, trackX + trackW, box.y);
+    const char* left = balance ? "texture/slider_lbal.tga" : "texture/slider_larr.tga";
+    const char* right = balance ? "texture/slider_rbal.tga" : "texture/slider_rarr.tga";
+    drawSpriteFrame(f, {left, 5}, enabled && m_clicked < 0 ? 2 : base, box.x, rowY());
+    drawSpriteFrame(f, {right, 5}, enabled && m_clicked > 0 ? 2 : base, trackX + trackW, rowY());
 }
 
 bool Slider::adjust(UiFrame& f, int dir) {
@@ -656,16 +725,19 @@ void TextEntry::draw(UiFrame& f, bool focused) {
     // UITextField::ToggleField: an opaque black card behind red text while
     // editing, nothing behind yellow text otherwise (the frame around the
     // field is painted on the backgrounds).
-    const FontSpec font = style::valueFont();
+    const FontSpec font = popup ? style::popupSmallFont() : style::valueFont();
     const float lh = f.text.lineHeight(f.overlay, font);
     const bool active = focused && m_editing;
     if (active)
         f.overlay.rect(box.x, box.y, box.w, box.h, rgba(0, 0, 0));
     const Vec4 clip{box.x, box.y, box.w, box.h};
     f.overlay.setClip(&clip);
-    f.text.draw(f.overlay, font, " " + *value, box.x, box.y + (box.h - lh) * 0.5f,
-                active ? style::kValueTextFocus : style::kValueText);
+    const std::uint32_t color = popup ? (active ? style::kPopupFocus : style::kPopupText)
+                                      : (active ? style::kValueTextFocus : style::kValueText);
+    f.text.draw(f.overlay, font, " " + *value, box.x, box.y + (box.h - lh) * 0.5f, color);
     f.overlay.setClip(nullptr);
+    if (popup)
+        outline(f.overlay, box, rgba(255, 255, 255));
 }
 
 bool TextEntry::activate(UiFrame&) {

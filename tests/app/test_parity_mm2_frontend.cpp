@@ -1,0 +1,93 @@
+// The in-race popup's OPTIONS pages and the PUMenuBase layout, checked
+// against MM2's own code (MM2Recomp, midtown2.exe build 3393); see
+// docs/parity/mm2/frontend.md.
+#include "app/frontend/PopupOptions.h"
+
+#include <gtest/gtest.h>
+
+using namespace mm2;
+using namespace mm2::app::frontend;
+using app::controls::Controller;
+
+// mmPopup's card is x 0.2-0.8, y 0.1-0.9 (mmGame::Init); PUControl and
+// PUGraphics ask for 0.9 x 0.8, which PUMenuBase::PUMenuBase centres.
+TEST(MM2FrontendParity, PopupCards) {
+    const ui::Box c = popup::cardFor(PopupPage::Audio);
+    EXPECT_FLOAT_EQ(c.x, 128.0f);
+    EXPECT_FLOAT_EQ(c.y, 48.0f);
+    EXPECT_FLOAT_EQ(c.w, 384.0f);
+    EXPECT_FLOAT_EQ(c.h, 384.0f);
+    EXPECT_FLOAT_EQ(popup::cardFor(PopupPage::Options).x, 128.0f);
+    const ui::Box w = popup::cardFor(PopupPage::Graphics);
+    EXPECT_FLOAT_EQ(w.x, 32.0f);
+    EXPECT_FLOAT_EQ(w.w, 576.0f);
+    EXPECT_FLOAT_EQ(popup::cardFor(PopupPage::Control).x, 32.0f);
+    // Card2D: (16, 31, 93) at alpha 0x80.
+    EXPECT_EQ(popup::cardColor(), render::packColor(0x10, 0x1F, 0x5D, 0x80));
+}
+
+// UIMenu::ScaleWidget: fractions of the card. PUAudioOptions' sliders start
+// at 0.11 (after the title) every 2 x WIDGET_HEIGHT + 0.11; OK sits at
+// (0.6, 0.9).
+TEST(MM2FrontendParity, PopupWidgetPositions) {
+    const ui::Box ok = popup::at(popup::kCard, 0.6f, 0.9f, 0.4f, 0.1f);
+    EXPECT_NEAR(ok.x, 358.4f, 1e-3f);
+    EXPECT_NEAR(ok.y, 393.6f, 1e-3f);
+    EXPECT_NEAR(ok.w, 153.6f, 1e-3f);
+    EXPECT_NEAR(ok.h, 38.4f, 1e-3f);
+    const float step = 2.0f / 15.0f + 0.11f;
+    EXPECT_NEAR(popup::at(popup::kCard, 0.05f, 0.11f + step, 0.6f, 0.0f).y, 183.68f, 1e-2f);
+    EXPECT_NEAR(popup::at(popup::kCard, 0.05f, 0.11f + 2.0f * step, 0.6f, 0.0f).y, 277.12f, 1e-2f);
+}
+
+// PUGraphics' lighting slider: raised, the whole part of value + 1; lowered,
+// its whole part; within 1..3; nothing when unchanged.
+TEST(MM2FrontendParity, PopupLightingQualitySnaps) {
+    EXPECT_FALSE(popup::lightQualityFromSlider(2.0f, 2).has_value());
+    EXPECT_EQ(popup::lightQualityFromSlider(2.105f, 2), 3);
+    EXPECT_EQ(popup::lightQualityFromSlider(1.895f, 2), 1);
+    EXPECT_EQ(popup::lightQualityFromSlider(3.0f, 3), std::nullopt);
+    // From the options page's 0, one step right lands on 2.
+    EXPECT_EQ(popup::lightQualityFromSlider(1.105f, 0), 2);
+    EXPECT_EQ(popup::lightQualityFromSlider(1.0f, 0), 2);
+    EXPECT_EQ(popup::lightQualityFromSlider(0.5f, 1), 1); // kept at 1
+}
+
+// PUControl::PreSetup runs SetRWStates and then InitSensitivity;
+// ControlSelect runs them the other way round, so a mouse keeps its dead
+// zone usable on entry but not after picking it from the list.
+TEST(MM2FrontendParity, PopupControlReadWriteStates) {
+    popup::ControlStates s;
+    popup::setRWStates(s, Controller::Mouse, false);
+    popup::initSensitivity(s, Controller::Mouse);
+    EXPECT_TRUE(s.sensitivity);
+    EXPECT_TRUE(s.deadZone);
+    EXPECT_FALSE(s.collision);
+    popup::initSensitivity(s, Controller::Mouse);
+    popup::setRWStates(s, Controller::Mouse, false);
+    EXPECT_TRUE(s.sensitivity);
+    EXPECT_FALSE(s.deadZone);
+
+    for (Controller c : {Controller::Keyboard, Controller::GamePad}) {
+        popup::setRWStates(s, c, true);
+        popup::initSensitivity(s, c);
+        EXPECT_FALSE(s.sensitivity || s.deadZone || s.collision || s.roadForce);
+    }
+    popup::setRWStates(s, Controller::Wheel, true);
+    popup::initSensitivity(s, Controller::Wheel);
+    EXPECT_TRUE(s.sensitivity && s.deadZone && s.collision && s.roadForce);
+    popup::setRWStates(s, Controller::Joystick, false);
+    EXPECT_TRUE(s.sensitivity && s.deadZone);
+    EXPECT_FALSE(s.collision || s.roadForce);
+}
+
+TEST(MM2FrontendParity, PopupScriptCommands) {
+    PopupScript script("wait:2;open:graphics;nav:down;bogus;nav:accept");
+    EXPECT_TRUE(script.step().open.empty()); // wait:2 starts
+    EXPECT_TRUE(script.step().open.empty());
+    EXPECT_TRUE(script.step().open.empty());
+    EXPECT_EQ(script.step().open, "graphics");
+    EXPECT_EQ(script.step().key, platform::Key::Down);
+    EXPECT_EQ(script.step().key, platform::Key::Return); // the unknown command is skipped
+    EXPECT_FALSE(script.active());
+}

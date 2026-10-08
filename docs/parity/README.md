@@ -148,6 +148,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/app/frontend/PagesOptions.cpp` | 998 | P | frontend-ui |
 | `src/app/frontend/PagesRace.cpp` | 587 | P | frontend-ui |
 | `src/app/frontend/PagesResults.cpp` | 155 | P | frontend-ui |
+| `src/app/frontend/PopupOptions.cpp` | 484 | M | mm2-frontend |
+| `src/app/frontend/PopupOptions.h` | 181 | M | mm2-frontend |
 | `src/app/main.cpp` | 104 | O | - |
 | `src/asset/Bound.cpp` | 304 | F | phys-bounds |
 | `src/asset/Bound.h` | 100 | F | phys-bounds |
