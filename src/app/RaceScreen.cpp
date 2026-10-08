@@ -1,4 +1,5 @@
 // A session in the city.
+#include "app/Controls.h"
 #include "app/Screens.h"
 #include "city/CityData.h"
 #include "core/Log.h"
@@ -92,6 +93,9 @@ public:
         m_rain.stop();
         if (m_ctxMixer)
             m_ctxMixer->stopAll();
+        // The police drivers hand their cars' impact callbacks back when they
+        // go: before the cars (m_cops) are destroyed.
+        m_police.reset();
     }
 
     bool usesScene() const override { return m_city != nullptr; }
@@ -120,6 +124,16 @@ public:
         }
         if (ctx.input.keyPressed(platform::Key::F2))
             m_flyCamera = !m_flyCamera;
+        if (!m_flyCamera)
+            updateGameInput(ctx);
+        if (m_paused) {
+            // asRoot paused (the full-screen map in single player): the
+            // game, the physics and the clocks stand still.
+            if (m_flyCamera || !m_player)
+                updateFlyCamera(ctx, static_cast<float>(dt));
+            m_textures->update(m_time);
+            return;
+        }
         updatePlayer(ctx, static_cast<float>(dt));
         updateAiDrivers(static_cast<float>(dt));
         // aiVehicleManager::Update and the rail cars' rooms, before the
@@ -153,7 +167,7 @@ public:
             pc.radius = sim.halfExtents().mag();
             pc.steering = sim.steering;
             pc.reversing = sim.trans.getCurrentGear() < 0;
-            pc.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
+            pc.horn = hornDown(ctx);
             std::vector<Vec3> racers;
             for (const auto& o : m_opponents)
                 racers.push_back(o.sim->sim().body.ics.matrix.m3);
@@ -271,10 +285,11 @@ public:
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
             std::vector<game::session::MapBlip> blips;
+            // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
             for (const auto& o : m_opponents)
-                blips.push_back({o.sim->sim().modelMatrix(), game::session::MapBlip::Kind::Opponent});
+                blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent});
             for (const auto& c : m_cops)
-                blips.push_back({c.sim->sim().modelMatrix(), game::session::MapBlip::Kind::Police});
+                blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
             m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
             m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
@@ -322,17 +337,21 @@ private:
             m_result.config.weather = static_cast<game::Weather>(std::clamp(env[2] - '0', 0, 4));
         }
         {
-            // The Lighting slider (0-1) picks MM2's light quality 0-3; the
-            // Visibility slider maps to the Far Clip range 100-1000 m (inferred).
-            const double lighting = ctx.settings.ini.getDouble("Graphics", "Lighting", 1.0);
-            const double visibility = ctx.settings.ini.getDouble("Graphics", "Visibility", 1.0);
-            m_envOptions.lightQuality = static_cast<int>(std::lround(std::clamp(lighting, 0.0, 1.0) * 3.0));
-            m_envOptions.farClip = 100.0f + 900.0f * static_cast<float>(std::clamp(visibility, 0.0, 1.0));
+            // mmGame::SetLevelGraphics: cityLevel::sm_LightQuality is the
+            // LIGHTING QUALITY option (0-3); the far clip is the FAR CLIP
+            // option in metres (PUGraphics::SetFarClip, mmGame::FarClipCB).
+            // The keys and defaults are the Graphics options page's.
+            m_envOptions.lightQuality =
+                static_cast<int>(std::clamp(ctx.settings.ini.getInt("Graphics", "LightingQuality", 3), 0LL, 3LL));
+            m_envOptions.farClip = static_cast<float>(
+                std::clamp(ctx.settings.ini.getDouble("Graphics", "FarClip", 1000.0), 100.0, 1000.0));
         }
         applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
         m_yaw = 0.0f;
         m_pitch = -0.15f;
+        m_bindings.load(ctx.settings.ini);
+        m_controlOptions = controls::Options::load(ctx.settings.ini);
         createSession(ctx);
         loadVehicle(ctx); // places the camera behind the car
         loadAi(ctx);
@@ -343,6 +362,7 @@ private:
                                                      ctx.game->strings, m_result.config.city, m_result.config.vehicle);
         m_hud->options().metric = ctx.settings.metricUnits;
         m_hud->options().uiScale = ctx.display.uiScale;
+        loadViewSettings(ctx);
         m_hud->preload(&m_ui);
         if (m_session) {
             m_session->start();
@@ -408,6 +428,10 @@ private:
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
+        // mmGame::Init: vehTransmission::Automatic with the player's
+        // transmission choice; the AUTO REVERSE option (mmInput +0x18C).
+        m_player->sim().trans.automatic(m_result.config.automatic);
+        m_player->controls().autoReverse = m_controlOptions.autoReverse;
         // The player's car collides with its polygonal bound (vehCar::Init
         // with vehBound) and marks what it hits (dgPhysManager's PlayerInst).
         m_player->sim().setPolygonalBound(true);
@@ -462,6 +486,7 @@ private:
         game::session::SessionOptions opts;
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             opts.scoringBias = info->scoringBias;
+        opts.playerName = ctx.settings.playerName;
         // Crash course pursuit checks look through the level (the world is
         // built after the session).
         opts.lineOfSight = [this](const Vec3& a, const Vec3& b) {
@@ -570,21 +595,15 @@ private:
     }
 
     // The race's police posts (.aimap [Police]): aiMap::Init places the first
-    // trunc(count * cop density) of them, the density being the menu's in
-    // cruise, the race table's cop count (0, or 1+ for all) in races, 1 in
-    // the crash course. Cops stay for the whole race.
+    // trunc(count * clamp(CopDensity, 0, 1)) of them, CopDensity being the
+    // menu's cop density in every mode (the race menu starts it at the race
+    // table's cop count, the crash course sets 1). Cops stay for the whole
+    // race.
     void spawnPolice(Context& ctx) {
         if (!m_session || !m_world || !m_ai)
             return;
         const auto& posts = m_session->police();
-        const auto mode = m_result.config.mode;
-        float density = 1.0f;
-        if (mode == game::GameMode::Cruise)
-            density = m_result.config.copDensity;
-        else if (mode == game::GameMode::Blitz || mode == game::GameMode::Circuit ||
-                 mode == game::GameMode::Checkpoint)
-            density = static_cast<float>(m_session->setup().settings.cops);
-        const std::size_t count = ai::PoliceSquad::countForDensity(posts.size(), density);
+        const std::size_t count = ai::PoliceSquad::countForDensity(posts.size(), m_result.config.copDensity);
         std::optional<float> chaseDistance;
         if (m_session->setup().aiMap)
             chaseDistance = m_session->setup().aiMap->copChaseDistance;
@@ -724,7 +743,9 @@ private:
     game::session::PlayerState playerState() const {
         game::session::PlayerState ps;
         const auto& sim = m_player->sim();
-        ps.transform = m_pose.body;
+        // The rules (mmWaypoints, mmGame::Update, mmSingleStunt) and the map
+        // read the car's phInertialCS matrix (vehCarSim +0x6C).
+        ps.transform = sim.body.ics.matrix;
         ps.velocity = sim.body.ics.frameVelocity;
         ps.speedMph = sim.speedMph();
         ps.rpm = std::max(sim.engine.rpm, sim.params.engine.idleRPM);
@@ -752,7 +773,7 @@ private:
         m_playerState = playerState();
         auto carState = [](const phys::CarSim& sim) {
             game::session::OpponentState s;
-            s.transform = sim.modelMatrix();
+            s.transform = sim.body.ics.matrix; // as mmWaypoints::AIWPHit gets it
             s.velocity = sim.body.ics.frameVelocity;
             s.damage01 = sim.damage.damage;
             s.wrecked = sim.damage.wrecked();
@@ -777,7 +798,14 @@ private:
             st.pursuing = c.driver->mode() == ai::PoliceCar::Mode::Chasing && c.driver->target() == 0;
         }
         const auto phaseBefore = m_session->phase();
+        m_session->setPreRaceCamera(m_cams.preRace());
+        // The multiplayer countdown (2.5 s) starts with the host's start
+        // message; OpenMM2 shares the start time instead.
+        m_session->setStartSignal(!multiplayer(ctx) || ctx.netGame->secondsToStart() <= 2.5);
         m_session->update(dt, m_playerState, opps, cops);
+        // mmSingleStunt::UpdateEvade turns the map on during its first line.
+        if (m_hud && m_session->wantsMap() && m_hud->options().mapMode == game::session::MapMode::Off)
+            m_hud->cycleMap();
         // mmPlayer::SetPostRaceCam when the race is over (not in cruise).
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
             m_result.config.mode != game::GameMode::Cruise)
@@ -811,6 +839,10 @@ private:
                 for (auto& c : m_cops)
                     c.driver->reset();
                 m_cams.reset(cameraTarget());
+                // The race modes' Reset: mmPlayer::SetPreRaceCam again.
+                if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
+                    m_cams.startPreRace();
+                m_keySteer.reset();
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
                 if (m_vehicle)
@@ -864,6 +896,14 @@ private:
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // mmSingleStunt::LoadEventFile sets the traffic density to the last
+        // event's AmbDensity before aiMap::Init reads it.
+        if (m_session && !m_session->setup().lessonEvents.empty())
+            settings.trafficDensity = m_session->setup().lessonEvents.back().ambientDensity;
+        // The SHOW PEDESTRIANS graphics option (mmStatePack +0x64): aiMap::Init
+        // creates no pedestrians without it.
+        if (!ctx.settings.ini.getBool("Graphics", "ShowPedestrians", true))
+            settings.pedestrianDensity = 0.0f;
         // aiMap::Init: no pedestrians in circuit races; the winter models in snow.
         if (m_result.config.mode == game::GameMode::Circuit)
             settings.pedestrianDensity = 0.0f;
@@ -1114,7 +1154,7 @@ private:
             in.brake = m_lastPedals.brake;
             in.impacts = std::move(m_impacts);
             m_impacts.clear();
-            in.horn = !m_flyCamera && ctx.input.keyDown(platform::Key::H);
+            in.horn = hornDown(ctx);
             in.transform = m_pose.body;
             // vehSurfaceAudio::UpdateAir: ground within 33 m below ("big air").
             phys::RayHit hit;
@@ -1145,7 +1185,7 @@ private:
             flags |= net::kVehicleBrakeLights;
         if (sim.damage.wrecked())
             flags |= net::kVehicleWrecked;
-        if (!m_flyCamera && ctx.input.keyDown(platform::Key::H))
+        if (hornDown(ctx))
             flags |= net::kVehicleHorn;
         ctx.netGame->submitLocalState(m_pose.body, sim.body.ics.frameVelocity, sim.body.ics.angularVelocity, controls,
                                       sim.damage.damage, flags);
@@ -1193,30 +1233,39 @@ private:
         if (!m_player)
             return;
         auto& in = ctx.input;
-        using platform::Key;
+        using controls::Action;
         phys::PedalInput pedals;
-        float steerTarget = 0.0f;
+        // mmInput::GetSteering, keyboard: Steer Left wins over Steer Right,
+        // through mmInput::FilterDiscreteSteering.
+        float keyTarget = 0.0f;
+        std::optional<float> analog;
         if (!m_flyCamera) {
-            pedals.accelerator = (in.keyDown(Key::Up) || in.keyDown(Key::W)) ? 1.0f : 0.0f;
-            pedals.brake = (in.keyDown(Key::Down) || in.keyDown(Key::S)) ? 1.0f : 0.0f;
-            pedals.handbrake = in.keyDown(Key::Space) ? 1.0f : 0.0f;
-            if (in.keyDown(Key::Left) || in.keyDown(Key::A))
-                steerTarget -= 1.0f;
-            if (in.keyDown(Key::Right) || in.keyDown(Key::D))
-                steerTarget += 1.0f;
+            // mmInput::GetThrottleVal / GetBrakesVal / GetHandBrake: a bound
+            // key gives 1.
+            pedals.accelerator = m_bindings.down(in, Action::Throttle) ? 1.0f : 0.0f;
+            pedals.brake = m_bindings.down(in, Action::Brakes) ? 1.0f : 0.0f;
+            pedals.handbrake = m_bindings.down(in, Action::Handbrake) ? 1.0f : 0.0f;
+            if (m_bindings.down(in, Action::SteerLeft))
+                keyTarget = -1.0f;
+            else if (m_bindings.down(in, Action::SteerRight))
+                keyTarget = 1.0f;
+            // Game controllers (an OpenMM2 extra beside the keyboard): the
+            // stick through the CONTROLLER DEAD ZONE option, as
+            // mmJoystick::SetDeadZone sets it on DirectInput.
             for (const auto& pad : in.gamepads()) {
                 using platform::GamepadAxis;
                 const auto axis = [&](GamepadAxis a) { return pad.axes[static_cast<std::size_t>(a)]; };
                 pedals.accelerator = std::max(pedals.accelerator, axis(GamepadAxis::RightTrigger));
                 pedals.brake = std::max(pedals.brake, axis(GamepadAxis::LeftTrigger));
-                const float x = axis(GamepadAxis::LeftX);
-                if (std::abs(x) > 0.15f)
-                    steerTarget = x;
+                const float x = controls::applyDeadZone(axis(GamepadAxis::LeftX), m_controlOptions.deadZone);
+                if (x != 0.0f)
+                    analog = x;
                 if (pad.buttons.test(static_cast<std::size_t>(platform::GamepadButton::South)))
                     pedals.handbrake = 1.0f;
             }
         }
-        // Development aid: constant pedal input "accel,brake,steer,handbrake".
+        // Development aid: constant pedal input "accel,brake,steer,handbrake"
+        // (the steering as an analog device's).
         if (const char* dbg = std::getenv("OPENMM2_DEBUG_INPUT")) {
             const auto parts = str::split(dbg, ',');
             auto f = [&](std::size_t i) {
@@ -1224,14 +1273,11 @@ private:
             };
             pedals.accelerator = f(0);
             pedals.brake = f(1);
-            steerTarget = f(2);
+            analog = f(2);
             pedals.handbrake = f(3);
         }
-        // Keyboard steering ramps like a wheel being turned; the rates are
-        // inferred (the original's steering sensitivity option scales them).
-        const float rate = (std::abs(steerTarget) < std::abs(m_steer) || steerTarget * m_steer < 0) ? 6.0f : 3.0f;
-        m_steer += clampf(steerTarget - m_steer, -rate * dt, rate * dt);
-        pedals.steering = m_steer;
+        const float keySteer = m_keySteer.update(keyTarget, dt);
+        pedals.steering = analog ? clampf(*analog, -1.0f, 1.0f) : keySteer;
         // Countdown: the car is held until "Go!" (and during false-start
         // penalties), and until the shared start time in multiplayer.
         // mmPlayer +0x2258: once the race is over the car brakes with the
@@ -1251,12 +1297,125 @@ private:
             m_player->drive(pedals);
         }
         m_lastPedals = pedals;
-        // R resets the car (OpenMM2 convenience). Falling out of the city is
-        // the session's rule (mmGame::DropThruCityHandler below y = -50); this
+        // Falling out of the city is the session's rule
+        // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
-        if (in.keyPressed(Key::R) ||
-            m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
+        if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
             m_player->reset(m_spawn);
+    }
+
+    // The horn key (mmGame::UpdateHorn), not in the free camera.
+    bool hornDown(Context& ctx) const {
+        return !m_flyCamera && m_bindings.down(ctx.input, controls::Action::Horn);
+    }
+
+    // mmGame::UpdateGameInput: the discrete in-race keys, handled while the
+    // game is paused too.
+    void updateGameInput(Context& ctx) {
+        using controls::Action;
+        const auto& in = ctx.input;
+        auto pressed = [&](Action a) { return m_bindings.pressed(in, a); };
+        bool viewChanged = false;
+        if (m_hud) {
+            auto& hud = *m_hud;
+            if (pressed(Action::MapToggle)) {
+                hud.cycleMap();
+                viewChanged = true;
+            }
+            if (pressed(Action::FullScreenMap)) {
+                // In single player the full-screen map pauses the game and
+                // leaving it resumes (mmReplayManager flags 0x1c / 0x1d).
+                if (!multiplayer(ctx))
+                    m_paused = hud.options().mapMode != game::session::MapMode::FullScreen;
+                hud.toggleFullScreenMap();
+                viewChanged = true;
+            }
+            if (pressed(Action::MapZoom)) {
+                hud.toggleMapZoom();
+                viewChanged = true;
+            }
+            if (pressed(Action::RotatingMap)) {
+                hud.toggleMapRotation();
+                viewChanged = true;
+            }
+            if (pressed(Action::HudToggle)) {
+                hud.toggleCluster();
+                viewChanged = true;
+            }
+            if (pressed(Action::OpponentPosition)) {
+                hud.toggleOpponentIcons();
+                viewChanged = true;
+            }
+        }
+        if (pressed(Action::ChangeCamera))
+            m_cams.toggleCamera();
+        if (pressed(Action::WideAngle))
+            m_cams.toggleWideAngle();
+        if (pressed(Action::Dashboard))
+            m_cams.toggleDashboard();
+        for (const auto& pad : in.gamepads())
+            if (pad.pressed.test(static_cast<std::size_t>(platform::GamepadButton::North)))
+                m_cams.toggleCamera();
+        if (m_player) {
+            auto& trans = m_player->sim().trans;
+            auto& pedals = m_player->controls();
+            if (pressed(Action::Transmission)) {
+                // Automatic <-> manual; a reverse taken with the swapped
+                // pedals goes back to drive first.
+                if (pedals.swapThrottle)
+                    trans.setDrive();
+                pedals.swapThrottle = false;
+                trans.automatic(!trans.isAutomatic);
+            }
+            if (pressed(Action::ShiftUp) && !trans.isAutomatic)
+                trans.upshift();
+            if (pressed(Action::ShiftDown) && !trans.isAutomatic)
+                trans.downshift();
+            if (pressed(Action::Reverse)) {
+                // Reverse, or first gear from reverse, in either box.
+                pedals.swapThrottle = false;
+                trans.setCurrentGear(trans.currentGear != phys::Transmission::kReverse
+                                         ? phys::Transmission::kReverse
+                                         : phys::Transmission::kFirst);
+            }
+        }
+        // mmSingleRace::UpdateGameInput: the target checkpoint.
+        if (m_session && pressed(Action::NextCheckpoint))
+            m_session->cycleTarget(true);
+        if (m_session && pressed(Action::PrevCheckpoint))
+            m_session->cycleTarget(false);
+        if (viewChanged)
+            saveViewSettings(ctx);
+    }
+
+    // The view settings MM2 keeps per driver (mmPlayerConfig): OpenMM2 keeps
+    // them in [HUD] of its settings. Defaults: mmStatePack /
+    // mmPlayerConfig::DefaultViewSettings.
+    void loadViewSettings(Context& ctx) {
+        auto& o = m_hud->options();
+        const auto& ini = ctx.settings.ini;
+        o.mapMode = static_cast<game::session::MapMode>(std::clamp(ini.getInt("HUD", "MapMode", 0), 0LL, 2LL));
+        o.rotatingMap = ini.getBool("HUD", "RotatingMap", o.rotatingMap);
+        o.zoomedIn = ini.getBool("HUD", "MapZoomIn", o.zoomedIn);
+        o.opponentIcons = ini.getBool("HUD", "OpponentIcons", o.opponentIcons);
+        o.cluster = ini.getBool("HUD", "Cluster", o.cluster);
+        m_hudMapBeforeFull = o.mapMode;
+    }
+
+    void saveViewSettings(Context& ctx) {
+        const auto& o = m_hud->options();
+        auto& ini = ctx.settings.ini;
+        // The full-screen map is not kept (mmPlayerConfig keeps the mode it
+        // was opened from).
+        const auto mode = o.mapMode == game::session::MapMode::FullScreen ? m_hudMapBeforeFull : o.mapMode;
+        if (o.mapMode != game::session::MapMode::FullScreen)
+            m_hudMapBeforeFull = o.mapMode;
+        ini.setInt("HUD", "MapMode", static_cast<int>(mode));
+        ini.setBool("HUD", "RotatingMap", o.rotatingMap);
+        ini.setBool("HUD", "MapZoomIn", o.zoomedIn);
+        ini.setBool("HUD", "OpponentIcons", o.opponentIcons);
+        ini.setBool("HUD", "Cluster", o.cluster);
+        ctx.saveSettings();
     }
 
     game::CameraTarget cameraTarget() const {
@@ -1278,13 +1437,10 @@ private:
     // The original's car cameras (TrackCamCS / PovCamCS, ported from MM1).
     void updateCarCamera(Context& ctx, float dt) {
         auto& in = ctx.input;
-        using platform::Key;
-        if (in.keyPressed(Key::C))
-            m_cams.toggleCamera();
-        if (in.keyPressed(Key::V))
-            m_cams.setDashboard(!m_cams.dashboard());
-        bool left = in.keyDown(Key::Kp4), right = in.keyDown(Key::Kp6), back = in.keyDown(Key::Kp2),
-             forward = in.keyDown(Key::Kp8);
+        using controls::Action;
+        // mmInput::GetCamPan: the look keys.
+        bool left = m_bindings.down(in, Action::LookLeft), right = m_bindings.down(in, Action::LookRight),
+             back = m_bindings.down(in, Action::LookBack), forward = m_bindings.down(in, Action::LookForward);
         for (const auto& pad : in.gamepads()) {
             using platform::GamepadAxis;
             using platform::GamepadButton;
@@ -1406,7 +1562,7 @@ private:
         ImGui::Checkbox("PVS", &m_detail.usePvs);
         if (ImGui::SliderInt("Object detail", &m_objectDetail, 0, 3))
             m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
-        ImGui::TextDisabled("Arrows/WASD drive, Space handbrake, C camera, V dash, keypad look, R reset, F2 free cam, F3 panel");
+        ImGui::TextDisabled("Keys as in Options > Controls; F2 free camera, F3 this panel");
         ImGui::End();
     }
 
@@ -1438,7 +1594,13 @@ private:
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
-    float m_steer = 0.0f;
+    // The player's controls: [Controls] bindings and options (mmInput).
+    controls::Bindings m_bindings;
+    controls::Options m_controlOptions;
+    controls::DiscreteSteering m_keySteer;
+    // The game is paused (asRoot): the full-screen map in single player.
+    bool m_paused = false;
+    game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
     std::unique_ptr<ai::World> m_ai;
 

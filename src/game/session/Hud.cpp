@@ -318,6 +318,12 @@ bool checkReadoutShown(GameMode mode, const LessonEvent* lesson) {
              (lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy));
 }
 
+MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen) {
+    if (mode == MapMode::FullScreen)
+        return beforeFullScreen;
+    return static_cast<MapMode>((static_cast<int>(mode) + 1) % 3);
+}
+
 std::uint32_t mapIconColor(MapIcon icon) {
     // mmHudMap's IconType colour table (0xAARRGGBB).
     static constexpr std::array<std::uint32_t, 10> kTable{0xFF000000u, 0xFFFF0000u, 0xFF0000EFu, 0xFF00EF00u,
@@ -594,6 +600,34 @@ void Hud::drawDash(const Camera& camera, const PlayerState& player, float steeri
 
 Vec4 Hud::mapRect(const render::UiLayout& l) const {
     return hud::mapRect(l, m_map, m_options, m_rightHandDrive);
+}
+
+void Hud::cycleMap() { m_options.mapMode = hud::nextMapMode(m_options.mapMode, m_mapModeBeforeFull); }
+
+void Hud::toggleFullScreenMap() {
+    if (m_options.mapMode == MapMode::FullScreen) {
+        m_options.mapMode = m_mapModeBeforeFull;
+    } else {
+        m_mapModeBeforeFull = m_options.mapMode;
+        m_options.mapMode = MapMode::FullScreen;
+    }
+}
+
+void Hud::toggleMapZoom() {
+    if (m_options.mapMode != MapMode::Off)
+        m_options.zoomedIn = !m_options.zoomedIn;
+}
+
+void Hud::toggleMapRotation() {
+    if (m_options.mapMode != MapMode::Off)
+        m_options.rotatingMap = !m_options.rotatingMap;
+}
+
+void Hud::toggleCluster() {
+    if (m_options.cluster)
+        m_options.cluster = false;
+    else if (!m_options.dashboard)
+        m_options.cluster = true;
 }
 
 void Hud::drawMap(const Session& session, const PlayerState& player, std::span<const MapBlip> blips,
@@ -892,7 +926,7 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
     trackLapTimes(session);
 
     // The instrument cluster (mmExternalView) is replaced by the dashboard.
-    if (m_options.visible && !m_options.dashboard)
+    if (m_options.visible && m_options.cluster && !m_options.dashboard)
         drawCluster(ov, art, player, l.left, l.bottom - px(100.0f));
 
     // Race clock, top centre (mmHUD::Cull): the count-down in Blitz and the

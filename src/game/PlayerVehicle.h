@@ -34,6 +34,9 @@ public:
 
     // Applies pedal input through the original's automatic-reverse logic.
     void drive(const phys::PedalInput& input) { m_controls.apply(m_sim, input); }
+    // The pedal handling's state (the AUTO REVERSE option, the swapped
+    // pedals that the transmission keys reset).
+    phys::ArcadeControls& controls() { return m_controls; }
     // Held on the start line: full brakes in drive, without the automatic
     // reverse (which would back the car away while the brake is held).
     void hold(float steering);

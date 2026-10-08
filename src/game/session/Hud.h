@@ -103,8 +103,9 @@ enum class MapMode : std::uint8_t {
 };
 
 struct HudOptions {
-    bool visible = true;              // "HUD Toggle" (mmHUD::Toggle): clock, map and dashboard stay
-    MapMode mapMode = MapMode::Small; // MM2 starts new players with the map off (mmStatePack)
+    bool visible = true;              // mmHUD::Toggle / Disable: clock, map and dashboard stay
+    bool cluster = true;              // "HUD Toggle" key: mmHUD::ToggleExternalView, the instrument cluster
+    MapMode mapMode = MapMode::Off;   // new players start with the map off (mmStatePack)
     bool rotatingMap = true;          // "Rotating Map" (on in mmStatePack)
     bool zoomedIn = false;            // "Map Zoom" (tune/<city>.mmhudmap ZoomIn)
     bool opponentIcons = true;        // "Opponent Position" (mmIcons; on for new players)
@@ -178,6 +179,10 @@ enum class MapIcon : std::uint8_t {
 // The icon's colour as 0xAARRGGBB (the table DrawIcon indexes).
 std::uint32_t mapIconColor(MapIcon icon);
 
+// mmHudMap::GetNextMapMode ("Map Toggle"): Off -> Small -> Split -> Off;
+// from full screen, the mode it was opened from.
+MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen);
+
 } // namespace hud
 
 class Hud {
@@ -208,6 +213,23 @@ public:
     // Virtual-space rectangle of the map (x, y, w, h) for the current options.
     Vec4 mapRect(const render::UiLayout& layout) const;
 
+    // The in-race view keys, as mmViewMgr::SetViewSetting handles them.
+    // "Map Toggle" (1): Off -> Small -> Split -> Off (mmHudMap::GetNextMapMode);
+    // from full screen, back to the mode it was opened from.
+    void cycleMap();
+    // "Full Screen Map" (10): full screen, remembering the mode (mmHudMap
+    // +0x40), and back to it.
+    void toggleFullScreenMap();
+    // "Map Zoom" (7, mmHudMap::ToggleMapRes) and "Rotating Map" (8,
+    // ToggleMapOrient): nothing while the map is off.
+    void toggleMapZoom();
+    void toggleMapRotation();
+    // "HUD Toggle" (4, mmHUD::ToggleExternalView): the instrument cluster;
+    // it comes back only outside the dashboard view.
+    void toggleCluster();
+    // "Opponent Position" (mmGame::UpdateGameInput, SetIconsState).
+    void toggleOpponentIcons() { m_options.opponentIcons = !m_options.opponentIcons; }
+
 private:
     void drawStands(const Session& session);
     void drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips);
@@ -236,6 +258,7 @@ private:
     // mmHudMap: current camera height and icon size, approaching the targets.
     float m_mapZoom = 0.0f, m_mapIconScale = 0.0f;
     std::optional<MapMode> m_mapModeApplied; // snaps zoom and icon size on change
+    MapMode m_mapModeBeforeFull = MapMode::Off; // mmHudMap +0x40
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;
