@@ -25,8 +25,15 @@ BirthRule VehicleFxSetup::engineSmokeDefaults() {
     return r;
 }
 
+BirthRule& VehicleEffects::engineSmokeRule() {
+    static BirthRule rule = VehicleFxSetup::engineSmokeDefaults();
+    return rule;
+}
+
 VehicleEffects::VehicleEffects(const EffectLibrary& library, const VehicleFxSetup& setup)
-    : m_smokeRule(setup.smokeRule), m_setup(setup), m_sparks(setup.sparkColors) {
+    : m_setup(setup), m_sparks(setup.sparkColors) {
+    // vehCarDamage::Init and the car's file: the shared rule.
+    engineSmokeRule() = setup.smokeRule;
     const ParticleSheet sheet = EffectLibrary::wheelSheet();
     m_wheelPtx.init(kWheelParticles, sheet.framesWide, sheet.framesHigh);
     m_wheelPtx.rng().seed(0x1234u);
@@ -52,7 +59,7 @@ void VehicleEffects::reset() {
     m_wheelFraction = {};
     m_smoke.reset();
     m_smokeFraction = 0.0f;
-    m_smokeRule.texFrameStart = m_smokeRule.texFrameEnd = 0;
+    engineSmokeRule().texFrameStart = engineSmokeRule().texFrameEnd = 0;
     m_damagePoint.reset();
     m_impacts.clear();
 }
@@ -139,8 +146,8 @@ void VehicleEffects::spewSmoke(const Mat34& car, const Vec3& offset, float amoun
     const int n = static_cast<int>(m_smokeFraction);
     if (n == 0)
         return;
-    BirthRule rule = m_smokeRule;
-    rule.velocity = car.transformDir(m_smokeRule.velocity);
+    BirthRule rule = engineSmokeRule();
+    rule.velocity = car.transformDir(rule.velocity);
     rule.position = car.transform(offset);
     m_smokeFraction -= static_cast<float>(n);
     m_smoke.blast(n, &rule);
@@ -174,7 +181,7 @@ void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxCont
     const int level = static_cast<int>(std::ceil(static_cast<double>(f * 4.0f)));
     if (level != 0) {
         constexpr int kFrame[] = {0, 1, 0, 3, 2};
-        m_smokeRule.texFrameStart = m_smokeRule.texFrameEnd = kFrame[std::min(level, 4)];
+        engineSmokeRule().texFrameStart = engineSmokeRule().texFrameEnd = kFrame[std::min(level, 4)];
         Vec3 offset = d.smokeOffset;
         if (d.smokeOffset2 != Vec3{}) {
             if (d.doublePivot) {

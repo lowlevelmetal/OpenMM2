@@ -115,8 +115,10 @@ differs.
 EngineSmokeRule: Velocity (0, 1, 0), VelocityVar (1, 2, 1), Life 0.8 ± 0.4,
 Mass 0.2, Drag 1, Radius 0.3 ± 0.1, DAlpha −15, DRadius 0.03, Gravity 3) is
 overwritten by the particle fields of `tune/vehicle/<car>.vehCarDamage`
-(vehCarDamage::FileIO includes the rule's). MM2 shares one rule between all
-cars, so the last car loaded wins; OpenMM2 keeps one per car.
+(vehCarDamage::FileIO includes the rule's). The rule is shared by all cars
+(`vehCarDamage::EngineSmokeRule`, OpenMM2's `VehicleEffects::engineSmokeRule`),
+so every car smokes with the rule of the last car loaded (which car that is
+follows the order the race creates its cars in).
 
 Each update (`vehCarDamage::Update`): level = ceil(4 × clamp((damage −
 MedDamage) / (MaxDamage − MedDamage))); at levels 1–4 the frame is 1, 0, 3, 2

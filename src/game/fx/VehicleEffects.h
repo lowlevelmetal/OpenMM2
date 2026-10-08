@@ -89,7 +89,10 @@ private:
     std::array<BirthRule, EffectLibrary::kWheelRules> m_wheelRules{};
     std::array<float, 2> m_wheelFraction{}; // one per ptxindex slot, shared by the four wheels
     ParticleSystem m_smoke;
-    BirthRule m_smokeRule;
+    // vehCarDamage::EngineSmokeRule: one rule for every car. Each car's
+    // Init resets it to engineSmokeDefaults() and its .vehCarDamage file
+    // loads over it, so every car smokes with the last loaded car's rule.
+    static BirthRule& engineSmokeRule();
     VehicleFxSetup m_setup;
     float m_smokeFraction = 0.0f;
     int m_nextPivot = 0; // DoublePivot alternation
