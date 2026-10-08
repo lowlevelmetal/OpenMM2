@@ -480,6 +480,8 @@ void Hud::drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_
 void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerState& player, float steering,
                     std::span<const MapBlip> blips) {
     drawStands(session);
+    if (m_cr.enabled)
+        drawCrObjects(camera);
     drawIcons(session, camera, blips);
     if (m_options.visible)
         drawArrow(session, camera);
@@ -487,6 +489,35 @@ void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerSt
     // hides it with the rest.
     if (m_options.dashboard && m_options.visible)
         drawDash(camera, player, steering);
+}
+
+void Hud::drawCrObjects(const Camera& camera) {
+    // mmBillInstance::Draw: the bases are billboards turned with the view,
+    // scaled by (radius 12, height 7.5, radius 12) and raised by half the
+    // height (mmWaypointObject); unlit.
+    for (const auto& base : m_cr.bases) {
+        const GpuModel* model = m_models.get(base.model);
+        const GpuMesh* mesh = model ? model->find("", asset::Lod::Low) : nullptr;
+        if (!mesh)
+            continue;
+        Mat34 m = camera.transform;
+        m.m0 = m.m0 * 12.0f;
+        m.m1 = m.m1 * 7.5f;
+        m.m2 = m.m2 * 12.0f;
+        m.m3 = base.position + Vec3{0.0f, 3.75f, 0.0f};
+        drawFlat(m_device, m_textures, *mesh, model->materials(0), m, true, true);
+    }
+    // mmPowerupInstance::Draw: the gold spins about Y at 3 rad/s, 1.5 m
+    // above its place (lit in the original).
+    if (m_cr.gold) {
+        const GpuModel* model = m_models.get("wpobj_gold");
+        const GpuMesh* mesh = model ? model->find("", asset::Lod::High) : nullptr;
+        if (mesh) {
+            Mat34 m = Mat34::rotationY(m_cr.time * 3.0f);
+            m.m3 = *m_cr.gold + Vec3{0.0f, 1.5f, 0.0f};
+            drawFlat(m_device, m_textures, *mesh, model->materials(0), m, true, true);
+        }
+    }
 }
 
 void Hud::drawStands(const Session& session) {
@@ -547,7 +578,9 @@ void Hud::drawArrow(const Session& session, const Camera& camera) {
     // (Session::arrowTarget); a lost race leaves it pointing.
     if (!hud::arrowShown(session.mode(), session.currentLesson()))
         return;
-    const auto target = session.arrowTarget();
+    // mmMultiCR points it with mmArrow::SetInterest (the gold, or the
+    // carrier's base).
+    const auto target = m_cr.enabled ? m_cr.arrowInterest : session.arrowTarget();
     if (!target)
         return;
     const GpuModel* model = m_models.get("hudarrow01");
@@ -973,6 +1006,32 @@ void Hud::drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, co
                   ui::Align::Center);
 }
 
+void Hud::drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art) {
+    // mmCRHUD::Init: "COPS" / "ROBBERS" (Cops vs. Robbers) or "BLUE" / "RED"
+    // in blue and red at 0 and 0.1 of the screen, each team's total under it
+    // (0.05, 0.15), from the node's corner (placed at the top left here,
+    // inferred; the roster of names and the gold icon are not drawn). In
+    // Free-For-All the player's own score. The time limit's clock is drawn
+    // top centre as mmHUD's.
+    const render::UiLayout& l = ov.layout();
+    const float h = l.bottom - l.top;
+    const ui::FontSpec f = font(251, "Gill Sans MT, 12, 22, 0, 700");
+    const std::uint32_t blue = render::packColor(0, 0, 255), red = render::packColor(255, 0, 0);
+    if (m_cr.teams) {
+        const bool cvr = m_cr.copsVsRobbers;
+        text.draw(ov, f, m_strings.get(cvr ? 264 : 266, cvr ? "COPS" : "BLUE"), l.left, l.top, blue,
+                  ui::Align::Left);
+        text.draw(ov, f, std::format("{}", m_cr.blueScore), l.left, l.top + 0.05f * h, blue, ui::Align::Left);
+        text.draw(ov, f, m_strings.get(cvr ? 265 : 267, cvr ? "ROBBERS" : "RED"), l.left, l.top + 0.1f * h, red,
+                  ui::Align::Left);
+        text.draw(ov, f, std::format("{}", m_cr.redScore), l.left, l.top + 0.15f * h, red, ui::Align::Left);
+    } else {
+        text.draw(ov, f, std::format("{}", m_cr.playerScore), l.left, l.top, kNumberColor, ui::Align::Left);
+    }
+    if (m_cr.timeLeft >= 0.0f)
+        drawClock(ov, art, m_cr.timeLeft, (l.left + l.right) * 0.5f, l.top);
+}
+
 void Hud::postChat(std::string line) {
     for (std::size_t i = 0; i + 1 < m_chat.size(); ++i)
         m_chat[i] = std::move(m_chat[i + 1]);
@@ -1038,6 +1097,8 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
         // SetMessage2: the line under the message.
         drawMessage(ov, text, session.message2(), true);
         drawChat(ov, text); // the chat node sits with the messages
+        if (m_cr.enabled)
+            drawCrReadouts(ov, text, art);
     }
     ov.end();
 }

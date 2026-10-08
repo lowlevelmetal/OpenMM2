@@ -124,6 +124,7 @@ public:
     // Team totals (team 0: cops / blue, team 1: robbers / red).
     int score(CrTeam team) const;
     int playerScore(int id) const;
+    CrTeam teamOf(int id) const;
     float timeRemaining() const { return m_settings.timeLimitSeconds > 0 ? m_timeLeft : -1.0f; }
     // The carrier's extra mass and throttle cap (FondleCarMass: 0 / 100 /
     // 200 kg, throttle 1 / 0.9 / 0.81 above first gear).
@@ -133,7 +134,6 @@ public:
 
 private:
     static bool teamZero(CrTeam t) { return t == CrTeam::Cop || t == CrTeam::Blue; }
-    CrTeam teamOf(int id) const;
     Vec3 randomPoint();
     void newSet();
     void drop(int carId, const Vec3& at, bool toSpawn);

@@ -138,6 +138,8 @@ public:
     // Checkpoint races: the player picks another target checkpoint
     // (mmWaypoints::GetNextWaypoint / GetLastWaypoint).
     void cycleTarget(bool forward);
+    // mmHUD::SetMessage for rules run beside the session (mmMultiCR).
+    void showMessage(std::string text, float seconds, bool top) { setMessage(std::move(text), seconds, top); }
     std::optional<Vec3> arrowTarget() const;
     // Progress shown on the HUD ("Check: n/N", "Lap: n/N", "Place: n/N").
     int checkpointsCleared() const;

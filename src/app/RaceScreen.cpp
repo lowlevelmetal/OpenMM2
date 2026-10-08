@@ -19,6 +19,7 @@
 #include "ai/Police.h"
 #include "ai/World.h"
 #include "game/AiRenderer.h"
+#include "game/session/CopsAndRobbers.h"
 #include "game/session/Hud.h"
 #include "game/session/Session.h"
 #include "game/TrafficBodies.h"
@@ -54,6 +55,21 @@
 
 namespace mm2::app {
 namespace {
+
+// Cops and Robbers' own messages (mmMultiCR's 0x25e pickup request and 0x261
+// ChangeSet) as OpenMM2 game events.
+constexpr auto kCrPickupRequest = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 1);
+constexpr auto kCrNewSet = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 2);
+struct CrSetEvent {
+    Vec3 gold, bank, hideout;
+};
+template <class S>
+bool serialize(S& s, CrSetEvent& e) {
+    s.vec3(e.gold);
+    s.vec3(e.bank);
+    s.vec3(e.hideout);
+    return s.ok();
+}
 
 const char* modePrefix(game::GameMode m) {
     switch (m) {
@@ -196,6 +212,7 @@ public:
         updateAudio(ctx, static_cast<float>(dt));
         updateEffects(static_cast<float>(dt));
         updateSession(ctx, static_cast<float>(dt));
+        updateCopsAndRobbers(ctx, static_cast<float>(dt));
         // Development aid: OPENMM2_DEBUG_FOCUS=ped|car frames the nearest
         // pedestrian or traffic car (for screenshots).
         if (const char* focus = std::getenv("OPENMM2_DEBUG_FOCUS"); focus && m_ai) {
@@ -395,6 +412,7 @@ private:
         if (m_session) {
             phys::setElasticityCap(phys::kElasticityCap); // mmGame::Reset
             m_session->start();
+            setupCopsAndRobbers(ctx);
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                 m_cams.startPreRace();
@@ -1168,6 +1186,235 @@ private:
         m_chatSeen = lines.size();
     }
 
+    // --- Cops and Robbers (mmMultiCR) ------------------------------------------------------
+
+    game::session::CrTeam crTeam(Context& ctx, const std::string& vehicle, int lobbyTeam) const {
+        // mmMultiCR::InitMyPlayer: Cops vs. Robbers and Free-For-All take the
+        // team from the car (vehicle flag 0x08, a police car: team 0); Robber
+        // Teams from the lobby. (OpenMM2's lobby gives Cops vs. Robbers
+        // players the car of their team.)
+        using game::session::CrTeam;
+        const auto* info = ctx.game->catalog.vehicle(vehicle);
+        const bool police = info && (info->flags & 0x08);
+        switch (m_result.config.copsAndRobbers) {
+        case game::CopsAndRobbersMode::RobberTeams: return lobbyTeam == 0 ? CrTeam::Blue : CrTeam::Red;
+        case game::CopsAndRobbersMode::CopsVsRobbers: return lobbyTeam == 0 || police ? CrTeam::Cop : CrTeam::Robber;
+        default: return police ? CrTeam::Cop : CrTeam::Robber;
+        }
+    }
+
+    void setupCopsAndRobbers(Context& ctx) {
+        if (!multiplayer(ctx) || m_result.config.mode != game::GameMode::CopsAndRobbers)
+            return;
+        auto locations = game::session::loadCrLocations(ctx.game->vfs, m_city->info.raceDir);
+        if (!locations) {
+            log::warn("race: no Cops and Robbers places for {}", m_city->info.raceDir);
+            return;
+        }
+        game::session::CrSettings st;
+        st.mode = m_result.config.copsAndRobbers;
+        st.goldMass = ctx.netGame->goldMass();
+        st.timeLimitSeconds = m_result.config.timeLimitMinutes * 60.0f;
+        st.pointLimit = m_result.config.pointLimit;
+        // Every machine starts with the same places (OpenMM2: the shared
+        // start time seeds them; the host's sets follow by message).
+        st.seed = std::max(1u, ctx.netGame->raceStartTime());
+        m_crRng = st.seed;
+        st.randomIntersection = [this]() -> std::optional<Vec3> {
+            if (!m_city->aiMap || m_city->aiMap->intersections.size() < 2)
+                return std::nullopt;
+            m_crRng = m_crRng * 1103515245u + 12345u;
+            const auto& xs = m_city->aiMap->intersections;
+            return xs[1 + ((m_crRng >> 16) & 0x7fffu) % (xs.size() - 1)].center;
+        };
+        // mmMultiCR::DropGold: on the AI map's roads and intersections
+        // (aiMap::PositionToAIMapComp), not in deep water; inferred here from
+        // the level's street rooms.
+        st.canDropAt = [this](const Vec3& p) {
+            const int f = levelFlagsAt(p);
+            return (f & city::kLevelRoomStreet) && !(f & city::kLevelRoomWater);
+        };
+        m_cr = std::make_unique<game::session::CopsAndRobbers>(st, *locations);
+        m_crSelf = ctx.netGame->localId();
+        for (const auto& p : ctx.netGame->players())
+            m_cr->addCar(p.id, crTeam(ctx, p.id == m_crSelf ? m_result.config.vehicle : p.car, p.team));
+        m_crMyTeam = m_cr->teamOf(m_crSelf);
+        m_regen = true; // mmMultiCR::InitMyPlayer: mmPlayer::EnableRegen(1)
+        // mmSpeechContainer::InitCNR loads the Cops and Robbers lines; build
+        // 3393 never plays them (nothing calls mmCNRSpeech::Play).
+        if (m_announcerOk || ctx.settings.commentary)
+            m_announcer.beginCopsAndRobbers();
+    }
+
+    // mmMultiCR::FondleCarMass: the gold's mass on the carrier
+    // (phInertialCS::Init with the mass changed) and its throttle cap.
+    void fondleMass(float kg) {
+        auto& ics = m_player->sim().body.ics;
+        ics.init(ics.mass + kg, ics.inertia.x, ics.inertia.y, ics.inertia.z);
+        m_throttleCap = kg > 0.0f ? m_cr->carrierThrottleCap() : 1.0f;
+    }
+
+    void sendCr(Context& ctx, const std::vector<game::session::CopsAndRobbers::Message>& messages) {
+        using Type = game::session::CopsAndRobbers::Message::Type;
+        for (const auto& m : messages) {
+            switch (m.type) {
+            case Type::PickupRequest:
+                ctx.netGame->sendEvent(kCrPickupRequest,
+                                       net::encodePayload(net::GoldEvent{m.position, static_cast<std::uint8_t>(m.car)}),
+                                       net::kHostPlayerId);
+                break;
+            case Type::GoldTaken: ctx.netGame->sendGold(net::GameEventType::GoldPickedUp, m.position, m.car); break;
+            case Type::GoldDropped: ctx.netGame->sendGold(net::GameEventType::GoldDropped, m.position, m.car); break;
+            case Type::GoldDelivered:
+                ctx.netGame->sendGold(net::GameEventType::GoldDelivered, m.position, m.car);
+                break;
+            case Type::NewSet:
+                ctx.netGame->sendEvent(kCrNewSet, net::encodePayload(CrSetEvent{m.set.gold, m.set.bank, m.set.hideout}));
+                break;
+            }
+        }
+    }
+
+    void updateCopsAndRobbers(Context& ctx, float dt) {
+        if (!m_cr || !m_player || !m_session)
+            return;
+        using game::session::CopsAndRobbers;
+        using Type = CopsAndRobbers::Message::Type;
+        const bool host = ctx.netGame->isHost();
+        // mmPlayer::UpdateRegen while regeneration is on.
+        if (m_regen && m_player->sim().regenerate() && m_vehicle)
+            m_vehicle->resetDamage();
+        // mmMultiCR::UpdateGame for the local car, with the others' places.
+        std::vector<CopsAndRobbers::Car> cars;
+        cars.push_back({m_crSelf, m_crMyTeam, m_player->sim().body.ics.matrix.m3, m_playerState.wrecked,
+                        m_playerState.inWater});
+        for (const auto& rc : ctx.netGame->remoteCars())
+            if (rc.hasState)
+                cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
+                                false});
+        sendCr(ctx, m_cr->updateNetwork(dt, m_crSelf, host, cars, m_crImpacts));
+        m_crImpacts.clear();
+        // The others' messages (mmMultiCR::GameMessage).
+        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+            CopsAndRobbers::Message m;
+            const auto type = static_cast<std::uint16_t>(ev.type);
+            if (type == kCrPickupRequest) {
+                m.type = Type::PickupRequest;
+                m.car = ev.from;
+            } else if (type == kCrNewSet) {
+                const auto set = ev.as<CrSetEvent>();
+                if (!set)
+                    continue;
+                m.type = Type::NewSet;
+                m.set = {set->bank, set->gold, set->hideout};
+            } else if (const auto g = ev.as<net::GoldEvent>(); g && (ev.type == net::GameEventType::GoldPickedUp ||
+                                                                     ev.type == net::GameEventType::GoldDropped ||
+                                                                     ev.type == net::GameEventType::GoldDelivered)) {
+                m.type = ev.type == net::GameEventType::GoldPickedUp  ? Type::GoldTaken
+                         : ev.type == net::GameEventType::GoldDropped ? Type::GoldDropped
+                                                                      : Type::GoldDelivered;
+                m.car = g->team;
+                m.position = g->position;
+            } else {
+                continue;
+            }
+            sendCr(ctx, m_cr->receive(m, ev.from, host));
+        }
+        // What happened, on this machine's HUD and car.
+        auto name = [&](int id) {
+            const auto* p = ctx.netGame->player(static_cast<std::uint8_t>(id));
+            return p ? p->name : std::string();
+        };
+        const auto& s = ctx.game->strings;
+        for (const auto& e : m_cr->takeEvents()) {
+            using E = CopsAndRobbers::EventType;
+            const bool me = e.car == m_crSelf;
+            switch (e.type) {
+            case E::GoldTaken:
+                if (me) {
+                    // StealGold: the mass, no regeneration, "You have the Gold!".
+                    fondleMass(m_cr->carrierExtraMassKg());
+                    m_regen = false;
+                    m_session->showMessage(s.get(host ? 115 : 134, "You have the Gold!"), 5.0f, false);
+                } else {
+                    m_session->showMessage(std::format("{} {}", name(e.car), s.get(135, "has the Gold!")), 5.0f, false);
+                }
+                break;
+            case E::GoldDropped:
+                if (me) {
+                    fondleMass(-m_cr->carrierExtraMassKg());
+                    m_regen = true;
+                    if (!m_playerState.wrecked)
+                        m_session->showMessage(s.get(112, "You dropped the gold!"), 5.0f, false);
+                } else {
+                    m_session->showMessage(std::format("{} {}", name(e.car), s.get(136, "dropped the Gold!")), 5.0f,
+                                           false);
+                }
+                break;
+            case E::GoldDelivered:
+                if (me) {
+                    // UpdateBank / UpdateHideout: regeneration, a repaired car.
+                    fondleMass(-m_cr->carrierExtraMassKg());
+                    m_regen = true;
+                    m_player->sim().damage.reset();
+                    if (m_vehicle)
+                        m_vehicle->resetDamage();
+                    m_session->showMessage(s.get(117, "Gold delivered!"), 5.0f, false);
+                } else {
+                    m_session->showMessage(std::format("{} {}", name(e.car), s.get(137, "delivered the Gold!")),
+                                           5.0f, false);
+                }
+                break;
+            case E::TimeWarning: {
+                // UpdateTimeWarning: 20, 15, 10, 5, 1 minutes (138-142).
+                static constexpr std::pair<int, std::uint32_t> kIds[] = {{20, 138}, {15, 139}, {10, 140}, {5, 141}, {1, 142}};
+                for (const auto& [minutes, id] : kIds)
+                    if (minutes == e.value)
+                        m_session->showMessage(s.get(id, ""), 5.0f, false);
+                break;
+            }
+            case E::TimeUp:
+            case E::PointLimit:
+                // UpdateLimit: the message, then 3 s to the results (state 9).
+                m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 5.0f, false);
+                m_crEnd = 3.0f;
+                break;
+            case E::NewSet: break;
+            }
+        }
+        if (m_crEnd >= 0.0f) {
+            m_crEnd -= dt;
+            if (m_crEnd < 0.0f) {
+                // FillResults; mmPlayer +0x2258; ShowResults.
+                m_crFinished = true;
+                game::RaceResult r = m_session->result();
+                r.ended = true;
+                leaveRace(ctx, r);
+                return;
+            }
+        }
+        // The objects and readouts (mmWaypointObject, mmArrow, mmCRHUD).
+        if (m_hud) {
+            game::session::CrDisplay d;
+            d.enabled = true;
+            d.time = static_cast<float>(m_time);
+            if (m_cr->goldActive() || m_cr->goldCarrier() >= 0)
+                d.gold = m_cr->goldPosition();
+            const bool teams = m_result.config.copsAndRobbers != game::CopsAndRobbersMode::FreeForAll;
+            const bool colours = m_result.config.copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
+            d.bases.push_back({colours ? "pt_blue" : "pt_bank", m_cr->set().bank});
+            d.bases.push_back({colours ? "pt_red" : "pt_hideout", m_cr->set().hideout});
+            d.arrowInterest = m_cr->goldCarrier() == m_crSelf ? m_cr->deliveryTarget(m_crMyTeam) : m_cr->goldPosition();
+            d.teams = teams;
+            d.copsVsRobbers = m_result.config.copsAndRobbers == game::CopsAndRobbersMode::CopsVsRobbers;
+            d.blueScore = m_cr->score(game::session::CrTeam::Cop);
+            d.redScore = m_cr->score(game::session::CrTeam::Robber);
+            d.playerScore = m_cr->playerScore(m_crSelf);
+            d.timeLeft = m_cr->timeRemaining();
+            m_hud->setCopsAndRobbers(std::move(d));
+        }
+    }
+
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
 
     void openPopup(Context& ctx, bool pause) {
@@ -1558,6 +1805,11 @@ private:
     // sounds), the damage effects, and the game's impact callback
     // (mmPlayer::ImpactCallback), which counts the hits.
     void playerImpact(const phys::CarImpact& impact) {
+        // mmMultiCR::ImpactCallback: a hit from another player's car.
+        if (m_cr && impact.otherBody)
+            for (const auto& [id, rv] : m_remotes)
+                if (rv.sim && &rv.sim->sim().body == impact.otherBody)
+                    m_crImpacts.push_back({m_crSelf, id, impact.impulse.mag()});
         if (impact.sound)
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
@@ -1804,7 +2056,12 @@ private:
         // mmPlayer +0x2258: after the other endings the car brakes with the
         // wheel turned full left (CarSim applies it for the player); after
         // the water it is left alone.
-        const bool over = m_session && m_session->playerHold() == game::session::PlayerHold::FinishBrake;
+        const bool over = (m_session && m_session->playerHold() == game::session::PlayerHold::FinishBrake) ||
+                          m_crFinished;
+        // mmGame::UpdateSteeringBrakes, network games: in a forward gear the
+        // throttle is capped by +0x40c (the gold's weight; 1 otherwise).
+        if (multiplayer(ctx) && m_player->sim().trans.getCurrentGear() > 0)
+            pedals.accelerator = std::clamp(pedals.accelerator, 0.0f, m_throttleCap);
         m_player->sim().raceFinished = over;
         if (over) {
             pedals = {};
@@ -2290,6 +2547,15 @@ private:
     game::RearViewMirror m_mirror;       // mmMirror: on / off and its camera (drawn by the renderer)
     std::optional<game::Profile> m_profile; // the driver, for the view settings and rewards
     std::string m_chatText;                  // PUChat's text field
+    std::unique_ptr<game::session::CopsAndRobbers> m_cr; // mmMultiCR's rules
+    std::vector<game::session::CopsAndRobbers::Impact> m_crImpacts; // the local car's hits on network cars
+    int m_crSelf = -1;
+    game::session::CrTeam m_crMyTeam = game::session::CrTeam::Robber;
+    std::uint32_t m_crRng = 1;  // the places' intersection draws
+    float m_crEnd = -1.0f;      // UpdateLimit's wait before the results
+    bool m_crFinished = false;
+    bool m_regen = false;       // mmPlayer::EnableRegen
+    float m_throttleCap = 1.0f; // mmGame +0x40c
     controls::AnalogSteering m_analogSteering; // mmPlayer::FilterSteering
     std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
     bool m_textInput = false;                // SDL text input on for the chat line

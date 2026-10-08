@@ -185,6 +185,25 @@ MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen);
 
 } // namespace hud
 
+// mmMultiCR's objects and readouts for the HUD (Cops and Robbers).
+struct CrDisplay {
+    bool enabled = false;
+    std::optional<Vec3> gold; // the gold's place (drawn while not delivered)
+    struct Base {
+        std::string model; // pt_bank / pt_hideout, pt_blue / pt_red in Robber Teams
+        Vec3 position;
+    };
+    std::vector<Base> bases;
+    std::optional<Vec3> arrowInterest; // mmArrow::SetInterest
+    float time = 0.0f;                 // the powerup's spin (ElapsedTime)
+    // mmCRHUD's readouts: the team totals (team 0 blue, team 1 red) or, in
+    // Free-For-All, the player's score.
+    bool teams = true;
+    bool copsVsRobbers = true; // "COPS" / "ROBBERS", else "BLUE" / "RED"
+    int blueScore = 0, redScore = 0, playerScore = 0;
+    float timeLeft = -1.0f; // the time limit's clock (none below 0)
+};
+
 class Hud {
 public:
     Hud(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs,
@@ -236,6 +255,7 @@ public:
     void toggleCluster();
     // "Opponent Position" (mmGame::UpdateGameInput, SetIconsState).
     void toggleOpponentIcons() { m_options.opponentIcons = !m_options.opponentIcons; }
+    void setCopsAndRobbers(CrDisplay display) { m_cr = std::move(display); }
 
     // mmHUD::PostChatMessage: the chat node's five lines scroll up, the new
     // one last, and the node shows again; mmHUD::Update hides it 15 s after
@@ -259,6 +279,8 @@ private:
     void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
     void drawChat(render::Overlay2D& ov, ui::TextRenderer& text);
+    void drawCrObjects(const Camera& camera);
+    void drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;
     float px(float pixels) const { return pixels * m_options.pixelSize; }
@@ -283,6 +305,7 @@ private:
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;
     std::array<std::string, 5> m_chat; // mmHUD's chat node (+0x8b0)
+    CrDisplay m_cr;
     bool m_chatShown = false;
     float m_chatTime = 0.0f;
 };
