@@ -60,7 +60,12 @@ cams.display();                          // draw body / hide it / draw the dash 
   `vehCarSim::SetWorldMatrix`), and `mmPlayer::SetCamInterest(0)` points them
   at the inertial matrix; whether those differ by the centre of gravity
   offset depends on the physics port.
-* **Inputs.** `speed` is `vehCarSim`'s speed, |m2 . velocity| (it picks
+* **Inputs.** `angularMomentum` is the body's world angular momentum
+  (`camTrackCS::UpdateCar` reads `vehCarSim +0x60`, the inertial body's
+  angular momentum): above 1500 kg m^2/s while the car has been off the
+  ground for 0.1 s, the chase cameras stop following its heading and keep
+  their offset (`UpdateTrack`), so a car tumbling through the air does not
+  drag the view round. `speed` is `vehCarSim`'s speed, |m2 . velocity| (it picks
   `AppXZPos`); `steering`, `throttle` and `handBrake` are the car's inputs;
   `reverseGear` is the transmission in reverse (gear 0); `wheels` give each
   wheel's contact flag and the ground normal of its last probe hit
@@ -153,6 +158,10 @@ camera's `Offset.z` by 0.7352941.
   letterboxed to 66% of the height (from 18% down) and the perspective set
   to 70 degrees; transitions then leave the perspective alone.
   `CameraView::wideAngle()` reports it; the renderer does not letterbox yet.
+  `camViewCS::Reset` sets the camera's own FOV whatever the mode, and
+  `mmPlayer` resets the view on the first update after every reset, so
+  after a reset MM2 shows the letterboxed view at the camera's FOV until a
+  view setting changes. PlayerCameras keeps this.
 
 The meaning of the room flags is **inferred**: mm2hook calls 0x02
 "Subterranean" (MM2 also turns on the tunnel echo with it) and 0x08 "Road",
@@ -270,3 +279,8 @@ HillLerp 0.05, and a point-of-view camera AppXRot 0.5.
   slope and reversing) without NaNs and keep the car framed.
 * **`Camera.PlotPaths`** (with `OPENMM2_CAMERA_PLOT=<dir>`) writes car and
   camera paths as CSV for plotting.
+
+`tests/game/test_parity_camera_props.cpp` (`test_game`, the parity audit,
+see `docs/parity/camera-props.md`): the chase camera keeping its offset over
+a car spinning in the air by angular momentum (and not by angular
+velocity).

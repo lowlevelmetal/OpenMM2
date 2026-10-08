@@ -109,8 +109,10 @@ void TrackCamera::updateCar(float dt, const CameraTarget& t) {
         m_isOnGround = false;
         return;
     }
-    const Vec3& w = t.angularVelocity;
-    const float spin2 = (w.x * w.x + w.y * w.y) + w.z * w.z;
+    // The spin test reads the angular momentum (vehCarSim +0x60, the
+    // inertial body's +0x48), not the angular velocity.
+    const Vec3& l = t.angularMomentum;
+    const float spin2 = (l.x * l.x + l.y * l.y) + l.z * l.z;
     if (t.wheelsOnGround() < 3) {
         m_inAirTime = dt + m_inAirTime;
         if (m_inAirTime > 0.1f) {
@@ -124,7 +126,10 @@ void TrackCamera::updateCar(float dt, const CameraTarget& t) {
             m_inAirTime = 0.0f;
         }
     }
-    // 2.25e6 rad^2/s^2 (1500 rad/s): effectively never reached.
+    // |L| > 1500 kg m^2/s while airborne: a car tumbling or spinning in the
+    // air at roughly one radian per second or more (it depends on the
+    // car's inertia). UpdateTrack then keeps the camera's offset instead
+    // of following the car round.
     m_spinning = (spin2 > 2250000.0f && !m_isOnGround) ? 1 : 0;
 }
 

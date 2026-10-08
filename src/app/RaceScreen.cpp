@@ -1264,7 +1264,7 @@ private:
         game::CameraTarget t;
         // camCarCS tracks vehCarSim's world matrix (the model origin).
         t.matrix = sim.modelMatrix();
-        t.angularVelocity = sim.body.ics.angularVelocity;
+        t.angularMomentum = sim.body.ics.angularMomentum; // camTrackCS::UpdateCar's spin test
         t.speed = sim.speed(); // vehCarSim: |velocity . Z|
         t.steering = sim.steering;
         t.throttle = sim.engine.throttle;

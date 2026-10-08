@@ -22,7 +22,10 @@ struct CameraTarget {
     // The car's frame in the world (camCarCS::Init: the vehCarSim matrix).
     // TrackTo / Offset are expressed in this frame; it faces -m2.
     Mat34 matrix;
-    Vec3 angularVelocity;   // world rad/s (only compared against a huge threshold)
+    // The body's world angular momentum (phInertialCS +0x48, read by
+    // camTrackCS::UpdateCar at vehCarSim +0x60): above 1500 kg m^2/s while
+    // airborne the chase cameras stop tracking the car's heading.
+    Vec3 angularMomentum;
     float speed = 0.0f;     // vehCarSim speed: |m2 . velocity| (m/s)
     float steering = 0.0f;  // steering input, -1 (left) .. 1 (right)
     float throttle = 0.0f;  // engine throttle input, 0 .. 1
