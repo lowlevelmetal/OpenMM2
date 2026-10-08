@@ -1818,8 +1818,15 @@ private:
             // mmPopup::Update, PUMain id 0xb: the OPTIONS pages (menu 5).
             button(0.0f, 0.25f, 1.0f, 0.1f, s.get(466, "Options"), 2,
                    [this, &ctx] { showPopupPage(ctx, frontend::PopupPage::Options); });
+            // mmPopup::Update, PUMain id 0xd: the host of a network race
+            // gets PUQuit (menu 2); everyone else leaves.
             button(0.0f, 0.375f, 1.0f, 0.1f, crash ? s.get(656, "Back to School") : s.get(468, "Quit to Race Menu"), 2,
-                   [this, &ctx] { quitToMenu(ctx); });
+                   [this, &ctx, net] {
+                       if (net && ctx.netGame->isHost())
+                           showPopupPage(ctx, frontend::PopupPage::Quit);
+                       else
+                           quitToMenu(ctx);
+                   });
             button(0.0f, 0.5f, 1.0f, 0.1f, s.get(469, "Exit to Windows"), 2, [this, &ctx] {
                 m_popup = Popup::ConfirmExit;
                 buildPopup(ctx);
@@ -1857,6 +1864,18 @@ private:
         host.controlsChanged = [this, &ctx] { applyControlOptions(ctx); };
         host.show = [this, &ctx](std::optional<frontend::PopupPage> page) { showPopupPage(ctx, page); };
         host.close = [this] { closePopup(); };
+        // PUQuit: everyone back to the lobby, or the session ended (as
+        // host, NetGame::leave ends it for everyone).
+        host.quitToLobby = [this, &ctx] {
+            if (ctx.netGame)
+                ctx.netGame->returnToLobby();
+            quitToMenu(ctx);
+        };
+        host.endSession = [this, &ctx] {
+            if (ctx.netGame)
+                ctx.netGame->leave();
+            quitToMenu(ctx);
+        };
         return host;
     }
 
@@ -1928,11 +1947,13 @@ private:
             if (p == "exit") {
                 m_popup = Popup::ConfirmExit;
                 buildPopup(ctx);
-            } else if (p == "options" || p == "audio" || p == "control" || p == "graphics" || p == "keymap") {
+            } else if (p == "options" || p == "audio" || p == "control" || p == "graphics" || p == "keymap" ||
+                       p == "quit") {
                 showPopupPage(ctx, p == "audio"      ? PopupPage::Audio
                                    : p == "control"  ? PopupPage::Control
                                    : p == "graphics" ? PopupPage::Graphics
                                    : p == "keymap"   ? PopupPage::KeyMap
+                                   : p == "quit"     ? PopupPage::Quit
                                                      : PopupPage::Options);
             } else {
                 showPopupPage(ctx, std::nullopt);

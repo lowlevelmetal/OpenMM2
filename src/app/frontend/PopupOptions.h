@@ -27,8 +27,10 @@
 
 namespace mm2::app::frontend {
 
-// The OPTIONS pages and the key map, by their mmPopup menu ids.
+// The OPTIONS pages, the host's quit menu and the key map, by their mmPopup
+// menu ids.
 enum class PopupPage : std::uint8_t {
+    Quit = 2,     // PUQuit (the host of a network race)
     Options = 5,  // PUOptions
     Audio = 6,    // PUAudioOptions
     Control = 7,  // PUControl
@@ -113,6 +115,10 @@ struct PopupOptionsHost {
     std::function<void(std::optional<PopupPage>)> show;
     // mmPopup::DisablePU: close the popup (the key map's Resume Driving).
     std::function<void()> close;
+    // PUQuit's Quit to Lobby (mmGameMulti::BeDone(1)) and End Session
+    // (BeDone(0) / (2)).
+    std::function<void()> quitToLobby;
+    std::function<void()> endSession;
 };
 
 // The OPTIONS pages of the in-race popup.
@@ -134,6 +140,7 @@ private:
     void buildControl(ui::Menu& menu, const PopupOptionsHost& host);
     void buildGraphics(ui::Menu& menu, const PopupOptionsHost& host);
     void buildKeyMap(ui::Menu& menu, const PopupOptionsHost& host);
+    void buildQuit(ui::Menu& menu, const PopupOptionsHost& host);
     void drawKeyMap(ui::UiFrame& f) const;
     void addOkCancel(ui::Menu& menu, const ui::Box& card, const PopupOptionsHost& host,
                      std::function<void()> cancel);
@@ -168,7 +175,7 @@ private:
 
 // OPENMM2_POPUP_SCRIPT drives the in-race popup for automated screenshots,
 // e.g. "wait:60;open:graphics;wait:2;nav:down": open:<main|options|audio|
-// control|graphics|keymap|exit> opens the popup on that page, nav:<up|down|left|
+// control|graphics|keymap|quit|exit> opens the popup on that page, nav:<up|down|left|
 // right|accept|back> presses a key, wait:<frames> waits.
 class PopupScript {
 public:

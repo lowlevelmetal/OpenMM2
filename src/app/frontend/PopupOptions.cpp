@@ -159,6 +159,7 @@ std::unique_ptr<ui::Menu> PopupOptions::build(PopupPage page, const PopupOptions
     case PopupPage::Control: buildControl(*menu, host); break;
     case PopupPage::Graphics: buildGraphics(*menu, host); break;
     case PopupPage::KeyMap: buildKeyMap(*menu, host); break;
+    case PopupPage::Quit: buildQuit(*menu, host); break;
     }
     return menu;
 }
@@ -170,7 +171,8 @@ void PopupOptions::draw(PopupPage page, ui::UiFrame& f) const {
     // (strings 442, 448, 460) and call CreateTitle(1).
     const auto& s = m_ctx.game->strings;
     switch (page) {
-    case PopupPage::Options: break;
+    case PopupPage::Options:
+    case PopupPage::Quit: break;
     case PopupPage::Audio: popup::drawTitle(f, card, s.get(442, "Audio Options")); break;
     case PopupPage::Control: popup::drawTitle(f, card, s.get(448, "Control Options")); break;
     case PopupPage::Graphics: popup::drawTitle(f, card, s.get(460, "Graphics Options")); break;
@@ -419,6 +421,38 @@ void PopupOptions::buildGraphics(ui::Menu& menu, const PopupOptionsHost& host) {
     };
     toggle(row1, 647, "Vehicle Reflections", "VehicleReflections");
     toggle(row2, 645, "Textured Sky", "TexturedSky");
+}
+
+// PUQuit (menu 2, "QUIT MENU", no title): what the host of a network race
+// gets for PUMain's Quit (mmPopup::Update, PUMain id 0xd with
+// mmGame::NetHost). Three rows across the card from y 0.5 - 1.5 x the
+// button height (0.35, 0.45, 0.55), type 2: Quit to Lobby (479, id 10;
+// mmGameMulti::BeDone(1): the host sends everyone back to the lobby),
+// the session button (id 0xc) and Cancel (482, id 0xd; back to PUMain, as
+// Escape). The session button reads Quit Game (641) and lets the others
+// race on under a migrated host (BeDone(2)), or End Session (481) in Cops
+// and Robbers (mmMultiCR::Init: PUQuit::EnableMigrateHost(false); BeDone(0)
+// ends it). OpenMM2's sessions have no host migration: leaving as host
+// always ends the session, so the button reads End Session.
+void PopupOptions::buildQuit(ui::Menu& menu, const PopupOptionsHost& host) {
+    const auto& s = m_ctx.game->strings;
+    const ui::Box card = popup::kCard;
+    const float y0 = 0.5f - popup::kButtonHeight * 1.5f;
+    auto& lobby = addButton(menu, card, 0.0f, y0, 1.0f, popup::kButtonHeight, s.get(479, "Quit to Lobby"), 2,
+                            [f = host.quitToLobby] {
+                                if (f)
+                                    f();
+                            });
+    addButton(menu, card, 0.0f, y0 + popup::kButtonHeight, 1.0f, popup::kButtonHeight, s.get(481, "End Session"), 2,
+              [f = host.endSession] {
+                  if (f)
+                      f();
+              });
+    auto back = [show = host.show] { show(std::nullopt); };
+    addButton(menu, card, 0.0f, y0 + 2.0f * popup::kButtonHeight, 1.0f, popup::kButtonHeight, s.get(482, "Cancel"), 2,
+              back);
+    menu.setInitialFocus(&lobby); // SetBstate(0)
+    menu.onBack = back;
 }
 
 // PUKey (menu 11, F1 in the race: mmGame::Update and UpdatePaused call
