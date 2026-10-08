@@ -500,13 +500,6 @@ the camera (a probe from 100 m up).
 
 Not implemented, all verified to exist in MM2:
 
-* **Rear-view mirror** drawing ("Rear View Mirror", off by default;
-  `mmMirror`): a viewport `Size` (0.3 × 0.16 of the screen) at the top
-  right, one pixel from the edges, showing the city from `Position` in car
-  space looking backwards, mirrored left-right, with `Fov` / `Aspect` /
-  `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
-  hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
-  the renderer draws it.
 * The CD player display (`mmCDPlayer`): unused in retail (the disc carries
   `cdid.txt`, so the in-race CD player does nothing).
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
