@@ -993,8 +993,9 @@ private:
     void updateAiAudio(float dt) {
         const Mat34& listener = m_camera.transform;
         auto feed = [&](audio::game::OpponentCarAudio& audio, const phys::CarSim& sim, bool siren,
-                        bool pursuingPlayer, std::vector<audio::game::ImpactInput>& impacts) {
+                        bool pursuingPlayer, bool wrecked, std::vector<audio::game::ImpactInput>& impacts) {
             audio::game::CarAudioInputs in = carAudioInputs(sim);
+            in.wrecked = wrecked;
             in.throttle = sim.engine.throttle;
             in.brake = sim.brakes;
             in.transform = sim.modelMatrix();
@@ -1009,10 +1010,13 @@ private:
         };
         for (auto& o : m_opponents)
             if (o.audio)
-                feed(*o.audio, o.sim->sim(), false, false, *o.impacts);
+                feed(*o.audio, o.sim->sim(), false, false, o.sim->sim().damage.wrecked(), *o.impacts);
+        // A cop's explosion follows its driver's wrecked flag (aiVehiclePhysics
+        // +0x9686: set the first update past MaxDamage, cleared by Reset).
         for (auto& c : m_cops)
             if (c.audio)
-                feed(*c.audio, c.sim->sim(), c.driver->siren(), c.driver->target() == 0, *c.impacts);
+                feed(*c.audio, c.sim->sim(), c.driver->siren(), c.driver->target() == 0, c.driver->driver().wrecked(),
+                     *c.impacts);
     }
 
     // The ambient cars' sounds (aiAmbientVehicleAudio, which aiVehicleSpline::Init

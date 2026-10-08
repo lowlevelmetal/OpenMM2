@@ -398,6 +398,7 @@ public:
     void stop();
     bool audible() const { return hasSlot(); }
     bool sirenOn() const { return m_siren && m_siren->on(); }
+    bool explosionPlaying() const { return m_siren && m_siren->explosionPlaying(); }
 
     static constexpr float kMaxDistance = 150.0f; // vehCarAudio::Init SetDropOffs(0, 150)
 
@@ -429,7 +430,6 @@ private:
     bool m_hasHorn = false;
     bool m_hornPressed = false; // vehCarAudioContainer +0: PlayHorn / StopHorn latch
     bool m_prevSiren = false;
-    bool m_prevWrecked = false;
 };
 
 // --- Ambient traffic (positioned) -------------------------------------------------------------

@@ -1082,7 +1082,7 @@ bool OpponentCarAudio::load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, 
     m_attenuation = 0.0f;
     m_doppler = 1.0f;
     m_pan = 0.0f;
-    m_hornPressed = m_prevSiren = m_prevWrecked = false;
+    m_hornPressed = m_prevSiren = false;
     return true;
 }
 
@@ -1189,7 +1189,11 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
             if (audible)
                 m_engine.stop(); // StartSiren silences a positioned car's engine
         }
-        if (in.wrecked && !m_prevWrecked && m_siren->on()) {
+        // aiPoliceOfficer::Update calls PerpEscapes(true) on every update
+        // while the driver's wrecked flag is set (aiVehiclePhysics +0x9686):
+        // PlayExplosion, which starts the explosion again once the last one
+        // has finished, then StopSiren.
+        if (in.wrecked) {
             m_siren->explode(audible, m_attenuation, m_doppler);
             m_siren->stop();
             m_priority = 7;
@@ -1201,7 +1205,6 @@ void OpponentCarAudio::update(const CarAudioInputs& in, float dt, const Mat34& l
         }
     }
     m_prevSiren = in.siren;
-    m_prevWrecked = in.wrecked;
 
     // A network player's horn: vehCarAudioContainer::PlayHorn / StopHorn,
     // latched.

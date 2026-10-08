@@ -811,6 +811,42 @@ TEST(GameAudioRetail, AnnouncerAndAmbience) {
     }
 }
 
+TEST(GameAudioRetail, WreckedCopExplodesAgainUntilReset) {
+    // aiPoliceOfficer::Update calls PerpEscapes(true) on every update while
+    // the driver's wrecked flag is set, siren or not: PlayExplosion starts the
+    // explosion again once the last one has finished.
+    MM2_REQUIRE_GAME_DATA();
+    const auto& v = *test::gameData();
+    SoundBank bank(v);
+    Mixer mixer(48000);
+    const Mat34 listener = Mat34::identity();
+    OpponentCarAudio cop;
+    std::string err;
+    ASSERT_TRUE(cop.load(v, bank, mixer, "vpcop", true, {}, &err)) << err;
+    CarAudioInputs in = grounded();
+    in.rpm = 3000;
+    in.transform.m3 = {10, 0, 0};
+    cop.update(in, 0.02f, listener); // takes a sound slot (PlayExplosion needs one)
+    in.wrecked = true;
+    cop.update(in, 0.02f, listener);
+    EXPECT_TRUE(cop.explosionPlaying());
+    EXPECT_FALSE(cop.sirenOn());
+    auto playOut = [&] {
+        std::vector<float> out(2 * 4800);
+        for (int i = 0; i < 300 && cop.explosionPlaying(); ++i)
+            mixer.mix(out.data(), 4800);
+    };
+    playOut();
+    ASSERT_FALSE(cop.explosionPlaying());
+    cop.update(in, 0.02f, listener); // still wrecked: again
+    EXPECT_TRUE(cop.explosionPlaying());
+    playOut();
+    in.wrecked = false; // Reset clears the flag
+    cop.update(in, 0.02f, listener);
+    EXPECT_FALSE(cop.explosionPlaying());
+    cop.stop();
+}
+
 TEST(GameAudioRetail, OpponentAmbientAndCityEmitters) {
     MM2_REQUIRE_GAME_DATA();
     const auto& v = *test::gameData();

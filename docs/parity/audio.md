@@ -5,10 +5,9 @@ pass (tunnel echo, world-owned ambient objects, cable cars, pedestrian voices,
 the race-side hooks) on 2026-10-08.
 
 Summary (after the second pass): 265 table rows (a row may cover several
-related functions); verified 69, fixed 153, deviation 11, inferred 10,
-open 2, openmm2 20. The open rows are the police explosion repeat (waiting on
-the ai-vehicles audit) and the ambient traffic, which no traffic car drives
-yet.
+related functions); verified 69, fixed 155, deviation 11, inferred 10,
+open 0, openmm2 20. (The police explosion repeat and the ambient traffic
+audio were closed after the ai-vehicles merge.)
 
 Scope: `src/audio/game/*` (P, including `PedAudio.*` from the second pass), `src/audio/Mixer.*`, `Music*`,
 `MusicDirector.*`, `MusicMotif.*` (M), `src/audio/SoundBank.*`, `Wav.*` (F),
@@ -186,7 +185,7 @@ Cross-cutting findings that changed many rows:
 | `PlayerCarAudio::updateEchoState / echoOn / echoOff / updateEcho` | `vehCarAudio::UpdateAudio`, `EchoOn / EchoOff / UpdateEcho`, `vehPoliceCarAudio::UpdateAudio / EchoOn / EchoOff / UpdateEcho`, `vehSemiCarAudio::UpdateAudio / EchoOn / EchoOff / UpdateEcho` | fixed | new: sirens or the semi's beeper and air brake first, then engine, surfaces, the horn 0.05 s behind at 0.997 of its rate (SetEchoFrequency), the clutch at the manager's delay. The police and semi variants skip the echo update on the frame the echo comes on. The car reads the manager through `CarAudioOptions::manager` |
 | `OpponentCarAudio::load` | `vehCarAudioContainer` (modes 0 / 1), `InitSemi`, `InitPolice` | fixed | positioned semis now get the reverse beeper and air brake; siren table by city as above. The `police` argument (an AI cop whose model is not in the list) is an OpenMM2 addition (deviation) |
 | `OpponentCarAudio::update` | `vehCarAudio::UpdateAudio3D` (both), `vehPoliceCarAudio::UpdateAudio3D` (both), `vehSemiCarAudio::UpdateAudio3D`, `aiPoliceOfficer::StartSiren / StopSiren / PerpEscapes` | fixed | StartSiren gets `sirenPursuingPlayer` (MM2 passes `IsPlayer` of the suspect; was always true); a past-max police car with its explosion playing keeps the previous update's values; network horn latched like the container and updated every frame; semi extras |
-| `OpponentCarAudio::update` (siren and explosion triggers) | `aiPoliceOfficer::StartSiren`, `StopSiren`, `PerpEscapes` | open | StartSiren / StopSiren follow `CarAudioInputs::siren` edges, as MM2's officer calls them. MM2 calls `PerpEscapes(true)` (PlayExplosion, then StopSiren) on every officer update while officer +0x968a is nonzero, so the explosion replays whenever it has finished; OpenMM2 explodes once on the rising edge of the cop's wreck state while its siren is on. The field's meaning belongs to the ai-vehicles audit; `wrecked` should mirror it |
+| `OpponentCarAudio::update` (siren and explosion triggers) | `aiPoliceOfficer::StartSiren`, `StopSiren`, `PerpEscapes` | fixed | StartSiren / StopSiren follow `CarAudioInputs::siren` edges, as MM2's officer calls them. MM2 calls `PerpEscapes(true)` (PlayExplosion, then StopSiren) on every officer update while officer +0x968a, the driver's wrecked flag (aiVehiclePhysics +0x9686, set the first update past MaxDamage, cleared by Reset), is set, siren or not, so the explosion replays whenever it has finished. The cop's `wrecked` input is now `PhysicsDriver::wrecked()` and explodes every update while set (test `GameAudioRetail.WreckedCopExplodesAgainUntilReset`); it exploded once, on the rising edge of the car's damage while its siren was on |
 | `OpponentCarAudio::silence` | `vehCarAudio::UnAssignSounds` (and semi / police) | fixed | the echo goes off first; loops stop, impacts / thumps / explosion play out; the distance history is kept |
 | `OpponentCarAudio::updateEchoState / echoOn / echoOff / updateEcho` | as for the player's car | fixed | new: only for a slot holder, before UpdateAudio3D; no clutch sample, a horn only for network cars |
 | `OpponentCarAudio::stop` | — | openmm2 | teardown |
@@ -356,7 +355,7 @@ Cross-cutting findings that changed many rows:
 | --- | --- | --- | --- |
 | `AngelRandom::seed / number` | `Random::Seed`, `Random::Number` | fixed | new port (x87 product kept in double) |
 | `randomizeNumber` (both), `setRandomizeSeedSource` | `AudManagerBase::RandomizeNumber` | fixed | new; the seed source is replaceable for tests (deviation only when replaced) |
-| Ambient traffic audio is not driven by the race | `aiAmbientVehicleAudio`, `aiVehicleSpline` | open | see Missing: the city ambience, announcer (session audit) and pedestrian voices are wired; the traffic cars still create no `AmbientCarAudio` |
+| Ambient traffic audio is driven by the race | `aiAmbientVehicleAudio`, `aiVehicleSpline` | fixed | wired with the ai-vehicles merge (95ac73e): every traffic car gets its `AmbientCarAudio` (and its driver's `CreatureVoice`) when it first drives; RaceScreen updates them each frame (UpdateStatics twice), plays aiGoalAvoidPlayer::Reset's avoidance horn and reaction and aiVehicleActive's impact horn and reaction, and stops a car's audio when it returns to the pool |
 | `parseAmbientSoundSet` sample type clamp | `Aud3DAmbientObject::UpdateSoundData` (Abortf) | deviation | malformed data only |
 | `SirenPlayer::fluctuate` next clamp | `FluctuateSiren` | deviation | malformed data only |
 | `Audio3D::pan` zero pseudo distance | `CalcSinglePlayerPan` | deviation | MM2 divides by 0 |

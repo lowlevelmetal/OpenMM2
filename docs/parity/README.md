@@ -60,6 +60,34 @@ generated assembly or C.
 | formats | [formats.md](formats.md) | asset and data formats, archives |
 | OpenMM2-only | [openmm2-only.md](openmm2-only.md) | check that O files carry no game behaviour |
 
+## Results (2026-10-08)
+
+Every area was audited, most in two passes (the second pass fixed what the
+first left open and wired features across areas). Rows per record, as each
+record's summary counts them:
+
+| Area | Rows | Verified | Fixed | Deviation | Inferred | Open | OpenMM2 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| phys-core | 206 | 75 | 96 | 9 | 10 | 1 | 15 |
+| phys-bounds | 159 | 101 | 36 | 13 | 1 | 0 | 8 |
+| vehicle | 141 | 76 | 42 | 6 | 2 | 1 | 14 |
+| ai-vehicles | 170 | 71 | 67 | 3 | 2 | 1 | 26 |
+| ai-ambient-city | 236 | 116 | 61 | 13 | 22 | 4 | 20 |
+| session | 205 | 89 | 86 | 6 | 4 | 1 | 19 |
+| camera-props | 195 | 107 | 57 | 11 | 2 | 0 | 18 |
+| rendering-fx | 197 | 67 | 94 | 9 | 3 | 4 | 20 |
+| audio | 265 | 69 | 155 | 11 | 10 | 0 | 20 |
+| frontend-ui | 151 | 80 | 39 | 11 | 3 | 2 | 16 |
+| formats | 119 | 23 | 44 | 11 | 7 | 0 | 34 |
+| OpenMM2-only | 34 | 6 | 8 | 5 | 4 | 1 | 10 |
+| **Total** | **2078** | **880** | **785** | **108** | **70** | **15** | **220** |
+
+The open rows and each record's "Missing" table list what still differs
+from MM2 and what porting it needs. The larger missing features are the
+in-race options pages (PUOptions), force feedback, rebinding non-keyboard
+controllers, the Cops and Robbers roster, traffic turn signals and
+ambient traffic movers without a body.
+
 ## Manifest
 
 Lines as of the start of the audit (files the audit added: as of when
