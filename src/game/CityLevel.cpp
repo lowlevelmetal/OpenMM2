@@ -57,9 +57,17 @@ float rowLength(const Vec3& v) {
     return std::sqrt(v.z * v.z + v.y * v.y + v.x * v.x);
 }
 
-// lvlInstance::GetRadius: the geometry set's radius (lvlInstance::GetGeomSet),
-// the largest distance of a vertex of the model's levels of detail from its
-// origin. Null without a model.
+// lvlInstance::GetRadius: the geometry set's radius. lvlFixedAny::Init takes
+// the largest of its entries' radii (lvlInstance::GetGeomSet: the farthest
+// vertex of any level of detail from the origin, modGetStatic) for the model
+// itself and its "mask", "nonrandom", "refl" and "opaque" parts, not its
+// shadow. Null without a model. (No retail collidable city model has any of
+// those parts.)
+bool radiusPart(std::string_view part) {
+    return part.empty() || str::iequals(part, "mask") || str::iequals(part, "nonrandom") ||
+           str::iequals(part, "refl") || str::iequals(part, "opaque");
+}
+
 float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
     const auto bytes = vfs.readAll("geometry/" + str::lower(name) + ".pkg");
     if (!bytes)
@@ -69,7 +77,7 @@ float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
         return 0.0f;
     float radius2 = 0.0f;
     for (const auto& mesh : pkg->meshes) {
-        if (!mesh.part.empty())
+        if (!radiusPart(mesh.part))
             continue;
         for (const auto& section : mesh.sections)
             for (const auto& packet : section.packets)
@@ -539,6 +547,12 @@ int CityLevel::roomFlags(int room) const {
     if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size())
         return 0;
     return m_city.psdl.rooms[static_cast<std::size_t>(room)].flags;
+}
+
+int CityLevel::roomInfoFlags(int room) const {
+    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.levelRoomFlags.size())
+        return 0;
+    return m_city.levelRoomFlags[static_cast<std::size_t>(room)];
 }
 
 void CityLevel::collectProbe(int room, const Vec3& centre, float radius, phys::LevelBound& out) const {

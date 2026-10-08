@@ -1,6 +1,8 @@
 #include "city/CityData.h"
 
 #include "city/Reader.h"
+#include "city/RoomInfo.h"
+#include "city/SdlCollect.h"
 #include "core/StringUtil.h"
 
 #include <algorithm>
@@ -209,6 +211,15 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
     }
     if (auto b = bytesOf("city/materials.csv", false))
         c.textureMaterials = parseTextureMaterials(text(*b));
+
+    // lvlRoomInfo's flags (cityLevel::Load, lvlLevel::LoadInstances).
+    {
+        const auto materials = sdlTextureMaterials(c.psdl, c.textureMaterials, [&](std::string_view name) {
+            return sdlMaterialIndex(c.materials, name);
+        });
+        c.levelRoomFlags = levelRoomFlags(c.psdl, materials, c.water ? &*c.water : nullptr, c.instances,
+                                          c.aiInstances, map);
+    }
 
     auto loadAiConfig = [&](const std::string& path, std::optional<AiMapConfig>& out) {
         if (auto b = bytesOf(path, false)) {

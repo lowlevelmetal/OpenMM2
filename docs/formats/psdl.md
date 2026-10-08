@@ -83,6 +83,28 @@ Names follow mm2hook's `RoomFlags`; the observed use differs for 0x04.
 
 The twelve London rooms flagged 0x46 have no attributes. They are water.
 
+### The game's room flags (lvlRoomInfo)
+
+MM2 keeps a second, separate set of room flags in each room's
+`lvlRoomInfo` (+0). `cityLevel::Load` starts them at 0 and sets them from
+the PSDL; `lvlLevel::LoadInstances` and `gizBridge::Init` add to them.
+mmPlayer::Update (cameras), dgPhysManager::Collide (warp), vehCar
+(sinking, skid marks) and aiPoliceOfficer (giving up a chase) read these,
+not the PSDL byte above. `city::levelRoomFlags` builds them
+(`CityData::levelRoomFlags`, `city::LevelRoomFlag`):
+
+| Bit  | Set when |
+|------|----------|
+| 0x01 | an intersection (PSDL 0x10) that is not a PSDL warp room, or a road (0x08) whose first attribute after its texture and tunnel attributes is not a divided road, in a room that is not a PSDL warp room, after no tunnel or a tunnel whose header has neither of its two low bits. Only `dgPhysManager::CollideTerrain` reads it, behind a switch mmGame keeps off |
+| 0x02, 0x08 | PSDL subterranean (0x02) |
+| 0x04 | "Water of Death": the room's first attribute is a texture whose material is lvlMaterialMgr's second entry (deepwater), or the room is listed in `city/<map>.water` (23 rooms in London, 45 in SF; the .water files list 3 each) |
+| 0x10 | `gizBridge::Init`: the rooms at a bridge and 5 m above it (at run time; not built here) |
+| 0x20 | a `.inst` / `_ai.inst` record with instance flag 0x100 (its own terrain bound) is in the room |
+| 0x40 | rooms 411, 412, 423 and 625 when the city's name contains "sf" |
+
+`cityLevel::GetWaterLevel` returns the `.water` file's level whatever the
+room.
+
 ### Room lookup (cityLevel::FindRoomId)
 
 `city::RoomLocator` follows MM2 (build 3393): the caller's last room if

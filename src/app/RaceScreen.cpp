@@ -2,6 +2,7 @@
 #include "app/Controls.h"
 #include "app/Screens.h"
 #include "city/CityData.h"
+#include "city/RoomInfo.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "asset/VehicleModel.h"
@@ -545,13 +546,23 @@ private:
         return car;
     }
 
-    // The water level under `p` if it lies in a water room (lvlLevel's room
-    // flag 4 and GetWaterLevel; city/<map>.water).
+    // lvlRoomInfo's flags of the room `p` is in (city::LevelRoomFlag), not
+    // the PSDL's room flags.
+    int levelRoomFlagsAt(const Vec3& p) const {
+        if (!m_cityRenderer)
+            return 0;
+        const int room = m_cityRenderer->roomAt(p);
+        if (room <= 0 || static_cast<std::size_t>(room) >= m_city->levelRoomFlags.size())
+            return 0;
+        return m_city->levelRoomFlags[static_cast<std::size_t>(room)];
+    }
+
+    // The water level under `p` if it lies in a Water of Death room
+    // (lvlRoomInfo flag 4: a deepwater first texture, or listed in
+    // city/<map>.water) and cityLevel::GetWaterLevel, the .water file's
+    // level for every room.
     std::optional<float> waterLevelAt(const Vec3& p) const {
-        if (!m_city->water || !m_cityRenderer)
-            return std::nullopt;
-        const auto& rooms = m_city->water->rooms;
-        if (std::find(rooms.begin(), rooms.end(), m_cityRenderer->roomAt(p)) == rooms.end())
+        if (!m_city->water || !(levelRoomFlagsAt(p) & city::LevelRoomFlag::WaterOfDeath))
             return std::nullopt;
         return m_city->water->height;
     }
@@ -823,12 +834,8 @@ private:
         ps.damage01 = sim.damage.damage;
         // mmPlayer::IsMaxDamaged: CurrentDamage strictly past MaxDamage.
         ps.wrecked = sim.damage.maxDamaged();
-        if (m_city->water) {
-            const int room = m_cityRenderer->roomAt(ps.transform.m3);
-            const auto& rooms = m_city->water->rooms;
-            ps.inWater = ps.transform.m3.y < m_city->water->height &&
-                         std::find(rooms.begin(), rooms.end(), room) != rooms.end();
-        }
+        if (const auto level = waterLevelAt(ps.transform.m3))
+            ps.inWater = ps.transform.m3.y < *level;
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
@@ -1768,12 +1775,9 @@ private:
         t.reverseGear = m_player->reversing();
         for (std::size_t i = 0; i < t.wheels.size(); ++i)
             t.wheels[i] = {sim.wheels[i].onGround, sim.wheels[i].intersection.normal};
-        // mmPlayer::Update: the flags of the room the car's model is in.
-        if (m_cityRenderer) {
-            const int room = m_cityRenderer->roomAt(t.matrix.m3);
-            if (room > 0 && static_cast<std::size_t>(room) < m_city->psdl.rooms.size())
-                t.roomFlags = m_city->psdl.rooms[static_cast<std::size_t>(room)].flags;
-        }
+        // mmPlayer::Update: the lvlRoomInfo flags of the room the car's model
+        // is in (0x02 / 0x08 subterranean, 0x20 a terrain-bound instance).
+        t.roomFlags = levelRoomFlagsAt(t.matrix.m3);
         return t;
     }
 

@@ -63,6 +63,8 @@ struct CityData {
     std::optional<std::vector<std::uint32_t>> roomColors; // city/<map>.lmap
     std::vector<PhysMaterial> materials;                  // city/materials.mtl
     std::vector<TextureMaterial> textureMaterials;        // city/materials.csv
+    // The game's own room flags (lvlRoomInfo, see RoomInfo.h), by room id.
+    std::vector<std::uint16_t> levelRoomFlags;
     std::optional<AiMapConfig> cruise, cruisePro;         // race/<dir>/roam.aimap(_p)
     std::vector<PathSet> cityPathSets;                    // race/<dir>/<map>_*.pathset (bridges, ferries...)
     std::vector<std::string> cityPathSetNames;

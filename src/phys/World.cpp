@@ -23,9 +23,12 @@ constexpr std::size_t kMaxActiveRooms = 20;
 // CollideTerrain.
 constexpr int kMaxNeighbors = 8;
 
-// lvlSDL's room flags the wheel probe reads.
-constexpr int kRoomWarp = 0x40;
+// lvlSDL's room flag the wheel probe reads.
 constexpr int kRoomInstance = 0x80;
+// lvlRoomInfo's warp flag dgPhysManager::Collide reads (cityLevel::Load
+// sets it on rooms 411, 412, 423 and 625 of a city whose name contains
+// "sf"; the PSDL's own 0x40 is a different flag).
+constexpr int kRoomInfoWarp = 0x40;
 // lvlSDL::CollideProbe probes at most 10 instance rooms across the start
 // room's perimeter.
 constexpr int kMaxProbeNeighbors = 10;
@@ -249,7 +252,7 @@ bool World::wheelProbe(const Vec3& a, const Vec3& b, RayHit& hit, const Instance
     probeInstances(start);
     if (info.endRoom != start)
         probeInstances(info.endRoom);
-    if (m_level->roomFlags(start) & kRoomWarp)
+    if (m_level->roomInfoFlags(start) & kRoomInfoWarp)
         if (const int target = warpTarget(start); target != 0)
             probeInstances(target);
     if (!found)

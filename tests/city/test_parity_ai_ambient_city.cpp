@@ -1,13 +1,20 @@
 // Parity checks for the city text formats against MM2's loaders (build 3393):
 // numbers read with atoi / atof / sscanf, aiCityData / aiRaceData lists,
 // mmCityInfo counts and dgPath records.
+#include "TestData.h"
+#include "city/CityData.h"
+#include "city/Environment.h"
+#include "city/Inst.h"
 #include "city/PathSet.h"
+#include "city/Psdl.h"
 #include "city/Race.h"
 #include "city/Reader.h"
+#include "city/RoomInfo.h"
 
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 using namespace mm2;
@@ -96,4 +103,88 @@ TEST(ParityCityText, PathSetReadsLikeDgPathLoad) {
     EXPECT_EQ(path.flags[1], 0x22u);
     EXPECT_EQ(path.type, 2);
     EXPECT_FLOAT_EQ(path.spacing, 2.0f);
+}
+
+// cityLevel::Load / lvlLevel::LoadInstances: lvlRoomInfo's flags come from
+// the PSDL room flags, the first texture's material, the .water list, the
+// terrain-bound instances and the "sf" warp rooms.
+TEST(ParityCityRooms, LevelRoomFlagsFollowCityLevelLoad) {
+    using namespace city;
+    Psdl psdl;
+    psdl.textures = {"road", "deep"};
+    psdl.rooms.resize(8);
+    auto texture = [](int value) {
+        PsdlAttribute a;
+        a.type = PsdlAttrType::Texture;
+        a.args = {static_cast<std::uint16_t>(value)};
+        return a;
+    };
+    auto plain = [](PsdlAttrType type, std::uint8_t subtype = 2) {
+        PsdlAttribute a;
+        a.type = type;
+        a.subtype = subtype;
+        a.args = {1, 2};
+        return a;
+    };
+    psdl.rooms[1].flags = RoomFlag::Intersection;
+    psdl.rooms[2].flags = RoomFlag::Intersection | RoomFlag::Warp;
+    psdl.rooms[3].flags = RoomFlag::Road;
+    psdl.rooms[3].attributes = {texture(1), plain(PsdlAttrType::RoadStrip)};
+    psdl.rooms[4].flags = RoomFlag::Road;
+    psdl.rooms[4].attributes = {texture(1), plain(PsdlAttrType::Tunnel, 3), plain(PsdlAttrType::RoadStrip)};
+    psdl.rooms[5].flags = RoomFlag::Road;
+    psdl.rooms[5].attributes = {plain(PsdlAttrType::DividedRoadStrip)};
+    psdl.rooms[6].flags = RoomFlag::Subterranean;
+    psdl.rooms[6].attributes = {texture(2)};
+    psdl.rooms[7].attributes = {plain(PsdlAttrType::Facade), texture(2)};
+    // Texture value 2 ("deep") has lvlMaterialMgr's second material.
+    const std::vector<std::uint8_t> materials = {0, 3, 2};
+    WaterDef water;
+    water.rooms = {7, 0, 99};
+    std::vector<Instance> inst(2);
+    inst[0].room = 5;
+    inst[0].flags = 0x100;
+    inst[1].room = 3;
+    inst[1].flags = 0x2000;
+    const std::vector<Instance> none;
+    const auto f = levelRoomFlags(psdl, materials, &water, inst, none, "london");
+    ASSERT_EQ(f.size(), 8u);
+    EXPECT_EQ(f[1], LevelRoomFlag::OpenRoad);
+    EXPECT_EQ(f[2], 0);
+    EXPECT_EQ(f[3], LevelRoomFlag::OpenRoad);
+    EXPECT_EQ(f[4], 0); // a tunnel with low header bits before the road
+    EXPECT_EQ(f[5], LevelRoomFlag::TerrainInstance);
+    EXPECT_EQ(f[6], LevelRoomFlag::Subterranean | LevelRoomFlag::Covered | LevelRoomFlag::WaterOfDeath);
+    EXPECT_EQ(f[7], LevelRoomFlag::WaterOfDeath); // from the .water list only
+
+    Psdl big;
+    big.rooms.resize(700);
+    const auto sf = levelRoomFlags(big, {}, nullptr, none, none, "sf");
+    for (const int room : {411, 412, 423, 625})
+        EXPECT_EQ(sf[static_cast<std::size_t>(room)], LevelRoomFlag::Warp) << room;
+    EXPECT_EQ(levelRoomFlags(big, {}, nullptr, none, none, "london")[411], 0);
+}
+
+TEST(ParityCityRooms, RetailLevelRoomFlags) {
+    MM2_REQUIRE_GAME_DATA();
+    for (const char* name : {"london", "sf"}) {
+        auto c = city::loadCity(*test::gameData(), name);
+        ASSERT_TRUE(c) << name;
+        ASSERT_EQ(c->levelRoomFlags.size(), c->psdl.rooms.size());
+        int water = 0, terrain = 0, covered = 0;
+        for (std::size_t r = 1; r < c->levelRoomFlags.size(); ++r) {
+            const auto f = c->levelRoomFlags[r];
+            water += (f & city::LevelRoomFlag::WaterOfDeath) != 0;
+            terrain += (f & city::LevelRoomFlag::TerrainInstance) != 0;
+            covered += (f & city::LevelRoomFlag::Covered) != 0;
+            // Covered only ever comes with Subterranean.
+            EXPECT_EQ((f & city::LevelRoomFlag::Covered) != 0, (f & city::LevelRoomFlag::Subterranean) != 0);
+        }
+        ASSERT_TRUE(c->water) << name;
+        for (const int room : c->water->rooms)
+            EXPECT_TRUE(c->levelRoomFlags[static_cast<std::size_t>(room)] & city::LevelRoomFlag::WaterOfDeath);
+        EXPECT_GT(terrain, 0) << name;
+        std::printf("%s: %d water-of-death rooms, %d terrain-instance rooms, %d covered rooms\n", name, water,
+                    terrain, covered);
+    }
 }
