@@ -103,7 +103,7 @@ enum class MapMode : std::uint8_t {
 };
 
 struct HudOptions {
-    bool visible = true;              // mmHUD::Toggle / Disable: clock, map and dashboard stay
+    bool visible = true;              // mmHUD::Enable / Disable: the clock, map and icons stay
     bool cluster = true;              // "HUD Toggle" key: mmHUD::ToggleExternalView, the instrument cluster
     MapMode mapMode = MapMode::Off;   // new players start with the map off (mmStatePack)
     bool rotatingMap = true;          // "Rotating Map" (on in mmStatePack)
@@ -213,6 +213,13 @@ public:
     // Virtual-space rectangle of the map (x, y, w, h) for the current options.
     Vec4 mapRect(const render::UiLayout& layout) const;
 
+    // The scene's view * projection, for the labels mmIcons projects onto
+    // the screen. Set each frame before drawOverlay.
+    void setViewProjection(const Mat44& viewProj) {
+        m_viewProj = viewProj;
+        m_viewProjValid = true;
+    }
+
     // The in-race view keys, as mmViewMgr::SetViewSetting handles them.
     // "Map Toggle" (1): Off -> Small -> Split -> Off (mmHudMap::GetNextMapMode);
     // from full screen, back to the mode it was opened from.
@@ -239,7 +246,9 @@ private:
                      float y);
     void drawClock(render::Overlay2D& ov, ui::TextureCache& art, float seconds, float centerX, float y);
     void drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
-    void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, float drop = 0.0f);
+    void drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session);
+    // `second`: the SetMessage2 line, in its own one-line node under the message.
+    void drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& message, bool second = false);
     void drawTriangle(const Vec3& a, const Vec3& b, const Vec3& c, std::uint32_t argb);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;
@@ -259,6 +268,8 @@ private:
     float m_mapZoom = 0.0f, m_mapIconScale = 0.0f;
     std::optional<MapMode> m_mapModeApplied; // snaps zoom and icon size on change
     MapMode m_mapModeBeforeFull = MapMode::Off; // mmHudMap +0x40
+    Mat44 m_viewProj;
+    bool m_viewProjValid = false;
     int m_arrowPaint = 0;                    // mmArrow colour state
     std::vector<float> m_lapTimes;           // completed laps (mmCircuitHUD::SetLapTime)
     float m_lastLapSeen = 0.0f;

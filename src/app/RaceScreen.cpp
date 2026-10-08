@@ -284,12 +284,19 @@ public:
             m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
+            // mmGame::UpdateGameInput: looking around from a point-of-view
+            // camera disables the HUD (mmHUD::Disable), straight ahead
+            // enables it again.
+            m_hud->options().visible = m_flyCamera || m_cams.display() == game::CarDisplay::Body || m_camPan == 0.0f;
             std::vector<game::session::MapBlip> blips;
             // mmHudMap and mmIcons follow the cars' phInertialCS matrices.
             for (const auto& o : m_opponents)
                 blips.push_back({o.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Opponent});
+            // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
             for (const auto& c : m_cops)
-                blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
+                if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
+                    blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
+            m_hud->setViewProjection(frame.view * frame.proj);
             m_hud->drawWorld(*m_session, m_camera, m_playerState, m_lastPedals.steering, blips);
             m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
@@ -363,6 +370,9 @@ private:
         m_hud->options().metric = ctx.settings.metricUnits;
         m_hud->options().uiScale = ctx.display.uiScale;
         loadViewSettings(ctx);
+        // mmSingleBlitz::InitHUD turns the icons on (iconState = 1).
+        if (m_result.config.mode == game::GameMode::Blitz)
+            m_hud->options().opponentIcons = true;
         m_hud->preload(&m_ui);
         if (m_session) {
             m_session->start();
@@ -814,6 +824,15 @@ private:
             using game::session::EventType;
             if (e.type == EventType::HitWater)
                 m_cams.startWaterCam();
+            // mmSingleStunt::InitHUD turns the icons on for the follow and
+            // destroy events (iconState, mmGame::SetIconsState).
+            if (e.type == EventType::LessonEventStarted && m_hud) {
+                const auto& events = m_session->setup().lessonEvents;
+                if (e.index >= 0 && static_cast<std::size_t>(e.index) < events.size() &&
+                    (events[static_cast<std::size_t>(e.index)].type == game::session::LessonType::Follow ||
+                     events[static_cast<std::size_t>(e.index)].type == game::session::LessonType::Destroy))
+                    m_hud->options().opponentIcons = true;
+            }
             if (e.type == EventType::Respawn) {
                 m_player->reset(m_session->respawnTransform());
                 if (m_vehicleFx)
@@ -1455,6 +1474,7 @@ private:
         }
         game::CameraInput input;
         input.camPan = game::cameraPanFor(left, right, back, forward);
+        m_camPan = input.camPan;
         if (const auto extent = ctx.device().sceneExtent(); extent.height)
             input.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
         const game::CameraProbe probe = [this](const Vec3& from, const Vec3& to, game::CameraHit& out) {
@@ -1600,6 +1620,7 @@ private:
     controls::DiscreteSteering m_keySteer;
     // The game is paused (asRoot): the full-screen map in single player.
     bool m_paused = false;
+    float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
     std::unique_ptr<ai::World> m_ai;

@@ -481,7 +481,9 @@ void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerSt
     drawIcons(session, camera, blips);
     if (m_options.visible)
         drawArrow(session, camera);
-    if (m_options.dashboard)
+    // The dash view is a child of mmHUD's container node: mmHUD::Disable
+    // hides it with the rest.
+    if (m_options.dashboard && m_options.visible)
         drawDash(camera, player, steering);
 }
 
@@ -505,27 +507,33 @@ void Hud::drawStands(const Session& session) {
 void Hud::drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips) {
     if (!m_options.opponentIcons)
         return;
-    // mmIcons::Cull: a triangle card facing the camera, pointing down, 2 m
-    // wide and 4 m tall with its tip 4 m above the object, drawn over
-    // everything.
+    // mmIcons::Cull: a triangle card facing the camera, pointing down: the
+    // corners (0, 4), (s/2, 2s + 4), (-s/2, 2s + 4) for an icon size s,
+    // drawn over everything. Opponents have size 2: 2 m wide and 4 m tall
+    // with the tip 4 m above the car.
     const Mat34& cam = camera.transform;
-    auto card = [&](const Vec3& p, std::uint32_t argb) {
-        drawTriangle(p + cam.m1 * 4.0f, p + cam.m0 * 1.0f + cam.m1 * 8.0f, p - cam.m0 * 1.0f + cam.m1 * 8.0f,
-                     argb);
+    auto card = [&](const Vec3& p, float size, std::uint32_t argb) {
+        const Vec3 top = p + cam.m1 * (2.0f * size + 4.0f);
+        drawTriangle(p + cam.m1 * 4.0f, top + cam.m0 * (0.5f * size), top - cam.m0 * (0.5f * size), argb);
     };
     if (session.mode() == GameMode::Blitz) {
         // mmSingleBlitz::InitHUD / Update: cyan cards 5 m above the
-        // checkpoints still to clear.
+        // checkpoints still to clear, sized 1.9 near the camera up to 4.1
+        // at 300 m and beyond.
         const auto& cps = session.checkpoints();
-        for (std::size_t i = 1; i < cps.size(); ++i)
-            if (session.checkpointVisible(i))
-                card(cps[i].position + Vec3{0.0f, 5.0f, 0.0f}, 0xFF00FFFFu);
+        for (std::size_t i = 1; i < cps.size(); ++i) {
+            if (!session.checkpointVisible(i))
+                continue;
+            const Vec3 p = cps[i].position + Vec3{0.0f, 5.0f, 0.0f};
+            const float d = std::min(cam.m3.dist(p), 300.0f);
+            card(p, d / 300.0f * (4.1f - 1.9f) + 1.9f, 0xFF00FFFFu);
+        }
         return;
     }
     // Opponents (registered for every single-player mode): violet.
     for (const auto& b : blips)
         if (b.kind == MapBlip::Kind::Opponent)
-            card(b.transform.m3, 0xFFB400FFu);
+            card(b.transform.m3, 2.0f, 0xFFB400FFu);
 }
 
 void Hud::drawArrow(const Session& session, const Camera& camera) {
@@ -533,7 +541,9 @@ void Hud::drawArrow(const Session& session, const Camera& camera) {
     // camera, turned toward the target, tilted 20 degrees, unlit, opaque and
     // drawn without depth test; paint job 1 (yellow) while the target is
     // behind.
-    if (!hud::arrowShown(session.mode(), session.currentLesson()) || session.phase() == Phase::PostRace)
+    // mmWaypoints::Update turns the arrow off once the waypoints are done
+    // (Session::arrowTarget); a lost race leaves it pointing.
+    if (!hud::arrowShown(session.mode(), session.currentLesson()))
         return;
     const auto target = session.arrowTarget();
     if (!target)
@@ -863,12 +873,17 @@ void Hud::drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Sess
             std::format("{}/{}", session.checkpointsCleared(), session.checkpointsTotal()));
         row(0.135f, m_strings.get(261, "Lap:  "), std::format("{}/{}", session.lap(), session.laps()));
         // Lap times: "1." ... at 18.5 %, 5 % apart, the time after the
-        // width of "10.  ".
+        // width of "10.  ". mmWaypoints::Update sets the row of the lap
+        // being driven every frame (mmHUD::SetLapTime(lap, 0, false)) until
+        // the race is finished: it runs live; completed laps keep their time.
         const float timeX = l.left + text.measure(ov, labelFont, "10.  ");
-        for (std::size_t i = 0; i < m_lapTimes.size() && static_cast<int>(i) < session.laps(); ++i) {
+        const bool running = session.phase() == Phase::Countdown || session.phase() == Phase::Racing;
+        const std::size_t rows = m_lapTimes.size() + (running ? 1u : 0u);
+        for (std::size_t i = 0; i < rows && static_cast<int>(i) < session.laps(); ++i) {
             const float y = l.top + (static_cast<float>(i + 1) * 0.05f + 0.135f) * h;
+            const float t = i < m_lapTimes.size() ? m_lapTimes[i] : session.lapTime();
             text.draw(ov, labelFont, std::format("{}.", i + 1), l.left, y, kLabelColor);
-            text.draw(ov, numberFont, hud::lapTimeText(m_lapTimes[i]), timeX, y, kNumberColor);
+            text.draw(ov, numberFont, hud::lapTimeText(t), timeX, y, kNumberColor);
         }
         return;
     }
@@ -889,7 +904,7 @@ void Hud::drawReadouts(render::Overlay2D& ov, ui::TextRenderer& text, const Sess
     }
 }
 
-void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& m, float drop) {
+void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMessage& m, bool second) {
     // mmHUD::Update clears the text when the time runs out; until then it shows.
     if (m.text.empty())
         return;
@@ -900,8 +915,12 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
     const render::UiLayout& l = ov.layout();
     const float w = l.right - l.left, h = l.bottom - l.top;
     const ui::FontSpec f = font(60, "Gill Sans MT, 20, 36, 0, 400");
-    const float top = l.top + ((m.top ? 0.2f : 0.8f) + drop) * h;
-    const float boxBottom = top + 0.15f * h;
+    // mmHUD::Update places the nodes: the message at 0.8 (mode 0) or 0.2
+    // (mode 1), 0.15 tall; the second line at 0.875 or 0.2 + 0.15, 0.075
+    // tall (mmHUD::mmHUD).
+    const float y0 = second ? (m.top ? 0.2f + 0.15f : 0.875f) : (m.top ? 0.2f : 0.8f);
+    const float top = l.top + y0 * h;
+    const float boxBottom = top + (second ? 0.075f : 0.15f) * h;
     const float lineHeight = static_cast<float>(f.size2); // DrawText steps by the cell height
     // RenderText: shadow offset = text height / 9, halved for word-wrapped
     // nodes, at least one pixel.
@@ -916,6 +935,40 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
         text.draw(ov, f, line, cx, y, kMessageColor, ui::Align::Center);
         y += lineHeight;
     }
+}
+
+void Hud::drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session) {
+    // mmSingleBlitz::InitHUD registers every checkpoint's number ("%d") with
+    // mmIcons as a label in font string 48, cyan; mmIcons::Cull draws each
+    // label whose point (2 m above the icon) is in front of the camera,
+    // centred over it with its bottom there, nearest first.
+    if (!m_viewProjValid)
+        return;
+    const render::UiLayout& l = ov.layout();
+    const render::Extent2D out = m_device.outputExtent(); // the scene fills the output
+    const ui::FontSpec f = font(48, "Gill Sans MT, 10, 16, 0, 400");
+    struct Label {
+        Vec2 at;
+        float depth;
+        std::size_t index;
+    };
+    std::vector<Label> labels;
+    const auto& cps = session.checkpoints();
+    for (std::size_t i = 1; i < cps.size(); ++i) {
+        const Vec3 p = cps[i].position + Vec3{0.0f, 5.0f + 2.0f, 0.0f};
+        const Vec4 c = m_viewProj.transform(Vec4{p.x, p.y, p.z, 1.0f});
+        if (!(c.w > 0.0f))
+            continue;
+        const float inv = 1.0f / c.w;
+        const Vec2 pixel{(c.x * inv * 0.5f + 0.5f) * static_cast<float>(out.width),
+                         (0.5f - c.y * inv * 0.5f) * static_cast<float>(out.height)};
+        labels.push_back({l.toVirtual(pixel), c.z * inv, i});
+    }
+    std::ranges::sort(labels, {}, &Label::depth);
+    const float lineHeight = static_cast<float>(f.size2);
+    for (const auto& lb : labels)
+        text.draw(ov, f, std::format("{}", lb.index), lb.at.x, lb.at.y - lineHeight, render::packColor(0, 255, 255),
+                  ui::Align::Center);
 }
 
 void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art,
@@ -938,12 +991,16 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
         drawClock(ov, art, shown, (l.left + l.right) * 0.5f, l.top);
     }
 
-    if (m_options.visible) {
+    if (m_options.visible)
         drawReadouts(ov, text, session);
+    if (m_options.opponentIcons && mode == GameMode::Blitz)
+        drawCheckpointLabels(ov, text, session);
+    // mmHUD::mmHUD puts the message nodes under the container mmHUD::Disable
+    // hides in single player, and directly under the HUD in multiplayer.
+    if (m_options.visible || session.multiplayer()) {
         drawMessage(ov, text, session.message());
-        // SetMessage2: the line under the message (mmHUD::Update places it
-        // 0.075 of the screen height lower: 0.875 under 0.8).
-        drawMessage(ov, text, session.message2(), 0.075f);
+        // SetMessage2: the line under the message.
+        drawMessage(ov, text, session.message2(), true);
     }
     ov.end();
 }

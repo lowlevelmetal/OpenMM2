@@ -1343,8 +1343,13 @@ std::optional<Vec3> Session::arrowTarget() const {
 
 int Session::checkpointsCleared() const {
     const int n = static_cast<int>(m_checkpoints.size());
-    if (mode() == GameMode::Circuit)
+    if (mode() == GameMode::Circuit) {
+        // mmCircuitHUD::SetWPCleared shows the index of the waypoint just
+        // passed; mmWaypoints::Reset shows the first target (1) at the start.
+        if (m_wp.count == 1)
+            return std::min(1, std::max(0, n - 1));
         return m_wp.current == 0 ? std::max(0, n - 1) : std::max(0, m_wp.current - 1);
+    }
     // mmWPHUD counts every change of the cleared mask; a checkpoint race's
     // finish adds its bit too.
     const int finish = rule() == WaypointRule::CheckpointRace && m_wp.finished ? 1 : 0;
