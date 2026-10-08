@@ -230,10 +230,13 @@ MM2 draws the PSDL in `sdlPage16::Draw` (immediate mode, four levels of
 detail, the drawn primitives coloured by `GetShadedColor`); compared with
 it (build 3393) the builder differs as follows, not yet ported:
 
-- Levels of detail: 0 uses the group's third texture (road LOD) with half
-  the sections, 1 lowers the sidewalks by 0.15 m, 2 and 3 draw them, and
-  only level 3 raises the curb line by 0.15 m and adds the curb faces, at
-  half brightness. The builder raises curbs to the outer vertex height.
+- Levels of detail (road strips): 0 draws one strip from outer edge to
+  outer edge with the group's third texture (road LOD) over every other
+  section; 1 the same strip over every section with the outer edges lowered
+  0.15 m; 2 and 3 draw the sidewalks (second texture) and the road (first)
+  separately, and only level 3 raises the curb line by 0.15 m and adds the
+  curb faces, at half brightness. The builder raises curbs to the outer
+  vertex height.
 - Road and rectangle strips: `ArcMap` texture coordinates: t is 1 at the
   curbs and 0 at the road's centre line (the texture mirrored about it),
   s the distance along the strip scaled to a whole number of repeats of
