@@ -59,6 +59,9 @@ TrackCamParams bugNear() {
     return p;
 }
 
+// Yaw moment of inertia of the test car (kg m^2), for its angular momentum.
+constexpr float kYawInertia = 2000.0f;
+
 // Simple kinematic car on flat ground, facing -Z at yaw 0.
 struct Car {
     Vec3 pos;
@@ -80,7 +83,7 @@ struct Car {
         CameraTarget t;
         t.matrix = Mat34::rotationY(yaw);
         t.matrix.m3 = pos;
-        t.angularVelocity = {0, yawRate, 0};
+        t.angularMomentum = {0, yawRate * kYawInertia, 0};
         t.speed = std::abs(speed);
         t.steering = steering;
         t.throttle = throttle;

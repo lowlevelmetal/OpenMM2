@@ -582,7 +582,8 @@ an impulse of 100 reach its breakable parts (`vehBreakableMgr`, threshold
 ### Props (`dgBangerData`, `dgUnhitBangerInstance`, `dgBangerActive`) — MM2
 
 `game/bangers/BangerSet`. A standing prop is a banger instance of its room
-(props placed without a room get `findRoom` at their CG, inferred): its bound
+(props placed without a room get `findRoom` at their placement point, as
+cityLevel::LoadPath does): its bound
 (`dgBangerData::InitBound` by CollisionPrim: the `<name>_bound` geometry
 shifted by −CG, else a box of Size; a box; a hotdog of YRadius and Size.y; a
 sphere of YRadius) with its own material (`AdjustPrim`: the data's elasticity

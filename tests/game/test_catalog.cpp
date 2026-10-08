@@ -7,7 +7,9 @@ using namespace mm2;
 
 TEST(Catalog, ParsesVehicleInfo) {
     auto v = game::parseVehicleInfo("BaseName=vpbug\r\nDescription=VW New Beetle\r\nColors=Yellow|Blue\r\n"
-                                    "Flags=64\r\nTop Speed=91 \t\r\nMass=4250\r\nUIDist=5.5\r\n");
+                                    "Flags=64\r\nOrder=-1\r\nScoringBias=20.0\r\nUnlockScore=0\r\n"
+                                    "UnlockFlags=0\r\nHorsepower=150\t\r\nTop Speed=91 \t\r\n"
+                                    "Durability=760000\t\r\nMass=4250\r\nUIDist=5.5\r\n");
     ASSERT_TRUE(v);
     EXPECT_EQ(v->baseName, "vpbug");
     EXPECT_EQ(v->colors.size(), 2u);

@@ -901,7 +901,10 @@ private:
                 m_roadDecals.load(*set);
         if (m_world) {
             m_bangers = std::make_unique<game::bangers::BangerSet>(*m_bangerData);
-            m_bangers->add(game::bangers::placeCityProps(*m_city, ctx.game->vfs, *m_bangerData));
+            // With the race's own props (race/<city>/<mode><N>.pathset).
+            m_bangers->add(game::bangers::placeCityProps(
+                *m_city, ctx.game->vfs, *m_bangerData,
+                game::bangers::racePropsName(m_result.config.mode, m_result.config.raceIndex)));
             // The props are instances of the level's rooms.
             if (m_cityLevel)
                 m_cityLevel->addSource(m_bangers.get());
@@ -1264,7 +1267,7 @@ private:
         game::CameraTarget t;
         // camCarCS tracks vehCarSim's world matrix (the model origin).
         t.matrix = sim.modelMatrix();
-        t.angularVelocity = sim.body.ics.angularVelocity;
+        t.angularMomentum = sim.body.ics.angularMomentum; // camTrackCS::UpdateCar's spin test
         t.speed = sim.speed(); // vehCarSim: |velocity . Z|
         t.steering = sim.steering;
         t.throttle = sim.engine.throttle;

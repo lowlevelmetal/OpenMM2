@@ -22,7 +22,10 @@ struct CameraTarget {
     // The car's frame in the world (camCarCS::Init: the vehCarSim matrix).
     // TrackTo / Offset are expressed in this frame; it faces -m2.
     Mat34 matrix;
-    Vec3 angularVelocity;   // world rad/s (only compared against a huge threshold)
+    // The body's world angular momentum (phInertialCS +0x48, read by
+    // camTrackCS::UpdateCar at vehCarSim +0x60): above 1500 kg m^2/s while
+    // airborne the chase cameras stop tracking the car's heading.
+    Vec3 angularMomentum;
     float speed = 0.0f;     // vehCarSim speed: |m2 . velocity| (m/s)
     float steering = 0.0f;  // steering input, -1 (left) .. 1 (right)
     float throttle = 0.0f;  // engine throttle input, 0 .. 1
@@ -67,6 +70,20 @@ struct CameraInput {
     // (camTrackCS::Collide) keeps the corners of the near plane out of
     // walls, and their spacing depends on it.
     float aspect = 4.0f / 3.0f;
+    // Keys held for the orbit camera (camPolarCS::Update reads the keyboard
+    // itself): Delete / Page Down turn it left / right round its point,
+    // End / Home lower / raise it, Page Up / Insert bring it closer / move
+    // it away; either Shift key gives full speed.
+    struct OrbitKeys {
+        bool azimuthDown = false; // Delete
+        bool azimuthUp = false;   // Page Down
+        bool inclineDown = false; // End
+        bool inclineUp = false;   // Home
+        bool closer = false;      // Page Up
+        bool farther = false;     // Insert
+        bool fast = false;        // Left or right Shift
+    };
+    OrbitKeys orbit;
 };
 
 // mmInput::GetCamPan for the digital look buttons.

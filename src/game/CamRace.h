@@ -4,10 +4,15 @@
 // 3393):
 //   PreCamera   camPreCS    high view behind the car while the race is set up
 //   PointCamera camPointCS  fixed point watching the car (post race, water)
-// Neither is loaded from a tune file (camPreCS::Init does not call Load);
-// they run with their constructor defaults. See docs/camera.md.
+//   PolarCamera camPolarCS  orbit round a point, steered with the keyboard
+//                           (multiplayer finish line)
+// None is loaded from a tune file (camPreCS::Init does not call Load and
+// mmPlayer::Init gives the others no name); they run with their constructor
+// defaults. See docs/camera.md.
 
 #include "game/CamCar.h"
+
+#include <optional>
 
 namespace mm2::game {
 
@@ -66,6 +71,41 @@ private:
     float m_appRate = 0.0f;     // 0x130 (not read)
     float m_minDist = 0.0f;     // 0x134 (not read)
     float m_minDist2 = 0.0f;    // 0x138
+};
+
+// camPolarCS: a polar view round its point of interest (the car, or a fixed
+// point set with setInterest), written straight to the camera (no
+// approach). The keyboard turns, tilts and zooms it every update
+// (CameraInput::orbit). mmPlayer keeps three: the two "XCams" of the camera
+// cheat (not ported) and the multiplayer finish-line camera
+// (mmPlayer::SetMPPostCam).
+class PolarCamera final : public CarCamera {
+public:
+    struct Params {
+        BaseCamParams base{1.2f, 1.0f, 50.0f, 0.1f, 1600.0f}; // CameraNear 0.1
+        AppCamParams app;
+        float polarHeight = 2.5f;    // PolarHeight: added to the height
+        float polarDistance = 10.0f; // PolarDistance, kept within 0.5 .. 200
+        float polarAzimuth = 2.5f;   // PolarAzimuth (rad)
+        float polarIncline = 0.25f;  // PolarIncline (rad above the horizon), kept within +-pi
+        float polarDelta = 2.0f;     // PolarDelta: keyboard rate
+        int azimuthLock = 0;         // AzimuthLock: azimuth relative to the interest's heading
+    };
+
+    PolarCamera();
+    Params& params() { return m_params; }
+
+    // The point the camera orbits: the car (nullopt, camCarCS::Init) or a
+    // fixed frame (mmPlayer::SetMPPostCam passes the finish line's).
+    void setInterest(const std::optional<Mat34>& interest) { m_interest = interest; }
+
+    void reset(const CameraTarget&) override {}
+    void update(float dt, const CameraTarget& target, const CameraProbe& probe, const CameraInput& input,
+                const CameraPerspective& view) override;
+
+private:
+    Params m_params;
+    std::optional<Mat34> m_interest;
 };
 
 } // namespace mm2::game

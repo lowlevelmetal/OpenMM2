@@ -112,7 +112,7 @@ TEST(ProfileStore, CreateListRemove) {
     EXPECT_FALSE(store.create("Alice", &err));
     EXPECT_EQ(err, ProfileStore::CreateError::Duplicate);
     EXPECT_TRUE(store.create("alice")); // duplicates are case-sensitive, like MM2
-    EXPECT_FALSE(store.create("   ", &err));
+    EXPECT_FALSE(store.create("", &err));
     EXPECT_EQ(err, ProfileStore::CreateError::EmptyName);
     // Creation order, not alphabetical.
     auto list = store.list();

@@ -345,7 +345,9 @@ profiles hold the same information. The rules below are MM2's own code
 **Records** (MM2 `mmPlayerRecord`, `mmPlayerCityRecord::NewRecord`). One
 record per city, mode and race, shared by both difficulties: the best time
 (checkpoint and blitz: race time; circuit: best lap; crash course: 1) with the
-car that set it, the best score and a passed flag that is never cleared.
+car that set it (an equal time keeps the earlier car), the best score and a
+passed flag that is never cleared; a record without a time is replaced
+whole by the next finish (the pass stays).
 A race is passed by an amateur in places 1-3 and by a professional only in
 1st place (checkpoint, circuit); a blitz is passed by reaching the finish in
 time at either difficulty; a lesson by its pass event (the game modes'
@@ -368,15 +370,17 @@ index 12 on and lessons from 13 on are never recorded.
 * Crash Course: lessons 0-2, 4-6 and 8-10 are open; midterm 1 (3) after
   0-2, midterm 2 (7) after 4-6, midterm 3 (11) after 8-10, the final (12)
   after everything else (`ResolveCrashProgress`).
-* Blitz and circuit races are all open; without a driver everything is.
+* Blitz and circuit races are all open; without a driver, or in a city
+  other than San Francisco and London, everything is.
 
 **Rewards** (`race/<city>/<city>_rewards.csv`, `mmRewardList`). At most 32
 rows per city; the message ends at the next comma. A row's condition, on that
 city's passed races of its mode: `half` = at least half of the races
 (rounded down), `all` = all of them, a number = that race or lesson (0-based)
-passed. Every row naming a vehicle (`VariantNum` 0) or paint job must be met
-before it can be picked; vehicles no row names are always available (12 of
-20). After a finish the first row of the mode just driven, in table order,
+passed. Every row of San Francisco and London naming a vehicle (`VariantNum`
+0) or paint job must be met before it can be picked
+(`mmInterface::PlayerResolveCars` locks only from those two tables); vehicles
+no row names are always available (12 of 20). After a finish the first row of the mode just driven, in table order,
 that is now met and whose target was still locked is announced on the
 results screen (`mmRewardList::CheckReward`). `UnlockScore` and
 `UnlockFlags` in `tune/*.info` are parsed by MM2 but never used.
@@ -384,14 +388,31 @@ results screen (`mmRewardList::CheckReward`). `UnlockScore` and
 **Score** (`mmGame::CalculateRaceScore`, done by the race session): the car's
 `ScoringBias` × 50 / 25 / 10 for 1st / 2nd / 3rd (blitz counts as 1st) × the
 race's difficulty column. A driver's total is the sum of the best scores of
-all blitz, circuit and checkpoint races in both cities
-(`mmPlayerData::GetTotalScore`).
+all blitz, circuit and checkpoint races of London and San Francisco
+(`mmPlayerData::GetTotalScore`, added up by `mmInterface::PlayerFillStats`),
+shown for professionals only.
 
 **Race records** (the main menu's RACE RECORDS, `mmMiscData`): per
 difficulty, city and race the five best times and the five best scores of
 any driver, recorded with the same conditions as the driver's records; a
-circuit enters every lap's time. OpenMM2 stores them in
+circuit enters every lap's time. Each entry keeps whether that finish passed
+the race (`mmRecord`, shown by `Dialog_HallOfFame`). OpenMM2 stores them in
 `<players dir>/records.ini`.
+
+**Per-driver view settings** (`mmPlayerConfig::GetViewSettings` /
+`SetViewSettings`): the selected car camera, wide angle and dashboard are
+kept with the driver and restored at the next race; a new driver starts on
+the near camera with both off. A driver's name is kept as typed, spaces
+included; only an empty one is refused (`mmInterface::PlayerCreate`). The
+INI files store names quoted so the spaces survive.
+
+**New drivers** (`mmPlayerData::Reset`, `mmInterface::PlayerSetState`,
+`PlayerFillStats`): in MM2 a new driver has no last car until a race
+starts, so the driver panel shows string 64 ("---") as LAST RACE and LAST
+VEHICLE, and the menus start in cruise on vpbug. A profile without a car
+reports it with `Profile::hasLastRace`, and `Profile::selectedVehicle`
+gives vpbug for it; the menus still store the first listed car when they
+create a driver (see docs/parity/camera-props.md).
 
 ## Automation
 

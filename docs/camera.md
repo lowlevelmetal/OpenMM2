@@ -18,6 +18,7 @@ MM2 function.
 | `camPovCS` (hood / dashboard) | `PovCamera` | `CamPov.*` |
 | `camPreCS` (pre-race) | `PreCamera` | `CamRace.*` |
 | `camPointCS` (post-race, water) | `PointCamera` | `CamRace.*` |
+| `camPolarCS` (multiplayer finish line) | `PolarCamera` | `CamRace.*` |
 | `camViewCS` + `camTransitionCS` | `CameraView` | `CamView.*` |
 | `mmPlayer`, `mmViewMgr::SetViewSetting`, `mmGame::UpdateGameInput` (camera parts) | `PlayerCameras` | `CamPlayer.*` |
 | `Matrix34` / `Vector3` helpers | `cam::` functions | `CamMath.*` |
@@ -60,7 +61,12 @@ cams.display();                          // draw body / hide it / draw the dash 
   `vehCarSim::SetWorldMatrix`), and `mmPlayer::SetCamInterest(0)` points them
   at the inertial matrix; whether those differ by the centre of gravity
   offset depends on the physics port.
-* **Inputs.** `speed` is `vehCarSim`'s speed, |m2 . velocity| (it picks
+* **Inputs.** `angularMomentum` is the body's world angular momentum
+  (`camTrackCS::UpdateCar` reads `vehCarSim +0x60`, the inertial body's
+  angular momentum): above 1500 kg m^2/s while the car has been off the
+  ground for 0.1 s, the chase cameras stop following its heading and keep
+  their offset (`UpdateTrack`), so a car tumbling through the air does not
+  drag the view round. `speed` is `vehCarSim`'s speed, |m2 . velocity| (it picks
   `AppXZPos`); `steering`, `throttle` and `handBrake` are the car's inputs;
   `reverseGear` is the transmission in reverse (gear 0); `wheels` give each
   wheel's contact flag and the ground normal of its last probe hit
@@ -95,6 +101,7 @@ cams.display();                          // draw body / hide it / draw the dash 
 | dash | camPovCS | `<car>_dash.campovcs` |
 | pre | camPreCS | none: `camPreCS::Init` does not load, constructor defaults |
 | point | camPointCS | none |
+| polar | camPolarCS | none (`mmPlayer::Init` gives it no name) |
 
 A missing file leaves the camera at the constructor defaults, and its
 `AfterLoad` does not run (`asNode::Load` only calls it after a successful
@@ -138,14 +145,30 @@ camera's `Offset.z` by 0.7352941.
   at the car and narrows its FOV from 60 to 25 degrees as the car gets from
   7.5 m (0.3 x MaxDist) to 25 m away. Camera changes are ignored until the
   next reset.
+* **Multiplayer finish** (`mmPlayer::SetMPPostCam`, from
+  `mmGameMulti::SetFinishCam` when a multiplayer checkpoint race or circuit
+  is over; multiplayer blitz uses the post-race camera above): the far camera
+  is updated once and the view blends (mode 3, 0.8 s) to a `camPolarCS`
+  orbiting the finish line (the last waypoint, the first in a circuit),
+  2.5 m up, at azimuth (heading + 180) x -pi / 180 from the waypoint's
+  heading in degrees, 21.5 m away and 0.34 rad above the horizon, or 15.5 m
+  away and level while the car is in a room with flag 0x02 or 0x08
+  (`PlayerCameras::startMultiplayerPostRace`). `camPolarCS::Update` reads
+  the keyboard every update (`CameraInput::orbit`): Delete / Page Down turn
+  it, End / Home tilt it, Page Up / Insert zoom it, at 0.3 x PolarDelta
+  (2) rad/s and 2 x PolarDelta m/s, or with either Shift key PolarDelta
+  rad/s and 5 x PolarDelta m/s; the distance stays within 0.5 .. 200 m and
+  the incline within +-pi. Camera changes are ignored until the next reset.
 * **Water** (`mmPlayer::Update`, while the car's splash is active): the
   point camera is placed 9 m above the view and blended to (mode 3, 0.8 s),
   once per reset.
 * **Big vehicles** (`mmPlayer::Update`): with `tune/<car>.info` Flags & 0x13
   (vpbus, vpddbus, vpcentury, vpsemi), in a room with flags & 0x0A the near
   or far camera blends to the _ind camera (mode 3, 1 s), and back to the
-  selected camera when out of such rooms. The original also switches in rooms
-  with flag 0x20 when a probe finds geometry above; that probe is not ported.
+  selected camera when out of such rooms. It also switches in rooms with
+  flag 0x20 when a segment from 100 m above the last rendered camera
+  position down to it hits something (`dgPhysManager::Collide`; the
+  position is `gfxRenderState`'s camera, set by `camViewCS::Update`).
   vpsemi, vpcentury and vpddbus have no _ind file and use the defaults.
 * **Collision margin** (`mmPlayer::Update`): the near and far cameras keep
   their near plane 0.33 m out of walls, 1.11 m in rooms with flag 0x08.
@@ -153,6 +176,16 @@ camera's `Offset.z` by 0.7352941.
   letterboxed to 66% of the height (from 18% down) and the perspective set
   to 70 degrees; transitions then leave the perspective alone.
   `CameraView::wideAngle()` reports it; the renderer does not letterbox yet.
+  `camViewCS::Reset` sets the camera's own FOV whatever the mode, and
+  `mmPlayer` resets the view on the first update after every reset, so
+  after a reset MM2 shows the letterboxed view at the camera's FOV until a
+  view setting changes. PlayerCameras keeps this.
+* **View settings** (`mmPlayerConfig::GetViewSettings` /
+  `SetViewSettings`): the selected camera, the wide angle and the
+  dashboard are globals that `mmPlayer::Init` and `Reset` read. They are
+  saved in the driver's config when the game ends and restored when the
+  next race is set up, so the view carries over from race to race
+  (`PlayerCameras::viewSettings` / `setViewSettings`, before `reset`).
 
 The meaning of the room flags is **inferred**: mm2hook calls 0x02
 "Subterranean" (MM2 also turns on the tunnel echo with it) and 0x08 "Road",
@@ -180,6 +213,39 @@ camera, and otherwise keeps its value. A blend therefore ends a little short
 of the target camera's FOV (by up to one update's share of the blend), as
 in the original.
 
+## Rear-view mirror
+
+`CamMirror.*` (`RearViewMirror`) ports `mmMirror`'s camera; drawing it is
+the renderer's job (open for rendering).
+
+* **Data** (`mmMirror::FileIO`): `tune/<car>.mmmirror`, which only 11 cars
+  ship (vp4x4, vpauditt, vpbus, vpcaddie, vpcentury, vpcop, vpdb7,
+  vpddbus, vpford, vppanoz, vpsemi); the others keep the defaults. Fields:
+  Position (the eye in the car's frame; `mmMirror::Init` sets 0, 1.4, -1:
+  1.4 m up and 1 m ahead), Size (0.3, 0.16 of the screen), Fov (10, the
+  vertical FOV in degrees), Aspect (2), NearClip (1.2; 1.2 to 5.8 in the
+  files), FarClip (100).
+* **Frame** (`mmMirror::Init`, `Cull`): the identity turned pi about Y
+  with m0 then negated, so it looks backwards and the picture is mirrored
+  left to right (determinant -1), at Position; the view is that frame times
+  the car's world matrix (`Matrix34::Dot`, `worldMatrix`).
+* **Inset** (`mmMirror::Reset`): `gfxViewport::SetWindow(width - w - 1, 1,
+  w, h)` with w = (int)(width x Size.x) and h = (int)(height x Size.y): the
+  top right corner, one pixel in, and `Perspective(Fov, Aspect, NearClip,
+  FarClip)`: the aspect is fixed at 2 whatever the inset's shape.
+* **On / off**: `mmViewMgr::Init` creates it and leaves it on only when the
+  driver's view settings say so (`mmPlayerConfig`, the byte after the
+  camera globals); `SetViewSetting(9)` (input event 0x1E) toggles it.
+  `mmGameManager::Update` declares it for drawing every frame while it is on,
+  whatever the camera, after the dashboard and the HUD map.
+
+What the renderer must do (`mmMirror::Cull`): set the inset's viewport,
+clear its colour (black) and depth, render from `worldMatrix(car)` with the
+fixed-aspect projection, swap the cull winding (the frame is mirrored),
+hide the player's car body, and draw the level as for the main view
+(`lvlLevel` draw for that viewport), then restore the viewport and the cull
+mode. The inset follows the screen size, so it works at any resolution.
+
 ## Port status
 
 | Function | Status |
@@ -192,12 +258,14 @@ in the original.
 | `camPreCS`, `camPointCS` | ported |
 | `camViewCS::SetCam`, `NewCam`, `Update`, `Reset` | ported (the player's view: `camViewCS+0x48` set, so SetCam leaves the perspective) |
 | `camTransitionCS::Update`, `NewTransition`, `NextTransition`, `StartTransition`, `StartNextTransition`, `ReverseTransition` | ported |
-| `mmPlayer::Init`, `Reset`, `Update`, `SetCamera`, `GetCamera`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `SetPreRaceCam`, `SetPostRaceCam` (camera parts) | ported |
+| `mmPlayer::Init`, `Reset`, `Update`, `SetCamera`, `GetCamera`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `SetPreRaceCam`, `SetPostRaceCam`, `SetMPPostCam` (camera parts) | ported |
+| `mmPlayerConfig::GetViewSettings`, `SetViewSettings` (camera part) | `PlayerCameras::viewSettings` / `setViewSettings` |
 | `mmViewMgr::SetViewSetting` 0, 5, 6, `mmGame::UpdateGameInput` (CamPan), `mmInput::GetCamPan` | ported |
 | `Matrix34::LookAt`, `GetEulers("zxy")`, `FromEulersZXY`, `MakeRotate*`, `Dot`, `Dot3x3`, `Rotate`, `RotateFull`, `PolarView`, `Vector3::Approach`, `Angle`, `InvMag` | ported with the original association of every sum |
-| `camPolarCS` (the cheat "XCams" orbit cameras driven by the keyboard, and `mmPlayer::SetMPPostCam`, which nothing calls) | not ported |
+| `camPolarCS` | ported (`PolarCamera`), used for the multiplayer finish line; the two cheat "XCams" (`SetViewSetting(2)` with the camera cheat) are not ported |
 | `camAICS` (keyboard-driven free camera), `camPostCS` (only its `MakeActive` is called; it is never shown) | not ported |
-| `mmExternalView` (HUD gauges over the chase views), `mmMirror` (rear-view mirror) | HUD, not part of the cameras |
+| `mmMirror::Init`, `Reset`, `FileIO`, the camera part of `Cull` | ported (`RearViewMirror`); drawing it is open (rendering) |
+| `mmExternalView` (HUD gauges over the chase views) | HUD, not part of the cameras |
 | HUD hidden while looking around in the point-of-view cameras (`mmGame::UpdateGameInput`) | not ported (HUD) |
 
 The math is 32-bit float, like the original's single-precision x87. It can
@@ -270,3 +338,11 @@ HillLerp 0.05, and a point-of-view camera AppXRot 0.5.
   slope and reversing) without NaNs and keep the car framed.
 * **`Camera.PlotPaths`** (with `OPENMM2_CAMERA_PLOT=<dir>`) writes car and
   camera paths as CSV for plotting.
+
+`tests/game/test_parity_camera_props.cpp` (`test_game`, the parity audit,
+see `docs/parity/camera-props.md`): the chase camera keeping its offset over
+a car spinning in the air by angular momentum (and not by angular
+velocity); the _ind camera under geometry in flag 0x20 rooms; the polar
+camera's defaults, keys and limits; the multiplayer finish camera in open
+and covered rooms; the view settings carried into the next race; the
+rear-view mirror's frame, inset and retail files.

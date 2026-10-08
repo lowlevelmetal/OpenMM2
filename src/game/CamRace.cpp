@@ -69,4 +69,53 @@ void PointCamera::update(float dt, const CameraTarget& t, const CameraProbe&, co
     }
 }
 
+PolarCamera::PolarCamera() : CarCamera(m_params.base, m_params.app) {}
+
+void PolarCamera::update(float dt, const CameraTarget& t, const CameraProbe&, const CameraInput& input,
+                         const CameraPerspective&) {
+    // camPolarCS::Update. Without Shift the angles turn at 0.3 x PolarDelta
+    // rad/s and the distance changes by 2 x PolarDelta m/s; with Shift at
+    // PolarDelta and 5 x PolarDelta.
+    Params& p = m_params;
+    const CameraInput::OrbitKeys& k = input.orbit;
+    const float step = dt * p.polarDelta;
+    if (!k.fast) {
+        if (k.azimuthDown)
+            p.polarAzimuth = p.polarAzimuth - step * 0.3f;
+        if (k.azimuthUp)
+            p.polarAzimuth = step * 0.3f + p.polarAzimuth;
+        if (k.inclineDown)
+            p.polarIncline = p.polarIncline - step * 0.3f;
+        if (k.inclineUp)
+            p.polarIncline = step * 0.3f + p.polarIncline;
+        if (k.closer)
+            p.polarDistance = p.polarDistance - (step + step);
+        if (k.farther)
+            p.polarDistance = (step + step) + p.polarDistance;
+    } else {
+        if (k.azimuthDown)
+            p.polarAzimuth = p.polarAzimuth - step;
+        if (k.azimuthUp)
+            p.polarAzimuth = step + p.polarAzimuth;
+        if (k.inclineDown)
+            p.polarIncline = p.polarIncline - step;
+        if (k.inclineUp)
+            p.polarIncline = step + p.polarIncline;
+        if (k.closer)
+            p.polarDistance = p.polarDistance - step * 5.0f;
+        if (k.farther)
+            p.polarDistance = step * 5.0f + p.polarDistance;
+    }
+    p.polarIncline = clampf(p.polarIncline, -cam::kPi, cam::kPi);
+    p.polarDistance = clampf(p.polarDistance, 0.5f, 200.0f);
+
+    const Mat34& interest = m_interest ? *m_interest : t.matrix;
+    const float azimuth =
+        p.azimuthLock != 0 ? std::atan2(interest.m2.x, interest.m2.z) + p.polarAzimuth : p.polarAzimuth;
+    cam::polarView(m_camera, p.polarDistance, azimuth, p.polarIncline, 0.0f);
+    const Vec3& o = interest.m3;
+    m_camera.m3 = {m_camera.m3.x + o.x, o.y + m_camera.m3.y, o.z + m_camera.m3.z};
+    m_camera.m3.y = p.polarHeight + m_camera.m3.y;
+}
+
 } // namespace mm2::game

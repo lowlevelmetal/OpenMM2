@@ -11,6 +11,7 @@
 //   dash   camPovCS    tune/camera/<car>_dash.campovcs (dashboard)
 //   pre    camPreCS    before the race (constructor defaults)
 //   point  camPointCS  after the race, and when the car is in the water
+//   polar  camPolarCS  multiplayer finish line (constructor defaults)
 //
 // "Change Camera" cycles near -> pov -> far with a 0.8 s ease-in-out blend
 // (mmViewMgr::SetViewSetting, mmPlayer::SetCamera). See docs/camera.md.
@@ -42,7 +43,7 @@ namespace mm2::game {
 
 class PlayerCameras {
 public:
-    enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash, Pre, Point };
+    enum class View : std::uint8_t { Near, Far, Ind, Pov, Dash, Pre, Point, Polar };
 
     PlayerCameras();
 
@@ -59,6 +60,19 @@ public:
     // flag 0x02 or 0x08 (mmPlayer::Update).
     void setVehicleFlags(int flags) { m_vehicleFlags = flags; }
 
+    // The view settings MM2 keeps per driver: the selected camera, wide
+    // angle and dashboard (globals that mmPlayer::Init and Reset read;
+    // mmPlayerConfig::SetViewSettings restores them from the driver's
+    // config when a race is set up, GetViewSettings saves them when the
+    // game ends). Set before reset(); read after the race.
+    struct ViewSettings {
+        int camera = 0; // index into near, pov (hood), far
+        bool wideAngle = false;
+        bool dashboard = false;
+    };
+    ViewSettings viewSettings() const { return {m_savedIndex, m_wide, m_dashActive}; }
+    void setViewSettings(const ViewSettings& settings);
+
     // (Not named near()/far(): those are macros in <windows.h>.)
     TrackCamera& nearCam() { return m_near; }
     TrackCamera& farCam() { return m_far; }
@@ -67,6 +81,7 @@ public:
     PovCamera& dashCam() { return m_dash; }
     PreCamera& preCam() { return m_pre; }
     PointCamera& pointCam() { return m_point; }
+    PolarCamera& polarCam() { return m_polar; }
     CarCamera& camera(View view);
 
     // mmPlayer::Reset (camera part): back to the selected camera, or the
@@ -98,6 +113,16 @@ public:
     // mmPlayer::SetPostRaceCam: watch the car from above where the far
     // camera is. Applied at the next update.
     void startPostRace();
+    // mmPlayer::SetMPPostCam, from mmGameMulti::SetFinishCam at the end of
+    // a multiplayer checkpoint race or circuit (multiplayer blitz uses
+    // startPostRace): orbit `finish` (the last waypoint, or the first in a
+    // circuit) 2.5 m up at `azimuth`, 21.5 m away and 0.34 rad above the
+    // horizon, or 15.5 m away level with it while the car is in a room with
+    // flag 0x02 or 0x08. mmGameMulti passes azimuth = (heading + 180) x
+    // -pi / 180 with the waypoint's heading in degrees
+    // (mmWaypoints::GetHeading). The keyboard then orbits it
+    // (CameraInput::orbit). Applied at the next update.
+    void startMultiplayerPostRace(const Vec3& finish, float azimuth);
     // mmPlayer::Update when the car has gone into the water: watch it from
     // 9 m above the view. Applied at the next update; once per reset.
     void startWaterCam();
@@ -122,6 +147,7 @@ private:
     PovCamera m_pov, m_dash;
     PreCamera m_pre;
     PointCamera m_point;
+    PolarCamera m_polar; // mmPlayer +0x1FBC
     CameraView m_view;
 
     int m_camIndex = 0;   // mmPlayer+0xE48 into near, pov, far
@@ -133,6 +159,9 @@ private:
     bool m_preRace = false;    // +0xE5A
     bool m_postRace = false;   // +0xE59
     bool m_postPending = false;
+    bool m_mpPostPending = false;
+    Vec3 m_mpPostFinish;
+    float m_mpPostAzimuth = 0.0f;
     bool m_waterPending = false;
     bool m_waterDone = false;  // +0x2344
     bool m_restoreCityCam = false;

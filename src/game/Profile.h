@@ -5,17 +5,23 @@
 // records and which vehicles and paint jobs are unlocked.
 //
 // The rules follow MM2's own code (mmPlayerData, mmPlayerCityRecord,
-// mmRewardList; see docs/frontend.md). MM2 saves profiles in a binary
-// format; OpenMM2 keeps the same information in its own INI files:
+// mmRewardList; see docs/frontend.md). MM2 saves profiles in binary files
+// (players/<playerN>.sav for mmPlayerData, players/<city>/<playerN>.rec per
+// city for mmPlayerCityRecord, <playerN>.cfg for the driver's options);
+// OpenMM2 keeps the same information in its own INI files:
 //
 //   <userDataDir>/players/<file>.ini
 //   [Driver]   Name, NetName
-//   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race
+//   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race,
+//              Camera, WideAngle, Dashboard, Mirror
 //   [Races]    <city>.<mode>.<index> = <time>,<vehicle>,<score>,<passed>
 //
 // mode is one of blitz, circuit, race (checkpoint), crash. Files written by
 // earlier OpenMM2 versions ([Races] keyed by difficulty, [Crash]) are read
-// and converted.
+// and converted. Not kept (yet): the last TCP/IP address (mmPlayerData
+// +0x100), the HUD and mirror bytes of the view settings, and the other
+// per-driver options of mmPlayerConfig (controls, audio, graphics), which
+// OpenMM2 keeps for all drivers in its settings.
 
 #include "game/RaceConfig.h"
 #include "vfs/Vfs.h"
@@ -46,8 +52,12 @@ struct Profile {
     int order = 0; // creation sequence: MM2 lists drivers in the order they were created
 
     // Last choices in the menus: MM2's last car, paint job, event and city,
-    // saved when a race starts (mmInterface::BeDone).
-    std::string vehicle = "vpbug";
+    // saved when a race starts (mmInterface::BeDone). A new driver has no
+    // car yet (mmPlayerData::Reset leaves it empty): the driver record then
+    // shows string 64 ("---") as LAST RACE and LAST VEHICLE
+    // (mmInterface::PlayerFillStats) and the menus select vpbug
+    // (mmInterface::PlayerSetState); see hasLastRace / selectedVehicle.
+    std::string vehicle;
     int vehicleColor = 0;
     bool automatic = true;
     Difficulty difficulty = Difficulty::Amateur;
@@ -55,8 +65,27 @@ struct Profile {
     GameMode mode = GameMode::Cruise;
     int raceIndex = 0;
 
+    // The driver's view settings (mmPlayerConfig +0x7168, copied from and to
+    // the game's globals by GetViewSettings / SetViewSettings): mmGame
+    // restores them when a race starts and saves them when it ends, so the
+    // camera choice carries over from race to race. A new driver has them
+    // all off (mmPlayerConfig::DefaultViewSettings).
+    int camera = 0;         // the cycled car camera: 0 near, 1 point of view, 2 far
+    bool wideAngle = false; // letterboxed wide view
+    bool dashboard = false; // dashboard view
+    // The rear-view mirror on (+0x716C; mmViewMgr::Init leaves the mirror
+    // node active only when it is set; off for a new driver).
+    bool mirror = false;
+
     // Records keyed as in the file format above.
     std::map<std::string, RaceRecord> races;
+
+    // mmInterface::PlayerSetState's fallback when the driver has no car.
+    static constexpr std::string_view kDefaultVehicle = "vpbug";
+    // Whether the driver has started a race: PlayerFillStats tests the car.
+    bool hasLastRace() const { return !vehicle.empty(); }
+    // The car the menus start on (PlayerSetState).
+    std::string selectedVehicle() const { return vehicle.empty() ? std::string(kDefaultVehicle) : vehicle; }
 
     static std::string raceKey(std::string_view city, std::string_view mode, int index);
     const RaceRecord* record(std::string_view city, std::string_view mode, int index) const;
@@ -82,7 +111,9 @@ public:
 
     std::vector<Profile> list() const; // in creation order
     // Fails on an empty name, an exact (case-sensitive) duplicate or when
-    // kMaxDrivers exist.
+    // kMaxDrivers exist (mmInterface::PlayerCreate, mmPlayerDirectory::
+    // AddPlayer). The name is kept as typed, spaces included: a name of
+    // spaces only is a driver, as in MM2 (the INI file stores it quoted).
     std::optional<Profile> create(std::string_view name, CreateError* error = nullptr);
     bool remove(const Profile& p);
     std::string lastUsed() const;          // name of the last selected driver
@@ -102,12 +133,17 @@ private:
 //
 //   [Index]   <table> = 1, for every table below
 //   [<difficulty>.<city>.<mode>.<index>]   difficulty amateur | pro
-//   time0..time4, score0..score4 = <driver>|<vehicle>|<time>|<score>
+//   time0..time4, score0..score4 = <driver>|<vehicle>|<time>|<score>|<passed>
+//
+// (Files without the passed field are read as not passed.)
 struct HallEntry {
     std::string driver;
     std::string vehicle;
     float time = 0.0f; // 0 = empty slot
     int score = 0;
+    // Whether the finish passed the race (mmRecord +0x104, what the mode's
+    // ProgressCheck gave); Dialog_HallOfFame shows passed entries differently.
+    bool passed = false;
 };
 
 class HallOfFame {
@@ -122,7 +158,10 @@ public:
 
     // MM2 `mmMiscData::NewRecord`: the entry goes into the time list before
     // the first slower or empty slot, and into the score list before the
-    // first lower score; the last entry drops out.
+    // first lower score (equal times and scores stay ahead); the last entry
+    // drops out. (MM2 writes only the time into a time slot and only the
+    // score into a score slot, so the other field of a slot is stale; the
+    // Hall of Fame never shows it.)
     void submit(Difficulty d, std::string_view city, std::string_view mode, int index, const HallEntry& e);
     const Table* table(Difficulty d, std::string_view city, std::string_view mode, int index) const;
 
