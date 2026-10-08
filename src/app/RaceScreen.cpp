@@ -452,7 +452,14 @@ private:
         // The player's car collides with its polygonal bound (vehCar::Init
         // with vehBound) and marks what it hits (dgPhysManager's PlayerInst).
         m_player->sim().setPolygonalBound(true);
-        m_player->sim().body.player = true;
+        // mmGame::Update declares the player every frame as mover type 4
+        // with flags 0x1b (it updates, collides with the city, the rooms'
+        // instances and the other movers; its room and the neighbours are
+        // active rooms; it is PlayerInst), and its trailer as type 2, 0x1b.
+        // A declaration holds until changed in World.
+        m_player->sim().body.declare(4, 0x1b);
+        if (auto* trailer = m_player->trailer())
+            trailer->body.declare(2, 0x1b);
         m_player->sim().options.weatherFriction = weatherFriction();
         m_vehicle = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models, m_player->model(),
                                                             m_result.config.vehicleColor);
