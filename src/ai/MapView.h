@@ -90,6 +90,12 @@ public:
     // counted from vertex 0; both kept while the player is in an
     // intersection or off the roads. Fills `car`'s playerRoad / playerVert.
     void trackPlayer(TrackedCar& car);
+    // aiVehiclePlayer::Reset (aiMap::Reset): the players' rooms, roads and
+    // vertices are found afresh (from room 0) on their next update. (MM2
+    // maps the reset position at once and, in an intersection, predicts the
+    // road the player will take, aiMap::PredictIntersectionPath; OpenMM2
+    // keeps no road until the player is on one.)
+    void resetPlayers() { m_players.clear(); }
 
 private:
     void buildRooms();

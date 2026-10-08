@@ -242,6 +242,7 @@ void World::reset() {
     m_lights.reset();
     m_traffic->reset();
     m_peds->reset();
+    m_map->resetPlayers(); // aiVehiclePlayer::Reset
     m_accumulator = 0.0f;
     m_pendingLightSteps = 0;
     m_playerRoom = 0;
