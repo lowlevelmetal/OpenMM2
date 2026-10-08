@@ -6,6 +6,7 @@
 #include "TestData.h"
 #include "city/CityData.h"
 #include "game/Strings.h"
+#include "game/bangers/BangerData.h"
 #include "game/session/CopsAndRobbers.h"
 #include "game/session/RaceSetup.h"
 #include "game/session/Session.h"
@@ -417,6 +418,21 @@ TEST(GameFlowParity, OpponentIconPlaces) {
     run.tick();
     EXPECT_EQ(s->opponentPlace(1), 1);
     EXPECT_GE(s->opponentPlace(0), 2);
+}
+
+// mmMultiCircuit::Init: the concrete barricades' Mass and ImpulseLimit2 x 26.
+TEST(GameFlowParity, MultiplayerCircuitBarricadesAreHeavier) {
+    MM2_REQUIRE_GAME_DATA();
+    game::bangers::BangerDataLibrary lib(*test::gameData());
+    const auto* before = lib.find("sp_barricadeconcl_f");
+    if (!before)
+        GTEST_SKIP() << "no barricade data";
+    const float mass = before->mass, limit = before->impulseLimit2;
+    lib.scaleMass("sp_barricadeconcl_f", 26.0f);
+    const auto* after = lib.find("sp_barricadeconcl_f");
+    ASSERT_TRUE(after);
+    EXPECT_FLOAT_EQ(after->mass, mass * 26.0f);
+    EXPECT_FLOAT_EQ(after->impulseLimit2, limit * 26.0f);
 }
 
 // mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand

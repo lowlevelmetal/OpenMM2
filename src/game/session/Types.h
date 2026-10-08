@@ -124,6 +124,7 @@ enum class GameSound : std::uint8_t {
     TimerWarning,  // "Timerwarning": the last 10 s
     Waypoint,      // "Waypoint": a checkpoint cleared
     LastWaypoint,  // "Lastwaypoint": a circuit lap completed
+    NetAlert,      // "Carhorn1double": mmHUD::PlayNetAlert (multiplayer messages)
 };
 
 inline const char* gameSoundName(GameSound s) {
@@ -137,6 +138,7 @@ inline const char* gameSoundName(GameSound s) {
     case GameSound::TimerWarning: return "Timerwarning";
     case GameSound::Waypoint: return "Waypoint";
     case GameSound::LastWaypoint: return "Lastwaypoint";
+    case GameSound::NetAlert: return "Carhorn1double";
     }
     return "";
 }
@@ -150,6 +152,7 @@ inline float gameSoundVolume(GameSound s, bool crashCourse) {
     case GameSound::DamageLose: return 0.925f;
     case GameSound::Waypoint:
     case GameSound::LastWaypoint: return crashCourse ? 0.91f : 0.95f;
+    case GameSound::NetAlert: return 0.85f; // mmHUD::Init
     default: return 0.9f;
     }
 }

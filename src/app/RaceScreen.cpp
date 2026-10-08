@@ -178,6 +178,7 @@ public:
             m_textInput = false;
         }
         postIncomingChat(ctx);
+        updateNetPlayers(ctx);
         if (m_hud)
             m_hud->updateChat(static_cast<float>(dt));
         if (multiplayer(ctx)) {
@@ -561,6 +562,12 @@ private:
         m_textures = std::make_unique<game::TextureLibrary>(ctx.device(), ctx.game->vfs);
         m_models = std::make_unique<game::ModelLibrary>(ctx.device(), ctx.game->vfs);
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
+        // mmMultiCircuit::Init: the concrete barricades are 26 times as heavy
+        // and as hard to knock loose in a multiplayer circuit.
+        if (multiplayer(ctx) && m_result.config.mode == game::GameMode::Circuit) {
+            m_bangerData->scaleMass("sp_barricadeconcl_f", 26.0f);
+            m_bangerData->scaleMass("sp_barricadeconcr_f", 26.0f);
+        }
         // cityLevel::Load: gfxTexReduceSize = 32 << the Texture Quality
         // option (gfxTextureQuality) while the city loads, no limit after.
         const int textureQuality =
@@ -1695,9 +1702,36 @@ private:
             const auto& line = lines[i];
             if (line.system || line.text.starts_with("/wav"))
                 continue;
-            m_hud->postChat(line.from == ctx.netGame->localId() ? line.text : std::format("{}: {}", line.name, line.text));
+            const bool own = line.from == ctx.netGame->localId();
+            m_hud->postChat(own ? line.text : std::format("{}: {}", line.name, line.text));
+            // mmGameMulti::GameMessageCB 0x1f8: another player's line comes
+            // with mmHUD::PlayNetAlert.
+            if (!own)
+                playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
         }
         m_chatSeen = lines.size();
+    }
+
+    // mmMultiRoam / Race / Circuit / Blitz / CR::SystemMessage 0x2d: a
+    // player who leaves while the game runs gets "<name>" / "has left the
+    // game" (38) for 5 s at the bottom with mmHUD::PlayNetAlert.
+    void updateNetPlayers(Context& ctx) {
+        if (!multiplayer(ctx) || !m_session)
+            return;
+        std::map<std::uint8_t, std::string> now;
+        for (const auto& p : ctx.netGame->players())
+            now[p.id] = p.name;
+        if (m_netPlayersKnown && m_session->phase() == game::session::Phase::Racing) {
+            for (const auto& [id, name] : m_netPlayers) {
+                if (now.contains(id))
+                    continue;
+                m_session->showMessage(name, 5.0f, false);
+                m_session->showMessage2(ctx.game->strings.get(38, "has left the game"));
+                playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
+            }
+        }
+        m_netPlayers = std::move(now);
+        m_netPlayersKnown = true;
     }
 
     // --- Cops and Robbers (mmMultiCR) ------------------------------------------------------
@@ -1904,8 +1938,10 @@ private:
                     if (e.value == 1)
                         m_session->showMessage(s.get(112, "You dropped the gold!"), 5.0f, false);
                 } else {
+                    // GameMessage 0x259: with mmHUD::PlayNetAlert.
                     m_session->showMessage(std::format("{} {}", name(e.car), s.get(136, "dropped the Gold!")), 5.0f,
                                            false);
+                    playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
                 }
                 break;
             case E::GoldDelivered:
@@ -1918,8 +1954,10 @@ private:
                         m_vehicle->resetDamage();
                     m_session->showMessage(s.get(117, "Gold delivered!"), 5.0f, false);
                 } else {
+                    // GameMessage 600: with mmHUD::PlayNetAlert.
                     m_session->showMessage(std::format("{} {}", name(e.car), s.get(137, "delivered the Gold!")),
                                            5.0f, false);
+                    playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
                 }
                 break;
             case E::TimeWarning: {
@@ -3333,6 +3371,8 @@ private:
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
     std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
     std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
+    std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
+    bool m_netPlayersKnown = false;
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;

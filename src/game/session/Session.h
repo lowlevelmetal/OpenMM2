@@ -160,6 +160,8 @@ public:
     void cycleTarget(bool forward);
     // mmHUD::SetMessage for rules run beside the session (mmMultiCR).
     void showMessage(std::string text, float seconds, bool top) { setMessage(std::move(text), seconds, top); }
+    // mmHUD::SetMessage2: a line under the current message.
+    void showMessage2(std::string text) { setMessage2(std::move(text)); }
     std::optional<Vec3> arrowTarget() const;
     // Progress shown on the HUD ("Check: n/N", "Lap: n/N", "Place: n/N").
     int checkpointsCleared() const;
