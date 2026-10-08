@@ -24,6 +24,11 @@ struct Image {
         std::vector<std::uint8_t> rgba; // width * height * 4 bytes
     };
     std::vector<Level> levels;
+    // True when the source format carries alpha (MM2's gfxImage RGBA8888 or
+    // ARGB1555 images: .tex PA8, P8A8, PA4, RGBA8888 and ARGB1555, 32-bit
+    // TGA). gfxTexture::Create marks such textures as alpha textures; the
+    // flag comes from the format, not from the texel values.
+    bool alphaFormat = false;
 
     std::uint32_t width() const { return levels.empty() ? 0 : levels[0].width; }
     std::uint32_t height() const { return levels.empty() ? 0 : levels[0].height; }
@@ -34,37 +39,42 @@ struct Image {
 
 // --- Angel .tex textures (texture/*.tex) -------------------------------------
 //
-// See docs/formats/tex.md. Header (14 bytes, little-endian):
-//   u16 width, u16 height, u16 format, u16 mipCount, u16 reserved (always 1),
+// See docs/formats/tex.md. Read as MM2's gfxLoadTexImage does. Header
+// (14 bytes, little-endian):
+//   u16 width, u16 height, u16 format, u16 mipCount, u16 (ignored; always 1),
 //   u32 flags
-// followed by a 256-entry palette (B,G,R,A bytes, like a Windows RGBQUAD) for
-// paletted formats and then the mip levels, largest first, tightly packed,
-// each stored bottom row first.
+// followed by a palette (B,G,R,A bytes, like a Windows RGBQUAD; 256 entries,
+// 16 for the 4-bit formats) and then the mip levels, largest first, tightly
+// packed, each stored bottom row first.
 
 enum class TexFormat : std::uint16_t {
-    P8 = 1,        // 8-bit palette, opaque palette entries
+    P8 = 1,        // 8-bit palette index; drawn opaque (the palette's alpha is ignored)
+    P8A8 = 2,      // 8-bit palette index followed by an 8-bit alpha per texel; not in retail files
+    ARGB1555 = 6,  // 16-bit A1 R5 G5 B5; not in retail files
     PA8 = 14,      // 8-bit palette with per-entry alpha
-    P4 = 15,       // 4-bit palette (16 entries); not used by retail files
-    PA4 = 16,      // 4-bit palette with alpha; not used by retail files
+    P4 = 15,       // 4-bit palette (16 entries), opaque; not in retail files
+    PA4 = 16,      // 4-bit palette with alpha; not in retail files
     RGB888 = 17,   // 24-bit, bytes R,G,B
     RGBA8888 = 18, // 32-bit, bytes R,G,B,A (note: palettes are B,G,R,A)
 };
 
-// Texture flags ("TexEnv"). Low bits match the Angel engine's
-// agiTexParameters (Open1560); the high bits are MM2-specific and their exact
-// meaning is not yet known. See docs/formats/tex.md for the evidence.
+// Texture flags ("TexEnv"): gfxLoadTexImage stores them in the image and
+// gfxTexture::Create ORs them into the texture's state. MM2's render-state
+// flush (gfxRenderState::DoFlush) reads two of them, the texture address
+// modes; everything else repeats. The other bits the exporter wrote (0x2,
+// 0x4, 0x8000) are not read by MM2's renderer. See docs/formats/tex.md.
 namespace TexFlags {
-inline constexpr std::uint32_t Alpha = 0x1;  // inferred: texture is drawn with alpha blending/testing
-inline constexpr std::uint32_t WrapU = 0x2;  // repeat horizontally (facades, roads, sidewalks)
-inline constexpr std::uint32_t WrapV = 0x4;  // repeat vertically (roads, sidewalks)
-inline constexpr std::uint32_t Unknown8000 = 0x8000;   // set on particles, roads, dashboards
-inline constexpr std::uint32_t Unknown10000 = 0x10000; // set on cars, trees, skies, fences
+inline constexpr std::uint32_t ClampU = 0x1;     // D3DTSS_ADDRESSU = CLAMP (else WRAP)
+inline constexpr std::uint32_t ClampV = 0x10000; // D3DTSS_ADDRESSV = CLAMP (else WRAP)
 } // namespace TexFlags
 
 struct TexHeader {
     std::uint16_t width = 0;
     std::uint16_t height = 0;
     TexFormat format = TexFormat::P8;
+    // Levels stored in the file. 0 means "the whole chain" (gfxImage::Create
+    // keeps halving), as in MM2. The image holds at most as many levels as
+    // MM2's chain has: a level is added only while both sides are above 1.
     std::uint16_t mipCount = 0;
     std::uint16_t reserved = 0;
     std::uint32_t flags = 0;
@@ -77,17 +87,25 @@ struct Texture {
     std::vector<std::uint8_t> palette;
 };
 
+// Fails, like gfxLoadTexImage, on an unknown format or a side that is not a
+// power of two ("Bad resolution"); MM2 then tries the next image type.
 std::optional<Texture> parseTex(std::span<const std::byte> data, std::string* error = nullptr);
 // Header only (cheap; used by listings).
 std::optional<TexHeader> parseTexHeader(std::span<const std::byte> data, std::string* error = nullptr);
 
 // --- Other image files ----------------------------------------------------------
+//
+// MM2's own readers are narrower than these (see docs/formats/images.md):
+// gfxLoadTargaImage reads only uncompressed 24/32-bit TGAs (it ignores the
+// image type, colour map and ID field), gfxLoadBmpImage only uncompressed
+// 8/24-bit BMPs, gfxLoadJPEGImage baseline JPEG through IJG libjpeg, and PNG
+// is not supported. Every retail image decodes the same in both.
 
 // Truevision TGA: uncompressed and RLE, true-colour (16/24/32-bit),
 // colour-mapped and greyscale. Honours the origin bits (output bottom-up).
 std::optional<Image> decodeTga(std::span<const std::byte> data, std::string* error = nullptr);
 
-// JPEG, BMP and PNG through stb_image (single level).
+// JPEG, BMP and PNG through stb_image (single level, opaque except PNG/BMP alpha).
 std::optional<Image> decodeStb(std::span<const std::byte> data, std::string* error = nullptr);
 
 // Decodes by file extension: .tex, .tga, .jpg/.jpeg, .bmp, .png.

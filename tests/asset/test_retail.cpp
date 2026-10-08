@@ -52,9 +52,21 @@ TEST(RetailAssets, AllTexturesDecode) {
     for (const auto& path : filesMatching("texture/", ".tex")) {
         std::string err;
         auto tex = asset::parseTex(read(path), &err);
+        // Two unreferenced retail textures are not a power of two in size;
+        // MM2's gfxLoadTexImage rejects them ("Bad resolution").
+        if (path == "texture/nl01_coit_top.tex" || path == "texture/sf_wall_brick03_blkfence_2_l.tex") {
+            EXPECT_FALSE(tex) << path;
+            ++count;
+            continue;
+        }
         EXPECT_TRUE(tex) << path << ": " << err;
         if (tex) {
-            EXPECT_EQ(tex->image.levels.size(), tex->header.mipCount) << path;
+            // gfxImage::Create stops the chain when a side reaches 1, so 24
+            // files declare more levels than MM2 reads.
+            std::size_t chain = 1;
+            for (std::uint32_t w = tex->header.width, h = tex->header.height; w > 1 && h > 1; w /= 2, h /= 2)
+                ++chain;
+            EXPECT_EQ(tex->image.levels.size(), std::min<std::size_t>(chain, tex->header.mipCount)) << path;
         }
         ++count;
     }
