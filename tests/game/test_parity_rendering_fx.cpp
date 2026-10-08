@@ -2,6 +2,7 @@
 // (midtown2.exe build 3393, see docs/parity/rendering-fx.md).
 
 #include "TestData.h"
+#include "asset/Ped.h"
 #include "city/CityData.h"
 #include "city/SdlDraw.h"
 #include "game/CityLevel.h"
@@ -200,4 +201,36 @@ TEST(ParityRenderingFx, SdlDrawLevelsOfDetail) {
     EXPECT_LT(triangles[0], triangles[1]);
     EXPECT_LE(triangles[1], triangles[2]);
     EXPECT_LT(triangles[2], triangles[3]);
+}
+
+TEST(ParityRenderingFx, PedestrianMeshesFaceOutCounterClockwise) {
+    // modModel::Draw runs under the default culling, so the pedestrians'
+    // triangles must face out with OpenMM2's counter-clockwise convention:
+    // nearly every bind-pose triangle's winding agrees with its normals.
+    MM2_REQUIRE_GAME_DATA();
+    const auto& vfs = *test::gameData();
+    auto read = [&](std::string_view path) { return vfs.readAll(path); };
+    for (const char* name : {"pedmodel_man", "pedmodel_woman"}) {
+        auto type = asset::loadPedType(name, read);
+        ASSERT_TRUE(type) << name;
+        std::vector<Mat34> bones;
+        asset::posePed(type->skeleton, nullptr, 0.0f, bones);
+        const auto& mesh = type->mesh;
+        auto world = [&](std::size_t i, bool normal) {
+            const auto& v = mesh.vertices[i];
+            const Mat34 b = v.bone < bones.size() ? bones[v.bone] : Mat34::identity();
+            return normal ? b.transformDir(v.normal) : b.transform(v.position);
+        };
+        int agree = 0, total = 0;
+        for (std::size_t t = 0; t + 2 < mesh.indices.size(); t += 3) {
+            const auto a = mesh.indices[t], b = mesh.indices[t + 1], c = mesh.indices[t + 2];
+            const Vec3 n = (world(b, false) - world(a, false)).cross(world(c, false) - world(a, false));
+            if (n.mag2() < 1e-12f)
+                continue;
+            ++total;
+            agree += n.dot(world(a, true) + world(b, true) + world(c, true)) > 0.0f;
+        }
+        EXPECT_GT(total, 100) << name;
+        EXPECT_GT(agree, total * 9 / 10) << name;
+    }
 }

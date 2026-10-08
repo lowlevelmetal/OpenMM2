@@ -95,7 +95,9 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
         call.first = mat.firstIndex;
         call.constants.color = color;
         call.constants.flags = render::DrawFlag::Lighting | render::DrawFlag::Fog;
-        call.state.cull = render::CullMode::None;
+        // modModel::Draw under the default culling (as for every model).
+        call.state.cull = render::CullMode::Back;
+        call.state.frontFace = render::FrontFace::CounterClockwise;
         m_device.draw(call);
     }
 }
