@@ -27,12 +27,13 @@
 
 namespace mm2::app::frontend {
 
-// The OPTIONS pages, by their mmPopup menu ids.
+// The OPTIONS pages and the key map, by their mmPopup menu ids.
 enum class PopupPage : std::uint8_t {
     Options = 5,  // PUOptions
     Audio = 6,    // PUAudioOptions
     Control = 7,  // PUControl
     Graphics = 8, // PUGraphics
+    KeyMap = 11,  // PUKey (F1)
 };
 
 namespace popup {
@@ -43,6 +44,9 @@ inline constexpr ui::Box kCard{128.0f, 48.0f, 384.0f, 384.0f};
 // PUControl and PUGraphics ask for a 0.9 x 0.8 card, which
 // PUMenuBase::PUMenuBase centres: x 0.05-0.95, y 0.1-0.9.
 inline constexpr ui::Box kWideCard{32.0f, 48.0f, 576.0f, 384.0f};
+// PUKey asks for 0.9 x 0.9 (on screens 512 pixels wide or more): x 0.05-0.95,
+// y 0.05-0.95.
+inline constexpr ui::Box kKeyCard{32.0f, 24.0f, 576.0f, 432.0f};
 
 // The card behind the popup menus (MenuManager::Init's Card2D, drawn by
 // Card2D::Cull): dark blue (16, 31, 93) at alpha 0x80.
@@ -89,6 +93,13 @@ void setRWStates(ControlStates& s, controls::Controller c, bool doingFF);
 // both off again for the keyboard and the game pad.
 void initSensitivity(ControlStates& s, controls::Controller c);
 
+// The action slots PUKey lists for a controller, in order. mmInput::Init
+// turns off Steering and Camera Pan for the keyboard, Steer Left, Steer
+// Right and Camera Pan for the other devices; PUKey::PreSetup then walks the
+// first 33 slots, or all 34 when fewer than 32 are on (so Enter Chat Msg is
+// listed for every device but the keyboard).
+std::vector<int> keyMapSlots(controls::Controller c);
+
 } // namespace popup
 
 // What the race does when the OPTIONS pages change something.
@@ -100,6 +111,8 @@ struct PopupOptionsHost {
     std::function<void()> controlsChanged;
     // MenuManager::Switch to another popup page (nothing: back to PUMain).
     std::function<void(std::optional<PopupPage>)> show;
+    // mmPopup::DisablePU: close the popup (the key map's Resume Driving).
+    std::function<void()> close;
 };
 
 // The OPTIONS pages of the in-race popup.
@@ -120,6 +133,8 @@ private:
     void buildAudio(ui::Menu& menu, const PopupOptionsHost& host);
     void buildControl(ui::Menu& menu, const PopupOptionsHost& host);
     void buildGraphics(ui::Menu& menu, const PopupOptionsHost& host);
+    void buildKeyMap(ui::Menu& menu, const PopupOptionsHost& host);
+    void drawKeyMap(ui::UiFrame& f) const;
     void addOkCancel(ui::Menu& menu, const ui::Box& card, const PopupOptionsHost& host,
                      std::function<void()> cancel);
     void applyControlStates();
@@ -153,7 +168,7 @@ private:
 
 // OPENMM2_POPUP_SCRIPT drives the in-race popup for automated screenshots,
 // e.g. "wait:60;open:graphics;wait:2;nav:down": open:<main|options|audio|
-// control|graphics|exit> opens the popup on that page, nav:<up|down|left|
+// control|graphics|keymap|exit> opens the popup on that page, nav:<up|down|left|
 // right|accept|back> presses a key, wait:<frames> waits.
 class PopupScript {
 public:

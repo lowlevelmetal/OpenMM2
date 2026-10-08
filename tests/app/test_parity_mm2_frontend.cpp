@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+
 using namespace mm2;
 using namespace mm2::app::frontend;
 using app::controls::Controller;
@@ -90,4 +92,22 @@ TEST(MM2FrontendParity, PopupScriptCommands) {
     EXPECT_EQ(script.step().key, platform::Key::Down);
     EXPECT_EQ(script.step().key, platform::Key::Return); // the unknown command is skipped
     EXPECT_FALSE(script.active());
+}
+
+// PUKey lists the slots mmInput::Init leaves on, walking 33 slots (34 when
+// fewer than 32 are on): the keyboard skips Steering and Camera Pan and
+// stops before Enter Chat Msg; the other devices skip Steer Left / Right and
+// Camera Pan and list Enter Chat Msg.
+TEST(MM2FrontendParity, PopupKeyMapSlots) {
+    const auto kb = popup::keyMapSlots(Controller::Keyboard);
+    EXPECT_EQ(kb.size(), 31u);
+    EXPECT_EQ(std::count(kb.begin(), kb.end(), 5), 0);
+    EXPECT_EQ(std::count(kb.begin(), kb.end(), 31), 0);
+    EXPECT_EQ(kb.back(), 32);
+    const auto pad = popup::keyMapSlots(Controller::GamePad);
+    EXPECT_EQ(pad.size(), 31u);
+    EXPECT_EQ(pad[5], 5);
+    EXPECT_EQ(std::count(pad.begin(), pad.end(), 6), 0);
+    EXPECT_EQ(pad.back(), 33);
+    EXPECT_FLOAT_EQ(popup::cardFor(PopupPage::KeyMap).y, 24.0f);
 }

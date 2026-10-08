@@ -143,6 +143,9 @@ public:
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         stepPopupScript(ctx); // OPENMM2_POPUP_SCRIPT automation (its keys reach the popup this frame)
         m_popupGraveyard.clear();
+        // mmGame::Update / UpdatePaused: F1 (mmPopup::ProcessKeymap).
+        if (ctx.input.keyPressed(platform::Key::F1))
+            processKeymap(ctx);
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
             if (ctx.nextScreen)
@@ -1853,7 +1856,21 @@ private:
         host.graphicsChanged = [this, &ctx] { applyGraphicsOptions(ctx); };
         host.controlsChanged = [this, &ctx] { applyControlOptions(ctx); };
         host.show = [this, &ctx](std::optional<frontend::PopupPage> page) { showPopupPage(ctx, page); };
+        host.close = [this] { closePopup(); };
         return host;
+    }
+
+    // mmPopup::ProcessKeymap: F1 opens the key map (PUKey), pausing like
+    // Escape when nothing is up; over another popup page it switches to it;
+    // on the key map it closes the popup.
+    void processKeymap(Context& ctx) {
+        if (m_popup == Popup::Options && m_popupPage == frontend::PopupPage::KeyMap) {
+            closePopup();
+            return;
+        }
+        if (m_popup == Popup::None)
+            openPopup(ctx, true);
+        showPopupPage(ctx, frontend::PopupPage::KeyMap);
     }
 
     // The in-race GRAPHICS OPTIONS (PUGraphics) as mmGame's callbacks apply
@@ -1911,10 +1928,11 @@ private:
             if (p == "exit") {
                 m_popup = Popup::ConfirmExit;
                 buildPopup(ctx);
-            } else if (p == "options" || p == "audio" || p == "control" || p == "graphics") {
-                showPopupPage(ctx, p == "audio"     ? PopupPage::Audio
-                                   : p == "control" ? PopupPage::Control
+            } else if (p == "options" || p == "audio" || p == "control" || p == "graphics" || p == "keymap") {
+                showPopupPage(ctx, p == "audio"      ? PopupPage::Audio
+                                   : p == "control"  ? PopupPage::Control
                                    : p == "graphics" ? PopupPage::Graphics
+                                   : p == "keymap"   ? PopupPage::KeyMap
                                                      : PopupPage::Options);
             } else {
                 showPopupPage(ctx, std::nullopt);

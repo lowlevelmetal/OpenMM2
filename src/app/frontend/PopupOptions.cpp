@@ -9,6 +9,7 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 
@@ -18,6 +19,8 @@ namespace popup {
 std::uint32_t cardColor() { return render::packColor(0x10, 0x1F, 0x5D, 0x80); }
 
 ui::Box cardFor(PopupPage page) {
+    if (page == PopupPage::KeyMap)
+        return kKeyCard;
     return page == PopupPage::Control || page == PopupPage::Graphics ? kWideCard : kCard;
 }
 
@@ -74,6 +77,28 @@ void initSensitivity(ControlStates& s, controls::Controller c) {
     s.sensitivity = s.deadZone = true;
     if (c == Controller::Keyboard || c == Controller::GamePad)
         s.sensitivity = s.deadZone = false;
+}
+
+std::vector<int> keyMapSlots(controls::Controller c) {
+    using controls::Controller;
+    constexpr int kSlots = static_cast<int>(controls::Action::Count); // 34
+    std::array<bool, kSlots> on{};
+    on.fill(true);
+    if (c == Controller::Keyboard) {
+        on[5] = false;  // Steering
+        on[31] = false; // Camera Pan
+    } else {
+        on[6] = false;  // Steer Left
+        on[7] = false;  // Steer Right
+        on[31] = false; // Camera Pan
+    }
+    const int count = static_cast<int>(std::count(on.begin(), on.end(), true));
+    const int walked = std::min(kSlots, (count < 32 ? 1 : 0) + 33);
+    std::vector<int> out;
+    for (int i = 0; i < walked; ++i)
+        if (on[static_cast<std::size_t>(i)])
+            out.push_back(i);
+    return out;
 }
 
 } // namespace popup
@@ -133,6 +158,7 @@ std::unique_ptr<ui::Menu> PopupOptions::build(PopupPage page, const PopupOptions
     case PopupPage::Audio: buildAudio(*menu, host); break;
     case PopupPage::Control: buildControl(*menu, host); break;
     case PopupPage::Graphics: buildGraphics(*menu, host); break;
+    case PopupPage::KeyMap: buildKeyMap(*menu, host); break;
     }
     return menu;
 }
@@ -148,6 +174,7 @@ void PopupOptions::draw(PopupPage page, ui::UiFrame& f) const {
     case PopupPage::Audio: popup::drawTitle(f, card, s.get(442, "Audio Options")); break;
     case PopupPage::Control: popup::drawTitle(f, card, s.get(448, "Control Options")); break;
     case PopupPage::Graphics: popup::drawTitle(f, card, s.get(460, "Graphics Options")); break;
+    case PopupPage::KeyMap: drawKeyMap(f); break;
     }
 }
 
@@ -392,6 +419,57 @@ void PopupOptions::buildGraphics(ui::Menu& menu, const PopupOptionsHost& host) {
     };
     toggle(row1, 647, "Vehicle Reflections", "VehicleReflections");
     toggle(row2, 645, "Textured Sky", "TexturedSky");
+}
+
+// PUKey (menu 11, F1 in the race: mmGame::Update and UpdatePaused call
+// mmPopup::ProcessKeymap): no title, Resume Driving at the exit's place,
+// which closes the popup, as Escape does (mmPopup::Update, menu 11).
+void PopupOptions::buildKeyMap(ui::Menu& menu, const PopupOptionsHost& host) {
+    const auto& s = m_ctx.game->strings;
+    auto close = host.close;
+    auto& resume = addButton(menu, popup::kKeyCard, 0.5f, 0.9f, 0.5f, popup::kButtonHeight,
+                             s.get(473, "Resume Driving"), 1, [close] {
+                                 if (close)
+                                     close();
+                             });
+    menu.setInitialFocus(&resume);
+    menu.onBack = [close] {
+        if (close)
+            close();
+    };
+}
+
+// PUKey::PreSetup: one text node at (0.05, 0.075) of the screen, 0.9 x 0.9;
+// the actions the controller uses (popup::keyMapSlots) in two columns, the
+// name ("%-23s") at x 0.05 and the binding ("%.23s", mmIO::GetDescription)
+// at 0.25 for the left column, 0.5 and 0.7 for the right one, the rows
+// from y 0.05 every 0.03 of the screen, in GetFont 16. OpenMM2 binds only
+// keys: an action shows its key (or UNDEFINED, string 271), the steering
+// axis of the analog devices the controller's name (inferred).
+void PopupOptions::drawKeyMap(ui::UiFrame& f) const {
+    const auto& s = m_ctx.game->strings;
+    const auto c = controller();
+    const auto font = ui::style::popupSmallFont();
+    const float x0 = 0.05f * 640.0f, y0 = 0.075f * 480.0f;
+    const auto& actions = controls::actions();
+    const auto slots = popup::keyMapSlots(c);
+    for (std::size_t k = 0; k < slots.size(); ++k) {
+        const auto& a = actions[static_cast<std::size_t>(slots[k])];
+        std::string key;
+        if (!a.keyboard) {
+            const std::uint32_t names[] = {580, 581, 582, 583, 584};
+            key = s.get(names[static_cast<int>(c)]);
+        } else {
+            const platform::Key bound = controls::boundKey(m_ctx.settings.ini, a);
+            key = bound == platform::Key::Unknown ? s.get(271, "UNDEFINED") : platform::keyName(bound);
+        }
+        if (key.size() > 23)
+            key.resize(23);
+        const bool right = k % 2 != 0;
+        const float y = y0 + (0.05f + 0.03f * static_cast<float>(k / 2)) * 480.0f;
+        f.text.draw(f.overlay, font, s.get(a.stringId), x0 + (right ? 0.5f : 0.05f) * 640.0f, y, ui::style::kPopupText);
+        f.text.draw(f.overlay, font, key, x0 + (right ? 0.7f : 0.25f) * 640.0f, y, ui::style::kPopupText);
+    }
 }
 
 // --- Sounds ------------------------------------------------------------------------------------
