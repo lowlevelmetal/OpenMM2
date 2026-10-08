@@ -471,11 +471,20 @@ narrow phase and the impact response are ports of the `phBound` family,
   `_default` of `city/materials.mtl`).
 * **Objects** (`lvlInstance` in the rooms' lists): the city's collidable
   instances (`.inst` flag 0x2000: their `bound/<name>_bound.bnd` geometry,
-  scaled by the matrix's row lengths, listed in every room their sphere
-  touches (`lvlMultiRoomInstance`); flag 0x100: a terrain bound of their own
-  space, `.bbnd` + `.ter`), unhit and resting props, traffic cars on their
-  rails. Instances with neither flag are drawn only (building walls are the
-  PSDL's facade bounds).
+  scaled by the matrix's row lengths; `lvlMultiRoomInstance::Create` puts a
+  stand-in in every neighbour of their room that their sphere reaches
+  across its perimeter, but not in the room itself, and moves the object to
+  room 0, so one reaching no neighbour is never collided; flag 0x100: a
+  terrain bound of their own space, `.bbnd` + `.ter` (version 1.1, with the
+  geometry's polygon count, else "Malformed terrain" and no bound), or the
+  `.bnd` without a `.ter`, in their own room only), unhit and resting props,
+  traffic cars on their rails. Instances with neither flag are drawn only
+  (building walls are the PSDL's facade bounds). An object's sphere is its
+  position and its model's radius (`lvlInstance::GetRadius`, the geometry
+  set's), which a terrain-local bound raises to its box's farther corner.
+  Materials a text bound file adds are `lvlMaterial`s: the file's
+  elasticity, friction, effect and sound, drag 0, width 1, height 0, depth 0
+  and no particles.
 
 ### A sample (`dgPhysManager::Update`)
 

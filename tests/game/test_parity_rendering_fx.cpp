@@ -3,6 +3,7 @@
 
 #include "TestData.h"
 #include "city/CityData.h"
+#include "game/CityLevel.h"
 #include "game/CityRenderer.h"
 #include "game/MeshDraw.h"
 #include "game/fx/LineSparks.h"
@@ -116,4 +117,37 @@ TEST(ParityRenderingFx, ObjectDetailLevels) {
     EXPECT_EQ(objectLod(41.0f, 1.0f, d), asset::Lod::High);
     EXPECT_EQ(objectLod(41.5f, 1.0f, d), asset::Lod::Medium);
     EXPECT_EQ(objectLod(301.0f, 0.0f, d, d.noDraw), std::nullopt);
+}
+
+TEST(ParityRenderingFx, MultiRoomInstancesLiveInTheNeighboursTheyReach) {
+    // lvlMultiRoomInstance::Create: a collidable (.inst flag 0x2000) object
+    // is listed in the neighbours of its room that its sphere reaches, never
+    // in its own room; terrain-local ones (0x100) only in their own room.
+    MM2_REQUIRE_GAME_DATA();
+    auto city = city::loadCity(*test::gameData(), "london");
+    ASSERT_TRUE(city);
+    CityLevel level(*city, *test::gameData(), {});
+    std::vector<phys::Instance*> list;
+    int multi = 0, terrain = 0;
+    for (const auto& inst : city->instances) {
+        if (inst.room == 0 || (inst.flags & 0x200) || !(inst.flags & 0x2100))
+            continue;
+        list.clear();
+        level.instances(inst.room, list);
+        bool inOwn = false;
+        for (const phys::Instance* i : list) {
+            const auto* si = dynamic_cast<const StaticInstance*>(i);
+            if (si && si->name == inst.name && si->position().dist2(inst.transform.m3) < 1e-6f)
+                inOwn = true;
+        }
+        if (inst.flags & 0x100) {
+            EXPECT_TRUE(inOwn) << inst.name;
+            ++terrain;
+        } else {
+            EXPECT_FALSE(inOwn) << inst.name;
+            ++multi;
+        }
+    }
+    EXPECT_GT(multi, 0);
+    EXPECT_GT(terrain, 0);
 }
