@@ -28,6 +28,9 @@ struct PedestrianSoundInput {
     // aiPedestrian::Wander / Avoid started an avoidance reaction this step
     // (AudCreatureContainer::PlayAvoidanceReaction).
     bool avoiding = false;
+    // aiPedestrian::Reset put it on a road this step: AudCreatureContainer::
+    // Reset (Aud3DObject::Reset lets its slot go).
+    bool reset = false;
 };
 
 class PedestrianAudio {

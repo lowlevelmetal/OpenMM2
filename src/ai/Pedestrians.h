@@ -57,6 +57,9 @@ struct Pedestrian {
     std::string animFile; // anim/<animFile>.anim
     float frame = 0.0f;   // whole frame within the .anim, from 0 (MM2 draws whole frames)
     bool scream = false;  // started an avoidance reaction this step (AudCreatureContainer)
+    // Put on a road this step (aiPedestrian::Reset, whose AudCreatureContainer::
+    // Reset lets the voice's 3D slot go).
+    bool placed = false;
     bool crossing = false; // on its way across a road
 };
 
@@ -147,6 +150,7 @@ private:
         State seq = nullptr, queued = nullptr;
         int frame = 0;
         bool scream = false;
+        bool placed = false; // reset() this step
     };
 
     // Sidewalk geometry of (path, side): side -1 is the file's first side.

@@ -599,6 +599,7 @@ void Pedestrians::steer(Ped& p, const Vec3& target) {
 void Pedestrians::reset(int idx, int path, int side) {
     Ped& p = m_peds[static_cast<std::size_t>(idx)];
     const Walk& w = walk(path, side);
+    p.placed = true; // AudCreatureContainer::Reset
     p.active = true;
     p.lost = false;
     p.path = p.prevPath = path;
@@ -1493,6 +1494,8 @@ void Pedestrians::step(float dt, const PlayerCar& player, int room) {
             return kNone;
         return map->roomPathsIn[static_cast<std::size_t>(r)];
     };
+    for (Ped& p : m_peds)
+        p.placed = false;
     if (!m_started) {
         // aiMap::Reset: the player's first room.
         m_started = true;
@@ -1533,6 +1536,7 @@ void Pedestrians::publish() {
         out.animFile = p.seq->animFile;
         out.frame = static_cast<float>(p.frame);
         out.scream = p.scream;
+        out.placed = p.placed;
         out.crossing = p.cross != 0;
         m_public.push_back(std::move(out));
     }

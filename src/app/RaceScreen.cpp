@@ -790,7 +790,7 @@ private:
             return;
         m_pedSounds.clear();
         for (const auto& p : m_ai->peds())
-            m_pedSounds.push_back({p.id, p.typeName, p.transform.m3, p.scream});
+            m_pedSounds.push_back({p.id, p.typeName, p.transform.m3, p.scream, p.placed});
         m_pedAudio.update(m_pedSounds, m_camera.transform, m_player->sim().speed(), dt, m_tunnel);
     }
 

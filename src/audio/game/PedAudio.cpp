@@ -59,6 +59,12 @@ public:
     }
     const std::string& type() const { return m_type; }
     void setPosition(const Vec3& p) { m_position = p; }
+    // AudCreatureContainer::Reset: Aud3DObject::Reset gives up the slot
+    // (RemoveFrom3DMgr).
+    void reset() {
+        if (hasSlot())
+            lose();
+    }
 
     // AudCreatureContainer::Update: the slot goes once the voice is quiet.
     void releaseWhenQuiet() {
@@ -252,6 +258,8 @@ void PedestrianAudio::update(std::span<const PedestrianSoundInput> peds, const M
         } else if (c->type() != p.type) {
             c->init(p.type); // OpenMM2: a pool entry reused with another model
         }
+        if (p.reset)
+            c->reset();
         c->setPosition(p.position);
         c->releaseWhenQuiet();
         if (p.avoiding)
