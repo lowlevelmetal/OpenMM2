@@ -53,22 +53,6 @@ Vec3 mulRow(const Vec3& v, const Mat34& m) {
             (m.m0.z * v.x + m.m1.z * v.y) + m.m2.z * v.z};
 }
 
-// Matrix34::Dot3x3Transpose: a * b^T (3x3), m3 cleared.
-Mat34 dot3x3Transpose(const Mat34& a, const Mat34& b) {
-    Mat34 r;
-    r.m0 = {(b.m0.z * a.m0.z + a.m0.y * b.m0.y) + a.m0.x * b.m0.x,
-            (b.m1.x * a.m0.x + b.m1.z * a.m0.z) + a.m0.y * b.m1.y,
-            (b.m2.x * a.m0.x + b.m2.z * a.m0.z) + a.m0.y * b.m2.y};
-    r.m1 = {(a.m1.z * b.m0.z + a.m1.x * b.m0.x) + a.m1.y * b.m0.y,
-            (a.m1.x * b.m1.x + a.m1.y * b.m1.y) + a.m1.z * b.m1.z,
-            (a.m1.x * b.m2.x + a.m1.y * b.m2.y) + a.m1.z * b.m2.z};
-    r.m2 = {(a.m2.y * b.m0.y + b.m0.z * a.m2.z) + a.m2.x * b.m0.x,
-            (b.m1.x * a.m2.x + b.m1.y * a.m2.y) + b.m1.z * a.m2.z,
-            (b.m2.x * a.m2.x + b.m2.y * a.m2.y) + b.m2.z * a.m2.z};
-    r.m3 = {};
-    return r;
-}
-
 Mat34 rotation3x3(const Mat34& m) {
     Mat34 r = m;
     r.m3 = {};
@@ -85,31 +69,20 @@ Mat34 diag(const Vec3& d) {
     return m;
 }
 
-// Matrix34::MakeRotateUnitAxis: rotation by `angle` about the unit `axis`
-// (row vectors; the diagonal is formed in extended precision).
-Mat34 makeRotateUnitAxis(const Vec3& n, float angle) {
-    const double c = std::cos(static_cast<double>(angle));
-    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
-    const float omc = static_cast<float>(1.0 - c);
-    Mat34 r;
-    r.m0.x = static_cast<float>(static_cast<double>(n.x) * n.x * omc + c);
-    r.m1.y = static_cast<float>(static_cast<double>(n.y) * n.y * omc + c);
-    r.m2.z = static_cast<float>(static_cast<double>(n.z) * n.z * omc + c);
-    r.m0.y = s * n.z + n.y * n.x * omc;
-    r.m1.x = n.y * n.x * omc - s * n.z;
-    r.m0.z = n.z * n.x * omc - s * n.y;
-    r.m2.x = s * n.y + n.z * n.x * omc;
-    r.m1.z = s * n.x + n.z * n.y * omc;
-    r.m2.y = n.z * n.y * omc - s * n.x;
-    r.m3 = {};
-    return r;
-}
-
-// A hitch point in world space, in the order of dgTrailerJoint::Update.
+// The tractor's hitch point in world space, in the order of
+// dgTrailerJoint::Update (and Reset).
 Vec3 hitchPoint(const Mat34& m, const Vec3& o) {
     return {((m.m1.x * o.y + m.m2.x * o.z) + o.x * m.m0.x) + m.m3.x,
             ((m.m1.y * o.y + m.m2.y * o.z) + m.m0.y * o.x) + m.m3.y,
             ((m.m1.z * o.y + m.m2.z * o.z) + m.m0.z * o.x) + m.m3.z};
+}
+
+// The trailer's hitch point, which dgTrailerJoint::Update sums in another
+// order.
+Vec3 trailerHitchPoint(const Mat34& m, const Vec3& o) {
+    return {((m.m1.x * o.y + m.m2.x * o.z) + m.m0.x * o.x) + m.m3.x,
+            ((m.m0.y * o.x + m.m1.y * o.y) + m.m2.y * o.z) + m.m3.y,
+            ((m.m0.z * o.x + m.m1.z * o.y) + m.m2.z * o.z) + m.m3.z};
 }
 
 } // namespace
@@ -158,14 +131,13 @@ void TrailerJoint::init(const TrailerJointParams& p, InertialCS* tractor, Inerti
 void TrailerJoint::reset() {
     unbreakJoint();
     Joint::reset();
-    position = ics1->matrix.transform(offset1);
+    position = hitchPoint(ics1->matrix, offset1);
 }
 
 void TrailerJoint::setPosition(const Vec3& pos) {
     for (auto [ics, o] : {std::pair{ics1, offset1}, std::pair{ics2, offset2}}) {
         const Mat34& m = ics->matrix;
-        const Vec3 r{(o.x * m.m0.x + m.m1.x * o.y) + m.m2.x * o.z,
-                     (m.m1.y * o.y + m.m2.y * o.z) + m.m0.y * o.x,
+        const Vec3 r{(m.m2.x * o.z + m.m1.x * o.y) + m.m0.x * o.x, (m.m0.y * o.x + m.m2.y * o.z) + m.m1.y * o.y,
                      (m.m0.z * o.x + m.m2.z * o.z) + m.m1.z * o.y};
         ics->matrix.m3 = {pos.x - r.x, pos.y - r.y, pos.z - r.z};
     }
@@ -212,7 +184,9 @@ void TrailerJoint::setRollLimit(float negativeLimit, float positiveLimit, float 
 }
 
 void TrailerJoint::setRestOrientation() {
-    setRestOrientMat(dot3x3Transpose(rotation3x3(ics1->matrix), ics2->matrix));
+    Mat34 m = rotation3x3(ics1->matrix);
+    age::dot3x3TransposeInPlace(m, ics2->matrix);
+    setRestOrientMat(m);
 }
 
 void TrailerJoint::setRestOrientMat(const Mat34& m) {
@@ -415,8 +389,11 @@ void TrailerJoint::update(float dt, float invDt) {
             // along the turning axis, and the FreeRange correction below
             // keeps the hitch together. (mm2ForceRotation = false applies
             // the plain rotation instead.)
-            const Mat34 r = makeRotateUnitAxis(n, halfAngle);
-            const Mat34 rot = mm2ForceRotation ? age::dot3x3(c2, r) : r;
+            Mat34 rot = age::makeRotateUnitAxis(n, halfAngle);
+            if (mm2ForceRotation) {
+                rot = c2;
+                age::rotateUnitAxis(rot, n, halfAngle);
+            }
             const float d = (n.x * force.x + n.z * force.z) + n.y * force.y;
             const Vec3 par{n.x * d, n.y * d, d * n.z};
             const Vec3 perp{force.x - par.x, force.y - par.y, force.z - par.z};
@@ -427,7 +404,9 @@ void TrailerJoint::update(float dt, float invDt) {
             if (theta2 < 1.0f) {
                 factor = 1.0f - theta2 * 0.041666668f;
             } else {
-                const float s = std::sin(halfAngle) * invM;
+                // fsin's wide result times 1/m, rounded once.
+                const float s =
+                    static_cast<float>(std::sin(static_cast<double>(halfAngle)) * static_cast<double>(invM));
                 factor = s + s;
             }
             force = {factor * (turned.x + par.x), factor * (turned.y + par.y), factor * (par.z + turned.z)};
@@ -440,7 +419,7 @@ void TrailerJoint::update(float dt, float invDt) {
     // The joint point follows the middle of the two hitch points; past
     // FreeRange both bodies move half the excess towards each other.
     const Vec3 p1 = hitchPoint(a.matrix, offset1);
-    const Vec3 p2 = hitchPoint(b.matrix, offset2);
+    const Vec3 p2 = trailerHitchPoint(b.matrix, offset2);
     position = {(p2.x + p1.x) * 0.5f, (p2.y + p1.y) * 0.5f, (p2.z + p1.z) * 0.5f};
     gap = sub(p2, p1);
     lean = leanAngle;
@@ -560,7 +539,7 @@ void TrailerJoint::doJointLimits(float leanErr, const Vec3& leanAxis, float roll
     // the bodies' relative angular response to an angular impulse.
     const Mat34 s = age::add3x3(age::dot3x3(iw2Inv, x2), age::dot3x3(iw1Inv, x1));
     const Mat34 sk = age::dot3x3(s, k);
-    Mat34 m = dot3x3Transpose(sk, age::transpose(s));
+    Mat34 m = age::dot3x3Transpose(sk, age::transpose(s));
     m = age::add3x3(age::add3x3(m, iw1Inv), iw2Inv);
 
     // The angular momentum each body gains this sample, the joint force's

@@ -9,23 +9,38 @@
 #include "phys/InertialCS.h"
 
 namespace mm2::phys {
+namespace {
+
+// The joint point o * M + m3 as phJoint::Init(ics, ics, offset) and
+// ComputeInvMassMatrix sum it.
+Vec3 jointPoint(const Mat34& m, const Vec3& o) {
+    return {((m.m1.x * o.y + m.m2.x * o.z) + m.m0.x * o.x) + m.m3.x,
+            ((m.m1.y * o.y + m.m0.y * o.x) + m.m2.y * o.z) + m.m3.y,
+            ((m.m1.z * o.y + m.m0.z * o.x) + m.m2.z * o.z) + m.m3.z};
+}
+
+} // namespace
 
 void Joint::init(InertialCS* a, InertialCS* b, const Vec3& o1) {
-    // Body 1's joint point in body 2's frame.
-    const Vec3 p = a->matrix.transform(o1);
+    // phJoint::Init(ics, ics, offset): body 1's joint point in body 2's frame.
+    const Vec3 p = jointPoint(a->matrix, o1);
     const Vec3 d{p.x - b->matrix.m3.x, p.y - b->matrix.m3.y, p.z - b->matrix.m3.z};
     const Mat34& m = b->matrix;
-    const Vec3 o2{(d.x * m.m0.x + d.y * m.m0.y) + d.z * m.m0.z, (d.x * m.m1.x + d.y * m.m1.y) + d.z * m.m1.z,
-                  (d.x * m.m2.x + d.y * m.m2.y) + d.z * m.m2.z};
+    const Vec3 o2{(d.z * m.m0.z + d.y * m.m0.y) + d.x * m.m0.x, (d.z * m.m1.z + d.y * m.m1.y) + d.x * m.m1.x,
+                  (d.z * m.m2.z + d.y * m.m2.y) + d.x * m.m2.x};
     init(a, b, o1, o2);
 }
 
 void Joint::init(InertialCS* a, InertialCS* b, const Vec3& o1, const Vec3& o2) {
+    // phJoint::Init(ics, ics, offset, offset).
     ics1 = a;
     ics2 = b;
     offset1 = o1;
     offset2 = o2;
-    initialPosition = ics1->matrix.transform(offset1);
+    const Mat34& m = ics1->matrix;
+    initialPosition = {((m.m2.x * o1.z + m.m1.x * o1.y) + m.m0.x * o1.x) + m.m3.x,
+                       ((m.m2.y * o1.z + m.m0.y * o1.x) + m.m1.y * o1.y) + m.m3.y,
+                       ((m.m2.z * o1.z + m.m0.z * o1.x) + m.m1.z * o1.y) + m.m3.z};
     reset();
 }
 
@@ -42,7 +57,7 @@ void Joint::update(float invDt) {
 }
 
 void Joint::computeInvMassMatrix() {
-    position = ics1->matrix.transform(offset1);
+    position = jointPoint(ics1->matrix, offset1);
     Mat34 c1, c2;
     ics2->calcCMatrix(c2, position);
     ics1->calcCMatrix(c1, position);
@@ -58,14 +73,18 @@ void Joint::computeJointForce(float invDt) {
     const Vec3 a2 = ics2->localAcceleration(position);
     const Vec3 t{dv.x * invDt + (a2.x - a1.x), dv.y * invDt + (a2.y - a1.y), dv.z * invDt + (a2.z - a1.z)};
     const Mat34& m = m_invMassMatrix;
-    const Vec3 f{(t.x * m.m0.x + t.y * m.m1.x) + t.z * m.m2.x, (t.x * m.m0.y + t.y * m.m1.y) + t.z * m.m2.y,
-                 (t.x * m.m0.z + t.y * m.m1.z) + t.z * m.m2.z};
+    const Vec3 f{(t.z * m.m2.x + t.y * m.m1.x) + t.x * m.m0.x, (t.z * m.m2.y + t.y * m.m1.y) + t.x * m.m0.y,
+                 (t.z * m.m2.z + t.y * m.m1.z) + t.x * m.m0.z};
     ics1->applyForce(f, position);
     ics2->applyForce({-f.x, -f.y, -f.z}, position);
 }
 
 void Joint::computeJointPush() {
-    const Vec3 p2 = ics2->matrix.transform(offset2);
+    const Mat34& m = ics2->matrix;
+    const Vec3& o = offset2;
+    const Vec3 p2{((m.m2.x * o.z + m.m1.x * o.y) + m.m0.x * o.x) + m.m3.x,
+                  ((m.m0.y * o.x + m.m2.y * o.z) + m.m1.y * o.y) + m.m3.y,
+                  ((m.m0.z * o.x + m.m2.z * o.z) + m.m1.z * o.y) + m.m3.z};
     const Vec3 gap{p2.x - position.x, p2.y - position.y, p2.z - position.z};
     if (gap.x == 0.0f && gap.y == 0.0f && gap.z == 0.0f)
         return;
