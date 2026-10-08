@@ -93,7 +93,7 @@ const char* modePrefix(game::GameMode m) {
 class RaceScreen final : public Screen {
 public:
     // The in-race popup's pages (mmPopup: PUMain, PUChat, PUKey).
-    enum class Popup : std::uint8_t { None, Main, Chat, Keymap };
+    enum class Popup : std::uint8_t { None, Main, Chat, Keymap, Roster };
     RaceScreen(Context& ctx, const game::RaceConfig& config)
         : m_ui(ctx.device(), ctx.game->vfs), m_text(ctx.device()) {
         m_result.config = config;
@@ -202,6 +202,8 @@ public:
             openPopup(ctx, true);
         } else if (!m_flyCamera && m_gameInput.fired(controls::Action::EnterChat)) {
             openChat(ctx);
+        } else if (!m_flyCamera) {
+            debugKeys(ctx);
         }
         if (m_textInput && m_popup != Popup::Chat) {
             ctx.input.stopTextInput(ctx.window());
@@ -2121,6 +2123,33 @@ private:
         buildPopup(ctx);
     }
 
+    // mmGame::UpdateDebugInput's other keys (with no popup up): F4 restarts
+    // the race (asRoot::Reset and mmReplayManager's reset; OpenMM2: single
+    // player, as the menu's Restart), F6 opens the roster in a network game
+    // (mmPopup::ShowRoster) and Ctrl+Alt+Shift+F7 the chat line in single
+    // player (where "/blubber" is typed).
+    void debugKeys(Context& ctx) {
+        using platform::Key;
+        const auto& in = ctx.input;
+        if (in.keyPressed(Key::F4) && m_session && !multiplayer(ctx)) {
+            m_resultsShown = false;
+            m_session->restart();
+            return;
+        }
+        if (in.keyPressed(Key::F6) && multiplayer(ctx)) {
+            // ShowRoster: no pause, no pause music.
+            m_popup = Popup::Roster;
+            m_popupPaused = false;
+            buildPopup(ctx);
+            return;
+        }
+        const bool ctrl = in.keyDown(Key::LCtrl) || in.keyDown(Key::RCtrl);
+        const bool alt = in.keyDown(Key::LAlt) || in.keyDown(Key::RAlt);
+        const bool shift = in.keyDown(Key::LShift) || in.keyDown(Key::RShift);
+        if (in.keyPressed(Key::F7) && ctrl && alt && shift && !multiplayer(ctx))
+            openChat(ctx);
+    }
+
     // MenuManager::Switch from one page of the open popup to another.
     void switchPopup(Context& ctx, Popup page) {
         m_popup = page;
@@ -2265,7 +2294,26 @@ private:
         auto at = [&](float x, float y, float w) {
             return ui::Box{card.x + x * card.w, card.y + y * card.h, w * card.w, 0.075f * card.h};
         };
-        if (m_popup == Popup::Keymap) {
+        if (m_popup == Popup::Roster) {
+            // PURoster: the players' names one under another (0.1 apart from
+            // the title, string 500 "Roster"); the host can boot a player by
+            // clicking the name (BootButtonCB). Escape or the exit close it
+            // (DisablePU(1), the return music, an MM2 quirk without a pause).
+            const auto& players = ctx.netGame->players();
+            float y = 0.1f;
+            for (std::size_t i = 0; i < players.size() && i < 8; ++i, y += 0.1f) {
+                const auto id = players[i].id;
+                auto& b = menu.add<ui::TextButton>(at(0.0f, y, 1.0f), players[i].name, [this, &ctx, id] {
+                    if (ctx.netGame->isHost() && id != ctx.netGame->localId())
+                        ctx.netGame->kick(id);
+                });
+                b.enabled = ctx.netGame->isHost() && id != ctx.netGame->localId();
+            }
+            auto& exit = menu.add<ui::TextButton>(at(0.65f, 0.0f, 0.35f), s.get(473, "Resume Driving"),
+                                                  [this, &ctx] { closePopup(ctx, true); });
+            menu.setInitialFocus(&exit);
+            menu.onBack = [this, &ctx] { closePopup(ctx, true); };
+        } else if (m_popup == Popup::Keymap) {
             // PUKey: PUMenuBase::AddExit at (0.65, 0, 0.35, 0.075); Escape
             // or the exit closes it with the return music.
             auto& exit = menu.add<ui::TextButton>(at(0.65f, 0.0f, 0.35f), s.get(473, "Resume Driving"),
