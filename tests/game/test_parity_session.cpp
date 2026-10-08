@@ -3,6 +3,7 @@
 // and mmSingleStunt's event chaining. See docs/parity/session.md.
 
 #include "TestData.h"
+#include "ai/World.h"
 #include "city/CityData.h"
 #include "game/Strings.h"
 #include "game/session/Session.h"
@@ -469,4 +470,26 @@ TEST(ParitySession, ModesCueTheAnnouncer) {
     s->restart();
     r.tick();
     EXPECT_EQ(cues(SpeechCue::PreRace), 2);
+}
+
+// aiMap::Update runs the light sets after the racers and police: the race
+// defers them, and they then advance by the steps the update took.
+TEST(ParitySession, DeferredLightsCatchUp) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(parityRetail());
+    const auto& city = parityRetail()->london;
+    ai::Settings settings;
+    auto a = ai::World::create(city, *test::gameData(), settings);
+    auto b = ai::World::create(city, *test::gameData(), settings);
+    ASSERT_TRUE(a && b);
+    b->setLightsDeferred(true);
+    const Vec3 pos = city.aiMap->intersections[1].center;
+    for (int i = 0; i < 90; ++i) {
+        a->update(1.0f / 30.0f, pos, {});
+        b->update(1.0f / 30.0f, pos, {});
+        b->updateLights();
+    }
+    ASSERT_EQ(a->signals().size(), b->signals().size());
+    for (std::size_t i = 0; i < a->signals().size(); ++i)
+        EXPECT_EQ(a->signals()[i].state, b->signals()[i].state) << i;
 }

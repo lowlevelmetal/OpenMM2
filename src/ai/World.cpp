@@ -217,7 +217,19 @@ void World::step(const PlayerCar& player) {
         m_playerRoom = room;
     m_traffic->step(kAiStepSeconds, player, room);
     m_peds->step(kAiStepSeconds, player, room);
+    if (m_lightsDeferred) {
+        ++m_pendingLightSteps;
+        return;
+    }
     m_lights.update(kAiStepSeconds);
+    updateSignals();
+}
+
+void World::updateLights() {
+    if (m_pendingLightSteps == 0)
+        return;
+    for (; m_pendingLightSteps > 0; --m_pendingLightSteps)
+        m_lights.update(kAiStepSeconds);
     updateSignals();
 }
 

@@ -62,6 +62,13 @@ public:
     }
     // One fixed step.
     void step(const PlayerCar& player);
+    // aiMap::Update runs the light sets after the racers and the police. A
+    // race loop that drives those between update() and the lights sets this
+    // and calls updateLights() after them: update() then leaves the lights'
+    // steps pending.
+    void setLightsDeferred(bool deferred) { m_lightsDeferred = deferred; }
+    // Advances the light sets by the steps update() left pending.
+    void updateLights();
     void step(const Vec3& playerPos, const Vec3& playerVel) { step(PlayerCar::at(playerPos, playerVel)); }
 
     // Race opponents' positions: ambient cars are never placed within 50 m
@@ -97,6 +104,8 @@ private:
     std::unique_ptr<Pedestrians> m_peds;
     std::vector<Signal> m_signals;
     float m_accumulator = 0.0f;
+    bool m_lightsDeferred = false;
+    int m_pendingLightSteps = 0;
     int m_playerRoom = 0; // the player's last room, the next lookup's hint
 };
 

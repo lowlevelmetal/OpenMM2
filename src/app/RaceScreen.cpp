@@ -148,6 +148,8 @@ public:
         // the racers and the police, before the physics step.
         updateAmbient(ctx, static_cast<float>(dt));
         updateAiDrivers(static_cast<float>(dt));
+        if (m_ai)
+            m_ai->updateLights(); // the light sets last (aiMap::Update)
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
         if (m_trafficBodies)
@@ -1176,6 +1178,7 @@ private:
             log::warn("race: AI unavailable: {}", error);
             return;
         }
+        m_ai->setLightsDeferred(true); // updated after the racers and police
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
