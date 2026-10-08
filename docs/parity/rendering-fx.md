@@ -4,7 +4,7 @@ Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 197 rows (functions; some rows split a constructor's or a draw
 function's parts, group small helpers, or cover a shader); verified 67,
-fixed 94, deviation 9, inferred 3, open 4, openmm2 20. Missing MM2
+fixed 95, deviation 8, inferred 3, open 4, openmm2 20. Missing MM2
 behaviour: 7 items. A second pass (2026-10-08) ported the tunnels, the
 rear-view mirror, the wide-angle letterbox, emissive materials, the sirens'
 lens flares, cloud shadows, the far pedestrians' stick figures, the Texture

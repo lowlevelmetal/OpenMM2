@@ -75,12 +75,12 @@ record's summary counts them:
 | ai-ambient-city | 236 | 116 | 61 | 13 | 22 | 4 | 20 |
 | session | 205 | 89 | 86 | 6 | 4 | 1 | 19 |
 | camera-props | 195 | 107 | 57 | 11 | 2 | 0 | 18 |
-| rendering-fx | 197 | 67 | 94 | 9 | 3 | 4 | 20 |
+| rendering-fx | 197 | 67 | 95 | 8 | 3 | 4 | 20 |
 | audio | 265 | 69 | 155 | 11 | 10 | 0 | 20 |
 | frontend-ui | 151 | 80 | 39 | 11 | 3 | 2 | 16 |
 | formats | 119 | 23 | 44 | 11 | 7 | 0 | 34 |
 | OpenMM2-only | 34 | 6 | 8 | 5 | 4 | 1 | 10 |
-| **Total** | **2078** | **880** | **785** | **108** | **70** | **15** | **220** |
+| **Total** | **2078** | **880** | **786** | **107** | **70** | **15** | **220** |
 
 The open rows and each record's "Missing" table list what still differs
 from MM2 and what porting it needs. The larger missing features are the
