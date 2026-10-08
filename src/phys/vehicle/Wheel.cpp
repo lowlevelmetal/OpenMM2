@@ -259,10 +259,6 @@ float Wheel::bumpDisplacement(float speed, float dt, std::uint32_t* seed) {
     return speed < 1.0f ? b * speed : b;
 }
 
-void Wheel::noContact() {
-    hit = false;
-}
-
 float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     // The steered wheel pivots about its inner edge.
     Mat34 m;
@@ -296,7 +292,11 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
         intersection = isect;
         material = &env.ground->material(isect.material);
         // OpenMM2: deep water (materials.mtl depth >= 1, e.g. deepwater 100)
-        // carries no wheel (inferred; see docs/physics.md).
+        // carries no wheel. vehWheel has no such test: it takes whatever
+        // dgPhysManager::Collide hits. OpenMM2's probe soup is the PSDL
+        // render mesh, not MM2's collision polygons, and how MM2's probe
+        // lets a car sink into deep water is not settled, so this stands in
+        // (inferred; see docs/physics.md).
         hit = material->depth < 1.0f;
     }
     if (hit) {

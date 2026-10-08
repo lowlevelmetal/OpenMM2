@@ -169,7 +169,6 @@ public:
 private:
     void calcSuspensionForce(float disp, bool contact, float cosNormal, const WheelEnv& env);
     float bumpDisplacement(float speed, float dt, std::uint32_t* seed);
-    void noContact();
 };
 
 // The game's frand (irand: MSVC rand(), times 2^-15) on the given state.
