@@ -78,8 +78,6 @@ std::optional<CityInfo> parseCityInfo(std::string_view name, std::string_view te
     c.blitzNames = namesFor(kv, "BlitzCount", "BlitzNames");
     c.circuitNames = namesFor(kv, "CircuitCount", "CircuitNames");
     c.checkpointNames = namesFor(kv, "CheckpointCount", "CheckpointNames");
-    c.mustPlace = kv.getInt("MustPlace");
-    c.unlockGroup = kv.getInt("UnlockGroup");
     return c;
 }
 

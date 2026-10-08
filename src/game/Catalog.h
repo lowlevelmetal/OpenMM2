@@ -46,7 +46,8 @@ struct VehicleInfo {
 
 // City description from tune/<name>.cinfo (mmCityInfo::Load). MM2 reads
 // nine fields with fscanf in a fixed sequence and drops a file that lacks
-// one of them; MustPlace and UnlockGroup are never read.
+// one of them; the files' MustPlace and UnlockGroup lines are never read,
+// so they are not kept.
 struct CityInfo {
     std::string name;          // file stem, "london"
     std::string localizedName; // "London"
@@ -57,8 +58,6 @@ struct CityInfo {
     std::vector<std::string> blitzNames;
     std::vector<std::string> circuitNames;
     std::vector<std::string> checkpointNames;
-    int mustPlace = 0;   // parsed, but never read by MM2 (pass rules are fixed, see game/Profile.h)
-    int unlockGroup = 0; // parsed, but never read by MM2
 };
 
 class Catalog {
