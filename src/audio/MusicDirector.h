@@ -39,6 +39,13 @@ public:
     // The race modes hold the idle logic from the music start until "Go!"
     // (mmSingleCircuit / mmSingleBlitz clear MMDMusicManager +0x50).
     void raceStarted();
+    // mmGame::Reset (the race starts over): StartMusic again at once, so the
+    // Start segment comes back on the next beat and the race modes hold the
+    // idle logic until "Go!". When the Start segment is still the current
+    // one MM2 replays it from its beginning (PlaySegment); OpenMM2 lets it
+    // play on (the same-segment rule; deviation, inferred to be rarely
+    // heard: a restart within the Start segment).
+    void restart();
     // mmPopup::PlayPauseMusic / PlayReturnMusic.
     void pause();
     void resume();
@@ -54,6 +61,16 @@ public:
     // mmPopup::ShowResults: the results segment, on the next beat (race
     // songs only).
     void results();
+    // mmWaypoints::Update when the race enters its last stretch: in a
+    // checkpoint race when the last checkpoint but the finish is cleared,
+    // in a circuit when the final lap starts and when its last checkpoint is
+    // cleared. The cop chase segment (MMDMusicManager +0x24) through
+    // SegmentSwitch(segment, DMUS_COMMANDT_END, DMUS_COMPOSEF_BEAT): a
+    // composed ending on the next beat (OpenMM2: the switch on the beat,
+    // inferred as for results); nothing if it is already playing. MM2 does it
+    // only in music mode (CITY SOUNDS off), where the director's commands are
+    // heard.
+    void finalStretch();
 
     std::vector<Command> takeCommands();
     // The "Big Air" motif: the player's car took off (rising edge).
@@ -63,6 +80,7 @@ public:
     MusicState current() const { return m_current; }
 
 private:
+    void startMusic();                      // mmGame::StartMusic
     void segmentSwitch(MusicState s);       // DMusicObject::SegmentSwitch(int): next beat
     void autoTransition(MusicState s);      // SegmentSwitch(int, cmd, flags): next measure
     void matchMusicToPlayerSpeed(float speed, float dt);

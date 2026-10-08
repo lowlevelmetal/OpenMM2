@@ -10,6 +10,7 @@
 #include "audio/MusicDirector.h"
 #include "audio/SoundBank.h"
 #include "audio/game/Ambience.h"
+#include "audio/game/AudioManager.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
 #include "audio/AngelRandom.h"
@@ -138,6 +139,11 @@ public:
             load(ctx);
             return;
         }
+        // GameLoop: AudManager::Update before the game's update, with the
+        // pause state the frame starts with (every sound stops while paused).
+        if (ctx.mixer)
+            m_audioManager.update(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
+                                  static_cast<float>(dt));
         // mmPopup: Escape opens the main menu (pausing a single-player game,
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         m_popupGraveyard.clear();
@@ -170,7 +176,10 @@ public:
             updateGameInput(ctx);
         if (m_paused) {
             // asRoot paused (the full-screen map in single player): the
-            // game, the physics and the clocks stand still.
+            // game, the physics and the clocks stand still. mmGame::Update
+            // still updates the announcer's queue (mmSpeechContainer::Update).
+            if (m_announcerOk)
+                m_announcer.update(static_cast<float>(dt));
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
             m_textures->update(m_time);
@@ -815,7 +824,11 @@ private:
                                                   m_session->laps(), 1 + static_cast<int>(i),
                                                   static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
-                    opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
+                    opp.driver->setResetCar([&v = *opp.sim, a = opp.audio.get()](const Mat34& m) {
+                        v.reset(m);
+                        if (a)
+                            a->reset(); // vehCar::Reset -> vehCarAudioContainer::Reset
+                    });
                 else
                     log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
             }
@@ -1072,37 +1085,34 @@ private:
             a->active = true;
             if (a->hasVoice)
                 a->voice.update(playerSpeed, dt);
+            // The voice follows the car's attenuation, pan and echo while
+            // the car holds its sound slot (AmbientCarAudio::setVoice).
             a->car.update(c.speed, c.transform, c.velocity, dt, listener);
-            // The voice follows the car's attenuation and pan while the car
-            // holds its sound slot.
-            if (a->hasVoice && a->car.audible())
-                a->voice.updateAttenuation(a->car.attenuation(), a->car.pan(), a->car.distance2());
         }
         for (std::size_t i = 0; i < m_ambientAudio.size(); ++i) {
             AmbientAudio* a = m_ambientAudio[i].get();
             if (a && a->active && (i >= seen.size() || !seen[i])) {
-                // Back in the pool (aiAmbientVehicleAudio::Reset).
-                a->car.stop();
+                // Back in the pool (aiVehicleSpline::Reset ->
+                // aiAmbientVehicleAudio::Reset).
+                a->car.reset();
                 a->active = false;
             }
         }
         // aiGoalAvoidPlayer::Reset: PlayAvoidanceHorn, and when a horn
-        // pattern starts, PlayAvoidanceReaction (for a car holding a sound
-        // slot).
+        // pattern starts, PlayAvoidanceReaction.
         for (int id : m_ai->takeAvoidEvents()) {
-            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk() && a->hasVoice && a->car.audible())
-                a->voice.avoid();
+            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk())
+                a->car.avoidReaction();
         }
         // aiVehicleActive's impact callback: AudImpact::Play and
         // PlayImpactHorn with |x| + |y| + |z| of the impulse, then
-        // PlayImpactReaction (for a car holding a sound slot).
+        // PlayImpactReaction.
         for (const game::TrafficImpact& e : m_trafficImpacts) {
             AmbientAudio* a = ambientAudioOf(e.carId);
             if (!a)
                 continue;
             a->car.impact({e.strength, e.audioId, {}});
-            if (a->hasVoice && a->car.audible())
-                a->voice.impact(e.strength);
+            a->car.impactReaction(e.strength);
         }
         m_trafficImpacts.clear();
     }
@@ -1138,6 +1148,7 @@ private:
             if (const auto* def = ambientVoice(ctx.game->vfs, c.data->model)) {
                 a->voice.load(*ctx.mixer, *m_bank, *def);
                 a->voice.setOwner(a.get());
+                a->car.setVoice(&a->voice);
                 a->hasVoice = true;
             }
             m_ambientAudio[id] = std::move(a);
@@ -1282,12 +1293,21 @@ private:
                     o.sim->reset();
                     if (o.fx)
                         o.fx->reset();
+                    if (o.audio)
+                        o.audio->reset(); // vehCarAudioContainer::Reset
                     o.renderer->resetDamage();
                     if (o.driver)
                         o.driver->reset();
                 }
-                for (auto& c : m_cops)
+                for (auto& c : m_cops) {
                     c.driver->reset();
+                    if (c.audio)
+                        c.audio->reset(); // aiPoliceOfficer::Reset -> vehPoliceCarAudio::Reset
+                }
+                // mmGame::Reset: StartMusic again.
+                if (m_musicDirector)
+                    m_musicDirector->restart();
+                m_musicFinished = m_musicResults = false;
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -1317,6 +1337,16 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
+            } else if (e.type == EventType::FinalCheckpoint || e.type == EventType::FinalLap) {
+                // mmWaypoints::Update: the last stretch switches the music to
+                // the cop chase segment; the final checkpoint is announced
+                // (mmRaceSpeech::PlayFinalCheckPoint; the race speech exists
+                // outside the crash course). PlayFinalLap has no caller.
+                if (m_musicDirector)
+                    m_musicDirector->finalStretch();
+                if (e.type == EventType::FinalCheckpoint && m_announcerOk &&
+                    m_result.config.mode != game::GameMode::CrashCourse)
+                    m_announcer.playFinalCheckpoint();
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
@@ -1387,7 +1417,8 @@ private:
         auto it = m_gameSounds.find(name);
         if (it == m_gameSounds.end()) {
             audio::game::SoundSlot slot;
-            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects);
+            // AudSoundBase::SetPriority(0x17) after loading them.
+            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects, audio::game::kGameSoundPriority);
             it = m_gameSounds.emplace(name, std::move(slot)).first;
         }
         auto& slot = it->second;
@@ -2299,8 +2330,10 @@ private:
         updateAiAudio(dt);
         updateAmbientAudio(ctx, dt);
         updatePedestrianAudio(dt);
+        // mmGame::Update's mmSpeechContainer::Update (AudSpeech::Update); the
+        // frame's first one was AudManager::Update's (m_audioManager).
         if (m_announcerOk)
-            m_announcer.update(dt); // AudSpeech::Update
+            m_announcer.update(dt);
         m_ambience.update(m_camera.transform, dt, m_tunnel);
         // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
         // hood camera (car view 1) and the dashboard, off for the others.
@@ -3056,6 +3089,7 @@ private:
     audio::game::PedestrianAudio m_pedAudio;
     std::vector<audio::game::PedestrianSoundInput> m_pedSounds;
     audio::game::Announcer m_announcer;
+    audio::game::AudioManager m_audioManager; // AudManager::Update
     bool m_announcerOk = false;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)
