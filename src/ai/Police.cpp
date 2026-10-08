@@ -199,7 +199,9 @@ void PoliceCar::reset() {
     // that lost the dice roll may be pursued again. The route to the post
     // has no waypoints (RegisterRoute: destination speed 0, 5 m short, corner
     // factor 2). The last suspect is kept.
-    m_car.reset(m_post);
+    // vehCarSim::SetResetPos(post) with the post's angle, then vehCar::Reset:
+    // the body at the post + CenterOfGravity (rotationY(a) has m2 = (sin a, 0, cos a)).
+    m_car.resetAt(m_post.m3, std::atan2(m_post.m2.x, m_post.m2.z));
     m_driver.reset();
     m_ignored.clear();
     m_target = -1;

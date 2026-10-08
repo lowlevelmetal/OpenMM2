@@ -104,6 +104,32 @@ Mat34 spawnAt(const Checkpoint& cp) {
     return m;
 }
 
+ResetPlace startPlace(const Checkpoint& cp) {
+    return {cp.position, cp.headingDeg * -0.017453292f};
+}
+
+std::optional<Vec3> settleOnGround(const Vec3& body, const GroundProbe& probe) {
+    if (!probe)
+        return std::nullopt;
+    const Vec3 from{body.x, body.y + 2.0f, body.z};
+    const Vec3 to{body.x, body.y - 10.0f, body.z};
+    auto hit = probe(from, to);
+    if (!hit)
+        return std::nullopt;
+    hit->y = hit->y + 0.9f;
+    return hit;
+}
+
+Vec3 findGroundPos(const Vec3& p, const GroundProbe& probe) {
+    if (!probe)
+        return p;
+    const Vec3 from{p.x, p.y + 7.5f, p.z};
+    const Vec3 to{p.x, p.y - 15.0f, p.z};
+    if (auto hit = probe(from, to))
+        return *hit;
+    return p;
+}
+
 std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uint32_t& rng) {
     if (!city.aiMap || city.aiMap->intersections.size() < 2)
         return std::nullopt;
@@ -308,10 +334,13 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             // in degrees, converted with the original's 0.017444445 and not
             // negated as the player's start angle is.
             if (!op.path.empty()) {
-                op.spawn = Mat34::rotationY(op.path.front().brake * 0.017444445f);
-                op.spawn.m3 = op.path.front().position;
+                op.place = {op.path.front().position, op.path.front().brake * 0.017444445f};
+                op.spawn = Mat34::rotationY(op.place.angle);
+                op.spawn.m3 = op.place.position;
             } else {
                 op.spawn = s.checkpoints.empty() ? Mat34::identity() : spawnAt(s.checkpoints.front());
+                if (!s.checkpoints.empty())
+                    op.place = startPlace(s.checkpoints.front());
             }
             s.opponents.push_back(std::move(op));
         }
@@ -331,18 +360,35 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     // GetStartAngle). Cruise starts at a random AI intersection facing -Z
     // (mmSingleRoam::InitOtherPlayers -> mmGame::RespawnXYZ); without an AI
     // map, the city's first Blitz start.
+    //
+    // The car is placed there (the modes' InitGameObjects: SetResetPos and
+    // vehCar::Reset); then the race modes' InitOtherPlayers settle it on the
+    // ground (settleOnGround), while mmSingleRoam::InitOtherPlayers leaves
+    // it at RespawnXYZ's point, 2 m above the intersection.
     std::uint32_t rng = seed;
+    s.playerDrop = StartDrop::OnGround;
     if (!s.checkpoints.empty()) {
         s.playerSpawn = spawnAt(s.checkpoints.front());
+        s.playerPlace = startPlace(s.checkpoints.front());
+        // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitNetworkPlayers:
+        // the grid slot (StartXYZ, added by the race screen) goes through
+        // mmGame::FindGroundPos before the one reset.
+        if (config.multiplayer)
+            s.playerDrop = StartDrop::FindGround;
     } else if (auto p = randomIntersectionStart(city, rng)) {
         s.playerSpawn = Mat34::identity();
         s.playerSpawn.m3 = *p;
+        s.playerPlace = {*p, 0.0f};
+        s.playerDrop = StartDrop::None;
     } else {
+        // OpenMM2's fallback for a city without an AI map (RespawnXYZ would
+        // use (0, 20, 0)): the city's first Blitz start.
         for (const auto& r : city.races) {
             if (r.mode != city::RaceMode::Blitz)
                 continue;
             if (auto cps = loadCheckpoints(vfs, r.waypoints, false)) {
                 s.playerSpawn = spawnAt(cps->front());
+                s.playerPlace = startPlace(cps->front());
                 break;
             }
         }

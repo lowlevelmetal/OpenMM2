@@ -39,6 +39,10 @@ public:
     void removeFrom(phys::World& world);
     // Places the car's model origin at `model` and resets its state.
     void reset(const Mat34& model);
+    // vehCarSim::SetResetPos(position), the reset angle (+0x250) and
+    // vehCar::Reset, as the game modes place cars: the body at position +
+    // CenterOfGravity (unrotated), turned by `angle` radians about Y.
+    void resetAt(const Vec3& position, float angle);
 
     // Applies pedal input through the original's automatic-reverse logic
     // (mmGame::UpdateSteeringBrakes). After hold() it first makes the car

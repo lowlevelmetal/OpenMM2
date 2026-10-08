@@ -215,6 +215,13 @@ void SimVehicle::reset(const Mat34& model) {
     m_controls.reset();
 }
 
+void SimVehicle::resetAt(const Vec3& position, float angle) {
+    m_sim.resetAt(position, angle);
+    if (m_trailer)
+        m_trailer->reset();
+    m_controls.reset();
+}
+
 VehiclePose SimVehicle::trailerPose() const {
     VehiclePose pose;
     if (!m_trailer)

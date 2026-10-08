@@ -606,21 +606,27 @@ private:
                                                                 m_result.config.vehicleColor, "TRAILER", "TWHL");
             setupVehicleRenderer(ctx, *m_trailer);
         }
+        // The mode's place for the car (its InitGameObjects: SetResetPos,
+        // the reset angle and vehCar::Reset), settled as its InitOtherPlayers
+        // does (game::session::StartDrop).
         auto [pos, heading] = spawnPoint(ctx);
+        game::session::ResetPlace place{pos, heading};
+        auto drop = game::session::StartDrop::OnGround;
         if (m_session) {
-            const Mat34 sp = m_session->playerSpawn();
-            pos = sp.m3;
-            heading = std::atan2(sp.m2.x, sp.m2.z);
-            // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitMyPlayer: the
-            // player's start slot on the grid behind the start
-            // (mmGameMulti::StartXYZ; the slot is NetStartArray's, here the
-            // player's id, inferred).
+            place = m_session->setup().playerPlace;
+            drop = m_session->setup().playerDrop;
+            // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitNetworkPlayers:
+            // the player's start slot on the grid behind the start
+            // (mmGameMulti::StartXYZ). The slot is NetStartArray's, which
+            // mmInterface::SendStartMsg fills in the order the host
+            // enumerates the players: here the place in the host's player
+            // list (join order, inferred from DirectPlay's enumeration).
             const auto raceMode = m_result.config.mode;
             if (multiplayer(ctx) && (raceMode == game::GameMode::Blitz || raceMode == game::GameMode::Circuit ||
                                      raceMode == game::GameMode::Checkpoint)) {
                 const bool longVehicle = m_player->sim().body.radius() > 6.0f || m_player->trailerModel();
-                pos += Mat34::rotationY(heading).transformDir(
-                    game::session::multiplayerGridOffset(ctx.netGame->localId(), longVehicle));
+                place.position += Mat34::rotationY(place.angle)
+                                      .transformDir(game::session::multiplayerGridOffset(startSlot(ctx), longVehicle));
             }
         }
         // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading".
@@ -628,19 +634,16 @@ private:
             const auto parts = str::split(sp, ',');
             if (parts.size() == 4) {
                 auto f = [&](int i) { return static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)); };
-                pos = {f(0), f(1), f(2)};
-                heading = f(3);
+                place = {{f(0), f(1), f(2)}, f(3)};
+                drop = game::session::StartDrop::OnGround;
             }
         }
-        m_spawn = Mat34::rotationY(heading);
-        m_spawn.m3 = pos;
-        // Drop the spawn point onto the surface below it (mmGame::FindGroundPos
-        // probes as the wheels do, lvlSDL::CollideProbe).
-        phys::RayHit hit;
-        if (m_world->wheelProbe(pos + Vec3{0, 5, 0}, pos - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            m_spawn.m3 = hit.position;
+        pos = place.position;
+        heading = place.angle;
         m_player->addTo(*m_world);
-        m_player->reset(m_spawn);
+        placeCar(*m_player, place, drop);
+        m_playerPlace = place;
+        m_spawn = m_player->sim().modelMatrix();
         m_pose = m_player->pose();
         std::vector<std::string> missing;
         // mmPlayer::Init: the dashboard eye depends on the screen's shape.
@@ -690,9 +693,10 @@ private:
             log::warn("race: no race rules: {}", error);
     }
 
-    // Loads an AI-driven car onto the ground at `spawn`.
+    // Loads an AI-driven car and puts it at `place` (settled as `drop` says;
+    // `place` gets the settled position).
     std::unique_ptr<game::SimVehicle> loadAiCar(Context& ctx, const std::string& vehicle, std::string_view tune,
-                                                Mat34& spawn) {
+                                                game::session::ResetPlace& place, game::session::StartDrop drop) {
         std::string error;
         auto car = game::SimVehicle::load(ctx.game->vfs, vehicle, &error, tune);
         if (!car) {
@@ -706,11 +710,48 @@ private:
         if (vehicle == m_result.config.vehicle)
             car->sim().setPolygonalBound(true);
         car->addTo(*m_world);
-        phys::RayHit hit;
-        if (m_world->wheelProbe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            spawn.m3 = hit.position;
-        car->reset(spawn);
+        placeCar(*car, place, drop);
         return car;
+    }
+
+    // NetStartArray::GetIndex for the local player: its place in the host's
+    // player list (mmInterface::SendStartMsg assigns the slots in that order).
+    int startSlot(Context& ctx) const {
+        const auto& players = ctx.netGame->players();
+        for (std::size_t i = 0; i < players.size(); ++i)
+            if (players[i].id == ctx.netGame->localId())
+                return static_cast<int>(i);
+        return 0; // GetIndex's answer for an unknown player
+    }
+
+    // dgPhysManager::Collide with the wheels' mask (0x20): the level and the
+    // objects the wheels collide with.
+    game::session::GroundProbe groundProbe() const {
+        return [this](const Vec3& from, const Vec3& to) -> std::optional<Vec3> {
+            phys::RayHit hit;
+            if (!m_world || !m_world->wheelProbe(from, to, hit, nullptr, nullptr))
+                return std::nullopt;
+            return hit.position;
+        };
+    }
+
+    // Puts a car at a mode's place (vehCarSim::SetResetPos, the reset angle,
+    // vehCar::Reset) and settles it: mmGame::InitOtherPlayers /
+    // CollideAIOpponents probe from its body and move its reset place 0.9 m
+    // above the ground; the multiplayer grid uses mmGame::FindGroundPos
+    // before the one reset. `place` becomes the car's reset place (where a
+    // restart puts it back).
+    void placeCar(game::SimVehicle& car, game::session::ResetPlace& place, game::session::StartDrop drop) {
+        using game::session::StartDrop;
+        if (drop == StartDrop::FindGround)
+            place.position = game::session::findGroundPos(place.position, groundProbe());
+        car.resetAt(place.position, place.angle);
+        if (drop == StartDrop::OnGround) {
+            if (const auto settled = game::session::settleOnGround(car.sim().body.ics.matrix.m3, groundProbe())) {
+                place.position = *settled;
+                car.resetAt(place.position, place.angle);
+            }
+        }
     }
 
     // lvlRoomInfo's flags of the room `p` is in (city::LevelRoomFlag), not
@@ -768,13 +809,15 @@ private:
             const auto& s = setups[i];
             Opponent opp;
             opp.sessionIndex = i;
-            Mat34 spawn = s.spawn;
+            // aiRouteRacer::Init places the racer on its first .opp row;
+            // the modes' InitOtherPlayers then settle every racer on the
+            // ground (mmGame::CollideAIOpponents).
+            opp.place = s.place;
             // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
             // (the retail *_opp.vehCarSim files are not used by MM2).
-            opp.sim = loadAiCar(ctx, s.vehicle, {}, spawn);
+            opp.sim = loadAiCar(ctx, s.vehicle, {}, opp.place, game::session::StartDrop::OnGround);
             if (!opp.sim)
                 continue;
-            opp.spawn = spawn;
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
             setupVehicleRenderer(ctx, *opp.renderer);
@@ -821,11 +864,14 @@ private:
         for (std::size_t i = 0; i < count; ++i) {
             const auto& p = posts[i];
             Cop cop;
-            Mat34 post = p.spawn;
+            // aiPoliceOfficer::Reset: SetResetPos at the post with its angle,
+            // no ground probe.
+            game::session::ResetPlace postPlace{p.spawn.m3, std::atan2(p.spawn.m2.x, p.spawn.m2.z)};
             // vpcop has a pursuit tune (vpcop_cop.vehcarsim); other cars use their base tune.
-            cop.sim = loadAiCar(ctx, p.vehicle, {}, post);
+            cop.sim = loadAiCar(ctx, p.vehicle, {}, postPlace, game::session::StartDrop::None);
             if (!cop.sim)
                 continue;
+            const Mat34 post = p.spawn;
             ai::PoliceSettings settings = ai::PoliceSettings::fromData(p.params, chaseDistance);
             settings.seed += i;
             cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings,
@@ -1222,7 +1268,11 @@ private:
                     m_hud->options().opponentIcons = true;
             }
             if (e.type == EventType::Respawn) {
-                m_player->reset(m_session->respawnTransform());
+                // The water handlers: SetResetPos at the checkpoint and
+                // mmPlayer::Reset there, the start kept as the reset place;
+                // or mmPlayer::Reset at the start.
+                const auto at = m_session->respawnPlace().value_or(m_playerPlace);
+                m_player->resetAt(at.position, at.angle);
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 if (m_vehicle)
@@ -1232,13 +1282,13 @@ private:
                 // The race starts over (mmGame::Reset): every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
                 phys::setElasticityCap(phys::kElasticityCap);
-                m_player->reset(m_spawn);
+                m_player->resetAt(m_playerPlace.position, m_playerPlace.angle);
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
                 if (m_vehicle)
                     m_vehicle->resetDamage();
                 for (auto& o : m_opponents) {
-                    o.sim->reset(o.spawn);
+                    o.sim->resetAt(o.place.position, o.place.angle);
                     if (o.fx)
                         o.fx->reset();
                     o.renderer->resetDamage();
@@ -1247,6 +1297,9 @@ private:
                 }
                 for (auto& c : m_cops)
                     c.driver->reset();
+                // lvlLevel::ResetInstances: every prop back in its place.
+                if (m_bangers)
+                    m_bangers->reset();
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -2446,7 +2499,7 @@ private:
         // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
         if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
-            m_player->reset(m_spawn);
+            m_player->resetAt(m_playerPlace.position, m_playerPlace.angle);
     }
 
     // The driving inputs of the chosen controller (mmInput::SetDefaultConfig's
@@ -2891,7 +2944,8 @@ private:
     std::unique_ptr<game::VehicleRenderer> m_trailer;
     game::VehiclePose m_pose;
     game::VehiclePose m_trailerPose;
-    Mat34 m_spawn;
+    Mat34 m_spawn;                           // the car's model matrix at its start
+    game::session::ResetPlace m_playerPlace; // its reset place (vehCarSim::SetResetPos), for restarts
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
@@ -2945,8 +2999,8 @@ private:
     int m_voiceFileNum = -1;
     std::vector<game::TrafficImpact> m_trafficImpacts;
     struct Opponent {
-        std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
-        Mat34 spawn;                  // grid place on the ground (session Restart)
+        std::size_t sessionIndex = 0;      // in Session::opponents() (cars that fail to load are skipped)
+        game::session::ResetPlace place;   // its reset place on the grid (session Restart)
         std::unique_ptr<game::SimVehicle> sim;
         std::unique_ptr<game::VehicleRenderer> renderer;
         std::unique_ptr<ai::Opponent> driver;

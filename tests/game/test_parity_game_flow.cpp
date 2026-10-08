@@ -1,0 +1,189 @@
+// Parity checks of the game modes' spawns and rules against MM2's own code
+// (MM2Recomp, build 3393): the modes' InitGameObjects / InitOtherPlayers,
+// mmGame::CollideAIOpponents, mmGame::FindGroundPos and the water handlers.
+// See docs/parity/mm2/game-flow.md.
+
+#include "TestData.h"
+#include "city/CityData.h"
+#include "game/Strings.h"
+#include "game/session/RaceSetup.h"
+#include "game/session/Session.h"
+#include "phys/World.h"
+#include "phys/vehicle/CarSim.h"
+#include "vfs/GameSource.h"
+
+#include <gtest/gtest.h>
+
+#include <cmath>
+#include <cstdlib>
+#include <memory>
+
+using namespace mm2;
+using namespace mm2::game;
+using namespace mm2::game::session;
+
+namespace {
+
+// A probe of the plane y = `height` (the level as dgPhysManager::Collide sees
+// it, for the tests).
+GroundProbe planeProbe(float height) {
+    return [height](const Vec3& from, const Vec3& to) -> std::optional<Vec3> {
+        phys::FlatGround ground(height);
+        phys::RayHit hit;
+        if (!ground.probe(from, to, hit))
+            return std::nullopt;
+        return hit.position;
+    };
+}
+
+struct FlowRetail {
+    city::CityData london;
+    Strings strings;
+};
+
+FlowRetail* flowRetail() {
+    static std::unique_ptr<FlowRetail> r = []() -> std::unique_ptr<FlowRetail> {
+        if (!test::gameData())
+            return nullptr;
+        auto src = vfs::probeGameSource(std::getenv("OPENMM2_GAME_DATA"));
+        auto london = city::loadCity(*test::gameData(), "london");
+        if (!src || !london)
+            return nullptr;
+        auto out = std::make_unique<FlowRetail>();
+        out->london = std::move(*london);
+        out->strings = Strings::load(*src);
+        return out;
+    }();
+    return r.get();
+}
+
+std::unique_ptr<Session> flowSession(GameMode mode, int index, bool multiplayer = false) {
+    RaceConfig cfg;
+    cfg.mode = mode;
+    cfg.city = "london";
+    cfg.raceIndex = index;
+    cfg.multiplayer = multiplayer;
+    SessionOptions options;
+    options.seed = 11;
+    std::string error;
+    auto s = Session::create(cfg, flowRetail()->london, *test::gameData(), flowRetail()->strings, &error, options);
+    EXPECT_TRUE(s) << error;
+    return s;
+}
+
+} // namespace
+
+// mmWaypoints::GetStart / GetStartAngle as the modes' InitGameObjects use
+// them: the waypoint itself, its heading x -0.017453292.
+TEST(GameFlowParity, StartPlaceIsTheWaypointAndItsNegatedHeading) {
+    Checkpoint cp;
+    cp.position = {10.0f, 2.0f, -30.0f};
+    cp.headingDeg = 90.0f;
+    const ResetPlace p = startPlace(cp);
+    EXPECT_EQ(p.position.x, 10.0f);
+    EXPECT_EQ(p.position.y, 2.0f);
+    EXPECT_EQ(p.position.z, -30.0f);
+    EXPECT_FLOAT_EQ(p.angle, 90.0f * -0.017453292f);
+    // The same orientation as spawnAt's.
+    const Mat34 r = Mat34::rotationY(p.angle);
+    const Mat34 s = spawnAt(cp);
+    EXPECT_NEAR(r.m2.x, s.m2.x, 1e-6f);
+    EXPECT_NEAR(r.m2.z, s.m2.z, 1e-6f);
+}
+
+// mmGame::InitOtherPlayers / CollideAIOpponents: from 2 m above the body to
+// 10 m below it; the reset place goes 0.9 m above the hit.
+TEST(GameFlowParity, SettleOnGroundProbesFromTheBodyAndAddsNinetyCentimetres) {
+    const auto settled = settleOnGround({5.0f, 3.0f, 7.0f}, planeProbe(1.0f));
+    ASSERT_TRUE(settled);
+    EXPECT_FLOAT_EQ(settled->x, 5.0f);
+    EXPECT_FLOAT_EQ(settled->y, 1.9f);
+    EXPECT_FLOAT_EQ(settled->z, 7.0f);
+    // Ground 2 m above the body is still found (the probe starts there) ...
+    EXPECT_TRUE(settleOnGround({0.0f, 0.0f, 0.0f}, planeProbe(1.99f)));
+    // ... but not above that, nor more than 10 m below: the car stays.
+    EXPECT_FALSE(settleOnGround({0.0f, 0.0f, 0.0f}, planeProbe(2.5f)));
+    EXPECT_FALSE(settleOnGround({0.0f, 0.0f, 0.0f}, planeProbe(-10.5f)));
+}
+
+// mmGame::FindGroundPos: from 7.5 m above to 15 m below; the hit itself, or
+// the point when nothing is hit.
+TEST(GameFlowParity, FindGroundPosProbesSevenAndAHalfUpFifteenDown) {
+    const Vec3 p{1.0f, 0.0f, 2.0f};
+    EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(7.0f)).y, 7.0f);
+    EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(-14.0f)).y, -14.0f);
+    EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(8.0f)).y, 0.0f);
+    EXPECT_FLOAT_EQ(findGroundPos(p, planeProbe(-16.0f)).y, 0.0f);
+}
+
+// A race start as MM2 makes it: the body at the start + CenterOfGravity, then
+// settled: the body ends 0.9 m + CG above the road, so the model origin (at
+// the bottom of MM2's car models) is 0.9 + 2 CG.y above it and the car drops
+// onto its wheels.
+TEST(GameFlowParity, RaceStartLeavesTheCarAboveTheRoad) {
+    phys::CarSimParams params;
+    params.centerOfGravity = {0.0f, -0.1f, 0.15f};
+    phys::CarSim car;
+    car.init(params, phys::VehicleGeometry::placeholder());
+    const ResetPlace start{{0.0f, 0.0f, 0.0f}, 0.0f};
+    car.resetAt(start.position, start.angle);
+    const auto settled = settleOnGround(car.body.ics.matrix.m3, planeProbe(0.0f));
+    ASSERT_TRUE(settled);
+    car.resetAt(*settled, start.angle);
+    EXPECT_NEAR(car.body.ics.matrix.m3.y, 0.8f, 1e-6f);
+    EXPECT_NEAR(car.modelMatrix().m3.y, 0.7f, 1e-6f);
+}
+
+// Where each mode puts the player (retail data): the race modes on the first
+// waypoint with its angle, settled on the ground; cruise 2 m above a random
+// intersection, facing -Z, as it is (mmSingleRoam::InitOtherPlayers).
+TEST(GameFlowParity, PlayerPlacePerMode) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    for (const GameMode mode : {GameMode::Blitz, GameMode::Circuit, GameMode::Checkpoint}) {
+        auto s = flowSession(mode, 0);
+        ASSERT_TRUE(s);
+        const auto& setup = s->setup();
+        ASSERT_FALSE(setup.checkpoints.empty());
+        EXPECT_EQ(setup.playerDrop, StartDrop::OnGround);
+        EXPECT_EQ(setup.playerPlace.position.y, setup.checkpoints.front().position.y);
+        EXPECT_FLOAT_EQ(setup.playerPlace.angle, setup.checkpoints.front().headingDeg * -0.017453292f);
+    }
+    auto cruise = flowSession(GameMode::Cruise, -1);
+    ASSERT_TRUE(cruise);
+    EXPECT_EQ(cruise->setup().playerDrop, StartDrop::None);
+    EXPECT_EQ(cruise->setup().playerPlace.angle, 0.0f);
+    bool atIntersection = false;
+    for (const auto& x : flowRetail()->london.aiMap->intersections)
+        if (x.center.x == cruise->setup().playerPlace.position.x && x.center.z == cruise->setup().playerPlace.position.z &&
+            x.center.y + 2.0f == cruise->setup().playerPlace.position.y)
+            atIntersection = true;
+    EXPECT_TRUE(atIntersection);
+}
+
+// mmSingleCircuit::HitWaterHandler: the car is reset at the last waypoint
+// cleared with that waypoint's angle (and no ground probe); the start stays
+// the reset place for a restart.
+TEST(GameFlowParity, CircuitWaterRespawnsAtTheLastCheckpointPlace) {
+    MM2_REQUIRE_GAME_DATA();
+    if (!flowRetail())
+        GTEST_SKIP() << "retail data incomplete";
+    auto s = flowSession(GameMode::Circuit, 0);
+    ASSERT_TRUE(s);
+    s->start();
+    EXPECT_FALSE(s->respawnPlace());
+    PlayerState p;
+    p.transform = s->playerSpawn();
+    p.inWater = true;
+    std::vector<Event> events;
+    for (int i = 0; i < 400 && !s->respawnPlace(); ++i) {
+        s->update(1.0f / 60.0f, p);
+        for (auto& e : s->takeEvents())
+            events.push_back(e);
+    }
+    ASSERT_TRUE(s->respawnPlace());
+    const ResetPlace expected = startPlace(s->checkpoints().front());
+    EXPECT_EQ(s->respawnPlace()->position.y, expected.position.y);
+    EXPECT_FLOAT_EQ(s->respawnPlace()->angle, expected.angle);
+}

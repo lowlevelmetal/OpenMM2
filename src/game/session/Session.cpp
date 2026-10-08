@@ -232,6 +232,7 @@ void Session::resetRace() {
     stopTimerWarning(); // the modes' Reset
     beginEvent(0);
     m_respawn = m_setup.playerSpawn;
+    m_respawnPlace.reset();
 }
 
 void Session::beginEvent(int index) {
@@ -783,6 +784,7 @@ void Session::hitWater() {
         // the start, mmPlayer::Reset).
         if (rule() == WaypointRule::None) {
             m_respawn = m_setup.playerSpawn;
+            m_respawnPlace.reset(); // mmGame::HitWaterHandler: mmPlayer::Reset
             m_waterHandled = false;
             push(EventType::Respawn);
         } else {
@@ -829,8 +831,11 @@ void Session::dropThroughCity() {
 void Session::respawnAtLastCheckpoint() {
     // mmSingleCircuit / mmGameMulti::HitWaterHandler: the last waypoint
     // cleared, facing its heading.
-    if (!m_checkpoints.empty())
-        m_respawn = spawnAt(m_checkpoints[static_cast<std::size_t>(m_wp.lastCleared)]);
+    if (!m_checkpoints.empty()) {
+        const Checkpoint& cp = m_checkpoints[static_cast<std::size_t>(m_wp.lastCleared)];
+        m_respawn = spawnAt(cp);
+        m_respawnPlace = startPlace(cp); // GetWaypoint, GetHeading x -0.017453292
+    }
     m_waterHandled = false;
     m_waterTimer = 0.0f;
     push(EventType::Respawn);

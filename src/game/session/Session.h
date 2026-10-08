@@ -175,6 +175,12 @@ public:
 
     // Where to put the player after Respawn.
     Mat34 respawnTransform() const { return m_respawn; }
+    // The same as the modes' water handlers place the car (SetResetPos and
+    // the reset angle, then mmPlayer::Reset): a checkpoint's place
+    // (mmSingleCircuit / mmGameMulti::HitWaterHandler), or nothing for the
+    // car's own reset place, its start (mmGame::HitWaterHandler, multiplayer
+    // cruise). The start stays the car's reset place for a later restart.
+    std::optional<ResetPlace> respawnPlace() const { return m_respawnPlace; }
 
 private:
     // How the player's checkpoints work (mmWaypoints types).
@@ -307,6 +313,7 @@ private:
     float m_idleTime = 0.0f;
     float m_postWait = 0.0f;
     Mat34 m_respawn;
+    std::optional<ResetPlace> m_respawnPlace;
 
     // Result.
     bool m_resultFinished = false;
