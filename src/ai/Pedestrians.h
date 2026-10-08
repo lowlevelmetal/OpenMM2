@@ -22,6 +22,7 @@
 #include "ai/TrafficLights.h"
 #include "asset/Ped.h"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <string>
@@ -59,6 +60,20 @@ struct Pedestrian {
     bool crossing = false; // on its way across a road
 };
 
+// A prop the pedestrians step round (aiBanger): one standing in the city when
+// the AI map loads. aiPath::AddBangersToObsMap lists it for the sidewalk
+// sections it stands beside, aiIntersection::AddBangersToObsMap for the
+// intersection whose room it is in.
+struct PedObstacle {
+    int room = 0;          // the room it was placed in
+    Vec3 position;         // lvlInstance::GetPosition: its centre of gravity
+    Vec3 origin;           // aiBanger::Position: its ground origin
+    float yRadius = 0.0f;  // dgBangerData YRadius
+    float modelRadius = 0.0f; // lvlInstance::GetRadius (what AvoidBanger rounds once it was hit)
+    float impulseLimit2 = 0.0f; // dgBangerData's break threshold (aiBanger::BreakThreshold)
+    bool drivable = false; // dgBangerData CollisionType 0x20 (aiBanger::Drivable)
+};
+
 struct PedSettings {
     float density = 1.0f; // menu pedestrian density
     int pool = kDefaultPedPool; // [Ped Pool] of the city's AI map
@@ -78,6 +93,12 @@ public:
     void setLights(const TrafficLights* lights) { m_lights = lights; }
     void setProbe(Probe probe) { m_probe = std::move(probe); }
     void setAccidentQuery(AccidentQuery query) { m_accident = std::move(query); }
+    // Whether obstacle i still stands where it was placed (lvlInstance flag
+    // 1: a prop that was knocked over keeps its place in the lists).
+    using ObstacleStanding = std::function<bool(std::size_t)>;
+    // The props, in the order they were placed in their rooms
+    // (lvlLevel::MoveToRoom); builds the obstacle lists as aiMap's load does.
+    void setObstacles(std::vector<PedObstacle> props, ObstacleStanding standing);
     void populateAll(); // every road's sidewalks (tests)
 
     // One update; `room` is the player's PSDL room (0: outside, no change).
@@ -194,6 +215,11 @@ private:
     void anticipate(Ped& p, const PlayerCar& c);
     void avoid(Ped& p, const PlayerCar& c, float& latScale);
     void avoidObstacle(Ped& p, const Vec3& obstacle, float radius);
+    // Props.
+    float isBlockingTarget(const PedObstacle& o, const Vec3& from, const Vec3& to, float reach,
+                           float width) const;
+    bool detectBangerCollision(const Ped& p, int& obstacle, float& along) const;
+    void avoidBanger(Ped& p, int obstacle);
 
     // Crossing the street.
     Vec3 curbPoint(int path, int side, bool atEnd) const;
@@ -223,6 +249,12 @@ private:
     const TrafficLights* m_lights = nullptr;
     Probe m_probe;
     AccidentQuery m_accident;
+    std::vector<PedObstacle> m_obstacles;
+    ObstacleStanding m_standing;
+    // aiPath's per-section lists (+0xf8 for side 1, +0x94 for side -1) and
+    // aiIntersection's (+0x28), newest first, of indices into m_obstacles.
+    std::vector<std::vector<std::array<std::vector<int>, 2>>> m_sectionObstacles; // [path][section][side]
+    std::vector<std::vector<int>> m_nodeObstacles;                                 // [intersection]
     int m_room = 0;
     bool m_started = false;
     bool m_populateAll = false;

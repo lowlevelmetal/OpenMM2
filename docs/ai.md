@@ -298,6 +298,20 @@ MM2's pedestrians (build 3393, **MM2** unless marked):
     previous side (an int) as the float offset: +1 gives the obstacle itself
     as the target, -1 a NaN that takes the pedestrian's heading and position
     with it (OpenMM2 hides it until its road is cleared).
+  * Props on the walkway (`DetectBangerCollision`, `AvoidBanger`): when the
+    AI map loads, each sidewalk section lists the props in its road's rooms
+    that are not drivable (CollisionType 0x20) and stand beside it (measured
+    from the section's centre point back along its z axis, within the centre
+    line's length to the point before), by side; each intersection lists the
+    unbreakable props (break threshold above 7.5e7) in its room; newest
+    first (`aiPath` / `aiIntersection::AddBangersToObsMap`). Wander takes the
+    first prop on the section's list (on a corner, the list of the
+    intersection it heads for), else on the next section's, whose ground
+    origin lies ahead on the way to the target point, nearer than it, within
+    min(YRadius, 2) + 1.25 m to either side and 0.7 rad of the way
+    (`aiBanger::IsBlockingTarget`); when it is nearer than the player car it
+    steps round the prop's centre at YRadius + 1 m (the model's radius + 1 m
+    once the prop was knocked over: the lists keep it where it stood).
   * Steering uses the matrix of the last update (rebuilt from the heading
     only at the end of `Update`), and turning round mid-sidewalk takes the
     heading from the first lane's lengths (`aiPath::GetHeading` row 0).
@@ -306,8 +320,9 @@ MM2's pedestrians (build 3393, **MM2** unless marked):
 
 **Deviations** (marked in the code): a single player; the ground and wall
 probes need the game's collision (`World::setProbe`), otherwise heights come
-from the sidewalk lines and there are no walls; the props (`DetectBangerCollision`)
-are not avoided; the stick-figure LOD beyond 35 m is not drawn; the
+from the sidewalk lines and there are no walls; the props come from the
+game (`Pedestrians::setObstacles`; inferred: the race's own props are placed
+before the AI map loads); the stick-figure LOD beyond 35 m is not drawn; the
 avoidance voice is only flagged.
 
 ## API
