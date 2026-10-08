@@ -36,6 +36,8 @@ void applyCommandLine(const CommandLine& cl, render::DisplaySettings& d) {
         d.windowWidth = *cl.width;
     if (cl.height)
         d.windowHeight = *cl.height;
+    if (cl.vsync && !*cl.vsync)
+        d.vsync = render::VsyncMode::Off; // -novblank
     d.sanitize();
 }
 
@@ -96,6 +98,10 @@ void tryMountConfiguredSource(Context& ctx) {
 int run(const CommandLine& cl) {
     log::setFile(paths::userDataDir() / "openmm2.log");
     log::info("{} {} starting", kProjectName, kProjectVersion);
+    for (const auto& o : cl.ignoredOptions)
+        log::info("command line: {} has no OpenMM2 equivalent; ignored", o);
+    for (const auto& o : cl.unknownOptions)
+        log::warn("command line: unknown option {}; ignored", o);
 
     Context ctx;
     ctx.commandLine = cl;
