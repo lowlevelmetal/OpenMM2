@@ -77,18 +77,24 @@ Commands are applied in the order they were issued.
 | `setAmbience("london" / "sf" / "underground" / "")` | city ambience on its own stream |
 | `stop()` | silence |
 
-The original's "Music/City Volume" option controlled music and ambience
-together, so both streams normally go to `Bus::Music`. In MM2 the audio
-options make "Music" and "Ambient" exclusive (`AudioOptions::ToggleMusic` /
-`ToggleAmbient`): with music on, the city's DirectMusic ambience segment and
-its 3D ambient emitters are not loaded (`mmGameMusicData::Load`,
-`mmPlayer::Init`). OpenMM2 plays both.
+The original's "Music/City Volume" option controlled the DirectMusic buffer,
+which plays either the soundtrack or the city ambience segment, so the
+ambience stream goes to `Bus::Ambient` with the music slider. The slider maps
+to an Angel volume log(200 v) / log(200) (`DMusicWaveBuffer::SetVolume`; the
+mixer applies it, see `docs/audio.md`). In MM2 the audio options make "Music"
+and "Ambient" exclusive (`AudioOptions::ToggleMusic` / `ToggleAmbient`): with
+music on, the city's DirectMusic ambience segment and its 3D ambient emitters
+are not loaded (`mmGameMusicData::Load`, `mmPlayer::Init`). OpenMM2 plays
+both. MM2 also stops the ambience segment while the camera is underground and
+restarts it outside (`MMDMusicManager::UpdateAmbientSFX`, audio flag 0x80);
+OpenMM2 has no tunnel state yet. `setAmbience("underground")` plays
+`UndergrounAmbience.sgt`, which MM2 never uses (a tool option).
 
 ### When the music changes (`MusicDirector`)
 
 Ported from MM2 (`mmGame::StartMusic`, `UpdateDMusic`,
 `MMDMusicManager::UpdateMusic`, `MatchMusicToPlayerSpeed`, `mmPopup`'s
-`PlayPauseMusic` / `PlayReturnMusic` / `ShowRoster`, the race modes'
+`PlayPauseMusic` / `PlayReturnMusic` / `ShowResults`, the race modes'
 `StopSegment` calls). The game calls `MusicDirector::update` every unpaused
 frame with the player's speed, the number of cops pursuing the player
 (`vehPoliceCarAudio::GetNumCopsPursuingPlayer`) and the car's airborne flag
@@ -97,15 +103,16 @@ commands to `MusicPlayer`.
 
 | Rule | Evidence |
 |------|----------|
-| The song is a uniformly random row of `singlerace.csv` / `singleroam.csv` | MM2 (`mmGameMusicData::RandomizeNumber`, `mmSingleRaceMusicData::LoadMusic`) |
+| The song is a row of `singlerace.csv` / `singleroam.csv` drawn with a generator seeded by the clock's second (`audio/AngelRandom.h`); every line after the header counts, so a blank line is a song without segments | MM2 (`mmGameMusicData::RandomizeNumber`, `GetNumDMusicChoiceGroups`, `mmSingleRaceMusicData::LoadMusic`, `LoadMusicSegments`) |
 | The Start segment begins 1.25 s into the game, on the next beat | MM2 (`mmGame::StartMusic`) |
 | Idle: speed at or below 5 m/s for 5 s; the switch waits for the next measure. The idle timer starts expired, so in cruise (no countdown) a stationary player gets the idle segment at once; the race modes hold the idle logic from the music start until "Go!", which also resets the timer | MM2 (`MatchMusicToPlayerSpeed`, both constants 5.0; flag +0x50 set by `StartMusic` for races, cleared by `mmSingleCircuit` / `mmSingleBlitz` / `mmMultiRace` at the start) |
 | Leaving idle (above 5 m/s): Idle → Return, IdleCops → CopChase, on the next measure | MM2 (`MatchMusicToPlayerSpeed`) |
 | Stopping during a chase gives IdleCops in races; cruise has no idle-cop segment (the cruise table's column is loaded but its index never set), so the chase music keeps playing | MM2 (`mmSingleRoamMusicData::LoadMusic` leaves +0x30 at -1) |
 | Cop chase: when the pursuing-cop count goes from 0 to exactly 1; Return when it goes from 1 to 0, both on the next beat. Other changes (0 → 2, 2 → 0) switch nothing | MM2 (`UpdateMusic`) |
-| Big Air: when the car becomes airborne (once per jump); the motif plays as a secondary segment with one repeat (twice) from the next beat (flags DMUS_SEGF_SECONDARY, GRID and BEAT; the beat is assumed to win) | MM2 (`UpdateMusic`, `DMusicObject::PlayMotif`, flags 0x880) |
-| Pause: the Pause segment on the next beat; resuming restarts the previous segment from its beginning | MM2 (`mmPopup::PlayPauseMusic`, `PlayReturnMusic`) |
-| Finish: the race modes stop the music at once; the results roster then starts the results segment on the next beat (with an END embellishment, not rendered by dmusic) | MM2 (`mmSingleCircuit` / `mmSingleBlitz` `StopSegment`, `mmPopup::ShowRoster`) |
+| Big Air: when the car becomes airborne (once per jump); the motif plays as a secondary segment with one repeat (twice) from the next beat (flags DMUS_SEGF_SECONDARY, GRID and BEAT; the beat is assumed to win); a jump while it still plays adds nothing | MM2 (`UpdateMusic`, `DMusicObject::PlayMotif`, flags 0x880 \| 0x1000, `SegmentWrapper::Play` with SetRepeats(1), nothing while playing) |
+| Pause: the Pause segment on the next beat; resuming restarts the previous segment (whatever it was) from its beginning | MM2 (`mmPopup::PlayPauseMusic`, `PlayReturnMusic`) |
+| Finish: the race modes stop the music at once (`StopSegment(0)`); the music logic keeps running, so standing still for 5 s brings in the idle segment; the results popup starts the results segment on the next beat (with an END embellishment, not rendered by dmusic) | MM2 (`mmSingleRace` / `mmSingleCircuit` / `mmSingleBlitz` `StopSegment`, `mmPopup::ShowResults`) |
+| Wrecked: the race modes end the music with a composed ending on the next beat (`StopSegment(1)`: AutoTransition to nothing, DMUS_COMMANDT_END, DMUS_COMPOSEF_BEAT); OpenMM2 stops on the next beat (`MusicDirector::damagedOut`) | MM2 (`mmSingleRace::UpdateGame`, `DMusicObject::StopSegment`); the ending **inferred** |
 | A segment switch to the segment already playing does nothing | MM2 (`DMusicObject::SegmentSwitch`) |
 
 Notes on the port:
