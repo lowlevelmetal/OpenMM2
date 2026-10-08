@@ -4,8 +4,8 @@ Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
 Summary: 219 reachable functions in 24 classes and the free functions
 `playerFilterSteering`, `ConvertDItoString`, `AngelReadKeyString`, and
-mmPlayer's force-feedback methods; ported 129 (of which newly ported 110),
-replaced 52, not needed 38, open 0. The 51 functions the coverage tool
+mmPlayer's force-feedback methods; ported 125 (of which newly ported 106),
+replaced 52, not needed 42, open 0. The 51 functions the coverage tool
 finds unreachable are listed at the end.
 
 MM2 reads its controls through `mmInput` (an asNode under ROOT, updated
@@ -56,8 +56,9 @@ Fixed or added by this audit:
   BuildCaptureIO`, `PollStates`, `mmJaxis::Capture`) on the customize page.
 - Force feedback (`mmPlayer::UpdateFF`, `FFImpactCallback`, `ResetFF`,
   `mmCarRoadFF`, the four effects) through SDL haptics, or rumble.
-- The steering bars: `mmMouseSteerBar` on the control page, and the
-  mouse's bar with the instrument cluster (`mmExternalView::Cull`).
+- The mouse's steering bar with the instrument cluster
+  (`mmExternalView::Cull`). (`ControlSetup` never adds its
+  `mmMouseSteerBar` to the menu, so the control page shows none.)
 - `mmInput::Flush` on the popups; the POV lamp for a joystick with a hat.
 
 ## mmInput
@@ -102,7 +103,7 @@ OpenMM2 builds a `GameInput` for each race and one for the control page.
 | `mmInput::GetThrottleVal`, `mmInput::GetBrakesVal`, `mmInput::GetHandBrake` | ported (new) | `GameInput::throttle`, `brakes`, `handBrake` | a held button gives 1, an axis its value; OpenMM2's game pad beside the keyboard adds its triggers and South |
 | `mmInput::FilterDiscreteSteering` | ported | `phys::SteeringFilter` via `GameInput::steering` | vehicle area; target ±1 (+0x1a8), Steer Left wins |
 | `mmInput::FilterGamepadSteering` | ported | `phys::SteeringFilter` via `GameInput::steering` | its own position (+0x1a0); the target is the axis, unclamped |
-| `mmInput::GetSteering` | ported (new) | `GameInput::steering`, `steeringUnfiltered` | keyboard, game pad, else `playerFilterSteering` (or the raw axis without the callback, the control page) |
+| `mmInput::GetSteering` | ported (new) | `GameInput::steering` | keyboard, game pad, else `playerFilterSteering` |
 | `mmInput::GetCamPan` | ported (new) | `GameInput::camPan` | fixed: the joystick controller's POV hat (north 1, east 0.75, south 0.5, west 0.25) before the look buttons; the analog slot never applies (above) |
 | `mmInput::DeviceConnected` | ported | `readJoystick().present`, frontend `joystickConnected` | |
 | `mmInput::JoystickHasCoolie` | ported (new) | `JoystickFrame::hasPov`, frontend POV lamp | |
@@ -228,7 +229,7 @@ stand-in; friction and the spring have no rumble equivalent).
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
 | `playerFilterSteering` | ported | `GameInput::steering` -> `AnalogSteering::filter` | `mmPlayer::FilterSteering` for the mouse, joystick and wheel (session area's port) |
-| `mmMouseSteerBar::Init`, `mmMouseSteerBar::Update`, `mmMouseSteerBar::Cull`, `mmMouseSteerBar::'scalar_deleting_destructor'` | ported (new) | frontend `ControlPage::drawSteeringBar` | `mouse_bar` at (0.1, 0.85) of the screen, `mouse_ar` 16 px above at (bar width / 2 - 15) x (1 + steering) + a quarter of its width; the value is `GetSteering` without the callback (`ControlSetup::Update`); split piece 0x534440 is the base destructor |
+| `mmMouseSteerBar::Init`, `mmMouseSteerBar::Update`, `mmMouseSteerBar::Cull`, `mmMouseSteerBar::'scalar_deleting_destructor'` | not needed | | `ControlSetup` builds the bar but never adds it to its menu, so MM2 never draws it (frontend audit; OpenMM2's control-page bar removed in 4c0d84d). The race's mouse bar is `mmExternalView::Cull`'s |
 
 The race's own bar is `mmExternalView::Cull` (the HUD's class): with the
 mouse controller it draws `mouse_bar` centred two bar heights above the

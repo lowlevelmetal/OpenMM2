@@ -148,9 +148,6 @@ public:
     // FilterGamepadSteering for the game pad, mmPlayer::FilterSteering for
     // the mouse, the joystick and the wheel).
     float steering(float dt);
-    // GetSteering without the callback (the options page's steering bar):
-    // the keyboard's and the game pad's filters, else the axis itself.
-    float steeringUnfiltered(float dt);
     // The game pad filter on an axis value (OPENMM2_DEBUG_INPUT).
     float filterAxis(float axis, float dt) { return m_padFilter.filter(axis, dt); }
     // mmPlayer::Update: the filters' parameters for the car's forward

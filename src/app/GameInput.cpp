@@ -475,14 +475,6 @@ float GameInput::steering(float dt) {
     }
 }
 
-float GameInput::steeringUnfiltered(float dt) {
-    switch (m_controller) {
-    case Controller::Keyboard:
-    case Controller::GamePad: return steering(dt);
-    default: return m_steerAxis;
-    }
-}
-
 void GameInput::setSpeed(float speed) {
     m_keyFilter.setSpeed(speed);
     m_padFilter.setSpeed(speed);

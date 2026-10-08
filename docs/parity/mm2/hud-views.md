@@ -2,7 +2,7 @@
 
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
-Summary: 373 reachable functions in 39 classes; ported 206 (of which newly ported 35), replaced 35, not needed 115, open 17.
+Summary: 373 reachable functions in 39 classes; ported 222 (of which newly ported 35, and 16 ported by the frontend audit's showroom), replaced 35, not needed 115, open 1.
 
 Scope: the race HUD (mmHUD and its parts, the overhead map, the opponent
 icons, the mode readouts, the dashboard), the view keys (mmViewMgr), the
@@ -410,7 +410,7 @@ ElapsedTime.
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `asViewCS::asViewCS`, `asViewCS::~asViewCS`, `asViewCS::'scalar_deleting_destructor'`, `asViewCS::Reset`, `asViewCS::Update`, `asViewCS::UpdateLookAt`, `asViewCS::UpdatePolar`, `asViewCS::UpdatePOV`, `asViewCS::UpdateRoam`, `asViewCS::UpdateStereo`, `asViewCS::UpdateTrack` | open |  | Needs the 3D showroom of VehicleSelectBase (frontend record: a photo stands in). The infrastructure record's split piece 0x596562 is the rest of Update: the azimuth approaches its target at the set rate, wraps to +-pi, then Matrix34::PolarView about the interest plus an offset. |
+| `asViewCS::asViewCS`, `asViewCS::~asViewCS`, `asViewCS::'scalar_deleting_destructor'`, `asViewCS::Reset`, `asViewCS::Update`, `asViewCS::UpdateLookAt`, `asViewCS::UpdatePolar`, `asViewCS::UpdatePOV`, `asViewCS::UpdateRoam`, `asViewCS::UpdateStereo`, `asViewCS::UpdateTrack` | ported | `app/frontend/Showroom` | Ported by the frontend audit with the garage's 3D car (VehicleSelectBase, mmVehicleForm); see docs/parity/mm2/frontend.md |
 
 ## asDofCS
 
@@ -418,7 +418,7 @@ An animated node (rotation, translation or scale on a time curve); VehicleSelect
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `asDofCS::asDofCS`, `asDofCS::~asDofCS`, `asDofCS::'vector_deleting_destructor'`, `asDofCS::Reset`, `asDofCS::Update` | open |  | Needs the 3D showroom (frontend). |
+| `asDofCS::asDofCS`, `asDofCS::~asDofCS`, `asDofCS::'vector_deleting_destructor'`, `asDofCS::Reset`, `asDofCS::Update` | ported | `app/frontend/Showroom` | Ported by the frontend audit with the garage's 3D car (VehicleSelectBase, mmVehicleForm); see docs/parity/mm2/frontend.md |
 
 ## asLinearCS
 
