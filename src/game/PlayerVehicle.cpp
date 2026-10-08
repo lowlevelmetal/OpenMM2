@@ -55,12 +55,12 @@ void readSimPivots(const vfs::Vfs& vfs, const std::string& model, phys::VehicleG
 } // namespace
 
 std::unique_ptr<SimVehicle> SimVehicle::loadPlayer(const vfs::Vfs& vfs, std::string_view baseName,
-                                                   std::string* error) {
-    return load(vfs, baseName, error, {}, true);
+                                                   std::string* error, bool trailer) {
+    return load(vfs, baseName, error, {}, true, trailer);
 }
 
 std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_view baseIn, std::string* error,
-                                             std::string_view tuneSuffix, bool player) {
+                                             std::string_view tuneSuffix, bool player, bool trailer) {
     const std::string base = str::lower(baseIn);
     auto v = std::make_unique<SimVehicle>();
     auto read = [&](std::string_view path) { return vfs.readAll(path); };
@@ -128,7 +128,7 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
     auto trailerTune = readDat(vfs, "tune/vehicle/" + base + ".vehtrailer");
     auto jointTune = readDat(vfs, "tune/vehicle/" + base + ".dgtrailerjoint");
     const asset::Mtx* carHitch = v->m_model.pivot("trailer_hitch");
-    if (carHitch && trailerTune && trailerTune->top() && jointTune && jointTune->top()) {
+    if (trailer && carHitch && trailerTune && trailerTune->top() && jointTune && jointTune->top()) {
         phys::TrailerParams tp;
         phys::TrailerJointParams jp;
         auto trailerModel = asset::loadVehicleModel(base + "_trailer", read, nullptr);

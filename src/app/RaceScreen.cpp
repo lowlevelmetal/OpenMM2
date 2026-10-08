@@ -404,7 +404,11 @@ private:
         m_world->setLevel(m_cityLevel.get());
 
         std::string error;
-        m_player = game::SimVehicle::loadPlayer(ctx.game->vfs, m_result.config.vehicle, &error);
+        // mmPlayer::Init: no trailer in multiplayer cruise or Cops and Robbers.
+        const auto mode = m_result.config.mode;
+        const bool withTrailer =
+            !(multiplayer(ctx) && (mode == game::GameMode::Cruise || mode == game::GameMode::CopsAndRobbers));
+        m_player = game::SimVehicle::loadPlayer(ctx.game->vfs, m_result.config.vehicle, &error, withTrailer);
         if (!m_player) {
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
             return;

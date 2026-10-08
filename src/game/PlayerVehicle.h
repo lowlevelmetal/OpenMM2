@@ -22,11 +22,14 @@ public:
     // `tuneSuffix` selects a tune variant (e.g. "_opp") when present. MM2
     // itself never loads one (OpenMM2 option, unused by the game).
     static std::unique_ptr<SimVehicle> load(const vfs::Vfs& vfs, std::string_view baseName, std::string* error,
-                                            std::string_view tuneSuffix = {}, bool player = false);
+                                            std::string_view tuneSuffix = {}, bool player = false,
+                                            bool trailer = true);
     // The local player's car (mmPlayer::Init): as load(), with the
-    // player-only rules (the police car simulated as vpmustang99).
+    // player-only rules (the police car simulated as vpmustang99). `trailer`
+    // is vehCar::Init's trailer flag: mmPlayer::Init clears it in
+    // multiplayer cruise and Cops and Robbers.
     static std::unique_ptr<SimVehicle> loadPlayer(const vfs::Vfs& vfs, std::string_view baseName,
-                                                  std::string* error);
+                                                  std::string* error, bool trailer = true);
 
     const asset::VehicleModel& model() const { return m_model; }
     phys::CarSim& sim() { return m_sim; }
