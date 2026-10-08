@@ -127,8 +127,7 @@ int atoiCell(const std::string& cell) {
     return v;
 }
 
-// lvlAiMap's flags of the current road (lvlAiRoad's first word: OpenMM2's
-// PsdlRoad keeps its bytes as flags, unknown1 and the high half).
+// lvlAiMap's flags of the current road (lvlAiRoad's first word, PsdlRoad::flags).
 constexpr std::uint32_t kRoadPedBlocked = 0x4;       // lvlAiMap::IsPedBlocked
 constexpr std::uint32_t kRoadSidewalks = 0x40;       // the road strips have sidewalks
 constexpr std::uint32_t kRoadCurbToCentre = 0x400000; // no retail road has it
@@ -139,7 +138,7 @@ constexpr std::uint32_t kRoadCurbToCentre = 0x400000; // no retail road has it
 class AiRoad {
 public:
     AiRoad(const city::Psdl& psdl, const city::PsdlRoad& road) : m_psdl(psdl) {
-        m_flags = road.flags | (std::uint32_t{road.unknown1} << 8) | (std::uint32_t{road.propRule} << 16);
+        m_flags = road.flags;
         // lvlAiMap::LoadCurrent, enumerated over the road's rooms in order:
         // every road strip (4 vertices a section), rectangle strip (2) or
         // divided road (6) fills the next slot until there is one per room.

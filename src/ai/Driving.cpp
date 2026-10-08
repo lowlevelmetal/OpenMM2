@@ -289,7 +289,7 @@ void avoidPoints(const TrackedCar& obstacle, const Vec3& from, const Vec3& dir, 
 // The test of aiVehiclePhysics::DriveRoute: the car drives while its damage
 // is at most the maximum (vehCarDamage CurrentDamage <= MaxDamage).
 static bool aiWrecked(const phys::CarSim& car) {
-    return car.damage.enabled && car.damage.maxScaled() < car.damage.currentDamage;
+    return car.damage.enabled && car.damage.maxDamage() < car.damage.currentDamage;
 }
 
 PhysicsDriver::PhysicsDriver(phys::CarSim& car, int selfId) : m_car(car), m_selfId(selfId) {
