@@ -3,7 +3,7 @@
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 138 functions (rows; a few group overloads or a struct's
-defaults); verified 77, fixed 37, deviation 8, inferred 2, open 1,
+defaults); verified 77, fixed 38, deviation 7, inferred 2, open 1,
 openmm2 13.
 
 Scope: `vehCarSim` and its parts (`vehWheel`, `vehDrivetrain`, `vehEngine`,
@@ -43,7 +43,7 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `loadCarDamageParams` | `vehCarDamage::FileIO` | verified | DoublePivot / MirrorPivot are datParser bools (GetInt != 0). The same file carries the engine smoke birth rule (`EngineSmokeRule`'s FileIO), which belongs to rendering-fx |
 | `loadTrailerParams` | `vehTrailer::FileIO` | verified | |
 | `loadTrailerJointParams` | `dgTrailerJoint::FileIO` | verified | |
-| tune values as read | `datParser::Read`, `datAsciiTokenizer::GetFloat` / `GetInt` | deviation | Checked with an emulation of datParser::Read (whitespace tokens, atof/atoi, unknown field: skip its block when the next token is '{', otherwise skip to the end of the line; last assignment wins) over every vehicle tune MM2 loads: identical values, except `vpftruck.vehCarSim` (an MM1 layout; the car has no `.info` and no race uses it). There MM2 reads the labelled `Aero asAero :addr {` block, swallows ManualNumGears in the skipped MM1 GearRatios lines, and, because `AsphaltRule asBirthRule :addr {` is skipped only to its end of line, takes vehCarSim's Mass from that rule's `Mass 0.1` and ends the block at the rule's `}` |
+| tune values as read | `datParser::Read`, `datAsciiTokenizer::GetFloat` / `GetInt` | fixed | Checked with an emulation of datParser::Read (whitespace tokens, atof/atoi, unknown field: skip its block when the next token is '{', otherwise skip to the end of the line; last assignment wins) over every vehicle tune MM2 loads: identical values, except `vpftruck.vehCarSim` (an MM1 layout; the car has no `.info` and no race uses it). There MM2 reads the labelled `Aero asAero :addr {` block, swallows ManualNumGears in the skipped MM1 GearRatios lines, and, because `AsphaltRule asBirthRule :addr {` is skipped only to its end of line, takes vehCarSim's Mass from that rule's `Mass 0.1` and ends the block at the rule's `}`. The formats audit's record-list reader (`phys::carSimSchema`, commit 7584956) now reproduces this: vpftruck reads Mass 0.1 and no ManualNumGears; every other tune is unchanged. |
 | `noteIgnored` | | openmm2 | diagnostics for unread fields |
 
 ## src/phys/vehicle/VehicleGeometry.h, VehicleGeometry.cpp

@@ -25,6 +25,9 @@ namespace mm2::phys {
 //   sound                 surface sound index (0 road, 1 water, 2 grass)
 //   ptxindex/threshold    wheel particle effect indices and slip thresholds
 // The latter four map to vehWheel::MaterialDrag/Width/Height/Depth.
+//
+// The member defaults are OpenMM2's (test ground); MM2's material defaults
+// are lvlMaterialDefault()'s.
 struct Material {
     std::string name = "_default";
     float elasticity = 0.9f;
@@ -39,18 +42,30 @@ struct Material {
     float ptxThreshold[2] = {0.25f, 0.5f};
 };
 
-// Parses every "mtl <name> { ... }" block in `text`. Unknown keys are
-// ignored. Returns std::nullopt (and sets `error`) on malformed input.
+// lvlMaterial's constructor (on top of phMaterial's): elasticity 0.5,
+// friction 1, drag 0, width 1, height and depth 0, no particle effects
+// (thresholds 0.25 / 0.5), effect and sound index -1, named "default". The
+// material manager's default material (lvlMaterialMgr's entry 0, which the
+// wheels get for polygons without a material) is one, and a block that
+// stops early keeps these values for the fields it leaves out.
+Material lvlMaterialDefault();
+
+// Parses every "mtl <name> { ... }" block in `text` (lvlMaterial::Load).
+// Unknown keys are ignored. Returns std::nullopt (and sets `error`) on
+// malformed input.
 std::optional<std::vector<Material>> parseMaterials(std::string_view text, std::string* error = nullptr);
 
-// Material lookup by case-insensitive name. Index 0 is always "_default";
-// unknown names (and "none", which city/materials.csv uses for most
-// textures) resolve to it.
+// Material lookup by case-insensitive name, standing in for lvlMaterialMgr's
+// table: index 0 is the default material (lvlMaterialDefault(), named
+// "default"); unknown names (and "none", which city/materials.csv uses for
+// most textures) resolve to it.
 class MaterialTable {
 public:
     MaterialTable();
 
-    // Adds or replaces materials by name.
+    // Adds materials by name. As lvlMaterialMgr::Load, a name already in
+    // the table keeps its first definition (so a file's "_default" block is
+    // an entry of its own, not the default material).
     void add(const Material& m);
     void add(const std::vector<Material>& ms);
 

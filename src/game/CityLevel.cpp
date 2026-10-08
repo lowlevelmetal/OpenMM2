@@ -22,6 +22,9 @@ namespace {
 constexpr std::uint16_t kInstTerrainLocal = 0x100; // InitBoundTerrainLocal, room flag 0x20
 constexpr std::uint16_t kInstBanger = 0x200;       // dgUnhitBangerInstance::RequestBanger
 constexpr std::uint16_t kInstCollidable = 0x2000;  // collidable, placed by lvlMultiRoomInstance::Create
+// A terrain-bound instance with this flag gets lvlInstance flags 0x110, not
+// 0x130: wheel probes do not hit it.
+constexpr std::uint16_t kInstNoWheels = 0x400;
 // lvlSDL::CollidePolyToLevel's polygon buffer.
 constexpr int kMaxLevelPolygons = 256;
 // cityLevel's room flag of instance rooms (GetTouchedNeighbors takes them
@@ -96,7 +99,8 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
     // a new name), then the new names of the bound files (lvlMaterialMgr::Load:
     // "default" in a bound file is the built-in one). The level's polygons
     // and the objects' bounds use these. OpenMM2's MaterialTable (m_materials,
-    // "_default" first) serves the wheels' probe geometry.
+    // the default material first, see phys::MaterialTable) serves the
+    // wheels' probe geometry.
     m_manager.push_back(phys::defaultBoundMaterial());
     auto managerIndex = [this](std::string_view name) -> int {
         for (std::size_t i = 0; i < m_manager.size(); ++i)
@@ -250,9 +254,11 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
         si->m_radius = rowLength(b.centroid) + b.radius;
         si->room = inst.room;
         // Flags 0x130 / 0x110: collidable, and terrain-collidable (which
-        // also keeps them from being attached).
+        // also keeps them from being attached); 0x20, the wheels' mask, on
+        // all but the terrain-bound ones with record flag 0x400.
         si->collidable = (inst.flags & kInstTerrainLocal) != 0;
         si->terrainCollidable = true;
+        si->wheelCollidable = !(inst.flags & kInstTerrainLocal) || !(inst.flags & kInstNoWheels);
         si->multiRoom = false;
         // Listed in the room and in the neighbours its sphere touches
         // (lvlMultiRoomInstance::Create; terrain instances likewise,
@@ -284,7 +290,7 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
             if (batch.indices.empty())
                 continue;
             phys::SoupGeometry g;
-            std::string material = "_default";
+            std::string material = "default"; // lvlMaterialMgr entry 0
             if (const auto* name = city.psdl.texture(batch.texture); name && !name->empty())
                 if (auto it = byTexture.find(str::lower(*name)); it != byTexture.end())
                     material = it->second;
@@ -311,7 +317,7 @@ CityLevel::CityLevel(const city::CityData& city, const vfs::Vfs& vfs,
         for (int i = 0; i < poly->numMaterials(); ++i)
             g.materialNames.push_back(poly->material(i).name);
         if (g.materialNames.empty())
-            g.materialNames.push_back("_default");
+            g.materialNames.push_back("default");
         for (const auto& pg : poly->polygons) {
             phys::SoupGeometry::Poly p;
             const int n = pg.vertexCount();
@@ -347,6 +353,21 @@ int CityLevel::findRoom(const Vec3& position, int hint) const {
     // to room 0, where it collides with nothing).
     const int room = m_locator.find(position, hint);
     return room != 0 ? room : hint;
+}
+
+int CityLevel::neighbors(int* out, int max, int room) const {
+    // cityLevel::GetNeighbors: the rooms across the room's perimeter edges,
+    // each once, in perimeter order.
+    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size())
+        return 0;
+    int count = 0;
+    for (const auto& edge : m_city.psdl.rooms[static_cast<std::size_t>(room)].perimeter) {
+        const int neighbor = edge.neighbor;
+        if (neighbor == 0 || count >= max || std::find(out, out + count, neighbor) != out + count)
+            continue;
+        out[count++] = neighbor;
+    }
+    return count;
 }
 
 int CityLevel::touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const {
@@ -434,6 +455,59 @@ void CityLevel::collect(const int* rooms, int count, const Vec3& centre, float r
         Vec3 corners[4];
         for (int i = 0; i < n; ++i)
             corners[i] = buffer.vertices[p.v[static_cast<std::size_t>(i)]];
+        out.addPolygon(corners, n, p.normal, p.material);
+    }
+}
+
+int CityLevel::roomFlags(int room) const {
+    if (room <= 0 || static_cast<std::size_t>(room) >= m_city.psdl.rooms.size())
+        return 0;
+    return m_city.psdl.rooms[static_cast<std::size_t>(room)].flags;
+}
+
+void CityLevel::collectProbe(int room, const Vec3& centre, float radius, phys::LevelBound& out) const {
+    // sdlPage16::CollideSegment's collection for lvlSDL::CollideProbe:
+    // Collect with the room marked as the probed one, in batches of 256
+    // polygons, each resuming at the attribute where the last overflowed,
+    // until a batch finishes the room, comes back empty or stops where the
+    // last one did (MM2 reports "Primitive too large").
+    struct ProbeBuffer {
+        const city::Psdl* psdl = nullptr;
+        city::SdlPolyBuffer buffer;
+    };
+    thread_local ProbeBuffer probe;
+    const city::Psdl& psdl = m_city.psdl;
+    if (probe.psdl != &psdl || probe.buffer.psdlVertexCount != psdl.vertices.size() ||
+        probe.buffer.vertices.size() < psdl.vertices.size()) {
+        probe.buffer.reset(psdl);
+        probe.psdl = &psdl;
+    } else {
+        // SdlPolyBuffer::reset without copying the PSDL's vertices again
+        // (Collect only appends to them).
+        probe.buffer.vertices.resize(probe.buffer.psdlVertexCount);
+        probe.buffer.polys.clear();
+        probe.buffer.vertexBudget = city::kSdlGeneratedVertexBudget;
+    }
+    out.clear();
+    if (room <= 0 || static_cast<std::size_t>(room) >= psdl.rooms.size())
+        return;
+    const city::SdlSphere sphere{centre, radius};
+    std::uint32_t state = 0;
+    std::uint32_t previous = 0;
+    for (;;) {
+        const int added =
+            city::collectRoomPolygons(psdl, static_cast<std::size_t>(room), &sphere, m_textureMaterials,
+                                      probe.buffer, kMaxLevelPolygons, nullptr, &state,
+                                      static_cast<std::uint16_t>(room));
+        if (added == 0 || state == 0 || state == previous)
+            break;
+        previous = state;
+    }
+    for (const city::SdlPoly& p : probe.buffer.polys) {
+        const int n = p.v[3] != 0 ? 4 : 3;
+        Vec3 corners[4];
+        for (int i = 0; i < n; ++i)
+            corners[i] = probe.buffer.vertices[p.v[static_cast<std::size_t>(i)]];
         out.addPolygon(corners, n, p.normal, p.material);
     }
 }

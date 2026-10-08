@@ -48,6 +48,9 @@ public:
     // vehCar::PreUpdate): full brakes and neutral, so the throttle revs the
     // engine freely; the steering and handbrake stay the player's.
     void hold(const phys::PedalInput& input);
+    // The pedal handling's state (the AUTO REVERSE option, the swapped
+    // pedals that the transmission keys reset).
+    phys::ArcadeControls& controls() { return m_controls; }
     bool reversing() const;
 
     // Pose for rendering (body and wheel matrices from the simulation).

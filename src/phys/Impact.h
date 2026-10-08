@@ -78,13 +78,17 @@ struct Impact {
                                         const Vec3& axis);
     // phImpactBase::ImpactIsInList: the index of the impact of `kind`
     // between elements a and b, or -1. (Declared bool in MM2, which returns
-    // the index in eax; callers test its low byte.)
+    // the index in eax; callers test the sign of the whole value.)
     static int impactIsInList(int a, int b, int kind, const Impact* list, int count);
 };
 
 // The elasticity cap of FindFrictionAndElasticity (a global): 1, reset
-// by mmGame::Reset; the "/blubber" chat cheat sets 4.
+// by mmGame::Reset; mmGame::SendChatMessage's "blubber" cheat sets 4.
 inline constexpr float kElasticityCap = 1.0f;
+inline constexpr float kBlubberElasticityCap = 4.0f;
+// The cap in force (the global itself; kElasticityCap until changed).
+float elasticityCap();
+void setElasticityCap(float cap);
 
 // phImpact::CalcCollisionNoFriction: the impulse magnitude along `normal`
 // that stops a closing speed `closing` (< 0) at `position` of ics; 0 when

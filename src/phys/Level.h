@@ -44,6 +44,10 @@ public:
     // The entity's call after the impacts that attached it were resolved
     // (dgPhysEntity vtable 0x24).
     virtual void attached() {}
+    // lvlInstance::Detach: dgPhysManager::Update calls it on a type-1 mover
+    // outside the active rooms (dgHitBangerInstance::Detach lets the body
+    // go and moves the prop to room 0, out of the world).
+    virtual void detach() {}
 
     // dgBangerInstance (lvlInstance flag 1): resolved with dgImpact and the
     // banger's impulse limit; breaking loose calls bangerHit
@@ -69,6 +73,9 @@ public:
     // bit keeps dgPhysManager::CollideInstances from trying AttachEntity.
     bool terrainCollidable = false;
     bool multiRoom = false;          // 0x800: listed in several rooms (lvlMultiRoomInstance)
+    // 0x20: wheel probes hit it (the mask vehWheel passes dgPhysManager::
+    // Collide; the city's collidable instances, lvlLevel::LoadInstances).
+    bool wheelCollidable = false;
     bool hitByPlayer = false;        // 0x8000: the player's car hit it this frame
 };
 
@@ -95,6 +102,25 @@ public:
     int numMaterials() const override { return 0; }
 };
 
+// lvlSegmentInfo with the state vehWheel::Init allocates for it
+// (AllocateState): the rooms of the probe's ends (lvlSegment's room cache)
+// and the level polygon the last probe hit (sdlPolyCached, a copy with its
+// own vertices), which lvlSDL::CollideProbe tests first. Each wheel keeps
+// one across samples.
+struct ProbeCache {
+    int startRoom = 0;
+    int endRoom = 0;
+    // The cached polygon is usable (MM2 sets the low bit of its pointer to
+    // mark it stale; a new state starts stale).
+    bool valid = false;
+    Polygon polygon; // indices 0..3 into `vertices` (v[3] == 0: a triangle)
+    std::array<Vec3, 4> vertices{};
+    // The material (World table index) the wheel's intersection was left
+    // with by the last probe that hit: a hit on the cached polygon does not
+    // set one (the wheel's lvlIntersection keeps its bound and material).
+    int material = 0;
+};
+
 // cityLevel / lvlLevel / lvlSDL services the collision manager needs.
 class Level {
 public:
@@ -106,6 +132,20 @@ public:
     // cityLevel::GetTouchedNeighbors: up to `max` rooms next to `room` whose
     // shared perimeter edges the sphere touches.
     virtual int touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const = 0;
+    // cityLevel::GetNeighbors: up to `max` rooms across `room`'s perimeter,
+    // each once, in perimeter order (none by default).
+    virtual int neighbors(int* /*out*/, int /*max*/, int /*room*/) const { return 0; }
+    // The room's flag byte (lvlSDL's room flags: 0x40 warp, 0x80 instance
+    // room).
+    virtual int roomFlags(int /*room*/) const { return 0; }
+    // sdlPage16::CollideSegment's collection of one room for a wheel probe
+    // (sdlPage16::Collect in batches of 256 until the room is done, into
+    // `out`, cleared first): lvlSDL::CollideProbe marks the room it probes,
+    // which turns a SpecialBound room's road surfaces into triangles with
+    // raised sidewalks. Default: collect().
+    virtual void collectProbe(int room, const Vec3& centre, float radius, LevelBound& out) const {
+        collect(&room, 1, centre, radius, out);
+    }
     // lvlSDL::CollidePolyToLevel's collection: sdlPage16::Collect of each
     // room for the sphere into `out` (cleared first).
     virtual void collect(const int* rooms, int count, const Vec3& centre, float radius, LevelBound& out) const = 0;

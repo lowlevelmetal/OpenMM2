@@ -12,92 +12,155 @@ namespace {
 constexpr std::string_view kAsciiHeader = "type: a";
 constexpr std::string_view kBinaryHeader = "type: b";
 
+// datParser::Read and datParser::Load read names into 64-byte buffers,
+// datAsciiTokenizer::GetInt/GetFloat into 32-byte ones.
+constexpr std::size_t kNameBuffer = 64;
+constexpr std::size_t kNumberBuffer = 32;
+
+// MM2 does not tell quoted tokens apart from others (a quoted "}" closes a
+// block); `quoted` only tells an empty quoted token from the end of the file.
 struct Token {
-    enum class Kind { End, Word, Number, String, Open, Close } kind = Kind::End;
-    std::string_view text;
+    std::string text;
+    bool quoted = false;
     int line = 0;
+
+    bool is(std::string_view s) const { return text == s; }
 };
 
-// datBaseTokenizer::GetToken.
-class Lexer {
+// A port of datBaseTokenizer / datAsciiTokenizer over the text after the
+// header. The tokenizer keeps one character of look-ahead: a token ends on
+// the separator that follows it, which stays as the current character, and
+// SkipToEndOfLine reads on from the text behind that character.
+class Tokenizer {
 public:
-    Lexer(std::string_view text, std::size_t pos) : m_text(text), m_pos(pos) {}
+    Tokenizer(std::string_view text, std::size_t pos) : m_text(text), m_pos(pos) {}
 
-    Token next() {
-        skipSpaceAndComments();
+    bool atEnd() const { return m_cur == -1; }
+
+    // datBaseTokenizer::GetToken; `capacity` is the caller's buffer size.
+    Token getToken(std::size_t capacity) {
         Token t;
-        t.line = m_line;
-        if (m_pos >= m_text.size())
-            return t;
-        if (m_text[m_pos] == '"') {
-            // A quoted token runs to the next quote, across lines.
-            const std::size_t start = ++m_pos;
-            while (m_pos < m_text.size() && m_text[m_pos] != '"') {
-                if (m_text[m_pos] == '\n')
-                    ++m_line;
-                ++m_pos;
-            }
-            t.kind = Token::Kind::String;
-            t.text = m_text.substr(start, m_pos - start);
-            if (m_pos < m_text.size())
-                ++m_pos;
-            return t;
-        }
-        const std::size_t start = m_pos;
-        while (m_pos < m_text.size() && !isSeparator(m_text[m_pos]) && m_text[m_pos] != kComment)
-            ++m_pos;
-        t.text = m_text.substr(start, m_pos - start);
-        const char c = t.text.front();
-        if (t.text == "{")
-            t.kind = Token::Kind::Open;
-        else if (t.text == "}")
-            t.kind = Token::Kind::Close;
-        else if ((c >= '0' && c <= '9') || c == '-' || c == '.')
-            t.kind = Token::Kind::Number; // what datAsciiTokenizer::GetFloat accepts
-        else
-            t.kind = Token::Kind::Word;
-        return t;
-    }
-
-private:
-    // datBaseTokenizer::CommentChar.
-    static constexpr char kComment = ';';
-
-    static bool isSeparator(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0'; }
-
-    void skipSpaceAndComments() {
-        while (m_pos < m_text.size()) {
-            const char c = m_text[m_pos];
-            if (c == '\n') {
+        while (true) {
+            if (m_cur == ' ' || m_cur == '\t' || m_cur == '\r' || m_cur == 0) {
+                advance();
+            } else if (m_cur == '\n') {
                 ++m_line;
-                ++m_pos;
-            } else if (isSeparator(c)) {
-                ++m_pos;
-            } else if (c == kComment) {
-                while (m_pos < m_text.size() && m_text[m_pos] != '\n')
-                    ++m_pos;
+                advance();
             } else {
                 break;
             }
         }
+        t.line = m_line;
+        auto store = [&](int c) {
+            if (t.text.size() + 1 < capacity)
+                t.text.push_back(static_cast<char>(c));
+        };
+        if (m_cur == '"') {
+            // A quoted token runs to the next quote, across lines.
+            t.quoted = true;
+            advance();
+            while (m_cur != -1 && m_cur != '"') {
+                store(m_cur);
+                advance();
+            }
+            advance();
+            return t;
+        }
+        while (true) {
+            if (m_cur == -1 || isSeparator(m_cur))
+                return t;
+            if (m_cur == kComment) {
+                // A comment before the token is skipped. One inside a token
+                // ends it, but the line break that ends the comment is
+                // stored in the token first.
+                do {
+                    while (m_cur != -1 && m_cur != '\n' && m_cur != '\r')
+                        advance();
+                    if (!t.text.empty())
+                        break;
+                    while (isSeparator(m_cur))
+                        advance();
+                } while (m_cur == kComment);
+            }
+            store(m_cur);
+            advance();
+        }
+    }
+
+    // datBaseTokenizer::SkipToEndOfLine: reads past the next line feed.
+    void skipToEndOfLine() {
+        while (m_pos < m_text.size())
+            if (m_text[m_pos++] == '\n')
+                return;
+    }
+
+    // datAsciiTokenizer::GetFloat: a token that does not start with a digit,
+    // '-' or '.' is an error and reads as 0.
+    float getFloat() {
+        const Token t = getToken(kNumberBuffer);
+        const char c = t.text.empty() ? '\0' : t.text[0];
+        if (!((c >= '0' && c <= '9') || c == '-' || c == '.'))
+            return 0.0f;
+        return static_cast<float>(cAtof(t.text));
+    }
+
+    // datAsciiTokenizer::GetInt: a token that does not start with a digit or
+    // '-' is an error and reads as 0.
+    int getInt() {
+        const Token t = getToken(kNumberBuffer);
+        const char c = t.text.empty() ? '\0' : t.text[0];
+        if (!((c >= '0' && c <= '9') || c == '-'))
+            return 0;
+        return cAtoi(t.text);
+    }
+
+    int line() const { return m_line; }
+
+private:
+    // datBaseTokenizer::CommentChar.
+    static constexpr int kComment = ';';
+
+    static bool isSeparator(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == 0; }
+
+    void advance() {
+        m_cur = m_pos < m_text.size() ? static_cast<unsigned char>(m_text[m_pos++]) : -1;
     }
 
     std::string_view m_text;
     std::size_t m_pos = 0;
+    int m_cur = ' '; // datBaseTokenizer::Init starts with a space
     int m_line = 1;
 };
 
-class Parser {
+bool isNumberToken(const Token& t) {
+    if (t.text.empty())
+        return false;
+    const char c = t.text[0];
+    return (c >= '0' && c <= '9') || c == '-' || c == '.';
+}
+
+bool fail(std::string* error, int line, std::string msg) {
+    if (error)
+        *error = std::format("line {}: {}", line, msg);
+    return false;
+}
+
+// Without a schema: every field and block the file has, for readers that
+// look fields up by name. A field's values are the number tokens that follow
+// it; other tokens on its own line are kept as strings (labels such as
+// "Aero asAero :075abc8c {", the rest of a multi-word name). A field
+// followed by '{' is a block.
+class TreeParser {
 public:
-    Parser(std::string_view text, std::size_t start) : m_lex(text, start) { advance(); }
+    TreeParser(std::string_view text, std::size_t start) : m_tok(text, start) { advance(); }
 
     bool parseFile(DatFile& out, std::string* error) {
         out.root.isBlock = true;
         // datParser::Load: the first token is the class name, whatever it is.
-        if (m_tok.kind == Token::Kind::End)
+        if (m_cur.text.empty() && m_tok.atEnd())
             return true;
         DatNode top;
-        top.name = std::string(m_tok.text);
+        top.name = m_cur.text;
         top.isBlock = true;
         advance();
         if (!parseBody(top, error))
@@ -108,49 +171,39 @@ public:
     }
 
 private:
-    void advance() { m_tok = m_lex.next(); }
+    void advance() { m_cur = m_tok.getToken(kNameBuffer); }
+    bool atEnd() const { return m_cur.text.empty() && !m_cur.quoted && m_tok.atEnd(); }
 
-    bool fail(std::string* error, std::string msg) const {
-        if (error)
-            *error = std::format("line {}: {}", m_tok.line, msg);
-        return false;
-    }
-
-    // datParser::Read: fields up to the closing '}'. A stray '{' in field
-    // position is skipped (that is how the block's own opening brace is
-    // consumed).
     bool parseBody(DatNode& node, std::string* error) {
         while (true) {
-            switch (m_tok.kind) {
-            case Token::Kind::End:
-                // MM2 keeps asking for tokens at the end of the file and never
-                // returns; report the file as broken instead.
-                return fail(error, std::format("unexpected end of file inside '{}'", node.name));
-            case Token::Kind::Close: advance(); return true;
-            case Token::Kind::Open: advance(); continue;
-            default: break;
+            if (atEnd())
+                return fail(error, m_cur.line, std::format("unexpected end of file inside '{}'", node.name));
+            if (m_cur.is("}")) {
+                advance();
+                return true;
             }
-
+            if (m_cur.is("{")) {
+                advance();
+                continue;
+            }
             DatNode child;
-            const int nameLine = m_tok.line;
-            child.name = std::string(m_tok.text);
+            const int nameLine = m_cur.line;
+            child.name = m_cur.text;
             advance();
-            // Words and strings on the field's own line (labels, or the rest
-            // of a multi-word name that MM2 cannot match).
-            while ((m_tok.kind == Token::Kind::Word || m_tok.kind == Token::Kind::String) &&
-                   m_tok.line == nameLine) {
-                child.strings.emplace_back(m_tok.text);
+            while (!atEnd() && !isNumberToken(m_cur) && !m_cur.is("{") && !m_cur.is("}") &&
+                   m_cur.line == nameLine) {
+                child.strings.push_back(m_cur.text);
                 advance();
             }
-            if (m_tok.kind == Token::Kind::Open) {
+            if (m_cur.is("{")) {
                 advance();
                 child.isBlock = true;
                 if (!parseBody(child, error))
                     return false;
             } else {
-                while (m_tok.kind == Token::Kind::Number) {
-                    child.numbers.push_back(cAtof(m_tok.text));
-                    child.numberTexts.emplace_back(m_tok.text);
+                while (isNumberToken(m_cur)) {
+                    child.numbers.push_back(cAtof(m_cur.text));
+                    child.numberTexts.push_back(m_cur.text);
                     advance();
                 }
             }
@@ -158,9 +211,117 @@ private:
         }
     }
 
-    Lexer m_lex;
-    Token m_tok;
+    Tokenizer m_tok;
+    Token m_cur;
 };
+
+// With a schema: datParser::Read itself. Only registered records are read,
+// each taking exactly the tokens its type asks for; an unknown name is
+// skipped together with the rest of its line, or with the block that follows
+// it when the next token is '{'.
+class SchemaParser {
+public:
+    SchemaParser(std::string_view text, std::size_t start) : m_tok(text, start) {}
+
+    bool parseFile(const DatSchema& schema, DatFile& out, std::string* error) {
+        out.root.isBlock = true;
+        DatNode top;
+        top.name = m_tok.getToken(kNameBuffer).text;
+        top.isBlock = true;
+        if (top.name.empty() && m_tok.atEnd())
+            return true;
+        if (!read(schema, top, error))
+            return false;
+        out.root.children.push_back(std::move(top));
+        return true;
+    }
+
+private:
+    bool read(const DatSchema& schema, DatNode& node, std::string* error) {
+        while (true) {
+            const Token t = m_tok.getToken(kNameBuffer);
+            // MM2 keeps reading empty tokens at the end of the file and never
+            // returns; report the file as broken instead.
+            if (t.text.empty() && !t.quoted && m_tok.atEnd())
+                return fail(error, t.line, std::format("unexpected end of file inside '{}'", node.name));
+            if (t.text == "}")
+                return true;
+            if (t.text == "{")
+                continue;
+            const auto record = std::ranges::find(schema, t.text, &DatRecord::name);
+            if (record != schema.end()) {
+                DatNode child;
+                child.name = record->name;
+                if (!readRecord(*record, child, error))
+                    return false;
+                node.children.push_back(std::move(child));
+                continue;
+            }
+            // "datParser::Read - Unrecognized token": skip the block that
+            // follows, or the rest of the line.
+            if (m_tok.getToken(kNameBuffer).text == "{") {
+                for (int depth = 1; depth > 0;) {
+                    const Token s = m_tok.getToken(kNameBuffer);
+                    if (s.text.empty() && m_tok.atEnd())
+                        return fail(error, s.line, std::format("unexpected end of file inside '{}'", t.text));
+                    if (s.text == "{")
+                        ++depth;
+                    else if (s.text == "}")
+                        --depth;
+                }
+            } else {
+                m_tok.skipToEndOfLine();
+            }
+        }
+    }
+
+    void addNumber(DatNode& node, double value) {
+        node.numbers.push_back(value);
+        node.numberTexts.push_back(std::format("{}", value));
+    }
+
+    bool readRecord(const DatRecord& record, DatNode& node, std::string* error) {
+        using Type = DatRecord::Type;
+        for (int i = 0; i < record.count; ++i) {
+            switch (record.type) {
+            case Type::String: node.strings.push_back(m_tok.getToken(kNameBuffer).text); break;
+            case Type::Bool: addNumber(node, m_tok.getInt() != 0 ? 1.0 : 0.0); break;
+            case Type::Byte: addNumber(node, static_cast<signed char>(m_tok.getInt())); break;
+            case Type::Short: addNumber(node, static_cast<short>(m_tok.getInt())); break;
+            case Type::Int: addNumber(node, m_tok.getInt()); break;
+            case Type::Float: addNumber(node, m_tok.getFloat()); break;
+            case Type::Vec2:
+            case Type::Vec3:
+            case Type::Vec4: {
+                const int n = record.type == Type::Vec2 ? 2 : (record.type == Type::Vec3 ? 3 : 4);
+                for (int c = 0; c < n; ++c)
+                    addNumber(node, m_tok.getFloat());
+                break;
+            }
+            case Type::Parser:
+                node.isBlock = true;
+                if (!read(record.records, node, error))
+                    return false;
+                break;
+            }
+        }
+        return true;
+    }
+
+    Tokenizer m_tok;
+};
+
+std::optional<std::size_t> bodyStart(std::string_view text, std::string* error) {
+    if (text.starts_with(kBinaryHeader)) {
+        // MM2 reads these with datBinTokenizer; no retail file uses one.
+        if (error)
+            *error = "binary ('type: b') data files are not supported";
+        return std::nullopt;
+    }
+    // GetReadTokenizer consumes the seven header bytes whatever they are; an
+    // unknown header is logged and the rest is read as text.
+    return std::min(text.size(), kAsciiHeader.size());
+}
 
 } // namespace
 
@@ -250,18 +411,25 @@ bool DatNode::read(std::string_view key, Vec3& out) const {
 }
 
 std::optional<DatFile> parseDat(std::string_view text, std::string* error) {
+    const auto start = bodyStart(text, error);
+    if (!start)
+        return std::nullopt;
     DatFile file;
     file.type = "a";
-    if (text.starts_with(kBinaryHeader)) {
-        // MM2 reads these with datBinTokenizer; no retail file uses one.
-        if (error)
-            *error = "binary ('type: b') data files are not supported";
-        return std::nullopt;
-    }
-    // GetReadTokenizer consumes the seven header bytes whatever they are; an
-    // unknown header is logged and the rest is read as text.
-    Parser parser(text, std::min(text.size(), kAsciiHeader.size()));
+    TreeParser parser(text, *start);
     if (!parser.parseFile(file, error))
+        return std::nullopt;
+    return file;
+}
+
+std::optional<DatFile> parseDat(std::string_view text, const DatSchema& schema, std::string* error) {
+    const auto start = bodyStart(text, error);
+    if (!start)
+        return std::nullopt;
+    DatFile file;
+    file.type = "a";
+    SchemaParser parser(text, *start);
+    if (!parser.parseFile(schema, file, error))
         return std::nullopt;
     return file;
 }

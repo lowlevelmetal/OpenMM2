@@ -37,12 +37,13 @@ std::optional<std::string> readText(const vfs::FileSystem& fs, const std::string
     return std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 }
 
-std::optional<data::DatFile> readDat(const vfs::FileSystem& fs, const std::string& path) {
+std::optional<data::DatFile> readDat(const vfs::FileSystem& fs, const std::string& path,
+                                     const data::DatSchema* schema = nullptr) {
     auto text = readText(fs, path);
     if (!text)
         return std::nullopt;
     std::string err;
-    auto dat = data::parseDat(*text, &err);
+    auto dat = schema ? data::parseDat(*text, *schema, &err) : data::parseDat(*text, &err);
     if (!dat)
         std::println(stderr, "warning: {}: {}", path, err);
     return dat;
@@ -100,7 +101,7 @@ struct LoadedCar {
 
 std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& car) {
     LoadedCar out;
-    auto sim = readDat(fs, "tune/vehicle/" + car + ".vehcarsim");
+    auto sim = readDat(fs, "tune/vehicle/" + car + ".vehcarsim", &carSimSchema());
     if (!sim || !sim->top() || !loadCarSimParams(*sim->top(), out.params)) {
         std::println(stderr, "error: cannot load tune/vehicle/{}.vehCarSim", car);
         return std::nullopt;
