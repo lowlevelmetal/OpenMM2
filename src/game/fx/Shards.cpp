@@ -76,7 +76,7 @@ std::size_t Shards::materialFor(std::size_t shard, std::size_t materials) {
 }
 
 void Shards::draw(render::Device& device, TextureLibrary& textures, const std::vector<std::string>& materials) const {
-    // draw_textured_tri: (0, 0, 0.1) at (u, v + 0.3), (0, 0, 0) at (u, v),
+    // fxShard::Draw -> draw_textured_tri: (0, 0, 0.1) at (u, v + 0.3), (0, 0, 0) at (u, v),
     // (0.1, 0, 0) at (u + 0.3, v); white, both sides.
     for (std::size_t i = 0; i < m_shards.size(); ++i) {
         const Shard& s = m_shards[i];

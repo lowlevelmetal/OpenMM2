@@ -95,7 +95,7 @@ public:
         Gone,   // in no room: a prop that broke loose, or an unused hit instance
     };
     struct Instance {
-        const BangerData* data = nullptr;
+        const BangerData* data = nullptr; // dgBangerInstance::GetData
         std::string model;
         int part = -1;   // -1 whole model, k = mesh "BREAK{k+1:02}"
         std::string mesh; // a car part's mesh (ejected parts), else empty

@@ -66,6 +66,8 @@ std::optional<BangerData> parseBangerData(std::string_view name, std::string_vie
     return d;
 }
 
+// tune/banger/<name>.dgBangerData (dgBangerData::GetDirName,
+// dgBangerData::GetClassName).
 BangerDataLibrary::BangerDataLibrary(const vfs::Vfs& vfs) : m_vfs(vfs) {
     constexpr std::string_view prefix = "tune/banger/", suffix = ".dgbangerdata";
     for (const auto& e : vfs.listFiles()) {

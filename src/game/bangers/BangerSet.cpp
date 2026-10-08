@@ -135,6 +135,7 @@ struct BangerSet::ActiveBody final : phys::Body {
     void detach() override;
 };
 
+// Its body's phInertialCS is dgBangerActive::GetICS.
 struct BangerSet::Active final : phys::BodyController {
     BangerSet* set = nullptr;
     int index = 0;
@@ -186,8 +187,10 @@ public:
             return b.box.get();
         return b.bound.get();
     }
-    // dgUnhitYBangerInstance / dgUnhitMtxBangerInstance / dgHitBangerInstance
-    // ::GetMatrix: the frame at the CG.
+    // dgUnhitYBangerInstance::GetMatrix (rebuilt from the Y form),
+    // dgUnhitMtxBangerInstance::GetMatrix, dgHitBangerInstance::GetMatrix:
+    // the frame at the CG, which their SetMatrix store (GetPosition: its
+    // last row).
     const Mat34& matrix() const override { return m_set.m_instances[m_index].matrix; }
     float radius() const override {
         const BangerSet::Instance& inst = m_set.m_instances[m_index];
@@ -235,6 +238,8 @@ private:
     std::size_t m_index;
 };
 
+// dgBangerManager::dgBangerManager (an empty ring) and the 32 actives of
+// dgBangerActiveManager.
 BangerSet::BangerSet(const BangerDataLibrary& data) : m_data(data) {
     for (int i = 0; i < kMaxActive; ++i) {
         auto a = std::make_unique<Active>();
@@ -515,8 +520,10 @@ std::size_t BangerSet::getBanger() {
     } else {
         slot = static_cast<std::size_t>(m_ringNext++);
     }
-    // dgBangerManager::Init makes all 40 up front; OpenMM2 makes each when
-    // the ring first reaches it.
+    // dgBangerManager::Init makes all 40 up front
+    // (dgHitBangerInstance::dgHitBangerInstance: flags 0x12, identity, and
+    // dgHitBangerInstance::SetMatrix stores the whole matrix); OpenMM2
+    // makes each when the ring first reaches it.
     if (slot >= m_ring.size()) {
         const std::size_t i = newInstance();
         m_instances[i].everHit = true;
@@ -1093,6 +1100,10 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
             trees.emplace_back(&inst, mesh);
             continue;
         }
+        // dgBangerInstance::Draw. No local lights
+        // (dgBangerInstance::SetupGfxLights answers 0), no reflection or
+        // shadow of their own (dgBangerInstance::DrawReflected and
+        // dgBangerInstance::DrawShadow are empty).
         MeshDrawOptions options;
         options.alphaRef = kAlphaRef;
         if (inst.data->billFlags & BangerData::kUnlit) {

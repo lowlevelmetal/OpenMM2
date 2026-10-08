@@ -75,7 +75,9 @@ public:
     int paintjob() const { return m_paintjob; }
 
     // vehBreakableMgr: parts that fly off and stop being drawn. The pivot
-    // is the part's placement in model space.
+    // is the part's placement in model space (vehBreakable::vehBreakable:
+    // identity rotation at the pivot; vehBreakableMgr::Add / vehBreakable::Add
+    // keep the parts in a list, in the order vehCarModel::Init adds them).
     struct Breakable {
         std::string part; // mesh part name, e.g. "BREAK0", "WHL2"
         Vec3 pivot;
@@ -85,7 +87,9 @@ public:
     // nearest `modelPoint`.
     std::optional<Breakable> nearestBreakable(const Vec3& modelPoint) const;
     // Manager B (vehCarModel::EjectOneshot), once until reattachAll():
-    // the wheels, hubs and fenders a wrecked car loses at `mph`.
+    // the wheels, hubs and fenders a wrecked car loses at `mph`
+    // (vehBreakableMgr::Get by id bit, vehBreakableMgr::EjectAll above
+    // 100 mph).
     std::vector<Breakable> wreckParts(float mph, fx::Rand& rng);
     // vehBreakableMgr::Eject: the part stops being drawn; `banger` is the
     // hit banger instance it became (vehBreakable +0x44), if any.

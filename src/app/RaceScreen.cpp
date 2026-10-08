@@ -2061,7 +2061,7 @@ private:
         const auto impacts = fx.takeImpacts();
         if (!m_bangers || !m_bangerData)
             return;
-        const Mat34 body = sim.modelMatrix();
+        const Mat34 body = sim.modelMatrix(); // vehBreakableMgr::Init: the car's matrix
         auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
             const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
             if (!data)

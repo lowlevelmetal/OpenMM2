@@ -103,6 +103,7 @@ TexelDamage::TexelDamage(render::Device& device, TextureLibrary& textures, const
     }
 }
 
+// fxTexelDamage::~fxTexelDamage (fxTexelDamage::Kill): the private copies go.
 TexelDamage::~TexelDamage() {
     for (const auto& layer : m_layers)
         if (layer.used)
