@@ -242,17 +242,20 @@ VehiclePose SimVehicle::pose() const {
         pose.wheelWorld[static_cast<std::size_t>(i)] = m_sim.wheelMatrix(i);
         pose.wheelValid[static_cast<std::size_t>(i)] = m_model.wheel(i) != nullptr;
     }
-    // Extra rear wheels follow the rear axle's wheels at their own pivots.
-    for (const auto& w : m_model.wheels) {
-        if (w.index < 4 || w.index > 5)
+    // vehCarModel::Draw: a WHL4 / WHL5 mesh (a second back axle) is drawn
+    // with the WHL2 / WHL3 matrix moved back along the car's Z axis by
+    // (0.2 + 2) times that wheel's radius (vehCarModel +0x2c holds the 0.2),
+    // not at its own pivot.
+    for (int i = 4; i < 6; ++i) {
+        if (!m_model.pkg.findBest(std::format("WHL{}", i)))
             continue;
-        const int follow = w.index - 2; // WHL4 follows WHL2, WHL5 follows WHL3
-        const auto* lead = m_model.wheel(follow);
+        const int follow = i - 2;
         Mat34 m = m_sim.wheelMatrix(follow);
-        if (lead)
-            m.m3 += pose.body.transformDir(w.position - lead->position);
-        pose.wheelWorld[static_cast<std::size_t>(w.index)] = m;
-        pose.wheelValid[static_cast<std::size_t>(w.index)] = true;
+        const float k = (0.2f + 2.0f) * m_sim.wheels[static_cast<std::size_t>(follow)].radius;
+        const Vec3& back = pose.body.m2;
+        m.m3 = {m.m3.x + back.x * k, m.m3.y + back.y * k, m.m3.z + back.z * k};
+        pose.wheelWorld[static_cast<std::size_t>(i)] = m;
+        pose.wheelValid[static_cast<std::size_t>(i)] = true;
     }
     pose.hasWheelWorld = true;
     // vehCarModel::DrawGlow: brake input not zero; reverse gear.
