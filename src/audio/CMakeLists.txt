@@ -4,6 +4,7 @@ add_library(mm2_audio STATIC
     ${audio_game_sources}
     AngelRandom.cpp
     AngelUnits.cpp
+    EchoEffect.cpp
     Wav.cpp
     Mixer.cpp
     SoundBank.cpp

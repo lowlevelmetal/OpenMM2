@@ -163,21 +163,50 @@ private:
     SoundSlot m_current;
 };
 
-// One creature's voice (an ambient driver or a pedestrian): AudCreature.
+// One creature's voice: AudCreature, with its AudCreatureAvoid blocks (the
+// near-miss lines) and its AudCreatureImpact (the impact lines). MM2 keeps
+// one per voice file and 3D-manager slot; the container holding that slot (a
+// pedestrian, PedestrianAudio) gives it its attenuation and pan and is asked
+// for its slot again before a line plays.
 class CreatureVoice {
 public:
-    // maxDistance: the owner's drop-off (ambient cars 100 m, pedestrians 40 m).
-    void load(Mixer& mixer, SoundBank& bank, CreatureVoiceDef def, float maxDistance = 100.0f);
-    // AudCreatureAvoid::Update with the creature's speed, the queued lines,
-    // and the attenuation from the creature's position.
-    void update(float speed, float dt, const Vec3& position, const Mat34& listener);
-    // AudCreature::PlayAvoidance (the AI reports a near miss): every eligible
-    // block queues one of its lines half of the time.
+    // The container a voice belongs to while it holds the slot
+    // (SetAud3DObjectPtr).
+    class Owner {
+    public:
+        virtual ~Owner() = default;
+        // Aud3DObject::UpdateNonVirtual: asks for a slot (within range);
+        // returns whether the container holds one.
+        virtual bool requestSlot() = 0;
+    };
+
+    void load(Mixer& mixer, SoundBank& bank, CreatureVoiceDef def);
+    void setOwner(Owner* owner) { m_owner = owner; }
+    // AudCreature::Update(speed): AudCreatureContainer::UpdateStatics updates
+    // every creature every frame with the player's speed. Each block counts
+    // the time the speed spends in and out of its range; a queued near-miss
+    // line plays within 50 m (or is dropped after 5 s), a queued impact line
+    // after its delay.
+    void update(float speed, float dt);
+    // UpdateAttenuation(attenuation, pan, squared distance): from the
+    // container's UpdateAudio; the lines being said follow it.
+    void updateAttenuation(float attenuation, float pan, float distance2);
+    // AudCreature::PlayAvoidance (a near miss): every eligible block queues
+    // one of its lines half of the time.
     void avoid();
     // AudCreature::PlayImpact: a line `delay` seconds after a hit at least as
     // hard as the table's minimum, at most once a minute across all creatures.
     void impact(float force);
+    // UnAssignSounds: queued lines are dropped; lines being said play out.
+    void unassign();
+    // OpenMM2's teardown: unassign() and every line stops.
+    void stop();
+    // IsPlaying: the chosen line of a block, or the impact line, is playing.
     bool speaking() const;
+    // EchoOn / EchoOff / UpdateEcho: every line's echo.
+    void echoOn(float delay);
+    void echoOff();
+    void updateEcho(float dt);
 
     // AudCreatureImpact::UpdateStatics: the shared impact-line clock.
     static void advanceClock(float dt);
@@ -194,6 +223,8 @@ private:
     };
     bool eligible(const Avoid& a) const;
     void playAvoid(Avoid& a);
+    void playImpact();
+    bool ownerHasSlot();
 
     CreatureVoiceDef m_def;
     std::vector<Avoid> m_avoids;
@@ -201,8 +232,9 @@ private:
     bool m_impactQueued = false;
     float m_impactTime = 0;
     std::size_t m_impactLine = 0;
-    Audio3D m_3d;
-    float m_attenuation = 0, m_pan = 0;
+    Owner* m_owner = nullptr;
+    // AudCreatureAvoid / AudCreatureImpact start at attenuation 1, pan 0.
+    float m_attenuation = 1.0f, m_pan = 0.0f, m_distance2 = 0.0f;
 };
 
 } // namespace mm2::audio::game

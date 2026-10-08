@@ -19,8 +19,9 @@ VoiceHandle makeHandle(std::size_t index, std::uint32_t generation) {
 
 } // namespace
 
-Mixer::Mixer(int sampleRate, int maxVoices) : m_rate(sampleRate) {
-    m_voices.resize(static_cast<std::size_t>(std::clamp(maxVoices, 1, static_cast<int>(kIndexMask))));
+Mixer::Mixer(int sampleRate, int maxVoices)
+    : m_rate(sampleRate), m_maxVoices(static_cast<std::size_t>(std::clamp(maxVoices, 1, 256))) {
+    m_voices.resize(m_maxVoices);
     m_bus.fill(1.0f);
     m_busMaster.fill(1.0f);
     m_busGain.fill(1.0f);
@@ -37,12 +38,12 @@ Mixer::Voice* Mixer::lookup(VoiceHandle h) {
 const Mixer::Voice* Mixer::lookup(VoiceHandle h) const { return const_cast<Mixer*>(this)->lookup(h); }
 
 std::size_t Mixer::pickSlot() {
-    for (std::size_t i = 0; i < m_voices.size(); ++i)
+    for (std::size_t i = 0; i < m_maxVoices; ++i)
         if (!m_voices[i].active)
             return i;
     // Steal (audManager::MoveToActive): the lowest priority, then the oldest.
     std::size_t best = 0;
-    for (std::size_t i = 1; i < m_voices.size(); ++i) {
+    for (std::size_t i = 1; i < m_maxVoices; ++i) {
         const Voice& a = m_voices[i];
         const Voice& b = m_voices[best];
         if (a.params.priority != b.params.priority) {
@@ -55,11 +56,8 @@ std::size_t Mixer::pickSlot() {
     return best;
 }
 
-VoiceHandle Mixer::play(std::shared_ptr<const SoundBuffer> sound, const VoiceParams& params) {
-    if (!sound || sound->frames() == 0 || sound->sampleRate <= 0)
-        return 0;
-    std::lock_guard lock(m_mutex);
-    const std::size_t slot = pickSlot();
+VoiceHandle Mixer::claim(std::size_t slot, std::shared_ptr<const SoundBuffer> sound,
+                         const VoiceParams& params) {
     Voice& v = m_voices[slot];
     const std::uint32_t generation = ((v.generation + 1) & ((1u << (32 - kIndexBits)) - 1)) | 1u;
     v = Voice{};
@@ -69,6 +67,61 @@ VoiceHandle Mixer::play(std::shared_ptr<const SoundBuffer> sound, const VoicePar
     v.serial = ++m_serial;
     v.active = true;
     return makeHandle(slot, generation);
+}
+
+VoiceHandle Mixer::play(std::shared_ptr<const SoundBuffer> sound, const VoiceParams& params) {
+    if (!sound || sound->frames() == 0 || sound->sampleRate <= 0)
+        return 0;
+    std::lock_guard lock(m_mutex);
+    return claim(pickSlot(), std::move(sound), params);
+}
+
+VoiceHandle Mixer::createEffectVoice(std::shared_ptr<const SoundBuffer> sound, const VoiceParams& params) {
+    if (!sound || sound->frames() == 0 || sound->sampleRate <= 0)
+        return 0;
+    std::lock_guard lock(m_mutex);
+    std::size_t slot = m_maxVoices;
+    while (slot < m_voices.size() && m_voices[slot].active)
+        ++slot;
+    if (slot == m_voices.size()) {
+        if (slot > kIndexMask)
+            return 0;
+        m_voices.emplace_back();
+    }
+    const VoiceHandle h = claim(slot, std::move(sound), params);
+    m_voices[slot].effect = true;
+    m_voices[slot].halted = true;
+    return h;
+}
+
+void Mixer::playEffect(VoiceHandle h, bool loop) {
+    std::lock_guard lock(m_mutex);
+    if (Voice* v = lookup(h); v && v->effect) {
+        v->params.loop = loop;
+        if (v->halted)
+            v->started = false; // no ramp from the level it stopped at
+        v->halted = false;
+    }
+}
+
+void Mixer::haltEffect(VoiceHandle h) {
+    std::lock_guard lock(m_mutex);
+    if (Voice* v = lookup(h); v && v->effect)
+        v->halted = true;
+}
+
+std::uint64_t Mixer::position(VoiceHandle h) const {
+    std::lock_guard lock(m_mutex);
+    const Voice* v = lookup(h);
+    return v ? v->position >> 32 : 0;
+}
+
+void Mixer::setPosition(VoiceHandle h, std::uint64_t frame) {
+    std::lock_guard lock(m_mutex);
+    if (Voice* v = lookup(h)) {
+        const std::uint64_t frames = v->sound->frames();
+        v->position = (frame < frames ? frame : 0) << 32;
+    }
 }
 
 void Mixer::stop(VoiceHandle h) {
@@ -82,6 +135,10 @@ void Mixer::stop(VoiceHandle h) {
 void Mixer::stopAll() {
     std::lock_guard lock(m_mutex);
     for (auto& v : m_voices) {
+        if (v.effect) {
+            v.halted = true;
+            continue;
+        }
         v.active = false;
         v.sound.reset();
     }
@@ -89,7 +146,8 @@ void Mixer::stopAll() {
 
 bool Mixer::isPlaying(VoiceHandle h) const {
     std::lock_guard lock(m_mutex);
-    return lookup(h) != nullptr;
+    const Voice* v = lookup(h);
+    return v && !v->halted;
 }
 
 void Mixer::setVolume(VoiceHandle h, float volume) {
@@ -151,6 +209,11 @@ float Mixer::busVolume(Bus bus) const {
     return m_bus[static_cast<std::size_t>(bus)];
 }
 
+float Mixer::busMaster(Bus bus) const {
+    std::lock_guard lock(m_mutex);
+    return m_busMaster[static_cast<std::size_t>(bus)];
+}
+
 void Mixer::setMasterVolume(float volume) {
     std::lock_guard lock(m_mutex);
     m_master = std::max(volume, 0.0f);
@@ -204,15 +267,17 @@ void Mixer::removeStream(int id) {
 
 int Mixer::activeVoices() const {
     std::lock_guard lock(m_mutex);
-    return static_cast<int>(std::ranges::count_if(m_voices, [](const Voice& v) { return v.active; }));
+    return static_cast<int>(
+        std::ranges::count_if(m_voices, [](const Voice& v) { return v.active && !v.halted; }));
 }
 
 void Mixer::computeTargets(const Voice& v, float& gl, float& gr, double& rate) const {
     const VoiceParams& p = v.params;
     const auto bus = static_cast<std::size_t>(p.bus);
     // audObject::SetVolume: Angel volume times the master, clamped to 0..1.
-    float gain = p.angel ? ageVolumeToGain(std::clamp(p.volume * m_busMaster[bus], 0.0f, 1.0f))
-                         : p.volume * m_busGain[bus];
+    float gain = p.angel && p.masterApplied ? ageVolumeToGain(p.volume)
+                 : p.angel ? ageVolumeToGain(std::clamp(p.volume * m_busMaster[bus], 0.0f, 1.0f))
+                           : p.volume * m_busGain[bus];
     gain *= m_master;
     float pan = m_stereo ? p.pan : 0.0f;
     float pitch = p.pitch;
@@ -255,7 +320,7 @@ void Mixer::mix(float* out, int frames) {
     const float invFrames = 1.0f / static_cast<float>(frames);
 
     for (auto& v : m_voices) {
-        if (!v.active || v.params.paused)
+        if (!v.active || v.halted || v.params.paused)
             continue;
         float targetL, targetR;
         double rate;
@@ -278,7 +343,12 @@ void Mixer::mix(float* out, int frames) {
         for (int i = 0; i < frames; ++i) {
             if (v.position >= length) {
                 if (!v.params.loop) {
-                    v.active = false;
+                    if (v.effect) {
+                        v.halted = true;
+                        v.position = 0;
+                    } else {
+                        v.active = false;
+                    }
                     break;
                 }
                 v.position %= length;
