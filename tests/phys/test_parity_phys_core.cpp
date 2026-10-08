@@ -7,6 +7,8 @@
 #include "phys/InertialCS.h"
 #include "phys/Sleep.h"
 #include "phys/World.h"
+#include "phys/vehicle/CarSim.h"
+#include "phys/vehicle/VehicleGeometry.h"
 
 #include <gtest/gtest.h>
 
@@ -416,4 +418,56 @@ TEST(ParityPhysCore, WheelProbeWithoutALevelUsesTheProbeGeometry) {
     World world;
     RayHit hit;
     EXPECT_FALSE(world.wheelProbe({5, 3, 5}, {5, -1, 5}, hit, nullptr, nullptr));
+}
+
+namespace {
+
+// One room: flat ground at y = 0 and a wall at z = -3 facing +z.
+class WallLevel final : public Level {
+public:
+    int findRoom(const Vec3&, int) const override { return 1; }
+    int touchedNeighbors(int*, int, int, const Vec3&, float) const override { return 0; }
+    void collect(const int*, int, const Vec3&, float, LevelBound& out) const override {
+        out.clear();
+        const Vec3 ground[4] = {{-50, 0, -50}, {-50, 0, 50}, {50, 0, 50}, {50, 0, -50}};
+        out.addPolygon(ground, 4, {0, 1, 0}, 0);
+        const Vec3 wall[4] = {{-5, 0, -3}, {5, 0, -3}, {5, 3, -3}, {-5, 3, -3}};
+        out.addPolygon(wall, 4, {0, 0, 1}, 0);
+    }
+    void instances(int, std::vector<Instance*>&) const override {}
+};
+
+} // namespace
+
+TEST(ParityPhysCore, UprightCarStillCollidesItsBodyWithTheCity) {
+    // dgPhysManager::CollideTerrain asks RequiresTerrainCollision only
+    // behind a global mmGame::Init sets to 0: a car upright on its wheels
+    // (which would not require it) still collides its body with the city,
+    // and the impact reaches vehCarDamage.
+    WallLevel level;
+    World world;
+    world.setLevel(&level);
+    CarSim car;
+    car.init(CarSimParams{}, VehicleGeometry::placeholder());
+    car.reset(Mat34::identity());
+    world.add(&car.body);
+    std::vector<CarImpact> impacts;
+    car.onImpactCallback = [&](const CarImpact& e) { impacts.push_back(e); };
+    for (int i = 0; i < 60; ++i)
+        world.advanceFixed(kFixedSampleStep);
+    ASSERT_EQ(car.wheelsOnGround(), 4);
+    ASSERT_TRUE(impacts.empty());
+    car.body.ics.linearVelocity = {0.0f, 0.0f, -10.0f};
+    car.body.ics.linearMomentum = car.body.ics.linearVelocity * car.body.ics.mass;
+    bool requiredBeforeHit = true;
+    for (int i = 0; i < 30 && impacts.empty(); ++i) {
+        requiredBeforeHit = car.requiresTerrainCollision();
+        world.advanceFixed(kFixedSampleStep);
+    }
+    ASSERT_FALSE(impacts.empty());
+    EXPECT_FALSE(requiredBeforeHit);
+    EXPECT_FALSE(impacts.front().otherIsBody);
+    EXPECT_GT(impacts.front().normal.z * impacts.front().normal.z, 0.9f);
+    EXPECT_TRUE(impacts.front().damaging);
+    EXPECT_GT(car.damage.currentDamage, 0.0f);
 }
