@@ -148,8 +148,10 @@ public:
             ai::PlayerCar pc;
             pc.transform = sim.body.ics.matrix;
             pc.velocity = sim.body.ics.frameVelocity;
-            pc.width = sim.halfExtents().x * 2.0f;
-            pc.length = sim.halfExtents().z * 2.0f;
+            // aiVehiclePlayer's side and bumper distances: half vehCarSim's
+            // Size (its InertiaBox).
+            pc.width = sim.params.inertiaBox.x;
+            pc.length = sim.params.inertiaBox.z;
             pc.radius = sim.halfExtents().mag();
             pc.steering = sim.steering;
             pc.reversing = sim.trans.getCurrentGear() < 0;
