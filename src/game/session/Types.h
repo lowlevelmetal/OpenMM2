@@ -48,7 +48,7 @@ struct OpponentState {
     // The AI driver reached the end of its route (aiRouteRacer::Finished);
     // MM2 ranks an opponent as finished from this, not from the gates.
     bool finished = false;
-    // Police: chasing the player (aiPoliceOfficer::InPersuit).
+    // Police: aiPoliceOfficer::InPersuit (any chase, or wrecked out of action).
     bool pursuing = false;
     Vec3 inertiaBox = kDefaultInertiaBox;
 };

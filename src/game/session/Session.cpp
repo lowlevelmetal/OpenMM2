@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <format>
+#include <limits>
 #include <random>
 
 namespace mm2::game::session {
@@ -269,7 +270,10 @@ void Session::beginEvent(int index) {
     m_phase = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers ? Phase::Racing : Phase::Countdown;
     m_stage = Stage::Intro;
     m_wait = 0.0f;
-    m_skipToGo = index > 0;
+    // A later exam event goes straight to "Go"; UpdateCollide and
+    // UpdateAccel have no such skip and play their countdown again.
+    m_skipToGo = index > 0 && !(lesson && (lesson->type == LessonType::Collide ||
+                                            lesson->type == LessonType::Acceleration));
     m_accelWait = -1.0f;
 
     m_hasClock = false;
@@ -743,7 +747,9 @@ void Session::updateOpponents(std::span<const OpponentState> opponents) {
             r.place = ++m_finishers;
             r.finishTime = m_hudTime; // mmTimer::GetTime on mmHUD's +0xA24 timer
             push(EventType::OpponentFinished, static_cast<int>(i), static_cast<float>(r.place));
-            if (m_phase == Phase::Racing) {
+            // mmSingleCircuit::UpdateOpponentStatus shows it only in state 3,
+            // not during the wreck penalty (state 6).
+            if (m_phase == Phase::Racing && !(mode() == GameMode::Circuit && m_penaltyLeft > 0.0f)) {
                 // Handle 4 (circuit) / 5 (race): "Messagenote" in both.
                 if (!multiplayer())
                     sound(GameSound::MessageNote);
@@ -846,6 +852,32 @@ void Session::hitWater() {
             push(EventType::Respawn);
         } else {
             respawnAtLastCheckpoint();
+        }
+        return;
+    }
+    if (m_phase == Phase::PostRace) {
+        // mmGame::Update checks the water after the ending too, and the
+        // modes' handlers do not look at their state.
+        switch (mode()) {
+        case GameMode::Blitz:
+        case GameMode::Checkpoint:
+            // mmSingleBlitz / mmSingleRace::HitWaterHandler: state 4, 0.5 s.
+            // After a finish (race-over set) state 4 never opens the menu nor
+            // shows the results: they wait for Escape on the locked menu.
+            sound(GameSound::DamageLose);
+            if (mode() == GameMode::Checkpoint)
+                m_engineSilenced = true;
+            m_postWait = m_resultFinished ? std::numeric_limits<float>::infinity() : kWaterLoseDelay;
+            break;
+        case GameMode::Circuit: respawnAtLastCheckpoint(); break;
+        case GameMode::CrashCourse:
+            // mmSingleStunt::HitWaterHandler, unless the race-over flag is set.
+            if (!m_lessonDone) {
+                sound(GameSound::DamageLose);
+                m_postWait = kWaterLoseDelay;
+            }
+            break;
+        default: break;
         }
         return;
     }
@@ -1289,7 +1321,9 @@ void Session::lessonFailed(float delay, PlayerHold hold, bool registerFinish) {
     // Several failures can come in one frame (UpdateCorner and UpdateFrogger
     // go on checking after one): report the lesson failed once.
     const bool alreadyFailed = (m_phase == Phase::PostRace || m_phase == Phase::Done) && !m_resultWon;
-    m_lessonDone = true;
+    // The race-over flag (+0x7c) is set only by the endings that set it
+    // themselves (a finish with pursuers, the Clean and Collide time-ups);
+    // the other failures leave it clear, so the water handler still runs.
     m_wp.stopped = true;
     if (!alreadyFailed) {
         push(EventType::LessonFailed, m_lessonEvent);
@@ -1421,6 +1455,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 sound(GameSound::YouLose);
                 lessonFailed();
                 m_postRaceCam = true; // set before the pursuit check
+                m_lessonDone = true;   // and the race-over flag (+0x7c)
                 deactivateFinish();
             } else {
                 setMessage(196, "You survived the gauntlet!", 5.0f, true);
@@ -1445,6 +1480,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
                 sound(GameSound::YouLose);
                 lessonFailed();
                 m_postRaceCam = true; // set before the pursuit check
+                m_lessonDone = true;   // and the race-over flag (+0x7c)
             } else {
                 if (lastEvent())
                     sound(GameSound::EndOfRaceTag);
@@ -1501,6 +1537,7 @@ void Session::updateLesson(float dt, const PlayerState& player, std::span<const 
             push(EventType::TimeUp);
             lessonFailed();
             m_postRaceCam = true; // UpdateFrogger: SetPostRaceCam at the time-up
+            m_lessonDone = true;   // and +0x7c
             break;
         }
         bool passed = false;
@@ -1652,6 +1689,9 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
         updateOpponents(opponents);
         if (multiplayer() && mode() != GameMode::Cruise && mode() != GameMode::CopsAndRobbers)
             updateNetRace(dt, player);
+        // mmGame::Update's water and fall checks run in every state.
+        if (updateHazards(dt, player) && m_phase != Phase::PostRace)
+            return; // a fall restarted the race
         m_postWait -= dt;
         // A multiplayer race or circuit waits (braked) until everyone is
         // counted or the finish timeout has run out (0x211, state 5).
@@ -1724,6 +1764,10 @@ int Session::checkpointsCleared() const {
         // passed; mmWaypoints::Reset shows the first target (1) at the start.
         if (m_wp.count == 1)
             return std::min(1, std::max(0, n - 1));
+        // mmWaypoints::Update skips SetWPCleared on the final crossing (the
+        // waypoints are done): the readout keeps the last checkpoint.
+        if (m_wp.finished)
+            return std::max(0, n - 1);
         return m_wp.current == 0 ? std::max(0, n - 1) : std::max(0, m_wp.current - 1);
     }
     // mmWPHUD counts every change of the cleared mask; a checkpoint race's

@@ -430,9 +430,10 @@ public:
                 blips.push_back(std::move(b));
             }
         }
-        // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit).
+        // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit:
+        // state 0x977a not 0, which also holds for a wrecked, out-of-action cop).
         for (const auto& c : m_cops)
-            if (c.driver->mode() == ai::PoliceCar::Mode::Chasing)
+            if (c.driver->mode() != ai::PoliceCar::Mode::Parked)
                 blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
         return blips;
     }
@@ -1364,7 +1365,9 @@ private:
         std::vector<game::session::OpponentState> cops;
         for (const auto& c : m_cops) {
             auto& st = cops.emplace_back(carState(c.sim->sim()));
-            st.pursuing = c.driver->mode() == ai::PoliceCar::Mode::Chasing && c.driver->target() == 0;
+            // mmSingleStunt::CheckCopPursuit asks aiPoliceOfficer::InPersuit:
+            // any chase (of anyone) and a wrecked, out-of-action cop count.
+            st.pursuing = c.driver->mode() != ai::PoliceCar::Mode::Parked;
         }
         const auto phaseBefore = m_session->phase();
         m_session->setPreRaceCamera(m_cams.preRace());

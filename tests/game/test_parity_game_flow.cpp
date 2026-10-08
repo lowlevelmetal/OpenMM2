@@ -420,7 +420,8 @@ TEST(GameFlowParity, OpponentIconPlaces) {
 }
 
 // mmSingleStunt::UpdateJump's time-up: no post-race camera, the finish stand
-// hidden; the race-over flag is set (Escape then shows the results).
+// hidden; the race-over flag stays clear (UpdateJump sets it only at the
+// finish), so Escape on the locked menu does nothing.
 TEST(GameFlowParity, JumpLessonTimeUpHidesTheFinishWithoutTheCamera) {
     MM2_REQUIRE_GAME_DATA();
     if (!flowRetail())
@@ -436,5 +437,5 @@ TEST(GameFlowParity, JumpLessonTimeUpHidesTheFinishWithoutTheCamera) {
     EXPECT_FALSE(s->postRaceCamera());
     EXPECT_FALSE(s->musicStopped());
     EXPECT_FALSE(s->checkpointVisible(s->checkpoints().size() - 1));
-    EXPECT_TRUE(s->raceOver());
+    EXPECT_FALSE(s->raceOver());
 }
