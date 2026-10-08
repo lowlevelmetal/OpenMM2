@@ -169,7 +169,7 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `CarSim::wheelMatrix` | the wheel's drawing matrix | verified | |
 | `CarSim::wheelsOnGround` | `vehCarSim::OnGround` | verified | |
 | `CarSim::bottomedOut` | `vehCarSim::BottomedOut` | fixed | added |
-| `CarSim::requiresTerrainCollision` | `vehCar::RequiresTerrainCollision` | fixed | added (asm); the World does not ask it yet (phys-core) |
+| `CarSim::requiresTerrainCollision` | `vehCar::RequiresTerrainCollision` | fixed | added (asm); in a race `dgPhysManager::CollideTerrain` never asks it (a global `mmGame::Init` sets to 0 skips that branch, phys-core), so the body always collides with the city |
 | `CarSim::regenerate` | `mmPlayer::UpdateRegen` | fixed | added (asm): above 5 m/s, MaxDamage * -0.0005 a frame, cleared once it empties; Cops and Robbers must call it (session) |
 | `CarSim::sssFactor` | `vehCarSim::GetSSSFactor` | verified | asm |
 | `CarSim::makeEnv` | | openmm2 | |
@@ -257,7 +257,7 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `mmPlayer::FilterSteering` | mouse and steering-wheel filters with their own speed-blended sensitivity | open: OpenMM2 has keyboard and gamepad only |
 | `mmPlayer::UpdateFF`, `FFImpactCallback`, `ResetFF` | force feedback | open (session records it); the vehicle data it reads (front-left wheel friction, bump height and width, radius, slip percents, speed) are all on `Wheel` / `CarSim` |
 | `mmPlayer::EnableRegen` / `UpdateRegen` call | Cops and Robbers regeneration | open for session: call `CarSim::regenerate` once a frame while regeneration is on |
-| `dgPhysManager::CollideTerrain`'s `RequiresTerrainCollision` | skip the body's terrain collision for a car upright on its wheels | open for phys-core: `CarSim` / `Trailer::requiresTerrainCollision` exist |
+| `dgPhysManager::CollideTerrain`'s `RequiresTerrainCollision` | skip the body's terrain collision for a car upright on its wheels | not needed: the branch is gated by a global `mmGame::Init` sets to 0, so MM2 never takes it in a race (phys-core, test `ParityPhysCore.UprightCarStillCollidesItsBodyWithTheCity`) |
 | `mmNetObject::Init`'s trailer flag | whether a network car tows its trailer | open for session |
 
 ## Second pass
