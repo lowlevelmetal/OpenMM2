@@ -84,10 +84,11 @@ float modelRadius(const vfs::Vfs& vfs, const std::string& name) {
 }
 
 // The distance of the farther corner of a bound's box from its origin
-// (InitBoundTerrainLocal raises the geometry set's radius to it).
+// (InitBoundTerrainLocal raises the geometry set's radius to it), each
+// corner's squared length summed (x*x + y*y) + z*z as the code does.
 float boxCornerRadius(const phys::Bound& b) {
-    float r2 = b.boxMax.z * b.boxMax.z + b.boxMax.y * b.boxMax.y + b.boxMax.x * b.boxMax.x;
-    const float min2 = b.boxMin.z * b.boxMin.z + b.boxMin.y * b.boxMin.y + b.boxMin.x * b.boxMin.x;
+    float r2 = (b.boxMax.x * b.boxMax.x + b.boxMax.y * b.boxMax.y) + b.boxMax.z * b.boxMax.z;
+    const float min2 = (b.boxMin.x * b.boxMin.x + b.boxMin.y * b.boxMin.y) + b.boxMin.z * b.boxMin.z;
     if (r2 < min2)
         r2 = min2;
     return std::sqrt(r2);
