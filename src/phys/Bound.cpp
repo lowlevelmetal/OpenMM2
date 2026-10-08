@@ -309,13 +309,32 @@ bool Polygon::detectSegmentUndirected(std::span<const Vec3> verts, const Vec3& a
 // --- phBound -----------------------------------------------------------------------------
 
 const Material& defaultBoundMaterial() {
-    // lvlMaterial's constructor: elasticity 0.5, friction 1.
+    // lvlMaterial's constructor: elasticity 0.5, friction 1, drag 0, width 1,
+    // height and depth 0, no particle effects (thresholds 0.25 / 0.5) and,
+    // from phMaterial's constructor, the name "default" with effect and
+    // sound index -1.
     static const Material m = [] {
         Material d;
         d.name = "default";
         d.elasticity = 0.5f;
         d.friction = 1.0f;
         d.width = 1.0f;
+        d.sound = -1;
+        return d;
+    }();
+    return m;
+}
+
+const Material& embeddedBoundMaterial() {
+    // phMaterial's constructor: "default", elasticity 0.1, friction 0.5,
+    // effect and sound index -1 (phMaterial has none of lvlMaterial's wheel
+    // fields; they read 0 here).
+    static const Material m = [] {
+        Material d;
+        d.name = "default";
+        d.elasticity = 0.1f;
+        d.friction = 0.5f;
+        d.sound = -1;
         return d;
     }();
     return m;
@@ -381,12 +400,14 @@ void Bound::setOffset(const Vec3& offset) {
 }
 
 Vec3 Bound::center(const Mat34& m) const {
-    // phBound::GetCenter.
+    // phBound::GetCenter (the overload writing to a Vector3; sums in its
+    // order).
     if (!isOffset)
         return m.m3;
-    return {centroid.x * m.m0.x + m.m1.x * centroid.y + m.m2.x * centroid.z + m.m3.x,
-            m.m1.y * centroid.y + m.m2.y * centroid.z + m.m0.y * centroid.x + m.m3.y,
-            m.m1.z * centroid.y + m.m2.z * centroid.z + m.m0.z * centroid.x + m.m3.z};
+    const Vec3& c = centroid;
+    return {((m.m2.x * c.z + m.m1.x * c.y) + c.x * m.m0.x) + m.m3.x,
+            ((m.m0.y * c.x + m.m2.y * c.z) + m.m1.y * c.y) + m.m3.y,
+            ((m.m0.z * c.x + m.m2.z * c.z) + m.m1.z * c.y) + m.m3.z};
 }
 
 void Bound::setPenetration() {
@@ -410,17 +431,18 @@ void Bound::setPenetration() {
 // --- phBoundPolygonal --------------------------------------------------------------------
 
 float BoundPolygonal::maxDot(const Vec3& dir, const Mat34& m, Vec3& local) const {
-    // phBoundPolygonal::MaxDot.
-    local = {dir.x * m.m0.x + m.m0.z * dir.z + m.m0.y * dir.y, m.m1.x * dir.x + m.m1.z * dir.z + m.m1.y * dir.y,
-             dir.x * m.m2.x + m.m2.z * dir.z + m.m2.y * dir.y};
+    // phBoundPolygonal::MaxDot (sums in its order).
+    local = {(m.m0.y * dir.y + m.m0.z * dir.z) + dir.x * m.m0.x,
+             (m.m1.y * dir.y + m.m1.z * dir.z) + m.m1.x * dir.x,
+             (m.m2.y * dir.y + m.m2.z * dir.z) + dir.x * m.m2.x};
     float best = -FLT_MAX;
     for (int i = numVertices() - 1; i >= 0; --i) {
         const Vec3& p = vertex(i);
-        const float d = local.x * p.x + p.y * local.y + p.z * local.z;
+        const float d = (p.z * local.z + p.y * local.y) + local.x * p.x;
         if (best < d)
             best = d;
     }
-    return dir.x * m.m3.x + m.m3.z * dir.z + m.m3.y * dir.y + best;
+    return ((m.m3.y * dir.y + m.m3.z * dir.z) + dir.x * m.m3.x) + best;
 }
 
 float BoundPolygonal::minDot(const Vec3& dir, const Mat34& m, Vec3& local) const {
@@ -546,10 +568,12 @@ void BoundGeometry::computeEdgeNums() {
 
 void BoundGeometry::computeEdgeNormals() {
     // phBoundGeometry::ComputeEdgeNormals / ReComputeEdgeNormals: the sum of
-    // the normals of the polygons on either side of the edge (the first one
-    // found each way; a missing side mirrors the other), and the cosine
-    // between it and the face that runs the edge backwards, or 2 when the
-    // edge is not convex.
+    // the normals of the polygons on either side of the edge (the polygons
+    // are scanned in order until both a face running the edge forwards and
+    // one running it backwards have been seen, each side keeping the last
+    // face found before then; a missing side mirrors the other), and the
+    // cosine between it and the face that runs the edge backwards, or 2 when
+    // the edge is not convex.
     edgeNormals.assign(edges.size(), Vec3{});
     edgeCosines.assign(edges.size(), 0.0f);
     for (std::size_t e = 0; e < edges.size(); ++e) {
@@ -838,6 +862,11 @@ BoundSphere::BoundSphere(float r) : Bound(BoundType::Sphere) {
     setPenetration();
 }
 
+const Material& BoundSphere::material(int) const {
+    // phBoundSphere::GetMaterial (dgBoundSphere::GetMaterial with its own).
+    return ownMaterial ? *ownMaterial : embeddedBoundMaterial();
+}
+
 void BoundSphere::setRadius(float r) {
     // phBoundSphere::SetRadius.
     sphereRadius = r;
@@ -852,6 +881,11 @@ BoundHotdog::BoundHotdog(float r, float h) : Bound(BoundType::Hotdog) {
     capRadius = r;
     height = h;
     calculateBoundingBox();
+}
+
+const Material& BoundHotdog::material(int) const {
+    // phBoundHotdog::GetMaterial (dgBoundHotdog::GetMaterial with its own).
+    return ownMaterial ? *ownMaterial : embeddedBoundMaterial();
 }
 
 void BoundHotdog::setSize(float r, float h) {

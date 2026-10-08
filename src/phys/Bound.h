@@ -325,6 +325,11 @@ public:
 
     float sphereRadius = 1.0f; // the bounding radius equals it
 
+    // phBoundSphere::GetMaterial / GetNumMaterials: the phMaterial embedded
+    // in the bound (one material) unless the dgBoundSphere owns one.
+    const Material& material(int index) const override;
+    int numMaterials() const override { return 1; }
+
     // phBoundSphere::SetRadius.
     void setRadius(float r);
 
@@ -340,6 +345,11 @@ public:
 
     float capRadius = 1.0f;
     float height = 1.0f;    // between the centres of the end spheres
+
+    // phBoundHotdog::GetMaterial / GetNumMaterials: as phBoundSphere's, the
+    // embedded phMaterial unless the dgBoundHotdog owns one.
+    const Material& material(int index) const override;
+    int numMaterials() const override { return 1; }
 
     // phBoundHotdog::SetSize / CalculateBoundingBox.
     void setSize(float radius, float height);
@@ -403,6 +413,9 @@ std::unique_ptr<BoundTerrain> makeTerrainBound(const GeometryData& geometry, con
 // elasticity 0.5, friction 1). The city's own "_default" (materials.mtl)
 // replaces it for level and instance polygons through their tables.
 const Material& defaultBoundMaterial();
+// A default-constructed phMaterial (elasticity 0.1, friction 0.5): the
+// material phBoundSphere and phBoundHotdog embed.
+const Material& embeddedBoundMaterial();
 
 // phBoundPolygonal::BackupDispByPenetration / BackupAbyPenetration: moves a
 // away from b by 1.5 * penetration (a unchanged up to rounding when the
