@@ -80,6 +80,8 @@ public:
     Pedestrians& pedestrians() { return *m_peds; }
 
     const std::vector<AmbientCar>& cars() const { return m_traffic->cars(); }
+    // See Traffic::takeAvoidEvents.
+    std::vector<int> takeAvoidEvents() { return m_traffic->takeAvoidEvents(); }
     const std::vector<Pedestrian>& peds() const { return m_peds->peds(); }
     const std::vector<Signal>& signals() const { return m_signals; }
     // PSDL room of a position (0 outside every room), looked up from `hint`

@@ -1551,6 +1551,7 @@ void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
         // Reset: a chance to honk (the horn audio decides), the speed law,
         // the pass offset and whether the player is dead ahead.
         c.horn = true;
+        m_avoidEvents.push_back(static_cast<int>(&c - m_cars.data()));
         if (cap <= c.speed)
             c.accel = c.accelFactor;
         else

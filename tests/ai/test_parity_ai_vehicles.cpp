@@ -4,8 +4,12 @@
 #include "ai/Course.h"
 #include "ai/Driving.h"
 #include "ai/Police.h"
+#include "ai/Traffic.h"
+#include "ai/World.h"
 
 #include <gtest/gtest.h>
+
+#include <algorithm>
 
 using namespace mm2;
 
@@ -162,4 +166,42 @@ TEST(ParityAiLights, ALoopRoadTakesItsEndOneLight) {
     const ai::Lane& lane = net.lanes()[static_cast<std::size_t>(site.lane)];
     EXPECT_EQ(lane.side, 0);
     EXPECT_EQ(lane.lightSlot, 0);
+}
+
+// aiGoalAvoidPlayer::Reset is where MM2 plays the avoidance horn (and the
+// driver's reaction): Traffic reports each car that starts avoiding once.
+TEST(ParityAiTraffic, ACarThatStartsAvoidingThePlayerIsReportedOnce) {
+    const city::AiMap map = squareBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    ai::TrafficLights lights;
+    lights.build(net);
+    ai::TrafficSettings settings;
+    settings.density = 1.0f;
+    ai::VehicleData sedan;
+    sedan.model = "test";
+    sedan.size = {2.0f, 1.5f, 4.5f};
+    ai::Traffic traffic(net, lights, {sedan}, settings, 3);
+    traffic.populateAll();
+    ai::PlayerCar far;
+    far.transform = Mat34::identity();
+    far.transform.m3 = {1000, 0, 1000};
+    for (int i = 0; i < 60; ++i)
+        traffic.step(ai::kAiStepSeconds, far, 0);
+    EXPECT_TRUE(traffic.takeAvoidEvents().empty());
+    ASSERT_FALSE(traffic.cars().empty());
+    const ai::AmbientCar car = traffic.cars().front();
+    ASSERT_GT(car.speed, 1.0f);
+    // The player parked in the car's lane 15 m ahead of it.
+    ai::PlayerCar player;
+    player.transform = car.transform;
+    player.transform.m3 = car.transform.m3 - car.transform.m2 * 15.0f;
+    std::vector<int> events;
+    for (int i = 0; i < 30; ++i) {
+        traffic.step(ai::kAiStepSeconds, player, 0);
+        for (int id : traffic.takeAvoidEvents())
+            events.push_back(id);
+    }
+    ASSERT_FALSE(events.empty());
+    EXPECT_EQ(events.front(), car.id);
+    EXPECT_EQ(std::count(events.begin(), events.end(), car.id), 1);
 }

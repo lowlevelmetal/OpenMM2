@@ -10,6 +10,8 @@
 #include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
+#include "audio/game/Voices.h"
+#include "audio/AngelRandom.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
 #include "ai/Opponent.h"
@@ -713,6 +715,120 @@ private:
                 feed(*c.audio, c.sim->sim(), c.driver->siren(), *c.impacts);
     }
 
+    // The ambient cars' sounds (aiAmbientVehicleAudio, which aiVehicleSpline::Init
+    // gives every pooled car; OpenMM2 loads it when the car first drives):
+    // engine, horn and impacts, and the driver's voice (AudCreature).
+    void updateAmbientAudio(Context& ctx, float dt) {
+        if (!m_ai || !m_bank || !ctx.mixer || !m_player)
+            return;
+        const Mat34& listener = m_camera.transform;
+        // aiMap::Update: aiAmbientVehicleAudio::UpdateStatics and
+        // AudCreatureContainer::UpdateStatics, with the player's speed, each
+        // advance the shared impact-line clock (so it runs twice a frame) and
+        // update the voices.
+        const float playerSpeed = m_player->sim().speed();
+        audio::game::CreatureVoice::advanceClock(dt);
+        audio::game::CreatureVoice::advanceClock(dt);
+        std::vector<char> seen;
+        for (const ai::AmbientCar& c : m_ai->cars()) {
+            AmbientAudio* a = ambientAudio(ctx, c);
+            if (!a)
+                continue;
+            seen.resize(m_ambientAudio.size(), 0);
+            seen[static_cast<std::size_t>(c.id)] = 1;
+            a->active = true;
+            if (a->hasVoice)
+                a->voice.update(playerSpeed, dt, c.transform.m3, listener);
+            a->car.update(c.speed, c.transform, c.velocity, dt, listener);
+        }
+        for (std::size_t i = 0; i < m_ambientAudio.size(); ++i) {
+            AmbientAudio* a = m_ambientAudio[i].get();
+            if (a && a->active && (i >= seen.size() || !seen[i])) {
+                // Back in the pool (aiAmbientVehicleAudio::Reset).
+                a->car.stop();
+                a->active = false;
+            }
+        }
+        // aiGoalAvoidPlayer::Reset: PlayAvoidanceHorn, and when a horn
+        // pattern starts, PlayAvoidanceReaction (for a car holding a sound
+        // slot).
+        for (int id : m_ai->takeAvoidEvents()) {
+            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk() && a->hasVoice && a->car.audible())
+                a->voice.avoid();
+        }
+        // aiVehicleActive's impact callback: AudImpact::Play and
+        // PlayImpactHorn with |x| + |y| + |z| of the impulse, then
+        // PlayImpactReaction (for a car holding a sound slot).
+        for (const game::TrafficImpact& e : m_trafficImpacts) {
+            AmbientAudio* a = ambientAudioOf(e.carId);
+            if (!a)
+                continue;
+            a->car.impact({e.strength, e.audioId, {}});
+            if (a->hasVoice && a->car.audible())
+                a->voice.impact(e.strength);
+        }
+        m_trafficImpacts.clear();
+    }
+
+    struct AmbientAudio {
+        audio::game::AmbientCarAudio car;
+        audio::game::CreatureVoice voice;
+        bool hasVoice = false;
+        bool active = false;
+    };
+
+    AmbientAudio* ambientAudioOf(int id) {
+        if (id < 0 || static_cast<std::size_t>(id) >= m_ambientAudio.size())
+            return nullptr;
+        return m_ambientAudio[static_cast<std::size_t>(id)].get();
+    }
+
+    // The audio of ambient car `c`, loaded on first use: the engine and horn
+    // of its type (else the defaults) and its driver's voice
+    // (aiAmbientVehicleAudio::Init).
+    AmbientAudio* ambientAudio(Context& ctx, const ai::AmbientCar& c) {
+        if (c.id < 0 || !c.data)
+            return nullptr;
+        const auto id = static_cast<std::size_t>(c.id);
+        if (id >= m_ambientAudio.size())
+            m_ambientAudio.resize(id + 1);
+        if (!m_ambientAudio[id]) {
+            auto a = std::make_unique<AmbientAudio>();
+            if (!a->car.load(ctx.game->vfs, *m_bank, *ctx.mixer, c.data->model, &m_audioSlots))
+                return nullptr;
+            if (const auto* def = ambientVoice(ctx.game->vfs, c.data->model)) {
+                a->voice.load(*ctx.mixer, *m_bank, *def, audio::game::AmbientCarAudio::kMaxDistance);
+                a->hasVoice = true;
+            }
+            m_ambientAudio[id] = std::move(a);
+        }
+        return m_ambientAudio[id].get();
+    }
+
+    // aiAmbientVehicleAudio::LoadVoices: aud/creaturedata/<type>_ambcarvoice<c>,
+    // else default_ambcarvoice<c><n>, with c "_l" in London and "_s"
+    // elsewhere (mmGame::Init's SetCSVCatString) and n drawn once per session
+    // from numambcarvoicefiles<c> (LoadNumVFileChoices).
+    const audio::game::CreatureVoiceDef* ambientVoice(const vfs::Vfs& vfs, const std::string& type) {
+        if (m_voiceFileNum < 0) {
+            m_voiceCategory = m_result.config.city == "london" ? "_l" : "_s";
+            m_voiceFileNum = 0;
+            const auto text =
+                audio::game::readText(vfs, "aud/creaturedata/numambcarvoicefiles" + m_voiceCategory + ".csv");
+            if (const auto n = text ? audio::game::parseNumFileChoices(*text) : std::nullopt)
+                m_voiceFileNum = static_cast<int>(audio::randomizeNumber(1.0f, *n + 0.25f));
+        }
+        auto [it, fresh] = m_voiceDefs.try_emplace(type);
+        if (fresh) {
+            std::string path = std::format("aud/creaturedata/{}_ambcarvoice{}.csv", type, m_voiceCategory);
+            if (!vfs.exists(path))
+                path = std::format("aud/creaturedata/default_ambcarvoice{}{}.csv", m_voiceCategory, m_voiceFileNum);
+            if (const auto text = audio::game::readText(vfs, path))
+                it->second = audio::game::parseCreatureVoice(*text);
+        }
+        return it->second ? &*it->second : nullptr;
+    }
+
     game::session::PlayerState playerState() const {
         game::session::PlayerState ps;
         const auto& sim = m_player->sim();
@@ -872,6 +988,9 @@ private:
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
             m_trafficBodies->setWeatherFriction(weatherFriction());
+            // aiVehicleActive's impacts, for the ambient cars' sounds.
+            m_trafficBodies->setImpactCallback(
+                [this](const game::TrafficImpact& e) { m_trafficImpacts.push_back(e); });
             // The rail cars are instances of the level's rooms.
             if (m_cityLevel)
                 m_cityLevel->addSource(m_trafficBodies.get());
@@ -1121,6 +1240,7 @@ private:
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
         updateAiAudio(dt);
+        updateAmbientAudio(ctx, dt);
         m_ambience.update(m_camera.transform, dt);
         m_rain.update(m_result.config.weather == game::Weather::Rain, false, false, dt);
     }
@@ -1441,6 +1561,11 @@ private:
     // MM2's positioned-sound slots (Aud3DObjectManager); declared before every
     // sound that uses it so it outlives them.
     audio::game::Object3DManager m_audioSlots;
+    std::vector<std::unique_ptr<AmbientAudio>> m_ambientAudio; // by ambient car id
+    std::map<std::string, std::optional<audio::game::CreatureVoiceDef>> m_voiceDefs;
+    std::string m_voiceCategory;
+    int m_voiceFileNum = -1;
+    std::vector<game::TrafficImpact> m_trafficImpacts;
     struct Opponent {
         std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
         Mat34 spawn;                  // grid place on the ground (session Restart)

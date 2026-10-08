@@ -30,6 +30,7 @@
 #include <functional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mm2::ai {
@@ -104,6 +105,10 @@ public:
     void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 
     const std::vector<AmbientCar>& cars() const { return m_public; }
+    // Ids of the cars that started avoiding the player since the last call
+    // (aiGoalAvoidPlayer::Reset, where MM2 plays the avoidance horn and, if
+    // it sounds, the driver's reaction).
+    std::vector<int> takeAvoidEvents() { return std::exchange(m_avoidEvents, {}); }
     std::size_t activeCount() const;
 
     void setImpactHandler(ImpactHandler h) { m_onImpact = std::move(h); }
@@ -281,6 +286,7 @@ private:
     std::vector<Car> m_cars;
     std::vector<int> m_pool; // free cars, last = next to use (aiMap +0x44)
     std::vector<AmbientCar> m_public;
+    std::vector<int> m_avoidEvents;
     std::vector<std::vector<int>> m_queues;      // per network lane
     std::vector<std::uint8_t> m_pathActive;      // aiPath AddAmbPlayer mask
     std::vector<int> m_activePaths;              // aiMap +0x17c, most recent first
