@@ -76,8 +76,9 @@ std::optional<std::vector<FogDef>> parseFogTable(std::string_view text, std::str
         fog.r = static_cast<std::uint8_t>(detail::cAtoi(row[0]));
         fog.g = static_cast<std::uint8_t>(detail::cAtoi(row[1]));
         fog.b = static_cast<std::uint8_t>(detail::cAtoi(row[2]));
-        fog.start = detail::cAtof(row[3]);
-        fog.end = detail::cAtof(row[4]);
+        // lvlSky::AutoInit reads the fog distances with atoi too.
+        fog.start = static_cast<float>(detail::cAtoi(row[3]));
+        fog.end = static_cast<float>(detail::cAtoi(row[4]));
         if (row.size() > 5)
             fog.description = row[5];
         out.push_back(std::move(fog));

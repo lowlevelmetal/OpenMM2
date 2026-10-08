@@ -330,7 +330,8 @@ std::vector<RaceReward> parseRewards(std::string_view text) {
             first = false;
             continue;
         }
-        if (str::trim(line).empty())
+        // mmRewardList::Load skips rows whose first field starts with '#'.
+        if (str::trim(line).empty() || str::trim(line).front() == '#')
             continue;
         // The message may itself contain commas; split the first four fields only.
         std::vector<std::string_view> f;
