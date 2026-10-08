@@ -125,8 +125,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/ai/World.h` | 113 | P | ai-ambient-city |
 | `src/app/App.cpp` | 216 | M | openmm2-only |
 | `src/app/App.h` | 11 | O | - |
-| `src/app/CommandLine.cpp` | 111 | O | - |
-| `src/app/CommandLine.h` | 38 | O | - |
+| `src/app/CommandLine.cpp` | 111 | M | mm2-infrastructure |
+| `src/app/CommandLine.h` | 38 | M | mm2-infrastructure |
 | `src/app/Context.cpp` | 61 | M | openmm2-only |
 | `src/app/Context.h` | 103 | O | - |
 | `src/app/Controls.cpp` | 105 | P | session |
