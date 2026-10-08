@@ -49,9 +49,9 @@ constexpr std::array<std::array<int, 3>, 8> kCornerEdges{{
 }};
 // The corner with a given sign pattern, indexed by x + 2y + 4z (1 = positive).
 constexpr std::array<int, 8> kCornerBySign{6, 7, 5, 4, 2, 3, 1, 0};
-// The corner signs as +-1 (a table the original fills at startup). Inferred
-// from its use: scaled by a box's half size they give its corners, and the
-// box-against-box edge test needs the full edge lengths.
+// The corner signs as +-1, which the original fills in a static initialiser
+// (scaled by a box's half size they give its corners, and the box-against-
+// box edge test needs the full edge lengths).
 constexpr std::array<Vec3, 8> kCornerSigns{{
     {1, 1, 1}, {-1, 1, 1}, {-1, -1, 1}, {1, -1, 1}, {1, 1, -1}, {-1, 1, -1}, {-1, -1, -1}, {1, -1, -1},
 }};

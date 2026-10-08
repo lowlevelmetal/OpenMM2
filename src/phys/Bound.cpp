@@ -38,6 +38,11 @@ bool signBit(float v) {
     return std::signbit(v);
 }
 
+// Vector4::Dot3 (and the same sum written inline): z, then y, then x.
+float dot3(const Vec3& a, const Vec3& b) {
+    return (a.z * b.z + a.y * b.y) + a.x * b.x;
+}
+
 // phPolygon::SegEdgeCheckDirected: the segment from `a` along `dir` passes
 // outside the edge p->q (whose inward normal is `edgeNormal`).
 bool segEdgeCheckDirected(const Vec3& p, const Vec3& q, const Vec3& a, const Vec3& dir, const Vec3& edgeNormal) {
@@ -45,10 +50,10 @@ bool segEdgeCheckDirected(const Vec3& p, const Vec3& q, const Vec3& a, const Vec
     const float cz = ex * dir.y - ey * dir.x;
     const float cx = ey * dir.z - ez * dir.y;
     const float cy = ez * dir.x - ex * dir.z;
-    const float side = (a.x - p.x) * cx + (a.y - p.y) * cy + (a.z - p.z) * cz;
+    const float side = ((a.z - p.z) * cz + (a.y - p.y) * cy) + (a.x - p.x) * cx;
     if (side == 0.0f)
         return false;
-    return 0.0f < cx * edgeNormal.x + cy * edgeNormal.y + cz * edgeNormal.z && side < 0.0f;
+    return 0.0f < (cz * edgeNormal.z + cy * edgeNormal.y) + cx * edgeNormal.x && side < 0.0f;
 }
 
 // phPolygon::SegEdgeCheckUndirected: the line passes on the other side of
@@ -58,10 +63,10 @@ bool segEdgeCheckUndirected(const Vec3& p, const Vec3& q, const Vec3& a, const V
     const float cz = ex * dir.y - ey * dir.x;
     const float cx = ey * dir.z - ez * dir.y;
     const float cy = ez * dir.x - ex * dir.z;
-    const float side = (a.x - p.x) * cx + (a.y - p.y) * cy + (a.z - p.z) * cz;
+    const float side = ((a.z - p.z) * cz + (a.y - p.y) * cy) + (a.x - p.x) * cx;
     if (side == 0.0f)
         return false;
-    return signBit(side) != signBit(cx * edgeNormal.x + cy * edgeNormal.y + cz * edgeNormal.z);
+    return signBit(side) != signBit((cz * edgeNormal.z + cy * edgeNormal.y) + cx * edgeNormal.x);
 }
 
 // One side test of the Detect/Test routines: the line a + s * dir against
@@ -70,19 +75,19 @@ bool segEdgeCheckUndirected(const Vec3& p, const Vec3& q, const Vec3& a, const V
 bool outsideDirected(const Vec3& from, const Vec3& to, const Vec3& a, const Vec3& dir, const Vec3& edgeNormal) {
     const Vec3 c = cross(to - from, dir);
     const Vec3 w = a - from;
-    const float side = w.x * c.x + w.y * c.y + w.z * c.z;
+    const float side = dot3(w, c);
     if (side == 0.0f)
         return false;
-    return 0.0f < edgeNormal.x * c.x + edgeNormal.y * c.y + edgeNormal.z * c.z && side < 0.0f;
+    return 0.0f < dot3(edgeNormal, c) && side < 0.0f;
 }
 
 bool outsideUndirected(const Vec3& from, const Vec3& to, const Vec3& a, const Vec3& dir, const Vec3& edgeNormal) {
     const Vec3 c = cross(to - from, dir);
     const Vec3 w = a - from;
-    const float side = w.x * c.x + w.y * c.y + w.z * c.z;
+    const float side = dot3(w, c);
     if (side == 0.0f)
         return false;
-    return signBit(side) != signBit(edgeNormal.x * c.x + edgeNormal.y * c.y + edgeNormal.z * c.z);
+    return signBit(side) != signBit(dot3(edgeNormal, c));
 }
 
 const Vec3& at(std::span<const Vec3> verts, std::uint16_t i) {
@@ -101,25 +106,26 @@ void Segment::calculateInfo() {
         return;
     }
     vertical = false;
-    const float len2 = (a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z);
+    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    const float len2 = (dz * dz + dy * dy) + dx * dx;
     invLength = len2 != 0.0f ? 1.0f / sqrtf32(len2) : 0.0f;
 }
 
 void IntersectionPoint::transform(const Mat34& m) {
     // phIntersectionPoint::Transform.
     const Vec3 p = position;
-    position = {p.y * m.m1.x + p.z * m.m2.x + p.x * m.m0.x + m.m3.x,
-                p.y * m.m1.y + p.z * m.m2.y + p.x * m.m0.y + m.m3.y,
-                p.x * m.m0.z + p.y * m.m1.z + p.z * m.m2.z + m.m3.z};
+    position = {((p.x * m.m0.x + p.z * m.m2.x) + p.y * m.m1.x) + m.m3.x,
+                ((p.x * m.m0.y + p.z * m.m2.y) + p.y * m.m1.y) + m.m3.y,
+                ((p.z * m.m2.z + p.y * m.m1.z) + p.x * m.m0.z) + m.m3.z};
     const Vec3 n = normal;
-    normal = {n.y * m.m1.x + n.z * m.m2.x + n.x * m.m0.x, n.y * m.m1.y + n.z * m.m2.y + n.x * m.m0.y,
-              n.x * m.m0.z + n.y * m.m1.z + n.z * m.m2.z};
+    normal = {(n.x * m.m0.x + n.z * m.m2.x) + n.y * m.m1.x, (n.x * m.m0.y + n.z * m.m2.y) + n.y * m.m1.y,
+              (n.z * m.m2.z + n.y * m.m1.z) + n.x * m.m0.z};
 }
 
 void backupDispByPenetration(Vec3& a, const Vec3& b, float penetration) {
     // phBoundPolygonal::BackupDispByPenetration.
     const float dx = a.x - b.x;
-    const float len2 = dx * dx + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z);
+    const float len2 = ((a.z - b.z) * (a.z - b.z) + (a.y - b.y) * (a.y - b.y)) + dx * dx;
     if (penetration * penetration < len2) {
         Vec3 d{dx, a.y - b.y, a.z - b.z};
         const float scale = (penetration * 1.5f) / sqrtf32(len2) + 1.0f;
@@ -159,7 +165,7 @@ void Polygon::calculateNormal(std::span<const Vec3> verts) {
     const float nz = (p0.y - p1.y) * (p2.x - p1.x) - (p2.y - p1.y) * (p0.x - p1.x);
     const float nx = (p0.z - p1.z) * (p2.y - p1.y) - (p0.y - p1.y) * (p2.z - p1.z);
     const float ny = (p2.z - p1.z) * (p0.x - p1.x) - (p0.z - p1.z) * (p2.x - p1.x);
-    const float len2 = nz * nz + nx * nx + ny * ny;
+    const float len2 = (ny * ny + nx * nx) + nz * nz;
     area = sqrtf32(len2) * 0.5f;
     const float scale = len2 == 0.0f ? 0.0f : 1.0f / sqrtf32(len2);
     normal = {nx * scale, ny * scale, nz * scale};
@@ -168,7 +174,7 @@ void Polygon::calculateNormal(std::span<const Vec3> verts) {
         const float qz = (p2.y - p3.y) * (p0.x - p3.x) - (p0.y - p3.y) * (p2.x - p3.x);
         const float qx = (p2.z - p3.z) * (p0.y - p3.y) - (p2.y - p3.y) * (p0.z - p3.z);
         const float qy = (p0.z - p3.z) * (p2.x - p3.x) - (p2.z - p3.z) * (p0.x - p3.x);
-        area = sqrtf32(qx * qx + qz * qz + qy * qy) * 0.5f + area;
+        area = sqrtf32((qy * qy + qz * qz) + qx * qx) * 0.5f + area;
     }
     computeEdgeNormalCross(verts);
 }
@@ -183,7 +189,7 @@ void Polygon::computeEdgeNormalCross(std::span<const Vec3> verts) {
         const Vec3& from = at(verts, v[static_cast<std::size_t>(prev)]);
         const float dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
         Vec3 e{dz * normal.y - dy * normal.z, dx * normal.z - dz * normal.x, dy * normal.x - dx * normal.y};
-        const float len2 = e.z * e.z + e.y * e.y + e.x * e.x;
+        const float len2 = (e.x * e.x + e.y * e.y) + e.z * e.z;
         const float scale = len2 == 0.0f ? 0.0f : 1.0f / sqrtf32(len2);
         edgeNormals[static_cast<std::size_t>(prev)] = {scale * e.x, scale * e.y, scale * e.z};
         prev = k;
@@ -195,10 +201,10 @@ bool Polygon::testSegmentDirected(std::span<const Vec3> verts, const Segment& se
     // phPolygon::TestSegmentDirected.
     const Vec3& p0 = at(verts, v[0]);
     const Vec3 w0 = seg.a - p0;
-    const float da = w0.y * normal.y + w0.x * normal.x + w0.z * normal.z;
+    const float da = (w0.z * normal.z + w0.x * normal.x) + w0.y * normal.y;
     if (da < 0.0f)
         return false;
-    const float db = (seg.b.y - p0.y) * normal.y + (seg.b.x - p0.x) * normal.x + (seg.b.z - p0.z) * normal.z;
+    const float db = ((seg.b.z - p0.z) * normal.z + (seg.b.x - p0.x) * normal.x) + (seg.b.y - p0.y) * normal.y;
     if (0.0f <= db)
         return false;
     const float t = da / (da - db);
@@ -233,8 +239,8 @@ bool Polygon::testSegmentUndirected(std::span<const Vec3> verts, const Segment& 
                                     float rejectFrom, float rejectTo) const {
     // phPolygon::TestSegmentUndirected.
     const Vec3& p0 = at(verts, v[0]);
-    const float da = (seg.a.z - p0.z) * normal.z + (seg.a.x - p0.x) * normal.x + (seg.a.y - p0.y) * normal.y;
-    const float db = (seg.b.z - p0.z) * normal.z + (seg.b.x - p0.x) * normal.x + (seg.b.y - p0.y) * normal.y;
+    const float da = ((seg.a.y - p0.y) * normal.y + (seg.a.x - p0.x) * normal.x) + (seg.a.z - p0.z) * normal.z;
+    const float db = ((seg.b.y - p0.y) * normal.y + (seg.b.x - p0.x) * normal.x) + (seg.b.z - p0.z) * normal.z;
     if (signBit(da) == signBit(db))
         return false;
     const float t = da / (da - db);
@@ -309,13 +315,32 @@ bool Polygon::detectSegmentUndirected(std::span<const Vec3> verts, const Vec3& a
 // --- phBound -----------------------------------------------------------------------------
 
 const Material& defaultBoundMaterial() {
-    // lvlMaterial's constructor: elasticity 0.5, friction 1.
+    // lvlMaterial's constructor: elasticity 0.5, friction 1, drag 0, width 1,
+    // height and depth 0, no particle effects (thresholds 0.25 / 0.5) and,
+    // from phMaterial's constructor, the name "default" with effect and
+    // sound index -1.
     static const Material m = [] {
         Material d;
         d.name = "default";
         d.elasticity = 0.5f;
         d.friction = 1.0f;
         d.width = 1.0f;
+        d.sound = -1;
+        return d;
+    }();
+    return m;
+}
+
+const Material& embeddedBoundMaterial() {
+    // phMaterial's constructor: "default", elasticity 0.1, friction 0.5,
+    // effect and sound index -1 (phMaterial has none of lvlMaterial's wheel
+    // fields; they read 0 here).
+    static const Material m = [] {
+        Material d;
+        d.name = "default";
+        d.elasticity = 0.1f;
+        d.friction = 0.5f;
+        d.sound = -1;
         return d;
     }();
     return m;
@@ -369,8 +394,8 @@ void Bound::calculateSphereFromBoundingBox() {
                 (boxMax.z - boxMin.z) * 0.5f + boxMin.z};
     if (centroid.x != 0.0f || centroid.y != 0.0f || centroid.z != 0.0f)
         isOffset = true;
-    radius = sqrtf32((centroid.x - boxMax.x) * (centroid.x - boxMax.x) + (centroid.y - boxMax.y) * (centroid.y - boxMax.y) +
-                     (centroid.z - boxMax.z) * (centroid.z - boxMax.z));
+    const float dx = centroid.x - boxMax.x, dy = centroid.y - boxMax.y, dz = centroid.z - boxMax.z;
+    radius = sqrtf32((dz * dz + dy * dy) + dx * dx);
 }
 
 void Bound::setOffset(const Vec3& offset) {
@@ -381,12 +406,14 @@ void Bound::setOffset(const Vec3& offset) {
 }
 
 Vec3 Bound::center(const Mat34& m) const {
-    // phBound::GetCenter.
+    // phBound::GetCenter (the overload writing to a Vector3; sums in its
+    // order).
     if (!isOffset)
         return m.m3;
-    return {centroid.x * m.m0.x + m.m1.x * centroid.y + m.m2.x * centroid.z + m.m3.x,
-            m.m1.y * centroid.y + m.m2.y * centroid.z + m.m0.y * centroid.x + m.m3.y,
-            m.m1.z * centroid.y + m.m2.z * centroid.z + m.m0.z * centroid.x + m.m3.z};
+    const Vec3& c = centroid;
+    return {((m.m2.x * c.z + m.m1.x * c.y) + c.x * m.m0.x) + m.m3.x,
+            ((m.m0.y * c.x + m.m2.y * c.z) + m.m1.y * c.y) + m.m3.y,
+            ((m.m0.z * c.x + m.m2.z * c.z) + m.m1.z * c.y) + m.m3.z};
 }
 
 void Bound::setPenetration() {
@@ -410,17 +437,18 @@ void Bound::setPenetration() {
 // --- phBoundPolygonal --------------------------------------------------------------------
 
 float BoundPolygonal::maxDot(const Vec3& dir, const Mat34& m, Vec3& local) const {
-    // phBoundPolygonal::MaxDot.
-    local = {dir.x * m.m0.x + m.m0.z * dir.z + m.m0.y * dir.y, m.m1.x * dir.x + m.m1.z * dir.z + m.m1.y * dir.y,
-             dir.x * m.m2.x + m.m2.z * dir.z + m.m2.y * dir.y};
+    // phBoundPolygonal::MaxDot (sums in its order).
+    local = {(m.m0.y * dir.y + m.m0.z * dir.z) + dir.x * m.m0.x,
+             (m.m1.y * dir.y + m.m1.z * dir.z) + m.m1.x * dir.x,
+             (m.m2.y * dir.y + m.m2.z * dir.z) + dir.x * m.m2.x};
     float best = -FLT_MAX;
     for (int i = numVertices() - 1; i >= 0; --i) {
         const Vec3& p = vertex(i);
-        const float d = local.x * p.x + p.y * local.y + p.z * local.z;
+        const float d = (p.z * local.z + p.y * local.y) + local.x * p.x;
         if (best < d)
             best = d;
     }
-    return dir.x * m.m3.x + m.m3.z * dir.z + m.m3.y * dir.y + best;
+    return ((m.m3.y * dir.y + m.m3.z * dir.z) + dir.x * m.m3.x) + best;
 }
 
 float BoundPolygonal::minDot(const Vec3& dir, const Mat34& m, Vec3& local) const {
@@ -546,10 +574,12 @@ void BoundGeometry::computeEdgeNums() {
 
 void BoundGeometry::computeEdgeNormals() {
     // phBoundGeometry::ComputeEdgeNormals / ReComputeEdgeNormals: the sum of
-    // the normals of the polygons on either side of the edge (the first one
-    // found each way; a missing side mirrors the other), and the cosine
-    // between it and the face that runs the edge backwards, or 2 when the
-    // edge is not convex.
+    // the normals of the polygons on either side of the edge (the polygons
+    // are scanned in order until both a face running the edge forwards and
+    // one running it backwards have been seen, each side keeping the last
+    // face found before then; a missing side mirrors the other), and the
+    // cosine between it and the face that runs the edge backwards, or 2 when
+    // the edge is not convex.
     edgeNormals.assign(edges.size(), Vec3{});
     edgeCosines.assign(edges.size(), 0.0f);
     for (std::size_t e = 0; e < edges.size(); ++e) {
@@ -594,14 +624,14 @@ void BoundGeometry::computeEdgeNormals() {
             reverseNormal = -forwardNormal;
         Vec3 n = reverseNormal;
         n = {forwardNormal.x + n.x, forwardNormal.y + n.y, forwardNormal.z + n.z};
-        float len2 = n.z * n.z + n.y * n.y + n.x * n.x;
+        float len2 = (n.x * n.x + n.y * n.y) + n.z * n.z;
         if (len2 < 1e-6f) {
             const Vec3& pa = vertex(a);
             const Vec3& pb = vertex(b);
             const float dx = pb.x - pa.x, dy = pb.y - pa.y, dz = pb.z - pa.z;
             n = {reverseNormal.y * dz - reverseNormal.z * dy, reverseNormal.z * dx - dz * reverseNormal.x,
                  dy * reverseNormal.x - reverseNormal.y * dx};
-            len2 = n.z * n.z + n.y * n.y + n.x * n.x;
+            len2 = (n.x * n.x + n.y * n.y) + n.z * n.z;
             if (len2 < 1e-6f) {
                 len2 = 1.0f;
                 n = {0.0f, 1.0f, 0.0f};
@@ -613,11 +643,9 @@ void BoundGeometry::computeEdgeNormals() {
         const Vec3& pa = vertex(a);
         const Vec3& pb = vertex(b);
         const float dx = pb.x - pa.x, dy = pb.y - pa.y, dz = pb.z - pa.z;
-        const float convex = (dz * n.y - dy * n.z) * reverseNormal.x + reverseNormal.y * (dx * n.z - dz * n.x) +
-                             reverseNormal.z * (dy * n.x - dx * n.y);
-        edgeCosines[e] = convex <= 0.0f
-                             ? reverseNormal.x * n.x + reverseNormal.y * n.y + reverseNormal.z * n.z
-                             : 2.0f;
+        const Vec3 c{dz * n.y - dy * n.z, dx * n.z - dz * n.x, dy * n.x - dx * n.y};
+        const float convex = dot3(reverseNormal, c);
+        edgeCosines[e] = convex <= 0.0f ? dot3(reverseNormal, n) : 2.0f;
     }
 }
 
@@ -822,7 +850,7 @@ void BoundBox::setQuickTestInfo() {
     // phBoundBox::SetQuickTestInfo.
     boxMax = {size.x * 0.5f, size.y * 0.5f, size.z * 0.5f};
     boxMin = -boxMax;
-    radius = sqrtf32(boxMax.z * boxMax.z + boxMax.y * boxMax.y + boxMax.x * boxMax.x);
+    radius = sqrtf32((boxMax.x * boxMax.x + boxMax.y * boxMax.y) + boxMax.z * boxMax.z);
     boxMax = {centroid.x + boxMax.x, centroid.y + boxMax.y, centroid.z + boxMax.z};
     boxMin = {centroid.x + boxMin.x, centroid.y + boxMin.y, centroid.z + boxMin.z};
     setPenetration();
@@ -836,6 +864,11 @@ BoundSphere::BoundSphere(float r) : Bound(BoundType::Sphere) {
     boxMin = {-r, -r, -r};
     boxMax = {r, r, r};
     setPenetration();
+}
+
+const Material& BoundSphere::material(int) const {
+    // phBoundSphere::GetMaterial (dgBoundSphere::GetMaterial with its own).
+    return ownMaterial ? *ownMaterial : embeddedBoundMaterial();
 }
 
 void BoundSphere::setRadius(float r) {
@@ -852,6 +885,11 @@ BoundHotdog::BoundHotdog(float r, float h) : Bound(BoundType::Hotdog) {
     capRadius = r;
     height = h;
     calculateBoundingBox();
+}
+
+const Material& BoundHotdog::material(int) const {
+    // phBoundHotdog::GetMaterial (dgBoundHotdog::GetMaterial with its own).
+    return ownMaterial ? *ownMaterial : embeddedBoundMaterial();
 }
 
 void BoundHotdog::setSize(float r, float h) {

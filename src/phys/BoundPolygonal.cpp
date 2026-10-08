@@ -28,17 +28,21 @@
 namespace mm2::phys {
 namespace {
 
-// Transforms with the original's summation order (Matrix34::Transform /
-// Transform3x3 as the routines inline them).
+// Matrix34::Transform4's summation order (the current poses of
+// TestBoundPolyPolyUseDotSmall and lvlSDL::CollidePolyToLevel).
 Vec3 xform(const Mat34& m, const Vec3& p) {
     return {p.x * m.m0.x + m.m2.x * p.z + m.m1.x * p.y + m.m3.x,
             m.m2.y * p.z + m.m0.y * p.x + m.m1.y * p.y + m.m3.y,
             m.m2.z * p.z + m.m0.z * p.x + m.m1.z * p.y + m.m3.z};
 }
 
-Vec3 xformDir(const Mat34& m, const Vec3& v) {
-    return {v.x * m.m0.x + v.y * m.m1.x + v.z * m.m2.x, m.m0.y * v.x + m.m1.y * v.y + m.m2.y * v.z,
-            m.m0.z * v.x + v.y * m.m1.z + v.z * m.m2.z};
+// The routines below inline other transforms, each with its own summation
+// order (read from the original's x87 code); they are spelled out where
+// they are used. This one serves the edge normals (TestBoundPolyPolyUseDot,
+// TestBoundPolyPolyUseDotSmall, lvlSDL::CollidePolyToLevel): z, y, then x.
+Vec3 rotateZyx(const Mat34& m, const Vec3& v) {
+    return {(m.m2.x * v.z + m.m1.x * v.y) + m.m0.x * v.x, (m.m2.y * v.z + m.m1.y * v.y) + m.m0.y * v.x,
+            (m.m2.z * v.z + m.m1.z * v.y) + m.m0.z * v.x};
 }
 
 // a * inverse(b) for rigid matrices (Matrix34::FastInverse, Matrix34::Dot).
@@ -46,8 +50,9 @@ Mat34 relative(const Mat34& a, const Mat34& b) {
     return age::dot(a, b.fastInverse());
 }
 
+// Vector3::Dot: z, then y, then x.
 float dot(const Vec3& a, const Vec3& b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
+    return (a.z * b.z + a.y * b.y) + a.x * b.x;
 }
 
 // The polygon's material index as an intersection carries it.
@@ -101,14 +106,18 @@ void getAllSegments(const BoundPolygonal& self, float radius2, bool sweep, const
     const int nv = self.numVertices();
     for (int i = nv - 1; i >= 0; --i) {
         const Vec3& p = self.vertex(i);
-        s.flags[static_cast<std::size_t>(i)] = dir.x * p.x + p.y * dir.y + p.z * dir.z < threshold ? 1 : 0;
+        s.flags[static_cast<std::size_t>(i)] = (p.z * dir.z + p.y * dir.y) + dir.x * p.x < threshold ? 1 : 0;
     }
     s.sweeps.clear();
     if (sweep) {
         for (int i = nv - 1; i >= 0; --i) {
             if (s.flags[static_cast<std::size_t>(i)] != 0)
                 continue;
-            const Vec3 prev = xform(relLast, self.vertex(i));
+            const Vec3& v = self.vertex(i);
+            const Mat34& m = relLast;
+            const Vec3 prev{((m.m1.x * v.y + m.m2.x * v.z) + m.m0.x * v.x) + m.m3.x,
+                            ((m.m0.y * v.x + m.m1.y * v.y) + m.m2.y * v.z) + m.m3.y,
+                            ((m.m0.z * v.x + m.m1.z * v.y) + m.m2.z * v.z) + m.m3.z};
             if (geom::segmentSphereTest(radius2, prev, s.verts[static_cast<std::size_t>(i)])) {
                 DispSegment d;
                 d.vertex = static_cast<std::uint16_t>(i);
@@ -146,7 +155,7 @@ void collidePolygon(const Polygon& poly, int polyIndex, std::span<const Vec3> po
         const auto k = static_cast<std::size_t>(i);
         if (s.flags[k] != 1) {
             const Vec3& v = s.verts[k];
-            s.dist[k] = (v.x - p0.x) * n.x + (v.y - p0.y) * n.y + (v.z - p0.z) * n.z;
+            s.dist[k] = ((v.z - p0.z) * n.z + (v.y - p0.y) * n.y) + (v.x - p0.x) * n.x;
         }
     }
     for (int k = static_cast<int>(s.sweeps.size()) - 1; k >= 0; --k) {
@@ -154,12 +163,14 @@ void collidePolygon(const Polygon& poly, int polyIndex, std::span<const Vec3> po
         const float now = s.dist[d.vertex];
         if (!(now < 0.0f))
             continue;
-        float before = (d.previous.x - p0.x) * n.x + (d.previous.y - p0.y) * n.y + (d.previous.z - p0.z) * n.z;
+        float before =
+            ((d.previous.z - p0.z) * n.z + (d.previous.y - p0.y) * n.y) + (d.previous.x - p0.x) * n.x;
         if (!(0.0f < before)) {
             if (!(penetration * -1.5f < before))
                 continue;
             backupDispByPenetration(d.previous, s.verts[d.vertex], penetration);
-            before = (d.previous.x - p0.x) * n.x + (d.previous.y - p0.y) * n.y + (d.previous.z - p0.z) * n.z;
+            before =
+                ((d.previous.z - p0.z) * n.z + (d.previous.y - p0.y) * n.y) + (d.previous.x - p0.x) * n.x;
             if (!(0.0f < before))
                 continue;
         }
@@ -259,7 +270,7 @@ int writeIntersections(const BoundPolygonal& self, const Bound& other, std::span
         is.bound = &self;
         is.vertexA = ed[0];
         is.vertexB = ed[1];
-        is.edgeNormal = xformDir(selfWorld, self.edgeNormal(e.edge));
+        is.edgeNormal = rotateZyx(selfWorld, self.edgeNormal(e.edge));
     };
     for (const EdgeSegment& e : s.edges) {
         if (e.polyEnter != 0xffff)
@@ -343,16 +354,14 @@ void checkSaveEdgeEdge(Intersection& s, int partner, bool recent, bool nearlyPar
         return;
     float along;
     if (recent) {
-        along = (otherPoint.x - s.position.x) * s.normal.x + (otherPoint.y - s.position.y) * s.normal.y +
-                (otherPoint.z - s.position.z) * s.normal.z;
+        along = dot(otherPoint - s.position, s.normal);
         if (!(s.edgeEdgeIndex < 0 || s.edgeEdgeDistance < along || soonLimit < s.timeToImpact ||
               (f & Intersection::kEdgeEdge) == 0))
             return;
     } else {
         if (nearlyParallel || !(depth <= s.depth * 1.2f) || !(soonLimit < s.timeToImpact))
             return;
-        along = (otherPoint.x - s.position.x) * s.normal.x + (otherPoint.y - s.position.y) * s.normal.y +
-                (otherPoint.z - s.position.z) * s.normal.z;
+        along = dot(otherPoint - s.position, s.normal);
         if (s.edgeEdgeIndex < 0) {
             if (!(along * along + depth2 < s.depth * s.depth))
                 return;
@@ -380,24 +389,31 @@ bool getCollideEdgePoly(const Intersection& s, const Vec3& relVel, const Mat34& 
                         bool& soon) {
     const Polygon& poly = *s.poly;
     const Bound& owner = *s.otherBound;
-    Vec3 lv{relVel.x * invM.m0.x + relVel.z * invM.m2.x + relVel.y * invM.m1.x,
-            relVel.x * invM.m0.y + relVel.y * invM.m1.y + relVel.z * invM.m2.y,
-            relVel.x * invM.m0.z + relVel.y * invM.m1.z + relVel.z * invM.m2.z};
-    const Vec3 lp = xform(invM, s.position);
-    const Vec3 ld{edgeDir.z * invM.m2.x + edgeDir.x * invM.m0.x + edgeDir.y * invM.m1.x,
-                  edgeDir.y * invM.m1.y + edgeDir.z * invM.m2.y + edgeDir.x * invM.m0.y,
-                  edgeDir.x * invM.m0.z + edgeDir.y * invM.m1.z + edgeDir.z * invM.m2.z};
+    const Vec3& rv = relVel;
+    const Vec3& sp = s.position;
+    const Vec3& m0 = invM.m0;
+    const Vec3& m1 = invM.m1;
+    const Vec3& m2 = invM.m2;
+    const Vec3& m3 = invM.m3;
+    Vec3 lv{(rv.y * m1.x + rv.z * m2.x) + rv.x * m0.x, (rv.z * m2.y + rv.y * m1.y) + rv.x * m0.y,
+            (rv.z * m2.z + rv.y * m1.z) + rv.x * m0.z};
+    const Vec3 lp{((sp.y * m1.x + sp.z * m2.x) + sp.x * m0.x) + m3.x,
+                  ((sp.z * m2.y + sp.y * m1.y) + sp.x * m0.y) + m3.y,
+                  ((sp.z * m2.z + sp.y * m1.z) + sp.x * m0.z) + m3.z};
+    const Vec3& d = edgeDir;
+    const Vec3 ld{(d.y * m1.x + d.x * m0.x) + d.z * m2.x, (d.x * m0.y + d.z * m2.y) + d.y * m1.y,
+                  (d.z * m2.z + d.y * m1.z) + d.x * m0.z};
     // The velocity without its part along the edge.
-    const float along = -(lv.z * ld.z + ld.x * lv.x + ld.y * lv.y);
+    const float along = -((ld.y * lv.y + ld.x * lv.x) + lv.z * ld.z);
     lv = {ld.x * along + lv.x, ld.y * along + lv.y, ld.z * along + lv.z};
     const Vec3 c = ld.cross(poly.normal);
-    const float c2 = c.y * c.y + c.z * c.z + c.x * c.x;
-    const float nd = std::abs(ld.x * poly.normal.x + ld.y * poly.normal.y + ld.z * poly.normal.z);
+    const float c2 = (c.x * c.x + c.z * c.z) + c.y * c.y;
+    const float nd = std::abs(dot(ld, poly.normal));
     if (nd == 0.0f) {
         lv = {};
     } else if (1e-6f <= c2) {
         // Slide the motion into the face's plane along the edge.
-        const float k = -((lv.y * c.y + lv.z * c.z + c.x * lv.x) / c2);
+        const float k = -(((c.x * lv.x + lv.z * c.z) + lv.y * c.y) / c2);
         const Vec3 t{k * c.x + lv.x, c.y * k + lv.y, k * c.z + lv.z};
         const float stretch = 1.0f / nd - 1.0f;
         lv = {t.x * stretch + lv.x, t.y * stretch + lv.y, t.z * stretch + lv.z};
@@ -413,11 +429,11 @@ bool getCollideEdgePoly(const Intersection& s, const Vec3& relVel, const Mat34& 
         Vec3 e{prev.x - cur.x, prev.y - cur.y, prev.z - cur.z};
         e = e * age::invMag(e);
         e = e.cross(poly.normal);
-        const float dist = e.y * (lp.y - cur.y) + e.z * (lp.z - cur.z) + (lp.x - cur.x) * e.x;
+        const float dist = ((lp.x - cur.x) * e.x + e.z * (lp.z - cur.z)) + e.y * (lp.y - cur.y);
         float beyond = dist - kPenetration;
         if (beyond < 0.0f)
             beyond = 0.0f;
-        const float approach = e.y * lv.y + e.z * lv.z + e.x * lv.x;
+        const float approach = (e.x * lv.x + e.z * lv.z) + e.y * lv.y;
         if (0.0f < approach && beyond < approach * best) {
             best = beyond / approach;
             bestEdge = k;
@@ -439,8 +455,14 @@ bool getCollideEdgePoly(const Intersection& s, const Vec3& relVel, const Mat34& 
         chosen = bestEdge;
     }
     const int prevSlot = (chosen > 0 ? chosen : n) - 1;
-    const Vec3 ea = xform(m, owner.vertex(poly.v[static_cast<std::size_t>(prevSlot)]));
-    const Vec3 eb = xform(m, owner.vertex(poly.v[static_cast<std::size_t>(chosen)]));
+    const Vec3& pa0 = owner.vertex(poly.v[static_cast<std::size_t>(prevSlot)]);
+    const Vec3& pb0 = owner.vertex(poly.v[static_cast<std::size_t>(chosen)]);
+    const Vec3 ea{((pa0.z * m.m2.x + pa0.y * m.m1.x) + pa0.x * m.m0.x) + m.m3.x,
+                  ((pa0.z * m.m2.y + pa0.y * m.m1.y) + pa0.x * m.m0.y) + m.m3.y,
+                  ((pa0.x * m.m0.z + pa0.z * m.m2.z) + pa0.y * m.m1.z) + m.m3.z};
+    const Vec3 eb{((pb0.z * m.m2.x + pb0.y * m.m1.x) + pb0.x * m.m0.x) + m.m3.x,
+                  ((pb0.y * m.m1.y + pb0.z * m.m2.y) + pb0.x * m.m0.y) + m.m3.y,
+                  ((pb0.x * m.m0.z + pb0.y * m.m1.z) + pb0.z * m.m2.z) + m.m3.z};
     const Vec3 de = eb - ea;
     const Vec3 di = s.b - s.a;
     Vec3 pa, pb;
@@ -449,8 +471,7 @@ bool getCollideEdgePoly(const Intersection& s, const Vec3& relVel, const Mat34& 
     if (ok == 0)
         return false;
     const float cosine = s.bound ? static_cast<const BoundPolygonal*>(s.bound)->edgeCosine(s.element) : 0.0f;
-    if (!(s.edgeNormal.x * normal.x + s.edgeNormal.y * normal.y + s.edgeNormal.z * normal.z <
-          -((cosine - 0.25881904f) - 0.01f)))
+    if (!(dot(s.edgeNormal, normal) < -((cosine - 0.25881904f) - 0.01f)))
         return false;
     position = {(pb.x + pa.x) * 0.5f, (pa.y + pb.y) * 0.5f, (pa.z + pb.z) * 0.5f};
     faceEdge = poly.edges[static_cast<std::size_t>(prevSlot)];
@@ -500,8 +521,10 @@ void doEndPtSearch(const Mat34* m1, const Mat34* last1, const Mat34* m2, const M
         float time;
         if (!(f & Intersection::kVertex)) {
             if (0.0f <= s.depth - kPenetration) {
-                const float approach = v.y * s.normal.y + v.z * s.normal.z + v.x * s.normal.x;
-                time = 0.0f <= approach ? (s.depth - kPenetration) / approach : FLT_MAX;
+                const float approach = (v.x * s.normal.x + v.z * s.normal.z) + v.y * s.normal.y;
+                // Only a closing speed divides (Ghidra prints this test as
+                // "0 <= approach"; the code tests "0 < approach").
+                time = 0.0f < approach ? (s.depth - kPenetration) / approach : FLT_MAX;
             } else {
                 time = 0.0f;
             }
@@ -611,11 +634,15 @@ void doEndPtSearch(const Mat34* m1, const Mat34* last1, const Mat34* m2, const M
 
 // phBoundPolygonal::RetryVertPolyCollide: a vertex left over by the edge
 // passes gets an impact against its face unless it is deep inside a long
-// edge it did not reach recently.
-void retryVertPolyCollide(Collider* ca, Collider* cb, const Intersection& s, Impact*& imp, int& left, bool isA) {
+// edge it did not reach recently. `vertexOwner` is the collider of the bound
+// whose vertex it is, `faceOwner` that of the face; an A vertex makes a
+// VertexA impact (A = vertexOwner), a B vertex a VertexB one
+// (A = faceOwner).
+void retryVertPolyCollide(Collider* vertexOwner, Collider* faceOwner, const Intersection& s, Impact*& imp,
+                          int& left, bool isA) {
     if (!(s.flags & Intersection::kSoon) && s.t <= 0.75f) {
         const Vec3 e = s.b - s.a;
-        if ((e.x * e.x + e.y * e.y + e.z * e.z) * 0.04f <= s.depth * s.depth)
+        if (((e.z * e.z + e.y * e.y) + e.x * e.x) * 0.04f <= s.depth * s.depth)
             return;
     }
     if (left <= 0)
@@ -626,15 +653,15 @@ void retryVertPolyCollide(Collider* ca, Collider* cb, const Intersection& s, Imp
         out.normal = s.normal;
         out.elementA = s.vertexB;
         out.elementB = s.polygon;
-        out.colliderA = ca;
-        out.colliderB = cb;
+        out.colliderA = vertexOwner;
+        out.colliderB = faceOwner;
     } else {
         out.kind = Impact::VertexB;
         out.normal = -s.normal;
         out.elementA = s.polygon;
         out.elementB = s.vertexB;
-        out.colliderA = cb;
-        out.colliderB = ca;
+        out.colliderA = faceOwner;
+        out.colliderB = vertexOwner;
     }
     out.componentA = -1;
     out.componentB = -1;
@@ -749,15 +776,29 @@ int addInteriorEdges(const BoundPolygonal& self, Intersection* selfList, int sel
 // --- Shared with the level (Level.cpp) ---------------------------------------------------
 
 void toWorldCoords(Intersection* isects, int count, const Mat34& m) {
+    // The per-intersection world transform FindImpactsPolyToPoly applies
+    // (points, the polygon normal, or an interior edge's normal), each sum
+    // in the original's order.
+    auto point = [&m](const Vec3& p) {
+        return Vec3{((p.x * m.m0.x + m.m2.x * p.z) + m.m1.x * p.y) + m.m3.x,
+                    ((m.m2.y * p.z + m.m1.y * p.y) + m.m0.y * p.x) + m.m3.y,
+                    ((m.m1.z * p.y + m.m2.z * p.z) + m.m0.z * p.x) + m.m3.z};
+    };
     for (int i = 0; i < count; ++i) {
         Intersection& s = isects[i];
-        s.a = xform(m, s.a);
-        s.b = xform(m, s.b);
+        s.a = point(s.a);
+        s.b = point(s.b);
         if (!(s.flags & Intersection::kInterior)) {
-            s.position = xform(m, s.position);
-            s.normal = xformDir(m, s.normal);
+            s.position = point(s.position);
+            const Vec3 n = s.normal;
+            s.normal = {(m.m2.x * n.z + m.m0.x * n.x) + m.m1.x * n.y,
+                        (m.m2.y * n.z + m.m1.y * n.y) + m.m0.y * n.x,
+                        (m.m1.z * n.y + m.m0.z * n.x) + m.m2.z * n.z};
         } else {
-            s.edgeNormal = xformDir(m, s.edgeNormal);
+            const Vec3 n = s.edgeNormal;
+            s.edgeNormal = {(m.m0.x * n.x + m.m2.x * n.z) + m.m1.x * n.y,
+                            (m.m2.y * n.z + m.m1.y * n.y) + m.m0.y * n.x,
+                            (m.m1.z * n.y + m.m2.z * n.z) + m.m0.z * n.x};
         }
     }
 }
@@ -776,9 +817,9 @@ int testBoundPolyPoly(const BoundPolygonal& a, const BoundPolygonal& b, const Ma
         countA = 0;
         return 0;
     }
-    const float thresholdA = minB - (relPos.x * ma.m3.x + ma.m3.z * relPos.z + ma.m3.y * relPos.y);
+    const float thresholdA = minB - ((ma.m3.y * relPos.y + ma.m3.z * relPos.z) + relPos.x * ma.m3.x);
     testBoundPolyPolyUseDotSmall(a, b, cb, ma, lastA, mb, lastB, isectsA, countA, thresholdA, localA, sweep);
-    const float thresholdB = -maxA + relPos.x * mb.m3.x + mb.m3.z * relPos.z + mb.m3.y * relPos.y;
+    const float thresholdB = ((mb.m3.y * relPos.y + mb.m3.z * relPos.z) + relPos.x * mb.m3.x) + -maxA;
     testBoundPolyPolyUseDotSmall(b, a, ca, mb, lastB, ma, lastA, isectsB, countB, thresholdB, localB, sweep);
     return countA + countB;
 }
@@ -843,15 +884,19 @@ int testBoundPolyPolyUseDot(const BoundPolygonal& self, const BoundPolygonal& ot
     for (int i = self.numVertices() - 1; i >= 0; --i) {
         const auto k = static_cast<std::size_t>(i);
         const Vec3& p = self.vertices[k];
-        const bool below = p.x * dir->x + p.z * dir->z + p.y * dir->y < threshold;
+        const bool below = (p.y * dir->y + p.z * dir->z) + p.x * dir->x < threshold;
         s.flags[k] = below ? 1 : 0;
         if (!below)
-            s.verts[k] = xform(cur, p);
+            s.verts[k] = {((cur.m2.x * p.z + cur.m1.x * p.y) + cur.m0.x * p.x) + cur.m3.x,
+                          ((cur.m1.y * p.y + cur.m2.y * p.z) + cur.m0.y * p.x) + cur.m3.y,
+                          ((cur.m1.z * p.y + cur.m0.z * p.x) + cur.m2.z * p.z) + cur.m3.z};
     }
     int remaining = max;
     for (;;) {
+        // phBound::TestSegment refuses a probe with fewer than 1 slot left
+        // and an edge with fewer than 2; stop here instead.
         if (remaining <= 0)
-            break; // OpenMM2 guard: the original keeps writing past a full table
+            break;
         // phBoundPolygonal::GetNextSegment (the UseDot variant): vertex
         // sweeps first, then edges with at least one vertex in reach.
         Segment seg;
@@ -861,7 +906,10 @@ int testBoundPolyPolyUseDot(const BoundPolygonal& self, const BoundPolygonal& ot
             ++vertexIndex;
         if (vertexIndex < self.numVertices()) {
             const auto k = static_cast<std::size_t>(vertexIndex);
-            seg.a = xform(prev, self.vertices[k]);
+            const Vec3& p = self.vertices[k];
+            seg.a = {((prev.m1.x * p.y + prev.m2.x * p.z) + p.x * prev.m0.x) + prev.m3.x,
+                     ((prev.m1.y * p.y + prev.m0.y * p.x) + prev.m2.y * p.z) + prev.m3.y,
+                     ((prev.m1.z * p.y + prev.m0.z * p.x) + prev.m2.z * p.z) + prev.m3.z};
             seg.b = s.verts[k];
             backupAByPenetration(seg, kPenetration);
             seg.kind = Segment::Probe;
@@ -877,11 +925,21 @@ int testBoundPolyPolyUseDot(const BoundPolygonal& self, const BoundPolygonal& ot
             if (edgeIndex >= self.numEdges())
                 break;
             const auto& ed = self.edges[static_cast<std::size_t>(edgeIndex)];
-            for (const auto vi : ed) {
-                if (s.flags[vi] == 1) {
-                    s.verts[vi] = xform(cur, self.vertices[vi]);
-                    s.flags[vi] = 2;
-                }
+            // A vertex below the threshold is placed when an edge needs it
+            // (each end with its own summation order).
+            if (s.flags[ed[0]] == 1) {
+                const Vec3& p = self.vertices[ed[0]];
+                s.verts[ed[0]] = {((cur.m2.x * p.z + cur.m1.x * p.y) + p.x * cur.m0.x) + cur.m3.x,
+                                  ((cur.m0.y * p.x + cur.m2.y * p.z) + cur.m1.y * p.y) + cur.m3.y,
+                                  ((cur.m0.z * p.x + cur.m2.z * p.z) + cur.m1.z * p.y) + cur.m3.z};
+                s.flags[ed[0]] = 2;
+            }
+            if (s.flags[ed[1]] == 1) {
+                const Vec3& p = self.vertices[ed[1]];
+                s.verts[ed[1]] = {((cur.m2.x * p.z + cur.m1.x * p.y) + p.x * cur.m0.x) + cur.m3.x,
+                                  ((cur.m2.y * p.z + cur.m1.y * p.y) + cur.m0.y * p.x) + cur.m3.y,
+                                  ((cur.m2.z * p.z + cur.m1.z * p.y) + cur.m0.z * p.x) + cur.m3.z};
+                s.flags[ed[1]] = 2;
             }
             seg.a = s.verts[ed[0]];
             seg.b = s.verts[ed[1]];
@@ -911,7 +969,7 @@ int testBoundPolyPolyUseDot(const BoundPolygonal& self, const BoundPolygonal& ot
                 const auto& ed = self.edges[static_cast<std::size_t>(element)];
                 is.vertexA = ed[0];
                 is.vertexB = ed[1];
-                is.edgeNormal = xformDir(m, self.edgeNormal(element));
+                is.edgeNormal = rotateZyx(m, self.edgeNormal(element));
             }
         }
         out += n;
@@ -1064,7 +1122,7 @@ int findImpacts(const BoundPolygonal& /*a*/, const Bound& b, const Mat34* ma, co
                                     const Vec3 dispB = geom::getDisp(*mb, *lastB, pb);
                                     const Vec3 rv{(dispA.x - dispB.x) * invDt, (dispA.y - dispB.y) * invDt,
                                                   (dispA.z - dispB.z) * invDt};
-                                    const float approach = rv.x * n.x + n.y * rv.y + n.z * rv.z;
+                                    const float approach = (n.z * rv.z + n.y * rv.y) + rv.x * n.x;
                                     if (0.0f < approach)
                                         time = 0.0f <= dist - kPenetration ? (dist - kPenetration) / approach : 0.0f;
                                     else
@@ -1233,7 +1291,7 @@ int findImpacts(const BoundPolygonal& /*a*/, const Bound& b, const Mat34* ma, co
     for (int i = 0; i < countB; ++i) {
         const std::uint16_t f = isectsB[i].flags;
         if ((f & Intersection::kNeedsRetry) && !(f & Intersection::kSkip) && !(f & Intersection::kUsed))
-            retryVertPolyCollide(ca, cb, isectsB[i], imp, left, false);
+            retryVertPolyCollide(cb, ca, isectsB[i], imp, left, false);
     }
     const int used = maxImpacts - left;
     // Terrain bounds give every impact the material of the first pierced
@@ -1260,9 +1318,9 @@ int findImpactsSphereToPoly(const BoundPolygonal& poly, const BoundSphere& spher
     Vec3 center{dot(polyM.m0, relPos), dot(polyM.m1, relPos), dot(polyM.m2, relPos)};
     if (sphere.isOffset) {
         const Vec3& c = sphere.centroid;
-        const Vec3 off{sphereM.m0.x * c.x + sphereM.m2.x * c.z + sphereM.m1.x * c.y,
-                       sphereM.m0.y * c.x + sphereM.m2.y * c.z + sphereM.m1.y * c.y,
-                       sphereM.m0.z * c.x + sphereM.m2.z * c.z + sphereM.m1.z * c.y};
+        const Vec3 off{(sphereM.m1.x * c.y + sphereM.m2.x * c.z) + sphereM.m0.x * c.x,
+                       (sphereM.m1.y * c.y + sphereM.m2.y * c.z) + sphereM.m0.y * c.x,
+                       (sphereM.m1.z * c.y + sphereM.m2.z * c.z) + sphereM.m0.z * c.x};
         const float ox = dot(polyM.m0, off);
         const float oy = dot(polyM.m1, off);
         const float oz = dot(polyM.m2, off);
@@ -1290,7 +1348,7 @@ int findImpactsSphereToPoly(const BoundPolygonal& poly, const BoundSphere& spher
         } else if (result == 2) {
             element = p;
         } else {
-            if (!(normal.x * back.x + normal.y * back.y + normal.z * back.z < 0.0f))
+            if (!(dot(normal, back) < 0.0f))
                 continue;
             Segment seg;
             seg.kind = Segment::Probe;
@@ -1303,8 +1361,7 @@ int findImpactsSphereToPoly(const BoundPolygonal& poly, const BoundSphere& spher
             contactNormal = normal;
             position = {center.x - r * normal.x, center.y - normal.y * r, center.z - r * normal.z};
             result = 2;
-            depth = (verts[0].x - position.x) * normal.x + (verts[0].y - position.y) * normal.y +
-                    (verts[0].z - position.z) * normal.z;
+            depth = dot(verts[0] - position, normal);
             const float h = depth * 0.5f;
             position = {h * normal.x + position.x, normal.y * h + position.y, normal.z * h + position.z};
             element = p;
@@ -1381,7 +1438,10 @@ int collidePolyToLevel(const LevelBound& level, const BoundPolygonal& bound, Col
         for (int i = 0; i < bound.numVertices(); ++i) {
             DispSegment d;
             d.vertex = static_cast<std::uint16_t>(i);
-            d.previous = xform(last, bound.vertex(i));
+            const Vec3& v = bound.vertex(i);
+            d.previous = {((last.m1.x * v.y + last.m2.x * v.z) + last.m0.x * v.x) + last.m3.x,
+                          ((last.m1.y * v.y + last.m2.y * v.z) + last.m0.y * v.x) + last.m3.y,
+                          ((last.m1.z * v.y + last.m2.z * v.z) + last.m0.z * v.x) + last.m3.z};
             s.sweeps.push_back(d);
         }
     }
@@ -1396,7 +1456,7 @@ int collidePolyToLevel(const LevelBound& level, const BoundPolygonal& bound, Col
         const Polygon& poly = level.polygons[static_cast<std::size_t>(p)];
         const Vec3& p0 = level.vertices[poly.v[0]];
         const Vec3& n = poly.normal;
-        const bool near = (m.m3.x - p0.x) * n.x + (m.m3.y - p0.y) * n.y + (m.m3.z - p0.z) * n.z <= bound.radius;
+        const bool near = dot(m.m3 - p0, n) <= bound.radius;
         collidePolygon(poly, p, level.vertices, penetration, bound, s, false, near);
     }
     count = writeIntersections(bound, level, level.polygons, collider, m, s, out, max);
