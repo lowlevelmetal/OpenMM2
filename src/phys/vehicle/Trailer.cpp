@@ -16,8 +16,6 @@ namespace {
 
 // The gravity vehTrailer::Init uses for the static loads (as vehWheel's).
 constexpr float kLoadGravity = -19.6f;
-// phInertialCS's default per-axis angular velocity limit (vehTrailer keeps it).
-constexpr float kTrailerMaxAngVelocity = 5.0f;
 
 } // namespace
 
@@ -36,14 +34,11 @@ void Trailer::init(const TrailerParams& p, const TrailerJointParams& j, const Tr
     body.controller = this;
     InertialCS& ics = body.ics;
     ics.setMass(p.inertiaBox.x, p.inertiaBox.y, p.inertiaBox.z, p.mass);
-    // A dgPhysEntity falls at 19.6 m/s^2.
+    // A dgPhysEntity falls at 19.6 m/s^2. vehTrailer keeps phInertialCS's
+    // default spin limit (5 rad/s per body axis) and sets no impact
+    // parameters: its bound's materials decide.
     ics.gravity = {0.0f, kLoadGravity, 0.0f};
-    ics.setMaxAngVelocity(kTrailerMaxAngVelocity);
-    ics.limitAngVelocity = true;
     ics.state = InertialCS::Off;
-    // vehTrailer sets no impact parameters: its bound's materials decide.
-    ics.elasticity = tractor.params.boundElasticity;
-    ics.friction = tractor.params.boundFriction;
     // Init places the trailer from the tractor's model matrix; reset() (as
     // vehCar::Reset does) places it from the tractor's InertialCS.
     const Mat34 model = tractor.modelMatrix();
