@@ -358,12 +358,10 @@ void CityRenderer::resolve(InstanceDraw& inst) {
 void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth) {
     if (const GpuMesh* mesh = findFilledLod(model, "", lod))
         drawMesh(*mesh, model.materials(0), Mat44::fromMat34(transform));
-    if (depth >= 3)
-        return;
-    for (const auto& xref : model.xrefs) {
-        if (const GpuModel* child = m_models.get(xref.name))
-            drawModel(*child, xref.transform * transform, lod, depth + 1);
-    }
+    // A model's PKG xrefs are not drawn with it: lvlLevel::LoadInstances
+    // places them as unhit bangers (BangerSet draws them; one without banger
+    // data is not placed at all).
+    static_cast<void>(depth);
 }
 
 void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera,

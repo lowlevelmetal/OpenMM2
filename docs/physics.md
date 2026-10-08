@@ -803,8 +803,10 @@ as speeds at MaxRPM and capped every car at High.)
   models dgPhysManager's mover table (`Body::declare(type, flags)`: at most
   32 movers a frame, the rooms around type-3 and type-4 movers active,
   type-1 movers outside them left out and detached, the flags' update and
-  collision bits), but the owners do not declare their levels yet: every
-  body is a type-2 mover with all flags, so props are never culled, the
+  collision bits). The props declare their actives by CollisionType
+  (bangers.md), so knocked-over props are culled as in MM2; the other
+  owners do not declare theirs yet: their bodies are type-2 movers with all
+  flags, so the
   rooms around opponents within 200 m of a player (type 3 in MM2) do not
   keep props alive, and police beyond 250 m (not declared in MM2) are
   still simulated. (MM2's opponents beyond 200 m and police between 200 and

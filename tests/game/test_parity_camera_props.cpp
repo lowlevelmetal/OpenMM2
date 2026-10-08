@@ -273,3 +273,52 @@ TEST(ParityCameraProps, RetailMirrorFiles) {
     EXPECT_FLOAT_EQ(mirror.params().nearClip, 5.8f);
     EXPECT_NEAR(mirror.localMatrix().m3.y, bus->position.y, 1e-6f);
 }
+
+// mmViewMgr::SetViewSetting(2): an XCam (camPolarCS about the car) and back;
+// the dashboard is remembered; the cheat cycles the two XCams.
+TEST(ParityCameraProps, XCamsToggleAndRememberTheDashboard) {
+    const CameraTarget t = carAt({}, 0.0f, true);
+    {
+        PlayerCameras cams;
+        cams.reset(t);
+        cams.update(kStep, t, {}, {});
+        cams.toggleXCam();
+        EXPECT_EQ(cams.view(), PlayerCameras::View::XCam);
+        EXPECT_EQ(cams.viewManager().transitionTo(), &cams.xCam(0));
+        cams.toggleDashboard(); // not from an XCam
+        EXPECT_FALSE(cams.dashboard());
+        for (int i = 0; i < 30; ++i)
+            cams.update(kStep, t, {}, {});
+        ASSERT_EQ(cams.viewManager().current(), &cams.xCam(0));
+        // The default camPolarCS: 10 m from the car, 2.5 m up.
+        const Vec3 rel = cams.xCam(0).matrix().m3 - Vec3{0.0f, 2.5f, 0.0f};
+        EXPECT_NEAR(rel.mag(), 10.0f, 1e-3f);
+        cams.toggleXCam(); // without the cheat: back to the cycled camera
+        EXPECT_EQ(cams.view(), PlayerCameras::View::Near);
+        EXPECT_EQ(cams.viewManager().transitionTo(), &cams.nearCam());
+    }
+    {
+        PlayerCameras cams;
+        cams.reset(t);
+        cams.update(kStep, t, {}, {});
+        cams.toggleDashboard();
+        ASSERT_TRUE(cams.dashboard());
+        cams.toggleXCam();
+        EXPECT_FALSE(cams.dashboard());
+        cams.toggleXCam(); // back to the dashboard
+        EXPECT_TRUE(cams.dashboard());
+        EXPECT_EQ(cams.viewManager().current(), &cams.dashCam());
+    }
+    {
+        PlayerCameras cams;
+        cams.setXCamCheat(true);
+        cams.reset(t);
+        cams.update(kStep, t, {}, {});
+        cams.toggleXCam();
+        cams.toggleXCam();
+        EXPECT_EQ(cams.viewManager().target(), &cams.xCam(1));
+        EXPECT_EQ(cams.xCam(1).params().azimuthLock, 1);
+        cams.toggleXCam();
+        EXPECT_EQ(cams.viewManager().target(), &cams.xCam(0));
+    }
+}

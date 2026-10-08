@@ -412,6 +412,10 @@ void World::beginFrame() {
     // dgPhysManager::Update, before the samples: a type-1 mover whose room
     // is not active takes no part this frame and is detached
     // (lvlInstance::Detach); then the "hit by the player" marks are cleared.
+    // (An owner's Detach may remove its body from the world: the removal
+    // waits until the loop is done.)
+    const bool stepping = m_stepping;
+    m_stepping = true;
     for (Mover& m : m_movers) {
         if (!m.active || m.body->moverType != 1 || !m_level)
             continue;
@@ -420,6 +424,9 @@ void World::beginFrame() {
         m.active = false;
         m.body->detach();
     }
+    m_stepping = stepping;
+    if (!stepping)
+        std::erase_if(m_movers, [](const Mover& m) { return m.removed; });
     for (Mover& m : m_movers)
         if (running(m))
             m.body->hitByPlayer = false;

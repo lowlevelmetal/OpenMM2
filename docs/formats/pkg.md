@@ -131,6 +131,8 @@ u32 count
 xref[count]: Matrix34 (12 floats: rows m0, m1, m2, position), char name[32]
 ```
 
-Read by `lvlInstance::EndGeom` as `count` × 80 raw bytes. Used by 33 city
-packages to place props (e.g. `sp_light_red_f`, trees). Bytes after the
+Read by `lvlInstance::EndGeom` as `count` × 80 raw bytes (the chunk is
+named "xrefs" with its NUL, six bytes). Used by 33 city packages to place
+props (e.g. `sp_light_red_f`, trees): `lvlLevel::LoadInstances` places
+each one with banger data as an unhit banger (see docs/bangers.md). Bytes after the
 name's NUL are uninitialised.

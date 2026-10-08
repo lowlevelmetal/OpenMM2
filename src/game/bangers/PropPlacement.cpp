@@ -6,10 +6,12 @@
 
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "game/CamMath.h"
 #include "game/fx/Random.h"
 
 #include <algorithm>
 #include <charconv>
+#include <cstring>
 #include <cmath>
 #include <format>
 #include <map>
@@ -575,6 +577,89 @@ std::string racePropsName(GameMode mode, int raceIndex) {
     return {};
 }
 
+std::vector<asset::PkgXref> pkgXrefs(const vfs::Vfs& vfs, std::string_view model) {
+    // modPackage::OpenFile("xrefs"): the FILE chunk named "xrefs" (six
+    // bytes with the NUL), in PKG3 after its size word; a count, then 80-byte
+    // entries: m0, m1, m2, m3 and a 32-character name.
+    std::vector<asset::PkgXref> out;
+    const auto bytes = vfs.readAll(std::format("geometry/{}.pkg", str::lower(model)));
+    if (!bytes || bytes->size() < 4)
+        return out;
+    const char* data = reinterpret_cast<const char*>(bytes->data());
+    const std::string_view file(data, bytes->size());
+    const bool v3 = file.starts_with("PKG3");
+    if (!v3 && !file.starts_with("PKG2"))
+        return out;
+    constexpr std::string_view kChunk{"FILE\x06xrefs\0", 11};
+    std::size_t pos = 4;
+    for (;;) {
+        pos = file.find(kChunk, pos);
+        if (pos == std::string_view::npos)
+            return out;
+        pos += kChunk.size();
+        if (v3)
+            pos += 4;
+        if (pos + 4 > file.size())
+            return out;
+        std::uint32_t count = 0;
+        std::memcpy(&count, data + pos, 4);
+        pos += 4;
+        if (static_cast<std::size_t>(count) * 80 > file.size() - pos)
+            continue; // not the chunk after all
+        out.resize(count);
+        for (auto& x : out) {
+            float f[12];
+            std::memcpy(f, data + pos, sizeof f);
+            x.transform.m0 = {f[0], f[1], f[2]};
+            x.transform.m1 = {f[3], f[4], f[5]};
+            x.transform.m2 = {f[6], f[7], f[8]};
+            x.transform.m3 = {f[9], f[10], f[11]};
+            const char* name = data + pos + 48;
+            x.name = std::string(name, strnlen(name, 32));
+            pos += 80;
+        }
+        return out;
+    }
+}
+
+std::vector<PlacedProp> placeXrefs(const city::Instance& record, const std::vector<asset::PkgXref>& xrefs,
+                                   const BangerDataLibrary& data) {
+    std::vector<PlacedProp> out;
+    auto zero = [](const Vec3& v) { return v.x == 0.0f && v.y == 0.0f && v.z == 0.0f; };
+    auto unit = [](Vec3& v) {
+        const float m2 = (v.x * v.x + v.y * v.y) + v.z * v.z;
+        if (m2 < 0.97f || m2 > 1.03f) {
+            const float s = m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2);
+            v = {s * v.x, s * v.y, s * v.z};
+        }
+    };
+    for (const auto& x : xrefs) {
+        Mat34 m = x.transform;
+        cam::dot(m, record.transform); // Matrix34::Dot(xref, record)
+        if (zero(m.m0) || zero(m.m1) || zero(m.m2)) {
+            log::warn("bangers: {}: bad x-ref matrix", record.name);
+            continue;
+        }
+        if ((m.m0.y * m.m1.y + m.m0.z * m.m1.z) + m.m1.x * m.m0.x > 0.01f ||
+            (m.m2.x * m.m1.x + m.m2.y * m.m1.y) + m.m2.z * m.m1.z > 0.01f ||
+            (m.m0.y * m.m2.y + m.m0.z * m.m2.z) + m.m2.x * m.m0.x > 0.01f) {
+            log::warn("bangers: {}: really bad x-ref matrix", record.name);
+            continue;
+        }
+        unit(m.m0);
+        unit(m.m1);
+        unit(m.m2);
+        if (!data.has(x.name)) {
+            log::debug("bangers: x-ref {} of {} has no banger data", x.name, record.name);
+            continue;
+        }
+        PlacedProp p{str::lower(x.name), m, 0, PlacedProp::Source::Instance, true, record.flags & 0xFF};
+        p.roomHint = record.room;
+        out.push_back(std::move(p));
+    }
+    return out;
+}
+
 std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vfs& vfs,
                                        const BangerDataLibrary& data, std::string_view raceProps) {
     std::vector<PlacedProp> out;
@@ -605,11 +690,25 @@ std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vf
     // take the record's variant byte. MM2 picks them by the record's banger
     // flag (0x200); OpenMM2 by their banger data, which retail data marks
     // exactly alike (and CityLevel and CityRenderer skip by name too).
+    // After each record come the bangers its geometry's xrefs place (the
+    // "xrefs" chunk of its PKG; the name after the last backslash, CleanName).
+    std::map<std::string, std::vector<asset::PkgXref>, std::less<>> xrefCache;
     for (const auto* list : {&city.instances, &city.aiInstances})
-        for (const auto& inst : *list)
+        for (const auto& inst : *list) {
             if (data.has(inst.name))
                 out.push_back({str::lower(inst.name), inst.transform, inst.room, PlacedProp::Source::Instance,
                                !inst.rotY, inst.flags & 0xFF});
+            std::string geom = str::lower(inst.name);
+            if (const auto slash = geom.rfind('\\'); slash != std::string::npos)
+                geom = geom.substr(slash + 1);
+            auto it = xrefCache.find(geom);
+            if (it == xrefCache.end())
+                it = xrefCache.emplace(geom, pkgXrefs(vfs, geom)).first;
+            if (!it->second.empty()) {
+                auto props = placeXrefs(inst, it->second, data);
+                out.insert(out.end(), props.begin(), props.end());
+            }
+        }
     // cityLevel::LoadPathSet("city/<map>", "props").
     addPathSet(dir + "props.pathset", PlacedProp::Source::PathSet);
     // The race's props: cityLevel::LoadPathSet("race/<map>", <race name>).
