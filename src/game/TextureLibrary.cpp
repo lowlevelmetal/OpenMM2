@@ -20,7 +20,8 @@ namespace {
 constexpr std::uint32_t kTexEnvClampU = 0x1;
 constexpr std::uint32_t kTexEnvClampV = 0x10000;
 
-// FUN_00442fb0 of the texture variant handler: every mip level's colour
+// The texture variant handler's darkening helper (InstallTextureVariantHandler's
+// image hook): every mip level's colour
 // channels halved.
 void darkenImage(asset::Image& image) {
     for (auto& level : image.levels)
