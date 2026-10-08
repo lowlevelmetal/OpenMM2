@@ -333,6 +333,10 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/session/Session.cpp` | 1321 | P | session |
 | `src/game/session/Session.h` | 269 | P | session |
 | `src/game/session/Types.h` | 115 | P | session |
+| `src/game/world/Gizmos.cpp` | 885 | P | mm2-world-objects |
+| `src/game/world/Gizmos.h` | 289 | P | mm2-world-objects |
+| `src/game/world/PathSpline.cpp` | 146 | P | mm2-world-objects |
+| `src/game/world/PathSpline.h` | 72 | P | mm2-world-objects |
 | `src/net/BitStream.cpp` | 243 | O | - |
 | `src/net/BitStream.h` | 200 | O | - |
 | `src/net/ClockSync.cpp` | 21 | O | - |

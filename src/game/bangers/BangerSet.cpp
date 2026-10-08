@@ -271,6 +271,15 @@ const phys::Body* BangerSet::body(std::size_t i) const {
 
 const phys::Bound* BangerSet::bound(const BangerData& data) const { return boundsOf(data).bound.get(); }
 
+const phys::Bound* BangerSet::boundOf(const BangerData& data, int which) const {
+    const DataBounds& b = boundsOf(data);
+    if (which == 1 && b.box)
+        return b.box.get();
+    return b.bound.get();
+}
+
+float BangerSet::boundRadius(const BangerData& data) const { return boundsOf(data).radius; }
+
 int BangerSet::hitCount() const {
     return static_cast<int>(std::ranges::count_if(m_instances, [](const Instance& i) { return i.state == State::Hit; }));
 }

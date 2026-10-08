@@ -42,6 +42,7 @@
 #include "game/CityLevel.h"
 #include "game/PlayerVehicle.h"
 #include "game/VehicleRenderer.h"
+#include "game/world/Gizmos.h"
 #include "phys/World.h"
 #include "render/Projection.h"
 #include "ui/Text.h"
@@ -108,6 +109,9 @@ public:
             m_cityLevel->removeSource(m_trafficBodies.get());
         if (m_cityLevel && m_bangers)
             m_cityLevel->removeSource(m_bangers.get());
+        if (m_cityLevel && m_gizmos)
+            m_cityLevel->removeSource(m_gizmos.get());
+        m_gizmos.reset(); // its sounds hold slots of m_audioSlots
         m_carAudio.stop();
         for (auto& o : m_opponents)
             if (o.audio)
@@ -183,6 +187,11 @@ public:
         updateAiDrivers(static_cast<float>(dt));
         if (m_ai)
             m_ai->updateLights(); // the light sets last (aiMap::Update)
+        // The gizmo managers, nodes of mmGame (bridges, trains, ferries,
+        // sailboats); the player's car is the bridges' proximity trigger.
+        if (m_gizmos)
+            m_gizmos->update(static_cast<float>(dt), m_player ? std::optional<Vec3>(m_player->sim().body.ics.matrix.m3)
+                                                              : std::nullopt);
         updateRemoteCars(ctx);
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
@@ -354,6 +363,8 @@ public:
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera, {m_detail.objects, night});
+        if (m_gizmos)
+            m_gizmos->draw(dev, *m_models, *m_textures, frustum, camera, m_detail.objects);
         const bool lights = carLights();
         if (m_vehicle && playerBody) {
             m_pose.headlights = lights;
@@ -1247,6 +1258,8 @@ private:
                 }
                 for (auto& c : m_cops)
                     c.driver->reset();
+                if (m_gizmos)
+                    m_gizmos->reset(); // the gizmo managers are nodes of mmGame
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -1977,6 +1990,14 @@ private:
             m_bangers->add(game::bangers::placeCityProps(
                 *m_city, ctx.game->vfs, *m_bangerData,
                 game::bangers::racePropsName(m_result.config.mode, m_result.config.raceIndex)));
+            // mmGame::InitGizmos: sailboats, drawbridges, tube trains,
+            // ferries, and the parked cars (props) along the streets.
+            m_gizmos = game::world::initGizmos(ctx.game->vfs, *m_city, m_result.config, multiplayer(ctx), *m_bangers,
+                                               *m_bangerData, m_cityLevel.get(), m_gizmoRand);
+            if (m_cityLevel)
+                m_cityLevel->addSource(m_gizmos.get());
+            if (m_bank && ctx.mixer)
+                m_gizmos->loadAudio(ctx.game->vfs, *m_bank, *ctx.mixer, &m_audioSlots);
             // The props are instances of the level's rooms.
             if (m_cityLevel)
                 m_cityLevel->addSource(m_bangers.get());
@@ -2077,9 +2098,13 @@ private:
                 eject(b, sim.speed() * 1.3f);
     }
 
-    // vehCar::UpdateTrack lays no tracks in rooms flagged by gizBridge (the
-    // opening bridges, not ported): everywhere else they are allowed.
-    game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim&) const { return {}; }
+    // vehCar::UpdateTrack lays no tracks in the rooms gizBridge::Init flags
+    // (level room flag 0x10: at the opening bridges).
+    game::fx::VehicleFxContext vehicleFxContext(const phys::CarSim& sim) const {
+        game::fx::VehicleFxContext c;
+        c.tracksAllowed = (levelRoomFlagsAt(sim.body.ics.matrix.m3) & city::LevelRoomFlag::Bridge) == 0;
+        return c;
+    }
 
     void updateEffects(float dt) {
         // vehCarDamage::Update paints the first impact since the last frame
@@ -2252,6 +2277,8 @@ private:
         if (m_announcerOk)
             m_announcer.update(dt); // AudSpeech::Update
         m_ambience.update(m_camera.transform, dt, m_tunnel);
+        if (m_gizmos)
+            m_gizmos->updateAudio(m_camera.transform, dt, m_tunnel);
         // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
         // hood camera (car view 1) and the dashboard, off for the others.
         const auto view = m_cams.view();
@@ -2980,6 +3007,10 @@ private:
     game::bangers::RoadDecals m_roadDecals;
     std::optional<game::fx::SparkLut> m_sparkColors;
     game::fx::Rand m_ejectRand{0xB4EAu};
+    // The gizmos (src/game/world) and the irand / frand of their loading
+    // (MM2's global rand(); its seed here is OpenMM2's).
+    std::unique_ptr<game::world::Gizmos> m_gizmos;
+    game::fx::Rand m_gizmoRand{1u};
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;
     std::unique_ptr<game::fx::Weather> m_weather;
