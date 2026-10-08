@@ -28,6 +28,8 @@ public:
     float calcTorqueAtFullThrottle(float w) const;
     float calcTorqueAtZeroThrottle() const;
     float calcTorque(float throttle) const;
+    // vehEngine::CalcHPAtFullThrottle (vehTransmission::ComputeConstants'
+    // shift points).
     float calcHPAtFullThrottle(float w) const { return calcTorqueAtFullThrottle(w) * w; }
 
     // vehEngine::Update. `ics` receives the reaction torque that rocks the car

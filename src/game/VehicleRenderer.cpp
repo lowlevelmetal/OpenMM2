@@ -167,8 +167,14 @@ std::vector<VehicleRenderer::Breakable> VehicleRenderer::wreckParts(float mph, f
     m_wreckEjected = true;
     std::set<std::string> taken; // a pair may come up twice
     auto take = [&](const std::string& part) {
+        // vehCarModel::InitBreakable adds a part to the one-shot manager when
+        // its high LOD mesh exists (vpvw_dune has WHL2 / WHL3 pivots but no
+        // such meshes, so its back wheels never fly off). The pivot gives the
+        // part's place (vehBreakableMgr::Create's GetPivot; a mesh without a
+        // pivot would leave it undefined in MM2, and no retail model has one).
         const auto* pivot = m_model.pivot(str::lower(part));
-        if (!pivot || m_detached.contains(part) || !taken.insert(part).second)
+        if (!pivot || !m_gpu || !findFilledLod(*m_gpu, part, asset::Lod::High) || m_detached.contains(part) ||
+            !taken.insert(part).second)
             return;
         out.push_back({part, pivot->origin});
     };

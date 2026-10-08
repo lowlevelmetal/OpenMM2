@@ -19,7 +19,8 @@ class Splash {
 public:
     // vehSplash::Init: points from `min` to `max` in the body's frame.
     void init(const Vec3& min, const Vec3& max);
-    // vehSplash::Reset.
+    // vehSplash::Reset (vehSplash::vehSplash runs it once; the members start
+    // at its values).
     void reset();
     // vehSplash::Activate: the car is in a water room below its level.
     void activate(float waterLevel);
