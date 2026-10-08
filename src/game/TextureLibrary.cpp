@@ -137,6 +137,7 @@ std::optional<TextureLibrary::LoadedImage> TextureLibrary::readImage(const std::
     if (auto bytes = m_vfs.readAll(base + ".tga")) {
         if (auto img = asset::decodeTga(*bytes); img && !img->empty()) {
             out.image = flipped(std::move(*img));
+            out.topRowFirst = true;
             // 32-bit Targas become RGBA8888 images, others RGB888.
             out.alphaFormat = bytes->size() > 16 && std::to_integer<int>((*bytes)[16]) == 32;
             // gfxLoadTargaImage: a square image gets a full generated chain.
@@ -147,12 +148,14 @@ std::optional<TextureLibrary::LoadedImage> TextureLibrary::readImage(const std::
     if (auto bytes = m_vfs.readAll(base + ".bmp")) {
         if (auto img = asset::decodeImageFile(base + ".bmp", *bytes); img && !img->empty()) {
             out.image = flipped(std::move(*img));
+            out.topRowFirst = true;
             return out;
         }
     }
     if (auto bytes = m_vfs.readAll("jpg/" + name + ".jpg")) {
         if (auto img = asset::decodeImageFile("jpg/" + name + ".jpg", *bytes); img && !img->empty()) {
             out.image = flipped(std::move(*img));
+            out.topRowFirst = true;
             // gfxLoadJPEGImage: one generated level below the picture when
             // mipmaps are asked for.
             out.generatedLevels = mipmaps ? 1 : 0;
@@ -176,15 +179,50 @@ std::optional<WorldTexture> TextureLibrary::load(const std::string& name, bool d
     // texels (gfxImage::GenerateMipmaps): a full chain for a square Targa,
     // one level for a JPEG. The night darkening comes after, on every level
     // (gfxPrepareImage).
-    const std::uint32_t width = image.width(), height = image.height();
     if (loaded->generatedLevels > 0) {
+        const std::uint32_t width = image.width(), height = image.height();
         auto mips = render::buildMipChain(render::Image{width, height, image.levels[0].rgba});
         image.levels.resize(1);
         for (std::size_t i = 1; i < mips.size() && i <= loaded->generatedLevels; ++i)
             image.levels.push_back({mips[i].width, mips[i].height, std::move(mips[i].pixels)});
     }
+    // gfxDefaultPrepareImage under a size limit: drop the top level while a
+    // smaller one remains, else halve the picture (gfxImage::Halve keeps
+    // every other texel of every other row, counted from the top row of the
+    // loader's picture), until both sides fit.
+    if (const int limit = m_activeLimit; limit > 0) {
+        auto& lv = image.levels;
+        auto tooBig = [&] {
+            return static_cast<int>(lv.front().width) > limit || static_cast<int>(lv.front().height) > limit;
+        };
+        while (!lv.empty() && tooBig()) {
+            if (lv.size() > 1) {
+                lv.erase(lv.begin());
+                continue;
+            }
+            auto& top = lv.front();
+            const std::uint32_t w = top.width >> 1, h = top.height >> 1;
+            std::vector<std::uint8_t> half(std::size_t{w} * h * 4);
+            // Rows are stored bottom first; a top-first loader's even rows
+            // are the stored rows 2r + 1 (even height) or 2r + 2 (odd).
+            const std::uint32_t skew = loaded->topRowFirst ? top.height + 1 - 2 * h : 0;
+            for (std::uint32_t r = 0; r < h; ++r) {
+                const std::uint32_t src = 2 * r + skew;
+                for (std::uint32_t x = 0; x < w; ++x) {
+                    const std::size_t from = (std::size_t{src} * top.width + 2 * x) * 4;
+                    const std::size_t to = (std::size_t{r} * w + x) * 4;
+                    std::copy_n(top.rgba.begin() + static_cast<std::ptrdiff_t>(from), 4,
+                                half.begin() + static_cast<std::ptrdiff_t>(to));
+                }
+            }
+            top.width = w;
+            top.height = h;
+            top.rgba = std::move(half);
+        }
+    }
     if (darken)
         darkenImage(image);
+    const std::uint32_t width = image.width(), height = image.height();
     const std::size_t levels = mipmaps ? std::min<std::size_t>(image.levels.size(), render::mipCount(width, height)) : 1;
     std::vector<render::TextureData> data;
     for (std::size_t i = 0; i < levels; ++i)
@@ -227,6 +265,10 @@ const WorldTexture* TextureLibrary::get(std::string_view nameIn, bool mipmaps) {
     // texture itself when it exists; otherwise the frames "<name>-0001",
     // "<name>-0002", ... (at most 128) cycle at tune/<name>.movie's "rate"
     // (frames per second; 30 without the file).
+    if (m_sizeLimit > 0)
+        m_sizeLimits[name] = m_sizeLimit;
+    const auto limit = m_sizeLimits.find(name);
+    m_activeLimit = limit != m_sizeLimits.end() ? limit->second : 0;
     auto t = loadVariant(name, mipmaps);
     if (!t && mipmaps) {
         Animation anim;
@@ -247,13 +289,57 @@ const WorldTexture* TextureLibrary::get(std::string_view nameIn, bool mipmaps) {
             }
             anim.current = anim.frames.front();
             auto& stored = m_animations[name] = std::move(anim);
+            m_activeLimit = 0;
             return &stored.current;
         }
     }
+    m_activeLimit = 0;
     if (!t)
         log::debug("texture '{}' not found", name);
     auto& slot = m_textures[key] = t;
     return slot ? &*slot : nullptr;
+}
+
+const WorldTexture* TextureLibrary::cloudMap(std::string_view nameIn) {
+    const std::string name = str::lower(nameIn);
+    const std::string key = "#cloud#" + name;
+    if (auto it = m_textures.find(key); it != m_textures.end())
+        return it->second ? &*it->second : nullptr;
+    // gfxLoadImage (with the variant handler), then every texel black with
+    // its alpha inverted, and gfxTexture::Create without mipmaps.
+    std::optional<WorldTexture> t;
+    if (auto picture = image(name)) {
+        auto& level = picture->levels.front();
+        for (std::size_t i = 0; i + 3 < level.rgba.size(); i += 4) {
+            level.rgba[i] = level.rgba[i + 1] = level.rgba[i + 2] = 0;
+            level.rgba[i + 3] = static_cast<std::uint8_t>(~level.rgba[i + 3]);
+        }
+        const auto flags = readImage(name, false).transform([](const LoadedImage& l) { return l.flags; });
+        render::TextureDesc desc;
+        desc.width = level.width;
+        desc.height = level.height;
+        desc.mipLevels = 1;
+        desc.debugName = key;
+        const render::TextureData data{level.rgba.data(), 0};
+        WorldTexture w;
+        w.handle = m_device.createTexture(desc, std::span<const render::TextureData>(&data, 1));
+        w.width = level.width;
+        w.height = level.height;
+        w.flags = flags.value_or(0);
+        w.alphaFormat = true;
+        using render::AddressMode;
+        w.sampler.addressU = (w.flags & asset::TexFlags::ClampU) ? AddressMode::Clamp : AddressMode::Wrap;
+        w.sampler.addressV = (w.flags & asset::TexFlags::ClampV) ? AddressMode::Clamp : AddressMode::Wrap;
+        w.sampler.filter = render::Filter::Bilinear;
+        t = w;
+    }
+    auto& slot = m_textures[key] = t;
+    return slot ? &*slot : nullptr;
+}
+
+void TextureLibrary::declare(std::string_view nameIn) {
+    if (m_sizeLimit > 0 && !nameIn.empty())
+        m_sizeLimits[str::lower(nameIn)] = m_sizeLimit;
 }
 
 void TextureLibrary::update(double time) {

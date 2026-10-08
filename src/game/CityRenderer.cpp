@@ -13,6 +13,9 @@ namespace mm2::game {
 namespace {
 
 constexpr float kPi = 3.14159265f;
+// The cloud shadow map's scale: one repeat every 128 m along x + y and y + z
+// (cityLevel::Update's vglSetOffset, lvlFixedAny::Draw's DrawOrthoMapped).
+constexpr float kCloudScale = 0.0078125f;
 
 Vec3 unpackRgb(std::uint32_t argb) {
     return {static_cast<float>((argb >> 16) & 0xFF) / 255.0f, static_cast<float>((argb >> 8) & 0xFF) / 255.0f,
@@ -130,6 +133,12 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
         env.wallShades[static_cast<std::size_t>(i)] = argb;
     }
 
+    // cityLevel::Load: vglSetCloudMap(shadmap_day) for times 0 and 1, else
+    // shadmap_nite; mmGame::SetLevelGraphics: vglCloudMapEnable = 0, 4 or
+    // 2 by the Cloud Shadows option.
+    env.cloudMap = t < 2 ? "shadmap_day" : "shadmap_nite";
+    constexpr std::array<std::uint32_t, 3> kCloudMasks{0u, 4u, 2u};
+    env.cloudMask = kCloudMasks[static_cast<std::size_t>(std::clamp(options.cloudShadows, 0, 2))];
     env.farClip = options.farClip;
     if (static_cast<std::size_t>(index) < city.fog.size()) {
         // lvlSky::SetupFog: linear fog clamped by the far plane.
@@ -152,8 +161,7 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
 CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
                            const city::CityData& city, const std::function<bool(std::string_view)>& isDynamic)
     : m_device(device), m_textures(textures), m_models(models), m_city(city), m_locator(city.psdl, city.info.mapName) {
-    // sdlPage16::Draw's primitives for every room and level of detail; the
-    // tunnels (not ported) from the CityMesh reconstruction, at every level.
+    // sdlPage16::Draw's primitives for every room and level of detail.
     std::unordered_map<std::string, std::uint32_t> slots;
     m_slotNames.emplace_back(); // 0: untextured
     auto slotOf = [&](int texture) -> std::uint32_t {
@@ -173,8 +181,12 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
         rv.position[2] = p.z;
         rv.normal[1] = 1.0f;
         rv.color = 0xFFFFFFFFu;
-        rv.uv0[0] = rv.uv1[0] = uv.x;
-        rv.uv0[1] = rv.uv1[1] = uv.y;
+        rv.uv0[0] = uv.x;
+        rv.uv0[1] = uv.y;
+        // vglEndBatch's cloud pass: ((x + y), (y + z)) / 128 (cityLevel::Update's
+        // vglSetOffset scale).
+        rv.uv1[0] = (p.y + p.x) * kCloudScale;
+        rv.uv1[1] = (p.z + p.y) * kCloudScale;
         m_streetVertices.push_back(rv);
         m_vertexShade.push_back(shade);
         m_vertexLight.push_back(light);
@@ -214,21 +226,6 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
                 room.lods[l].push_back(p);
             }
         }
-        for (const auto& batch : city::buildRoomMesh(city.psdl, r).batches) {
-            if (batch.kind != city::SurfaceKind::Tunnel || batch.indices.empty())
-                continue;
-            const auto tunnelBase = static_cast<std::uint32_t>(m_streetVertices.size());
-            for (const auto& v : batch.vertices)
-                addVertex(v.position, v.uv, city::SdlShade::Room, 0);
-            Prim p;
-            p.first = static_cast<std::uint32_t>(m_streetIndices.size());
-            p.count = static_cast<std::uint32_t>(batch.indices.size());
-            p.slot = slotOf(batch.texture);
-            for (const auto i : batch.indices)
-                m_streetIndices.push_back(tunnelBase + i);
-            for (auto& lod : room.lods)
-                lod.push_back(p);
-        }
     }
     m_buckets.resize(m_slotNames.size());
     m_vertices = m_device.createBuffer(render::BufferKind::Vertex,
@@ -266,6 +263,24 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
     m_roomMarks.assign(m_rooms.size(), 0);
     if (city.sky)
         m_sky = m_models.get(city.sky->model);
+    // cityLevel::Load loads the city's textures under gfxTexReduceSize: the
+    // streets', the objects' (props included) with their xrefs', and the
+    // sky's. OpenMM2 loads textures on first use, so it names them now.
+    for (const auto& name : m_slotNames)
+        m_textures.declare(name);
+    std::unordered_map<std::string, bool> declared;
+    std::function<void(const GpuModel*, int)> declareModel = [&](const GpuModel* model, int depth) {
+        if (!model || depth > 3 || !declared.try_emplace(model->name, true).second)
+            return;
+        for (const auto& paintjob : model->paintjobs)
+            for (const auto& material : paintjob)
+                m_textures.declare(material.texture);
+        for (const auto& xref : model->xrefs)
+            declareModel(m_models.get(xref.name), depth + 1);
+    };
+    for (const auto& inst : city.instances)
+        declareModel(m_models.get(inst.name), 0);
+    declareModel(m_sky, 0);
     log::info("city: {} rooms, {} vertices, {} triangles, {} instances", m_rooms.size(), m_streetVertices.size(),
               m_streetIndices.size() / 3, m_instances.size());
 }
@@ -356,12 +371,46 @@ void CityRenderer::resolve(InstanceDraw& inst) {
 }
 
 void CityRenderer::drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth) {
-    if (const GpuMesh* mesh = findFilledLod(model, "", lod))
+    if (const GpuMesh* mesh = findFilledLod(model, "", lod)) {
         drawMesh(*mesh, model.materials(0), Mat44::fromMat34(transform));
+        if (depth == 0 && m_cloud && m_cloudMask)
+            drawCloudShadow(*mesh, model.materials(0), Mat44::fromMat34(transform));
+    }
     // A model's PKG xrefs are not drawn with it: lvlLevel::LoadInstances
     // places them as unhit bangers (BangerSet draws them; one without banger
     // data is not placed at all).
-    static_cast<void>(depth);
+}
+
+void CityRenderer::drawCloudShadow(const GpuMesh& mesh, const std::vector<asset::PkgMaterial>& materials,
+                                   const Mat44& world) {
+    // lvlFixedAny::Draw -> modStatic::DrawOrthoMapped: the packets whose
+    // texture has the cloud bit and no alpha format again, white, with the
+    // cloud map at their model-space ortho coordinates, alpha blended and
+    // tested above 0.
+    for (const auto& d : mesh.draws) {
+        const asset::PkgMaterial* mat = d.shader < materials.size() ? &materials[d.shader] : nullptr;
+        const WorldTexture* tex = mat && !mat->texture.empty() ? m_textures.get(mat->texture) : nullptr;
+        if (!tex || !(tex->flags & m_cloudMask) || tex->alphaFormat)
+            continue;
+        render::DrawCall call;
+        call.vertices = {mesh.vertices, 0};
+        call.indices = {mesh.indices, 0};
+        call.indexType = render::IndexType::U16;
+        call.count = d.indexCount;
+        call.first = d.firstIndex;
+        call.baseVertex = d.baseVertex;
+        call.constants.world = world;
+        call.constants.color = {1, 1, 1, 1};
+        namespace DrawFlag = render::DrawFlag;
+        call.constants.flags = DrawFlag::Fog | DrawFlag::Texture1 | DrawFlag::AlphaTest;
+        call.constants.alphaRef = 1.0f / 255.0f;
+        call.textures[1] = {m_cloud->handle, m_cloud->sampler};
+        call.state.blend = render::BlendMode::Alpha;
+        call.state.cull = render::CullMode::Back;
+        call.state.frontFace = render::FrontFace::CounterClockwise;
+        m_device.draw(call);
+        ++m_stats.drawCalls;
+    }
 }
 
 void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera,
@@ -440,6 +489,19 @@ void CityRenderer::drawStreets(bool alphaPass) {
         call.state.frontFace = render::FrontFace::CounterClockwise;
         m_device.draw(call);
         ++m_stats.drawCalls;
+        // vglEndBatch: an opaque texture whose flags have the cloud bit is
+        // drawn again with the cloud map (black, inverted alpha) blended
+        // over it, alpha tested above 0; the alpha textures never are.
+        if (!alphaPass && tex && m_cloud && (tex->flags & m_cloudMask)) {
+            namespace DrawFlag = render::DrawFlag;
+            call.constants.flags = DrawFlag::Fog | DrawFlag::VertexColor | DrawFlag::Texture1 | DrawFlag::AlphaTest;
+            call.textures[0] = {};
+            call.textures[1] = {m_cloud->handle, m_cloud->sampler};
+            call.constants.alphaRef = 1.0f / 255.0f;
+            call.state.blend = render::BlendMode::Alpha;
+            m_device.draw(call);
+            ++m_stats.drawCalls;
+        }
     }
 }
 
@@ -447,6 +509,8 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
                         const DetailSettings& detail) {
     m_stats = {};
     ++m_frame;
+    m_cloudMask = env.cloudMask;
+    m_cloud = m_cloudMask && !env.cloudMap.empty() ? m_textures.cloudMap(env.cloudMap) : nullptr;
     drawSky(camera, env);
 
     const Vec3 eye = camera.position();

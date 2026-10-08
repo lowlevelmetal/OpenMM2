@@ -169,19 +169,27 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
         // into its table, so the lower light qualities' ambient levels come
         // from what the table held before: the constructor's ambient for the
         // first city of the session, the last loaded city's afterwards.
+        // The tables keep whatever they held when a file is missing or
+        // lacks a field (datParser::Load): the constructor's values for the
+        // first city of the session, the previous city's afterwards.
         static std::mutex historyMutex;
-        static auto history = defaultAmbients();
+        static std::array<LightingDef, kTimesOfDay * kWeathers> tables = [] {
+            std::array<LightingDef, kTimesOfDay * kWeathers> t;
+            t.fill(defaultLighting());
+            return t;
+        }();
         const std::lock_guard lock(historyMutex);
-        c.ambientBeforeLoad = history;
         for (int i = 0; i < kTimesOfDay * kWeathers; ++i) {
+            auto& table = tables[static_cast<std::size_t>(i)];
+            c.ambientBeforeLoad[static_cast<std::size_t>(i)] = table.ambient;
             const std::string path = std::format("{}.lt{:02}", cityDir, i);
             if (auto b = bytesOf(path, false)) {
-                c.lighting[static_cast<std::size_t>(i)] = parseLighting(text(*b), &err);
-                if (!c.lighting[static_cast<std::size_t>(i)])
-                    warn(std::format("{}: {}", path, err));
+                if (auto parsed = parseLighting(text(*b), &err, &table))
+                    table = std::move(*parsed);
                 else
-                    history[static_cast<std::size_t>(i)] = c.lighting[static_cast<std::size_t>(i)]->ambient;
+                    warn(std::format("{}: {}", path, err));
             }
+            c.lighting[static_cast<std::size_t>(i)] = table;
         }
     }
     if (auto b = bytesOf(cityDir + "_fog.csv", false)) {

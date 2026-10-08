@@ -5,9 +5,9 @@
 // vglBeginBatch / vglEndBatch do. Ported from midtown2.exe build 3393
 // (MM2Recomp); see docs/formats/psdl.md, "Drawing".
 //
-// Tunnel attributes are the exception: their drawing has not been ported
-// yet, so their walls come from the CityMesh reconstruction (the renderer
-// adds them to every level of detail).
+// Tunnel attributes are drawn at every level: a junction's walls along the
+// room's masked perimeter edges, a strip tunnel's along the next road,
+// divided road or rectangle strip.
 
 #include "city/Psdl.h"
 #include "core/Math.h"
@@ -65,6 +65,12 @@ SdlRoomDraw buildSdlRoomDraw(const Psdl& psdl, std::size_t room);
 // back and forth.
 std::vector<float> sdlArcMap(const Psdl& psdl, std::span<const std::uint16_t> indices, int stride, int count,
                              int column);
+
+// sdlPage16::WallMap: as ArcMap, but whole repeats of `repeatLength` along
+// the sections' first vertices (none when it is 0 or the strip is shorter
+// than 0.1 m).
+std::vector<float> sdlWallMap(const Psdl& psdl, std::span<const std::uint16_t> indices, float repeatLength,
+                              int count, int stride);
 
 // sdlPage16::GetCentroid: the area centroid of the room's perimeter in the
 // ground plane, at the mean height of its corners.

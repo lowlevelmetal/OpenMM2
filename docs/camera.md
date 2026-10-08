@@ -192,7 +192,8 @@ camera's `Offset.z` by 0.7352941.
 * **Wide angle** (`SetViewSetting(5)`, `mmPlayer::SetWideFOV`): the view is
   letterboxed to 66% of the height (from 18% down) and the perspective set
   to 70 degrees; transitions then leave the perspective alone.
-  `CameraView::wideAngle()` reports it; the renderer does not letterbox yet.
+  `CameraView::wideAngle()` reports it; RaceScreen draws the level in that
+  band on black (docs/rendering.md, "Rear-view mirror" and "Wide angle").
   `camViewCS::Reset` sets the camera's own FOV whatever the mode, and
   `mmPlayer` resets the view on the first update after every reset, so
   after a reset MM2 shows the letterboxed view at the camera's FOV until a
@@ -232,8 +233,8 @@ in the original.
 
 ## Rear-view mirror
 
-`CamMirror.*` (`RearViewMirror`) ports `mmMirror`'s camera; drawing it is
-the renderer's job (open for rendering).
+`CamMirror.*` (`RearViewMirror`) ports `mmMirror`'s camera; RaceScreen's
+`drawMirror` draws it (docs/rendering.md, "Rear-view mirror").
 
 * **Data** (`mmMirror::FileIO`): `tune/<car>.mmmirror`, which only 11 cars
   ship (vp4x4, vpauditt, vpbus, vpcaddie, vpcentury, vpcop, vpdb7,

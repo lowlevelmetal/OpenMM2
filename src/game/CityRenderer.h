@@ -27,6 +27,8 @@ struct EnvironmentOptions {
     // The Far Clip option in metres (MM2: 100-1000): the camera's far plane,
     // clamping the fog.
     float farClip = 1000.0f;
+    // The Cloud Shadows option: 0 none, 1 low, 2 high (gfxCloudShadows).
+    int cloudShadows = 2;
 };
 
 // Lighting, fog and sky for one time of day and weather.
@@ -40,6 +42,12 @@ struct Environment {
     // plus the lights falling on a vertical wall facing angle
     // i * pi / 32 - pi / 2.
     std::array<std::uint32_t, 64> wallShades{};
+    // Cloud shadows: the texture (shadmap_day in the morning and at noon,
+    // shadmap_nite in the evening and at night) and the .tex flag bit a
+    // texture needs to receive them (vglCloudMapEnable: 4 for the low
+    // setting, 2 for high, 0 none).
+    std::string cloudMap;
+    std::uint32_t cloudMask = 0;
 };
 
 // Builds the environment from the city's .ltNN and _fog.csv tables.
@@ -123,6 +131,8 @@ private:
     void drawStreets(bool alphaPass);
     void drawInstance(InstanceDraw& inst, const Frustum& frustum, const Mat34& camera, const DetailSettings& detail);
     void drawModel(const GpuModel& model, const Mat34& transform, asset::Lod lod, int depth);
+    void drawCloudShadow(const GpuMesh& mesh, const std::vector<asset::PkgMaterial>& materials,
+                         const Mat44& world);
     void resolve(InstanceDraw& inst);
 
     render::Device& m_device;
@@ -147,6 +157,9 @@ private:
     const GpuModel* m_sky = nullptr;
     float m_skyAngle = 0.0f;
     int m_lastRoom = 0; // cityLevel's sm_LastPvsRoom
+    // This frame's cloud shadow texture and flag mask (Environment).
+    const WorldTexture* m_cloud = nullptr;
+    std::uint32_t m_cloudMask = 0;
     std::uint32_t m_frame = 0;
     Stats m_stats;
 };

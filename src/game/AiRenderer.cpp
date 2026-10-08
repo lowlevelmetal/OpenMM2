@@ -42,7 +42,7 @@ const asset::PedType* AiRenderer::pedType(const std::string& name) {
     return it->second ? &*it->second : nullptr;
 }
 
-void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera&) {
+void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera) {
     const asset::PedAnimation* anim = type.animation(ped.animFile);
     if (!anim)
         anim = type.animation(ped.state);
@@ -57,6 +57,12 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
         const Vec3 shift{drift.x * k, 0.0f, drift.z * k};
         for (auto& b : m_bones)
             b.m3 -= shift;
+    }
+    // aiPedestrianInstance::Draw: the posed model within 35 m of the camera,
+    // the stick figure (pedAnimation::DrawSkeleton) beyond.
+    if (ped.transform.m3.dist2(camera.position()) >= 1225.0f) {
+        drawSkeleton(ped, type, camera);
+        return;
     }
     const auto& mesh = type.mesh;
     m_skinned.resize(mesh.vertices.size());
@@ -100,6 +106,72 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
         call.state.frontFace = render::FrontFace::CounterClockwise;
         m_device.draw(call);
     }
+}
+
+void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera) {
+    // pedAnimation::DrawSkeleton: for each bone with a width in the .rays
+    // file, its position raised by the bone's offset (which its children then
+    // use), a quad to its parent's position across the camera's right axis
+    // (the start and end half widths), in the colour the variant's row
+    // picks from its shaders' diffuse colours; untextured, unlit, both sides.
+    if (!type.rays)
+        return;
+    const auto& rays = *type.rays;
+    const std::size_t n = std::min(rays.bones.size(), m_bones.size());
+    const std::vector<int>* row =
+        ped.variant >= 0 && static_cast<std::size_t>(ped.variant) < rays.variants.size()
+            ? &rays.variants[static_cast<std::size_t>(ped.variant)]
+            : nullptr;
+    const Vec3 right = camera.transform.m0;
+    std::vector<render::Vertex3D> vertices;
+    std::vector<std::uint16_t> indices;
+    for (std::size_t j = 0; j < n; ++j) {
+        const auto& bone = rays.bones[j];
+        const float w0 = bone.values.x, w1 = bone.values.y;
+        if (w0 == 0.0f)
+            continue;
+        m_bones[j].m3.y = bone.values.z + m_bones[j].m3.y;
+        const std::size_t parent = static_cast<std::size_t>(std::clamp(bone.a, 0, static_cast<int>(n) - 1));
+        // The variant's shader colour: 0xFF, then trunc(diffuse x 255).
+        std::uint32_t argb = 0xFFFFFFFFu;
+        const auto variant = static_cast<std::uint32_t>(ped.variant);
+        if (row && j < row->size())
+            if (const auto* shader = type.shaders.get(variant, static_cast<std::uint32_t>((*row)[j]))) {
+                auto byte = [](float v) {
+                    return static_cast<std::uint32_t>(static_cast<int>(v * 255.0f)) & 0xFFu;
+                };
+                argb = 0xFF000000u | byte(shader->diffuse.x) << 16 | byte(shader->diffuse.y) << 8 |
+                       byte(shader->diffuse.z);
+            }
+        const Vec3 a = ped.transform.transform(m_bones[j].m3);
+        const Vec3 b = ped.transform.transform(m_bones[parent].m3);
+        const Vec3 da = right * w0, db = right * w1;
+        const auto base = static_cast<std::uint16_t>(vertices.size());
+        for (const Vec3& p : {a - da, a + da, b - db, b + db}) {
+            render::Vertex3D v{};
+            v.position[0] = p.x;
+            v.position[1] = p.y;
+            v.position[2] = p.z;
+            v.normal[1] = 1.0f;
+            v.color = (argb & 0xFF00FF00u) | ((argb >> 16) & 0xFFu) | ((argb & 0xFFu) << 16);
+            vertices.push_back(v);
+        }
+        for (std::uint16_t i : {std::uint16_t(0), std::uint16_t(1), std::uint16_t(2), std::uint16_t(2),
+                                std::uint16_t(1), std::uint16_t(3)})
+            indices.push_back(static_cast<std::uint16_t>(base + i));
+    }
+    if (indices.empty())
+        return;
+    render::DrawCall call;
+    call.vertices =
+        m_device.uploadTransient(render::BufferKind::Vertex, std::span<const render::Vertex3D>(vertices));
+    call.indices =
+        m_device.uploadTransient(render::BufferKind::Index, std::span<const std::uint16_t>(indices));
+    call.count = static_cast<std::uint32_t>(indices.size());
+    call.constants.world = Mat44::identity();
+    call.constants.flags = render::DrawFlag::VertexColor | render::DrawFlag::Fog;
+    call.state.cull = render::CullMode::None;
+    m_device.draw(call);
 }
 
 void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows) {

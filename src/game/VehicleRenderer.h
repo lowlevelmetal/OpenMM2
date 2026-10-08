@@ -5,6 +5,7 @@
 #include "game/ModelLibrary.h"
 #include "game/TexelDamage.h"
 #include "game/TextureLibrary.h"
+#include "game/fx/LensFlares.h"
 #include "game/fx/ParticleRenderer.h"
 
 #include <array>
@@ -105,6 +106,10 @@ public:
     // 0.95 after aiVehicleManager::Init, the single-player value; 0.2 and
     // 0.6 after a vehSiren is constructed later, as network cars are).
     static void setLightGlowScales(float size, float color);
+    // vehSiren::Draw's lens flares (ltLensFlare::Draw): while a target is
+    // set, the siren lights' flares for that view go into `out`, to be drawn
+    // after the scene (fx::drawLensFlares). Null turns them off.
+    static void setLensFlareTarget(const Mat44* viewProj, float aspect, std::vector<fx::LensFlareQuad>* out);
 
 private:
     struct Light {
@@ -141,6 +146,7 @@ private:
     std::vector<Light> m_sirens;
     std::optional<Vec3> m_fenderOffset; // fndr0 pivot relative to wheel 0
     fx::ParticleRenderer m_cards;
+    std::optional<fx::LensFlare> m_flare; // vehSiren's ltLensFlare(20)
     std::unique_ptr<TexelDamage> m_texelDamage;
     std::set<std::string> m_detached;
     bool m_wreckEjected = false;

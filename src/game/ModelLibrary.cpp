@@ -111,8 +111,12 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
                     rv.normal[1] = v.normal.y;
                     rv.normal[2] = v.normal.z;
                     rv.color = argbToRgba(v.color);
-                    rv.uv0[0] = rv.uv1[0] = v.uv.x;
-                    rv.uv0[1] = rv.uv1[1] = v.uv.y;
+                    rv.uv0[0] = v.uv.x;
+                    rv.uv0[1] = v.uv.y;
+                    // gfxPacket::OrthoMap's cloud shadow coordinates, from the
+                    // model-space position: ((y + x), (y + z)) / 128.
+                    rv.uv1[0] = (v.position.y + v.position.x) * 0.0078125f;
+                    rv.uv1[1] = (v.position.y + v.position.z) * 0.0078125f;
                     vertices.push_back(rv);
                 }
                 indices.insert(indices.end(), packet.indices.begin(), packet.indices.end());

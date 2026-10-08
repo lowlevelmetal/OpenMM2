@@ -102,6 +102,11 @@ public:
     virtual void clear(const ClearValues& values) = 0; // inside the current viewport
     virtual void setFrameConstants(const FrameConstants& constants) = 0;
     virtual void draw(const DrawCall& call) = 0;
+    // Swaps every following draw's front-face winding (a view through a
+    // mirrored camera frame, such as the rear-view mirror, whose
+    // mmMirror::Cull swaps the cull mode) until turned off again.
+    void setFrontFaceFlipped(bool flipped) { m_frontFaceFlipped = flipped; }
+    bool frontFaceFlipped() const { return m_frontFaceFlipped; }
 
     // --- Readback ---
     // Captures the window image at the end of the current frame (or the next
@@ -112,6 +117,20 @@ public:
 
     virtual void waitIdle() = 0;
     virtual const FrameStats& stats() const = 0;
+
+protected:
+    // The state a backend draws with: the call's, with the winding swapped
+    // while setFrontFaceFlipped(true) is in force.
+    PipelineState effectiveState(const PipelineState& state) const {
+        PipelineState s = state;
+        if (m_frontFaceFlipped)
+            s.frontFace =
+                s.frontFace == FrontFace::CounterClockwise ? FrontFace::Clockwise : FrontFace::CounterClockwise;
+        return s;
+    }
+
+private:
+    bool m_frontFaceFlipped = false;
 };
 
 // Frame constants for overlay drawing in output pixels (origin top-left).

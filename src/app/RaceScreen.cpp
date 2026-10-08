@@ -32,6 +32,7 @@
 #include "game/fx/VehicleEffects.h"
 #include "game/fx/Weather.h"
 #include "game/net/NetGame.h"
+#include "game/CamMirror.h"
 #include "game/CamPlayer.h"
 #include "game/CityRenderer.h"
 #include "game/CityLevel.h"
@@ -231,10 +232,27 @@ public:
         render::Device& dev = ctx.device();
         render::ClearValues clear;
         clear.color = m_env.clearColor;
+        // mmPlayer::SetWideFOV: the wide-angle view is letterboxed to 66% of
+        // the screen height, 18% down, on black.
+        const bool letterbox = !m_flyCamera && m_cams.wideAngle();
+        if (letterbox)
+            clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
         dev.beginScene(clear);
 
         const auto extent = dev.sceneExtent();
-        const float aspect = extent.height ? static_cast<float>(extent.width) / static_cast<float>(extent.height) : 1.0f;
+        render::Rect band{0, 0, extent.width, extent.height};
+        if (letterbox) {
+            const auto h = static_cast<float>(extent.height);
+            band.y = static_cast<std::int32_t>(h * 0.18f);
+            band.height = static_cast<std::uint32_t>(h * 0.66f);
+            dev.setViewport({0.0f, static_cast<float>(band.y), static_cast<float>(band.width),
+                             static_cast<float>(band.height)});
+            dev.setScissor(&band);
+            render::ClearValues sky;
+            sky.color = m_env.clearColor;
+            dev.clear(sky);
+        }
+        const float aspect = band.height ? static_cast<float>(band.width) / static_cast<float>(band.height) : 1.0f;
         const auto proj = render::computeProjection(m_camera.horizontalFov, aspect, ctx.display.fovMode,
                                                     ctx.display.maxAspect);
         m_camera.farPlane = m_env.farClip;
@@ -244,52 +262,22 @@ public:
         frame.cameraPosition = m_camera.position();
         dev.setFrameConstants(frame);
         const game::Frustum frustum(frame.view * frame.proj);
-        m_cityRenderer->draw(m_camera, frustum, m_env, m_detail);
-        m_roadDecals.draw(dev, *m_textures);
-        if (m_ai && m_aiRenderer)
-            m_aiRenderer->draw(*m_ai, m_camera, frustum, m_result.config.timeOfDay, carLights(),
-                               m_detail.objects,
-                               [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
-        drawRemoteCars(ctx, m_frameDt);
-        const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
-        if (m_bangers)
-            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, m_camera, {m_detail.objects, night});
-        const bool lights = carLights();
-        if (m_vehicle && (m_flyCamera || m_cams.display() == game::CarDisplay::Body)) {
-            m_pose.headlights = lights;
-            m_vehicle->draw(m_pose, m_camera.transform);
-            if (m_trailer) {
-                m_trailerPose.headlights = lights;
-                m_trailer->draw(m_trailerPose, m_camera.transform);
-            }
+        const bool playerBody = m_flyCamera || m_cams.display() == game::CarDisplay::Body;
+        // The sirens' lens flares (vehSiren::Draw, ltLensFlare) are queued
+        // while the level draws and added over it afterwards.
+        std::vector<game::fx::LensFlareQuad> flares;
+        const Mat44 viewProj = frame.view * frame.proj;
+        game::VehicleRenderer::setLensFlareTarget(&viewProj, proj.aspect, &flares);
+        drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
+        game::VehicleRenderer::setLensFlareTarget(nullptr, 1.0f, nullptr);
+        if (!flares.empty()) {
+            game::fx::drawLensFlares(dev, *m_textures, flares);
+            dev.setFrameConstants(frame);
         }
-        for (const auto& o : m_opponents) {
-            game::VehiclePose pose = o.sim->pose();
-            pose.headlights = lights;
-            o.renderer->draw(pose, m_camera.transform);
+        if (letterbox) {
+            dev.setScissor(nullptr);
+            dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
         }
-        for (const auto& c : m_cops) {
-            game::VehiclePose pose = c.sim->pose();
-            pose.headlights = lights;
-            pose.siren = c.driver->siren();
-            pose.sirenAngle = c.sirenAngle;
-            c.renderer->draw(pose, m_camera.transform);
-        }
-        if (m_vehicleFx)
-            m_vehicleFx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
-        for (const auto& o : m_opponents)
-            if (o.fx)
-                o.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
-        for (const auto& c : m_cops)
-            if (c.fx)
-                c.fx->draw(dev, *m_textures, m_cards, m_skids, m_camera.transform);
-        // cityLevel::DrawRooms draws no rain while the camera is underground
-        // (PSDL room flag 0x02).
-        const int cameraRoom = m_cityRenderer->stats().cameraRoom;
-        const bool underground = cameraRoom > 0 && static_cast<std::size_t>(cameraRoom) < m_city->psdl.rooms.size() &&
-                                 (m_city->psdl.rooms[static_cast<std::size_t>(cameraRoom)].flags & city::RoomFlag::Subterranean);
-        if (m_weather && !underground)
-            m_weather->draw(dev, *m_textures, m_cards, m_camera.transform);
         if (m_hud && m_session && m_player) {
             m_hud->options().dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
             // mmGame::UpdateGameInput: looking around from a point-of-view
@@ -312,7 +300,104 @@ public:
             if (m_popup == Popup::None)
                 m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
         }
+        // mmGameManager::Update declares the mirror after the dashboard and
+        // the HUD map.
+        drawMirror(ctx, frame);
         dev.endScene();
+    }
+
+    // The level as lvlLevel::Draw draws it for one view: the city, traffic,
+    // props, the cars and their effects (lvlLevel's callbacks) and the rain.
+    // `playerBody` false hides the player's car; `dt` advances the remote
+    // cars' wheels (0 for a second view of the same frame).
+    void drawLevel(Context& ctx, const game::Camera& camera, const game::Frustum& frustum, bool playerBody,
+                   float dt) {
+        render::Device& dev = ctx.device();
+        m_cityRenderer->draw(camera, frustum, m_env, m_detail);
+        m_roadDecals.draw(dev, *m_textures);
+        if (m_ai && m_aiRenderer)
+            m_aiRenderer->draw(*m_ai, camera, frustum, m_result.config.timeOfDay, carLights(), m_detail.objects,
+                               [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
+        drawRemoteCars(ctx, dt, camera);
+        const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
+        if (m_bangers)
+            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera, {m_detail.objects, night});
+        const bool lights = carLights();
+        if (m_vehicle && playerBody) {
+            m_pose.headlights = lights;
+            m_vehicle->draw(m_pose, camera.transform);
+        }
+        if (m_trailer && (m_flyCamera || m_cams.display() == game::CarDisplay::Body || !playerBody)) {
+            m_trailerPose.headlights = lights;
+            m_trailer->draw(m_trailerPose, camera.transform);
+        }
+        for (const auto& o : m_opponents) {
+            game::VehiclePose pose = o.sim->pose();
+            pose.headlights = lights;
+            o.renderer->draw(pose, camera.transform);
+        }
+        for (const auto& c : m_cops) {
+            game::VehiclePose pose = c.sim->pose();
+            pose.headlights = lights;
+            pose.siren = c.driver->siren();
+            pose.sirenAngle = c.sirenAngle;
+            c.renderer->draw(pose, camera.transform);
+        }
+        if (m_vehicleFx)
+            m_vehicleFx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
+        for (const auto& o : m_opponents)
+            if (o.fx)
+                o.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
+        for (const auto& c : m_cops)
+            if (c.fx)
+                c.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
+        // cityLevel::DrawRooms draws no rain while the camera is underground
+        // (PSDL room flag 0x02).
+        const int cameraRoom = m_cityRenderer->stats().cameraRoom;
+        const bool underground = cameraRoom > 0 && static_cast<std::size_t>(cameraRoom) < m_city->psdl.rooms.size() &&
+                                 (m_city->psdl.rooms[static_cast<std::size_t>(cameraRoom)].flags &
+                                  city::RoomFlag::Subterranean);
+        if (m_weather && !underground)
+            m_weather->draw(dev, *m_textures, m_cards, camera.transform);
+    }
+
+    // mmMirror::Cull: the rear-view mirror's inset at the top right, cleared
+    // to black, the level drawn from the mirror's frame on the player's car
+    // with its fixed-aspect projection, the winding swapped (the frame is
+    // mirrored) and the player's car hidden.
+    void drawMirror(Context& ctx, const render::FrameConstants& mainFrame) {
+        if (!m_mirror.enabled() || !m_player || !m_vehicle || m_flyCamera)
+            return;
+        render::Device& dev = ctx.device();
+        const auto extent = dev.sceneExtent();
+        const auto inset = m_mirror.viewport(static_cast<int>(extent.width), static_cast<int>(extent.height));
+        if (inset.width <= 0 || inset.height <= 0)
+            return;
+        const auto& params = m_mirror.params();
+        game::Camera camera;
+        camera.transform = m_mirror.worldMatrix(m_pose.body);
+        camera.nearPlane = params.nearClip;
+        camera.farPlane = params.farClip;
+        render::FrameConstants frame = mainFrame;
+        frame.view = camera.view();
+        frame.proj = Mat44::perspective(params.fov * 0.017453292f, params.aspect, camera.nearPlane,
+                                        camera.farPlane, true);
+        frame.cameraPosition = camera.position();
+        const render::Rect rect{inset.x, inset.y, static_cast<std::uint32_t>(inset.width),
+                                static_cast<std::uint32_t>(inset.height)};
+        dev.setViewport({static_cast<float>(inset.x), static_cast<float>(inset.y), static_cast<float>(inset.width),
+                         static_cast<float>(inset.height)});
+        dev.setScissor(&rect);
+        render::ClearValues clear;
+        clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
+        dev.clear(clear);
+        dev.setFrameConstants(frame);
+        dev.setFrontFaceFlipped(true);
+        drawLevel(ctx, camera, game::Frustum(frame.view * frame.proj), false, 0.0f);
+        dev.setFrontFaceFlipped(false);
+        dev.setScissor(nullptr);
+        dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
+        dev.setFrameConstants(mainFrame);
     }
 
     void drawOverlay(Context& ctx) override {
@@ -348,8 +433,14 @@ private:
         m_textures = std::make_unique<game::TextureLibrary>(ctx.device(), ctx.game->vfs);
         m_models = std::make_unique<game::ModelLibrary>(ctx.device(), ctx.game->vfs);
         m_bangerData = std::make_unique<game::bangers::BangerDataLibrary>(ctx.game->vfs);
+        // cityLevel::Load: gfxTexReduceSize = 32 << the Texture Quality
+        // option (gfxTextureQuality) while the city loads, no limit after.
+        const int textureQuality =
+            static_cast<int>(std::clamp(ctx.settings.ini.getInt("Graphics", "TextureQuality", 2), 0LL, 3LL));
+        m_textures->setSizeLimit(32 << textureQuality);
         m_cityRenderer = std::make_unique<game::CityRenderer>(ctx.device(), *m_textures, *m_models, *m_city,
                                                               [this](std::string_view n) { return m_bangerData->has(n); });
+        m_textures->setSizeLimit(0);
         m_objectDetail = std::clamp(static_cast<int>(ctx.settings.ini.getInt("Graphics", "ObjectDetail", 3)), 0, 3);
         m_detail.objects = game::ObjectDetail::forLevel(m_objectDetail);
         // Development aid for screenshots: "<timeOfDay 0-3>,<weather 0-3>".
@@ -366,6 +457,9 @@ private:
                 static_cast<int>(std::clamp(ctx.settings.ini.getInt("Graphics", "LightingQuality", 3), 0LL, 3LL));
             m_envOptions.farClip = static_cast<float>(
                 std::clamp(ctx.settings.ini.getDouble("Graphics", "FarClip", 1000.0), 100.0, 1000.0));
+            // mmGame::SetLevelGraphics: vglCloudMapEnable by CLOUD SHADOWS.
+            const auto clouds = ctx.settings.ini.getInt("Graphics", "CloudShadows", 2);
+            m_envOptions.cloudShadows = static_cast<int>(std::clamp(clouds, 0LL, 2LL));
         }
         applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
@@ -506,6 +600,8 @@ private:
         if (const auto extent = ctx.device().sceneExtent(); extent.height)
             aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
         m_cams.load(ctx.game->vfs, m_result.config.vehicle, &missing, aspect);
+        // mmMirror::Init: the defaults, then tune/<car>.mmmirror.
+        m_mirror.load(ctx.game->vfs, m_result.config.vehicle);
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             m_cams.setVehicleFlags(static_cast<int>(info->flags));
         for (const auto& m : missing)
@@ -1590,7 +1686,7 @@ private:
                                       sim.damage.damage, flags);
     }
 
-    void drawRemoteCars(Context& ctx, float dt) {
+    void drawRemoteCars(Context& ctx, float dt, const game::Camera& camera) {
         if (!multiplayer(ctx))
             return;
         for (const auto& rc : ctx.netGame->remoteCars()) {
@@ -1624,7 +1720,7 @@ private:
             pose.headlights = (rc.flags & net::kVehicleHeadlights) != 0;
             pose.brakeLights = (rc.flags & net::kVehicleBrakeLights) != 0;
             pose.reverseLights = rc.controls.gear < 0;
-            rv.renderer->draw(pose, m_camera.transform);
+            rv.renderer->draw(pose, camera.transform);
         }
     }
 
@@ -2020,6 +2116,9 @@ private:
     float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
+    // The rear-view mirror's camera (camera-props); drawMirror draws it. Its
+    // on/off switch and the profile flag are the session's to wire.
+    game::RearViewMirror m_mirror;
     std::unique_ptr<ai::World> m_ai;
 
     // Race rules, opponents and HUD (src/game/session).

@@ -230,6 +230,7 @@ struct DrawConstants {
     Vec4 color{1, 1, 1, 1}; // material colour, multiplied in
     float alphaRef = 0.5f;
     std::uint32_t flags = DrawFlag::Texture0 | DrawFlag::VertexColor;
+    Vec4 emissive{0, 0, 0, 0}; // added to lit colours (DrawFlag::Lighting)
 };
 
 // --- Draw calls ---------------------------------------------------------------

@@ -8,6 +8,7 @@
 #include "game/CityLevel.h"
 #include "game/CityRenderer.h"
 #include "game/MeshDraw.h"
+#include "game/fx/LensFlares.h"
 #include "game/fx/LineSparks.h"
 #include "game/fx/Particles.h"
 #include "game/fx/Shards.h"
@@ -233,4 +234,77 @@ TEST(ParityRenderingFx, PedestrianMeshesFaceOutCounterClockwise) {
         EXPECT_GT(total, 100) << name;
         EXPECT_GT(agree, total * 9 / 10) << name;
     }
+}
+
+TEST(ParityRenderingFx, SdlTunnelsDrawFiniteGeometry) {
+    // sdlPage16::Draw's Tunnel case: junction walls along the masked
+    // perimeter edges, strip tunnels along the next strip. Every retail
+    // tunnel builds triangles with finite corners at every level of detail.
+    MM2_REQUIRE_GAME_DATA();
+    for (const char* name : {"london", "sf"}) {
+        auto city = city::loadCity(*test::gameData(), name);
+        ASSERT_TRUE(city) << name;
+        int tunnels = 0, junctions = 0;
+        for (std::size_t r = 1; r < city->psdl.rooms.size(); ++r) {
+            bool has = false;
+            for (const auto& a : city->psdl.rooms[r].attributes) {
+                if (a.type != city::PsdlAttrType::Tunnel)
+                    continue;
+                has = true;
+                ++tunnels;
+                junctions += (a.subtype == 0 && !a.args.empty() && a.args[0] == 10);
+            }
+            if (!has)
+                continue;
+            const auto draw = city::buildSdlRoomDraw(city->psdl, r);
+            for (const auto& v : draw.vertices)
+                ASSERT_TRUE(std::isfinite(v.position.x) && std::isfinite(v.position.y) &&
+                            std::isfinite(v.position.z))
+                    << name << " room " << r;
+            EXPECT_FALSE(draw.lods[0].empty()) << name << " room " << r;
+        }
+        EXPECT_GT(tunnels, 50) << name;
+        EXPECT_GT(junctions, 0) << name;
+    }
+}
+
+TEST(ParityRenderingFx, LensFlaresFollowLtLensFlare) {
+    // ltLensFlare(20): flare 0 sits on the light (0.3 across), flare 1 is
+    // mirrored through the centre (0.25); the rest come from ltFlare::Random.
+    fx::Rand rng(7);
+    const fx::LensFlare flare(20, rng);
+    ASSERT_EQ(flare.flares().size(), 20u);
+    EXPECT_FLOAT_EQ(flare.flares()[0].along, 1.0f);
+    EXPECT_FLOAT_EQ(flare.flares()[0].size, 0.3f);
+    EXPECT_FLOAT_EQ(flare.flares()[1].along, -1.0f);
+    for (const auto& f : flare.flares()) {
+        EXPECT_GE(f.reach, 1.5f);
+        EXPECT_LE(f.brightness, 1.0f);
+    }
+    // A light straight ahead at the centre of the screen draws every flare
+    // that reaches it; a dim one draws nothing.
+    const Mat44 viewProj = Mat44::perspective(1.0f, 4.0f / 3.0f, 0.1f, 100.0f, true);
+    std::vector<fx::LensFlareQuad> quads;
+    flare.draw({0, 0, -10}, {1, 0, 0}, 1.0f, viewProj, 4.0f / 3.0f, quads);
+    EXPECT_EQ(quads.size(), 20u);
+    EXPECT_NEAR(quads[0].min.x * (4.0f / 3.0f), -0.3f, 1e-5f);
+    quads.clear();
+    flare.draw({0, 0, -10}, {1, 0, 0}, 0.05f, viewProj, 4.0f / 3.0f, quads);
+    EXPECT_TRUE(quads.empty());
+    // ltLight::ComputeIntensity: 25 / d^2 x cos^3, less the threshold.
+    EXPECT_NEAR(fx::spotIntensity({0, 0, 0}, {0, 0, 1}, {0, 0, 5}, 0.05f), 1.0f - 0.05f, 1e-6f);
+    EXPECT_EQ(fx::spotIntensity({0, 0, 0}, {0, 0, -1}, {0, 0, 5}, 0.05f), 0.0f);
+}
+
+TEST(ParityRenderingFx, LightingFilesLoadOverThePreviousTable) {
+    // datParser::Load keeps the fields a .ltNN lacks; a missing file keeps
+    // the whole table (cityTimeWeatherLighting's constructor values first).
+    const auto base = city::defaultLighting();
+    EXPECT_EQ(base.ambient, 0xFF101010u);
+    EXPECT_NEAR(base.fill1Heading, 2.0943952f, 1e-6f);
+    const auto partial = city::parseLighting("type: a\nlt00 {\n\tKeyHeading 1.5\n}\n", nullptr, &base);
+    ASSERT_TRUE(partial);
+    EXPECT_FLOAT_EQ(partial->keyHeading, 1.5f);
+    EXPECT_FLOAT_EQ(partial->keyPitch, base.keyPitch);
+    EXPECT_EQ(partial->ambient, base.ambient);
 }
