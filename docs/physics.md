@@ -529,8 +529,9 @@ steady circle vpsemi's trailer then lags (its body velocity reads 10 m/s at
 Impacts see the inverse mass matrix through the joint while it holds
 (`phColliderJointed::GetInvMassMatrix`), and the tractor and its trailer do
 not collide with each other (`dgPhysManager::Update`). The
-Ctrl+B debug key that breaks the joint (`dgTrailerJoint::Update`) is not
-ported. TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
+Ctrl+B debug key breaks every holding joint in the frame it goes down
+(`dgTrailerJoint::Update` checks it first and then does nothing else that
+sample). TWHL4/TWHL5 (vpcentury's second trailer axle) are neither simulated
 nor drawn: `vehTrailerInstance::Init` loads only TWHL0–3 (drawing them at
 their offset from TWHL2/3 is mm2hook's addition). A car's own WHL4/WHL5
 (`vehCarModel::Draw`) are drawn with the WHL2/WHL3 matrices moved back along
@@ -593,6 +594,11 @@ narrow phase and the impact response are ports of the `phBound` family,
   (building walls are the PSDL's facade bounds). An object's sphere is its
   position and its model's radius (`lvlInstance::GetRadius`, the geometry
   set's), which a terrain-local bound raises to its box's farther corner.
+  A car's sphere is centred one up axis above its centre of mass
+  (`vehCarModel::GetPosition`), a trailer's on its centre of mass
+  (`vehTrailerInstance::GetPosition`); their radii are the "body" and
+  "trailer" geometries', which their bounds do not raise. The car's room
+  follows the same point (`vehCar::Update`).
   Materials a text bound file adds are `lvlMaterial`s: the file's
   elasticity, friction, effect and sound, drag 0, width 1, height 0, depth 0
   and no particles.
