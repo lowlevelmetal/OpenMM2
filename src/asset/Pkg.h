@@ -44,13 +44,16 @@ struct PkgVertex {
     Vec3 position;
     Vec3 normal;                     // zero when the format has no normals
     Vec2 uv;                         // first texture coordinate set; D3D convention (v down)
-    std::uint32_t color = 0xFFFFFFFF; // diffuse colour (ARGB) when present, else white
+    // Diffuse colour (ARGB) when present, else white. The file stores it with
+    // red in the low byte; modGetStatic swaps red and blue on load.
+    std::uint32_t color = 0xFFFFFFFF;
 };
 
 // One draw: an indexed primitive list with its own vertex array.
 struct PkgPacket {
-    // Primitive type as stored. Every retail file uses 3, which is an indexed
-    // triangle list (index count is always a multiple of three).
+    // Primitive type as stored; modGetStatic draws it as D3DPRIMITIVETYPE
+    // value + 1. Every retail file uses 3, an indexed triangle list (index
+    // count is always a multiple of three).
     std::uint32_t primitive = 3;
     std::vector<PkgVertex> vertices;
     std::vector<std::uint16_t> indices;
@@ -58,8 +61,9 @@ struct PkgPacket {
 
 // Packets sharing one material.
 struct PkgSection {
-    std::uint16_t flags = 0;       // always 0 in retail files
-    std::uint32_t shaderIndex = 0; // index into a paint job's material list
+    // Index into a paint job's material list. MM2 keeps only the low byte of
+    // the stored u32 (modGetStatic).
+    std::uint32_t shaderIndex = 0;
     std::vector<PkgPacket> packets;
 };
 
@@ -77,17 +81,35 @@ struct PkgMesh {
     Aabb bounds() const;
 };
 
+// A material as modShader::Load builds it. Full materials store a
+// D3DMATERIAL7 (diffuse, ambient, specular, emissive, power); MM2 rounds each
+// diffuse, specular and emissive component down to a multiple of 1/32 (below
+// 0.05 becomes 0, above 0.95 becomes 1). Compact materials store diffuse,
+// specular and emissive as bytes (no rounding); light glows (fxltglow) put
+// their colour in the emissive slot. Either way MM2 then replaces the
+// ambient colour with the diffuse one.
 struct PkgMaterial {
     std::string texture; // texture base name (no extension); empty = untextured
     Vec4 diffuse{1, 1, 1, 1};
     Vec4 ambient{1, 1, 1, 1};
-    // Compact (byte colour) materials store three colours; the third is
-    // assumed to be specular, following Direct3D's D3DMATERIAL7 field order.
-    // Light glow materials (fxltglow) put their colour there with power 0.
     Vec4 specular{0, 0, 0, 0};
     Vec4 emissive{0, 0, 0, 0};
     float shininess = 0;
 };
+
+// The shader table shared by a package's "shaders" chunk and
+// anim/<pedestrian>.shaders (modShader::LoadShaderSet).
+struct ShaderTable {
+    // Raw header word: low 7 bits = paint job count, 0x80 = compact (byte
+    // colour) materials.
+    std::uint32_t type = 0;
+    std::uint32_t perPaintjob = 0;
+    std::vector<std::vector<PkgMaterial>> paintjobs; // paintjobs[p][shader]
+};
+
+// Reads a shader table at the start of `data`; `consumed` receives its size.
+std::optional<ShaderTable> parseShaderTable(std::span<const std::byte> data, std::size_t* consumed = nullptr,
+                                            std::string* error = nullptr);
 
 struct PkgXref {
     Mat34 transform;
@@ -112,9 +134,13 @@ struct Pkg {
     // Non-fatal oddities found while parsing (e.g. wrong totals in a header).
     std::vector<std::string> warnings;
 
-    const PkgMesh* find(std::string_view name) const;          // exact chunk name, case-insensitive
     const PkgMesh* find(std::string_view part, Lod lod) const; // part "" for plain LOD meshes
-    // The best available LOD of `part`, preferring `lod` and then higher detail.
+    const PkgMesh* find(std::string_view name) const;          // exact chunk name, case-insensitive
+    // The mesh MM2 uses for `part` at `lod` (lvlInstance::GetGeomSet): a
+    // missing level takes the next less detailed one that exists (VL fills L,
+    // L fills M, M fills H), never a more detailed one, so a part with only
+    // a high LOD has nothing at the lower levels. Parts without a LOD suffix
+    // are returned for any level.
     const PkgMesh* findBest(std::string_view part, Lod lod = Lod::High) const;
     // Distinct part names in file order.
     std::vector<std::string> parts() const;
