@@ -1095,8 +1095,8 @@ private:
             wi.brakeCoef = w.params.brakeCoef;
         }
         // vehSurfaceAudio::UpdateTireWobble: damage past MedDamage.
-        const float damageRange = sim.damage.maxScaled() - sim.damage.medScaled();
-        in.tireWobble = damageRange > 0.0f ? (sim.damage.currentDamage - sim.damage.medScaled()) / damageRange : 0.0f;
+        const float damageRange = sim.damage.maxDamage() - sim.damage.medDamage();
+        in.tireWobble = damageRange > 0.0f ? (sim.damage.currentDamage - sim.damage.medDamage()) / damageRange : 0.0f;
         in.wheelRadius = sim.wheels[2].radius;
         in.wrecked = sim.damage.wrecked();
         in.velocity = sim.body.ics.frameVelocity;

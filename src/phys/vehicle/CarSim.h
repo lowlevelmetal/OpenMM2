@@ -55,7 +55,8 @@ struct CarImpact {
 // the list (12 entries) until RelaxTime (0.2 s) passes without such a
 // re-trigger, its weaker impacts adding damage silently. CurrentDamage falls
 // by RegenerateRate per second; damage is the 0..1 fraction between
-// MedDamage and MaxDamage and the car is wrecked at MaxDamage.
+// MedDamage and MaxDamage and the car is wrecked at MaxDamage. (MM2 has no
+// global damage scale; Midtown Madness 1's GlobalDamageScale is gone.)
 struct CarDamage {
     // ?RelaxTime@vehCarDamage@@2MA and the impact list's size.
     static constexpr float kRelaxTime = 0.2f;
@@ -71,15 +72,14 @@ struct CarDamage {
 
     CarDamageParams params;
     float currentDamage = 0.0f;
-    float damage = 0.0f;      // 0..1
-    float globalScale = 1.0f; // ?GlobalDamageScale@@3MA
+    float damage = 0.0f; // 0..1
     // vehCarDamage's enable flag: impacts are recorded (the game turns it on for a
     // race unless damage is off).
     bool enabled = true;
     std::array<ImpactInfo, kMaxImpacts> impacts{};
 
-    float maxScaled() const { return params.maxDamage * globalScale; }
-    float medScaled() const { return params.medDamage * globalScale; }
+    float maxDamage() const { return params.maxDamage; }
+    float medDamage() const { return params.medDamage; }
     // vehCarDamage::ClearDamage (and Reset).
     void reset();
     // vehCarDamage::AddDamage.
@@ -87,7 +87,11 @@ struct CarDamage {
     // vehCarDamage::Update's bookkeeping: regeneration, the damage fraction
     // and the impact timers (per sample).
     void update(float dt);
-    bool wrecked() const { return enabled && maxScaled() <= currentDamage; }
+    // vehCarDamage::Update's test (it ejects the car's one-shot parts from
+    // then on): damage enabled and MaxDamage reached.
+    bool wrecked() const { return enabled && params.maxDamage <= currentDamage; }
+    // mmPlayer::IsMaxDamaged: strictly past MaxDamage.
+    bool maxDamaged() const { return params.maxDamage < currentDamage; }
 };
 
 // vehAxle: anti-roll coupling between an axle's wheels (TorqueCoef,

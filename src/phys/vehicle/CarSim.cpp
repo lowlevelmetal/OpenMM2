@@ -42,7 +42,7 @@ void CarDamage::update(float dt) {
     currentDamage = currentDamage - dt * params.regenerateRate;
     if (currentDamage < 0.0f)
         currentDamage = 0.0f;
-    const float med = medScaled(), max = maxScaled();
+    const float med = params.medDamage, max = params.maxDamage;
     float f = (currentDamage - med) / (max - med);
     damage = f < 0.0f ? 0.0f : (1.0f < f ? 1.0f : f);
     for (ImpactInfo& e : impacts) {
@@ -198,9 +198,11 @@ void CarSim::reset(const Mat34& model) {
     handBrake = 0.0f;
     m_speed = 0.0f;
     m_speedMph = 0.0f;
-    // vehCarSim::RestoreImpactParams.
-    ics.elasticity = params.boundElasticity;
-    ics.friction = params.boundFriction;
+    // vehCarSim::RestoreImpactParams: the bound's friction and elasticity.
+    if (m_bound) {
+        m_bound->setElasticity(params.boundElasticity);
+        m_bound->setFriction(params.boundFriction);
+    }
     // vehCar::Reset resets the collider: the next sweep starts here.
     body.syncBoundMatrix();
     body.collider.reset();
@@ -311,7 +313,7 @@ void CarSim::beforeIntegrate(Body& b, float, const World&) {
             brakes = 1.0f;
             steering = -1.0f;
         }
-        if (damage.wrecked()) {
+        if (damage.enabled && damage.maxDamaged()) {
             engine.throttle = 0.0f;
             steering = 0.0f;
             brakes = 0.0f;
@@ -380,6 +382,17 @@ void CarSim::afterIntegrate(Body& b, float dt, const World& world) {
         splash.activate(*m_waterLevel);
     splash.update(ics, dt);
     damage.update(dt);
+    // vehCarDamage::Update (bWobble, on): damaged wheels wobble, less as the
+    // front-left wheel spins faster; the front-left and back-right ones one
+    // way, the other two the other way.
+    float spin = std::abs(wheels[0].rotationSpeed) * dt;
+    spin = (spin + spin) * 0.31830987f;
+    spin = spin < 0.0f ? 0.0f : (1.0f < spin ? 1.0f : spin);
+    const float wobble = (1.0f - spin) * damage.damage;
+    wheels[0].wobble = wobble * -0.15f;
+    wheels[2].wobble = wobble * 0.35f;
+    wheels[1].wobble = wobble * 0.35f;
+    wheels[3].wobble = wobble * -0.15f;
 }
 
 void CarSim::updateAxles() {
