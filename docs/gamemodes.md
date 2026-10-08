@@ -365,9 +365,14 @@ HUD, car):
   delivered!" (117), "<name> delivered the Gold!" (137). The gold spins at
   3 rad/s 1.5 m above its place (`mmPowerupInstance`); the bases are
   billboards 12 x 7.5 x 12 (`mmBillInstance`); the arrow points at the gold,
-  or at the carrier's base. The team totals ("COPS" / "ROBBERS", or "BLUE" /
-  "RED") show in blue and red at the top left (mmCRHUD's corner inferred;
-  its roster of names is not drawn), the time limit's clock top centre.
+  or at the carrier's base. `mmCRHUD` (its corner at the top left,
+  inferred): in team games "COPS" / "ROBBERS" or "BLUE" / "RED" in blue and
+  red (font string 262) with the team totals under them; then the player's
+  name (blue, red on team 1) and score, and the roster of the other players
+  in their colours with their scores and "$" (string 268) by the gold
+  carrier. The numbers are yellow Gill Sans MT (20 and 16 pixels). While
+  the player carries the gold a `wpobj_gold` spins (0.05 rad a frame) 5.5 m
+  up and 13.1 m ahead of the camera. The time limit's clock is top centre.
   The announcer's Cops & Robbers lines are loaded but build 3393 never
   plays them.
 
@@ -502,9 +507,8 @@ Not implemented, all verified to exist in MM2:
   `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
   hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
   the renderer draws it.
-* The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`),
-  the CD player display (`mmCDPlayer`) and the Cops & Robbers roster of
-  names (`mmCRHUD`).
+* The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`)
+  and the CD player display (`mmCDPlayer`).
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

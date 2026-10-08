@@ -1756,6 +1756,26 @@ private:
             d.redScore = m_cr->score(game::session::CrTeam::Robber);
             d.playerScore = m_cr->playerScore(m_crSelf);
             d.timeLeft = m_cr->timeRemaining();
+            // mmCRHUD::SetName (red on team 1), AddPlayer / SetScore /
+            // ActivateRosterGold for the others, ActivateGold while the
+            // player carries the gold.
+            d.playerName = ctx.netGame->player(static_cast<std::uint8_t>(m_crSelf))
+                               ? ctx.netGame->player(static_cast<std::uint8_t>(m_crSelf))->name
+                               : std::string();
+            d.playerRed = teams && m_crMyTeam == game::session::CrTeam::Robber;
+            d.carryingGold = m_cr->goldCarrier() == m_crSelf;
+            for (const auto& p : ctx.netGame->players()) {
+                if (p.id == m_crSelf)
+                    continue;
+                game::session::CrDisplay::RosterEntry r;
+                r.name = p.name;
+                r.score = m_cr->playerScore(p.id);
+                r.color = game::session::hud::netIconColor(p.id);
+                if (teams)
+                    r.color = m_cr->teamOf(p.id) == game::session::CrTeam::Robber ? 0xFFEF0000u : 0xFF0000EFu;
+                r.gold = m_cr->goldCarrier() == p.id;
+                d.roster.push_back(std::move(r));
+            }
             m_hud->setCopsAndRobbers(std::move(d));
         }
     }

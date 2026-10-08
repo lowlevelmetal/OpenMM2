@@ -241,6 +241,21 @@ struct CrDisplay {
     bool copsVsRobbers = true; // "COPS" / "ROBBERS", else "BLUE" / "RED"
     int blueScore = 0, redScore = 0, playerScore = 0;
     float timeLeft = -1.0f; // the time limit's clock (none below 0)
+    // mmCRHUD::SetName: the player's name, blue, or red on team 1.
+    std::string playerName;
+    bool playerRed = false;
+    // mmCRHUD::AddPlayer / SetScore / ActivateRosterGold: the other players
+    // in the order they joined (seven rows), each in its icon colour
+    // (0xAARRGGBB) with its score, "$" on the gold carrier's row.
+    struct RosterEntry {
+        std::string name;
+        int score = 0;
+        std::uint32_t color = 0xFFFFFFFFu;
+        bool gold = false;
+    };
+    std::vector<RosterEntry> roster;
+    // mmCRHUD::ActivateGold: the player carries the gold.
+    bool carryingGold = false;
 };
 
 class Hud {
@@ -321,6 +336,7 @@ private:
     void drawChat(render::Overlay2D& ov, ui::TextRenderer& text);
     void drawCrObjects(const Camera& camera);
     void drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art);
+    void drawCrGoldIcon(const Camera& camera);
     void trackLapTimes(const Session& session);
     ui::FontSpec font(std::uint32_t id, const char* fallback) const;
     float px(float pixels) const { return pixels * m_options.pixelSize; }
@@ -347,6 +363,7 @@ private:
     float m_lastLapSeen = 0.0f;
     std::array<std::string, 5> m_chat; // mmHUD's chat node (+0x8b0)
     CrDisplay m_cr;
+    Mat34 m_crGoldSpin; // mmCRHUD +0x148: the HUD gold's spin and place in camera space
     bool m_chatShown = false;
     float m_chatTime = 0.0f;
 };

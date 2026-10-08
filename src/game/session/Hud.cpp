@@ -477,6 +477,8 @@ Hud::Hud(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
     m_map = loadHudMapParams(vfs, m_city);
     m_options.zoomedIn = m_map.zoomIn;
     m_dash = loadDashParams(vfs, m_vehicle);
+    // mmCRHUD::Init: the gold sits 5.5 m up and 13.1 m ahead in camera space.
+    m_crGoldSpin.m3 = {0.0f, 5.5f, -13.1f};
     if (auto bytes = vfs.readAll("tune/" + m_vehicle + ".info")) {
         const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
         if (auto info = parseVehicleInfo(text))
@@ -551,6 +553,8 @@ void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerSt
     drawIcons(session, camera, blips);
     if (m_options.visible)
         drawArrow(session, camera);
+    if (m_cr.enabled && m_options.visible)
+        drawCrGoldIcon(camera);
     // The dash view is a child of mmHUD's container node: mmHUD::Disable
     // hides it with the rest.
     if (m_options.dashboard && m_options.visible)
@@ -1168,27 +1172,78 @@ void Hud::drawIconLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Se
     }
 }
 
+void Hud::drawCrGoldIcon(const Camera& camera) {
+    // mmCRHUD::UpdateGold (PostUpdate, every frame while ActivateGold has
+    // its node on): turn 0.05 rad about Y per frame, then place it in the
+    // camera's frame; wpobj_gold without depth test. Lit in the original
+    // (EnableLighting); drawn unlit here like the gold in the world.
+    if (!m_cr.carryingGold)
+        return;
+    const GpuModel* model = m_models.get("wpobj_gold");
+    const GpuMesh* mesh = model ? model->find("", asset::Lod::High) : nullptr;
+    if (!mesh)
+        return;
+    const Vec3 at = m_crGoldSpin.m3;
+    m_crGoldSpin.m3 = {};
+    m_crGoldSpin = m_crGoldSpin * Mat34::rotationY(0.05f); // Matrix34::Rotate(YAXIS, 0.05)
+    m_crGoldSpin.m3 = at;
+    drawFlat(m_device, m_textures, *mesh, model->materials(0), m_crGoldSpin * camera.transform, false);
+}
+
 void Hud::drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art) {
-    // mmCRHUD::Init: "COPS" / "ROBBERS" (Cops vs. Robbers) or "BLUE" / "RED"
-    // in blue and red at 0 and 0.1 of the screen, each team's total under it
-    // (0.05, 0.15), from the node's corner (placed at the top left here,
-    // inferred; the roster of names and the gold icon are not drawn). In
-    // Free-For-All the player's own score. The time limit's clock is drawn
-    // top centre as mmHUD's.
+    // mmCRHUD::Init, in fractions of the screen from its top left corner
+    // (the node's corner: the top left, inferred). Team games: "COPS" /
+    // "ROBBERS" (Cops vs. Robbers) or "BLUE" / "RED" in blue and red at 0
+    // and 0.1 (font string 262), each team's total under it (0.05, 0.15);
+    // the rest starts 0.25 lower. Then the player's name at 12 / 640 of the
+    // width, blue or red (mmCRHUD::SetName), the player's score under it
+    // (+0.05) and the roster from +0.1: per row the "$" (string 268,
+    // yellow) at the left for the gold carrier, the name at 16 / 640 (font
+    // string 263) in the player's colour and its score 0.025 under it,
+    // rows 0.0625 apart. The numbers are yellow Gill Sans MT (mmNumberFont
+    // with 0xffff00), 20 pixels for the totals and the player's score, 16
+    // for the roster.
     const render::UiLayout& l = ov.layout();
-    const float h = l.bottom - l.top;
-    const ui::FontSpec f = font(251, "Gill Sans MT, 12, 22, 0, 700");
+    const float w = l.right - l.left, h = l.bottom - l.top;
+    const ui::FontSpec labelFont = font(262, "Gill Sans MT, 12, 20, 0, 700");
+    const ui::FontSpec rosterFont = font(263, "Gill Sans MT, 10, 16, 0, 400");
+    auto numberFont = [&](int pixels) {
+        ui::FontSpec f;
+        f.face = "Gill Sans MT";
+        f.size = pixels;
+        f.size2 = std::max(1, static_cast<int>(std::lround(static_cast<float>(pixels) * m_options.pixelSize)));
+        return f;
+    };
+    const ui::FontSpec bigNumbers = numberFont(20), smallNumbers = numberFont(16);
     const std::uint32_t blue = render::packColor(0, 0, 255), red = render::packColor(255, 0, 0);
+    const std::uint32_t yellow = render::packColor(255, 255, 0);
+    auto at = [&](float x, float y) { return Vec2{l.left + x * w, l.top + y * h}; };
+    auto put = [&](const ui::FontSpec& f, const std::string& s, Vec2 p, std::uint32_t colour) {
+        text.draw(ov, f, s, p.x, p.y, colour, ui::Align::Left);
+    };
+    float base = 0.0f;
     if (m_cr.teams) {
         const bool cvr = m_cr.copsVsRobbers;
-        text.draw(ov, f, m_strings.get(cvr ? 264 : 266, cvr ? "COPS" : "BLUE"), l.left, l.top, blue,
-                  ui::Align::Left);
-        text.draw(ov, f, std::format("{}", m_cr.blueScore), l.left, l.top + 0.05f * h, blue, ui::Align::Left);
-        text.draw(ov, f, m_strings.get(cvr ? 265 : 267, cvr ? "ROBBERS" : "RED"), l.left, l.top + 0.1f * h, red,
-                  ui::Align::Left);
-        text.draw(ov, f, std::format("{}", m_cr.redScore), l.left, l.top + 0.15f * h, red, ui::Align::Left);
-    } else {
-        text.draw(ov, f, std::format("{}", m_cr.playerScore), l.left, l.top, kNumberColor, ui::Align::Left);
+        put(labelFont, m_strings.get(cvr ? 264 : 266, cvr ? "COPS" : "BLUE"), at(0.0f, 0.0f), blue);
+        put(bigNumbers, std::format("{}", m_cr.blueScore), at(0.0f, 0.05f), yellow);
+        put(labelFont, m_strings.get(cvr ? 265 : 267, cvr ? "ROBBERS" : "RED"), at(0.0f, 0.1f), red);
+        put(bigNumbers, std::format("{}", m_cr.redScore), at(0.0f, 0.15f), yellow);
+        base = 0.25f;
+    }
+    const float nameX = 12.0f / 640.0f;
+    if (!m_cr.playerName.empty())
+        put(labelFont, m_cr.playerName, at(nameX, base), m_cr.playerRed ? red : blue);
+    put(bigNumbers, std::format("{}", m_cr.playerScore), at(nameX, base + 0.05f), yellow);
+    float y = base + 0.05f + 0.05f;
+    const float rosterX = 16.0f / 640.0f;
+    for (std::size_t i = 0; i < m_cr.roster.size() && i < 7; ++i) {
+        const auto& r = m_cr.roster[i];
+        if (r.gold)
+            put(rosterFont, m_strings.get(268, "$"), at(0.0f, y), yellow);
+        auto channel = [&](int shift) { return static_cast<std::uint8_t>((r.color >> shift) & 0xFFu); };
+        put(rosterFont, r.name.substr(0, 15), at(rosterX, y), render::packColor(channel(16), channel(8), channel(0)));
+        put(smallNumbers, std::format("{}", r.score), at(rosterX, y + 0.025f), yellow);
+        y += 0.025f + 0.0375f;
     }
     if (m_cr.timeLeft >= 0.0f)
         drawClock(ov, art, m_cr.timeLeft, (l.left + l.right) * 0.5f, l.top);
