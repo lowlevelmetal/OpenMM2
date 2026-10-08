@@ -124,6 +124,7 @@ bool Profile::load(const std::filesystem::path& path) {
     camera = static_cast<int>(std::clamp<long long>(ini.getInt("Prefs", "Camera", 0), 0, 2));
     wideAngle = ini.getBool("Prefs", "WideAngle", false);
     dashboard = ini.getBool("Prefs", "Dashboard", false);
+    mirror = ini.getBool("Prefs", "Mirror", false);
 
     for (const auto& key : ini.keys("Races")) {
         const std::string value = ini.getString("Races", key); // split() returns views into it
@@ -181,6 +182,7 @@ bool Profile::save() const {
     ini.setInt("Prefs", "Camera", camera);
     ini.setBool("Prefs", "WideAngle", wideAngle);
     ini.setBool("Prefs", "Dashboard", dashboard);
+    ini.setBool("Prefs", "Mirror", mirror);
     // The times in full (MM2's mmPlayerRecord keeps the float), so later
     // finishes compare against the time that was driven.
     for (const auto& [key, r] : races)

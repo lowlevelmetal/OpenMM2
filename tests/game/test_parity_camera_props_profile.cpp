@@ -177,15 +177,18 @@ TEST(ParityProfile, ViewSettingsAreKeptPerDriver) {
     EXPECT_EQ(p->camera, 0);
     EXPECT_FALSE(p->wideAngle);
     EXPECT_FALSE(p->dashboard);
+    EXPECT_FALSE(p->mirror);
     p->camera = 2;
     p->wideAngle = true;
     p->dashboard = true;
+    p->mirror = true;
     ASSERT_TRUE(p->save());
     Profile q;
     ASSERT_TRUE(q.load(p->file));
     EXPECT_EQ(q.camera, 2);
     EXPECT_TRUE(q.wideAngle);
     EXPECT_TRUE(q.dashboard);
+    EXPECT_TRUE(q.mirror);
     std::filesystem::remove_all(dir);
 }
 

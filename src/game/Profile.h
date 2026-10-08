@@ -13,7 +13,7 @@
 //   <userDataDir>/players/<file>.ini
 //   [Driver]   Name, NetName
 //   [Prefs]    Vehicle, Color, Automatic, Difficulty, City, Mode, Race,
-//              Camera, WideAngle, Dashboard
+//              Camera, WideAngle, Dashboard, Mirror
 //   [Races]    <city>.<mode>.<index> = <time>,<vehicle>,<score>,<passed>
 //
 // mode is one of blitz, circuit, race (checkpoint), crash. Files written by
@@ -73,6 +73,9 @@ struct Profile {
     int camera = 0;         // the cycled car camera: 0 near, 1 point of view, 2 far
     bool wideAngle = false; // letterboxed wide view
     bool dashboard = false; // dashboard view
+    // The rear-view mirror on (+0x716C; mmViewMgr::Init leaves the mirror
+    // node active only when it is set; off for a new driver).
+    bool mirror = false;
 
     // Records keyed as in the file format above.
     std::map<std::string, RaceRecord> races;
