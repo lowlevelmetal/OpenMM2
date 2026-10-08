@@ -3,8 +3,8 @@
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
 Summary: 2424 reachable functions in 68 classes and the global namespace;
-ported 217 (of which newly ported 5), replaced 1184, not needed 639,
-open 8, handed over 376.
+ported 219 (of which newly ported 7), replaced 1188, not needed 639,
+open 0, handed over 378.
 
 "Handed over" is this record's extra status: the function belongs to a
 game subsystem the coverage tool did not route it to (an unnamed piece of
@@ -142,7 +142,7 @@ MM2 has two generators:
 
 | What | Subsystem | MM2 | OpenMM2 |
 | --- | --- | --- | --- |
-| The menu pointer | frontend | `sfPointer::ResChange`, `Update`, `Cull`: texture/midcursor.tga, colour keyed, drawn at the mouse (held 4 pixels inside the screen) in full screen only, not while the IME composes; in a window (-window) Windows' cursor shows. | open: OpenMM2 always shows the system cursor (record row above). |
+| The menu pointer | frontend | `sfPointer::ResChange`, `Update`, `Cull`: texture/midcursor.tga, colour keyed, drawn at the mouse (held 4 pixels inside the screen) in full screen only, not while the IME composes; in a window (-window) Windows' cursor shows. | ported (new): `app/frontend/MenuPointer.cpp`, drawn last by `Frontend::draw` when borderless or full screen, with the system cursor hidden. OpenMM2 always showed the system cursor. |
 | Start-up graphics defaults | frontend | `AutoDetect`: far clip 400/600/800/1000 m, object detail and cloud shadows by CPU MHz (less 150 for software rendering), lighting quality 1-3, sky, environment maps and texture quality by video memory and RAM. | deviation already recorded by frontend-ui (top tier always). |
 | Hookmen | ai | `mcHookman` (circuit, hideout and return driving), created per the [Hookmen] count of the race's .aimap. | not needed: no retail file asks for one. |
 | Unclamped ElapsedTime | hud-views, world-objects, vehicle-physics, frontend | See datTimeManager. | differs only on long frames and while paused. |
@@ -229,7 +229,9 @@ One row per class, or per group of methods where a class splits. Every method is
 | `parCsvFile` | 6 | ported | `data/` CSV readers | Cited. |
 | `Quaternion` | 2 | handed over | world-objects (ragdolls) / game-flow (net) | Matrix34::Interpolate: the ragdoll IK solvers (crArmData, crLegData, crSpineData, crHeadData) and mmNetObject::Predict; OpenMM2's network prediction has its own slerp (`net/Snapshot.cpp`). |
 | `Random` | 2 | ported | `audio/AngelRandom` | Section above. |
-| `sfPointer` (the rest) | 8 | open | - | The menu pointer: ResChange loads texture/midcursor.tga (colour keyed) and limits it to the screen less 4 pixels; Update declares it as a 2D bitmap only when full screen (not -window) and the IME is not composing; Cull draws it at the mouse. OpenMM2 shows the system cursor in every mode. Needs a frontend overlay sprite and hiding the system cursor in full screen. |
+| `sfPointer` (Cull, ResChange) | 2 | ported (new) | `app/frontend/MenuPointer.cpp` `drawMenuPointer` | The menu pointer: ResChange loads texture/midcursor.tga and limits its corner to the screen less 4 pixels; Update declares it only when not in a window (and not while the IME composes); Cull copies it colour keyed with its top-left corner at the mouse. OpenMM2 now draws it on top of the menus and hides the system cursor when the window is borderless or full screen; in a decorated window the system cursor shows, as Windows' did under -window. The IME condition is not reproduced. |
+| `sfPointer` (GetPointerHeight, WaitForRelease) | 2 | handed over | frontend | GetPointerHeight (0.05 of the screen) is read by UIBMButton::Update; WaitForRelease (ignore the mouse until the button is released) by UICWArray::AcceptCapture. |
+| `sfPointer` (Init, 'scalar_deleting_destructor', sfPointer, ~sfPointer) | 4 | replaced | `app/frontend` | Construction and field defaults of the pointer node. |
 | `sfPointer` (Update) | 1 | ported | `ui/Widgets.cpp` | Mouse hits (frontend record). |
 | `Stream` (the rest) | 11 | replaced | `vfs/` | Buffered file streams, archive streams, open-file dump. |
 | `Stream` (GetCh, Open, Read, Seek) | 5 | ported | `vfs/`, `core/` readers | Cited. |
@@ -329,7 +331,7 @@ The decompiler splits a function where it believes a call does not return (Displ
 | `aiPath::UpdatePedestrians` | ai | handed over | 0x5441c9 |
 | `aiPoliceOfficer::Push` | ai | handed over | 0x53e74e |
 | `aiRouteRacer::Init` | ai | handed over | 0x53d336, 0x53d35f |
-| `aiStuck::`scalar_deleting_destructor'` | ai | handed over | 0x56fca0, 0x56fcb0, 0x56fcc0 |
+| `aiStuck::'scalar_deleting_destructor'` | ai | handed over | 0x56fca0, 0x56fcb0, 0x56fcc0 |
 | `aiStuck::aiStuck` | ai | handed over | 0x56f9d0 |
 | `aiTrafficLightInstance::DrawGlow` | ai | handed over | 0x53cd09 |
 | `aiVehicleAmbient::Type` | ai | handed over | 0x551d00, 0x551d20, 0x551d30, 0x551d50, 0x551d70, 0x551d80 |
@@ -338,7 +340,7 @@ The decompiler splits a function where it believes a call does not return (Displ
 | `aiVehiclePhysics::LocateWayPtFromRoad` | ai | handed over | 0x55d896 |
 | `aiVehicleSpline::DistanceToIntersection` | ai | handed over | 0x56a2e0 |
 | `aiVehicleSpline::DistanceToVehicle` | ai | handed over | 0x56a002, 0x56a0d1, 0x56a194, 0x56a26a |
-| `Spline::`scalar_deleting_destructor'` | world-objects | handed over | 0x5232a0, 0x5232b0, 0x5232c0, 0x5232e0, 0x5232f0, 0x523300 |
+| `Spline::'scalar_deleting_destructor'` | world-objects | handed over | 0x5232a0, 0x5232b0, 0x5232c0, 0x5232e0, 0x5232f0, 0x523300 |
 | `aiCableCar::DistanceToIntersection` | world-objects | handed over | 0x540bac |
 | `aiCableCar::OkayToEnterIntersection` | world-objects | handed over | 0x540b51, 0x540b66, 0x540b71 |
 | `aiCableCar::SolveRailType` | world-objects | handed over | 0x540c25 |
@@ -379,7 +381,7 @@ The decompiler splits a function where it believes a call does not return (Displ
 | `pedAnimation::Load` | city-render | handed over | 0x57ab00, 0x57ab20, 0x57ab30 |
 | `pedAnimationInstance::Draw` | city-render | handed over | 0x57b410 |
 | vglBegin and 4 more callers | city-render | handed over | 0x4a5620, 0x4a5780, 0x4a5910, 0x4a59b0 |
-| `asCamera::`vector_deleting_destructor'` | hud-views | handed over | 0x4a32b0, 0x4a32c0, 0x4a32d0 |
+| `asCamera::'vector_deleting_destructor'` | hud-views | handed over | 0x4a32b0, 0x4a32c0, 0x4a32d0 |
 | `asViewCS::Update` | hud-views | handed over | 0x596562 |
 | `mmHUD::Init` | hud-views | handed over | 0x42d8f5 |
 | `mmPositions::Load` | hud-views | handed over | 0x52a2b0 |
@@ -392,7 +394,7 @@ The decompiler splits a function where it believes a call does not return (Displ
 | `Dialog_Serial::BuildComs` | frontend | handed over | 0x4fe45a |
 | `GraphicsOptions::GraphicsOptions` | frontend | handed over | 0x4f4f30 |
 | `GraphicsOptions::GraphicsOptions`, `GraphicsOptions::SetResolution` | frontend | handed over | 0x4f4b60 |
-| `MainMenu::`scalar_deleting_destructor'` | frontend | handed over | 0x506af0, 0x506b00, 0x506b10, 0x506b40, 0x506b50, 0x506b60, 0x506b90, 0x506ba0, 0x506bb0 |
+| `MainMenu::'scalar_deleting_destructor'` | frontend | handed over | 0x506af0, 0x506b00, 0x506b10, 0x506b40, 0x506b50, 0x506b60, 0x506b90, 0x506ba0, 0x506bb0 |
 | `MenuManager::GetFGColor` | frontend | handed over | 0x4e4f10 |
 | `MenuManager::GetFont` | frontend | handed over | 0x4e4d3d |
 | `MenuManager::ScanGlobalKeys` | frontend | handed over | 0x4e5755 |
@@ -439,7 +441,7 @@ The decompiler splits a function where it believes a call does not return (Displ
 | `mmJoystick::ResetAxisCapture` | input-ff | handed over | 0x530b97 |
 | `mmJoystick::SetDeadZone` | input-ff | handed over | 0x5307c2, 0x5307f1 |
 | `mmJoystick::inputPrepareDevice` | input-ff | handed over | 0x530623, 0x53066c, 0x5306c1, 0x530704 |
-| `mmMouseSteerBar::`scalar_deleting_destructor'` | input-ff | handed over | 0x534440 |
+| `mmMouseSteerBar::'scalar_deleting_destructor'` | input-ff | handed over | 0x534440 |
 | `AudCreature::UpdateAttenuation` | audio | handed over | 0x512a20, 0x512a40, 0x512a50 |
 | `AudImpact::GetAudImpactDataPtr` | audio | handed over | 0x511330, 0x511350, 0x511360 |
 | `DMusicObject::CreateComposer` | audio | handed over | 0x516e10 |
@@ -524,8 +526,8 @@ The decompiler splits a function where it believes a call does not return (Displ
 | `__fassign`, `__fltin` | infrastructure | replaced | 0x58c463 |
 | `__input`, `__whiteout` | infrastructure | replaced | 0x5895ff |
 | `_memcpy` | infrastructure | replaced | 0x58c809 |
-| `eh_vector_constructor_iterator' | infrastructure | not needed | 0x58258c |
-| `eh_vector_destructor_iterator' | infrastructure | not needed | 0x582103 |
+| 'eh_vector_constructor_iterator' | infrastructure | not needed | 0x58258c |
+| 'eh_vector_destructor_iterator' | infrastructure | not needed | 0x582103 |
 | `asFileIO::GetClassName` | infrastructure | replaced | 0x5979e0, 0x597a00, 0x597a10 |
 | `asNetwork::CloseSession` | infrastructure | replaced | 0x57156e |
 | `asNetwork::CreatePlayer` | infrastructure | replaced | 0x5709a4 |
@@ -579,20 +581,20 @@ Every reachable named method of the classes above, for the coverage tool (`Class
 
 - AgeDevice: `AgeDevice::AddRef`, `AgeDevice::ApplyStateBlock`, `AgeDevice::BeginScene`, `AgeDevice::BeginStateBlock`, `AgeDevice::CaptureStateBlock`, `AgeDevice::Clear`, `AgeDevice::ComputeSphereVisibility`, `AgeDevice::CreateStateBlock`, `AgeDevice::DeleteStateBlock`, `AgeDevice::DrawIndexedPrimitive`, `AgeDevice::DrawIndexedPrimitiveStrided`, `AgeDevice::DrawIndexedPrimitiveVB`, `AgeDevice::DrawPrimitive`, `AgeDevice::DrawPrimitiveStrided`, `AgeDevice::DrawPrimitiveVB`, `AgeDevice::EndScene`, `AgeDevice::EndStateBlock`, `AgeDevice::EnumTextureFormats`, `AgeDevice::GetCaps`, `AgeDevice::GetClipPlane`, `AgeDevice::GetClipStatus`, `AgeDevice::GetDirect3D`, `AgeDevice::GetInfo`, `AgeDevice::GetLight`, `AgeDevice::GetLightEnable`, `AgeDevice::GetMaterial`, `AgeDevice::GetRenderState`, `AgeDevice::GetRenderTarget`, `AgeDevice::GetTexture`, `AgeDevice::GetTextureStageState`, `AgeDevice::GetTransform`, `AgeDevice::GetViewport`, `AgeDevice::Initialize`, `AgeDevice::LightEnable`, `AgeDevice::Load`, `AgeDevice::MultiplyTransform`, `AgeDevice::PreLoad`, `AgeDevice::QueryInterface`, `AgeDevice::Release`, `AgeDevice::SetClipPlane`, `AgeDevice::SetClipStatus`, `AgeDevice::SetLight`, `AgeDevice::SetMaterial`, `AgeDevice::SetRenderState`, `AgeDevice::SetRenderTarget`, `AgeDevice::SetTexture`, `AgeDevice::SetTextureStageState`, `AgeDevice::SetTransform`, `AgeDevice::SetViewport`, `AgeDevice::ValidateDevice`
 - asCullable: `asCullable::Cull`
-- asCullManager: `asCullManager::DeclareBitmap`, `asCullManager::DeclareCamera`, `asCullManager::DeclareCullable`, `asCullManager::DeclareCullable2D`, `asCullManager::DeclareCullable2DFG`, `asCullManager::Reset`, `asCullManager::Update`, `asCullManager::`vector_deleting_destructor'`, `asCullManager::asCullManager`, `asCullManager::~asCullManager`
-- asFileIO: `asFileIO::AfterLoad`, `asFileIO::BeforeSave`, `asFileIO::FileIO`, `asFileIO::GetClassName`, `asFileIO::GetDirName`, `asFileIO::Load`, `asFileIO::Save`, `asFileIO::SetName`, `asFileIO::`scalar_deleting_destructor'`, `asFileIO::asFileIO`, `asFileIO::~asFileIO`
+- asCullManager: `asCullManager::DeclareBitmap`, `asCullManager::DeclareCamera`, `asCullManager::DeclareCullable`, `asCullManager::DeclareCullable2D`, `asCullManager::DeclareCullable2DFG`, `asCullManager::Reset`, `asCullManager::Update`, `asCullManager::'vector_deleting_destructor'`, `asCullManager::asCullManager`, `asCullManager::~asCullManager`
+- asFileIO: `asFileIO::AfterLoad`, `asFileIO::BeforeSave`, `asFileIO::FileIO`, `asFileIO::GetClassName`, `asFileIO::GetDirName`, `asFileIO::Load`, `asFileIO::Save`, `asFileIO::SetName`, `asFileIO::'scalar_deleting_destructor'`, `asFileIO::asFileIO`, `asFileIO::~asFileIO`
 - asMeshCardInfo: `asMeshCardInfo::Draw`, `asMeshCardInfo::DrawShadows`, `asMeshCardInfo::Init`
-- asNetObject: `asNetObject::Update`, `asNetObject::`scalar_deleting_destructor'`, `asNetObject::asNetObject`, `asNetObject::~asNetObject`
+- asNetObject: `asNetObject::Update`, `asNetObject::'scalar_deleting_destructor'`, `asNetObject::asNetObject`, `asNetObject::~asNetObject`
 - asNetwork: `asNetwork::BootPlayer`, `asNetwork::CloseSession`, `asNetwork::CreateInterface`, `asNetwork::CreatePlayer`, `asNetwork::CreateSession`, `asNetwork::Deallocate`, `asNetwork::DestroyPlayer`, `asNetwork::Disconnect`, `asNetwork::GetEnumPlayer`, `asNetwork::GetEnumPlayerData`, `asNetwork::GetEnumSession`, `asNetwork::GetEnumSessionLock`, `asNetwork::GetGameVersion`, `asNetwork::GetNetworkCaps`, `asNetwork::GetNumModems`, `asNetwork::GetNumPlayers`, `asNetwork::GetNumSessions`, `asNetwork::GetPlayerData`, `asNetwork::GetPlayerID`, `asNetwork::GetPlayerName`, `asNetwork::GetPlayers`, `asNetwork::GetProtocols`, `asNetwork::GetSessionData`, `asNetwork::GetSessionsAsynch`, `asNetwork::GetSessionsSynch`, `asNetwork::GetTime`, `asNetwork::HandleAppMessage`, `asNetwork::HandleSysMessage`, `asNetwork::Initialize`, `asNetwork::InitializeLobby`, `asNetwork::JoinLobbySession`, `asNetwork::JoinSession`, `asNetwork::Logout`, `asNetwork::PollLobby`, `asNetwork::QueryModems`, `asNetwork::SealSession`, `asNetwork::Send`, `asNetwork::SetEnumSessionLock`, `asNetwork::SetPlayerData`, `asNetwork::SetProtocol`, `asNetwork::SetSessionData`, `asNetwork::SetTime`, `asNetwork::StopSessionsAsynch`, `asNetwork::UnSealSession`, `asNetwork::Update`, `asNetwork::WaitForLobbyConnection`, `asNetwork::asNetwork`, `asNetwork::~asNetwork`
-- asNode: `asNode::AddChild`, `asNode::AfterLoad`, `asNode::BeforeSave`, `asNode::FileIO`, `asNode::GetChild`, `asNode::GetClassName`, `asNode::GetClassNameA`, `asNode::GetDirName`, `asNode::InsertChild`, `asNode::NumChildren`, `asNode::RemoveAllChildren`, `asNode::RemoveChild`, `asNode::ResChange`, `asNode::Reset`, `asNode::Save`, `asNode::SetName`, `asNode::Update`, `asNode::UpdatePaused`, `asNode::`vector_deleting_destructor'`, `asNode::asNode`, `asNode::~asNode`, `asNode::Load`
+- asNode: `asNode::AddChild`, `asNode::AfterLoad`, `asNode::BeforeSave`, `asNode::FileIO`, `asNode::GetChild`, `asNode::GetClassName`, `asNode::GetClassNameA`, `asNode::GetDirName`, `asNode::InsertChild`, `asNode::NumChildren`, `asNode::RemoveAllChildren`, `asNode::RemoveChild`, `asNode::ResChange`, `asNode::Reset`, `asNode::Save`, `asNode::SetName`, `asNode::Update`, `asNode::UpdatePaused`, `asNode::'vector_deleting_destructor'`, `asNode::asNode`, `asNode::~asNode`, `asNode::Load`
 - asRoot: `asRoot::Init`, `asRoot::IsPaused`, `asRoot::Reset`, `asRoot::SetPause`, `asRoot::TogglePause`, `asRoot::Update`
 - asSparkLut: `asSparkLut::Get`, `asSparkLut::Init`
-- asUnderlay: `asUnderlay::Cull`, `asUnderlay::SetBitmap`, `asUnderlay::`scalar_deleting_destructor'`, `asUnderlay::asUnderlay`, `asUnderlay::~asUnderlay`
-- Base: `Base::`scalar_deleting_destructor'`, `Base::~Base`
+- asUnderlay: `asUnderlay::Cull`, `asUnderlay::SetBitmap`, `asUnderlay::'scalar_deleting_destructor'`, `asUnderlay::asUnderlay`, `asUnderlay::~asUnderlay`
+- Base: `Base::'scalar_deleting_destructor'`, `Base::~Base`
 - CArrayList: `CArrayList::CArrayList`, `CArrayList::ReadBinary`, `CArrayList::~CArrayList`
-- CFileStream: `CFileStream::AddRef`, `CFileStream::AddRef`adjustor{4}'`, `CFileStream::CFileStream`, `CFileStream::Clone`, `CFileStream::Close`, `CFileStream::Commit`, `CFileStream::CopyTo`, `CFileStream::GetLoader`, `CFileStream::GetNextPtr`, `CFileStream::LockRegion`, `CFileStream::Open`, `CFileStream::QueryInterface`, `CFileStream::QueryInterface`adjustor{4}'`, `CFileStream::Read`, `CFileStream::Release`, `CFileStream::Release`adjustor{4}'`, `CFileStream::Revert`, `CFileStream::Seek`, `CFileStream::SetNextPtr`, `CFileStream::SetSize`, `CFileStream::Stat`, `CFileStream::UnlockRegion`, `CFileStream::Write`, `CFileStream::~CFileStream`
+- CFileStream: `CFileStream::AddRef`, `CFileStream::AddRef'adjustor{4}'`, `CFileStream::CFileStream`, `CFileStream::Clone`, `CFileStream::Close`, `CFileStream::Commit`, `CFileStream::CopyTo`, `CFileStream::GetLoader`, `CFileStream::GetNextPtr`, `CFileStream::LockRegion`, `CFileStream::Open`, `CFileStream::QueryInterface`, `CFileStream::QueryInterface'adjustor{4}'`, `CFileStream::Read`, `CFileStream::Release`, `CFileStream::Release'adjustor{4}'`, `CFileStream::Revert`, `CFileStream::Seek`, `CFileStream::SetNextPtr`, `CFileStream::SetSize`, `CFileStream::Stat`, `CFileStream::UnlockRegion`, `CFileStream::Write`, `CFileStream::~CFileStream`
 - CLoader: `CLoader::AddCFileStreamToList`, `CLoader::AddRef`, `CLoader::AddRefP`, `CLoader::CLoader`, `CLoader::CacheObject`, `CLoader::ClearCache`, `CLoader::DestroyCFileStreamList`, `CLoader::EnableCache`, `CLoader::EnumObject`, `CLoader::GetObjectA`, `CLoader::Init`, `CLoader::LoadFromFile`, `CLoader::LoadFromMemory`, `CLoader::QueryInterface`, `CLoader::Release`, `CLoader::ReleaseObject`, `CLoader::ReleaseP`, `CLoader::ScanDirectory`, `CLoader::SetObject`, `CLoader::SetSearchDirectory`, `CLoader::~CLoader`
-- CMemStream: `CMemStream::AddRef`, `CMemStream::AddRef`adjustor{4}'`, `CMemStream::CMemStream`, `CMemStream::Clone`, `CMemStream::Close`, `CMemStream::Commit`, `CMemStream::CopyTo`, `CMemStream::GetLoader`, `CMemStream::LockRegion`, `CMemStream::Open`, `CMemStream::QueryInterface`, `CMemStream::QueryInterface`adjustor{4}'`, `CMemStream::Read`, `CMemStream::Release`, `CMemStream::Release`adjustor{4}'`, `CMemStream::Revert`, `CMemStream::Seek`, `CMemStream::SetSize`, `CMemStream::Stat`, `CMemStream::UnlockRegion`, `CMemStream::Write`, `CMemStream::~CMemStream`
+- CMemStream: `CMemStream::AddRef`, `CMemStream::AddRef'adjustor{4}'`, `CMemStream::CMemStream`, `CMemStream::Clone`, `CMemStream::Close`, `CMemStream::Commit`, `CMemStream::CopyTo`, `CMemStream::GetLoader`, `CMemStream::LockRegion`, `CMemStream::Open`, `CMemStream::QueryInterface`, `CMemStream::QueryInterface'adjustor{4}'`, `CMemStream::Read`, `CMemStream::Release`, `CMemStream::Release'adjustor{4}'`, `CMemStream::Revert`, `CMemStream::Seek`, `CMemStream::SetSize`, `CMemStream::Stat`, `CMemStream::UnlockRegion`, `CMemStream::Write`, `CMemStream::~CMemStream`
 - datArgParser: `datArgParser::Get`, `datArgParser::Init`, `datArgParser::Kill`
 - datAsciiTokenizer: `datAsciiTokenizer::GetDelimiter`, `datAsciiTokenizer::GetFloat`, `datAsciiTokenizer::GetInt`, `datAsciiTokenizer::GetVector`, `datAsciiTokenizer::MatchFloat`, `datAsciiTokenizer::MatchInt`, `datAsciiTokenizer::MatchVector`, `datAsciiTokenizer::Put`, `datAsciiTokenizer::PutDelimiter`
 - datAssetManager: `datAssetManager::Create`, `datAssetManager::EnumFiles`, `datAssetManager::Exists`, `datAssetManager::FullPath`, `datAssetManager::Open`, `datAssetManager::SetPath`
@@ -604,7 +606,7 @@ Every reachable named method of the classes above, for the coverage tool (`Class
 - datOutput: `datOutput::CallAfterMsgBoxFunction`, `datOutput::CallBeforeMsgBoxFunction`
 - datParser: `datParser::AddParser`, `datParser::AddRecord`, `datParser::AddValue`, `datParser::Load`, `datParser::Read`, `datParser::datParser`, `datParser::Indent`, `datParser::Save`, `datParser::Write`, `datParser::~datParser`
 - datParserRecord: `datParserRecord::~datParserRecord`
-- datRefCount: `datRefCount::DecRef`, `datRefCount::IncRef`, `datRefCount::`scalar_deleting_destructor'`, `datRefCount::datRefCount`, `datRefCount::~datRefCount`
+- datRefCount: `datRefCount::DecRef`, `datRefCount::IncRef`, `datRefCount::'scalar_deleting_destructor'`, `datRefCount::datRefCount`, `datRefCount::~datRefCount`
 - datReplay: `datReplay::GetInt`, `datReplay::RecordInt`
 - datStack: `datStack::DoTraceback`, `datStack::LookupAddress`, `datStack::Traceback`
 - datTimeManager: `datTimeManager::RealTime`, `datTimeManager::SetTempOverSampling`, `datTimeManager::Update`
@@ -637,11 +639,11 @@ Every reachable named method of the classes above, for the coverage tool (`Class
 - parCsvFile: `parCsvFile::GetColumn`, `parCsvFile::GetFloat`, `parCsvFile::GetInt`, `parCsvFile::GetRow`, `parCsvFile::Kill`, `parCsvFile::Load`
 - Quaternion: `Quaternion::FromMatrix`, `Quaternion::Slerp`
 - Random: `Random::Number`, `Random::Seed`
-- sfPointer: `sfPointer::Cull`, `sfPointer::GetPointerHeight`, `sfPointer::Init`, `sfPointer::ResChange`, `sfPointer::WaitForRelease`, `sfPointer::`scalar_deleting_destructor'`, `sfPointer::sfPointer`, `sfPointer::~sfPointer`, `sfPointer::Update`
+- sfPointer: `sfPointer::Cull`, `sfPointer::ResChange`, `sfPointer::GetPointerHeight`, `sfPointer::WaitForRelease`, `sfPointer::Init`, `sfPointer::'scalar_deleting_destructor'`, `sfPointer::sfPointer`, `sfPointer::~sfPointer`, `sfPointer::Update`
 - Stream: `Stream::AllocStream`, `Stream::Close`, `Stream::Create`, `Stream::DumpOpenFiles`, `Stream::Flush`, `Stream::PreLoad`, `Stream::PutCh`, `Stream::Size`, `Stream::Tell`, `Stream::Write`, `Stream::GetCh`, `Stream::Open`, `Stream::Read`, `Stream::Seek`
 - string: `string::Contains`, `string::Init`, `string::SubString`, `string::operator+=`, `string::operator=`, `string::string`, `string::NumSubStrings`
 - TerrainContact: `phInertialCS::TerrainContact::TerrainContact`
 - Timer: `Timer::QuickTicks`, `Timer::Ticks`, `Timer::Timer`
-- winDispatchable: `winDispatchable::`scalar_deleting_destructor'`, `winDispatchable::winDispatchable`, `winDispatchable::~winDispatchable`
+- winDispatchable: `winDispatchable::'scalar_deleting_destructor'`, `winDispatchable::winDispatchable`, `winDispatchable::~winDispatchable`
 - zipFile: `zipFile::EnumFiles`, `zipFile::Init`, `zipFile::Open`, `zipFile::internalRead`, `zipFile::internalSeek`, `zipFile::zipClose`, `zipFile::zipCreate`, `zipFile::zipEnumFiles`, `zipFile::zipFile`, `zipFile::zipOpen`, `zipFile::zipRead`, `zipFile::zipSeek`, `zipFile::zipSize`, `zipFile::zipWrite`, `zipFile::~zipFile`
 - zipHandle: `zipHandle::Read`, `zipHandle::Seek`

@@ -142,6 +142,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/app/SetupScreen.cpp` | 248 | O | - |
 | `src/app/frontend/Frontend.h` | 244 | P | frontend-ui |
 | `src/app/frontend/FrontendScreen.cpp` | 871 | P | frontend-ui |
+| `src/app/frontend/MenuPointer.cpp` | 40 | P | mm2-infrastructure |
 | `src/app/frontend/PagesCrash.cpp` | 233 | P | frontend-ui |
 | `src/app/frontend/PagesMain.cpp` | 481 | P | frontend-ui |
 | `src/app/frontend/PagesMulti.cpp` | 1078 | P | frontend-ui |
