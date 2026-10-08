@@ -2,9 +2,10 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
-Summary: 115 entries (functions, or groups of trivial helpers); verified 24,
-fixed 40, deviation 10, inferred 7, open 0, openmm2 34. Five MM2 features
-with no retail use are listed as open under Missing.
+Summary: 119 entries (functions, or groups of trivial helpers); verified 23,
+fixed 44, deviation 11, inferred 7, open 0, openmm2 34. Five MM2 features
+with no retail use are listed as open under Missing. (Follow-up on
+2026-10-08: datParser::Read's handling of unknown names, see DatFile.)
 
 Scope: the asset readers (`src/asset/Image`, `Mtx`, `Pkg`, `Ped`,
 `VehicleModel`, `Reader.h`), the data readers (`src/data/DatFile`,
@@ -123,10 +124,13 @@ provides the layering it uses.
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
-| `Lexer::next`, `isSeparator` | `datBaseTokenizer::GetToken` | fixed | tokens are separated by space, tab, CR, LF and NUL only; `{`/`}` are structural only as whole tokens; ':' is not special; a quoted token runs to the next quote across lines. OpenMM2 split braces and colons out of tokens |
-| `Lexer::skipSpaceAndComments` | `datBaseTokenizer::SkipComment` | verified | ';' (CommentChar) to end of line. MM2's in-token handling of ';' (the newline ends up in the token) is not reproduced |
-| `Parser::parseFile` | `datParser::Load`, `datMultiTokenizer::GetReadTokenizer` | fixed | the first seven bytes are the header whatever they hold (snow.asbirthrule has none, so its class name reads as "Rule", as in MM2); the next token is the class name; reading stops at the class block's closing brace (OpenMM2 parsed further blocks) |
-| `Parser::parseBody` | `datParser::Read` | fixed | a field name is one token, so MM2's multi-word names ("Approach Rate", "Ocean Color" in mmHudMap) never match; a labelled block line ("Aero asAero :093ec7d4 {") is still the named block (OpenMM2 folded the label into the name and lost the Aero and particle-rule blocks of eight vehCarSim files, among them the fire truck's); a stray '{' is skipped. A missing closing brace is an error (MM2 never returns) |
+| `Tokenizer::getToken` | `datBaseTokenizer::GetToken` | fixed | ported character by character, with its look-ahead character: tokens are separated by space, tab, CR, LF and NUL only; `{`/`}` are structural only as whole tokens (quoted or not); ':' is not special; a quoted token runs to the next quote across lines; a ';' comment before a token is skipped and one inside a token ends it after storing the line break; names are cut to 63 characters and numbers to 31 as in MM2's buffers. OpenMM2 split braces and colons out of tokens |
+| `Tokenizer::skipToEndOfLine` | `datBaseTokenizer::SkipToEndOfLine` | fixed | reads on from behind the look-ahead character to the next line feed, so after a token that ends on a bare line feed it skips the whole following line |
+| `Tokenizer::getFloat`, `getInt` | `datAsciiTokenizer::GetFloat`, `GetInt` | fixed | a token not starting with a digit, '-' or '.' (GetInt: digit or '-') is an error and reads as 0, after being consumed |
+| `TreeParser::parseFile`, `parseBody` (schema-less `parseDat`) | `datParser::Load`, `datParser::Read` | deviation | without the class's record list a reader cannot tell MM2's known names from unknown ones, so this reads every field and block: a field name is one token (MM2's multi-word names such as mmHudMap's "Approach Rate" and "Ocean Color" never match), a labelled block line is a block, the first seven bytes are the header (snow.asbirthrule has none), reading stops at the class block's closing brace and a missing closing brace is an error (MM2 never returns). It differs from MM2 for an unknown labelled block, of which MM2 skips only the first line; tunes read through a record list (below) are exact |
+| `SchemaParser::read` | `datParser::Read` | fixed | new: with the class's records, exactly MM2's loop: '{' in field position is skipped, '}' returns, a registered name reads its record, an unknown name reads the next token and then skips the block after it if that token is '{', else the rest of the line. So an unregistered labelled block (`AsphaltRule asBirthRule :addr {`) loses only its first line, its fields are assigned to the outer class and its '}' ends the outer block |
+| `SchemaParser::readRecord`, `addNumber` | `datParser::Read` record types 0-9 | fixed | new: strings take one token each, bool/byte/short/int take GetInt truncated as MM2 stores them, float GetFloat, vectors 2/3/4 GetFloats whatever the tokens are, a parser recurses |
+| `SchemaParser::parseFile` | `datParser::Load` | fixed | new: header bytes, class name token, then the class's records |
 | `DatNode::child` | `datParser::Read` | fixed | the last occurrence of a field wins (records are assigned in turn); was the first |
 | `DatNode::getFloat` | `datAsciiTokenizer::GetFloat` | fixed | atof prefix of a token starting with a digit, '-' or '.': "1.#QNAN0" (va_garbagetruck MaxAng) is 1 (was a non-number, leaving MaxAng at its default) |
 | `DatNode::getInt` | `datAsciiTokenizer::GetInt` | fixed | atoi of the token ("1.9" is 1, ".5" is 0, wraps at 32 bits) |
@@ -134,7 +138,8 @@ provides the layering it uses.
 | `DatNode::getString` | `datParser::Read` (string record) | verified | a quoted or plain token after the name |
 | `DatNode::getFloats` | `datParser::Read` | openmm2 | variable-length lists for OpenMM2's readers; MM2 reads a fixed count per record |
 | `DatNode::read` (four overloads) | — | openmm2 | assign-if-present convenience |
-| `parseDat` | `datParser::Load` | fixed | header rule above; `type: b` (binary, `datBinTokenizer`) is rejected (no retail file uses it); the UTF-8 BOM is no longer stripped (MM2 reads it as header bytes) |
+| `parseDat(text)` | `datParser::Load` | fixed | header rule above; `type: b` (binary, `datBinTokenizer`) is rejected (no retail file uses it); the UTF-8 BOM is no longer stripped (MM2 reads it as header bytes) |
+| `parseDat(text, schema)`, `DatRecord`, `DatSchema` | `datParser::AddRecord`, `AddParser`, `Read` | fixed | new: a class's FileIO record list. `phys::carSimSchema()` (outside this area, in `phys/vehicle/TuneParams`) lists the records of vehCarSim and its nested classes, and the vehicle tunes are now read through it (`game/PlayerVehicle.cpp`, `mm2tool simcar`). Every base tune reads as before; `vpftruck.vehCarSim` (no race uses it) now reads as in MM2: Mass 0.1 from its first particle rule, the block ended at that rule's '}', ManualNumGears swallowed by the unregistered MM1 gear lists. The `_opp`/`_cop` variants with the same rules read the same way, but MM2 never loads them |
 
 ## src/data/CNumbers.h (new)
 

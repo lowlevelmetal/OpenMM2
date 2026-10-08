@@ -13,12 +13,16 @@
 namespace mm2::game {
 namespace {
 
-std::optional<data::DatFile> readDat(const vfs::Vfs& vfs, const std::string& path) {
+// With a schema the file is read exactly as datParser::Read reads it for
+// that class (see data::parseDat).
+std::optional<data::DatFile> readDat(const vfs::Vfs& vfs, const std::string& path,
+                                     const data::DatSchema* schema = nullptr) {
     auto bytes = vfs.readAll(path);
     if (!bytes)
         return std::nullopt;
     std::string error;
-    auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()), &error);
+    const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+    auto f = schema ? data::parseDat(text, *schema, &error) : data::parseDat(text, &error);
     if (!f)
         log::warn("vehicle: {}: {}", path, error);
     return f;
@@ -75,7 +79,7 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
         return tuneSuffix.empty() || !vfs.exists(variant) ? std::format("tune/vehicle/{}.{}", base, ext) : variant;
     };
     phys::CarSimParams params;
-    if (auto f = readDat(vfs, tunePath("vehcarsim")); f && f->top()) {
+    if (auto f = readDat(vfs, tunePath("vehcarsim"), &phys::carSimSchema()); f && f->top()) {
         phys::loadCarSimParams(*f->top(), params);
     } else {
         if (error)
@@ -110,7 +114,8 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
     // splash box vehCar::Init built from its InertiaBox before.
     const phys::CarSimParams copParams = params;
     if (player && base == "vpcop") {
-        if (auto f = readDat(vfs, "tune/vehicle/vpmustang99.vehcarsim"); f && f->top()) {
+        const std::string mustang = "tune/vehicle/vpmustang99.vehcarsim";
+        if (auto f = readDat(vfs, mustang, &phys::carSimSchema()); f && f->top()) {
             params = phys::CarSimParams{};
             phys::loadCarSimParams(*f->top(), params);
             readSimPivots(vfs, "vpmustang99", geom);

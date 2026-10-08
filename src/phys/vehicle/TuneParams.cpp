@@ -83,6 +83,62 @@ void loadWheelParams(const DatNode& b, WheelParams& w) {
     b.read("SlidingFric", w.slidingFric);
 }
 
+const data::DatSchema& carSimSchema() {
+    using R = data::DatRecord;
+    using T = R::Type;
+    static const data::DatSchema schema = [] {
+        auto floats = [](std::initializer_list<const char*> names) {
+            std::vector<R> out;
+            for (const char* n : names)
+                out.push_back({n, T::Float, 1, {}});
+            return out;
+        };
+        auto parser = [](const char* name, std::vector<R> records) {
+            return R{name, T::Parser, 1, std::move(records)};
+        };
+        // vehAero::FileIO, vehEngine::FileIO, vehTransmission::FileIO,
+        // vehDrivetrain::FileIO, vehWheel::FileIO, vehAxle::FileIO.
+        std::vector<R> aero = {{"AngCDamp", T::Vec3, 1, {}},
+                               {"AngVelDamp", T::Vec3, 1, {}},
+                               {"AngVel2Damp", T::Vec3, 1, {}},
+                               {"Drag", T::Float, 1, {}},
+                               {"Down", T::Float, 1, {}}};
+        std::vector<R> trans = {{"ManualNumGears", T::Int, 1, {}}, {"AutoNumGears", T::Int, 1, {}}};
+        for (auto& r : floats({"Reverse", "Low", "High", "GearBias", "UpshiftBias", "DownshiftBiasMin",
+                               "DownshiftBiasMax", "GearChangeTime"}))
+            trans.push_back(std::move(r));
+        const auto drivetrain = floats({"AngInertia", "BrakeDynamicCoef", "BrakeStaticCoef"});
+        const auto wheel = floats({"SuspensionExtent", "SuspensionLimit", "SuspensionFactor", "SuspensionDampCoef",
+                                   "SteeringLimit", "SteeringOffset", "BrakeCoef", "HandbrakeCoef", "CamberLimit",
+                                   "WobbleLimit", "TireDispLimitLong", "TireDampCoefLong", "TireDragCoefLong",
+                                   "TireDispLimitLat", "TireDampCoefLat", "TireDragCoefLat", "OptimumSlipPercent",
+                                   "StaticFric", "SlidingFric"});
+        const auto axle = floats({"TorqueCoef", "DampCoef"});
+        // vehCarSim::FileIO, in registration order.
+        return data::DatSchema{
+            {"Mass", T::Float, 1, {}},
+            {"InertiaBox", T::Vec3, 1, {}},
+            {"CenterOfGravity", T::Vec3, 1, {}},
+            {"BoundFriction", T::Float, 1, {}},
+            {"BoundElasticity", T::Float, 1, {}},
+            {"DrivetrainType", T::Int, 1, {}},
+            {"SSSValue", T::Float, 1, {}},
+            {"SSSThreshold", T::Float, 1, {}},
+            {"CarFrictionHandling", T::Float, 1, {}},
+            parser("Aero", aero),
+            parser("Engine", floats({"AngInertia", "MaxHorsePower", "IdleRPM", "OptRPM", "MaxRPM", "GCL"})),
+            parser("Trans", trans),
+            parser("Drivetrain", drivetrain),
+            parser("Freetrain", drivetrain),
+            parser("WheelFront", wheel),
+            parser("WheelBack", wheel),
+            parser("AxleFront", axle),
+            parser("AxleBack", axle),
+        };
+    }();
+    return schema;
+}
+
 bool loadCarSimParams(const DatNode& b, CarSimParams& p, std::vector<std::string>* ignored) {
     if (b.name != "vehCarSim")
         return false;
