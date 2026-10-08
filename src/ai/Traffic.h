@@ -255,7 +255,18 @@ private:
     float turnLength(const Car& c) const;
     void setCurve(Car& c, const Vec3& p0, const Vec3& p1, const Vec3& m0, const Vec3& m1);
     Vec3 curvePoint(const Car& c, float t, Vec3* direction = nullptr) const;
-    Vec3 railPosition(const Car& c, float dist) const; // aiRailSet::CalcRailPosition
+    // aiRailSet::CalcRailPosition (and, with `direction`, CalcRailPosOrient:
+    // the rail's tangent there).
+    Vec3 railPosition(const Car& c, float dist, Vec3* direction = nullptr) const;
+    // aiPath::DetermineRoadPosInfo: the first vertex of `path` the car's
+    // position lies before (along the section's z axis) within the road's
+    // half width, the side it drives (from its matrix), the lane whose
+    // lateral bounds hold it (else lane 0) and its distance along that lane.
+    // False ("Position is not on road segment") leaves the outputs alone.
+    bool roadPosInfo(int path, const Mat34& m, int& vert, float& dist, int& lane, int& dir) const;
+    // aiMap::PredictAmbIntersectionPath / PredictAmbFreewayIntersectionPath:
+    // the road leaving `node` that best matches the heading of `m`.
+    int predictIntersectionPath(int node, const Mat34& m, bool freeway) const;
 
     // Lane queues (aiPath per-lane vehicle lists, front-most first).
     std::vector<int>& queue(int path, int dir, int lane);

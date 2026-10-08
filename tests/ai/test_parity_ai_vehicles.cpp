@@ -439,3 +439,63 @@ TEST(ParityAiPlanner, RoadTargetsFollowTheTurnCircles) {
     EXPECT_FLOAT_EQ(driver.target().z, nodes[1].pos.z);
 }
 
+// aiGoalRegainRail::Reset maps the car first (aiMap::MapComponent): a car
+// set down on another road takes that road, the side it faces and the lane
+// under it (aiPath::DetermineRoadPosInfo); one set down in an intersection
+// takes the road out of it that best matches its heading as its next road
+// (aiMap::PredictAmbIntersectionPath).
+TEST(ParityAiTraffic, RegainRailMapsTheCarFirst) {
+    const city::AiMap map = plannerBlock();
+    const ai::RoadNetwork net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    ai::TrafficLights lights;
+    lights.build(net);
+    ai::TrafficSettings settings;
+    settings.density = 1.0f;
+    ai::VehicleData sedan;
+    sedan.model = "test";
+    sedan.size = {2.0f, 1.5f, 4.5f};
+    ai::Traffic traffic(net, lights, {sedan}, settings, 3);
+    traffic.setMap(&view);
+    traffic.populateAll();
+    ai::PlayerCar far;
+    far.transform = Mat34::identity();
+    far.transform.m3 = {1000, 0, 1000};
+    traffic.step(ai::kAiStepSeconds, far, 0);
+    ASSERT_GE(traffic.cars().size(), 2u);
+
+    // Facing +Z on road 2's right-hand lane (x = 198): road 2, direction +1.
+    const int a = traffic.cars()[0].id;
+    Mat34 m;
+    m.m0 = {-1, 0, 0};
+    m.m1 = {0, 1, 0};
+    m.m2 = {0, 0, -1};
+    m.m3 = {198, 0, -100};
+    traffic.impact(a, {});
+    traffic.detach(a, m, true);
+    traffic.step(ai::kAiStepSeconds, far, 0);
+    ai::Traffic::DebugCar d = traffic.debug(a);
+    EXPECT_EQ(d.goal, ai::AmbientGoal::RegainRail);
+    ASSERT_GE(d.lane, 0);
+    EXPECT_EQ(net.lanes()[static_cast<std::size_t>(d.lane)].path, 2);
+    EXPECT_EQ(net.lanes()[static_cast<std::size_t>(d.lane)].dir, 1);
+
+    // In corner 1 facing +X: road 1 (leaving it with its vertex order) next.
+    const int b = traffic.cars()[1].id;
+    m.m0 = {0, 0, 1};
+    m.m2 = {-1, 0, 0};
+    m.m3 = {1, 0, -199};
+    traffic.impact(b, {});
+    traffic.detach(b, m, true);
+    traffic.step(ai::kAiStepSeconds, far, 0);
+    d = traffic.debug(b);
+    if (d.goal == ai::AmbientGoal::RegainRail) {
+        ASSERT_GE(d.nextLane, 0);
+        EXPECT_EQ(net.lanes()[static_cast<std::size_t>(d.nextLane)].path, 1);
+        EXPECT_EQ(net.lanes()[static_cast<std::size_t>(d.nextLane)].dir, 1);
+    } else {
+        // Parked: only when its own road is a freeway taken the other way
+        // or road 1 is closed to it, neither of which holds here.
+        ADD_FAILURE() << "parked";
+    }
+}

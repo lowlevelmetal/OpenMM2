@@ -294,7 +294,7 @@ Vec3 Traffic::curvePoint(const Car& c, float t, Vec3* direction) const {
 // aiRailSet::CalcRailPosition: the point of the car's rail `dist` along its
 // lane, through the turn and onto the next road. The height is the road
 // centre's at that distance (aiPath::CenterPosition), as AdjustAmbients reads it.
-Vec3 Traffic::railPosition(const Car& c, float dist) const {
+Vec3 Traffic::railPosition(const Car& c, float dist, Vec3* direction) const {
     const Lane* lane = laneOf(c.path, c.dir, c.lane);
     if (!lane || lane->line.points.size() < 2)
         return c.transform.m3;
@@ -323,7 +323,7 @@ Vec3 Traffic::railPosition(const Car& c, float dist) const {
             m1 = subSectionDir(c.path, c.dir, i, segLen);
         }
         const float t = segLen > 0.0f ? (dist - cum[static_cast<std::size_t>(i - 1)]) / segLen : 0.0f;
-        out = hermitePoint(p0, p1, m0, m1, t);
+        out = hermitePoint(p0, p1, m0, m1, t, direction);
     } else {
         const float over = dist - (L - fb);
         const Vec3 p1 = lanePoint(c, c.nextPath, c.nextDir, c.nextLane, 0);
@@ -333,11 +333,14 @@ Vec3 Traffic::railPosition(const Car& c, float dist) const {
         if (over < turnLen) {
             // MM2 takes the exit vector with the current road's direction here.
             out = hermitePoint(p0, p1, entryVector(c.path, c.dir, turnLen),
-                               exitVector(c.nextPath, c.dir, turnLen), over / turnLen);
+                               exitVector(c.nextPath, c.dir, turnLen), over / turnLen, direction);
         } else {
             const Lane* next = laneOf(c.nextPath, c.nextDir, c.nextLane);
-            if (!next || next->line.points.size() < 2)
+            if (!next || next->line.points.size() < 2) {
+                if (direction)
+                    *direction = exitVector(c.nextPath, c.nextDir, 1.0f);
                 return p1;
+            }
             const float d2 = over - turnLen;
             const int j = index(c.nextPath, c.nextDir, c.nextLane, d2);
             const auto& cn = next->line.distances;
@@ -348,7 +351,8 @@ Vec3 Traffic::railPosition(const Car& c, float dist) const {
                                    : subSectionDir(c.nextPath, c.nextDir, j - 1, segLen);
             const Vec3 m1 = subSectionDir(c.nextPath, c.nextDir, j, segLen);
             out = hermitePoint(q0, q1, m0, m1,
-                               segLen > 0.0f ? (d2 - cn[static_cast<std::size_t>(j - 1)]) / segLen : 0.0f);
+                               segLen > 0.0f ? (d2 - cn[static_cast<std::size_t>(j - 1)]) / segLen : 0.0f,
+                               direction);
         }
     }
     // aiPath::CenterPosition: the centre line's height at `dist`.
@@ -1660,7 +1664,94 @@ void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
 // aiGoalRegainRail::Reset: a curve of up to 30 m from where the car is back
 // onto its lane. MM2 first maps the car onto the road or intersection under
 // it (aiMap::MapComponent); here it keeps its road and lane (inferred).
+bool Traffic::roadPosInfo(int path, const Mat34& m, int& vert, float& dist, int& lane, int& dir) const {
+    // aiPath::DetermineRoadPosInfo.
+    const city::AiMap* map = m_net.source();
+    if (!map || path < 0 || static_cast<std::size_t>(path) >= map->paths.size())
+        return false;
+    const city::AiPath& p = map->paths[static_cast<std::size_t>(path)];
+    const int n = static_cast<int>(p.center.size());
+    if (p.xAxis.size() < p.center.size() || p.zAxis.size() < p.center.size())
+        return false;
+    for (int i = 0; i < n; ++i) {
+        const auto k = static_cast<std::size_t>(i);
+        const float dx = m.m3.x - p.center[k].x, dz = m.m3.z - p.center[k].z;
+        const float along = dx * p.zAxis[k].x + dz * p.zAxis[k].z;
+        const float lat = dz * p.xAxis[k].z + dx * p.xAxis[k].x;
+        if (!(0.0f <= along && -p.halfWidth < lat && lat < p.halfWidth))
+            continue;
+        vert = i;
+        dir = m.m2.x * p.zAxis[k].x + m.m2.z * p.zAxis[k].z < 0.0f ? -1 : 1;
+        const city::AiRoadSide& side = dir == 1 ? p.right : p.left;
+        lane = 0;
+        for (int l = 0; l < side.numLanes && 2 * l + 1 < 10; ++l) {
+            const float lo = side.params[static_cast<std::size_t>(2 * l)];
+            const float hi = side.params[static_cast<std::size_t>(2 * l + 1)];
+            if (lo < lat && lat < hi) {
+                lane = l;
+                break;
+            }
+        }
+        // The distance along the lane: to the vertex, less (with the vertex
+        // order) or plus (against it) how far before it the car is.
+        const Lane* l = laneOf(path, dir, lane);
+        if (!l || l->line.distances.size() != static_cast<std::size_t>(n))
+            return true;
+        const auto& cum = l->line.distances;
+        dist = dir == 1 ? cum[k] - along : cum[static_cast<std::size_t>(n - 1 - i)] + along;
+        return true;
+    }
+    return false;
+}
+
+int Traffic::predictIntersectionPath(int node, const Mat34& m, bool freeway) const {
+    // aiMap::PredictAmbIntersectionPath: of the roads leaving `node` on an
+    // open side, the one whose first section points most along the car's
+    // heading (that direction unnormalised for a road leaving from its last
+    // vertex, as coded); the freeway version takes freeways only, both
+    // directions normalised. The first listed road when none qualifies.
+    const city::AiMap* map = m_net.source();
+    if (!map || node < 0 || static_cast<std::size_t>(node) >= m_net.intersections().size())
+        return -1;
+    const auto& list = m_net.intersections()[static_cast<std::size_t>(node)].paths;
+    const Vec3 h = (-m.m2).normalized();
+    float best = -999999.0f;
+    int choice = 0;
+    for (std::size_t i = 0; i < list.size(); ++i) {
+        const int id = list[i];
+        if (id < 0 || static_cast<std::size_t>(id) >= map->paths.size())
+            continue;
+        const city::AiPath& p = map->paths[static_cast<std::size_t>(id)];
+        const PathInfo& info = m_net.paths()[static_cast<std::size_t>(id)];
+        const std::size_t n = p.center.size();
+        if (n < 2)
+            continue;
+        Vec3 d;
+        bool scored = false;
+        const bool fromEnd1 = info.intersection[1] == node;
+        if (fromEnd1 && (info.sideFlags[1] & 1) == 0 && (!freeway || info.freeway())) {
+            d = (p.center[1] - p.center[0]).normalized();
+            scored = true;
+        } else if ((freeway ? info.intersection[0] == node : !fromEnd1) && (info.sideFlags[0] & 1) == 0 &&
+                   (!freeway || info.freeway())) {
+            d = p.center[n - 2] - p.center[n - 1];
+            if (freeway)
+                d = d.normalized();
+            scored = true;
+        }
+        if (!scored)
+            continue;
+        const float score = h.x * d.x + (d.y * h.y + d.z * h.z);
+        if (best < score) {
+            best = score;
+            choice = static_cast<int>(i);
+        }
+    }
+    return list.empty() ? -1 : list[static_cast<std::size_t>(choice)];
+}
+
 void Traffic::resetRegainRail(int idx) {
+    // aiGoalRegainRail::Reset.
     Car& c = m_cars[static_cast<std::size_t>(idx)];
     const Vec3 pos = c.transform.m3;
     if (pos.dist2(c.regainStart) <= 1.0f) {
@@ -1669,40 +1760,96 @@ void Traffic::resetRegainRail(int idx) {
         c.regainAttempts = 1;
         c.regainStart = pos;
     }
-    const Lane* lane = laneOf(c.path, c.dir, c.lane);
-    const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
-    float off = 0.0f;
-    if (!lane || (info.flagsOf(c.dir) & 1)) {
-        c.goal = AmbientGoal::Parked;
+    auto park = [&] { c.goal = AmbientGoal::Parked; };
+    // Where the car is now (aiMap::MapComponent, its road preferred). Without
+    // a map (tools, tests) it is taken to be on its road.
+    int compId = c.path, compType = kRoadComponent;
+    if (m_map)
+        c.mapRoom = m_map->mapComponent(pos, compId, compType, c.mapRoom, c.path);
+    float dist = c.regainBase;
+    float regainLength = kRegainDistance;
+    if (compType == kRoadComponent) {
+        // On a road (its own or another): off the old lane lists, onto the
+        // lane under the car, the next road chosen afresh; parked on a
+        // freeway against the way it was going or on a side closed to
+        // ambient cars.
+        const PathInfo& old = m_net.paths()[static_cast<std::size_t>(c.path)];
+        for (std::size_t l = 0; l < old.lanesOf(c.dir).size(); ++l)
+            removeVehicle(idx, c.path, c.dir, static_cast<int>(l));
+        roadPosInfo(compId, c.transform, c.section, dist, c.drawLane, c.dir);
+        c.path = compId;
+        regainLength = kRegainDistance;
+        const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
+        if ((info.freeway() && c.dir != c.nextDir) || (info.flagsOf(c.dir) & 1)) {
+            park();
+            return;
+        }
+        chooseNext(c);
+        c.lane = c.drawLane;
+        addVehicle(idx, c.path, c.dir, c.drawLane, regainLength + dist);
+    } else if (compType == kIntersectionComponent) {
+        // In an intersection: the road out of it that best matches the car's
+        // heading becomes the next road, and the car rejoins its rail as far
+        // through the turn as it is past the start of that road's lanes.
+        const PathInfo& cur = m_net.paths()[static_cast<std::size_t>(c.path)];
+        const bool nextFreeway =
+            c.nextPath >= 0 && m_net.paths()[static_cast<std::size_t>(c.nextPath)].freeway();
+        const bool freeway = cur.freeway() || (cur.lanesOf(c.dir).size() == 1 && nextFreeway);
+        const int next = predictIntersectionPath(compId, c.transform, freeway);
+        const int firstDir =
+            next >= 0 && m_net.paths()[static_cast<std::size_t>(next)].intersection[1] == compId ? 1 : -1;
+        const Lane* first = next >= 0 ? laneOf(next, firstDir, 0) : nullptr;
+        if (next < 0 || !first || first->line.points.empty()) {
+            park();
+            return;
+        }
+        c.nextPath = next;
+        const PathInfo& nextInfo = m_net.paths()[static_cast<std::size_t>(next)];
+        c.nextDir = nextInfo.intersection[1] == compId ? 1 : -1;
+        // (OpenMM2: the next lane kept within the new road's lanes.)
+        const int nextLanes = static_cast<int>(nextInfo.lanesOf(c.nextDir).size());
+        c.nextLane = std::clamp(c.nextLane, 0, std::max(nextLanes - 1, 0));
+        const Vec3 start = first->line.points.front();
+        const Lane* lane = laneOf(c.path, c.dir, c.lane);
+        const int n = lane ? static_cast<int>(lane->line.points.size()) : 1;
+        const Vec3 entry = entryPoint(c.path, c.dir, c.lane, c.frontBumper) +
+                           xAxisAt(c.path, c.dir, n - 1) * c.laneRandomness;
+        const float turn = std::abs(entry.x - start.x) + std::abs(entry.z - start.z);
+        const city::AiPath& np = m_net.source()->paths[static_cast<std::size_t>(next)];
+        const Vec3 back = c.nextDir == 1 ? np.zAxis.front() : -np.zAxis.back();
+        const Vec3 rel = pos - start;
+        const float before = back.x * rel.x + back.y * rel.y + back.z * rel.z;
+        const float curLen = laneLength(c.path, c.dir, c.drawLane);
+        dist = ((curLen - c.frontBumper) + turn) - before;
+        const float total = curLen + laneLength(next, c.nextDir, c.nextLane) + turn;
+        regainLength = dist + kRegainDistance <= total ? kRegainDistance : total - dist;
+        if ((cur.freeway() && c.dir != c.nextDir) || (nextInfo.flagsOf(c.nextDir) & 1)) {
+            park();
+            return;
+        }
+    } else {
+        // On no road or intersection (or a shortcut road, which MM2 stops
+        // the game on): parked.
+        park();
         return;
     }
-    const float d = lane->line.project(pos, &off);
-    if (off > info.halfWidth + 5.0f) {
-        c.goal = AmbientGoal::Parked; // off the road
-        return;
-    }
-    // Back into the lane list at the end of the curve.
-    for (std::size_t l = 0; l < info.lanesOf(c.dir).size(); ++l)
-        removeVehicle(idx, c.path, c.dir, static_cast<int>(l));
-    c.drawLane = c.lane;
-    chooseNext(c);
-    c.regainLength = kRegainDistance;
-    c.regainBase = d;
-    c.roadDist = d + c.regainLength;
-    addVehicle(idx, c.path, c.dir, c.lane, c.roadDist);
-    // The curve: from the car along its heading to its rail point 30 m on.
-    const Vec3 end = railPosition(c, c.roadDist);
-    const Vec3 ahead = railPosition(c, c.roadDist + 1.0f);
-    Vec3 endDir = ahead - end;
-    endDir.y = 0.0f;
-    endDir = endDir.mag2() > 1e-8f ? endDir.normalized() : -c.transform.m2;
+    // The curve from the car, along its heading, to its rail point the
+    // regain length on, arriving along the rail.
+    c.regainLength = regainLength;
+    c.regainBase = dist;
+    Vec3 railDir;
+    const Vec3 end = railPosition(c, dist + regainLength, &railDir);
+    railDir.y = 0.0f;
+    const Vec3 endDir =
+        railDir.mag2() > 0.0f ? railDir.normalized() * regainLength : -c.transform.m2 * regainLength;
     const Vec3 fwd = -c.transform.m2;
-    setCurve(c, pos, end, fwd * 30.0f, endDir * c.regainLength);
+    setCurve(c, pos, end, fwd * regainLength, endDir);
     c.turnY1 = end.y;
     c.segDist = 0.0f;
-    c.segLen = c.regainLength;
+    c.segLen = regainLength;
     c.rail = Rail::Regain;
     c.enterInt = false;
+    const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
     c.target = info.speedLimit + c.exceedLimit;
     c.roadDist = c.regainBase;
 }
