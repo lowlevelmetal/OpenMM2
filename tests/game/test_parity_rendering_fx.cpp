@@ -1,6 +1,8 @@
 // Parity checks for the rendering and effects code against MM2's own
 // (midtown2.exe build 3393, see docs/parity/rendering-fx.md).
 
+#include "TestData.h"
+#include "city/CityData.h"
 #include "game/CityRenderer.h"
 #include "game/MeshDraw.h"
 #include "game/fx/LineSparks.h"
@@ -8,6 +10,8 @@
 #include "game/fx/Shards.h"
 
 #include <gtest/gtest.h>
+
+#include <cmath>
 
 using namespace mm2;
 using namespace mm2::game;
@@ -69,6 +73,34 @@ TEST(ParityRenderingFx, SdlMovieFrameNamesUseTheBaseName) {
     EXPECT_EQ(sdlTextureName("s_ocean-0001"), "s_ocean");
     EXPECT_EQ(sdlTextureName("cw_apt-1234"), "cw_apt-1234");
     EXPECT_EQ(sdlTextureName("r2_f"), "r2_f");
+}
+
+TEST(ParityRenderingFx, EveryWallHasAFacadeBoundLight) {
+    // sdlPage16::Draw shades facades and slivers with the wall light table
+    // entry the room's preceding FacadeBound attribute names. All but one
+    // retail wall has one before it (MM2 would use whatever its local held;
+    // CityRenderer takes the wall's facing), and the angle word fits the
+    // 64-entry table.
+    MM2_REQUIRE_GAME_DATA();
+    for (const char* name : {"london", "sf"}) {
+        auto city = city::loadCity(*test::gameData(), name);
+        ASSERT_TRUE(city) << name;
+        int walls = 0, unlit = 0;
+        for (const auto& room : city->psdl.rooms) {
+            int angle = -1;
+            for (const auto& a : room.attributes) {
+                if (a.type == city::PsdlAttrType::FacadeBound) {
+                    angle = a.facadeBoundAngle();
+                    EXPECT_LT(angle, 64) << name;
+                } else if (a.type == city::PsdlAttrType::Facade || a.type == city::PsdlAttrType::Sliver) {
+                    ++walls;
+                    unlit += angle < 0;
+                }
+            }
+        }
+        EXPECT_GT(walls, 1000) << name;
+        EXPECT_LE(unlit, 1) << name;
+    }
 }
 
 TEST(ParityRenderingFx, ObjectDetailLevels) {

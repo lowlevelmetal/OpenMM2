@@ -121,6 +121,7 @@ private:
     // CPU copy of the street vertices and their kinds, reshaded per environment.
     std::vector<render::Vertex3D> m_streetVertices;
     std::vector<city::SurfaceKind> m_streetKinds;
+    std::vector<std::uint8_t> m_wallShade; // wall light table index per vertex
     std::vector<Room> m_rooms;
     std::vector<InstanceDraw> m_instances;
     std::vector<std::uint8_t> m_roomMarks;

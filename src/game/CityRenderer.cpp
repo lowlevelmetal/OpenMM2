@@ -53,6 +53,52 @@ std::uint32_t argbToRgba(std::uint32_t argb) {
     return (argb & 0xFF00FF00u) | ((argb >> 16) & 0xFFu) | ((argb & 0xFFu) << 16);
 }
 
+// A facade or sliver of a room and the wall light table entry it is drawn
+// with: sdlPage16::Draw keeps the angle word of the last FacadeBound
+// attribute it passed and shades the following facades and slivers with
+// sdlCommon's light table entry of that index.
+struct WallLight {
+    Vec3 p0, p1, outward;
+    std::uint8_t index = 0;
+};
+
+std::vector<WallLight> wallLights(const city::Psdl& psdl, std::size_t room) {
+    std::vector<WallLight> out;
+    if (room >= psdl.rooms.size())
+        return out;
+    int light = -1;
+    for (const auto& a : psdl.rooms[room].attributes) {
+        if (a.type == city::PsdlAttrType::FacadeBound) {
+            light = a.facadeBoundAngle() & 63;
+            continue;
+        }
+        if ((a.type != city::PsdlAttrType::Facade && a.type != city::PsdlAttrType::Sliver) || light < 0)
+            continue;
+        if (a.wallLeft() >= psdl.vertices.size() || a.wallRight() >= psdl.vertices.size())
+            continue;
+        WallLight w;
+        w.p0 = psdl.vertices[a.wallLeft()];
+        w.p1 = psdl.vertices[a.wallRight()];
+        const Vec3 n = (w.p1 - w.p0).cross({0, 1, 0});
+        w.outward = n.mag2() > 0.0f ? n.normalized() : Vec3{};
+        w.index = static_cast<std::uint8_t>(light);
+        out.push_back(w);
+    }
+    return out;
+}
+
+// The light table index of a wall vertex built by city::buildCityMesh: the
+// wall it is a corner of (same ground position, same facing). A wall the
+// lookup misses (no FacadeBound before it) takes the entry of its facing.
+std::uint8_t wallLightIndex(const std::vector<WallLight>& walls, const city::CityVertex& v) {
+    auto flatNear = [](const Vec3& a, const Vec3& b) { return sq(a.x - b.x) + sq(a.z - b.z) < 1e-6f; };
+    for (const auto& w : walls)
+        if ((flatNear(v.position, w.p0) || flatNear(v.position, w.p1)) && v.normal.dot(w.outward) > 0.99f)
+            return w.index;
+    const float a = std::atan2(v.normal.z, v.normal.x);
+    return static_cast<std::uint8_t>(static_cast<int>(std::floor((a + kPi / 2.0f) * 32.0f / kPi)) & 63);
+}
+
 } // namespace
 
 std::string sdlTextureName(std::string_view name) {
@@ -154,6 +200,7 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
         const auto& roomMesh = mesh.rooms[r];
         Room& room = m_rooms[r];
         room.bounds = roomMesh.bounds;
+        const auto walls = wallLights(city.psdl, r);
         for (const auto& batch : roomMesh.batches) {
             if (batch.indices.empty() || batch.kind == city::SurfaceKind::FacadeBound)
                 continue;
@@ -177,6 +224,7 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
                 rv.uv0[1] = rv.uv1[1] = v.uv.y;
                 m_streetVertices.push_back(rv);
                 m_streetKinds.push_back(batch.kind);
+                m_wallShade.push_back(batch.kind == city::SurfaceKind::Wall ? wallLightIndex(walls, v) : 0);
             }
             for (auto i : batch.indices)
                 indices.push_back(base + i);
@@ -218,19 +266,13 @@ void CityRenderer::setEnvironment(const Environment& env) {
     // colour. The room colours come from city/<map>.lmap, but its count
     // never matches the room count cityLevel::Load checks (London 1340 for
     // 1341, SF 1125 for 1171), so MM2 drops it and every room is white.
-    // The light table index is the facade's orientation (MM2 stores it in
-    // the preceding FacadeBound attribute; here it is taken from the wall's
-    // normal, inferred to match).
+    // The light table index of a wall is the one the room's preceding
+    // FacadeBound attribute stores (wallLights).
     for (std::size_t i = 0; i < m_streetVertices.size(); ++i) {
         auto& v = m_streetVertices[i];
         std::uint32_t argb = 0xFFFFFFFFu;
         switch (m_streetKinds[i]) {
-        case city::SurfaceKind::Wall: {
-            const float a = std::atan2(v.normal[2], v.normal[0]);
-            const int index = static_cast<int>(std::lround((a + kPi / 2.0f) * 32.0f / kPi)) & 63;
-            argb = env.wallShades[static_cast<std::size_t>(index)];
-            break;
-        }
+        case city::SurfaceKind::Wall: argb = env.wallShades[m_wallShade[i] & 63u]; break;
         case city::SurfaceKind::Curb: argb = ((0xFFFFFFFFu >> 1) & 0x7F7F7Fu) | 0xFF000000u; break;
         default: break;
         }
