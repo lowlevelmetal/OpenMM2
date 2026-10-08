@@ -29,6 +29,20 @@ struct CommandLine {
     std::optional<int> frames;             // --frames N: exit after N frames
     std::optional<std::string> screenshot; // --screenshot <png>: capture the last frame
 
+    // The original's own options (datArgParser: "-name", "-name=value"),
+    // accepted so shortcuts made for midtown2.exe keep working. -nomovie,
+    // -window, -max, -fs/-fullscreen, -width and -height set the fields above;
+    // these are the rest of what OpenMM2 can honour, for this run only.
+    bool noAudio = false;       // -noaudio, -nosoundfx: no sound at all
+    bool noMusic = false;       // -nomusic: no music, no city ambience segment
+    bool noSpeech = false;      // -nospeech: no announcer
+    std::optional<bool> vsync;  // -novblank: false
+    // MM2 options with no OpenMM2 equivalent (Direct3D device choices,
+    // development switches), and single-dash words the original would not
+    // have read either; both are logged at start-up and otherwise ignored.
+    std::vector<std::string> ignoredOptions;
+    std::vector<std::string> unknownOptions;
+
     std::string error; // set when parsing failed
 };
 

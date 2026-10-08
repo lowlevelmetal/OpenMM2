@@ -299,6 +299,46 @@ void posePed(const Skeleton& skeleton, const PedAnimation* anim, float frame, st
     }
 }
 
+void normalizePedRoots(PedType& type) {
+    // crAnimation::Normalize(false), from crAnimation::GetAnimation's first
+    // load: z -= i * -(distance / frames) + 0, in that order.
+    for (auto& [key, anim] : type.animations) {
+        if (anim.channelCount < 3 || anim.frameCount == 0)
+            continue;
+        const float step = anim.cycleDistance / static_cast<float>(anim.frameCount);
+        for (std::uint32_t i = 0; i < anim.frameCount; ++i) {
+            float& z = anim.channels[static_cast<std::size_t>(i) * anim.channelCount + 2];
+            z = z - (static_cast<float>(i) * -step + 0.0f);
+        }
+    }
+    // pedAnimation::Load, row by row.
+    for (const auto& state : type.table.states) {
+        const auto it = type.animations.find(str::lower(state.animFile));
+        if (it == type.animations.end() || it->second.channelCount < 3 || it->second.frameCount == 0)
+            continue;
+        PedAnimation& anim = it->second;
+        int m = state.lastFrame - state.firstFrame;
+        if (static_cast<int>(anim.frameCount) <= m)
+            m = static_cast<int>(anim.frameCount) - 1;
+        if (m < 0)
+            continue;
+        auto root = [&](int frame) { return anim.channels.data() + static_cast<std::size_t>(frame) * anim.channelCount; };
+        const float originX = -root(0)[0];
+        const float originZ = -root(0)[2];
+        float slopeX = 0.0f, slopeZ = 0.0f;
+        if (m != 0) {
+            slopeX = (-root(m)[0] - originX) / static_cast<float>(m);
+            slopeZ = (-root(m)[2] - originZ) / static_cast<float>(m);
+        }
+        for (int i = 0; i <= m; ++i) {
+            const float fi = static_cast<float>(i);
+            float* r = root(i);
+            r[0] = r[0] - -(fi * slopeX + originX);
+            r[2] = r[2] - -(fi * slopeZ + originZ);
+        }
+    }
+}
+
 // --- Mesh ----------------------------------------------------------------------------------
 
 std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
