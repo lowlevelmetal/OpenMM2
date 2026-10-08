@@ -343,6 +343,8 @@ public:
         o.wideAngle = !m_flyCamera && m_cams.wideAngle();
         o.dashActive = !m_flyCamera && m_cams.dashboard();
         o.dashboard = !m_flyCamera && m_cams.display() == game::CarDisplay::Dash;
+        o.mouseSteering = m_controlOptions.controller == controls::Controller::Mouse;
+        m_hud->setSteering(m_lastPedals.steering);
         // mmGame::UpdateGameInput: looking around from a point-of-view
         // camera disables the HUD (mmHUD::Disable), straight ahead enables
         // it again. mmPopup::ProcessEscape disables it too.

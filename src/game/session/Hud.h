@@ -119,6 +119,7 @@ struct HudOptions {
     bool zoomedIn = false;            // "Map Zoom" (tune/<city>.mmhudmap ZoomIn)
     bool opponentIcons = true;        // "Opponent Position" (mmIcons; on for new players)
     bool metric = false;              // km/h instead of mph (OpenMM2 option)
+    bool mouseSteering = false;       // the mouse drives (mmInput's device 0): the steering bar shows
     bool dashboard = false;           // the dash model shows (mmDashView active, its camera current)
     // The HUD's dashboard flag (mmHUD::ActivateDash): hides the instrument
     // cluster and, for right-hand-drive cars, moves the small map left.
@@ -308,6 +309,9 @@ public:
     // "Opponent Position" (mmGame::UpdateGameInput, SetIconsState).
     void toggleOpponentIcons() { m_options.opponentIcons = !m_options.opponentIcons; }
     void setCopsAndRobbers(CrDisplay display) { m_cr = std::move(display); }
+    // The player's steering (mmPlayer +0x2264, mmPlayer::SetSteering), for
+    // the mouse steering bar.
+    void setSteering(float steering) { m_steering = steering; }
 
     // mmHUD::PostChatMessage: the chat node's five lines scroll up, the new
     // one last, and the node shows again; mmHUD::Update hides it 15 s after
@@ -363,6 +367,7 @@ private:
     float m_lastLapSeen = 0.0f;
     std::array<std::string, 5> m_chat; // mmHUD's chat node (+0x8b0)
     CrDisplay m_cr;
+    float m_steering = 0.0f;
     Mat34 m_crGoldSpin; // mmCRHUD +0x148: the HUD gold's spin and place in camera space
     bool m_chatShown = false;
     float m_chatTime = 0.0f;
