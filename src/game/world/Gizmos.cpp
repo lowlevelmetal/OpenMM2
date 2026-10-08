@@ -97,7 +97,8 @@ std::string bridgeModel(const vfs::Vfs& vfs, const std::string& name) {
             const auto start = name.find_first_not_of(' ', end + 1);
             if (start != std::string::npos) {
                 const auto stop = name.find(' ', start);
-                const std::string second = name.substr(start, stop == std::string::npos ? stop : stop - start);
+                const std::string second =
+                    name.substr(start, stop == std::string::npos ? stop : stop - start);
                 if (geometryExists(vfs, second))
                     return str::lower(second);
             }
@@ -130,8 +131,8 @@ std::optional<Gizmos::Bridge::Type> bridgeType(const std::string& name) {
 constexpr float kAlphaRef = 101.0f / 255.0f;
 constexpr float kUnlitAlphaRef = 141.0f / 255.0f;
 
-void drawModel(render::Device& device, ModelLibrary& models, TextureLibrary& textures, const std::string& name,
-               int paint, const Mat34& matrix, asset::Lod lod, bool unlit) {
+void drawModel(render::Device& device, ModelLibrary& models, TextureLibrary& textures,
+               const std::string& name, int paint, const Mat34& matrix, asset::Lod lod, bool unlit) {
     const GpuModel* model = models.get(name);
     if (!model)
         return;
@@ -145,8 +146,8 @@ void drawModel(render::Device& device, ModelLibrary& models, TextureLibrary& tex
         options.alphaRef = kUnlitAlphaRef;
     }
     const int count = static_cast<int>(model->paintjobs.size());
-    drawGpuMesh(device, textures, *mesh, model->materials(count > 0 ? paint % count : 0), Mat44::fromMat34(matrix),
-                options);
+    drawGpuMesh(device, textures, *mesh, model->materials(count > 0 ? paint % count : 0),
+                Mat44::fromMat34(matrix), options);
 }
 
 // gizBridgeMgr::Cull / gizFerryMgr::Cull: within R of the camera the high
@@ -300,8 +301,8 @@ void Gizmos::load(const vfs::Vfs& vfs, const Options& options, const phys::Level
         for (auto& b : m_bridges)
             resetBridgeState(b); // gizBridgeMgr::Reset
     }
-    log::info("gizmos: {} sailboats, {} bridge leaves, {} trains, {} ferries", m_sailboats.size(), m_bridges.size(),
-              m_trains.size(), m_ferries.size());
+    log::info("gizmos: {} sailboats, {} bridge leaves, {} trains, {} ferries", m_sailboats.size(),
+              m_bridges.size(), m_trains.size(), m_ferries.size());
 }
 
 std::unique_ptr<GizmoBody> Gizmos::makeBody(const std::string& model, bool yOnly) const {
@@ -409,7 +410,8 @@ void Gizmos::updateSailboat(Sailboat& s, float dt) {
 
 // --- Bridges ---------------------------------------------------------------------------------
 
-void Gizmos::loadBridges(const vfs::Vfs& vfs, const city::PathSet& set, std::vector<std::uint16_t>* roomFlags) {
+void Gizmos::loadBridges(const vfs::Vfs& vfs, const city::PathSet& set,
+                         std::vector<std::uint16_t>* roomFlags) {
     // gizBridgeMgr::Init: nothing without the default model.
     if (!geometryExists(vfs, kBridgeModel)) {
         log::warn("gizmos: couldn't find {} to load in gizBridgeMgr", kBridgeModel);
@@ -471,7 +473,7 @@ void Gizmos::resetBridgeState(Bridge& b) {
     b.angle = b.type == Bridge::Type::Open ? kGoalAngle : 0.0f;
     repositionBridge(b);
     if (b.audio)
-        b.audio->stop(); // Aud3DAmbientObject::Reset: out of the 3D manager
+        b.audio->reset(); // Aud3DAmbientObject::Reset
 }
 
 void Gizmos::repositionBridge(Bridge& b) {
@@ -589,7 +591,7 @@ void Gizmos::resetTrain(Train& t) {
     t.speedFactor = 1.0f;
     t.forward = true;
     if (t.audio)
-        t.audio->stop();
+        t.audio->reset(); // Aud3DAmbientObject::Reset
     for (std::size_t i = 0; i < t.cars.size(); ++i) {
         TrainCar& car = t.cars[i];
         car.spline.reset();
@@ -751,7 +753,7 @@ void Gizmos::reset() {
     // gizFerryMgr::Reset (gizFerry::Reset: the sound, the room, the spline).
     for (auto& f : m_ferries) {
         if (f.audio)
-            f.audio->stop();
+            f.audio->reset(); // Aud3DAmbientObject::Reset
         updateRoom(*f.body);
         f.spline.reset();
     }
@@ -768,7 +770,8 @@ void Gizmos::update(float dt, const std::optional<Vec3>& trigger) {
         if (b.type == Bridge::Type::Proximity && b.state == Bridge::State::Down && trigger) {
             const Vec3& p = b.body->matrix().m3;
             const Vec3& t = *trigger;
-            const float d2 = (t.x - p.x) * (t.x - p.x) + (t.y - p.y) * (t.y - p.y) + (t.z - p.z) * (t.z - p.z);
+            const float d2 =
+                (t.x - p.x) * (t.x - p.x) + (t.y - p.y) * (t.y - p.y) + (t.z - p.z) * (t.z - p.z);
             if (d2 < kProximityDist2)
                 triggerBridge(i);
         }
@@ -792,7 +795,8 @@ void Gizmos::updateAudio(const Mat34& listener, float dt, bool inTunnel) {
     for (auto& t : m_trains)
         if (t.audio) {
             t.audio->setPosition(t.cars[1].body->matrix().m3);
-            t.audio->update(listener, t.state != Train::State::InStation ? kTrainAudioSpeed : 0.0f, dt, inTunnel);
+            const float speed = t.state != Train::State::InStation ? kTrainAudioSpeed : 0.0f;
+            t.audio->update(listener, speed, dt, inTunnel);
         }
     // gizFerry::Update: the ferry sounds at the ferry, speed 0.
     for (auto& f : m_ferries)
@@ -814,8 +818,9 @@ void Gizmos::stopAudio() {
             f.audio->stop();
 }
 
-void Gizmos::draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, const Frustum& frustum,
-                  const Camera& camera, const ObjectDetail& detail) const {
+void Gizmos::draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures,
+                  const Frustum& frustum, const Camera& camera, const ObjectDetail& detail,
+                  const RoomVisibility* rooms) const {
     const Mat34& cam = camera.transform;
     auto unlit = [](const GizmoBody& b) {
         return b.data && (b.data->billFlags & bangers::BangerData::kUnlit) != 0;
@@ -825,19 +830,27 @@ void Gizmos::draw(render::Device& device, ModelLibrary& models, TextureLibrary& 
         const auto lod = managerLod(distanceTo(cam.m3, b.placement.m3), kCullDistance);
         if (!lod || !frustum.intersectsSphere(b.body->matrix().m3, modelRadius(models, b.body->model)))
             continue;
-        drawModel(device, models, textures, b.body->model, b.body->paint, b.body->matrix(), *lod, unlit(*b.body));
+        drawModel(device, models, textures, b.body->model, b.body->paint, b.body->matrix(), *lod,
+                  unlit(*b.body));
     }
     // gizFerryMgr::Cull: by the distance from the camera to the ferry.
     for (const auto& f : m_ferries) {
         const auto lod = managerLod(distanceTo(cam.m3, f.body->matrix().m3), kCullDistance);
         if (!lod || !frustum.intersectsSphere(f.body->matrix().m3, modelRadius(models, f.body->model)))
             continue;
-        drawModel(device, models, textures, f.body->model, f.body->paint, f.body->matrix(), *lod, unlit(*f.body));
+        drawModel(device, models, textures, f.body->model, f.body->paint, f.body->matrix(), *lod,
+                  unlit(*f.body));
     }
-    // The train cars and the sailboats are instances of their rooms
-    // (lvlInstance::IsVisible with the dynamic objects' NoDraw limit).
+    // The train cars and the sailboats are instances of their rooms:
+    // cityLevel::DrawRooms draws them only from the rooms the city lists for
+    // the view (cityLevel_drawObjects), then lvlInstance::IsVisible with the
+    // dynamic objects' NoDraw limit.
+    const bool byRoom = rooms && rooms->active() && m_level;
+    auto listed = [&](int room) { return !byRoom || rooms->passes(room).objects; };
     for (const auto& t : m_trains)
         for (const auto& c : t.cars) {
+            if (!listed(c.body->room))
+                continue;
             const Mat34& m = c.body->matrix();
             const float r = modelRadius(models, c.body->model);
             const auto lod = objectLod(viewDepth(cam, m.m3), r, detail, detail.noDraw);
@@ -845,6 +858,8 @@ void Gizmos::draw(render::Device& device, ModelLibrary& models, TextureLibrary& 
                 drawModel(device, models, textures, c.body->model, c.body->paint, m, *lod, unlit(*c.body));
         }
     for (const auto& s : m_sailboats) {
+        if (!listed(s.room))
+            continue;
         const float r = modelRadius(models, s.model);
         const auto lod = objectLod(viewDepth(cam, s.matrix.m3), r, detail, detail.noDraw);
         // gizInstance::Draw: lit, with its paint job.
@@ -865,7 +880,8 @@ std::unique_ptr<Gizmos> initGizmos(const vfs::Vfs& vfs, city::CityData& city, co
     options.multiplayer = multiplayer;
     gizmos->load(vfs, options, level, &city.levelRoomFlags, random);
     if (GizmoKinds::forSession(config.mode, multiplayer).parkedCars) {
-        const std::string path = gizmoPathSetPath(vfs, config.city, "parkedcar", config.mode, config.raceIndex);
+        const std::string path =
+            gizmoPathSetPath(vfs, config.city, "parkedcar", config.mode, config.raceIndex);
         if (!path.empty()) {
             auto bytes = vfs.readAll(path);
             std::string error;

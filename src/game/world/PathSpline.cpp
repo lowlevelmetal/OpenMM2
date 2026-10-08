@@ -72,7 +72,8 @@ void PathSpline::solve(Vec3& position, Vec3& direction, float t) const {
                 ((t * m_z.x + m_z.y) * t + m_z.z) * t + m_z.w};
     const float t2 = t * t * 3.0f;
     const float t1 = t + t;
-    direction = {t2 * m_x.x + t1 * m_x.y + m_x.z, t2 * m_y.x + t1 * m_y.y + m_y.z, t2 * m_z.x + t1 * m_z.y + m_z.z};
+    direction = {t2 * m_x.x + t1 * m_x.y + m_x.z, t2 * m_y.x + t1 * m_y.y + m_y.z,
+                 t2 * m_z.x + t1 * m_z.y + m_z.z};
 }
 
 void PathSpline::update(Vec3& position, Vec3& direction, float dt) {

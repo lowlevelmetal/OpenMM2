@@ -30,6 +30,7 @@
 #include "city/CityData.h"
 #include "game/CityLevel.h"
 #include "game/MeshDraw.h"
+#include "game/RoomVisibility.h"
 #include "game/ModelLibrary.h"
 #include "game/RaceConfig.h"
 #include "game/TextureLibrary.h"
@@ -228,10 +229,12 @@ public:
     void updateAudio(const Mat34& listener, float dt, bool inTunnel);
     void stopAudio();
 
-    // gizBridgeMgr::Cull and gizFerryMgr::Cull (their own distances), the
-    // train cars and the sailboats as the rooms draw instances.
+    // gizBridgeMgr::Cull and gizFerryMgr::Cull (their own distances,
+    // whatever the rooms), the train cars and the sailboats as
+    // cityLevel::DrawRooms draws instances: from their rooms when `rooms`
+    // (the city's list for the view) is given.
     void draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, const Frustum& frustum,
-              const Camera& camera, const ObjectDetail& detail) const;
+              const Camera& camera, const ObjectDetail& detail, const RoomVisibility* rooms = nullptr) const;
 
     // InstanceSource: the bridges, ferries and train cars in `room`.
     void instancesIn(int room, std::vector<phys::Instance*>& out) const override;

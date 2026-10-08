@@ -124,7 +124,7 @@ hinge (high within 200 m, then medium, low, very low, none beyond 800 m).
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
 | `gizBridge::gizBridge`, `~gizBridge`, `Init` | ported (new) | `Gizmos::loadBridges`, `makeBody`, `placeBanger` | Init's Reset runs with the constructor's type (timed): the type from the name is set afterwards, so an open leaf opens at the next Reset (`initGizmos` resets, as mmGame::Reset does before the race). |
-| `gizBridge::Reset`, `Reposition` | ported (new) | `Gizmos::resetBridgeState`, `repositionBridge` | Reset's Aud3DAmbientObject::Reset is `stop()` here (the integration branch's `AmbientObject::reset` is the exact one). |
+| `gizBridge::Reset`, `Reposition` | ported (new) | `Gizmos::resetBridgeState`, `repositionBridge` | Reset's Aud3DAmbientObject::Reset is `AmbientObject::reset`. |
 | `gizBridge::Update`, `Trigger` | ported (new) | `Gizmos::updateBridge`, `triggerBridge` | Timers in frame seconds. |
 | `gizBridge::Cull`, `Draw` | ported (new) | `Gizmos::draw` | Draw is empty in MM2 (the rooms do not draw bridges); Cull is dgBangerInstance::Draw (unlit with BillFlags 0x80). |
 | `gizBridge::SizeOf` | not needed | - | |
@@ -169,7 +169,7 @@ the bridges; their "ferry" sounds follow them.
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `gizFerry::gizFerry`, `~gizFerry`, `Init`, `Reset`, `Update`, `SetSpeed` | ported (new) | `Gizmos::loadFerries`, `reset`, `updateFerry` | Reset: the sound out of the 3D manager (`stop()`), the room, the spline. |
+| `gizFerry::gizFerry`, `~gizFerry`, `Init`, `Reset`, `Update`, `SetSpeed` | ported (new) | `Gizmos::loadFerries`, `reset`, `updateFerry` | Reset: `AmbientObject::reset`, the room, the spline. |
 | `gizFerry::Cull`, `Draw` | ported (new) | `Gizmos::draw` | Draw is empty in MM2. |
 | `gizFerry::SizeOf` | not needed | - | |
 | `gizFerryMgr::gizFerryMgr`, `~gizFerryMgr`, `Init`, `ApplyTuning`, `Reset`, `Update`, `Cull` | ported (new) | `Gizmos::loadFerries`, `reset`, `update`, `draw` | The manager's pause flag (+0x30) is never set. |
@@ -260,7 +260,7 @@ cars' `CableCarAudio` (position and speed each frame), the trains'
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `aiCableCarAudio::aiCableCarAudio`, `~aiCableCarAudio`, `Init`, `AssignSounds`, `UnAssignSounds`, `UpdateAudio` (both), `Reset` | ported | `CableCarAudio::load`, `update`, `slotLost`, `stop`; `CableCars::loadAudio`, `updateAudio` | Reset is `stop()` here. |
+| `aiCableCarAudio::aiCableCarAudio`, `~aiCableCarAudio`, `Init`, `AssignSounds`, `UnAssignSounds`, `UpdateAudio` (both), `Reset` | ported | `CableCarAudio::load`, `update`, `slotLost`, `reset`; `CableCars::loadAudio`, `updateAudio`, `resetCar` | |
 | `aiCableCarAudioData::aiCableCarAudioData`, `~aiCableCarAudioData`, `AssignSounds`, `UnAssignSounds`, `Stop`, `UpdatePlay`, `UpdateState` | ported | `CableCarAudio` | |
 | `aiSubwayAudio::aiSubwayAudio`, `~aiSubwayAudio`, `Activate`, `Deactivate`, `Update` | ported | `SubwayAudio`; `Gizmos::updateAudio` | gizTrain is its only owner in retail (no aiSubway is ever made). |
 
@@ -341,14 +341,14 @@ on s_win_trans_01), which nothing then uses.
 
 ## For other areas and the coordinator
 
-- Room visibility (integration's `RoomVisibility.h`): the train cars, the
-  sailboats and the cable cars are room instances in MM2 and should be drawn
-  only from listed rooms (their rooms are tracked: `GizmoBody::room`,
-  `Gizmos::Sailboat::room`, `CableCars::room`); bridges and ferries are drawn
-  by their managers' Cull whatever the rooms. Parked cars are BangerSet props.
-- The integration branch's `AmbientObject::reset()` should replace the
-  `stop()` calls in `Gizmos::resetBridgeState`, `resetTrain`, `reset` (ferries)
-  and `CableCars::resetCar` (Aud3DAmbientObject::Reset / aiCableCarAudio::Reset).
+- Room visibility (`RoomVisibility.h`, cityLevel::DrawRooms): the train
+  cars, the sailboats and the cable cars are drawn only from the rooms the
+  city lists for the view, from the rooms they are kept in
+  (`GizmoBody::room`, `Gizmos::Sailboat::room`, the cable car's body); the
+  bridges and the ferries are drawn by their managers' Cull whatever the
+  rooms, as in MM2. Parked cars are BangerSet props.
+- A race restart resets the gizmos and the cable cars right after the props
+  (lvlLevel::ResetInstances), as mmGame::Reset and aiMap::Reset do.
 - ai-vehicles: the ambient traffic does not see the cable cars (MM2 lists them
   in the same per-section obstacle lists and at the same four-way stops, and
   the ambient cars read their aiObstacle interface). Porting it needs

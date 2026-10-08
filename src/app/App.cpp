@@ -36,6 +36,8 @@ void applyCommandLine(const CommandLine& cl, render::DisplaySettings& d) {
         d.windowWidth = *cl.width;
     if (cl.height)
         d.windowHeight = *cl.height;
+    if (cl.vsync && !*cl.vsync)
+        d.vsync = render::VsyncMode::Off; // -novblank
     d.sanitize();
 }
 
@@ -96,6 +98,10 @@ void tryMountConfiguredSource(Context& ctx) {
 int run(const CommandLine& cl) {
     log::setFile(paths::userDataDir() / "openmm2.log");
     log::info("{} {} starting", kProjectName, kProjectVersion);
+    for (const auto& o : cl.ignoredOptions)
+        log::info("command line: {} has no OpenMM2 equivalent; ignored", o);
+    for (const auto& o : cl.unknownOptions)
+        log::warn("command line: unknown option {}; ignored", o);
 
     Context ctx;
     ctx.commandLine = cl;
@@ -154,7 +160,8 @@ int run(const CommandLine& cl) {
         // on every start unless started with -nomovie (OpenMM2: --skip-intro
         // or [Game] SkipIntro). It did not play it in a window (only when
         // inWindow was false); OpenMM2 draws the movie itself and plays it in
-        // every window mode.
+        // every window mode, except when started with the original's -window
+        // or -max (parseCommandLine).
         const bool intro = !cl.skipIntro && !ctx.settings.ini.getBool("Game", "SkipIntro", false) && !cl.frames;
         screen = intro ? makeIntroScreen(ctx) : makeFrontendScreen(ctx);
     } else {

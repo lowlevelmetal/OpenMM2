@@ -164,6 +164,8 @@ std::unique_ptr<Page> makeAddressDialog(Frontend& fe);
 std::unique_ptr<Page> makeLobbyPage(Frontend& fe);
 std::unique_ptr<Page> makeHostSettingsPage(Frontend& fe);
 std::unique_ptr<Page> makeEjectDialog(Frontend& fe);
+// MM2's own menu pointer, drawn last when not in a window (MenuPointer.cpp).
+void drawMenuPointer(Frontend& fe, ui::UiFrame& f);
 // Automation helpers: host with the current config / join an address.
 bool frontendHostSession(Frontend& fe);
 void frontendJoinSession(Frontend& fe, const std::string& address, const std::string& password);

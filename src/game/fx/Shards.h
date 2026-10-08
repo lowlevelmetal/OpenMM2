@@ -10,7 +10,8 @@
 
 namespace mm2::game::fx {
 
-// fxShardManager: 16 glass/paint shards per car, thrown from hard impacts.
+// fxShardManager: 16 glass/paint shards per car, thrown from hard impacts
+// (the constants are fxShardManager::fxShardManager's).
 // Each is a small right triangle (0.1 m legs) textured with a random
 // 0.3 x 0.3 patch of one of the car's paint materials (materialFor), tumbling
 // and falling for 1.8 s.
@@ -37,7 +38,7 @@ public:
         Vec3 velocity;
         Vec3 axis;    // spin axis
         float spin = 0.0f;
-        float age = 3.4e38f; // dead until thrown
+        float age = 3.4e38f; // dead until thrown (fxShard::fxShard: FLT_MAX)
         float u = 0.5f, v = 0.5f;
     };
     const std::array<Shard, kCount>& shards() const { return m_shards; }

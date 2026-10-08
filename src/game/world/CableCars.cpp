@@ -135,7 +135,9 @@ const std::vector<Vec3>* CableCars::line(int path, int dir) const {
 
 int CableCars::sections(int path) const { return static_cast<int>(source(path).center.size()); }
 
-float CableCars::centerLength(int path, int a, int b) const { return ai::pathCenterLength(source(path), a, b); }
+float CableCars::centerLength(int path, int a, int b) const {
+    return ai::pathCenterLength(source(path), a, b);
+}
 
 namespace {
 
@@ -341,7 +343,7 @@ void CableCars::resetCar(Car& c, const phys::World& world) {
     solvePositionAndOrientation(c, world);
     c.room = p.rooms.empty() ? 0 : p.rooms.front();
     if (c.audio)
-        c.audio->stop(); // aiCableCarAudio::Reset
+        c.audio->reset(); // aiCableCarAudio::Reset
     updateRoom(c, world);
 }
 
@@ -397,7 +399,8 @@ void CableCars::solveVelocity(Car& c, float dt, const ai::TrackedCar* player) {
             // Brake to a stop 0.25 m short of the intersection.
             if (c.target != 0.0f) {
                 c.target = 0.0f;
-                c.accel = -((c.speed * c.speed) / ((toIntersection - kStopGap) + (toIntersection - kStopGap)));
+                const float gap = toIntersection - kStopGap;
+                c.accel = -((c.speed * c.speed) / (gap + gap));
             } else if (c.speed < 0.2f && toIntersection < 0.5f) {
                 c.speed = 0.0f;
             }
@@ -480,7 +483,8 @@ bool CableCars::checkForObstacles(Car& c, float& distance, const ai::TrackedCar*
     };
     if (vehicles(c.vert, pts[static_cast<std::size_t>(c.vert)]))
         return true;
-    if (c.segLen - c.segDist < kObstacleReach && vehicles(c.vert + 1, pts[static_cast<std::size_t>(c.vert + 1)]))
+    if (c.segLen - c.segDist < kObstacleReach &&
+        vehicles(c.vert + 1, pts[static_cast<std::size_t>(c.vert + 1)]))
         return true;
     return false;
 }
@@ -690,10 +694,13 @@ void CableCars::solvePositionAndOrientation(Car& c, const phys::World& world) {
     m.m3 = along + across;
     m.m0 = m.m0 * invMag(m.m0);
     m.m2 = m.m2 * invMag(m.m2);
-    m.m1 = {m.m2.y * m.m0.z - m.m0.y * m.m2.z, m.m2.z * m.m0.x - m.m2.x * m.m0.z, m.m0.y * m.m2.x - m.m2.y * m.m0.x};
+    m.m1 = {m.m2.y * m.m0.z - m.m0.y * m.m2.z, m.m2.z * m.m0.x - m.m2.x * m.m0.z,
+            m.m0.y * m.m2.x - m.m2.y * m.m0.x};
 }
 
-std::vector<int>* CableCars::sectionList(int path, int dir, int section) { return &m_sections[{path, dir, section}]; }
+std::vector<int>* CableCars::sectionList(int path, int dir, int section) {
+    return &m_sections[{path, dir, section}];
+}
 
 const std::vector<int>* CableCars::sectionList(int path, int dir, int section) const {
     const auto it = m_sections.find({path, dir, section});
@@ -785,7 +792,8 @@ void CableCars::instancesIn(int room, std::vector<phys::Instance*>& out) const {
 
 // --- Sound and drawing -----------------------------------------------------------------------
 
-void CableCars::loadAudio(audio::SoundBank& bank, audio::Mixer& mixer, audio::game::Object3DManager* manager) {
+void CableCars::loadAudio(audio::SoundBank& bank, audio::Mixer& mixer,
+                          audio::game::Object3DManager* manager) {
     for (auto& c : m_cars) {
         c->audio = std::make_unique<audio::game::CableCarAudio>();
         if (!c->audio->load(bank, mixer, manager, c->speed))
@@ -806,15 +814,21 @@ void CableCars::stopAudio() {
             c->audio->stop();
 }
 
-void CableCars::draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, const Frustum& frustum,
-                     const Camera& camera, const ObjectDetail& detail) const {
-    // aiCableCarInstance::Draw: the BODY mesh for the LOD
-    // lvlInstance::IsVisible picks, with the first paint job, lit.
+void CableCars::draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures,
+                     const Frustum& frustum, const Camera& camera, const ObjectDetail& detail,
+                     const RoomVisibility* rooms) const {
+    // aiCableCarInstance::Draw from the car's room when the city lists it for
+    // the view (cityLevel::DrawRooms' cityLevel_drawObjects): the BODY mesh
+    // for the LOD lvlInstance::IsVisible picks, with the first paint job,
+    // lit.
     const GpuModel* model = models.get(kModel);
     if (!model)
         return;
     const float radius = (model->bounds.max - model->bounds.min).mag() * 0.5f;
+    const bool byRoom = rooms && rooms->active();
     for (const auto& c : m_cars) {
+        if (byRoom && !rooms->passes(c->body->room).objects)
+            continue;
         const Mat34& m = c->matrix;
         const auto lod = objectLod(viewDepth(camera.transform, m.m3), radius, detail, detail.noDraw);
         if (!lod || !frustum.intersectsSphere(m.m3, radius))

@@ -33,6 +33,7 @@
 #include "game/Camera.h"
 #include "game/CityLevel.h"
 #include "game/MeshDraw.h"
+#include "game/RoomVisibility.h"
 #include "game/ModelLibrary.h"
 #include "game/TextureLibrary.h"
 #include "game/bangers/BangerData.h"
@@ -98,9 +99,10 @@ public:
     void updateAudio(const Mat34& listener, float dt);
     void stopAudio();
 
-    // aiCableCarInstance::Draw, as the rooms draw instances.
+    // aiCableCarInstance::Draw, as cityLevel::DrawRooms draws instances:
+    // from their rooms when `rooms` (the city's list for the view) is given.
     void draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, const Frustum& frustum,
-              const Camera& camera, const ObjectDetail& detail) const;
+              const Camera& camera, const ObjectDetail& detail, const RoomVisibility* rooms = nullptr) const;
 
     // InstanceSource: the cable cars in `room`.
     void instancesIn(int room, std::vector<phys::Instance*>& out) const override;

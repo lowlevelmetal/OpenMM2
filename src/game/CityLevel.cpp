@@ -597,11 +597,17 @@ void CityLevel::collectProbe(int room, const Vec3& centre, float radius, phys::L
 }
 
 void CityLevel::instances(int room, std::vector<phys::Instance*>& out) const {
-    if (room > 0 && static_cast<std::size_t>(room) < m_roomInstances.size())
-        for (StaticInstance* si : m_roomInstances[static_cast<std::size_t>(room)])
-            out.push_back(si);
+    // lvlLevel::MoveToRoom links a movable instance at the head of the
+    // room's list and a static one (flag 0x400) in front of the room's
+    // earlier statics, after every movable one: the sources' instances
+    // first, then the statics newest first.
     for (const InstanceSource* s : m_sources)
         s->instancesIn(room, out);
+    if (room > 0 && static_cast<std::size_t>(room) < m_roomInstances.size()) {
+        const auto& list = m_roomInstances[static_cast<std::size_t>(room)];
+        for (auto it = list.rbegin(); it != list.rend(); ++it)
+            out.push_back(*it);
+    }
 }
 
 } // namespace mm2::game

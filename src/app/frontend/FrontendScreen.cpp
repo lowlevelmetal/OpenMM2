@@ -317,6 +317,7 @@ void Frontend::draw() {
         --first;
     for (std::size_t i = first; i < m_pages.size(); ++i)
         drawPage(*m_pages[i], f, i + 1 == m_pages.size());
+    drawMenuPointer(*this, f); // sfPointer
     ov.end();
 }
 

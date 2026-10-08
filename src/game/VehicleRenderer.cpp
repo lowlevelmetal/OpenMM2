@@ -167,8 +167,14 @@ std::vector<VehicleRenderer::Breakable> VehicleRenderer::wreckParts(float mph, f
     m_wreckEjected = true;
     std::set<std::string> taken; // a pair may come up twice
     auto take = [&](const std::string& part) {
+        // vehCarModel::InitBreakable adds a part to the one-shot manager when
+        // its high LOD mesh exists (vpvw_dune has WHL2 / WHL3 pivots but no
+        // such meshes, so its back wheels never fly off). The pivot gives the
+        // part's place (vehBreakableMgr::Create's GetPivot; a mesh without a
+        // pivot would leave it undefined in MM2, and no retail model has one).
         const auto* pivot = m_model.pivot(str::lower(part));
-        if (!pivot || m_detached.contains(part) || !taken.insert(part).second)
+        if (!pivot || !m_gpu || !findFilledLod(*m_gpu, part, asset::Lod::High) || m_detached.contains(part) ||
+            !taken.insert(part).second)
             return;
         out.push_back({part, pivot->origin});
     };
@@ -195,7 +201,22 @@ std::vector<VehicleRenderer::Breakable> VehicleRenderer::wreckParts(float mph, f
     return out;
 }
 
+void VehicleRenderer::detach(const std::string& part, std::optional<std::size_t> banger) {
+    m_detached.insert(part);
+    if (banger)
+        m_ejectedBangers.push_back(*banger);
+}
+
 void VehicleRenderer::reattachAll() {
+    // vehBreakableMgr::Reset: each part back on, and the hit banger it became
+    // detached (lvlInstance vtable +0x28, dgHitBangerInstance::Detach). MM2
+    // walks its breakable lists in their order (BREAK parts, then wheels,
+    // hubs, fenders, engine); OpenMM2 detaches in ejection order, which only
+    // changes the order of dgBangerActiveManager's free list.
+    if (m_ejectedPartReset)
+        for (const std::size_t i : m_ejectedBangers)
+            m_ejectedPartReset(i);
+    m_ejectedBangers.clear();
     m_detached.clear();
     m_wreckEjected = false;
 }
@@ -286,6 +307,14 @@ void VehicleRenderer::drawReflection(const Mat34& body) {
 void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
     if (!m_gpu)
         return;
+    if (m_rooms && m_rooms->active()) {
+        // vehCar::Update moves the car's instance to FindRoomId's room.
+        m_room = m_rooms->findRoom(pose.body.m3, m_room);
+        draw(pose, camera, m_rooms->passes(m_room));
+        return;
+    }
+    // Without a city view's room list: the car, its shadow and its glows
+    // while it is visible.
     const auto visible = lodFor(pose, camera);
     if (!visible)
         return;
@@ -295,6 +324,24 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
         drawCar(pose, *visible);
     drawShadow(pose);
     drawGlows(pose, camera);
+}
+
+void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera, const RoomVisibility::Passes& passes) {
+    if (!m_gpu)
+        return;
+    // cityLevel_drawObjects: the car itself through lvlInstance::IsVisible.
+    if (passes.objects)
+        if (const auto visible = lodFor(pose, camera)) {
+            if (m_traffic)
+                drawTraffic(pose, *visible);
+            else
+                drawCar(pose, *visible);
+        }
+    // cityLevel_drawShadows, cityLevel_drawLights: by the room alone.
+    if (passes.shadowsAndGlows) {
+        drawShadow(pose);
+        drawGlows(pose, camera);
+    }
 }
 
 void VehicleRenderer::drawCar(const VehiclePose& pose, asset::Lod lod) {

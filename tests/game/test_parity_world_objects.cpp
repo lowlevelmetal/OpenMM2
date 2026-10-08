@@ -103,10 +103,12 @@ TEST(WorldGizmos, KindsPerSession) {
 TEST(WorldGizmos, PathSetPerRace) {
     MM2_REQUIRE_GAME_DATA();
     const auto& v = *test::gameData();
-    EXPECT_EQ(gizmoPathSetPath(v, "london", "bridge", GameMode::Cruise, -1), "race/london/london_bridge.pathset");
+    EXPECT_EQ(gizmoPathSetPath(v, "london", "bridge", GameMode::Cruise, -1),
+              "race/london/london_bridge.pathset");
     EXPECT_EQ(gizmoPathSetPath(v, "london", "bridge", GameMode::Circuit, 0),
               "race/london/london_bridge_circuit0.pathset");
-    EXPECT_EQ(gizmoPathSetPath(v, "london", "bridge", GameMode::Circuit, 1), "race/london/london_bridge.pathset");
+    EXPECT_EQ(gizmoPathSetPath(v, "london", "bridge", GameMode::Circuit, 1),
+              "race/london/london_bridge.pathset");
     EXPECT_EQ(gizmoPathSetPath(v, "london", "ferry", GameMode::CrashCourse, 9),
               "race/london/london_ferry_crash9.pathset");
     EXPECT_EQ(gizmoPathSetPath(v, "sf", "train", GameMode::Cruise, -1), "");
@@ -260,7 +262,8 @@ TEST(WorldGizmos, TrainRunsBetweenStations) {
     // first segment bulges out towards the path's far end, so the distance
     // between them is not 17.6 m).
     for (int i = 0; i < 3; ++i) {
-        EXPECT_NEAR(train.cars[static_cast<std::size_t>(i)].spline.time(), 0.44f * static_cast<float>(i), 1e-5f);
+        const auto& car = train.cars[static_cast<std::size_t>(i)];
+        EXPECT_NEAR(car.spline.time(), 0.44f * static_cast<float>(i), 1e-5f);
         EXPECT_FLOAT_EQ(train.cars[static_cast<std::size_t>(i)].spline.speed(), Gizmos::kTrainSpeed);
     }
     const float dt = 1.0f / 30.0f;
@@ -307,7 +310,8 @@ TEST(WorldGizmos, ParkedCars) {
         const Vec3 along = (set->paths[0].points[1].position - set->paths[0].points[0].position).normalized();
         const auto first = bangers::placePathSet(*set, bangers::PlacedProp::Source::PathSet);
         (void)first;
-        EXPECT_GT(std::abs(cars[0].transform.m2.dot(along)) + std::abs(cars[0].transform.m0.dot(along)), 0.9f);
+        const Mat34& t = cars[0].transform;
+        EXPECT_GT(std::abs(t.m2.dot(along)) + std::abs(t.m0.dot(along)), 0.9f);
     }
 }
 
@@ -330,14 +334,16 @@ TEST(WorldGizmos, BridgeRoomsFlagged) {
         flagged += (f & city::LevelRoomFlag::Bridge) != 0;
     EXPECT_GT(flagged, 0);
     const Vec3 hinge = g->bridges()[0].placement.m3;
-    EXPECT_NE(city->levelRoomFlags[static_cast<std::size_t>(level.findRoom(hinge, 0))] & city::LevelRoomFlag::Bridge, 0);
+    const auto hingeRoom = static_cast<std::size_t>(level.findRoom(hinge, 0));
+    EXPECT_NE(city->levelRoomFlags[hingeRoom] & city::LevelRoomFlag::Bridge, 0);
     // The leaves, ferries and train cars are listed in their rooms.
     std::vector<phys::Instance*> listed;
     const int room = g->bridges()[0].body->room;
     ASSERT_GT(room, 0);
     g->instancesIn(room, listed);
     EXPECT_NE(std::ranges::find(listed, g->bridges()[0].body.get()), listed.end());
-    EXPECT_TRUE(listed.front()->collidable && listed.front()->terrainCollidable && listed.front()->wheelCollidable);
+    const phys::Instance& first = *listed.front();
+    EXPECT_TRUE(first.collidable && first.terrainCollidable && first.wheelCollidable);
     EXPECT_FALSE(listed.front()->isBanger());
     EXPECT_NE(listed.front()->bound(0), nullptr);
     // The parked cars went to the props.
