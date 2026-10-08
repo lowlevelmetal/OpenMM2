@@ -5,6 +5,8 @@
 
 #include <gtest/gtest.h>
 
+#include <cstring>
+
 using namespace mm2;
 
 namespace {
@@ -20,7 +22,13 @@ public:
     render::BufferHandle createBuffer(render::BufferKind, std::size_t, const void*) override { return {++m_next}; }
     void updateBuffer(render::BufferHandle, std::size_t, std::span<const std::byte>) override {}
     void destroyBuffer(render::BufferHandle) override {}
-    render::BufferSlice uploadTransient(render::BufferKind, std::span<const std::byte>) override { return {{1}, 0}; }
+    render::BufferSlice uploadTransient(render::BufferKind kind, std::span<const std::byte> data) override {
+        if (kind == render::BufferKind::Vertex) {
+            m_vertices.resize(data.size() / sizeof(render::Vertex2D));
+            std::memcpy(m_vertices.data(), data.data(), m_vertices.size() * sizeof(render::Vertex2D));
+        }
+        return {{1}, 0};
+    }
     void applySettings(const render::DisplaySettings&) override {}
     void notifyResized() override {}
     bool beginFrame() override { return true; }
@@ -35,16 +43,24 @@ public:
     void setScissor(const render::Rect*) override {}
     void clear(const render::ClearValues&) override {}
     void setFrameConstants(const render::FrameConstants&) override {}
-    void draw(const render::DrawCall&) override {}
+    // Collects the colours of untextured overlay quads (rectangles).
+    void draw(const render::DrawCall& call) override {
+        if (!call.textures[0].texture)
+            for (const auto& v : m_vertices)
+                untexturedColors.push_back(v.color);
+    }
     void requestCapture() override {}
     bool readCapture(render::Image&) override { return false; }
     void waitIdle() override {}
     const render::FrameStats& stats() const override { return m_stats; }
 
+    std::vector<std::uint32_t> untexturedColors;
+
 private:
     render::DeviceInfo m_info;
     render::FrameStats m_stats;
     std::uint32_t m_next = 0;
+    std::vector<render::Vertex2D> m_vertices;
 };
 
 struct Fixture {
@@ -188,4 +204,28 @@ TEST(FrontendParity, ShownIconIsAFocusStop) {
     EXPECT_FALSE(map.focusable());
     m.resetFocus();
     EXPECT_NE(m.focused(), &map);
+}
+
+// UITextField::ToggleField: the field has no frame of its own (it is painted
+// on the background); only while editing is the text on an opaque black card.
+TEST(FrontendParity, TextFieldHasNoFrameAndABlackCardWhileEditing) {
+    Fixture fx;
+    ui::Menu m;
+    std::string name = "Bob";
+    auto& entry = m.add<ui::TextEntry>(ui::Box{72, 89, 200, 20}, &name, 18);
+    auto rectangles = [&](bool focused) {
+        fx.device.untexturedColors.clear();
+        auto f = fx.frame();
+        fx.overlay.begin(render::UiScaleMode::Fit);
+        entry.draw(f, focused);
+        fx.overlay.end();
+        return fx.device.untexturedColors;
+    };
+    EXPECT_TRUE(rectangles(false).empty());
+    EXPECT_TRUE(rectangles(true).empty()); // focused, not editing
+    entry.beginEdit();
+    const auto card = rectangles(true);
+    ASSERT_EQ(card.size(), 4u);
+    for (const auto c : card)
+        EXPECT_EQ(c, render::packColor(0, 0, 0));
 }

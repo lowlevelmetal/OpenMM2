@@ -328,9 +328,10 @@ private:
 };
 
 // Single-line text entry (UITextField): editing whenever it has focus; the
-// first key typed replaces the text; Enter commits, Tab moves on, Escape
-// goes to the page's back handler. Drawn as " text" in a white 1 px frame,
-// red on black while focused, yellow otherwise; no caret.
+// first key typed replaces the text; printable characters only, up to
+// `maxLength`; Backspace removes one character; Enter commits, Tab moves on,
+// Escape goes to the page's back handler. Drawn as " text", red on an opaque
+// black card while editing, yellow otherwise; no caret, no frame.
 class TextEntry : public Widget {
 public:
     TextEntry(Box box, std::string* value, std::size_t maxLength = 18);
