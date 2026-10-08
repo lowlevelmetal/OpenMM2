@@ -96,7 +96,7 @@ private:
 
     platform::FFDevice* m_device = nullptr;
     Controller m_controller = Controller::Keyboard;
-    bool m_enabled = false;        // DAT_006b1718
+    bool m_enabled = false;        // the FORCE FEEDBACK option (mmInput's global switch)
     float m_collisionScale = 1.0f; // mmInput +0x1ac
     float m_roadScale = 1.0f;      // mmInput +0x1b0
     float m_vehicleCollision = 1.0f, m_vehicleRoad = 1.0f; // +0x1b8 / +0x1bc (mmVehInfo, always 1)

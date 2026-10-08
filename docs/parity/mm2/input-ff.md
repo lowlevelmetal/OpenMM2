@@ -106,7 +106,7 @@ OpenMM2 builds a `GameInput` for each race and one for the control page.
 | `mmInput::GetCamPan` | ported (new) | `GameInput::camPan` | fixed: the joystick controller's POV hat (north 1, east 0.75, south 0.5, west 0.25) before the look buttons; the analog slot never applies (above) |
 | `mmInput::DeviceConnected` | ported | `readJoystick().present`, frontend `joystickConnected` | |
 | `mmInput::JoystickHasCoolie` | ported (new) | `JoystickFrame::hasPov`, frontend POV lamp | |
-| `mmInput::DoingFF` | ported (new) | `ForceFeedback::doing` | a force-feedback joystick (+0x160), the option (DAT_006b1718), the joystick or wheel controller |
+| `mmInput::DoingFF` | ported (new) | `ForceFeedback::doing` | a force-feedback joystick (+0x160), the FORCE FEEDBACK option (a global switch), the joystick or wheel controller |
 | `mmInput::StopAllFF` | ported (new) | `ForceFeedback::stopAll`, `RaceScreen` popups and exit | |
 | `mmInput::FFPlay`, `mmInput::FFStop`, `mmInput::FFIsPlaying`, `mmInput::FFSetValues` | ported (new) | `ForceFeedback::play`, `stop`, `isPlaying`, `setValues` | gated by +0x164 (set by Init) and a force-feedback joystick |
 
