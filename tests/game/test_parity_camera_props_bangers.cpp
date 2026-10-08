@@ -227,3 +227,32 @@ TEST(ParityBangersRetail, CityPropsComeInCityLevelLoadOrderWithTheRaceProps) {
     EXPECT_GT(race, 0); // race/london/circuit0.pathset has props with banger data
     EXPECT_EQ(props.front().source, PlacedProp::Source::StreetRule);
 }
+
+// parCsvFile::Load as cityPropulator reads the prop tables: 16 columns at
+// most, '#' ends a line, blank lines are rows without cells, a cell ends at
+// a comma or a control character and keeps its spaces.
+TEST(ParityBangers, PropTablesReadLikeParCsvFile) {
+    std::string header = "rulename";
+    for (int i = 1; i <= 19; ++i)
+        header += ",prop" + std::to_string(i);
+    std::string row = "n01left";
+    for (int i = 1; i <= 19; ++i)
+        row += ",p" + std::to_string(i);
+    const auto rules = parsePropRules(header + "\r\n\r\n" + row + "\r\nn02left,a,,b # c,d\r\nn03left,x\ty\r\n");
+    ASSERT_EQ(rules.size(), 3u);
+    EXPECT_EQ(rules[0].props.size(), 15u); // columns 16.. are dropped
+    EXPECT_EQ(rules[0].props.back(), "p15");
+    ASSERT_EQ(rules[1].props.size(), 2u); // "a", "" (skipped), "b " up to the '#'
+    EXPECT_EQ(rules[1].props[1], "b ");
+    ASSERT_EQ(rules[2].props.size(), 2u); // a tab ends a cell
+    EXPECT_EQ(rules[2].props[1], "y");
+
+    const auto defs = parsePropDefs("name,start,distance,maxUse,minLerp,maxLerp,file1,file2,file3,file4\n"
+                                    "lamp, 9,29x,12.7,0.1,0.3,a,,c,\n");
+    ASSERT_EQ(defs.size(), 1u);
+    EXPECT_FLOAT_EQ(defs[0].start, 9.0f);     // atof skips the space
+    EXPECT_FLOAT_EQ(defs[0].distance, 29.0f); // and stops at the 'x'
+    EXPECT_EQ(defs[0].maxUse, 12);            // atoi stops at the '.'
+    ASSERT_EQ(defs[0].files.size(), 3u);      // a, "", c; none after the final comma
+    EXPECT_EQ(defs[0].files[1], "");
+}
