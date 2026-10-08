@@ -92,6 +92,8 @@ const char* modePrefix(game::GameMode m) {
 
 class RaceScreen final : public Screen {
 public:
+    // The in-race popup's pages (mmPopup: PUMain, PUChat, PUKey).
+    enum class Popup : std::uint8_t { None, Main, Chat, Keymap };
     RaceScreen(Context& ctx, const game::RaceConfig& config)
         : m_ui(ctx.device(), ctx.game->vfs), m_text(ctx.device()) {
         m_result.config = config;
@@ -133,6 +135,20 @@ public:
         m_ff.stopAll(); // mmInput::StopAllFF
     }
 
+    // RestoreFocus: when the display surfaces come back after the game lost
+    // them (another application took the full screen), a running
+    // single-player game that is not paused opens the in-race menu, paused
+    // (mmGameManager::ForcePopupUI: ProcessEscape(1)). OpenMM2 does it when
+    // the window is activated again in a full-screen mode (inferred: a
+    // window keeps its surfaces).
+    void activated(Context& ctx) override {
+        if (m_state != State::Running || multiplayer(ctx) || m_paused || m_popup != Popup::None)
+            return;
+        if (ctx.window().mode() == platform::WindowMode::Windowed)
+            return;
+        openPopup(ctx, true);
+    }
+
     // The loading picture covers the screen until the race is loaded.
     bool usesScene() const override { return m_city != nullptr && m_state == State::Running; }
 
@@ -165,6 +181,16 @@ public:
         // mmPopup: Escape opens the main menu (pausing a single-player game,
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         m_popupGraveyard.clear();
+        if (!m_flyCamera && ctx.input.keyPressed(platform::Key::F1)) {
+            // mmPopup::ProcessKeymap (F1, from the game, the paused game and
+            // the menu): the list of controls, which F1 closes again.
+            if (m_popup == Popup::Keymap)
+                closePopup(ctx, true);
+            else if (m_popup == Popup::Main)
+                switchPopup(ctx, Popup::Keymap);
+            else if (m_popup == Popup::None)
+                openPopup(ctx, true, Popup::Keymap);
+        }
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
             if (ctx.nextScreen)
@@ -2082,8 +2108,8 @@ private:
 
     // --- The in-race popup (mmPopup, PUMain, PUExit) ---------------------------------------
 
-    void openPopup(Context& ctx, bool pause) {
-        m_popup = Popup::Main;
+    void openPopup(Context& ctx, bool pause, Popup page = Popup::Main) {
+        m_popup = page;
         // ProcessEscape: pauses unless the game already is (the full-screen
         // map), and remembers it so closing does not resume it.
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
@@ -2092,6 +2118,12 @@ private:
         if (m_popupPaused)
             m_paused = true;
         popupMusic(ctx, true);
+        buildPopup(ctx);
+    }
+
+    // MenuManager::Switch from one page of the open popup to another.
+    void switchPopup(Context& ctx, Popup page) {
+        m_popup = page;
         buildPopup(ctx);
     }
 
@@ -2233,7 +2265,14 @@ private:
         auto at = [&](float x, float y, float w) {
             return ui::Box{card.x + x * card.w, card.y + y * card.h, w * card.w, 0.075f * card.h};
         };
-        if (m_popup == Popup::Chat) {
+        if (m_popup == Popup::Keymap) {
+            // PUKey: PUMenuBase::AddExit at (0.65, 0, 0.35, 0.075); Escape
+            // or the exit closes it with the return music.
+            auto& exit = menu.add<ui::TextButton>(at(0.65f, 0.0f, 0.35f), s.get(473, "Resume Driving"),
+                                                  [this, &ctx] { closePopup(ctx, true); });
+            menu.setInitialFocus(&exit);
+            menu.onBack = [this, &ctx] { closePopup(ctx, true); };
+        } else if (m_popup == Popup::Chat) {
             // PUChat (mmPopup::Init: x 0, y 0.99 - the popup line height, 0.75
             // wide): one text field of up to 40 characters, no title, no label.
             const float lineHeight = 0.05f; // MenuManager's popup line height (inferred)
@@ -2296,7 +2335,39 @@ private:
         }
     }
 
-    static ui::Box popupCard() { return {0.2f * 640.0f, 0.1f * 480.0f, 0.6f * 640.0f, 0.8f * 480.0f}; }
+    // mmPopup::mmPopup's pages: PUMain and the others at (0.2, 0.1, 0.6, 0.8)
+    // of the screen, PUKey at (0.05, 0.05, 0.9, 0.9).
+    ui::Box popupCard() const {
+        if (m_popup == Popup::Keymap)
+            return {0.05f * 640.0f, 0.05f * 480.0f, 0.9f * 640.0f, 0.9f * 480.0f};
+        return {0.2f * 640.0f, 0.1f * 480.0f, 0.6f * 640.0f, 0.8f * 480.0f};
+    }
+
+    // PUKey::PreSetup: every action the controller reads, its name ("%-23s")
+    // and its control (mmIO::GetDescription, "%.23s"), two to a row: the
+    // first at 0.05 / 0.25 of the page, the second at 0.5 / 0.7, the rows
+    // 0.03 apart from 0.05, in a text node at (0.05, 0.075, 0.9, 0.9) of the
+    // page (menu font 16).
+    void drawKeymap(Context& ctx, render::Overlay2D& ov, const ui::Box& card) {
+        const auto& s = ctx.game->strings;
+        auto string = [&s](std::uint32_t id, const char* fallback) { return s.get(id, fallback); };
+        const ui::Box node{card.x + 0.05f * card.w, card.y + 0.075f * card.h, 0.9f * card.w, 0.9f * card.h};
+        const auto font = ui::style::popupFont();
+        int n = 0;
+        for (std::size_t i = 0; i < controls::kActionCount; ++i) {
+            const auto action = static_cast<controls::Action>(i);
+            if (!controls::slotEnabled(m_gameInput.controller(), action))
+                continue;
+            const bool second = (n % 2) != 0;
+            const float row = 0.05f + 0.03f * static_cast<float>(n / 2);
+            const std::string name = s.get(controls::info(action).stringId, "").substr(0, 23);
+            const std::string control = controls::describe(m_gameInput.binding(action), string).substr(0, 23);
+            const float y = node.y + row * node.h;
+            m_text.draw(ov, font, name, node.x + (second ? 0.5f : 0.05f) * node.w, y, ui::style::kPopupText);
+            m_text.draw(ov, font, control, node.x + (second ? 0.7f : 0.25f) * node.w, y, ui::style::kPopupText);
+            ++n;
+        }
+    }
 
     void updatePopup(Context& ctx, double dt) {
         if (!m_popupMenu)
@@ -2319,7 +2390,10 @@ private:
             ov.rect(card.x, card.y, card.w, card.h, render::packColor(0, 0, 0, 160));
         const ui::NavInput none;
         ui::UiFrame f{ov, m_ui, m_text, none, m_time};
-        // No title: PUMain calls PUMenuBase::CreateTitle(0), which adds none.
+        // No title: PUMain and PUKey call PUMenuBase::CreateTitle(0), which
+        // adds none.
+        if (m_popup == Popup::Keymap)
+            drawKeymap(ctx, ov, card);
         m_popupMenu->drawContent(f);
         ov.end();
     }
@@ -3323,7 +3397,6 @@ private:
     // single player.
     bool m_paused = false;
     // The in-race popup (mmPopup).
-    enum class Popup : std::uint8_t { None, Main, Chat };
     Popup m_popup = Popup::None;
     std::unique_ptr<ui::Menu> m_popupMenu;
     std::vector<std::unique_ptr<ui::Menu>> m_popupGraveyard;
