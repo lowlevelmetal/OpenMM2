@@ -171,13 +171,21 @@ bool SpriteButton::activate(UiFrame& f) {
 }
 
 void SpriteButton::mouse(UiFrame& f, bool hovered) {
-    if (hovered && f.nav.mousePressed)
-        m_pressed = true;
-    if (f.nav.mouseReleased) {
-        const bool fire = m_pressed && hovered;
+    if (!enabled) {
         m_pressed = false;
-        if (fire)
-            activate(f);
+        return;
+    }
+    // UIBMButton::Action: the press shows the pressed frame and plays the
+    // button's sound; the menu acts on the release over the button
+    // (UIMenu::CheckMouseHits with a release event), wherever the press was.
+    if (hovered && f.nav.mousePressed) {
+        m_pressed = true;
+        f.play(sound, soundVolume);
+    }
+    if (f.nav.mouseReleased) {
+        m_pressed = false;
+        if (hovered && onClick)
+            onClick();
     } else if (!f.nav.mouseDown) {
         m_pressed = false;
     }
@@ -244,16 +252,21 @@ void ValueBox::draw(UiFrame& f, bool focused) {
 }
 
 std::vector<ValueBox::Cell> ValueBox::listCells(std::size_t count) const {
-    // mmDropDown: rows of the box's size below it; when they would leave the
-    // screen they continue in further columns, and the list moves left to
-    // stay on screen.
+    // mmDropDown::InitString: rows of the box's size below it; a row that
+    // would pass the bottom of the screen starts a further column to the
+    // right. When the list is too tall and two columns would not fit right of
+    // the box, the list starts as many columns further left as it has extra
+    // columns (not before the screen's left edge); otherwise it starts at the
+    // box, whether or not the columns fit.
     std::vector<Cell> cells;
     const float top = box.y + box.h;
     const int perColumn = std::max(1, static_cast<int>((480.0f - top) / kDropHeight));
-    const int columns = static_cast<int>((count + static_cast<std::size_t>(perColumn) - 1) / static_cast<std::size_t>(perColumn));
     float x0 = box.x;
-    if (x0 + static_cast<float>(columns) * box.w > 640.0f)
-        x0 = std::max(0.0f, 640.0f - static_cast<float>(columns) * box.w);
+    if (top + static_cast<float>(count) * kDropHeight > 480.0f && box.x + 2.0f * box.w > 640.0f) {
+        const int n = static_cast<int>(count);
+        const int extraColumns = n / perColumn + (n % perColumn != 0 ? 1 : 0) - 1;
+        x0 = std::max(0.0f, box.x - static_cast<float>(extraColumns) * box.w);
+    }
     for (std::size_t i = 0; i < count; ++i) {
         const int col = static_cast<int>(i) / perColumn, row = static_cast<int>(i) % perColumn;
         cells.push_back({{x0 + static_cast<float>(col) * box.w, top + static_cast<float>(row) * kDropHeight, box.w,
@@ -288,32 +301,39 @@ void ValueBox::modalInput(UiFrame& f) {
         m_open = false;
         return;
     }
-    auto move = [&](int from, int dir) {
-        for (int i = from; i >= 0 && i < n; i += dir)
-            if (isOptionEnabled(i))
-                return i;
-        return m_hover;
+    // TextDropWidget::IncDrop / DecDrop step by one and stop at the ends;
+    // TextDropWidget::SetValue turns an entry that cannot be picked into the
+    // first one that can (mmDropDown::FindFirstEnabled, entry 0 when none).
+    auto settle = [&](int i) {
+        i = std::clamp(i, 0, n - 1);
+        if (isOptionEnabled(i))
+            return i;
+        for (int k = 0; k < n; ++k)
+            if (isOptionEnabled(k))
+                return k;
+        return 0;
     };
     const NavInput& nav = f.nav;
     if (nav.up || nav.left)
-        m_hover = move(m_hover - 1, -1);
+        m_hover = settle(m_hover - 1);
     if (nav.down || nav.right)
-        m_hover = move(m_hover + 1, 1);
+        m_hover = settle(m_hover + 1);
     if (nav.home)
-        m_hover = move(0, 1);
+        m_hover = settle(0);
     if (nav.end)
-        m_hover = move(n - 1, -1);
+        m_hover = settle(n - 1);
     const auto cells = listCells(opts.size());
     const Cell* under = nullptr;
     for (const auto& c : cells)
         if (c.box.contains(nav.mouse))
             under = &c;
+    // mmDropDown::SetHighlight moves the highlight to enabled entries only.
     if (under && nav.mouseMoved && isOptionEnabled(under->index))
         m_hover = under->index;
-    if (nav.accept || (nav.mouseReleased && under && isOptionEnabled(under->index))) {
-        const int pick = nav.accept ? m_hover : under->index;
-        if (isOptionEnabled(pick))
-            set(pick);
+    // UITextDropdown::CaptureAction: Enter or a release over an entry picks
+    // it (an entry that cannot be picked picks the first one that can).
+    if (nav.accept || (nav.mouseReleased && under)) {
+        set(settle(nav.accept ? m_hover : under->index));
         m_open = false;
     } else if (nav.back || (nav.mousePressed && !under && !box.contains(nav.mouse))) {
         m_open = false;
@@ -699,6 +719,10 @@ void TextEntry::modalInput(UiFrame& f) {
 
 Picture::Picture(Box b, std::function<std::string()> p) : path(std::move(p)) { box = b; }
 
+bool Picture::focusable() const {
+    return focusStop && Widget::focusable() && path && !path().empty();
+}
+
 void Picture::draw(UiFrame& f, bool) {
     const std::string p = path ? path() : std::string();
     if (p.empty())
@@ -860,11 +884,10 @@ void Menu::update(UiFrame& f) {
         return;
 
     if (nav.back) {
-        // Escape on the navigation strip first returns to the page.
-        if (cur && cur->group != 0 && firstFocusable(0) >= 0) {
+        // MenuManager::ScanGlobalKeys: Escape on the navigation strip moves
+        // the focus back to the page and then backs the page up as well.
+        if (cur && cur->group != 0 && firstFocusable(0) >= 0)
             setFocus(firstFocusable(0));
-            return;
-        }
         if (onBack)
             onBack();
         return;

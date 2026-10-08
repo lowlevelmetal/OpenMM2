@@ -155,8 +155,8 @@ public:
 // Sprite buttons (UIBMButton): frames normal, highlighted, pressed, disabled
 // (4), or normal, highlighted, pressed (3), or with a 5th frame (mnav_opt,
 // lit while `lit()` is true). The pressed frame shows only while the mouse
-// button is held on the button; the button acts when it is released over it
-// or on Enter.
+// button is held on the button; its sound plays on the press, and the button
+// acts when the mouse button is released over it or on Enter.
 class SpriteButton : public Widget {
 public:
     SpriteButton(SpriteSheet sheet, float x, float y, std::function<void()> onClick);
@@ -353,7 +353,11 @@ private:
 class Picture : public Widget {
 public:
     Picture(Box box, std::function<std::string()> path);
-    bool focusable() const override { return false; }
+    // A UIIcon added to a menu (the race map) is enabled and writable like
+    // any uiWidget, so the menu's focus stops on it while it is shown; it
+    // draws no highlight.
+    bool focusStop = false;
+    bool focusable() const override;
     void draw(UiFrame& f, bool focused) override;
     std::function<std::string()> path;
 };
