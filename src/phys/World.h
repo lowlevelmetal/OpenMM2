@@ -28,6 +28,13 @@ public:
     virtual ~GroundQuery() = default;
     // Nearest hit on the segment a->b.
     virtual bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const = 0;
+    // The wheels' ground probe (dgPhysManager::Collide with vehWheel's
+    // mask); `self` is never hit; `cache` is the wheel's lvlSegmentInfo
+    // (null: none). Default: probe().
+    virtual bool wheelProbe(const Vec3& a, const Vec3& b, RayHit& hit, const Instance* /*self*/,
+                            ProbeCache* /*cache*/) const {
+        return probe(a, b, hit);
+    }
     virtual const Material& material(int index) const = 0;
 };
 
@@ -197,6 +204,18 @@ public:
     double time() const { return m_time; }
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
+    // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw
+    // calls it, with lvlSDL::CollideProbe for the city: the cached polygon
+    // of the last probe when the segment still crosses it, else the nearest
+    // hit among the level's collision polygons of the segment's start room,
+    // end room and up to 10 instance rooms across the start room's perimeter
+    // (sdlPage16::CollideSegment, phPolygon::TestSegmentUndirected); then
+    // the wheel-collidable instances of the start and end rooms (and of the
+    // room a warp room links to) that are nearer (dgPhysManager::
+    // CollideProbe, the bound's TestProbe). The hit's material is the World
+    // table's entry of the same name. Without a level: probe().
+    bool wheelProbe(const Vec3& a, const Vec3& b, RayHit& hit, const Instance* self,
+                    ProbeCache* cache) const override;
     const Material& material(int index) const override { return m_materials[index]; }
 
     // The game's random generator for the simulation (irand / frand). MM2
@@ -235,6 +254,15 @@ private:
     void beginFrame();
     void gatherCollidables(Mover& mover);
     bool trivialCollide(const Instance& a, const Instance& b) const;
+    // lvlSDL::CollideProbe: the level part of wheelProbe.
+    bool collideLevelProbe(const Segment& seg, Intersection& hit, ProbeCache& cache,
+                           const Material*& material) const;
+    // sdlPage16::CollideSegment of one room.
+    bool collideRoomSegment(int room, const Vec3& centre, float radius, const Segment& seg, Intersection& hit,
+                            ProbeCache& cache, const Material*& material) const;
+    // dgPhysManager::CollideProbe: the segment against one instance's bound
+    // (in its frame), kept when no farther than hit.t.
+    bool collideProbe(const Segment& seg, Instance& inst, Intersection& hit, const Material*& material) const;
     void collideTerrain(Body& body);
     bool collideInstances(Instance& a, Instance& b);
 
@@ -261,6 +289,9 @@ private:
     std::vector<Instance*> m_roomScratch;
     // dgPhysManager's active rooms (+0x10, at most 20) for this frame.
     std::vector<int> m_activeRooms;
+    // The polygons of the room a wheel probe is testing.
+    mutable LevelBound m_probeBound;
+    mutable std::vector<Instance*> m_probeScratch;
 };
 
 } // namespace mm2::phys

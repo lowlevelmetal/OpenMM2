@@ -6,6 +6,8 @@
 
 #include "phys/World.h"
 
+#include "phys/AgeMath.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -20,6 +22,31 @@ constexpr std::size_t kMaxActiveRooms = 20;
 // cityLevel::GetTouchedNeighbors' table size in GatherCollidables and
 // CollideTerrain.
 constexpr int kMaxNeighbors = 8;
+
+// lvlSDL's room flags the wheel probe reads.
+constexpr int kRoomWarp = 0x40;
+constexpr int kRoomInstance = 0x80;
+// lvlSDL::CollideProbe probes at most 10 instance rooms across the start
+// room's perimeter.
+constexpr int kMaxProbeNeighbors = 10;
+// The wheels' mask (lvlInstance flag 0x20) is Instance::wheelCollidable.
+
+// dgPhysManager::Collide: a segment starting in a warp room also probes the
+// instances of the room it leads to (room ids written into the code).
+int warpTarget(int room) {
+    switch (room) {
+    case 411:
+        return 102;
+    case 412:
+        return 122;
+    case 423:
+        return 96;
+    case 625:
+        return 1;
+    default:
+        return 0;
+    }
+}
 
 } // namespace
 
@@ -184,6 +211,172 @@ bool World::contains(const Body* body) const {
 
 bool World::probe(const Vec3& a, const Vec3& b, RayHit& hit) const {
     return m_static.raycast(a, b, hit);
+}
+
+bool World::wheelProbe(const Vec3& a, const Vec3& b, RayHit& hit, const Instance* self,
+                       ProbeCache* cache) const {
+    if (!m_level)
+        return probe(a, b, hit);
+    // dgPhysManager::Collide without a segment info uses one of its own,
+    // with no polygon cache.
+    ProbeCache scratch;
+    ProbeCache& info = cache ? *cache : scratch;
+    // lvlSegment::Set.
+    Segment seg;
+    seg.kind = Segment::Probe;
+    seg.a = a;
+    seg.b = b;
+    seg.calculateInfo();
+
+    // dgPhysManager::Collide: the rooms of the segment's ends (found from
+    // the ones they were in), the level, then the instances of those rooms
+    // that carry the mask, as long as they are nearer.
+    info.startRoom = m_level->findRoom(a, info.startRoom);
+    info.endRoom = m_level->findRoom(b, info.endRoom);
+    Intersection isect;
+    isect.t = 2.0f;
+    isect.poly = nullptr;
+    const Material* material = nullptr;
+    bool found = collideLevelProbe(seg, isect, info, material);
+    const auto probeInstances = [&](int room) {
+        m_probeScratch.clear();
+        m_level->instances(room, m_probeScratch);
+        for (Instance* inst : m_probeScratch)
+            if (inst->wheelCollidable && inst != self && collideProbe(seg, *inst, isect, material))
+                found = true;
+    };
+    const int start = info.startRoom;
+    probeInstances(start);
+    if (info.endRoom != start)
+        probeInstances(info.endRoom);
+    if (m_level->roomFlags(start) & kRoomWarp)
+        if (const int target = warpTarget(start); target != 0)
+            probeInstances(target);
+    if (!found)
+        return false;
+
+    hit.position = isect.position;
+    hit.normal = isect.normal;
+    hit.t = isect.t;
+    hit.polygon = -1;
+    // A hit on the cached polygon leaves the wheel's intersection with the
+    // material of the probe before.
+    hit.material = material ? m_materials.resolve(material->name) : info.material;
+    info.material = hit.material;
+    return true;
+}
+
+bool World::collideLevelProbe(const Segment& seg, Intersection& hit, ProbeCache& cache,
+                              const Material*& material) const {
+    // lvlSDL::CollideProbe. An end in an instance room makes the cached
+    // polygon stale; a cached polygon the segment still crosses (no farther
+    // than hit.t) answers alone.
+    const int start = cache.startRoom;
+    const int end = cache.endRoom;
+    if ((m_level->roomFlags(start) & kRoomInstance) || (m_level->roomFlags(end) & kRoomInstance))
+        cache.valid = false;
+    if (cache.valid) {
+        if (cache.polygon.testSegmentUndirected(cache.vertices, seg, hit, hit.t, 2.0f))
+            return true;
+        cache.valid = false;
+    }
+    // The rooms' polygons near the segment: the sphere about its midpoint
+    // reaching a little past its ends.
+    const Vec3 centre{(seg.b.x - seg.a.x) * 0.5f + seg.a.x, (seg.b.y - seg.a.y) * 0.5f + seg.a.y,
+                      (seg.b.z - seg.a.z) * 0.5f + seg.a.z};
+    const float radius = (1.0f / seg.invLength) * 0.51f;
+    bool found = false;
+    if (start != 0 && collideRoomSegment(start, centre, radius, seg, hit, cache, material))
+        found = true;
+    if (end != start && end != 0 && collideRoomSegment(end, centre, radius, seg, hit, cache, material))
+        found = true;
+    if (start != 0) {
+        // The instance rooms across the start room's perimeter, each once,
+        // at most 10.
+        int all[256];
+        const int n = m_level->neighbors(all, 256, start);
+        int rooms[kMaxProbeNeighbors];
+        int count = 0;
+        for (int k = 0; k < n && count < kMaxProbeNeighbors; ++k)
+            if (all[k] != 0 && (m_level->roomFlags(all[k]) & kRoomInstance))
+                rooms[count++] = all[k];
+        for (int k = 0; k < count; ++k) {
+            const int room = rooms[k];
+            if (room != start && room != end && room != 0 &&
+                collideRoomSegment(room, centre, radius, seg, hit, cache, material))
+                found = true;
+        }
+    }
+    return found;
+}
+
+bool World::collideRoomSegment(int room, const Vec3& centre, float radius, const Segment& seg,
+                               Intersection& hit, ProbeCache& cache, const Material*& material) const {
+    // sdlPage16::CollideSegment: each collected polygon the segment crosses
+    // either way no farther than the hit so far (a later one at the same
+    // distance replacing it). The last one kept becomes the cached polygon;
+    // a room without a hit makes the cache stale.
+    m_level->collectProbe(room, centre, radius, m_probeBound);
+    int kept = -1;
+    for (std::size_t i = 0; i < m_probeBound.polygons.size(); ++i) {
+        const Polygon& poly = m_probeBound.polygons[i];
+        if (poly.testSegmentUndirected(m_probeBound.vertices, seg, hit, hit.t, 2.0f)) {
+            hit.material = poly.material;
+            kept = static_cast<int>(i);
+        }
+    }
+    if (kept < 0) {
+        cache.valid = false;
+        return false;
+    }
+    hit.polygon = 0;
+    hit.a = seg.a;
+    hit.b = seg.b;
+    hit.poly = nullptr;
+    material = &m_level->material(hit.material);
+    // sdlPolyCached::InitFromPoly: the polygon with copies of its corners.
+    const Polygon& poly = m_probeBound.polygons[static_cast<std::size_t>(kept)];
+    const int corners = poly.vertexCount();
+    cache.polygon = poly;
+    for (std::size_t k = 0; k < static_cast<std::size_t>(corners); ++k)
+        cache.vertices[k] = m_probeBound.vertices[poly.v[k]];
+    cache.polygon.v = {0, 1, 2, static_cast<std::uint16_t>(corners == 4 ? 3 : 0)};
+    cache.valid = true;
+    return true;
+}
+
+bool World::collideProbe(const Segment& seg, Instance& inst, Intersection& hit,
+                         const Material*& material) const {
+    // dgPhysManager::CollideProbe: when the instance's sphere reaches the
+    // segment's, the segment in the instance's frame against its bound.
+    const Bound* bound = inst.bound(0);
+    if (!bound)
+        return false; // MM2 reports the instance as having no bound
+    const Vec3 mid{(seg.a.x + seg.b.x) * 0.5f, (seg.a.y + seg.b.y) * 0.5f, (seg.a.z + seg.b.z) * 0.5f};
+    const float radius = inst.radius();
+    const Vec3 pos = inst.position();
+    const float reach = 0.5f / seg.invLength + radius;
+    const float dx = mid.x - pos.x;
+    const float dy = mid.y - pos.y;
+    const float dz = mid.z - pos.z;
+    if (reach * reach < (dz * dz + dy * dy) + dx * dx)
+        return false;
+    const Mat34& m = inst.matrix();
+    Segment local;
+    local.kind = seg.kind;
+    const Vec3 da{seg.a.x - m.m3.x, seg.a.y - m.m3.y, seg.a.z - m.m3.z};
+    local.a = {age::dot(m.m0, da), age::dot(m.m1, da), age::dot(m.m2, da)};
+    const Vec3 db{seg.b.x - m.m3.x, seg.b.y - m.m3.y, seg.b.z - m.m3.z};
+    local.b = {age::dot(m.m0, db), age::dot(m.m1, db), age::dot(m.m2, db)};
+    local.vertical = false;
+    local.invLength = 0.0f;
+    if (!bound->testProbe(local, hit, hit.t))
+        return false;
+    hit.transform(m);
+    if (hit.poly)
+        hit.material = hit.poly->material;
+    material = &bound->material(hit.material);
+    return true;
 }
 
 void World::beginFrame() {

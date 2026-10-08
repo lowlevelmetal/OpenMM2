@@ -294,7 +294,7 @@ float Wheel::computeDwtdw(float net, const WheelEnv& env) {
     float upDotN = 0.0f;
     bool wall = false;
     RayHit isect;
-    if (env.ground && env.ground->probe(top, bottom, isect)) {
+    if (env.ground && env.ground->wheelProbe(top, bottom, isect, env.self, &probeCache)) {
         material = &env.ground->material(isect.material);
         // OpenMM2: deep water (materials.mtl depth >= 1, e.g. deepwater 100)
         // carries no wheel (inferred; see docs/physics.md).

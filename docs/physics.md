@@ -136,6 +136,35 @@ CenterOfGravity field; without a car, mass * 19.6 / 4):
 
 Suspension (`ComputeDwtdw`, `CalcSuspensionForce`): a probe from
 SuspensionLimit + 0.3 above the centre to SuspensionExtent + Radius below it.
+The probe is `dgPhysManager::Collide` with the wheels' instance mask 0x20,
+never hitting the car's own instance (a trailer's wheels pass none), as
+`World::wheelProbe`:
+
+- the rooms of the segment's ends are looked up from the ones the wheel's
+  segment info had;
+- `lvlSDL::CollideProbe`: when neither end is in an instance room (flag
+  0x80), the polygon the wheel's last probe ended on (a cached copy,
+  `sdlPolyCached`) answers alone if the segment still crosses it. Otherwise
+  `sdlPage16::CollideSegment` collects (`sdlPage16::Collect`, in batches of
+  256, with the probed room marked so a SpecialBound room's road surfaces
+  become triangles with raised sidewalks) the polygons of the start room,
+  the end room, and the instance rooms across the start room's perimeter
+  (at most 10), within a sphere about the segment's midpoint of 0.51 times
+  its length, and keeps the nearest crossing either way
+  (`phPolygon::TestSegmentUndirected`; at equal distance the later polygon).
+  Each room with a hit caches its last kept polygon; each room without one
+  makes the cache stale;
+- `dgPhysManager::CollideProbe`: the instances with flag 0x20 in the start
+  and end rooms (and in the room a warp room, flag 0x40, leads to: rooms
+  411, 412, 423 and 625 lead to 102, 122, 96 and 1) whose sphere reaches the
+  segment's are probed in their own frame (the bound's `TestProbe`), a
+  nearer hit replacing the level's. The city's collidable instances carry
+  0x20 except the terrain-bound ones whose record has flag 0x400
+  (`lvlLevel::LoadInstances`); props and cars do not.
+
+The material is the polygon's (the level's material byte, or the bound's),
+looked up by name in the World's table. A hit on the cached polygon keeps
+the material of the probe before (the wheel's intersection is not refreshed).
 The travel (compression positive) is limited to -Extent; the force is
 (rate * damping + travel * spring) * (1 + progression * travel) + L, rate
 limited to ±10 m/s; a lifting wheel relaxes without pulling. The contact
@@ -687,9 +716,11 @@ as speeds at MaxRPM and capped every car at High.)
   still simulated. (MM2's opponents beyond 200 m and police between 200 and
   250 m drop flag 0x8, which changes nothing while 0x2 and 0x10 are set.)
   Movers without a body (traffic on its rail while it avoids, regains its
-  rail or collides) are not supported. Wheel
-  probes still use OpenMM2's probe geometry (the render mesh of the PSDL)
-  rather than `lvlSDL::CollideProbe` over `sdlPage16::Collect`'s polygons.
+  rail or collides) are not supported.
+- Ground probes other than the wheels of physics cars and trailers (cheap
+  traffic wheels, the AI, spawning, line of sight) still use OpenMM2's
+  probe geometry (the PSDL's render mesh plus the instances' bounds);
+  `World::wheelProbe` is MM2's.
 - Trailers: OpenMM2 corrects vehTrailer::Init's static loads by default
   (MM2's values make vpcentury's trailer ride on its bump stops, see
   "Trailers"); the trailer's impact parameters are inferred.
