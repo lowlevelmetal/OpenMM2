@@ -1983,6 +1983,10 @@ private:
         ai::Settings settings;
         settings.trafficDensity = m_result.config.trafficDensity;
         settings.pedestrianDensity = m_result.config.pedestrianDensity;
+        // -pedpool: aiCityData's pool, over the city's [Ped Pool] (a negative
+        // number, which MM2 would not survive, counts as none).
+        if (ctx.commandLine.pedPool)
+            settings.maxPeds = std::max(0, *ctx.commandLine.pedPool);
         // mmSingleStunt::LoadEventFile sets the traffic density to the last
         // event's AmbDensity before aiMap::Init reads it.
         if (m_session && !m_session->setup().lessonEvents.empty())
