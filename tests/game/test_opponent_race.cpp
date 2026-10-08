@@ -7,8 +7,9 @@
 //   OPENMM2_AI_SWEEP=1          run EveryRaceSweep (all circuits and checkpoint
 //                               races of both cities, both difficulties)
 //   OPENMM2_AI_ONLY="sf race8 a"  limit the sweep to one race
-//   OPENMM2_AI_DEBUG=1|2|3      print courses / trace one car
-//                               (OPENMM2_AI_TRACE=<car>) / stuck events
+//   OPENMM2_AI_DEBUG=1|2|3|4    print courses / trace one car
+//                               (OPENMM2_AI_TRACE=<car>) / stuck events /
+//                               damage taken
 // e.g. OPENMM2_AI_TRAILS=local/out/ai2 test_game --gtest_filter='OpponentRace.*:PoliceChase.*'
 #include "TestData.h"
 #include "ai/Opponent.h"
@@ -221,6 +222,7 @@ struct AiRacer {
     } excursion;
     bool offRoad = false;
     int seenResets = 0, seenBackups = 0;
+    float seenDamage = 0.0f;
 
     void endExcursion() {
         if (excursion.dropped) {
@@ -354,6 +356,17 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
                 r.finishTime = run.time;
             if (debugLevel() == 3)
                 printStuck(r, run.time, pos);
+            if (debugLevel() == 4) {
+                const phys::CarSim& sim = r.vehicle->sim();
+                if (sim.damage.currentDamage > r.seenDamage + 1.0f)
+                    std::printf("  t %.1f car %d %s damage +%.0f -> %.0f of %.0f at (%.1f %.1f %.1f) "
+                                "v %.1f prog %.0f\n",
+                                run.time, r.id, r.vehicle->model().baseName.c_str(),
+                                sim.damage.currentDamage - r.seenDamage, sim.damage.currentDamage,
+                                sim.damage.maxDamage(), pos.x, pos.y, pos.z, sim.speed(),
+                                r.driver->progress());
+                r.seenDamage = sim.damage.currentDamage;
+            }
             bool off = false;
             if (!r.driver->finished()) {
                 bool below = false;

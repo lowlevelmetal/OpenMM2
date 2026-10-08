@@ -195,10 +195,13 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
         // (vehCar::SetDrivable(0, 1)): aiVehiclePhysics::Forward only revs it
         // (with its front-left wheel on the ground: throttle 1, no brakes,
         // steering 0) and vehCar::PreUpdate holds it with the brakes on and
-        // the gearbox in neutral.
+        // the gearbox in neutral. DisableRacers also turns the car's damage
+        // off (impacts are not recorded) until EnableRacers.
         m_mode = Mode::Held;
-        if (!m_wasHeld)
+        if (!m_wasHeld) {
             m_car.setDrivable(false, 1);
+            m_car.damage.enabled = false;
+        }
         if (m_car.wheels[0].hit)
             m_car.setInputs(1.0f, 0.0f, 0.0f, m_car.handBrake);
         m_car.preUpdate();
@@ -208,9 +211,11 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     }
     if (m_wasHeld) {
         // mmGameSingle::EnableRacers: vehCar::SetDrivable(1, 1) puts the
-        // gearbox in first (vehTransmission::SetForward).
+        // gearbox in first (vehTransmission::SetForward), and the opponents'
+        // damage is on again.
         m_wasHeld = false;
         m_car.setDrivable(true, 1);
+        m_car.damage.enabled = true;
     }
 
     // Fallen through the world (aiRouteRacer::DriveRoute): disabled. From then
