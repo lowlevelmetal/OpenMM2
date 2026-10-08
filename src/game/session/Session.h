@@ -201,6 +201,7 @@ private:
     void updateWaypoints(const PlayerState& player);
     void displayCleared(int index);
     void closestTarget(const Vec3& pos);
+    void cycleCurrent(bool forward);
     void setTarget(int index);
     void updateOpponents(std::span<const OpponentState> opponents);
     void updateRank(const PlayerState& player, std::span<const OpponentState> opponents);

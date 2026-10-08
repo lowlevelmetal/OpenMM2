@@ -239,7 +239,9 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     if (s.aiMap && s.race && (racing || config.mode == GameMode::CrashCourse)) {
         const std::string& any = !s.race->aiMap.empty() ? s.race->aiMap : s.race->waypoints;
         const std::string dir = any.substr(0, any.rfind('/') + 1);
-        const int wanted = !racing ? 64 : (config.opponents >= 0 ? config.opponents : s.settings.opponents);
+        // aiMap::Init loads min(table count, OpponentDensity) racers; the
+        // crash course sets OpponentDensity to 8 (CrashCourse::SetEnvironment).
+        const int wanted = !racing ? 8 : (config.opponents >= 0 ? config.opponents : s.settings.opponents);
         for (const auto& o : s.aiMap->opponents) {
             if (static_cast<int>(s.opponents.size()) >= wanted)
                 break;

@@ -472,13 +472,19 @@ void Session::closestTarget(const Vec3& pos) {
 }
 
 void Session::cycleTarget(bool forward) {
-    // mmWaypoints::CycleCurrentWaypoint; the input only reaches checkpoint
-    // races (mmSingleRace::UpdateGameInput; Blitz checks the same waypoint
-    // type and so never cycles).
+    // mmSingleRace / mmMultiRace::UpdateGameInput: "Next Checkpoint" and
+    // "Prev. Checkpoint" only for waypoint type 2 (Blitz and the crash
+    // course ignore them).
+    if (rule() == WaypointRule::CheckpointRace)
+        cycleCurrent(forward);
+}
+
+void Session::cycleCurrent(bool forward) {
+    // mmWaypoints::CycleCurrentWaypoint (GetNextWaypoint / GetLastWaypoint).
+    // OpenMM2 also stops for fewer than three waypoints, where the original
+    // could index past the list.
     const int n = static_cast<int>(m_checkpoints.size());
     if (n < 3 || m_wp.finished)
-        return;
-    if (rule() != WaypointRule::CheckpointRace && rule() != WaypointRule::AnyOrderEnd)
         return;
     if (m_wp.count == n - 1) {
         setTarget(n - 1);
@@ -565,7 +571,7 @@ void Session::updateWaypoints(const PlayerState& player) {
                 }
                 closestTarget(car.m3);
             } else if (idx == m_wp.current) {
-                cycleTarget(true);
+                cycleCurrent(true);
             }
             if (m_wp.singleVisible)
                 m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
