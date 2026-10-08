@@ -88,6 +88,7 @@ public:
     int touchedNeighbors(int* out, int max, int room, const Vec3& centre, float radius) const override;
     int neighbors(int* out, int max, int room) const override;
     int roomFlags(int room) const override;
+    int roomInfoFlags(int room) const override;
     void collectProbe(int room, const Vec3& centre, float radius, phys::LevelBound& out) const override;
     void collect(const int* rooms, int count, const Vec3& centre, float radius,
                  phys::LevelBound& out) const override;

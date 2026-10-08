@@ -224,7 +224,7 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `spawnOpponents` | `aiVehicleOpponent`, `aiRouteRacer::Init` | verified | |
 | `spawnPolice` | `aiMap::Init` | fixed | trunc(posts × cop density) in every mode (OpenMM2 had its own count) |
 | `trackedCar`, `updateAiDrivers` | `aiMap::Update` (racers, police) | verified | held racers until "Go!" and per lesson event |
-| `updateAmbient`, `bodyRadius` | `aiMap::Update` (ambient), `aiVehiclePlayer`, `lvlInstance::GetRadius` | fixed | runs before the racers; radius = modGetStatic's largest vertex distance over the body's LODs |
+| `updateAmbient` | `aiMap::Update` (ambient), `aiVehiclePlayer`, `lvlInstance::GetRadius` | fixed | runs before the racers; the player's radius is vehicle's `VehicleBody::radius` (the BODY geometry set's), which also picks `mmGameMulti::StartXYZ`'s wide grid (over 6 m) |
 | `playerState` | `mmPlayer`, `mmPlayer::IsMaxDamaged` | fixed | ICS matrix; wrecked strictly past MaxDamage |
 | `updateSession` | the modes' `UpdateGame` integration | fixed | pre-race camera and start signal; post-race camera; Evade's map; lesson icons; restart starts the pre-race camera; damage limits; sounds; announcer; nothing done for an opponent's finish |
 | `playGameSound` | `AudSoundBase::PlayOnce`, `PlayLoop`, `Stop` | fixed | new |
@@ -235,7 +235,7 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `playerImpact` | `mmPlayer::ImpactCallback` | verified | |
 | `surfaceWeather`, `carAudioInputs`, `updateAiAudio` | `vehCarAudio` inputs | fixed | the tunnel flag reaches every car's surface sound |
 | `updateAudio` | `mmPlayer::Update` audio part | fixed | tunnel flag from the car's room (flag 0x02), rain interior for the hood and dash cameras, engine silenced after a race wreck |
-| `sendLocalState`, `drawRemoteCars` | `mmNetObject` | openmm2 | remote trailers are not drawn (see Missing) |
+| `sendLocalState`, `drawRemoteCars` | `mmNetObject` | openmm2 | snapshots drawn where they were received (see `updateRemoteCars` below for the bodies and trailers); drawn in the mirror too, from `drawLevel` |
 | `updatePlayer` | `mmPlayer::Update`, `mmInput::GetSteering`, `FilterDiscreteSteering`, `vehCar::SetDrivable` | fixed | the player's bindings; Steer Left wins; keyboard filter; dead zone; hold per ending (+0x2258 only where set) |
 | `hornDown` | `mmGame::UpdateHorn` | verified | |
 | `updateGameInput` | `mmGame::UpdateGameInput`, `mmViewMgr` | fixed | new key handling (map, cluster, cameras, transmission, checkpoints, icons); looking around from a POV camera disables the HUD |
@@ -262,11 +262,12 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `RaceScreen::leaveRace`, `loadProfile` | `mmPlayerConfig::SetViewSettings` / `GetViewSettings` | fixed | the driver's camera, wide angle, dashboard and mirror applied at the start and stored when the race is left |
 | `RaceScreen::startFinishCamera` | `mmGameMulti::SetFinishCam`, `mmPlayer::SetMPPostCam` | fixed | the orbit camera on the finish (last waypoint, a circuit's first) at (heading + 180) x -0.017453292; Blitz the post-race camera |
 | `RaceScreen::updateCarCamera` (orbit keys, probe) | `camPolarCS::Update`, `dgPhysManager::Collide` (0x20) | fixed | Delete / Page Down / End / Home / Page Up / Insert / Shift; the probe is the wheels' (city and flagged instances, not the player's car) |
-| `RaceScreen::updateGameInput` (mirror) | `mmViewMgr::SetViewSetting(9)` (event 0x1E) | fixed | toggles `RearViewMirror` (drawn by the renderer) |
-| `city::levelRoomFlags` (city area) | `cityLevel::Load`, `lvlLevel::LoadInstances` | fixed | lvlRoomInfo's own flags (0x01 open streets, 0x0A subterranean, 0x04 deep water, 0x20 flag-0x100 instance rooms); ai-ambient-city's `CityData::levelRoomFlags` on integration does the same and should replace it |
-| `RaceScreen::cameraTarget` (room flags), `levelFlagsAt` | `mmPlayer::Update` | fixed | the level flags, not the PSDL bytes |
-| `RaceScreen::rainVisible` | `cityLevel::DrawRooms` | fixed | no rain with the camera in a 0x0A room, nor in a 0x20 room under geometry (probe from 100 m up) |
-| `randomIntersectionStart` | `mmGame::RespawnXYZ` | fixed | rejects level flags 0x0A (mmSingleRoam's argument) and 0x24, not PSDL road / building / special-bound rooms |
+| `RaceScreen::updateGameInput` (mirror) | `mmViewMgr::SetViewSetting(9)` (event 0x1E), `mmViewMgr::Init` | fixed | toggles `RearViewMirror`, which `drawMirror` (rendering-fx) draws; off unless the driver's profile had it on |
+| `RaceScreen::updateGameInput` (XCam) | `mmGame::UpdateGameInput` event 0x0C, `mmGame::UpdatePaused` keys 0x2E / 0x2F, `mmViewMgr::SetViewSetting(0, 2)` | fixed | Thrill Cam calls `PlayerCameras::toggleXCam` (steered by `CameraInput::orbit`); while paused the C and V keys change the camera and the XCam whatever the actions are bound to |
+| `CityData::levelRoomFlags` (ai-ambient-city's) | `cityLevel::Load`, `lvlLevel::LoadInstances` | fixed | lvlRoomInfo's own flags; the session's own copy was dropped at the merge and every reader below uses this one |
+| `RaceScreen::cameraTarget` (room flags), `levelRoomFlagsAt`, `m_tunnel` | `mmPlayer::Update` | fixed | the level flags, not the PSDL bytes (the tunnel echo reads `LevelRoomFlag::Subterranean`) |
+| `RaceScreen::rainVisible` | `cityLevel::DrawRooms` | fixed | no rain with the camera (main view or mirror, from `drawLevel`) in a subterranean or covered room, nor in a terrain-instance room under geometry (probe from 100 m up) |
+| `randomIntersectionStart` | `mmGame::RespawnXYZ` | fixed | rejects `CityData::levelRoomFlags` 0x0A (mmSingleRoam's argument) and 0x24, not PSDL road / building / special-bound rooms |
 | `RaceScreen::updateAudio` (tunnel) | `mmPlayer::Update` (audio flag 0x80) | verified | level flag 0x02 at the car |
 | `RaceScreen::load` (glow scales), remote car setup | `vehSiren::vehSiren`, `aiVehicleManager::Init` | fixed | 0.2 / 0.95 after the AI is set up, 0.2 / 0.6 once a network car is built |
 | engine smoke rule winner | `vehCarDamage::Init` order | verified | the player, then racers, then police, as `mmPlayer::Init` and `aiMap::Init` build them (network cars, which MM2 builds last, have no effects in OpenMM2) |
@@ -292,12 +293,9 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `mmNetObject::Predict`, `InputUpdate`, `PositionUpdate` | network cars simulated with the remote inputs and pulled toward the received positions | deviation: OpenMM2's snapshots place them kinematically |
 | `PUResults` in the race | results over the running race, opponents added as they finish | deviation: the results are a frontend page |
 | `PUOptions` pages in the popup | the in-race option pages | open: Options is shown disabled (frontend-ui) |
-| `mmMirror` drawing | the rear-view mirror's view | open (rendering-fx); the race toggles `RearViewMirror` (event 0x1E) and keeps the driver's flag |
 | `mmHudMap::SetMapMode` 3D view placement | the 3D view moves to the top half / small rectangle | open (rendering-fx) |
 | `mmCDPlayer`, mouse steering bar | CD player display, mouse bar (`mouse_bar`, `mouse_ar`) | open |
-| `PlayerCameras::toggleXCam` keys (events 0x0C, 0x2F) | the XCam cheat's orbit cameras | open: the API is on integration (camera-props' second pass); wire it at the merge |
 | HUD bytes of the view settings | map mode, HUD state and map options per driver (mmPlayerConfig +0x7169, +0x716D, +0x7170) | deviation: kept in `[HUD]` of the settings for every driver |
-| Thrill cam (`mmViewMgr::SetViewSetting(2)`) | the thrill camera | open (camera-props) |
 | `mmPlayer::UpdateFF`, `FFImpactCallback` | force feedback | open: no force feedback device layer |
 | `mmInput` binding sets for the other controllers | rebinding the mouse, joystick, gamepad and wheel inputs | open: their defaults are used (the options page binds keys only) |
 | `Aud3DObjectManager::Process3D(false)` | drops positioned sounds behind the results popup | deviation: leaving the race stops them |
@@ -328,11 +326,7 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 - frontend-ui: the lobby should pick the Cops vs. Robbers team from the
   car's police flag (`mmMultiCR::InitMyPlayer`); the options page can use
   `app/Controls` for its action table; the in-race Options pages.
-- Second pass, for the merge: camera-props' second pass also declares the
-  player as the type-4 mover and gives the camera probe `World::wheelProbe`
-  (keep one of each); ai-ambient-city's `CityData::levelRoomFlags`
-  (`src/city/RoomInfo.h`) replaces `city::levelRoomFlags` here (RaceScreen's
-  `levelFlagsAt`, `rainVisible`, the camera's room flags and
-  `randomIntersectionStart` should read it); wire `PlayerCameras::toggleXCam`
-  to input events 0x0C and 0x2F with `CameraInput::orbit` (the race already
-  fills the orbit keys).
+- Merged with the second passes of the other areas: one type-4 player
+  declaration and one camera probe (camera-props'); `CityData::levelRoomFlags`
+  in place of the session's copy; the XCam keys wired; the mirror drawn by
+  rendering-fx's `drawMirror` under the session's toggle and profile flag.

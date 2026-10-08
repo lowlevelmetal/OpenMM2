@@ -67,11 +67,8 @@ void CarSim::init(const CarSimParams& p, const VehicleGeometry& g, const Options
     InertialCS& ics = body.ics;
     ics.setMass(p.inertiaBox.x, p.inertiaBox.y, p.inertiaBox.z, p.mass);
     ics.gravity = {0.0f, -kVehicleGravity, 0.0f};
-    ics.limitAngVelocity = true;
     ics.setMaxAngVelocity(kMaxAngVelocity);
     ics.state = InertialCS::Off;
-    ics.elasticity = p.boundElasticity;
-    ics.friction = p.boundFriction;
 
     // The collision bound (vehCarModel::InitBound) in model space, whose
     // origin sits at CenterOfGravity in the body's frame.

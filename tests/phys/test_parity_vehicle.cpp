@@ -6,6 +6,7 @@
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
 #include "phys/vehicle/Controls.h"
+#include "phys/vehicle/Trailer.h"
 #include "phys/vehicle/VehicleGeometry.h"
 #include "phys/vehicle/Wheel.h"
 
@@ -35,7 +36,7 @@ PolygonSoup flatGround(float half = 2000.0f) {
     SoupGeometry g;
     g.vertices = {{-half, 0, -half}, {-half, 0, half}, {half, 0, half}, {half, 0, -half}};
     g.polys.push_back({{0, 1, 2, 3}, 4, 0});
-    g.materialNames = {"_default"};
+    g.materialNames = {"default"};
     PolygonSoup soup;
     soup.add(g, Mat34::identity(), MaterialTable{});
     soup.finalize(512.0f);
@@ -225,4 +226,63 @@ TEST(VehicleParity, KeyboardSteeringFilter) {
     const float fh = 100.0f / 95.0f;
     const float inHi = (1.5f - 2.5f) * fh + 2.5f;
     EXPECT_NEAR(s.filter(-1.0f, dt), -std::pow(inHi * dt, (1.0f - 2.0f) * fh + 2.0f), 1e-6f);
+}
+
+// dgTrailerJoint::Update's debug key: Ctrl+B breaks a holding hitch.
+TEST(VehicleParity, CtrlBBreaksTheTrailerHitch) {
+    World world;
+    world.setStatic(flatGround());
+    CarSim car;
+    car.init(CarSimParams{}, VehicleGeometry::placeholder());
+    car.reset(Mat34::identity());
+    TrailerGeometry tg;
+    for (std::size_t i = 0; i < 4; ++i)
+        tg.wheels[i] = VehicleGeometry::placeholder().wheels[i];
+    tg.carHitch = Vec3{0.0f, 0.5f, 2.5f};
+    tg.trailerHitch = Vec3{0.0f, 0.5f, -3.0f};
+    Trailer trailer;
+    trailer.init(TrailerParams{}, TrailerJointParams{}, tg, car);
+    world.add(&car.body);
+    trailer.addTo(world);
+    world.step(kFixedSampleStep);
+    EXPECT_FALSE(trailer.joint.isBroken());
+    Trailer::breakKeyPressed = true;
+    world.step(kFixedSampleStep);
+    Trailer::breakKeyPressed = false;
+    EXPECT_TRUE(trailer.joint.isBroken());
+}
+
+// The level's sphere of a car (vehCarModel::GetPosition, lvlInstance::
+// GetRadius): one up axis above the centre of mass, with the body
+// geometry's radius; a trailer's (vehTrailerInstance) sits at its centre of
+// mass.
+TEST(VehicleParity, VehicleSphereIsMm2s) {
+    CarSim car;
+    car.init(CarSimParams{}, VehicleGeometry::placeholder());
+    Mat34 m = Mat34::identity();
+    m.m0 = {0.0f, 1.0f, 0.0f}; // on its side
+    m.m1 = {-1.0f, 0.0f, 0.0f};
+    m.m3 = {10.0f, 2.0f, -5.0f};
+    car.reset(m);
+    const Vec3& p = car.body.ics.matrix.m3;
+    const Vec3 c = car.body.position();
+    EXPECT_FLOAT_EQ(c.x, p.x - 1.0f);
+    EXPECT_FLOAT_EQ(c.y, p.y);
+    EXPECT_FLOAT_EQ(c.z, p.z);
+    // Without its model, the bound's sphere; with it, the geometry's.
+    EXPECT_FLOAT_EQ(car.body.radius(), car.body.Body::radius());
+    car.body.geometryRadius = 3.25f;
+    EXPECT_FLOAT_EQ(car.body.radius(), 3.25f);
+
+    TrailerGeometry tg;
+    for (std::size_t i = 0; i < 4; ++i)
+        tg.wheels[i] = VehicleGeometry::placeholder().wheels[i];
+    tg.carHitch = Vec3{0.0f, 0.5f, 2.5f};
+    tg.trailerHitch = Vec3{0.0f, 0.5f, -3.0f};
+    Trailer trailer;
+    trailer.init(TrailerParams{}, TrailerJointParams{}, tg, car);
+    const Vec3 t = trailer.body.position();
+    EXPECT_EQ(t.x, trailer.body.ics.matrix.m3.x);
+    EXPECT_EQ(t.y, trailer.body.ics.matrix.m3.y);
+    EXPECT_EQ(t.z, trailer.body.ics.matrix.m3.z);
 }

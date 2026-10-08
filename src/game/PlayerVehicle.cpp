@@ -8,6 +8,7 @@
 #include "data/DatFile.h"
 #include "phys/vehicle/TuneParams.h"
 
+#include <algorithm>
 #include <format>
 
 namespace mm2::game {
@@ -54,6 +55,16 @@ void readSimPivots(const vfs::Vfs& vfs, const std::string& model, phys::VehicleG
     geom.enginePivot = readPivot(vfs, model, "engine");
     geom.axlePivots[0] = readPivot(vfs, model, "axle0");
     geom.axlePivots[1] = readPivot(vfs, model, "axle1");
+}
+
+// lvlInstance::GetGeomSet's radius of `part`: the largest modGetStatic
+// radius over the part's levels of detail.
+float geomSetRadius(const asset::VehicleModel& model, std::string_view part) {
+    float radius = 0.0f;
+    for (const auto& mesh : model.pkg.meshes)
+        if (mesh.part == part)
+            radius = std::max(radius, mesh.radius());
+    return radius;
 }
 
 } // namespace
@@ -123,6 +134,8 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
     }
 
     v->m_sim.init(params, geom);
+    // The car instance's sphere radius: its "body" geometry's.
+    v->m_sim.body.geometryRadius = geomSetRadius(v->m_model, "BODY");
     {
         const Vec3 half = copParams.inertiaBox * 0.5f;
         v->m_sim.splash.init(copParams.centerOfGravity - half, half + copParams.centerOfGravity);
@@ -161,6 +174,8 @@ std::unique_ptr<SimVehicle> SimVehicle::load(const vfs::Vfs& vfs, std::string_vi
             v->m_trailerModel = std::make_unique<asset::VehicleModel>(std::move(*trailerModel));
             v->m_trailer = std::make_unique<phys::Trailer>();
             v->m_trailer->init(tp, jp, tg, v->m_sim);
+            // vehTrailerInstance's first geometry is "trailer".
+            v->m_trailer->body.geometryRadius = geomSetRadius(*v->m_trailerModel, "TRAILER");
         }
     }
     if (auto f = readDat(vfs, tunePath("vehgyro")); f && f->top()) {

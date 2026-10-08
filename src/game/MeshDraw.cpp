@@ -30,6 +30,10 @@ int drawGpuMesh(render::Device& device, TextureLibrary& textures, const GpuMesh&
             diffuse = {diffuse.x * 0.5f, diffuse.y * 0.5f, diffuse.z * 0.5f, diffuse.w};
         call.constants.color = {diffuse.x * options.tint.x, diffuse.y * options.tint.y, diffuse.z * options.tint.z,
                                 diffuse.w * options.tint.w};
+        // modShader's material emissive colour (the compact form's third
+        // colour) is added to the lit colour.
+        if (mat && options.lighting)
+            call.constants.emissive = mat->emissive;
         std::uint32_t flags = render::DrawFlag::VertexColor;
         if (options.fog)
             flags |= render::DrawFlag::Fog;

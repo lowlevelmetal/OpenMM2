@@ -149,7 +149,7 @@ PolygonSoup flatGround(float half = 20000.0f) {
     SoupGeometry g;
     g.vertices = {{-half, 0, -half}, {-half, 0, half}, {half, 0, half}, {half, 0, -half}};
     g.polys.push_back({{0, 1, 2, 3}, 4, 0});
-    g.materialNames = {"_default"};
+    g.materialNames = {"default"};
     PolygonSoup soup;
     soup.add(g, Mat34::identity(), MaterialTable{});
     soup.finalize(2048.0f);

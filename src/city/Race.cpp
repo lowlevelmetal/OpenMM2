@@ -2,6 +2,7 @@
 
 #include "city/Reader.h"
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 #include "data/TextTables.h"
 
 #include <algorithm>
@@ -18,11 +19,23 @@ void setError(std::string* error, std::string msg) {
 // MM2's loaders read these fields with atof / atoi (mmRaceData::Load,
 // mmPositions::Load): the numeric prefix, 0 without one.
 float toFloat(std::string_view s) {
-    return detail::cAtof(s);
+    return static_cast<float>(data::cAtof(s));
 }
 
 int toInt(std::string_view s) {
-    return detail::cAtoi(s);
+    return data::cAtoi(s);
+}
+
+// sscanf "%f" / "%d" (aiCityData, aiRaceData): the same prefix, but nothing
+// without one (the target keeps its value).
+std::optional<float> scanFloat(std::string_view s) {
+    if (const auto v = data::atofPrefix(s))
+        return static_cast<float>(*v);
+    return std::nullopt;
+}
+
+std::optional<int> scanInt(std::string_view s) {
+    return data::atoiPrefix(s);
 }
 
 // Whitespace tokenizer for .aimap lines.
@@ -49,7 +62,7 @@ bool forNumericRows(std::string_view text, std::size_t minColumns, std::string* 
         const auto& row = table.rows()[r];
         if (row.empty() || (row.size() == 1 && row[0].empty()))
             continue;
-        if (row.size() < minColumns || !detail::scanFloat(row[0])) {
+        if (row.size() < minColumns || !scanFloat(row[0])) {
             setError(error, std::format("row {}: expected at least {} numeric columns", r + 2, minColumns));
             return false;
         }
@@ -89,7 +102,7 @@ CityInfo parseCityInfo(std::string_view text) {
     // one more than the number of bars). It reads nothing else (MustPlace and
     // UnlockGroup stay unread).
     auto count = [&](std::string_view countKey, std::string_view namesKey) {
-        const int n = detail::cAtoi(kv.getString(countKey));
+        const int n = data::cAtoi(kv.getString(countKey));
         if (n == 0)
             return 0;
         const std::string names = kv.getString(namesKey);
@@ -174,7 +187,7 @@ std::optional<AiMapConfig> parseAiMapConfig(std::string_view text, std::string* 
                            str::iequals(sec.name, "Exceptions") || str::iequals(sec.name, "Police") ||
                            str::iequals(sec.name, "Opponent") || str::iequals(sec.name, "Hookmen");
         if (known) {
-            const auto count = static_cast<std::size_t>(std::max(0, detail::scanInt(sec.lines[0]).value_or(0)));
+            const auto count = static_cast<std::size_t>(std::max(0, scanInt(sec.lines[0]).value_or(0)));
             sec.isList = true;
             sec.lines.erase(sec.lines.begin());
             if (sec.lines.size() > count)
@@ -202,12 +215,12 @@ std::optional<AiMapConfig> parseAiMapConfig(std::string_view text, std::string* 
         auto firstNumber = [&]() -> std::optional<float> {
             if (sec.isList || sec.lines.empty())
                 return std::nullopt;
-            return detail::scanFloat(sec.lines[0]);
+            return scanFloat(sec.lines[0]);
         };
         auto firstInt = [&]() -> std::optional<int> {
             if (sec.isList || sec.lines.empty())
                 return std::nullopt;
-            return detail::scanInt(sec.lines[0]);
+            return scanInt(sec.lines[0]);
         };
         if (str::iequals(name, "Speed Limit")) {
             cfg.speedLimit = firstNumber();

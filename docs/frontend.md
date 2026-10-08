@@ -294,8 +294,10 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   DISPLAY/RENDERER/RESOLUTION at 404,66/104/139 hold OpenMM2's window mode,
   renderer (Vulkan/OpenGL) and size (MM2: adapter, software/hardware, 16-bit
   modes); VISIBILITY (far clip 100–1000 m) and LIGHTING QUALITY (0–3,
-  snapping up/down, `SetLightQuality`) sliders at 450,179/213; TEXTURE
-  QUALITY (strings 390–393, " - Recommended" on High), OBJECT DETAIL
+  snapping up/down, `SetLightQuality`; the race uses the whole number)
+  sliders at 450,179/213; TEXTURE QUALITY (strings 390–393, " - Recommended"
+  on High; MM2 limits the city's textures to 32, 64, 128 or 256 px a side
+  while the city loads, `cityLevel::Load`), OBJECT DETAIL
   (574–577) and CLOUD SHADOWS (660/661/576). Defaults are the top tier of
   `mmGfxCFG::AutoDetect`: far clip 1000, lighting 3, texture High, object
   detail Very High, shadows High, sky/reflections/pedestrians on. OpenMM2's
@@ -304,8 +306,7 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
 * **Audio** (`aud_bk`): SOUND FX / COMMENTARY / MUSIC / CITY SOUNDS toggles
   at y 62/91/125/152 (music and city sounds exclude each other; defaults:
   music off, city on, `mmStatePack::SetDefaults`), DEVICE, STEREO FX
-  (326/327), SOUND QUALITY (574–576; OpenMM2 maps Low to the 11 kHz sounds
-  and Medium/High to 22 kHz, MM2 chooses 8/16/32 voices), and the SOUND FX
+  (326/327), SOUND QUALITY (574–576), and the SOUND FX
   VOLUME, MUSIC/CITY VOLUME (both default 1) and BALANCE (−1..1, normal
   arrows) sliders at 450,212/246/280. STEREO FX lists Mono, Stereo and
   Surround (MM2 adds Surround on a 16-bit device); SOUND QUALITY sets MM2's
@@ -330,8 +331,9 @@ Audio, 4 Graphics, 5 Control, 41 Customize, 34 About), checked against MM2's
   cancels; F1–F10 are refused (`xasn_dlg`); a key already in use asks with
   `ctrl_dlg` and unbinds the other action. Only keyboard bindings are
   offered (MM2 also had mouse, joystick, pad and wheel columns). Bindings
-  are stored as `[Controls] Bind.<string id>` and are not yet read by the
-  race input.
+  are stored as `[Controls] Bind.<string id>`; the page and the race share
+  one action table (`app::controls`), and the race reads the bindings, the
+  dead zone and the other `[Controls]` options from it.
 * **About** (`about_bk`): `credits.jpg` at 39,203 (215×173) from its top,
   held 1.5 s, then scrolling at 50 px/s in whole pixels and wrapping
   without a gap (`AboutMenu::Update`); DONE at 439,415; the product ID label (130,180) shows "UNKNOWN"
@@ -445,8 +447,9 @@ defaults), `vehicle:<name>`, `go` (start the race), `result:<position>`,
 * 3D vehicle showroom (MM2 rotates the car model; see "Garage").
 * Instant replay (MM2's REPLAY button is switched off anyway).
 * Options per driver (`mmPlayerConfig`), mouse/joystick bindings, MM2's
-  log-200 volume curve; the race does not read `[Graphics]` and `[Controls]`
-  yet.
+  log-200 volume curve.
+* The in-race OPTIONS pages (`PUOptions`: audio, control and graphics
+  options in the race's popup); the popup shows Options disabled.
 * MM2's own multiplayer menus (`NetSelectMenu`, `NetArena`); OpenMM2 has
   its own session and lobby screens over UDP. The host's race settings
   follow `HostRaceMenu` (menu 11, `host_bk`): DONE first, the five race

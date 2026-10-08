@@ -80,17 +80,21 @@ struct CarAudioInputs {
     std::optional<float> groundBelow;
     Mat34 transform; // car placement (positioned cars)
     Vec3 velocity;
-    // The listener is in a tunnel (Aud3DObjectManager echo flag): every car's
-    // surface sound uses the table's tunnel entry.
+    // The listener is in a tunnel (Aud3DObjectManager's echo flag): the
+    // car's sounds get their echo and its rolling sound uses the table's
+    // tunnel entry. A car with an Object3DManager also follows the manager's
+    // flag (Object3DManager::setTunnel); either one counts.
     bool inTunnel = false;
 };
 
 enum class SurfaceWeather { Dry, Wet, Snow };
 
-// The surface sound index of a wheel's material: its "sound:" value
-// (vehWheel::GetSurfaceSound reads lvlMaterial's sound field; "none" and
-// negative values count as 0). The name is not used: cobblestone, for
-// example, has sound 0 and sounds like road.
+// The surface sound index of a wheel's material (vehWheel::GetSurfaceSound):
+// its "sound:" value as a short, with -1 (the default material's) as 0; a
+// wheel without a material also gets 0 (the caller's part). "none" is
+// already 0 (lvlMaterial::Load). Other values are used as they are; the
+// surface table index is checked by the caller. The name is not used:
+// cobblestone, for example, has sound 0 and sounds like road.
 int surfaceSoundIndex(std::string_view materialName, int mtlSound);
 
 // --- Engine -------------------------------------------------------------------------
@@ -121,11 +125,16 @@ public:
     // vehEngineSampleWrapper::UpdateRPM(rpm): the player's car. A sample whose
     // table volume is below 0.25 stops; the others get volume and frequency and
     // loop.
-    void update(float rpm);
+    // Each sample then updates its echo (`dt` is the frame time).
+    void update(float rpm, float dt = 0.0f);
     // UpdateRPM(rpm, volume, frequency, pan): positioned cars; the cut-off uses
     // the table volume, then volume and pitch are scaled by the attenuation
     // and the doppler factor.
-    void update3D(float rpm, float attenuation, float doppler, float pan);
+    void update3D(float rpm, float attenuation, float doppler, float pan, float dt = 0.0f);
+    // vehEngineAudio::EchoOn / vehEngineSampleWrapper::EchoOn: every sample's
+    // echo, `delay` seconds late at 0.96 volume. EchoOff turns them off.
+    void echoOn(float delay);
+    void echoOff();
     // vehEngineAudio::Silence: zero every sample's volume range (the engine
     // stops), or restore it.
     void silence(bool on);
@@ -160,6 +169,15 @@ public:
     // out.
     void silence();
     void stop();
+    // The car's tunnel state for the next updates (its inputs' inTunnel or the
+    // manager's echo flag): the table's tunnel entry is the surface.
+    void setTunnel(bool inTunnel) { m_inTunnel = inTunnel; }
+    // vehSurfaceAudio::EchoOn / vehSurfaceAudioData::EchoOn: the echo of every
+    // entry's surface and skid samples (the suspension and wobble thumps have
+    // none). UpdateEcho updates the current entry's.
+    void echoOn(float delay);
+    void echoOff();
+    void updateEcho(float dt);
 
     int currentSurface() const { return m_surface; }
     bool skidding() const { return m_skidding; }
@@ -196,6 +214,7 @@ private:
     Entry* entry(int index);
 
     std::vector<Entry> m_entries;
+    bool m_inTunnel = false;
     int m_tunnelIndex = 0;
     int m_surface = 0;
     int m_previous = -1;
@@ -268,6 +287,11 @@ public:
     // siren state stays.
     void silence();
     void stopAll();
+    // vehPoliceCarAudio::EchoOn / EchoOff / UpdateEcho: the siren samples'
+    // echo (not the explosion's).
+    void echoOn(float delay);
+    void echoOff();
+    void updateEcho(float dt);
 
     bool on() const { return m_state != 0; }
     int currentSample() const { return m_state != 0 ? m_current : -1; }
@@ -308,6 +332,7 @@ struct CarAudioOptions {
     // every other city (mmGame::Init, vehCarAudioContainer::SetSirenCSVName).
     std::string city = "london";
     // Positioned cars share this (Aud3DObjectManager); null = every car sounds.
+    // The player's car only reads its tunnel echo state.
     Object3DManager* manager = nullptr;
     // A network player's car (vehCarAudioContainer mode 0) keeps its horn; AI
     // opponents and police (mode 1) have none.
@@ -338,7 +363,15 @@ public:
 
 private:
     void updateHorn(bool pressed);
+    // vehCarAudio::UpdateAudio's start (and the police and semi variants'):
+    // the echo follows the tunnel state.
+    void updateEchoState(bool tunnel, float dt);
+    void echoOn(float delay);
+    void echoOff();
+    void updateEcho(float dt);
 
+    Object3DManager* m_manager = nullptr;
+    bool m_echo = false; // vehCarAudio +0x12d
     CarAudioDef m_def;
     EngineSound m_engine;
     SurfaceSounds m_surfaces;
@@ -373,7 +406,12 @@ private:
     int slotPriority() const override { return m_priority; }
     void slotLost() override { silence(); }
     void silence();
+    void updateEchoState(bool tunnel, float dt);
+    void echoOn(float delay);
+    void echoOff();
+    void updateEcho(float dt);
 
+    bool m_echo = false; // vehCarAudio +0x12d
     CarAudioDef m_def;
     EngineSound m_engine;
     SurfaceSounds m_surfaces;
@@ -408,8 +446,11 @@ public:
     // Impacts come from aud/cardata/opponent/default_impacts.csv.
     bool load(const vfs::Vfs& vfs, SoundBank& bank, Mixer& mixer, std::string_view type,
               Object3DManager* manager = nullptr);
-    void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Mat34& listener);
-    void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Vec3& listener);
+    // `inTunnel` as CarAudioInputs::inTunnel: the echo also follows it.
+    void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Mat34& listener,
+                bool inTunnel = false);
+    void update(float speed, const Mat34& transform, const Vec3& velocity, float dt, const Vec3& listener,
+                bool inTunnel = false);
     // vehHornAudio::PlayAvoidance: RandomizeNumber(2 * last - 0.01) picks one
     // of the patterns before the last (the long "stuck" blast is kept for
     // impacts), or (about half the time) nothing; returns whether a pattern
@@ -435,6 +476,12 @@ private:
     void silence();
     void updateHorn(float dt);
     void startPattern(std::size_t index);
+    // aiAmbientVehicleAudio::EchoOn / EchoOff / UpdateEcho: the engine and
+    // horn echo (aiEngineAudio, vehHornAudio).
+    void echoOn(float delay);
+    void echoOff();
+
+    bool m_echo = false; // aiAmbientVehicleAudio +0x89
 
     AmbientEngineDef m_engineDef;
     std::optional<HornDef> m_hornDef;

@@ -67,6 +67,9 @@ const ActionInfo& info(Action a);
 std::string bindKey(std::uint32_t stringId);
 inline constexpr const char* kUnbound = "Undefined";
 
+// The key bound to one action: the stored binding, else the default.
+platform::Key boundKey(const IniFile& ini, const ActionInfo& a);
+
 class Bindings {
 public:
     // Reads the [Controls] bindings over the keyboard defaults.

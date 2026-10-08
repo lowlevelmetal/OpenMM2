@@ -39,10 +39,11 @@ struct CameraTarget {
         Vec3 normal{0.0f, 1.0f, 0.0f};
     };
     std::array<Wheel, 4> wheels;
-    // Flags of the level room the car is in (lvlRoomInfo, mmPlayer::Update):
-    // 0x08 widens the chase cameras' collision margin; 0x02 or 0x08 puts big
-    // vehicles on the _ind camera. What the flags stand for in the city
-    // data is not verified, so 0 (none) is a safe default.
+    // Flags of the level room the car is in (lvlRoomInfo, mmPlayer::Update;
+    // city::LevelRoomFlag, not the PSDL's room flags): 0x08 widens the chase
+    // cameras' collision margin; 0x02 or 0x08 puts big vehicles on the _ind
+    // camera. cityLevel::Load sets both on PSDL subterranean rooms; 0x20
+    // marks a room with a terrain-bound instance.
     int roomFlags = 0;
 
     int wheelsOnGround() const;

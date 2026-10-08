@@ -1,5 +1,6 @@
 #include "game/session/RaceSetup.h"
 
+#include "city/RoomInfo.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "game/session/Gate.h"
@@ -107,12 +108,14 @@ std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uin
     if (!city.aiMap || city.aiMap->intersections.size() < 2)
         return std::nullopt;
     const auto& xs = city.aiMap->intersections;
-    // The level's room flags (not the PSDL's): mmSingleRoam asks for no
-    // subterranean rooms (0x0A), and RespawnXYZ never takes water or
-    // landmark rooms (0x24).
-    const auto levelFlags = city::levelRoomFlags(city);
+    // The level's room flags (lvlRoomInfo, not the PSDL's): mmSingleRoam asks
+    // for no subterranean or covered rooms (0x0A), and RespawnXYZ never takes
+    // water-of-death or terrain-instance rooms (0x24).
+    const auto& levelFlags = city.levelRoomFlags;
+    constexpr std::uint16_t kRejected = city::LevelRoomFlag::Subterranean | city::LevelRoomFlag::Covered |
+                                        city::LevelRoomFlag::WaterOfDeath | city::LevelRoomFlag::TerrainInstance;
     auto acceptable = [&](const city::AiIntersection& x) {
-        if (x.room < levelFlags.size() && (levelFlags[x.room] & 0x2E))
+        if (x.room < levelFlags.size() && (levelFlags[x.room] & kRejected))
             return false;
         for (const auto pathId : x.paths) {
             if (pathId >= city.aiMap->paths.size())

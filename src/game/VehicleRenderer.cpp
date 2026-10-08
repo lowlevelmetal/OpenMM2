@@ -26,6 +26,15 @@ constexpr float kExtraWheelSpacing = 0.2f + 2.0f;
 // the AI map after the cars (mmGame::Init), so 0.95 is what is drawn with.
 float s_glowSize = 0.2f;
 float s_glowColor = 0.95f;
+// The view the siren flares are queued for (VehicleRenderer::setLensFlareTarget).
+const Mat44* s_flareViewProj = nullptr;
+float s_flareAspect = 4.0f / 3.0f;
+std::vector<fx::LensFlareQuad>* s_flareOut = nullptr;
+// ltFlare::Random draws on MM2's global generator; OpenMM2 gives the flares
+// their own.
+fx::Rand s_flareRand{0x5A1E};
+// vehSiren::Draw: ltLight::ComputeIntensity's threshold for the flares.
+constexpr float kFlareThreshold = 0.05f;
 
 std::uint32_t argb(const Vec3& c) {
     auto b = [](float v) { return static_cast<std::uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
@@ -90,6 +99,9 @@ VehicleRenderer::VehicleRenderer(render::Device& device, TextureLibrary& texture
             if (const auto* pivot = model.pivot(name))
                 m_sirens.push_back({pivot->origin, *color});
     }
+    // vehSiren::Init: twenty lens flares for the siren lights.
+    if (!m_sirens.empty())
+        m_flare.emplace(20, s_flareRand);
     // Fenders follow the front wheels at their pivot's offset from wheel 0
     // (lifted 2.5 cm; FNDR1 mirrors it).
     if (findFilledLod(*m_gpu, "FNDR0", asset::Lod::High) && model.pivot("fndr0") && model.wheel(0))
@@ -199,6 +211,13 @@ std::optional<asset::Lod> VehicleRenderer::lodFor(const VehiclePose& pose, const
     // lvlInstance::IsVisible: the view depth of the car minus its radius
     // against the Object Detail thresholds; dynamic objects end at NoDraw.
     return objectLod(viewDepth(camera, pose.body.m3), m_radius, m_detail, m_detail.noDraw);
+}
+
+void VehicleRenderer::setLensFlareTarget(const Mat44* viewProj, float aspect,
+                                         std::vector<fx::LensFlareQuad>* out) {
+    s_flareViewProj = viewProj;
+    s_flareAspect = aspect;
+    s_flareOut = out;
 }
 
 void VehicleRenderer::setLightGlowScales(float size, float color) {
@@ -510,8 +529,13 @@ void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
             for (std::size_t i = 0; i < m_sirens.size(); ++i) {
                 const float a = static_cast<float>(i) * 1.5707964f + pose.sirenAngle;
                 const Vec3 direction = Mat34::rotationY(a).transformDir({1, 0, 0});
-                addLightGlow(m_cards, pose.body.transform(m_sirens[i].position), direction, m_sirens[i].color,
-                             camera);
+                const Vec3 position = pose.body.transform(m_sirens[i].position);
+                addLightGlow(m_cards, position, direction, m_sirens[i].color, camera);
+                // ltLensFlare::Draw with ltLight::ComputeIntensity(eye, 0.05).
+                if (m_flare && s_flareOut && s_flareViewProj)
+                    m_flare->draw(position, m_sirens[i].color,
+                                  fx::spotIntensity(position, direction, camera.m3, kFlareThreshold),
+                                  *s_flareViewProj, s_flareAspect, *s_flareOut);
             }
     }
     m_cards.flush(m_device, m_textures.get("lt_glow"), {render::BlendMode::Add, false, {1, 1, 1, 1}});

@@ -36,11 +36,23 @@ constexpr float kInertiaRatio = 40.0f;
 // height an active is dropped.
 constexpr float kLowestY = -100.0f;
 
-// dgBangerActiveManager::Update: the mover each CollisionType bit declares.
+// dgBangerActiveManager::Update: the mover each CollisionType bit declares,
+// checked in this order.
 constexpr int kCollideNone = 0x2;    // updated by the manager, without collisions
 constexpr int kCollideAlways = 0x40; // DeclareMover(type 2, 0x1b)
 constexpr int kCollideAll = 0x10;    // DeclareMover(type 1, 0x1b)
 constexpr int kCollideCity = 0x4;    // DeclareMover(type 1, 3): the city only
+// DeclareMover's flags: 0x1 update, 0x2 the city, 0x8 the rooms' instances,
+// 0x10 the other movers.
+constexpr unsigned kMoverAll = 0x1b;
+constexpr unsigned kMoverCity = 0x3;
+// The age mode (dgBangerDataManager +0x2a8a8, which mmGame::Init clears)
+// declares by the active's age instead: (1, 0x1b) while the age is at most
+// the second age, (1, 0x3) while at most the first, else the manager updates
+// it without collisions. mmGame::Init sets the ages to 6 and 30000 s (the
+// constructor's 3 and 1.5 are replaced), so the first test decides.
+constexpr float kAgeFirst = 6.0f;      // dgBangerDataManager +0x2a8a0
+constexpr float kAgeSecond = 30000.0f; // dgBangerDataManager +0x2a8a4
 
 // vehBreakableMgr's ejection: momentum speed +- 1, angular impulse 2 +- 1
 // (vehBreakableMgr's three ejection settings).
@@ -115,10 +127,18 @@ struct BangerSet::DataBounds {
 // dgBangerActive: the rigid body simulating a knocked-over prop (its
 // collider, phInertialCS and phSleep), the instance it moves, and the
 // prop's debris. The physics world drives it as a mover's entity.
+// An active's body as the collision manager's mover. Detach is the hit
+// instance's (dgHitBangerInstance::Detach), which dgPhysManager::Update
+// calls on a type-1 mover outside the active rooms.
+struct BangerSet::ActiveBody final : phys::Body {
+    Active* owner = nullptr;
+    void detach() override;
+};
+
 struct BangerSet::Active final : phys::BodyController {
     BangerSet* set = nullptr;
     int index = 0;
-    phys::Body body;
+    ActiveBody body;
     phys::Sleep sleep;
     int instance = -1;
     float age = 0.0f;
@@ -221,6 +241,7 @@ BangerSet::BangerSet(const BangerDataLibrary& data) : m_data(data) {
         a->set = this;
         a->index = i;
         a->body.controller = a.get();
+        a->body.owner = a.get();
         // dgBangerActive's constructor: phSleep::Init, then its thresholds.
         a->sleep.init(&a->body.ics);
         a->sleep.speed2 = kSleepSpeed2;
@@ -366,7 +387,7 @@ void BangerSet::placeUnroomed() {
     for (std::size_t i = 0; i < m_instances.size(); ++i) {
         const Instance& inst = m_instances[i];
         if (!inst.everHit && inst.state == State::Unhit && inst.room == 0 && !m_props[i]->listed)
-            moveToRoom(i, findRoom(inst.ground.m3, 0));
+            moveToRoom(i, findRoom(inst.ground.m3, inst.roomHint));
     }
 }
 
@@ -413,6 +434,7 @@ void BangerSet::add(const std::vector<PlacedProp>& props) {
         inst.matrix = inst.ground;
         inst.matrix.m3 = p.transform.transform(d->cg);
         inst.paint = p.variant;
+        inst.roomHint = p.roomHint;
         inst.state = State::Unhit;
         Prop& prop = *m_props[i];
         prop.banger = true;
@@ -654,6 +676,24 @@ void BangerSet::detachMe(Active& a) {
     managerDetach(a);
 }
 
+void BangerSet::ActiveBody::detach() { owner->set->worldDetach(*owner); }
+
+void BangerSet::worldDetach(Active& a) {
+    // dgHitBangerInstance::Detach: the instance's entity detaches
+    // (dgBangerActive::DetachMe) and the instance leaves its room, so the
+    // knocked-over prop disappears. A placed prop still standing
+    // (dgUnhitBangerInstance) keeps lvlInstance::Detach, which does nothing.
+    if (a.instance < 0)
+        return;
+    const auto i = static_cast<std::size_t>(a.instance);
+    if (!m_instances[i].everHit)
+        return;
+    detachMe(a);
+    if (m_instances[i].room != 0 || m_props[i]->listed)
+        moveToRoom(i, 0);
+    m_instances[i].state = State::Gone;
+}
+
 void BangerSet::newMover(Active& a) {
     // dgPhysManager::NewMover: the active's body joins the movers and
     // collides with everything from the next sample (0x100, then 0x1b). It
@@ -837,8 +877,12 @@ void BangerSet::declare(Active& a, float dt) {
     // manager by its data's CollisionType.
     if (a.instance < 0)
         return;
-    const int type = m_instances[static_cast<std::size_t>(a.instance)].data->collisionType;
+    int type = m_instances[static_cast<std::size_t>(a.instance)].data->collisionType;
     phys::Body& sim = a.body;
+    if (m_ageMode) {
+        // By age: all, then the city only, then the manager's own update.
+        type = a.age <= kAgeFirst ? (a.age <= kAgeSecond ? kCollideAll : kCollideCity) : kCollideNone;
+    }
     if (type & kCollideNone) {
         // Updated here, without collisions, then dgBangerActive::PostUpdate.
         if (inWorld(a))
@@ -850,11 +894,12 @@ void BangerSet::declare(Active& a, float dt) {
         return;
     }
     bool mover = true;
-    if (type & (kCollideAlways | kCollideAll)) {
-        sim.collideTerrain = sim.collideInstances = sim.collideMovers = true;
+    if (type & kCollideAlways) {
+        sim.declare(2, kMoverAll);
+    } else if (type & kCollideAll) {
+        sim.declare(1, kMoverAll);
     } else if (type & kCollideCity) {
-        sim.collideTerrain = true;
-        sim.collideInstances = sim.collideMovers = false;
+        sim.declare(1, kMoverCity);
     } else {
         // Not declared: neither simulated nor collided with.
         mover = false;

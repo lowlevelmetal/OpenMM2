@@ -1,6 +1,7 @@
 #include "city/CityData.h"
 
 #include "city/Reader.h"
+#include "city/RoomInfo.h"
 #include "city/SdlCollect.h"
 #include "core/StringUtil.h"
 
@@ -20,58 +21,6 @@ std::string text(const std::vector<std::byte>& bytes) {
 }
 
 } // namespace
-
-std::vector<std::uint16_t> levelRoomFlags(const CityData& city) {
-    const Psdl& psdl = city.psdl;
-    std::vector<std::uint16_t> flags(psdl.rooms.size(), 0);
-    // lvlSDL::LoadBinary's texture -> material table, as cityLevel::Load
-    // tests it (lvlMaterialMgr index 2 is "deepwater").
-    const auto textureMaterials = sdlTextureMaterials(psdl, city.textureMaterials, [&](std::string_view name) {
-        return sdlMaterialIndex(city.materials, name);
-    });
-    const int deepwater = sdlMaterialIndex(city.materials, "deepwater");
-    for (std::size_t i = 1; i < psdl.rooms.size(); ++i) {
-        const PsdlRoom& room = psdl.rooms[i];
-        const std::uint8_t sdl = room.flags;
-        std::uint16_t f = 0;
-        if (sdl & RoomFlag::Intersection) {
-            if (!(sdl & RoomFlag::Warp))
-                f |= kLevelRoomStreet;
-        } else if (sdl & RoomFlag::Road) {
-            // Past the leading texture and tunnel attributes, remembering the
-            // tunnel's subtype (cityLevel::Load reads the attribute stream).
-            std::size_t a = 0;
-            int tunnel = -1;
-            for (; a < room.attributes.size(); ++a) {
-                if (room.attributes[a].type == PsdlAttrType::Texture)
-                    continue;
-                if (room.attributes[a].type == PsdlAttrType::Tunnel) {
-                    tunnel = room.attributes[a].subtype;
-                    continue;
-                }
-                break;
-            }
-            const bool divided = a < room.attributes.size() && room.attributes[a].type == PsdlAttrType::DividedRoadStrip;
-            if (!divided && !(sdl & RoomFlag::Warp) && (tunnel < 0 || (tunnel & 0x3) == 0))
-                f |= kLevelRoomStreet;
-        }
-        if (sdl & RoomFlag::Subterranean)
-            f |= kLevelRoomSubterranean | kLevelRoomCovered;
-        const bool waterTest = !((sdl & RoomFlag::Subterranean) && (sdl & RoomFlag::Standard));
-        if (waterTest && !room.attributes.empty() && room.attributes.front().type == PsdlAttrType::Texture) {
-            const int index = room.attributes.front().textureBase() + 1;
-            if (index > 0 && static_cast<std::size_t>(index) < textureMaterials.size() && deepwater > 0 &&
-                textureMaterials[static_cast<std::size_t>(index)] == deepwater)
-                f |= kLevelRoomWater;
-        }
-        flags[i] = f;
-    }
-    // lvlLevel::LoadInstances: instance flag 0x100 marks its room.
-    for (const auto& inst : city.instances)
-        if ((inst.flags & 0x100) && inst.room < flags.size())
-            flags[inst.room] |= kLevelRoomLandmark;
-    return flags;
-}
 
 std::vector<CityInfo> listCities(const vfs::Vfs& v) {
     std::vector<CityInfo> out;
@@ -220,19 +169,27 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
         // into its table, so the lower light qualities' ambient levels come
         // from what the table held before: the constructor's ambient for the
         // first city of the session, the last loaded city's afterwards.
+        // The tables keep whatever they held when a file is missing or
+        // lacks a field (datParser::Load): the constructor's values for the
+        // first city of the session, the previous city's afterwards.
         static std::mutex historyMutex;
-        static auto history = defaultAmbients();
+        static std::array<LightingDef, kTimesOfDay * kWeathers> tables = [] {
+            std::array<LightingDef, kTimesOfDay * kWeathers> t;
+            t.fill(defaultLighting());
+            return t;
+        }();
         const std::lock_guard lock(historyMutex);
-        c.ambientBeforeLoad = history;
         for (int i = 0; i < kTimesOfDay * kWeathers; ++i) {
+            auto& table = tables[static_cast<std::size_t>(i)];
+            c.ambientBeforeLoad[static_cast<std::size_t>(i)] = table.ambient;
             const std::string path = std::format("{}.lt{:02}", cityDir, i);
             if (auto b = bytesOf(path, false)) {
-                c.lighting[static_cast<std::size_t>(i)] = parseLighting(text(*b), &err);
-                if (!c.lighting[static_cast<std::size_t>(i)])
-                    warn(std::format("{}: {}", path, err));
+                if (auto parsed = parseLighting(text(*b), &err, &table))
+                    table = std::move(*parsed);
                 else
-                    history[static_cast<std::size_t>(i)] = c.lighting[static_cast<std::size_t>(i)]->ambient;
+                    warn(std::format("{}: {}", path, err));
             }
+            c.lighting[static_cast<std::size_t>(i)] = table;
         }
     }
     if (auto b = bytesOf(cityDir + "_fog.csv", false)) {
@@ -262,6 +219,15 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
     }
     if (auto b = bytesOf("city/materials.csv", false))
         c.textureMaterials = parseTextureMaterials(text(*b));
+
+    // lvlRoomInfo's flags (cityLevel::Load, lvlLevel::LoadInstances).
+    {
+        const auto materials = sdlTextureMaterials(c.psdl, c.textureMaterials, [&](std::string_view name) {
+            return sdlMaterialIndex(c.materials, name);
+        });
+        c.levelRoomFlags = levelRoomFlags(c.psdl, materials, c.water ? &*c.water : nullptr, c.instances,
+                                          c.aiInstances, map);
+    }
 
     auto loadAiConfig = [&](const std::string& path, std::optional<AiMapConfig>& out) {
         if (auto b = bytesOf(path, false)) {

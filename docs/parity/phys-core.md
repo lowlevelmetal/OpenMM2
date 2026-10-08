@@ -3,7 +3,7 @@
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 206 rows (functions that share a verdict are grouped in one row);
-verified 75, fixed 94, deviation 9, inferred 10, open 3, openmm2 15. The
+verified 75, fixed 96, deviation 9, inferred 10, open 1, openmm2 15. The
 Missing table adds 3 open items.
 
 Scope: `src/core/Math`, `src/phys/AgeMath`, `Collider`, `Collision`,
@@ -236,7 +236,7 @@ BoundCollision.cpp (phys-bounds).
 | `setCosFreeLean`, `setRotate1`/`2`, `setFrictionLean`/`Roll`, `setLeanLimit`, `setRollLimit` (both), `setRestOrientMat` (both), `setForceLimit`, `setJointForceFlag`, `moveICS`, `breakJoint`, `unbreakJoint`, `isBroken` | same names | verified | |
 | `setRestOrientation` | dgTrailerJoint::SetRestOrientation | fixed | The in-place Dot3x3Transpose on the tractor's rotation. Never called in MM2. |
 | `update` | dgTrailerJoint::Update | fixed | Every branch, constant and the force rotation through the matrix still holding C2 matched. The trailer's hitch point now sums in its own order, the gap length is Vector3::Mag2, the rotation is RotateUnitAxis (in-place Dot3x3) with MakeRotateUnitAxis's single-precision products, 2 sin(m/2)/m rounds fsin once, and the products go through the exact Matrix34 helpers. |
-| `update`: Ctrl+B | dgTrailerJoint::Update | open | MM2 breaks the hitch when B is newly pressed with either Ctrl held (ioKeyboard); OpenMM2 has no keyboard path into the joint. Needs an input flag from the vehicle/input layer. |
+| `update`: Ctrl+B | dgTrailerJoint::Update | fixed | MM2 breaks the hitch when B is newly pressed with either Ctrl held (ioKeyboard). Wired by the vehicle audit's second pass (27e8faf): `Trailer::breakKeyPressed`, set by RaceScreen, breaks the joint before `joint.update`. |
 | `doJointTorque` | dgTrailerJoint::DoJointTorque | fixed | Matched (DampLinearLean built but never added; the roll block never runs with roll 0 and FreeRoll 0.1); lv normalised with Vector3::InvMag's order. |
 | `doJointLimits` | dgTrailerJoint::DoJointLimits | fixed | Matched; M through the two-argument Dot3x3Transpose. |
 | `computeInvMassMatrix(ics, out, pos)` | dgTrailerJoint::ComputeInvMassMatrix (virtual) | fixed | C(pos) − SᵀKS matched; all products two-argument Dot3x3, now in MM2's order. |
@@ -302,7 +302,7 @@ and trailers use it.
 | `Body::Body`, `place`, `resetCollider` | the owners' phCollider::Init + Reset | inferred | Glue. |
 | `Body::syncBoundMatrix` | vehCarSim::SetWorldMatrix, the instances' GetMatrix | inferred | The bound's world matrix from the ICS. |
 | `Body::bound`, `entity` | lvlInstance::GetBound(0 / 1), GetEntity | verified | |
-| `Body::radius` | lvlInstance::GetRadius | open | MM2's radius is the largest LOD model's radius (lvlInstance::GetGeomSet), OpenMM2 the bound's reach about the origin (traffic overrides it with its own). Needs the model radius from the vehicle and prop loaders. |
+| `Body::radius` | lvlInstance::GetRadius | fixed | MM2's radius is the largest LOD model's radius (lvlInstance::GetGeomSet). Cars and trailers now carry it (the vehicle audit's `VehicleBody`, 40c6859); traffic overrides it with its own; props take their model's radius from CityLevel/BangerSet. |
 | `Body::aabb` | none | openmm2 | |
 | `World::World` | dgPhysManager::Reset | fixed | The level's collider is now phCollider::Init(bound, identity): barely moved. |
 | `setLevel`, `setStatic`, `setMaterials`, `time`, `stats`, `randomSeed`, `seedRandom`, `interpolationAlpha` | none | openmm2 | |
@@ -355,9 +355,10 @@ and trailers use it.
 - The other ground probes (cameras, AI, spawning, vehWheelCheap) are the
   same dgPhysManager::Collide with mask 0x20: `World::wheelProbe(a, b, hit,
   self, nullptr)`.
-- `limitAngVelocity = true` in CarSim / Trailer is now the default.
-- simcar's material fallback should name "default" (entry 0), not
-  "_default".
+- `limitAngVelocity = true` in CarSim / Trailer is now the default
+  (removed by the vehicle audit's second pass).
+- simcar's material fallback names "default" (entry 0) since the vehicle
+  audit's second pass.
 - The "blubber" chat cheat: `setElasticityCap(kBlubberElasticityCap)`.
-- `Body::radius` from the largest LOD model, the trailer's Ctrl+B break,
-  and traffic movers without a body.
+- Traffic movers without a body. (`Body::radius` for cars and trailers and
+  the trailer's Ctrl+B break are done by the vehicle audit's second pass.)

@@ -95,15 +95,8 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         gm.bounds = mesh.bounds();
         std::vector<render::Vertex3D> vertices;
         std::vector<std::uint16_t> indices;
-        float radius2 = 0.0f;
         for (const auto& section : mesh.sections) {
             for (const auto& packet : section.packets) {
-                for (const auto& v : packet.vertices) {
-                    const float d2 = v.position.z * v.position.z + v.position.y * v.position.y +
-                                     v.position.x * v.position.x;
-                    if (radius2 < d2)
-                        radius2 = d2;
-                }
                 GpuMesh::Draw d;
                 d.firstIndex = static_cast<std::uint32_t>(indices.size());
                 d.indexCount = static_cast<std::uint32_t>(packet.indices.size());
@@ -118,8 +111,12 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
                     rv.normal[1] = v.normal.y;
                     rv.normal[2] = v.normal.z;
                     rv.color = argbToRgba(v.color);
-                    rv.uv0[0] = rv.uv1[0] = v.uv.x;
-                    rv.uv0[1] = rv.uv1[1] = v.uv.y;
+                    rv.uv0[0] = v.uv.x;
+                    rv.uv0[1] = v.uv.y;
+                    // gfxPacket::OrthoMap's cloud shadow coordinates, from the
+                    // model-space position: ((y + x), (y + z)) / 128.
+                    rv.uv1[0] = (v.position.y + v.position.x) * 0.0078125f;
+                    rv.uv1[1] = (v.position.y + v.position.z) * 0.0078125f;
                     vertices.push_back(rv);
                 }
                 indices.insert(indices.end(), packet.indices.begin(), packet.indices.end());
@@ -129,7 +126,7 @@ const GpuModel* ModelLibrary::add(std::string_view nameIn, const asset::Pkg& pkg
         }
         if (vertices.empty() || indices.empty())
             continue;
-        gm.radius = std::sqrt(radius2);
+        gm.radius = mesh.radius();
         gm.vertices = m_device.createBuffer(render::BufferKind::Vertex, vertices.size() * sizeof(render::Vertex3D),
                                             vertices.data());
         gm.indices = m_device.createBuffer(render::BufferKind::Index, indices.size() * sizeof(std::uint16_t),

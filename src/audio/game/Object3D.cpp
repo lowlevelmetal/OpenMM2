@@ -70,6 +70,11 @@ bool Object3DManager::holds(const Client* client) const {
     return std::find(m_slots.begin(), m_slots.end(), client) != m_slots.end();
 }
 
+int Object3DManager::slotOf(const Client* client) const {
+    const auto it = std::find(m_slots.begin(), m_slots.end(), client);
+    return client && it != m_slots.end() ? static_cast<int>(it - m_slots.begin()) : -1;
+}
+
 int Object3DManager::used() const {
     return static_cast<int>(std::count_if(m_slots.begin(), m_slots.end(), [](const Client* c) { return c != nullptr; }));
 }

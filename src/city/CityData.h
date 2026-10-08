@@ -63,6 +63,8 @@ struct CityData {
     std::optional<std::vector<std::uint32_t>> roomColors; // city/<map>.lmap
     std::vector<PhysMaterial> materials;                  // city/materials.mtl
     std::vector<TextureMaterial> textureMaterials;        // city/materials.csv
+    // The game's own room flags (lvlRoomInfo, see RoomInfo.h), by room id.
+    std::vector<std::uint16_t> levelRoomFlags;
     std::optional<AiMapConfig> cruise, cruisePro;         // race/<dir>/roam.aimap(_p)
     std::vector<PathSet> cityPathSets;                    // race/<dir>/<map>_*.pathset (bridges, ferries...)
     std::vector<std::string> cityPathSetNames;
@@ -74,26 +76,6 @@ struct CityData {
 
 // All cities defined by tune/*.cinfo, in name order.
 std::vector<CityInfo> listCities(const vfs::Vfs& vfs);
-
-// The level's own room flags (lvlRoomInfo's flag word, lvlLevel +8), which
-// differ from the PSDL's room flag bytes: cityLevel::Load gives
-//   0x01 open streets: intersections that are not warp rooms, and road rooms
-//        that are not warp rooms whose geometry (after any texture and tunnel
-//        attributes) is not a divided road and whose tunnel, if any, has
-//        neither of the subtype bits 0x3;
-//   0x0A subterranean rooms (PSDL 0x02);
-//   0x04 rooms whose first attribute selects a texture of the "deepwater"
-//        material (city/materials.csv; not tested for subterranean rooms that
-//        also have PSDL 0x04);
-// and lvlLevel::LoadInstances adds
-//   0x20 rooms holding an instance with flag 0x100 (the .inst flags word).
-// Index = room id (entry 0 is the dummy room).
-inline constexpr std::uint16_t kLevelRoomStreet = 0x01;
-inline constexpr std::uint16_t kLevelRoomSubterranean = 0x02;
-inline constexpr std::uint16_t kLevelRoomWater = 0x04;
-inline constexpr std::uint16_t kLevelRoomCovered = 0x08; // set with 0x02
-inline constexpr std::uint16_t kLevelRoomLandmark = 0x20;
-std::vector<std::uint16_t> levelRoomFlags(const CityData& city);
 
 // Race events of a city, with settings from mm<mode>data.csv.
 std::vector<RaceDefinition> listRaces(const vfs::Vfs& vfs, const CityInfo& info);

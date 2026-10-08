@@ -1,6 +1,7 @@
 #include "game/net/NetGame.h"
 
 #include "core/Log.h"
+#include "game/Catalog.h"
 #include "core/StringUtil.h"
 #include "net/PortMapper.h"
 #include "net/Session.h"
@@ -404,6 +405,8 @@ const net::SessionSettings& NetGame::settings() const {
     static const net::SessionSettings none;
     return m_impl->session ? m_impl->session->settings() : none;
 }
+
+int freeForAllTeam(const VehicleInfo* car) { return car && (car->flags & VehicleInfo::kFlagCop) ? 0 : 1; }
 
 RaceConfig NetGame::raceConfig() const {
     RaceConfig c = fromSessionSettings(settings());

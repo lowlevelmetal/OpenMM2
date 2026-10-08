@@ -65,6 +65,20 @@ public:
 
     std::size_t loadedCount() const { return m_textures.size(); }
 
+    // gfxTexReduceSize: cityLevel::Load sets 32 << Texture Quality (32, 64,
+    // 128 or 256 pixels) while the city loads and 0 (no limit) after. A
+    // texture named while a limit is set keeps it, also when it is loaded
+    // later (OpenMM2 loads on first use) or again (variants): its top mip
+    // levels are dropped, or a single level halved, until both sides fit
+    // (gfxDefaultPrepareImage).
+    void setSizeLimit(int pixels) { m_sizeLimit = pixels; }
+    // Names a texture during the city's load: it takes the current limit.
+    void declare(std::string_view name);
+
+    // vglSetCloudMap: the cloud shadow texture made from `name` (its colour
+    // black, its alpha inverted, no mipmaps). Null when it does not exist.
+    const WorldTexture* cloudMap(std::string_view name);
+
 private:
     struct Animation {
         std::vector<WorldTexture> frames;
@@ -76,6 +90,7 @@ private:
         std::uint32_t flags = 0;
         bool alphaFormat = false;
         std::size_t generatedLevels = 0; // mip levels to generate below the top
+        bool topRowFirst = false;        // stored flipped from a top-first loader
     };
     // gfxLoadImageAll's lookup of one name (no variants, no darkening).
     std::optional<LoadedImage> readImage(const std::string& name, bool mipmaps) const;
@@ -91,6 +106,9 @@ private:
     std::unordered_map<std::string, WorldTexture> m_adopted;
     bool m_night = false;
     bool m_rain = false;
+    int m_sizeLimit = 0;                                // while the city loads
+    std::unordered_map<std::string, int> m_sizeLimits; // per texture name
+    int m_activeLimit = 0;                              // the texture being loaded
 };
 
 } // namespace mm2::game

@@ -611,7 +611,7 @@ void CreatureVoice::resetGlobals() {
     g_lastImpactLine = 0;
 }
 
-void CreatureVoice::load(Mixer& mixer, SoundBank& bank, CreatureVoiceDef def, float maxDistance) {
+void CreatureVoice::load(Mixer& mixer, SoundBank& bank, CreatureVoiceDef def) {
     m_def = std::move(def);
     m_avoids.clear();
     for (const auto& t : m_def.triggers) {
@@ -627,8 +627,8 @@ void CreatureVoice::load(Mixer& mixer, SoundBank& bank, CreatureVoiceDef def, fl
     for (std::size_t i = 0; i < m_def.impactLines.size(); ++i)
         m_impactSlots[i].load(mixer, bank, m_def.impactLines[i].wave, Bus::Effects);
     m_impactQueued = false;
-    m_3d = Audio3D();
-    m_3d.setDropOffs(0.0f, maxDistance);
+    m_attenuation = 1.0f;
+    m_pan = m_distance2 = 0.0f;
 }
 
 bool CreatureVoice::eligible(const Avoid& a) const {
@@ -657,8 +657,10 @@ void CreatureVoice::avoid() {
 
 void CreatureVoice::impact(float force) {
     // AudCreatureImpact::QueuePlay.
-    if (m_impactQueued || m_impactSlots.empty() || g_impactClock < kImpactCooldown || force < m_def.minImpactForce)
+    if (m_impactQueued || m_impactSlots.empty() || g_impactClock < kImpactCooldown ||
+        force < m_def.minImpactForce)
         return;
+    m_impactTime = 0.0f;
     const int n = static_cast<int>(m_impactSlots.size());
     int line = static_cast<int>(randomizeNumber(static_cast<float>(n) - 0.01f));
     if (line == g_lastImpactLine && n <= ++line)
@@ -666,14 +668,18 @@ void CreatureVoice::impact(float force) {
     g_lastImpactLine = line;
     m_impactLine = static_cast<std::size_t>(line);
     m_impactQueued = true;
-    m_impactTime = 0.0f;
+}
+
+bool CreatureVoice::ownerHasSlot() {
+    // Play: Aud3DObject::UpdateNonVirtual on the container, which must then
+    // hold a slot. Without a container nothing is checked.
+    return !m_owner || m_owner->requestSlot();
 }
 
 void CreatureVoice::playAvoid(Avoid& a) {
-    // AudCreatureAvoid::Play: only while the owner holds a sound slot (OpenMM2:
-    // while the creature is within its drop-off).
+    // AudCreatureAvoid::Play: a line already playing stays queued.
     auto& slot = a.slots[a.line];
-    if (slot.playing() || m_attenuation <= 0.0f)
+    if (slot.playing() || !ownerHasSlot())
         return;
     slot.setVolume(m_attenuation * a.def.lines[a.line].volume);
     slot.setPan(m_pan);
@@ -681,22 +687,39 @@ void CreatureVoice::playAvoid(Avoid& a) {
     a.queued = false;
 }
 
-void CreatureVoice::update(float speed, float dt, const Vec3& position, const Mat34& listener) {
-    const bool inRange = m_3d.withinMaxDistance(position, listener.m3);
-    m_attenuation = inRange ? m_3d.attenuation() : 0.0f;
-    m_pan = inRange ? m_3d.pan(listener, position) : 0.0f;
-    // UpdateAttenuation for the lines being said.
+void CreatureVoice::playImpact() {
+    // AudCreatureImpact::Play.
+    auto& slot = m_impactSlots[m_impactLine];
+    if (!slot.valid() || slot.playing() || !ownerHasSlot())
+        return;
+    slot.setVolume(m_attenuation * m_def.impactLines[m_impactLine].volume);
+    slot.setPan(m_pan);
+    slot.playOnce();
+    g_lastImpactLine = static_cast<int>(m_impactLine);
+    m_impactQueued = false;
+    g_impactClock = 0.0f;
+}
+
+void CreatureVoice::updateAttenuation(float attenuation, float pan, float distance2) {
+    // AudCreature::UpdateAttenuation: the lines being said follow; the
+    // squared distance gates the near-miss lines.
+    m_attenuation = attenuation;
+    m_pan = pan;
     for (auto& a : m_avoids)
         for (std::size_t i = 0; i < a.slots.size(); ++i)
             if (a.slots[i].playing()) {
                 a.slots[i].setVolume(a.def.lines[i].volume * m_attenuation);
                 a.slots[i].setPan(m_pan);
             }
+    m_distance2 = distance2;
     for (std::size_t i = 0; i < m_impactSlots.size(); ++i)
         if (m_impactSlots[i].playing()) {
             m_impactSlots[i].setVolume(m_def.impactLines[i].volume * m_attenuation);
             m_impactSlots[i].setPan(m_pan);
         }
+}
+
+void CreatureVoice::update(float speed, float dt) {
     // AudCreatureAvoid::Update.
     for (auto& a : m_avoids) {
         if (a.def.minSpeed <= speed && speed < a.def.maxSpeed) {
@@ -713,35 +736,69 @@ void CreatureVoice::update(float speed, float dt, const Vec3& position, const Ma
             a.queued = false;
             continue;
         }
-        if (m_3d.distance2() <= kAvoidMaxDistance2)
+        if (m_distance2 <= kAvoidMaxDistance2)
             playAvoid(a);
     }
-    // AudCreatureImpact::Update.
+    // AudCreatureImpact::Update: the timer restarts whether or not the line
+    // could play.
     if (m_impactQueued) {
         m_impactTime += dt;
         if (m_def.impactLines[m_impactLine].delay <= m_impactTime) {
-            auto& slot = m_impactSlots[m_impactLine];
-            if (slot.valid() && !slot.playing() && m_attenuation > 0.0f) {
-                slot.setVolume(m_attenuation * m_def.impactLines[m_impactLine].volume);
-                slot.setPan(m_pan);
-                slot.playOnce();
-                m_impactQueued = false;
-                g_impactClock = 0.0f;
-            }
+            playImpact();
             m_impactTime = 0.0f;
         }
     }
 }
 
+void CreatureVoice::unassign() {
+    for (auto& a : m_avoids)
+        a.queued = false;
+    m_impactQueued = false;
+}
+
+void CreatureVoice::stop() {
+    unassign();
+    for (auto& a : m_avoids)
+        for (auto& s : a.slots)
+            s.stop();
+    for (auto& s : m_impactSlots)
+        s.stop();
+}
+
 bool CreatureVoice::speaking() const {
     for (const auto& a : m_avoids)
-        for (const auto& s : a.slots)
-            if (s.playing())
-                return true;
-    for (const auto& s : m_impactSlots)
-        if (s.playing())
+        if (!a.slots.empty() && a.slots[a.line].playing())
             return true;
-    return false;
+    return !m_impactSlots.empty() && m_impactSlots[m_impactLine].playing();
+}
+
+void CreatureVoice::echoOn(float delay) {
+    auto on = [&](SoundSlot& s) {
+        s.enableEcho();
+        s.setEchoDelay(delay);
+        s.setEchoAttenuation(kEchoAttenuation);
+    };
+    for (auto& a : m_avoids)
+        for (auto& s : a.slots)
+            on(s);
+    for (auto& s : m_impactSlots)
+        on(s);
+}
+
+void CreatureVoice::echoOff() {
+    for (auto& a : m_avoids)
+        for (auto& s : a.slots)
+            s.disableEcho();
+    for (auto& s : m_impactSlots)
+        s.disableEcho();
+}
+
+void CreatureVoice::updateEcho(float dt) {
+    for (auto& a : m_avoids)
+        for (auto& s : a.slots)
+            s.updateEcho(dt);
+    for (auto& s : m_impactSlots)
+        s.updateEcho(dt);
 }
 
 } // namespace mm2::audio::game

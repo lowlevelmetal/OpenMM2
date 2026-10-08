@@ -77,6 +77,16 @@ name. A mass of 0 or less becomes 1 in OpenMM2 (no retail file has one).
    unless stored in the compact Y-rotation form, and the record's variant
    byte as paint job. MM2 picks them by the record's banger flag (0x200);
    retail data sets it on exactly the instances with banger data.
+   After each record (banger or not) come the bangers its geometry's PKG
+   xrefs place (lvlLevel::LoadInstances, the "xrefs" chunk read by
+   lvlInstance::EndGeom): each xref's matrix times the record's, dropped
+   when a row is zero or two rows have a dot product above 0.01, rows
+   outside 0.97..1.03 squared length normalised, kept as a full matrix with
+   the record's variant, in the room FindRoomId finds from the record's
+   room. An xref whose model has no banger data is not placed at all (MM2
+   reports it as not exported): cl10's trees. 33 retail models have xrefs
+   (tower and bridge lights, awnings, doors, windows): 65 bangers in London,
+   368 in San Francisco. They are not drawn with their parent model.
 3. **`city/<map>/props.pathset`** (cityLevel::LoadPathSet, dgPath): the
    trailer after the last point (OpenMM2's parser reads it as the last
    point's spare word) holds a type byte and a spacing byte in quarter
@@ -154,8 +164,19 @@ point (MM2 reads past its table); MM2 draws a decal only with its room
 * Reset (lvlLevel::ResetInstances): every prop back in place, hit instances
   and actives released.
 
-Not ported: `dgPhysManager::Update` detaches type-1 movers (CollisionType
-0x10 and 0x4 props, ragdolls) whose room is neither the room of the
-player's car (mover type 4), an opponent's or a network player's (type 3)
-nor a neighbour of one, so a knocked-over prop still moving vanishes when
-the cars leave it behind (OpenMM2's world has no mover types).
+Movers (`dgBangerActiveManager::Update`, `dgPhysManager::DeclareMover`):
+each active is declared by its data's CollisionType, checked in the order
+0x2 (updated by the manager without collisions), 0x40 (type 2, flags
+0x1b), 0x10 (type 1, 0x1b), 0x4 (type 1, 0x3: the city only); none of them
+leaves it undeclared. In the age mode (dgBangerDataManager +0x2a8a8, which
+mmGame::Init clears; `BangerSet::setAgeMode`) the active's age decides:
+(1, 0x1b) up to the second age, (1, 0x3) up to the first, then the
+manager's own update; with mmGame::Init's ages (6 and 30000 s) that is
+(1, 0x1b) for the first 6 s and the manager's update afterwards.
+`dgPhysManager::Update` detaches a type-1 mover whose room is neither the
+room of the player's car (type 4), an opponent's or a network player's
+(type 3) nor a neighbour of one: for a knocked-over prop that is
+`dgHitBangerInstance::Detach`, which detaches its active and takes it out of
+its room, so a prop still moving vanishes when the cars leave it behind. A
+prop still standing (`dgUnhitBangerInstance`) keeps lvlInstance's empty
+Detach.
