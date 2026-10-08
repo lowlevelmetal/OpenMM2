@@ -88,7 +88,7 @@ public:
     // sample's accumulated force and torque (impulses not included):
     // F / m + w x (w x r) + (I^-1 (T - w x L)) x r.
     Vec3 localAcceleration(const Vec3& worldPos) const;
-    // phInertialCS::GetForce / GetTorque: the accumulated force (torque)
+    // phInertialCS::GetForce / phInertialCS::GetTorque: the accumulated force (torque)
     // plus the accumulated impulse spread over the sample (impulse * invDt).
     // The ApplyContactForce accumulators are not included.
     Vec3 getForce(float invDt) const;

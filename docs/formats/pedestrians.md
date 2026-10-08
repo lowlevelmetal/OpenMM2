@@ -61,7 +61,7 @@ valid skel file". Bone names are matched exactly (`crSkeletonData::FindBone`).
 | 0 | u32 | always 0 |
 | 4 | u32 | frame count (1–10000) |
 | 8 | u32 | channel count (1–1000), always 60 |
-| 12 | f32 | cycle distance (see below; **inferred**) |
+| 12 | f32 | cycle distance (see below; read by `crAnimation::Normalize`) |
 | 16 | u8 | always 1, meaning **unknown** |
 | 17 | f32[frames × channels] | channel data |
 
@@ -89,15 +89,24 @@ poses the skeleton like `crAnimFrame::Pose` and then `crBoneData::Transform`:
 The `cycle distance` header value matches `-(2·z[n-1] − z[n-2] − z[0])` for
 most files: the forward travel of the root over n frame steps, i.e. one full
 loop including the step back to frame 0. A few files differ by up to 0.15
-(`manwalk`, `manrun`, `manw2bk`). This value is **inferred**.
+(`manwalk`, `manrun`, `manw2bk`). Its meaning is inferred; its use is **verified**: `crAnimation::Normalize` takes i × distance / frames off the travel of frame i (below).
 
 MM2 (`pedAnimation::Load`, `pedAnimationInstance`) plays the animations at
 **30 frames per second**, in whole frames (no interpolation), from frame 0
-of the `.anim` whatever the CSV's first frame says. At load it subtracts the
-root's straight-line x/z drift between the first and the last frame from
-every frame, so the pose stays in place and the pedestrian is moved by the
-sequence's speed instead (below). `posePed` interpolates channels linearly;
-the AI hands it whole frames.
+of the `.anim` whatever the CSV's first frame says. At load it changes the
+root translations (**verified**, `asset::normalizePedRoots`):
+`crAnimation::GetAnimation` normalises an animation on its first load
+(`crAnimation::Normalize`: frame i's root z gains i × cycle distance /
+frame count), then `pedAnimation::Load` takes, for each table row with
+m = last − first (at most frame count − 1), frame 0's x and z and the
+straight line from frame 0 to frame m out of frames 0..m. Every sequence
+is therefore posed from the pedestrian's origin and back to it, and the
+pedestrian is moved by the sequence's speed instead (below); the raw data
+of the dives starts 2.2 m to the side and that of the run-to-walk 3.1 m
+ahead. The game shares one copy of an animation between the types that
+name it, so the `w` types' identical tables adjust it again (a no-op up to
+rounding). `posePed` interpolates channels linearly; the AI hands it whole
+frames.
 
 ## Animation table (`pedmodel_*.csv`)
 

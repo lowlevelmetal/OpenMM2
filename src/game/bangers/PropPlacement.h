@@ -57,6 +57,8 @@ std::vector<PropRule> parsePropRules(std::string_view text);
 // strip; dgPath::Enumerate places nothing for any other) and a spacing byte
 // in quarter metres (0 = 5 m). OpenMM2's PTH1 parser reads that trailer as
 // the last point's spare word.
+// (dgPath::dgPath starts at type 2, spacing 5; dgPath::Load always sets
+// both, so these defaults are never seen.)
 struct PathPlacement {
     int type = 0;
     float spacing = 5.0f;

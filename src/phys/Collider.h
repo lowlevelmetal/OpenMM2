@@ -56,9 +56,12 @@ public:
     // the inverse mass matrix at a world point, through the joint while it
     // holds; zero without an ICS.
     void invMassMatrix(const Vec3& position, Mat34& out) const;
-    // phColliderBase::Impact: adds the impulse (and its angular part about
-    // the ICS position) to the ICS accumulators, folds the push into the
-    // pending push, records the hardest push and calls the handler.
+    // phColliderBase::Impact (and phColliderJointed::Impact, which forwards
+    // to it): adds the impulse (and its angular part about the ICS position)
+    // to the ICS accumulators, folds the push into the pending push, records
+    // the hardest push and calls the handler. MM2's bound-callback branch
+    // (phColliderBase::CallBoundCallback) is never taken: nothing calls
+    // phColliderBase::SetBoundCB.
     void impact(const Impact& impact, const Vec3& impulse, const Vec3& push);
 
     // The identity of the collider for the push bookkeeping (MM2 uses the
@@ -80,8 +83,8 @@ public:
     // The instance data's collider id: the id AudImpact plays (vehCar::SetColliderID, the
     // banger's AudioId); 0 for the world and cars.
     int id = 0;
-    ImpactHandler* handler = nullptr;
-    const Joint* joint = nullptr;     // phColliderJointed's joint
+    ImpactHandler* handler = nullptr; // phColliderBase::SetImpactCB
+    const Joint* joint = nullptr;     // phColliderJointed's joint (phColliderJointed::Attach)
     Body* body = nullptr;             // the simulated body owning the collider (dgPhysEntity), if any
     bool active = true;               // ColliderIsActive without an ICS
 

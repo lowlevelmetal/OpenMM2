@@ -3,6 +3,7 @@
 #include "asset/VehicleModel.h"
 #include "game/MeshDraw.h"
 #include "game/ModelLibrary.h"
+#include "game/RoomVisibility.h"
 #include "game/TexelDamage.h"
 #include "game/TextureLibrary.h"
 #include "game/fx/LensFlares.h"
@@ -78,7 +79,9 @@ public:
     int paintjob() const { return m_paintjob; }
 
     // vehBreakableMgr: parts that fly off and stop being drawn. The pivot
-    // is the part's placement in model space.
+    // is the part's placement in model space (vehBreakable::vehBreakable:
+    // identity rotation at the pivot; vehBreakableMgr::Add / vehBreakable::Add
+    // keep the parts in a list, in the order vehCarModel::Init adds them).
     struct Breakable {
         std::string part; // mesh part name, e.g. "BREAK0", "WHL2"
         Vec3 pivot;
@@ -88,14 +91,32 @@ public:
     // nearest `modelPoint`.
     std::optional<Breakable> nearestBreakable(const Vec3& modelPoint) const;
     // Manager B (vehCarModel::EjectOneshot), once until reattachAll():
-    // the wheels, hubs and fenders a wrecked car loses at `mph`.
+    // the wheels, hubs and fenders a wrecked car loses at `mph`
+    // (vehBreakableMgr::Get by id bit, vehBreakableMgr::EjectAll above
+    // 100 mph).
     std::vector<Breakable> wreckParts(float mph, fx::Rand& rng);
-    void detach(const std::string& part) { m_detached.insert(part); }
-    // vehCarModel::ClearDamage: everything back on.
+    // vehBreakableMgr::Eject: the part stops being drawn; `banger` is the
+    // hit banger instance it became (vehBreakable +0x44), if any.
+    void detach(const std::string& part, std::optional<std::size_t> banger = {});
+    // vehBreakableMgr::Reset calls the hit banger's Detach (it leaves the
+    // world) for every ejected part when the parts go back on: `f` does that
+    // (BangerSet::detachHit).
+    void setEjectedPartReset(std::function<void(std::size_t)> f) { m_ejectedPartReset = std::move(f); }
+    // vehCarModel::ClearDamage: everything back on (vehBreakableMgr::Reset
+    // of both managers).
     void reattachAll();
 
     // Draws everything for the camera placed at `camera`.
     void draw(const VehiclePose& pose, const Mat34& camera);
+    // The same with cityLevel::DrawRooms' room gates of the car's room
+    // (RoomVisibility): the car itself in cityLevel_drawObjects, its shadow
+    // and glows (vehCarModel::DrawShadow / DrawGlow, without IsVisible) in
+    // cityLevel_drawShadows / cityLevel_drawLights.
+    void draw(const VehiclePose& pose, const Mat34& camera, const RoomVisibility::Passes& passes);
+    // The rooms the city listed for the view: draw() then keeps the car's
+    // room (vehCar::Update: FindRoomId from the last one) and gates by it.
+    // Not for the traffic renderers AiRenderer shares between cars.
+    void setRooms(const RoomVisibility* rooms) { m_rooms = rooms; }
 
     // The level of detail at that camera; nullopt beyond NoDraw.
     std::optional<asset::Lod> lodFor(const VehiclePose& pose, const Mat34& camera) const;
@@ -152,8 +173,12 @@ private:
     std::optional<fx::LensFlare> m_flare; // vehSiren's ltLensFlare(20)
     std::unique_ptr<TexelDamage> m_texelDamage;
     std::set<std::string> m_detached;
+    std::vector<std::size_t> m_ejectedBangers; // in ejection order
+    std::function<void(std::size_t)> m_ejectedPartReset;
     bool m_wreckEjected = false;
     bool m_traffic = false;
+    const RoomVisibility* m_rooms = nullptr;
+    int m_room = 0; // lvlInstance's room (vehCar::Update)
 };
 
 } // namespace mm2::game

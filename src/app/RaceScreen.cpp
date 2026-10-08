@@ -1,5 +1,7 @@
 // A session in the city.
 #include "app/Controls.h"
+#include "app/ForceFeedback.h"
+#include "app/GameInput.h"
 #include "app/Screens.h"
 #include "city/CityData.h"
 #include "city/RoomInfo.h"
@@ -10,6 +12,7 @@
 #include "audio/MusicDirector.h"
 #include "audio/SoundBank.h"
 #include "audio/game/Ambience.h"
+#include "audio/game/AudioManager.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
 #include "audio/AngelRandom.h"
@@ -123,6 +126,7 @@ public:
         // The police drivers hand their cars' impact callbacks back when they
         // go: before the cars (m_cops) are destroyed.
         m_police.reset();
+        m_ff.stopAll(); // mmInput::StopAllFF
     }
 
     bool usesScene() const override { return m_city != nullptr; }
@@ -138,6 +142,18 @@ public:
             load(ctx);
             return;
         }
+        // GameLoop: AudManager::Update before the game's update, with the
+        // pause state the frame starts with (every sound stops while paused).
+        if (ctx.mixer)
+            m_audioManager.update(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
+                                  static_cast<float>(dt));
+        // mmInput::Update: the controller's bindings against the devices.
+        {
+            const auto size = ctx.window().size();
+            m_gameInput.update(controls::readFrame(ctx.input, m_gameInput.controller(), m_controlOptions.deadZone,
+                                                   static_cast<float>(size.width), static_cast<float>(size.height)),
+                               static_cast<float>(dt));
+        }
         // mmPopup: Escape opens the main menu (pausing a single-player game,
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         m_popupGraveyard.clear();
@@ -147,7 +163,7 @@ public:
                 return;
         } else if (ctx.input.keyPressed(platform::Key::Escape)) {
             openPopup(ctx, true);
-        } else if (!m_flyCamera && m_bindings.pressed(ctx.input, controls::Action::EnterChat)) {
+        } else if (!m_flyCamera && m_gameInput.fired(controls::Action::EnterChat)) {
             openChat(ctx);
         }
         if (m_textInput && m_popup != Popup::Chat) {
@@ -170,10 +186,14 @@ public:
             updateGameInput(ctx);
         if (m_paused) {
             // asRoot paused (the full-screen map in single player): the
-            // game, the physics and the clocks stand still.
+            // game, the physics and the clocks stand still. mmGame::Update
+            // still updates the announcer's queue (mmSpeechContainer::Update).
+            if (m_announcerOk)
+                m_announcer.update(static_cast<float>(dt));
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
             m_textures->update(m_time);
+            updateForceFeedback(ctx, static_cast<float>(dt), true);
             return;
         }
         updatePlayer(ctx, static_cast<float>(dt));
@@ -353,7 +373,8 @@ public:
         drawRemoteCars(ctx, dt, camera);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
-            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera, {m_detail.objects, night});
+            m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera,
+                            {m_detail.objects, night, &m_cityRenderer->rooms()});
         const bool lights = carLights();
         if (m_vehicle && playerBody) {
             m_pose.headlights = lights;
@@ -487,13 +508,20 @@ private:
             // mmGame::SetLevelGraphics: vglCloudMapEnable by CLOUD SHADOWS.
             const auto clouds = ctx.settings.ini.getInt("Graphics", "CloudShadows", 2);
             m_envOptions.cloudShadows = static_cast<int>(std::clamp(clouds, 0LL, 2LL));
+            // mmGame::SetLevelGraphics: cityLevel::EnableSky(TEXTURED SKY).
+            m_envOptions.texturedSky = ctx.settings.ini.getBool("Graphics", "TexturedSky", true);
         }
         applyEnvironment();
         m_position = m_city->psdl.sphereCenter + Vec3{0, 3, 0};
         m_yaw = 0.0f;
         m_pitch = -0.15f;
-        m_bindings.load(ctx.settings.ini);
         m_controlOptions = controls::Options::load(ctx.settings.ini);
+        m_gameInput.load(ctx.settings.ini, controls::readJoystick(ctx.input, m_controlOptions.controller,
+                                                                  m_controlOptions.deadZone));
+        // mmPlayer::Init: the force feedback's switches and the road wave.
+        m_ff.configure(m_gameInput.controller(), m_controlOptions);
+        m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
+        m_ff.start();
         createSession(ctx);
         loadVehicle(ctx); // places the camera behind the car
         loadAi(ctx);
@@ -526,7 +554,9 @@ private:
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                 m_cams.startPreRace();
         }
-        if (auto* music = ctx.music()) {
+        // -nomusic: mmGameMusicData::Load loads neither the song nor the
+        // city's ambience segment, so the race plays neither.
+        if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic) {
             // The song is chosen now; MusicDirector starts it 1.25 s in.
             const bool cruise = m_result.config.mode == game::GameMode::Cruise;
             music->startRace(-1, cruise, false);
@@ -610,10 +640,14 @@ private:
             setupVehicleRenderer(ctx, *m_trailer);
         }
         auto [pos, heading] = spawnPoint(ctx);
+        // mmGame::FindGroundPos drops only the multiplayer race grids onto the
+        // road; the single-player starts are placed as the race data gives
+        // them and settled 0.9 m above the road below (InitOtherPlayers).
+        bool findGround = !m_session;
         if (m_session) {
             const Mat34 sp = m_session->playerSpawn();
             pos = sp.m3;
-            heading = std::atan2(sp.m2.x, sp.m2.z);
+            heading = phys::resetRotationOf(sp);
             // mmMultiBlitz / mmMultiCircuit / mmMultiRace::InitMyPlayer: the
             // player's start slot on the grid behind the start
             // (mmGameMulti::StartXYZ; the slot is NetStartArray's, here the
@@ -624,26 +658,35 @@ private:
                 const bool longVehicle = m_player->sim().body.radius() > 6.0f || m_player->trailerModel();
                 pos += Mat34::rotationY(heading).transformDir(
                     game::session::multiplayerGridOffset(ctx.netGame->localId(), longVehicle));
+                findGround = true;
             }
         }
-        // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading".
+        // Development aid: OPENMM2_DEBUG_SPAWN="x,y,z,heading" (dropped onto
+        // the ground below it).
         if (const char* sp = std::getenv("OPENMM2_DEBUG_SPAWN")) {
             const auto parts = str::split(sp, ',');
             if (parts.size() == 4) {
                 auto f = [&](int i) { return static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)); };
                 pos = {f(0), f(1), f(2)};
                 heading = f(3);
+                findGround = true;
             }
         }
-        m_spawn = Mat34::rotationY(heading);
-        m_spawn.m3 = pos;
-        // Drop the spawn point onto the surface below it (mmGame::FindGroundPos
-        // probes as the wheels do, lvlSDL::CollideProbe).
+        // mmGame::FindGroundPos: dgPhysManager::Collide with the wheels' probe
+        // mask from 7.5 m above to 15 m below; the point itself on a miss.
         phys::RayHit hit;
-        if (m_world->wheelProbe(pos + Vec3{0, 5, 0}, pos - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            m_spawn.m3 = hit.position;
+        if (findGround &&
+            m_world->wheelProbe(pos + Vec3{0, 7.5f, 0}, pos - Vec3{0, 15.0f, 0}, hit, nullptr, nullptr))
+            pos = hit.position;
         m_player->addTo(*m_world);
-        m_player->reset(m_spawn);
+        // The modes' InitGameObjects / InitMyPlayer: vehCarSim::SetResetPos at
+        // the start, the reset rotation, vehCar::Reset.
+        m_player->setResetPos(pos, heading);
+        m_player->reset();
+        // mmGame::InitOtherPlayers (every single-player mode but cruise):
+        // the player's start dropped onto the road, 0.9 m up.
+        if (m_session && !multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+            m_player->settleOnGround(*m_world, m_player->sim().body.ics.matrix.m3);
         m_pose = m_player->pose();
         std::vector<std::string> missing;
         // mmPlayer::Init: the dashboard eye depends on the screen's shape.
@@ -693,9 +736,12 @@ private:
             log::warn("race: no race rules: {}", error);
     }
 
-    // Loads an AI-driven car onto the ground at `spawn`.
+    // Loads an AI-driven car at `spawn`: aiRouteRacer::Init (its route's
+    // first point) and aiPoliceOfficer::Reset (its post) set the reset
+    // position and rotation there and vehCar::Reset places it (racers are
+    // then settled onto the road, see spawnOpponents; police are not).
     std::unique_ptr<game::SimVehicle> loadAiCar(Context& ctx, const std::string& vehicle, std::string_view tune,
-                                                Mat34& spawn) {
+                                                const Mat34& spawn) {
         std::string error;
         auto car = game::SimVehicle::load(ctx.game->vfs, vehicle, &error, tune);
         if (!car) {
@@ -709,10 +755,8 @@ private:
         if (vehicle == m_result.config.vehicle)
             car->sim().setPolygonalBound(true);
         car->addTo(*m_world);
-        phys::RayHit hit;
-        if (m_world->wheelProbe(spawn.m3 + Vec3{0, 5, 0}, spawn.m3 - Vec3{0, 30, 0}, hit, nullptr, nullptr))
-            spawn.m3 = hit.position;
-        car->reset(spawn);
+        car->setResetPos(spawn);
+        car->reset();
         return car;
     }
 
@@ -777,9 +821,15 @@ private:
             opp.sim = loadAiCar(ctx, s.vehicle, {}, spawn);
             if (!opp.sim)
                 continue;
+            // mmGame::CollideAIOpponents (from InitOtherPlayers): the racer's
+            // start dropped onto the road below its model origin, 0.9 m up.
+            if (!multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+                opp.sim->settleOnGround(*m_world, opp.sim->sim().modelMatrix().m3);
             opp.spawn = spawn;
+            // aiVehiclePhysics::Init: vehCar::Init's paint job is the racer's
+            // id (its index) & 3.
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
-                                                                    opp.sim->model(), static_cast<int>(m_opponents.size()) % 4);
+                                                                    opp.sim->model(), static_cast<int>(i) & 3);
             setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
             opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
@@ -795,7 +845,13 @@ private:
                                                   m_session->laps(), 1 + static_cast<int>(i),
                                                   static_cast<int>(i), &error, m_world.get(), s.vehicle);
                 if (opp.driver)
-                    opp.driver->setResetCar([&v = *opp.sim](const Mat34& m) { v.reset(m); });
+                    opp.driver->setResetCar([&v = *opp.sim, a = opp.audio.get()](const Mat34& m) {
+                        v.reset(m);
+                        if (a)
+                            a->reset(); // vehCar::Reset -> vehCarAudioContainer::Reset
+                    });
+                else
+                    log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
                 // aiMap::SetWaypoints: the line aiRouteRacer::Finished tests
                 // (mmSingleRace: the last checkpoint; mmSingleCircuit: the first).
                 const auto& cps = m_session->checkpoints();
@@ -805,8 +861,6 @@ private:
                     const auto& cp = mode == game::GameMode::Circuit ? cps.front() : cps.back();
                     opp.driver->setFinishLine(cp.position, cp.headingDeg);
                 }
-                else
-                    log::warn("race: opponent {} cannot drive: {}", s.vehicle, error);
             }
             m_opponents.push_back(std::move(opp));
         }
@@ -834,7 +888,8 @@ private:
             const auto& p = posts[i];
             Cop cop;
             Mat34 post = p.spawn;
-            // vpcop has a pursuit tune (vpcop_cop.vehcarsim); other cars use their base tune.
+            // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
+            // (MM2 never loads vpcop_cop.vehCarSim).
             cop.sim = loadAiCar(ctx, p.vehicle, {}, post);
             if (!cop.sim)
                 continue;
@@ -842,9 +897,14 @@ private:
             settings.seed += i;
             cop.driver = &m_police->add(cop.sim->sim(), post, 100 + static_cast<int>(m_cops.size()), settings,
                                         p.vehicle);
-            // vpcop paint job 0 is the California livery (vpcop_ca_*), 1 the
-            // London one (vpcop_ln_*); picked by city (inferred).
-            const int livery = str::iequals(m_result.config.city, "london") ? 1 : 0;
+            // aiVehiclePhysics::Init: the paint job is the officer's id (its
+            // index) & 3, except for vpcop: 1 (the London livery, vpcop_ln_*)
+            // when the AI map has no cable cars, else 0 (California,
+            // vpcop_ca_*). OpenMM2 has no cable cars yet; of the retail cities
+            // only San Francisco has them.
+            int livery = static_cast<int>(i & 3);
+            if (str::iequals(p.vehicle, "vpcop"))
+                livery = str::iequals(m_result.config.city, "sf") ? 0 : 1;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
             setupVehicleRenderer(ctx, *cop.renderer);
@@ -1055,37 +1115,34 @@ private:
             a->active = true;
             if (a->hasVoice)
                 a->voice.update(playerSpeed, dt);
+            // The voice follows the car's attenuation, pan and echo while
+            // the car holds its sound slot (AmbientCarAudio::setVoice).
             a->car.update(c.speed, c.transform, c.velocity, dt, listener);
-            // The voice follows the car's attenuation and pan while the car
-            // holds its sound slot.
-            if (a->hasVoice && a->car.audible())
-                a->voice.updateAttenuation(a->car.attenuation(), a->car.pan(), a->car.distance2());
         }
         for (std::size_t i = 0; i < m_ambientAudio.size(); ++i) {
             AmbientAudio* a = m_ambientAudio[i].get();
             if (a && a->active && (i >= seen.size() || !seen[i])) {
-                // Back in the pool (aiAmbientVehicleAudio::Reset).
-                a->car.stop();
+                // Back in the pool (aiVehicleSpline::Reset ->
+                // aiAmbientVehicleAudio::Reset).
+                a->car.reset();
                 a->active = false;
             }
         }
         // aiGoalAvoidPlayer::Reset: PlayAvoidanceHorn, and when a horn
-        // pattern starts, PlayAvoidanceReaction (for a car holding a sound
-        // slot).
+        // pattern starts, PlayAvoidanceReaction.
         for (int id : m_ai->takeAvoidEvents()) {
-            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk() && a->hasVoice && a->car.audible())
-                a->voice.avoid();
+            if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk())
+                a->car.avoidReaction();
         }
         // aiVehicleActive's impact callback: AudImpact::Play and
         // PlayImpactHorn with |x| + |y| + |z| of the impulse, then
-        // PlayImpactReaction (for a car holding a sound slot).
+        // PlayImpactReaction.
         for (const game::TrafficImpact& e : m_trafficImpacts) {
             AmbientAudio* a = ambientAudioOf(e.carId);
             if (!a)
                 continue;
             a->car.impact({e.strength, e.audioId, {}});
-            if (a->hasVoice && a->car.audible())
-                a->voice.impact(e.strength);
+            a->car.impactReaction(e.strength);
         }
         m_trafficImpacts.clear();
     }
@@ -1121,6 +1178,7 @@ private:
             if (const auto* def = ambientVoice(ctx.game->vfs, c.data->model)) {
                 a->voice.load(*ctx.mixer, *m_bank, *def);
                 a->voice.setOwner(a.get());
+                a->car.setVoice(&a->voice);
                 a->hasVoice = true;
             }
             m_ambientAudio[id] = std::move(a);
@@ -1174,6 +1232,9 @@ private:
         ps.vehicleImpacts = m_vehicleImpacts;
         ps.objectImpacts = m_objectImpacts;
         ps.inertiaBox = sim.params.inertiaBox;
+        // mmExternalView::Cull draws the steering bar for the mouse.
+        if (m_gameInput.controller() == controls::Controller::Mouse)
+            ps.mouseSteer = m_steerApplied;
         return ps;
     }
 
@@ -1234,25 +1295,39 @@ private:
                     m_hud->options().opponentIcons = true;
             }
             if (e.type == EventType::Respawn) {
-                m_player->reset(m_session->respawnTransform());
+                // Without waypoints mmGame::HitWaterHandler is mmPlayer::Reset
+                // (back to the reset position); with them mmSingleCircuit /
+                // mmGameMulti::HitWaterHandler reset the car at the last
+                // checkpoint and put the reset position back.
+                if (m_session->setup().checkpoints.empty())
+                    m_player->reset();
+                else
+                    m_player->respawnAt(m_session->respawnTransform());
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 if (m_vehicle)
                     m_vehicle->resetDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
-                // The race starts over (mmGame::Reset): every car to its start,
+                // The race starts over (mmGame::Reset): every prop back in its
+                // place (lvlLevel::ResetInstances), every car to its start,
                 // and the elasticity cap back to 1 (the "/blubber" cheat's 4).
+                if (m_bangers)
+                    m_bangers->reset();
                 phys::setElasticityCap(phys::kElasticityCap);
-                m_player->reset(m_spawn);
+                // mmPlayer::Reset, aiVehiclePhysics::Reset: vehCar::Reset at
+                // the reset positions.
+                m_player->reset();
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
                 if (m_vehicle)
                     m_vehicle->resetDamage();
                 for (auto& o : m_opponents) {
-                    o.sim->reset(o.spawn);
+                    o.sim->reset();
                     if (o.fx)
                         o.fx->reset();
+                    if (o.audio)
+                        o.audio->reset(); // vehCarAudioContainer::Reset
                     o.renderer->resetDamage();
                     if (o.driver)
                         o.driver->reset();
@@ -1264,17 +1339,24 @@ private:
                 if (m_ai)
                     m_ai->reset();
                 if (m_police)
-                    m_police->reset();
+                    m_police->reset(); // aiPoliceForce::Reset, then each aiPoliceOfficer::Reset
                 for (auto& c : m_cops) {
                     if (c.fx)
                         c.fx->reset(); // vehCar::Reset (aiVehiclePhysics::Reset)
                     c.renderer->resetDamage();
+                    if (c.audio)
+                        c.audio->reset(); // aiPoliceOfficer::Reset -> vehPoliceCarAudio::Reset
                 }
+                // mmGame::Reset: StartMusic again.
+                if (m_musicDirector)
+                    m_musicDirector->restart();
+                m_musicFinished = m_musicResults = false;
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                     m_cams.startPreRace();
-                m_steering.reset();
+                m_gameInput.reset();
+                m_ff.reset(); // mmPlayer::Reset: ResetFF, mmCarRoadFF::Reset
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
                 if (m_vehicle)
@@ -1299,6 +1381,16 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
+            } else if (e.type == EventType::FinalCheckpoint || e.type == EventType::FinalLap) {
+                // mmWaypoints::Update: the last stretch switches the music to
+                // the cop chase segment; the final checkpoint is announced
+                // (mmRaceSpeech::PlayFinalCheckPoint; the race speech exists
+                // outside the crash course). PlayFinalLap has no caller.
+                if (m_musicDirector)
+                    m_musicDirector->finalStretch();
+                if (e.type == EventType::FinalCheckpoint && m_announcerOk &&
+                    m_result.config.mode != game::GameMode::CrashCourse)
+                    m_announcer.playFinalCheckpoint();
             }
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
@@ -1369,7 +1461,8 @@ private:
         auto it = m_gameSounds.find(name);
         if (it == m_gameSounds.end()) {
             audio::game::SoundSlot slot;
-            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects);
+            // AudSoundBase::SetPriority(0x17) after loading them.
+            slot.load(*ctx.mixer, *m_bank, name, audio::Bus::Effects, audio::game::kGameSoundPriority);
             it = m_gameSounds.emplace(name, std::move(slot)).first;
         }
         auto& slot = it->second;
@@ -1454,6 +1547,8 @@ private:
     void openChat(Context& ctx) {
         m_popup = Popup::Chat;
         m_popupPaused = false;
+        m_gameInput.flush(); // mmPopup::ProcessChat: mmInput::Flush, StopAllFF
+        m_ff.stopAll();
         m_chatText.clear();
         ctx.input.startTextInput(ctx.window());
         m_textInput = true;
@@ -1734,14 +1829,17 @@ private:
         // ProcessEscape: pauses unless the game already is (the full-screen
         // map), and remembers it so closing does not resume it.
         m_popupPaused = pause && !multiplayer(ctx) && !m_paused;
+        m_ff.stopAll(); // mmPopup::ProcessEscape: mmInput::StopAllFF and Flush
+        m_gameInput.flush();
         if (m_popupPaused)
             m_paused = true;
         buildPopup(ctx);
     }
 
     void closePopup() {
-        // mmPopup::DisablePU.
+        // mmPopup::DisablePU (mmInput::Flush).
         m_popup = Popup::None;
+        m_gameInput.flush();
         // Buttons close the popup from inside its update: keep the menu
         // until the next frame.
         if (m_popupMenu)
@@ -1907,6 +2005,8 @@ private:
         }
         m_ai->setLightsDeferred(true); // updated after the racers and police
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
+        if (m_cityRenderer)
+            m_aiRenderer->setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
             m_trafficBodies->setWeatherFriction(weatherFriction());
@@ -2038,6 +2138,8 @@ private:
     // Object Detail, reflections and the shadow's ground probe of a car renderer.
     void setupVehicleRenderer(Context& ctx, game::VehicleRenderer& r) {
         r.setDetail(m_detail.objects);
+        if (m_cityRenderer)
+            r.setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         r.setReflections(ctx.settings.ini.getBool("Graphics", "VehicleReflections", true));
         r.setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
             phys::RayHit hit;
@@ -2081,14 +2183,19 @@ private:
         const auto impacts = fx.takeImpacts();
         if (!m_bangers || !m_bangerData)
             return;
-        const Mat34 body = sim.modelMatrix();
+        const Mat34 body = sim.modelMatrix(); // vehBreakableMgr::Init: the car's matrix
         auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
             const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
             if (!data)
                 return false;
-            r.detach(b.part);
-            m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(), Mat34::translation(b.pivot) * body, speed,
-                                 sim.body.room);
+            // vehBreakableMgr::Reset (the car's damage cleared) takes the
+            // ejected part out of the world again (dgHitBangerInstance::Detach).
+            r.setEjectedPartReset([this](std::size_t i) {
+                if (m_bangers)
+                    m_bangers->detachHit(i);
+            });
+            r.detach(b.part, m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(),
+                                                  Mat34::translation(b.pivot) * body, speed, sim.body.room));
             return true;
         };
         for (const auto& impact : impacts)
@@ -2194,8 +2301,10 @@ private:
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
             m_vehicleFx->impact(impact, m_player->sim());
-        if (impact.damaging)
+        if (impact.damaging) {
             ++(impact.otherIsBody ? m_vehicleImpacts : m_objectImpacts);
+            m_ff.impact(impact.total, m_player->sim().speedMph()); // mmPlayer::FFImpactCallback
+        }
     }
 
     audio::game::SurfaceWeather surfaceWeather() const {
@@ -2246,7 +2355,7 @@ private:
         m_audioSlots.setTunnel(m_tunnel);
         // MMDMusicManager::UpdateAmbientSFX: the city's ambience segment stops
         // underground (StopSegment(0)) and starts again outside (PlaySegment).
-        if (auto* music = ctx.music(); music && m_tunnel != m_ambienceStopped) {
+        if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic && m_tunnel != m_ambienceStopped) {
             music->setAmbience(m_tunnel ? std::string_view{} : std::string_view(m_result.config.city));
             m_ambienceStopped = m_tunnel;
         }
@@ -2272,8 +2381,10 @@ private:
         updateAiAudio(dt);
         updateAmbientAudio(ctx, dt);
         updatePedestrianAudio(dt);
+        // mmGame::Update's mmSpeechContainer::Update (AudSpeech::Update); the
+        // frame's first one was AudManager::Update's (m_audioManager).
         if (m_announcerOk)
-            m_announcer.update(dt); // AudSpeech::Update
+            m_announcer.update(dt);
         m_ambience.update(m_camera.transform, dt, m_tunnel);
         // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
         // hood camera (car view 1) and the dashboard, off for the others.
@@ -2412,14 +2523,18 @@ private:
         if (!m_player)
             return;
         phys::PedalInput pedals;
-        float keyTarget = 0.0f;
-        std::optional<float> analog;      // through FilterGamepadSteering
-        std::optional<float> deviceAxis;  // through mmPlayer::FilterSteering
-        const controls::Controller controller = m_controlOptions.controller;
-        if (!m_flyCamera && m_popup == Popup::None)
-            readController(ctx, controller, pedals, keyTarget, analog, deviceAxis);
+        // mmReplayManager::Update reads mmInput::GetThrottle / GetBrakes /
+        // GetSteering(playerFilterSteering) / GetHandBrake (the pedal swap
+        // is ArcadeControls'); the steering filters use the parameters
+        // mmPlayer::Update set from the last frame's speed.
+        if (!m_flyCamera && m_popup == Popup::None) {
+            pedals.accelerator = m_gameInput.throttle();
+            pedals.brake = m_gameInput.brakes();
+            pedals.handbrake = m_gameInput.handBrake();
+            pedals.steering = m_gameInput.steering(dt);
+        }
         // Development aid: constant pedal input "accel,brake,steer,handbrake"
-        // (the steering as an analog device's).
+        // (the steering through the game pad's filter).
         if (const char* dbg = std::getenv("OPENMM2_DEBUG_INPUT")) {
             const auto parts = str::split(dbg, ',');
             auto f = [&](std::size_t i) {
@@ -2427,20 +2542,14 @@ private:
             };
             pedals.accelerator = f(0);
             pedals.brake = f(1);
-            analog = f(2);
+            pedals.steering = m_gameInput.filterAxis(clampf(f(2), -1.0f, 1.0f), dt);
             pedals.handbrake = f(3);
         }
-        // mmInput::GetSteering: the keyboard and the gamepad through
-        // FilterDiscreteSteering / FilterGamepadSteering, the mouse, joystick
-        // and wheel axes through mmPlayer::FilterSteering, with the
-        // speed-sensitive parameters mmPlayer::Update sets (from the last
-        // frame's speed).
-        if (deviceAxis && !analog)
-            pedals.steering = m_analogSteering.filter(controller, *deviceAxis, dt);
-        else
-            pedals.steering = m_steering.filter(analog ? clampf(*analog, -1.0f, 1.0f) : keyTarget, dt);
-        m_steering.setSpeed(m_player->sim().speed());
-        m_analogSteering.setSpeed(m_player->sim().speed(), m_controlOptions.sensitivity);
+        // ... and records them, and the car is driven with the recorded
+        // values (bytes).
+        pedals = controls::replayQuantize(pedals);
+        m_steerApplied = pedals.steering; // mmPlayer::SetSteering: +0x2264
+        m_gameInput.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during wreck
         // penalties, and after a wreck or a multiplayer finish), and until
         // the shared start time in multiplayer.
@@ -2465,119 +2574,32 @@ private:
             m_player->drive(pedals);
         }
         m_lastPedals = pedals;
+        updateForceFeedback(ctx, dt, false);
         // Falling out of the city is the session's rule
         // (mmGame::DropThruCityHandler below y = -50); this OpenMM2 safety net
         // catches only cities whose geometry lies far below that.
         if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
-            m_player->reset(m_spawn);
+            m_player->reset();
     }
 
-    // The driving inputs of the chosen controller (mmInput::SetDefaultConfig's
-    // binding set for it; GetThrottleVal / GetBrakesVal / GetHandBrake /
-    // GetSteering). The joystick's X and Y (and the wheel's) go through the
-    // CONTROLLER DEAD ZONE as mmJoystick::SetDeadZone sets it on DirectInput.
-    void readController(Context& ctx, controls::Controller controller, phys::PedalInput& pedals, float& keyTarget,
-                        std::optional<float>& analog, std::optional<float>& deviceAxis) {
-        using controls::Action;
-        using controls::Controller;
-        auto& in = ctx.input;
-        const float deadZone = m_controlOptions.deadZone;
-        auto keyHandbrake = [&] { return m_bindings.down(in, Action::Handbrake) ? 1.0f : 0.0f; };
-        switch (controller) {
-        case Controller::Keyboard:
-        default:
-            // A bound key gives 1; Steer Left wins over Steer Right.
-            pedals.accelerator = m_bindings.down(in, Action::Throttle) ? 1.0f : 0.0f;
-            pedals.brake = m_bindings.down(in, Action::Brakes) ? 1.0f : 0.0f;
-            pedals.handbrake = keyHandbrake();
-            if (m_bindings.down(in, Action::SteerLeft))
-                keyTarget = -1.0f;
-            else if (m_bindings.down(in, Action::SteerRight))
-                keyTarget = 1.0f;
-            // OpenMM2 extra: a connected gamepad drives beside the keyboard
-            // (triggers, left stick, South for the handbrake).
-            for (const auto& pad : in.gamepads()) {
-                using platform::GamepadAxis;
-                const auto axis = [&](GamepadAxis a) { return pad.axes[static_cast<std::size_t>(a)]; };
-                pedals.accelerator = std::max(pedals.accelerator, axis(GamepadAxis::RightTrigger));
-                pedals.brake = std::max(pedals.brake, axis(GamepadAxis::LeftTrigger));
-                const float x = controls::applyDeadZone(axis(GamepadAxis::LeftX), deadZone);
-                if (x != 0.0f)
-                    analog = x;
-                if (pad.buttons.test(static_cast<std::size_t>(platform::GamepadButton::South)))
-                    pedals.handbrake = 1.0f;
-            }
-            return;
-        case Controller::Mouse: {
-            // The cursor's place across the window steers; buttons 1 and 2
-            // (left, right) are throttle and brakes; the handbrake stays a key.
-            const auto size = ctx.window().size();
-            deviceAxis = m_analogSteering.mouseAxis(in.mousePosition().x, static_cast<float>(size.width));
-            pedals.accelerator = in.mouseDown(platform::MouseButton::Left) ? 1.0f : 0.0f;
-            pedals.brake = in.mouseDown(platform::MouseButton::Right) ? 1.0f : 0.0f;
-            pedals.handbrake = keyHandbrake();
-            return;
-        }
-        case Controller::GamePad:
-            // The stick through FilterGamepadSteering; buttons 0 and 1
-            // throttle and brakes, button 3 the handbrake (South, East and
-            // North on an SDL gamepad, inferred from DirectInput's order).
-            for (const auto& pad : in.gamepads()) {
-                using platform::GamepadAxis;
-                using platform::GamepadButton;
-                const auto button = [&](GamepadButton b) { return pad.buttons.test(static_cast<std::size_t>(b)); };
-                analog = controls::applyDeadZone(pad.axes[static_cast<std::size_t>(GamepadAxis::LeftX)], deadZone);
-                pedals.accelerator = button(GamepadButton::South) ? 1.0f : 0.0f;
-                pedals.brake = button(GamepadButton::East) ? 1.0f : 0.0f;
-                pedals.handbrake = button(GamepadButton::North) ? 1.0f : 0.0f;
-                return;
-            }
-            pedals.handbrake = keyHandbrake();
-            return;
-        case Controller::Joystick:
-        case Controller::Wheel: {
-            // X steers; Y forward is the throttle and back the brakes
-            // (mmJoystick::GetAxis codes 0x13 / 0x14). The wheel's handbrake
-            // is button 0, the joystick's button 5 (when it has one; else
-            // the key).
-            float x = 0.0f, y = 0.0f;
-            bool handbrake = false;
-            if (!in.joysticks().empty()) {
-                const auto& j = in.joysticks().front();
-                x = j.axes.size() > 0 ? j.axes[0] : 0.0f;
-                y = j.axes.size() > 1 ? j.axes[1] : 0.0f;
-                const std::size_t b = controller == Controller::Wheel ? 0 : 5;
-                handbrake = b < j.buttons.size() ? j.buttons[b] : keyHandbrake() != 0.0f;
-            } else if (!in.gamepads().empty()) {
-                // A pad SDL recognises as a gamepad: its left stick (OpenMM2).
-                using platform::GamepadAxis;
-                const auto& pad = in.gamepads().front();
-                x = pad.axes[static_cast<std::size_t>(GamepadAxis::LeftX)];
-                y = pad.axes[static_cast<std::size_t>(GamepadAxis::LeftY)];
-                handbrake = keyHandbrake() != 0.0f;
-            }
-            x = controls::applyDeadZone(x, deadZone);
-            y = controls::applyDeadZone(y, deadZone);
-            deviceAxis = x;
-            pedals.accelerator = y < 0.0f ? -y : 0.0f;
-            pedals.brake = y > 0.0f ? y : 0.0f;
-            pedals.handbrake = handbrake ? 1.0f : 0.0f;
-            return;
-        }
-        }
+    // Force feedback (mmPlayer::Update -> UpdateFF while mmInput::DoingFF;
+    // paused: ResetFF) on the race's joystick (app/ForceFeedback).
+    void updateForceFeedback(Context& ctx, float dt, bool paused) {
+        m_ff.setDevice(ctx.input.forceFeedback(m_gameInput.controller() == controls::Controller::GamePad));
+        if (m_player)
+            m_ff.update(controls::ffCarState(m_player->sim()), dt, paused);
     }
 
-    // The horn key (mmGame::UpdateHorn), not in the free camera.
-    bool hornDown(Context& ctx) const {
-        return !m_flyCamera && m_bindings.down(ctx.input, controls::Action::Horn);
-    }
+    // The horn (mmGame::UpdateHorn: the slot's held bit), not in the free
+    // camera.
+    bool hornDown(Context&) const { return !m_flyCamera && m_gameInput.held(controls::Action::Horn); }
 
     // mmGame::UpdateGameInput: the discrete in-race keys, handled while the
     // game is paused too.
     void updateGameInput(Context& ctx) {
         using controls::Action;
         const auto& in = ctx.input;
-        auto pressed = [&](Action a) { return m_bindings.pressed(in, a); };
+        auto pressed = [&](Action a) { return m_gameInput.fired(a); };
         bool viewChanged = false;
         if (m_hud) {
             auto& hud = *m_hud;
@@ -2614,7 +2636,7 @@ private:
         // themselves (key events 0x2E and 0x2F), whatever the two camera
         // actions are bound to.
         auto pausedKey = [&](Action a, platform::Key k) {
-            return m_paused && m_bindings.key(a) != k && in.keyPressed(k);
+            return m_paused && m_gameInput.binding(a) != controls::Binding::key(k) && in.keyPressed(k);
         };
         if (pressed(Action::ChangeCamera) || pausedKey(Action::ChangeCamera, platform::Key::C))
             m_cams.toggleCamera();
@@ -2629,9 +2651,6 @@ private:
         // mmViewMgr::SetViewSetting(9), input event 0x1E: the rear-view mirror.
         if (pressed(Action::RearViewMirror))
             m_mirror.toggle();
-        for (const auto& pad : in.gamepads())
-            if (pad.pressed.test(static_cast<std::size_t>(platform::GamepadButton::North)))
-                m_cams.toggleCamera();
         if (m_player) {
             auto& trans = m_player->sim().trans;
             auto& pedals = m_player->controls();
@@ -2745,14 +2764,18 @@ private:
     // The original's car cameras (TrackCamCS / PovCamCS, ported from MM1).
     void updateCarCamera(Context& ctx, float dt) {
         auto& in = ctx.input;
-        using controls::Action;
-        // mmInput::GetCamPan: the look keys.
-        bool left = m_bindings.down(in, Action::LookLeft), right = m_bindings.down(in, Action::LookRight),
-             back = m_bindings.down(in, Action::LookBack), forward = m_bindings.down(in, Action::LookForward);
+        // OpenMM2 extras: a game pad's right stick looks around, and with the
+        // keyboard or the mouse controller its North button changes the
+        // camera (the joystick types bind the pad's buttons themselves).
+        bool left = false, right = false, back = false, forward = false;
+        const auto c = m_gameInput.controller();
+        const bool padIsController =
+            c == controls::Controller::Joystick || c == controls::Controller::GamePad || c == controls::Controller::Wheel;
         for (const auto& pad : in.gamepads()) {
             using platform::GamepadAxis;
             using platform::GamepadButton;
-            if (pad.pressed.test(static_cast<std::size_t>(GamepadButton::North)))
+            if (!padIsController && !m_flyCamera && m_popup == Popup::None &&
+                pad.pressed.test(static_cast<std::size_t>(GamepadButton::North)))
                 m_cams.toggleCamera();
             const float rx = pad.axes[static_cast<std::size_t>(GamepadAxis::RightX)];
             const float ry = pad.axes[static_cast<std::size_t>(GamepadAxis::RightY)];
@@ -2762,7 +2785,8 @@ private:
             forward |= ry < -0.5f;
         }
         game::CameraInput input;
-        input.camPan = game::cameraPanFor(left, right, back, forward);
+        // mmInput::GetCamPan: the joystick's POV hat or the look buttons.
+        input.camPan = m_gameInput.camPan(left, right, back, forward);
         m_camPan = input.camPan;
         if (const auto extent = ctx.device().sceneExtent(); extent.height)
             input.aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
@@ -2914,13 +2938,14 @@ private:
     std::unique_ptr<game::VehicleRenderer> m_trailer;
     game::VehiclePose m_pose;
     game::VehiclePose m_trailerPose;
-    Mat34 m_spawn;
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
-    phys::SteeringFilter m_steering;
-    // The player's controls: [Controls] bindings and options (mmInput).
-    controls::Bindings m_bindings;
+    // The player's controls: the [Controls] options and the chosen
+    // controller's bindings read each frame (mmInput, app/GameInput).
+    controls::GameInput m_gameInput;
+    controls::ForceFeedback m_ff; // mmPlayer::UpdateFF and the effects
+    float m_steerApplied = 0.0f;  // the recorded steering (mmPlayer +0x2264)
     controls::Options m_controlOptions;
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.
@@ -2949,7 +2974,6 @@ private:
     bool m_crFinished = false;
     bool m_regen = false;       // mmPlayer::EnableRegen
     float m_throttleCap = 1.0f; // mmGame +0x40c
-    controls::AnalogSteering m_analogSteering; // mmPlayer::FilterSteering
     std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
     bool m_textInput = false;                // SDL text input on for the chat line
     std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)
@@ -3030,6 +3054,7 @@ private:
     audio::game::PedestrianAudio m_pedAudio;
     std::vector<audio::game::PedestrianSoundInput> m_pedSounds;
     audio::game::Announcer m_announcer;
+    audio::game::AudioManager m_audioManager; // AudManager::Update
     bool m_announcerOk = false;
     bool m_carAudioOk = false;
     bool m_tunnel = false; // the audio's tunnel flag (mmPlayer::Update, audio flag 0x80)

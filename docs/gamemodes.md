@@ -503,9 +503,9 @@ Not implemented, all verified to exist in MM2:
   the renderer draws it.
 * The 3D view moving to the top half (split map) or into the small rectangle
   (full-screen map), `mmHudMap::SetMapMode`.
-* The mouse steering bar (`mouse_bar` / `mouse_ar`, `mmExternalView::Cull`),
-  the CD player display (`mmCDPlayer`) and the Cops & Robbers roster of
-  names (`mmCRHUD`).
+* The CD player display (`mmCDPlayer`) and the Cops & Robbers roster of
+  names (`mmCRHUD`). (The mouse steering bar, `mouse_bar` / `mouse_ar` in
+  `mmExternalView::Cull`, is drawn with the instrument cluster.)
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

@@ -35,7 +35,9 @@ const asset::PedType* AiRenderer::pedType(const std::string& name) {
         std::string error;
         auto read = [this](std::string_view path) { return m_vfs.readAll(path); };
         auto type = asset::loadPedType(name, read, &error);
-        if (!type)
+        if (type)
+            asset::normalizePedRoots(*type); // pedAnimation::Load
+        else
             log::warn("ai: pedestrian type {}: {}", name, error);
         it = m_pedTypes.emplace(name, std::move(type)).first;
     }
@@ -46,18 +48,11 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
     const asset::PedAnimation* anim = type.animation(ped.animFile);
     if (!anim)
         anim = type.animation(ped.state);
+    // pedAnimationInstance::Draw poses the sequence's current frame with the
+    // root translations pedAnimation::Load adjusted (normalizePedRoots): the
+    // pose starts and ends at the pedestrian's origin, which carries the
+    // motion.
     asset::posePed(type.skeleton, anim, ped.frame, m_bones);
-    // pedAnimation::Load takes the root's straight-line x/z drift over the
-    // clip out of every frame: the pedestrian moves by its sequence's speed,
-    // so the pose stays in place.
-    if (anim && anim->frameCount > 1) {
-        const Vec3 drift = anim->rootTranslation(anim->frameCount - 1) - anim->rootTranslation(0);
-        const float k = std::clamp(ped.frame, 0.0f, static_cast<float>(anim->frameCount - 1)) /
-                        static_cast<float>(anim->frameCount - 1);
-        const Vec3 shift{drift.x * k, 0.0f, drift.z * k};
-        for (auto& b : m_bones)
-            b.m3 -= shift;
-    }
     // aiPedestrianInstance::Draw: the posed model within 35 m of the camera,
     // the stick figure (pedAnimation::DrawSkeleton) beyond.
     if (ped.transform.m3.dist2(camera.position()) >= 1225.0f) {
@@ -174,27 +169,31 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
     m_device.draw(call);
 }
 
-void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows) {
+void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows,
+                            const RoomVisibility::Passes* passes) {
     const GpuModel* model = m_models.get(signal.model);
     if (!model)
         return;
+    const Mat44 world = Mat44::fromMat34(signal.transform);
     // lvlInstance::IsVisible with the Object Detail thresholds, and
     // aiTrafficLightInstance::Draw's first shader set.
     const auto lod =
         objectLod(viewDepth(camera.transform, signal.transform.m3), geomRadius(*model, ""), m_detail);
-    if (!lod)
+    if (!passes && !lod)
         return;
-    const Mat44 world = Mat44::fromMat34(signal.transform);
-    if (const GpuMesh* body = findFilledLod(*model, "", *lod))
-        drawGpuMesh(m_device, m_textures, *body, model->materials(0), world);
+    if (lod && (!passes || passes->objects))
+        if (const GpuMesh* body = findFilledLod(*model, "", *lod))
+            drawGpuMesh(m_device, m_textures, *body, model->materials(0), world);
     // aiTrafficLightInstance::DrawGlow: the light's glow together with the
     // pedestrian signal (WALK only in the walk phase), both or neither.
     const char* colour = signal.state == ai::LightState::Green  ? "GREEN"
                        : signal.state == ai::LightState::Amber  ? "YELLOW"
                                                                 : "RED";
-    // Drawn in cityLevel::DrawRooms' glow pass (rooms nearer than NoDraw):
-    // unlit, no fog, added (ONE/ONE), no depth writes.
-    if (signal.transform.m3.dist2(camera.position()) >= sq(m_detail.noDraw))
+    // Drawn in cityLevel::DrawRooms' glow pass (rooms nearer than NoDraw,
+    // whatever IsVisible says): unlit, no fog, added (ONE/ONE), no depth
+    // writes. Without the city's room list the signal's own distance stands
+    // in for its room's.
+    if (passes ? !passes->shadowsAndGlows : signal.transform.m3.dist2(camera.position()) >= sq(m_detail.noDraw))
         return;
     const char* time = nightGlows ? "NIGHT" : "DAY";
     const GpuMesh* glow = findFilledLod(*model, std::format("{}GLOW{}", colour, time), asset::Lod::High);
@@ -219,11 +218,21 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     m_detail = detail;
     const Vec3 eye = camera.position();
     const int blinkClock = world.blinkClock();
+    const bool rooms = m_rooms && m_rooms->active();
     for (const auto& car : world.cars()) {
         const Mat34* physical = physicalTransform ? physicalTransform(car.id) : nullptr;
         const Mat34& transform = physical ? *physical : car.transform;
-        // The renderer's lvlInstance::IsVisible ends dynamic objects at NoDraw.
-        if (!frustum.intersectsSphere(transform.m3, 4.0f))
+        // cityLevel::DrawRooms: from the car's room; the renderer's
+        // lvlInstance::IsVisible ends the car itself at NoDraw.
+        RoomVisibility::Passes passes;
+        if (rooms)
+            passes = roomPasses(m_carRooms, car.id, transform.m3);
+        if (!frustum.intersectsSphere(transform.m3, 4.0f)) {
+            if (!rooms)
+                continue;
+            passes.objects = false;
+        }
+        if (!passes.objects && !passes.shadowsAndGlows)
             continue;
         CarModel* cm = carModel(car.model);
         if (!cm || !cm->model)
@@ -250,12 +259,17 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         // blinking with the car's own phase.
         if (ai::World::indicatorsOn(car, blinkClock))
             pose.indicators = static_cast<int>(car.signal);
-        r->draw(pose, camera.transform);
+        if (rooms)
+            r->draw(pose, camera.transform, passes);
+        else
+            r->draw(pose, camera.transform);
         ++m_stats.cars;
     }
     // Pedestrians are dynamic objects too: nothing beyond NoDraw (inferred:
     // MM2 draws them through lvlInstance::IsVisible like the cars).
     for (const auto& ped : world.peds()) {
+        if (rooms && !roomPasses(m_pedRooms, ped.id, ped.transform.m3).objects)
+            continue;
         if (ped.transform.m3.dist2(eye) > sq(detail.noDraw) ||
             !frustum.intersectsSphere(ped.transform.m3, 2.0f))
             continue;
@@ -264,12 +278,27 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             ++m_stats.peds;
         }
     }
+    int index = 0;
     for (const auto& signal : world.signals()) {
+        const int id = index++;
         if (!frustum.intersectsSphere(signal.transform.m3, 6.0f))
             continue;
-        drawSignal(signal, camera, time >= TimeOfDay::Evening);
+        if (rooms) {
+            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, signal.transform.m3);
+            if (!passes.objects && !passes.shadowsAndGlows)
+                continue;
+            drawSignal(signal, camera, time >= TimeOfDay::Evening, &passes);
+        } else {
+            drawSignal(signal, camera, time >= TimeOfDay::Evening, nullptr);
+        }
         ++m_stats.signals;
     }
+}
+
+RoomVisibility::Passes AiRenderer::roomPasses(std::unordered_map<int, int>& rooms, int id, const Vec3& position) {
+    int& room = rooms[id];
+    room = m_rooms->findRoom(position, room);
+    return m_rooms->passes(room);
 }
 
 } // namespace mm2::game
