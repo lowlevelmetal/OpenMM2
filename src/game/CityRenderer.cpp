@@ -24,13 +24,17 @@ Vec3 lightDirection(float heading, float pitch) {
     return {std::cos(heading) * std::cos(pitch), std::sin(pitch), std::sin(heading) * std::cos(pitch)};
 }
 
-// cityTimeWeatherLighting::ComputeAmbientLightLevels: lower light qualities
-// use an ambient level moved towards white (by 66% at quality 1, 33% at 2).
-std::uint32_t ambientForQuality(std::uint32_t argb, int quality) {
+// cityLevel::SetupLighting's ambient: the table's own at quality 3, white at
+// 0, and at 1 and 2 the level cityTimeWeatherLighting::
+// ComputeAmbientLightLevels moved towards white (by 66% at quality 1, 33% at
+// 2) from `before`, the ambient the table held before the .ltNN file loaded
+// (LoadCityTimeWeatherLighting computes the levels first).
+std::uint32_t ambientForQuality(std::uint32_t loaded, std::uint32_t before, int quality) {
     if (quality >= 3)
-        return argb;
+        return loaded;
     if (quality <= 0)
         return 0xFFFFFFFFu;
+    const std::uint32_t argb = before;
     const std::uint32_t k = quality == 1 ? 168u : 84u;
     std::uint32_t out = 0xFF000000u;
     for (int shift = 0; shift < 24; shift += 8) {
@@ -103,7 +107,8 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
         for (int i = 0; i < 3; ++i)
             f.lights[static_cast<std::size_t>(i)] = {lights[static_cast<std::size_t>(i)].first,
                                                      quality > i ? lights[static_cast<std::size_t>(i)].second : Vec3{}};
-        f.ambient = unpackRgb(ambientForQuality(lt->ambient, quality));
+        f.ambient = unpackRgb(
+            ambientForQuality(lt->ambient, city.ambientBeforeLoad[static_cast<std::size_t>(index)], quality));
     } else {
         f.lights[0] = {Vec3{0.3f, -1.0f, -0.5f}.normalized(), {1, 1, 1}};
         f.ambient = {0.4f, 0.4f, 0.4f};
