@@ -153,7 +153,8 @@ std::optional<LoadedCar> loadCar(const vfs::FileSystem& fs, const std::string& c
 }
 
 // A 100 km square of flat road (for the wheels; the bodies collide with
-// nothing).
+// nothing) of the material manager's built-in "default" material (entry 0,
+// lvlMaterialDefault: friction 1), not materials.mtl's "_default" block.
 std::unique_ptr<World> makeTestWorld(const vfs::FileSystem& fs) {
     MaterialTable materials;
     if (auto mtl = readText(fs, "city/materials.mtl"))
@@ -164,7 +165,7 @@ std::unique_ptr<World> makeTestWorld(const vfs::FileSystem& fs) {
     const float s = 50000.0f;
     ground.vertices = {{-s, 0, -s}, {-s, 0, s}, {s, 0, s}, {s, 0, -s}};
     ground.polys.push_back({{0, 1, 2, 3}, 4, 0});
-    ground.materialNames = {"_default"};
+    ground.materialNames = {"default"};
     PolygonSoup soup;
     soup.add(ground, Mat34::identity(), world->materials());
     soup.finalize(4096.0f);
