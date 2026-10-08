@@ -84,15 +84,27 @@ CityInfo parseCityInfo(std::string_view text) {
     c.localizedName = kv.getString("LocalizedName");
     c.mapName = kv.getString("MapName");
     c.raceDir = kv.getString("RaceDir", c.mapName);
-    // mmCityInfo::Load reads the counts with "%d".
-    c.blitzCount = detail::cAtoi(kv.getString("BlitzCount"));
-    c.circuitCount = detail::cAtoi(kv.getString("CircuitCount"));
-    c.checkpointCount = detail::cAtoi(kv.getString("CheckpointCount"));
-    c.blitzNames = kv.getList("BlitzNames");
-    c.circuitNames = kv.getList("CircuitNames");
-    c.checkpointNames = kv.getList("CheckpointNames");
-    c.mustPlace = detail::cAtoi(kv.getString("MustPlace"));
-    c.unlockGroup = detail::cAtoi(kv.getString("UnlockGroup"));
+    // mmCityInfo::Load reads the counts with "%d"; a nonzero count is then
+    // replaced by the number of '|'-separated names (string::NumSubStrings:
+    // one more than the number of bars). It reads nothing else (MustPlace and
+    // UnlockGroup stay unread).
+    auto count = [&](std::string_view countKey, std::string_view namesKey) {
+        const int n = detail::cAtoi(kv.getString(countKey));
+        if (n == 0)
+            return 0;
+        const std::string names = kv.getString(namesKey);
+        return 1 + static_cast<int>(std::ranges::count(names, '|'));
+    };
+    c.blitzCount = count("BlitzCount", "BlitzNames");
+    c.circuitCount = count("CircuitCount", "CircuitNames");
+    c.checkpointCount = count("CheckpointCount", "CheckpointNames");
+    // The names are only kept when the count is nonzero.
+    if (c.blitzCount)
+        c.blitzNames = kv.getList("BlitzNames");
+    if (c.circuitCount)
+        c.circuitNames = kv.getList("CircuitNames");
+    if (c.checkpointCount)
+        c.checkpointNames = kv.getList("CheckpointNames");
     return c;
 }
 

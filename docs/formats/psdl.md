@@ -41,12 +41,14 @@ float3   sphereCenter
 f32      sphereRadius
 u32      roadCount
 road[roadCount]:
-    u8   flags
-    u8   unknown
-    u16  propRule                               inferred name
-    u8   leftCount, rightCount
-    f32  leftValues[leftCount], rightValues[rightCount]   fractions in (0,1); inferred prop spacing
-    u8   unknown2, unknown3                     values 0/1/128/129 (two bit flags)
+    u32  flags                                  lvlAiRoad +0: bit 1 blocked, 2 no pedestrians,
+                                                3 divided, 4 alley, 5 freeway (lvlAiMap::Is*);
+                                                bits 10-11 / 16-17 intersection type at each end
+                                                (lvlAiMap::GetIntersectionType)
+    u8   leftCount, rightCount                  lanes per side (lvlAiMap::GetNumLanes)
+    f32  leftValues[leftCount], rightValues[rightCount]   one per lane, fractions in (0,1); use inferred
+    u8   stopLights[2]                          per end: stop light / sign type, masked with 0x15
+                                                (lvlAiMap::GetStopLightType); values 0/1/128/129
     u16  startCrossroads[4], endCrossroads[4]   corner vertices of the end intersections (verified)
     u8   roomCountOfRoad
     i16  rooms[roomCountOfRoad]                 negative = negated room id (SF only, 23 roads)

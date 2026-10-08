@@ -14,8 +14,11 @@ parse.
 `Key=Value` lines: `LocalizedName`, `MapName` (selects `city/<map>.*`),
 `RaceDir` (selects `race/<dir>/`), `BlitzCount`, `CircuitCount`,
 `CheckpointCount`, `BlitzNames`/`CircuitNames`/`CheckpointNames`
-(`|`-separated, in race order), `MustPlace`, `UnlockGroup`. The `.cinfo.bak`
-files are editor backups.
+(`|`-separated, in race order), `MustPlace`, `UnlockGroup`. MM2's
+`mmCityInfo::Load` reads the keys in that order up to the name lists (the
+counts with `%d`, a nonzero count then replaced by the number of names) and
+never reads `MustPlace` or `UnlockGroup`. The `.cinfo.bak` files are editor
+backups.
 
 ## Race events
 

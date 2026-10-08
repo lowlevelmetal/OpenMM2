@@ -19,8 +19,6 @@ struct CityInfo {
     std::string raceDir;       // race/<raceDir>/
     int blitzCount = 0, circuitCount = 0, checkpointCount = 0;
     std::vector<std::string> blitzNames, circuitNames, checkpointNames;
-    int mustPlace = 0;
-    int unlockGroup = 0;
 };
 CityInfo parseCityInfo(std::string_view text);
 

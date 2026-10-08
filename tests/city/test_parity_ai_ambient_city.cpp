@@ -1,9 +1,14 @@
 // Parity checks for the city text formats against MM2's loaders (build 3393):
-// numbers read with atoi / atof / sscanf, and aiCityData / aiRaceData lists.
+// numbers read with atoi / atof / sscanf, aiCityData / aiRaceData lists,
+// mmCityInfo counts and dgPath records.
+#include "city/PathSet.h"
 #include "city/Race.h"
 #include "city/Reader.h"
 
 #include <gtest/gtest.h>
+
+#include <cstdint>
+#include <vector>
 
 using namespace mm2;
 
@@ -40,4 +45,55 @@ TEST(ParityCityText, NegativeAmbientProbabilityMeansEqualShares) {
     ASSERT_EQ(cfg->ambientTypes.size(), 4u);
     EXPECT_FLOAT_EQ(cfg->ambientTypes[0].cumulative, 0.25f);
     EXPECT_FLOAT_EQ(cfg->ambientTypes[3].cumulative, 1.0f);
+}
+
+// mmCityInfo::Load: a nonzero race count becomes the number of names; a zero
+// count leaves the names unread.
+TEST(ParityCityText, CityInfoCountsComeFromTheNames) {
+    const auto info = city::parseCityInfo("LocalizedName=X\r\nMapName=x\r\nRaceDir=x\r\nBlitzCount=5\r\n"
+                                          "CircuitCount=0\r\nCheckpointCount=1\r\nBlitzNames=A|B\r\n"
+                                          "CircuitNames=C|D\r\nCheckpointNames=E|F|G\r\n");
+    EXPECT_EQ(info.blitzCount, 2);
+    EXPECT_EQ(info.circuitCount, 0);
+    EXPECT_TRUE(info.circuitNames.empty());
+    EXPECT_EQ(info.checkpointCount, 3);
+}
+
+// dgPath::Load: per point a flags word and then the position; the path ends
+// with its type and spacing (quarter metres) bytes.
+TEST(ParityCityText, PathSetReadsLikeDgPathLoad) {
+    std::vector<std::byte> b;
+    auto put = [&](const void* p, std::size_t n) {
+        const auto* c = static_cast<const std::byte*>(p);
+        b.insert(b.end(), c, c + n);
+    };
+    auto u32 = [&](std::uint32_t v) { put(&v, 4); };
+    auto f32 = [&](float v) { put(&v, 4); };
+    put("PTH1", 4);
+    u32(1); // paths
+    u32(0);
+    char name[32] = "fence";
+    put(name, 32);
+    u32(2); // points
+    u32(2); // dgPath +0x2c
+    u32(0x11);
+    f32(1);
+    f32(2);
+    f32(3);
+    u32(0x22);
+    f32(4);
+    f32(5);
+    f32(6);
+    const std::uint8_t trailer[4] = {2, 8, 0, 0};
+    put(trailer, 4);
+    const auto set = city::parsePathSet(b);
+    ASSERT_TRUE(set);
+    const auto& path = set->paths.at(0);
+    ASSERT_EQ(path.points.size(), 2u);
+    EXPECT_FLOAT_EQ(path.points[1].position.x, 4.0f);
+    ASSERT_EQ(path.flags.size(), 2u);
+    EXPECT_EQ(path.flags[0], 0x11u);
+    EXPECT_EQ(path.flags[1], 0x22u);
+    EXPECT_EQ(path.type, 2);
+    EXPECT_FLOAT_EQ(path.spacing, 2.0f);
 }

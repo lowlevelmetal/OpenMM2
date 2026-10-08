@@ -217,17 +217,15 @@ std::optional<Psdl> parsePsdl(std::span<const std::byte> data, std::string* erro
     }
     p.roads.resize(numRoads);
     for (auto& road : p.roads) {
-        road.flags = r.u8();
-        road.unknown1 = r.u8();
-        road.propRule = r.u16();
+        road.flags = r.u32();
         const std::uint8_t nLeft = r.u8();
         const std::uint8_t nRight = r.u8();
         for (int i = 0; i < nLeft; ++i)
             road.leftValues.push_back(r.f32());
         for (int i = 0; i < nRight; ++i)
             road.rightValues.push_back(r.f32());
-        road.unknown2 = r.u8();
-        road.unknown3 = r.u8();
+        road.stopLights[0] = r.u8();
+        road.stopLights[1] = r.u8();
         for (auto& v : road.startCrossroads)
             v = r.u16();
         for (auto& v : road.endCrossroads)
