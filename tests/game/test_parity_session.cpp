@@ -7,6 +7,8 @@
 #include "city/CityData.h"
 #include "game/Profile.h"
 #include "game/Strings.h"
+#include "game/session/CopsAndRobbers.h"
+#include "game/session/RaceSetup.h"
 #include "game/session/Session.h"
 #include "vfs/GameSource.h"
 
@@ -549,4 +551,67 @@ TEST(ParitySession, CheatingMarksTheResult) {
     setCheating(true);
     EXPECT_TRUE(s->result().cheated);
     setCheating(false);
+}
+
+// mmMultiCR across two machines: the client asks for the gold (0x25e), the
+// host grants it (0x25a), the client delivers (600), the host draws the next
+// set (0x261); both keep the same scores and places.
+TEST(ParitySession, CopsAndRobbersAcrossMachines) {
+    CrLocations loc;
+    for (int i = 0; i < 6; ++i)
+        loc.points.push_back({100.0f * static_cast<float>(i), 0, 0});
+    CrSettings settings;
+    settings.mode = CopsAndRobbersMode::CopsVsRobbers;
+    settings.seed = 7;
+    CopsAndRobbers host(settings, loc), client(settings, loc);
+    for (auto* g : {&host, &client}) {
+        g->addCar(0, CrTeam::Robber);
+        g->addCar(1, CrTeam::Cop);
+    }
+    ASSERT_EQ(host.set().gold, client.set().gold);
+    using Type = CopsAndRobbers::Message::Type;
+    std::vector<CopsAndRobbers::Car> cars{{0, CrTeam::Robber, {5000, 0, 5000}, false, false},
+                                          {1, CrTeam::Cop, client.set().gold, false, false}};
+    auto sent = client.updateNetwork(0.1f, 1, false, cars, {});
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].type, Type::PickupRequest);
+    EXPECT_FALSE(client.goldActive());
+    auto acks = host.receive(sent[0], 1, true);
+    ASSERT_EQ(acks.size(), 1u);
+    EXPECT_EQ(acks[0].type, Type::GoldTaken);
+    EXPECT_EQ(host.goldCarrier(), 1);
+    client.receive(acks[0], 0, false);
+    EXPECT_EQ(client.goldCarrier(), 1);
+    EXPECT_EQ(client.playerScore(1), 25);
+    // The cop drives to the bank.
+    cars[1].position = client.deliveryTarget(CrTeam::Cop);
+    sent = client.updateNetwork(0.1f, 1, false, cars, {});
+    ASSERT_EQ(sent.size(), 1u);
+    EXPECT_EQ(sent[0].type, Type::GoldDelivered);
+    auto sets = host.receive(sent[0], 1, true);
+    ASSERT_EQ(sets.size(), 1u);
+    EXPECT_EQ(sets[0].type, Type::NewSet);
+    client.receive(sets[0], 0, false);
+    EXPECT_EQ(client.set().gold, host.set().gold);
+    EXPECT_EQ(client.set().bank, host.set().bank);
+    EXPECT_EQ(host.playerScore(1), 125);
+    EXPECT_EQ(client.playerScore(1), 125);
+    EXPECT_TRUE(client.goldActive());
+    // A hard hit from another player knocks a local carrier's gold loose.
+    cars[1].position = client.set().gold;
+    sent = client.updateNetwork(0.1f, 1, false, cars, {});
+    host.receive(sent.at(0), 1, true);
+    client.receive({Type::GoldTaken, 1}, 0, false);
+    sent = client.updateNetwork(0.1f, 1, false, cars, {{1, 0, 300.0f}});
+    ASSERT_FALSE(sent.empty());
+    EXPECT_EQ(sent[0].type, Type::GoldDropped);
+    EXPECT_EQ(client.goldCarrier(), -1);
+}
+
+// mmGameMulti::StartXYZ's grid: 6 m rows, or 16 / 34 m back for long cars.
+TEST(ParitySession, MultiplayerGridSlots) {
+    EXPECT_EQ(multiplayerGridOffset(0, false), (Vec3{2.25f, 0, 6}));
+    EXPECT_EQ(multiplayerGridOffset(4, false), (Vec3{-4.5f, 0, 0}));
+    EXPECT_EQ(multiplayerGridOffset(7, true), (Vec3{5.5f, 0, 34}));
+    EXPECT_EQ(multiplayerGridOffset(9, true), (Vec3{}));
 }

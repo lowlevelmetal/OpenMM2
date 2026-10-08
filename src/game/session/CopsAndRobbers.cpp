@@ -111,6 +111,7 @@ void CopsAndRobbers::newSet() {
         m_set.hideout = randomPoint();
     m_goldPos = m_set.gold;
     m_carrier = -1;
+    m_goldActive = true;
     m_events.push_back({EventType::NewSet});
 }
 
@@ -120,7 +121,177 @@ void CopsAndRobbers::drop(int carId, const Vec3& at, bool toSpawn) {
     const bool stays = !toSpawn && (!m_settings.canDropAt || m_settings.canDropAt(at));
     m_goldPos = stays ? at : m_set.gold;
     m_carrier = -1;
+    m_goldActive = true;
     m_events.push_back({EventType::GoldDropped, carId});
+}
+
+void CopsAndRobbers::take(int carId) {
+    // StealGold / OppStealGold, and Score(25) for the taker.
+    m_carrier = carId;
+    m_goldActive = false;
+    score(carId, kPickupPoints);
+    m_events.push_back({EventType::GoldTaken, carId, kPickupPoints});
+}
+
+void CopsAndRobbers::deliver(int carId) {
+    // UpdateBank / UpdateHideout (and the others on message 600):
+    // Score(100), nobody carries the gold.
+    score(carId, kDeliveryPoints);
+    m_carrier = -1;
+    m_goldActive = false; // until the new set
+    m_events.push_back({EventType::GoldDelivered, carId, kDeliveryPoints});
+}
+
+void CopsAndRobbers::tickLimits(float dt) {
+    // UpdateLimit (the time and point limits) and UpdateTimeWarning.
+    if (m_settings.timeLimitSeconds > 0.0f) {
+        m_timeLeft = std::max(0.0f, m_timeLeft - dt);
+        if (m_timeLeft < 0.1f) {
+            m_over = true;
+            m_events.push_back({EventType::TimeUp});
+            return;
+        }
+    }
+    checkLimits();
+    if (m_over)
+        return;
+    if (m_settings.timeLimitSeconds > 0.0f) {
+        for (int minutes : kWarningMinutes) {
+            const float mark = static_cast<float>(minutes) * 60.0f;
+            if (m_timeLeft < mark && mark < m_lastWarning) {
+                m_lastWarning = m_timeLeft;
+                m_events.push_back({EventType::TimeWarning, -1, minutes});
+            }
+        }
+    }
+}
+
+std::vector<CopsAndRobbers::Message> CopsAndRobbers::updateNetwork(float dt, int self, bool host,
+                                                                    const std::vector<Car>& cars,
+                                                                    const std::vector<Impact>& impacts) {
+    std::vector<Message> out;
+    if (m_over)
+        return out;
+    const Car* me = nullptr;
+    for (const auto& c : cars)
+        if (c.id == self)
+            me = &c;
+    auto locked = [&](int id) {
+        for (const auto& [cid, t] : m_lockout)
+            if (cid == id && t > 0.0f)
+                return true;
+        return false;
+    };
+    auto lock = [&](int id, float seconds) {
+        for (auto& [cid, t] : m_lockout)
+            if (cid == id) {
+                t = std::max(t, seconds);
+                return;
+            }
+        m_lockout.emplace_back(id, seconds);
+    };
+    for (auto& [cid, t] : m_lockout)
+        t -= dt;
+    if (!me)
+        return out;
+
+    // ImpactCallback (the physics step before this frame): a hard enough
+    // hit from another player's car knocks the local carrier's gold loose
+    // (DropGold, SendGoldDrop) and locks it out for 2 s (state 7).
+    if (m_carrier == self) {
+        for (const auto& im : impacts) {
+            const int other = im.a == self ? im.b : (im.b == self ? im.a : -1);
+            if (other < 0 || other == self || im.impulse < kStealImpulse)
+                continue;
+            lock(self, kDropLockout);
+            drop(self, me->position, false);
+            out.push_back({Message::Type::GoldDropped, self, m_goldPos});
+            break;
+        }
+    }
+    // UpdateGame state 4: a wrecked car sits out 5 s (state 6) and drops
+    // the gold where it is; the water or a fall sends it back to its place.
+    if (me->wrecked && !locked(self)) {
+        lock(self, kWreckPenalty);
+        if (m_carrier == self) {
+            drop(self, me->position, false);
+            out.push_back({Message::Type::GoldDropped, self, m_goldPos});
+        }
+    }
+    if (me->inWater && m_carrier == self) {
+        drop(self, me->position, true);
+        out.push_back({Message::Type::GoldDropped, self, m_goldPos});
+    }
+
+    tickLimits(dt);
+    if (m_over)
+        return out;
+
+    // UpdateGold: the carried gold rides 2 m above its carrier; the local
+    // car takes free gold within 5 m (a host at once, telling the others;
+    // a client asks the host and the gold waits).
+    if (m_carrier >= 0) {
+        for (const auto& c : cars)
+            if (c.id == m_carrier)
+                m_goldPos = c.position + Vec3{0.0f, 2.0f, 0.0f};
+    } else if (m_goldActive && !locked(self) && !me->wrecked &&
+               me->position.dist2(m_goldPos) < kGoldRadius * kGoldRadius) {
+        if (host) {
+            take(self);
+            out.push_back({Message::Type::GoldTaken, self, m_goldPos});
+        } else {
+            m_goldActive = false;
+            out.push_back({Message::Type::PickupRequest, self, m_goldPos});
+        }
+    }
+    // UpdateBank / UpdateHideout: the local carrier within 12 m of its base.
+    if (m_carrier == self && me->position.dist2(deliveryTarget(teamOf(self))) < kBaseRadius * kBaseRadius) {
+        deliver(self);
+        out.push_back({Message::Type::GoldDelivered, self, m_goldPos});
+        if (host) {
+            newSet(); // GetNewSet, SendChangeSet
+            out.push_back({Message::Type::NewSet, -1, m_goldPos, m_set});
+        }
+    }
+    return out;
+}
+
+std::vector<CopsAndRobbers::Message> CopsAndRobbers::receive(const Message& m, int from, bool host) {
+    std::vector<Message> out;
+    switch (m.type) {
+    case Message::Type::PickupRequest:
+        // 0x25e at the host: granted while nobody carries the gold.
+        if (host && m_carrier < 0 && !m_over) {
+            take(from);
+            out.push_back({Message::Type::GoldTaken, from, m_goldPos});
+        }
+        break;
+    case Message::Type::GoldTaken: take(m.car); break; // 0x25a
+    case Message::Type::GoldDropped:
+        // 0x259: the gold at the place the carrier sent.
+        m_goldPos = m.position;
+        m_carrier = -1;
+        m_goldActive = true;
+        m_events.push_back({EventType::GoldDropped, m.car});
+        break;
+    case Message::Type::GoldDelivered:
+        // 600: the deliverer scores; the host draws the next set.
+        deliver(m.car >= 0 ? m.car : from);
+        if (host) {
+            newSet();
+            out.push_back({Message::Type::NewSet, -1, m_goldPos, m_set});
+        }
+        break;
+    case Message::Type::NewSet:
+        // 0x261: the host's places.
+        m_set = m.set;
+        m_goldPos = m_set.gold;
+        m_carrier = -1;
+        m_goldActive = true;
+        m_events.push_back({EventType::NewSet});
+        break;
+    }
+    return out;
 }
 
 void CopsAndRobbers::score(int id, int points) {
