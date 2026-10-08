@@ -233,6 +233,19 @@ void SimVehicle::reset() {
     m_controls.reset();
 }
 
+bool SimVehicle::settleOnGround(const phys::World& world, const Vec3& from) {
+    const Vec3 top{from.x, from.y + 2.0f, from.z};
+    const Vec3 bottom{from.x, from.y - 10.0f, from.z};
+    phys::RayHit hit;
+    if (!world.wheelProbe(top, bottom, hit, nullptr, nullptr))
+        return false;
+    Vec3 p = hit.position;
+    p.y = p.y + 0.9f;
+    m_sim.setResetPos(p);
+    reset();
+    return true;
+}
+
 void SimVehicle::respawnAt(const Mat34& at) {
     const Vec3 savedPos = m_sim.resetPos();
     const float savedRotation = m_sim.resetRotation;

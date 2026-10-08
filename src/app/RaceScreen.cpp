@@ -608,7 +608,8 @@ private:
         }
         auto [pos, heading] = spawnPoint(ctx);
         // mmGame::FindGroundPos drops only the multiplayer race grids onto the
-        // road; every other start is used as the race data gives it.
+        // road; the single-player starts are placed as the race data gives
+        // them and settled 0.9 m above the road below (InitOtherPlayers).
         bool findGround = !m_session;
         if (m_session) {
             const Mat34 sp = m_session->playerSpawn();
@@ -649,6 +650,10 @@ private:
         // the start, the reset rotation, vehCar::Reset.
         m_player->setResetPos(pos, heading);
         m_player->reset();
+        // mmGame::InitOtherPlayers (every single-player mode but cruise):
+        // the player's start dropped onto the road, 0.9 m up.
+        if (m_session && !multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+            m_player->settleOnGround(*m_world, m_player->sim().body.ics.matrix.m3);
         m_pose = m_player->pose();
         std::vector<std::string> missing;
         // mmPlayer::Init: the dashboard eye depends on the screen's shape.
@@ -700,8 +705,8 @@ private:
 
     // Loads an AI-driven car at `spawn`: aiRouteRacer::Init (its route's
     // first point) and aiPoliceOfficer::Reset (its post) set the reset
-    // position and rotation there, with no drop onto the ground, and
-    // vehCar::Reset places it.
+    // position and rotation there and vehCar::Reset places it (racers are
+    // then settled onto the road, see spawnOpponents; police are not).
     std::unique_ptr<game::SimVehicle> loadAiCar(Context& ctx, const std::string& vehicle, std::string_view tune,
                                                 const Mat34& spawn) {
         std::string error;
@@ -783,6 +788,10 @@ private:
             opp.sim = loadAiCar(ctx, s.vehicle, {}, spawn);
             if (!opp.sim)
                 continue;
+            // mmGame::CollideAIOpponents (from InitOtherPlayers): the racer's
+            // start dropped onto the road below its model origin, 0.9 m up.
+            if (!multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise)
+                opp.sim->settleOnGround(*m_world, opp.sim->sim().modelMatrix().m3);
             opp.spawn = spawn;
             // aiVehiclePhysics::Init: vehCar::Init's paint job is the racer's
             // id (its index) & 3.

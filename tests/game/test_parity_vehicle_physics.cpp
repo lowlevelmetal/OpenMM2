@@ -106,9 +106,12 @@ TEST(VehiclePhysicsParity, CheckpointRespawnShiftsTheStartByCenterOfGravity) {
 }
 
 // Every single-player start (the player's first waypoint, the racers' first
-// route points, the police posts) is used as the race data gives it, with
-// no drop onto the road (aiRouteRacer::Init, aiPoliceOfficer::Reset, the
-// modes' InitGameObjects). The cars placed there settle on the road.
+// route points, the police posts) is first used as the race data gives it
+// (the modes' InitGameObjects, aiRouteRacer::Init, aiPoliceOfficer::Reset);
+// then mmGame::InitOtherPlayers and CollideAIOpponents move the player's
+// and the racers' reset positions 0.9 m above the road under them (from the
+// body's centre and the model origin). The cars placed so settle on the
+// road.
 TEST(VehiclePhysicsParity, RaceStartsSettleOnTheRoad) {
     MM2_REQUIRE_GAME_DATA();
     const vfs::Vfs& vfs = *test::gameData();
@@ -134,15 +137,17 @@ TEST(VehiclePhysicsParity, RaceStartsSettleOnTheRoad) {
             auto s = game::session::loadRaceSetup(config, *l->city, vfs);
             if (!s)
                 continue;
+            enum class Kind { Player, Racer, Police };
             struct Start {
                 std::string vehicle;
                 Mat34 at;
+                Kind kind;
             };
-            std::vector<Start> starts{{"vpbug", s->playerSpawn}};
+            std::vector<Start> starts{{"vpbug", s->playerSpawn, Kind::Player}};
             for (const auto& o : s->opponents)
-                starts.push_back({o.vehicle, o.spawn});
+                starts.push_back({o.vehicle, o.spawn, Kind::Racer});
             for (const auto& p : s->police)
-                starts.push_back({p.vehicle, p.spawn});
+                starts.push_back({p.vehicle, p.spawn, Kind::Police});
             for (const auto& st : starts) {
                 float above = 0.0f;
                 if (!heightAboveGround(st.at.m3, &above))
@@ -156,6 +161,19 @@ TEST(VehiclePhysicsParity, RaceStartsSettleOnTheRoad) {
                 car->addTo(*l->world);
                 car->setResetPos(st.at);
                 car->reset();
+                const std::string where = std::format("{} race {} {}", name, race.index, st.vehicle);
+                if (st.kind != Kind::Police) {
+                    const Vec3 from = st.kind == Kind::Player ? car->sim().body.ics.matrix.m3
+                                                              : car->sim().modelMatrix().m3;
+                    phys::RayHit hit;
+                    const bool hits = l->world->wheelProbe(from + Vec3{0, 2, 0}, from - Vec3{0, 10, 0}, hit,
+                                                           nullptr, nullptr);
+                    EXPECT_EQ(car->settleOnGround(*l->world, from), hits) << where;
+                    if (hits) {
+                        const float y = hit.position.y + 0.9f;
+                        EXPECT_EQ(car->sim().body.ics.matrix.m3.y, car->sim().centerOfGravity.y + y) << where;
+                    }
+                }
                 for (int i = 0; i < 90; ++i) {
                     car->sim().setInputs(0.0f, 1.0f, 0.0f, 0.0f);
                     l->world->advanceFixed(1.0f / 30.0f);
@@ -167,7 +185,6 @@ TEST(VehiclePhysicsParity, RaceStartsSettleOnTheRoad) {
                     std::printf("%s %s %d %s: start %.3f above the road, after 3 s origin %.3f, up.y %.3f\n",
                                 name, city::raceModeName(race.mode), race.index, st.vehicle.c_str(), above,
                                 settled - 1.0f, m.m1.y);
-                const std::string where = std::format("{} race {} {}", name, race.index, st.vehicle);
                 EXPECT_TRUE(onGround) << where;
                 EXPECT_GT(m.m1.y, 0.9f) << where;
                 EXPECT_LT(std::abs(settled - 1.0f), 0.5f) << where;
