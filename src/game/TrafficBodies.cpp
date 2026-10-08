@@ -4,6 +4,10 @@
 // Attach, Detach, Update, PostUpdate, Impact) and vehWheelCheap (Init, Reset,
 // Update), from the code of midtown2.exe build 3393 (MM2Recomp;
 // documentation only). See docs/physics.md, "Collision".
+// Also: aiVehicleActive::DetachMe (detach + release), aiVehicleActive::Reset,
+// aiVehicleActive::UpdateDamage (damage stays 0), aiVehicleActive::GetICS,
+// aiVehicleActive::GetInst, aiVehicleInstance::GetData,
+// aiVehicleInstance::SetMatrix (never called), aiVehicleManager::Reset (reset).
 
 #include "game/TrafficBodies.h"
 

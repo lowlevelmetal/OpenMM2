@@ -1,5 +1,23 @@
 // Ambient traffic after MM2's aiVehicleAmbient and its goals (build 3393,
 // MM2Recomp, documentation only); see Traffic.h and docs/ai.md.
+// Also (MM2 names, docs/parity/mm2/ai.md): aiMap::RemoveAmbient (placeCar
+// takes the pool's head), aiMap::FindAmbAppRoad (m_pathActive),
+// aiPath::RemAmbPlayer, aiPath::RemoveAmbVehicle, aiPath::SubSectionDist,
+// aiPath::SubSectionLength, aiPath::AddVehicle, aiPath::RemoveVehicle,
+// aiPath::Reset, aiIntersection::AddVehicle, aiIntersection::RemoveVehicle,
+// aiIntersection::AddToStopSignCntl, aiIntersection::RemoveFromStopSignCntl,
+// aiIntersection::RemoveTotalFromStopSignCntl, aiIntersection::Reset,
+// aiVehicleSpline::Reset, aiVehicleSpline::CurrentLane,
+// aiVehicleSpline::CurrentRoadId, aiVehicleSpline::CurrentRdVert,
+// aiVehicleSpline::TotLength, aiVehicleSpline::InAccident,
+// aiVehicle::Init, aiVehicle::Reset, aiVehicle::Update, aiGoal::Update,
+// aiGoalRandomDrive::aiGoalRandomDrive, aiGoalRandomDrive::Init,
+// aiGoalRegainRail::aiGoalRegainRail, aiGoalRegainRail::Init,
+// aiGoalAvoidPlayer::aiGoalAvoidPlayer, aiGoalAvoidPlayer::Init,
+// aiGoalCollision::aiGoalCollision, aiGoalCollision::Init,
+// aiVehicleAmbient::aiVehicleAmbient, aiRailSet::aiRailSet,
+// aiRailSet::CalcRailPosOrient, aiRailSet::CalcXZPosOrient,
+// aiObstacle::InAccident.
 #include "ai/Traffic.h"
 
 #include "core/StringUtil.h"

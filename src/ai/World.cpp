@@ -1,3 +1,6 @@
+// MM2 (docs/parity/mm2/ai.md): aiMap::Init, aiMap::Reset, aiMap::Update,
+// aiMap::AddPlayer (the first step's population), aiMap::Player,
+// aiMap::Opponent, aiMap::Police, aiMap::CableCar (the race's lists).
 #include "ai/World.h"
 
 #include "asset/Ped.h"

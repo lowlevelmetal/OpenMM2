@@ -1,3 +1,7 @@
+// MM2: aiVehicleInstance::Draw, aiVehicleInstance::DrawPart,
+// aiVehicleInstance::DrawShadow, aiVehicleInstance::DrawGlow,
+// aiPedestrianInstance::Draw, aiPedestrianInstance::GetMatrix,
+// aiPedestrianInstance::GetPosition, aiPedestrianInstance::ComputeLod.
 #include "game/AiRenderer.h"
 
 #include "core/Log.h"

@@ -1,6 +1,7 @@
 // Race opponents: MM2's aiRouteRacer (build 3393) driving an ai::PhysicsDriver
 // (aiVehiclePhysics). See Opponent.h and docs/ai.md for what is ported and
 // what is inferred.
+// Also: aiRouteRacer::Disabled (update, below y -200).
 #include "ai/Opponent.h"
 
 #include "ai/MapView.h"

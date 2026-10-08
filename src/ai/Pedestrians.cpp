@@ -1,5 +1,6 @@
 // Pedestrians after MM2's aiPedestrian (build 3393, MM2Recomp; documentation
 // only); see Pedestrians.h and docs/ai.md.
+// Also: aiPedestrian::GetRoadToLeft (setNextRoad).
 #include "ai/Pedestrians.h"
 
 #include "core/StringUtil.h"

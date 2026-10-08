@@ -1,6 +1,9 @@
 // Driving lines for AI racers and police: MM2's waypoint routes
 // (aiVehiclePhysics::RegisterRoute); see Course.h and docs/ai.md. First ported
 // from MM1's aiGoalFollowWayPts (Open1560 game.asm, GPL-3.0).
+// Also: aiMap::InitRouting, aiMap::AddRoutingNode, aiMap::RemoveRoutingNode,
+// aiMap::FindInt and aiPath::CenterDist (calcRoute's table, open list and
+// road starts).
 #include "ai/Course.h"
 
 #include <algorithm>

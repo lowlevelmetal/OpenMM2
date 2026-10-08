@@ -1,6 +1,18 @@
 // MM2's AI driving controller, aiVehiclePhysics (build 3393), on an
 // ai::Course. See Driving.h and docs/ai.md ("Opponents and police") for
 // what is ported and what is inferred.
+// Also: aiVehiclePhysics::Position, aiVehiclePhysics::GetMatrix,
+// aiVehiclePhysics::Speed, aiVehiclePhysics::FrontBumperDistance,
+// aiVehiclePhysics::BackBumperDistance, aiVehiclePhysics::RSideDistance,
+// aiVehiclePhysics::CurrentLane, aiVehiclePhysics::CurrentRoadId,
+// aiVehiclePhysics::CurrentRdVert, aiVehiclePhysics::Type (trackedCar and the
+// driver's accessors), aiStuck::Init, aiRouteNode::aiRouteNode,
+// aiRouteNode::Reset (the route nodes), aiVehiclePlayer::Attach,
+// aiVehiclePlayer::GetMatrix, aiVehiclePlayer::FrontBumperDistance,
+// aiVehiclePlayer::BackBumperDistance, aiVehiclePlayer::LSideDistance,
+// aiVehiclePlayer::RSideDistance, aiVehiclePlayer::CurrentLane,
+// aiVehiclePlayer::CurrentRoadId, aiVehiclePlayer::CurrentRdVert,
+// aiVehiclePlayer::Type (trackedCar).
 #include "ai/Driving.h"
 
 #include "ai/MapView.h"

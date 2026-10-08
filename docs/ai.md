@@ -79,6 +79,13 @@ signs are static instances in `city/<map>_ai.inst`, drawn with the city.
   previous room's are populated, and the roads that dropped out return
   their cars to the pool (`aiPath::ClearAmbients`). The first room is
   populated at the start (`aiMap::Reset`).
+* A race restart (`mmGame::Reset` -> `aiMap::Reset`, also run once by
+  `mmGame::Init`) starts the AI over: the random seed back to its start,
+  every road's and intersection's lists emptied, the physical traffic cars
+  detached, every car and pedestrian back in its pool in index order, the
+  light sets at their first phase, the police force and officers reset; the
+  roads round the player are populated again (`World::reset`). A car's
+  wreck flag survives, as in MM2.
 * Cars per new area: with d = clamp(menu density, 0, 1) x 0.2 and L the new
   roads' usable lane length (centre length - 5 m per lane, open sides
   only, exception roads aside), 1 + trunc(L d / 8) gaps; cars are placed one
@@ -201,6 +208,13 @@ its side leaving the intersection is open to traffic.
   within 1 m of the last one parks it for good. Cars are recycled only with
   their road. The hit impulse is OpenMM2's (closing speed, reduced mass,
   restitution the product of both elasticities, **inferred**).
+* Off its rail (avoiding the player, regaining its lane, or a wreck), a car
+  is a mover without a body (`dgPhysManager::DeclareMover` of its
+  instance: (2, 0x0a), a wreck (2, 0x08)): it collides with the props and
+  cars round it, and a hit gives it a body as any knock does.
+* Lights (`aiVehicleInstance::DrawGlow`): the tail lights while the car
+  slows down or stands; the indicators (SLIGHT0 left, SLIGHT1 right, both
+  for hazards) blink once a second, each car with its own phase.
 * The player (`aiGoalAvoidPlayer`): a moving car whose next 30 m of rail (in
   10 m pieces, within its width) holds the player within 25 m, with no car
   ahead nearer, leaves its rail: one chance to honk; it brakes to stop
@@ -488,8 +502,8 @@ earlier `BrakeMeter` fitted to the old physics is gone.
 | The shortcut roads of `<city>_sup.bai` (straight one-lane links, 70 London, 49 SF) are part of the map the racers and police route over; 317 of London's and 328 of SF's consecutive waypoint pairs are joined only by one | MM2 |
 | Held at the start (`mmGameSingle::DisableRacers` makes the car undrivable): revs in neutral with the brakes on (throttle 1 with a front wheel down), into first gear on release | MM2 |
 | Fallen below y = −200 (tested after driving): disabled, no more driving (`Update` sets Stop without calling `DriveRoute`) | MM2 |
-| The race result is the game's (finish line); the AI drives on to its destination and stops there | MM2 (`Finished` is only read by the game) |
-| No progress for 10 s, or fallen 15 m below the line: put back on the line, further along each time it recurs, the route registered again from the waypoint and lap reached | **OpenMM2** recovery, not in MM2 |
+| The race result is the game's: `aiRouteRacer::Finished` counts a racer when it crosses the line `aiMap::SetWaypoints` set (the race's last checkpoint, a circuit's first) within 20 m of its point, on its last lap past its last waypoint (front bumper + 1 m across); the AI drives on to its .opp destination and stops there, which some routes put short of the line (those racers never finish) | MM2 |
+| No progress for 10 s, or fallen 15 m below the line: put back on the line (placed as MM2 places racers: the reset position on the road + 0.9 m), further along each time it recurs, the route registered again from the waypoint and lap reached; not once the racer has reached its destination | **OpenMM2** recovery, not in MM2 |
 | Rubber-banding | none in MM2 |
 
 ### Police (`aiPoliceOfficer`, `aiPoliceForce`)
@@ -528,7 +542,9 @@ earlier `BrakeMeter` fitted to the old physics is gone.
 * A car put nose-first against a wall 30 m off its route steers off it
   without backing up and is 150 m along its line after 12.4 s.
 * The opponent sweep (every circuit and checkpoint race of both cities, one
-  lap): 516 of 517 racers finish; in sf race11 p every racer is wrecked by
+  lap): 516 of 517 racers complete their route (508 also cross the race's
+  finish line as `aiRouteRacer::Finished` counts it; 8 stop at a
+  destination short of it); in sf race11 p every racer is wrecked by
   landing impacts over SF's crests at 40 - 100 m/s (damage from the ported
   vehCarDamage), one before the line.
 * A player-flagged car driven past a parked London cop at 13 m/s (lawful):
