@@ -6,6 +6,8 @@
 #include "city/RoomInfo.h"
 #include "game/CityLevel.h"
 #include "game/bangers/BangerSet.h"
+#include "ai/World.h"
+#include "game/world/CableCars.h"
 #include "game/world/Gizmos.h"
 #include "game/world/PathSpline.h"
 
@@ -365,4 +367,131 @@ TEST(WorldLandmarks, CollideThroughTheCityFlagOnly) {
             }
     }
     EXPECT_GT(landmarks, 50);
+}
+
+namespace {
+
+// The city as the race builds it: level, physics world, props, AI.
+struct CableCity {
+    std::optional<city::CityData> city;
+    std::unique_ptr<bangers::BangerDataLibrary> data;
+    std::unique_ptr<CityLevel> level;
+    std::unique_ptr<phys::World> world;
+    std::unique_ptr<bangers::BangerSet> bangers;
+    std::unique_ptr<ai::World> ai;
+    std::unique_ptr<CableCars> cars;
+    fx::Rand random{1u};
+
+    bool load(const vfs::Vfs& v, const char* name) {
+        city = city::loadCity(v, name);
+        if (!city)
+            return false;
+        data = std::make_unique<bangers::BangerDataLibrary>(v);
+        level = std::make_unique<CityLevel>(*city, v, [&](std::string_view n) { return data->has(n); });
+        world = std::make_unique<phys::World>(level->takeMaterials());
+        world->setStatic(level->takeProbeSoup());
+        world->setLevel(level.get());
+        bangers = std::make_unique<bangers::BangerSet>(*data);
+        ai::Settings settings;
+        settings.trafficDensity = 0.0f;
+        settings.pedestrianDensity = 0.0f;
+        ai = ai::World::create(*city, v, settings);
+        if (!ai)
+            return false;
+        cars = std::make_unique<CableCars>(*ai, *data, *bangers);
+        cars->create(random);
+        cars->reset(*world);
+        level->addSource(cars.get());
+        return true;
+    }
+};
+
+} // namespace
+
+// aiMap::Init: a cable car at each end of San Francisco's lines; London has
+// none.
+TEST(WorldCableCars, OneAtEachEndOfTheLines) {
+    MM2_REQUIRE_GAME_DATA();
+    CableCity sf;
+    ASSERT_TRUE(sf.load(*test::gameData(), "sf"));
+    ASSERT_GE(sf.cars->size(), 2u);
+    for (std::size_t i = 0; i < sf.cars->size(); ++i) {
+        // At its start, on the ground of a room, standing, with a sister
+        // (the car starting at the other end of its line).
+        int path = -1, dir = 0;
+        EXPECT_EQ(sf.cars->speed(i), 0.0f);
+        EXPECT_GT(sf.cars->room(i), 0) << i;
+        EXPECT_GE(sf.cars->sister(i), 0) << i;
+        EXPECT_NEAR(sf.cars->matrix(i).m1.y, 1.0f, 0.2f) << i;
+        (void)path;
+        (void)dir;
+    }
+    CableCity london;
+    ASSERT_TRUE(london.load(*test::gameData(), "london"));
+    EXPECT_EQ(london.cars->size(), 0u);
+}
+
+// aiCableCar::Update: the cars start, run along their lines at up to
+// 15 m/s on the ground, through intersections onto the next roads, and
+// stay listed in the rooms they reach.
+TEST(WorldCableCars, RideTheirLines) {
+    MM2_REQUIRE_GAME_DATA();
+    CableCity sf;
+    ASSERT_TRUE(sf.load(*test::gameData(), "sf"));
+    ASSERT_GT(sf.cars->size(), 0u);
+    std::vector<Vec3> start;
+    std::vector<int> firstPath;
+    for (std::size_t i = 0; i < sf.cars->size(); ++i) {
+        start.push_back(sf.cars->matrix(i).m3);
+        firstPath.push_back(sf.cars->path(i));
+    }
+    const float dt = 1.0f / 30.0f;
+    float top = 0.0f;
+    std::vector<bool> changedRoad(sf.cars->size(), false);
+    for (int frame = 0; frame < 30 * 60; ++frame) {
+        sf.ai->lights().update(dt);
+        sf.cars->update(dt, nullptr, *sf.world);
+        for (std::size_t i = 0; i < sf.cars->size(); ++i) {
+            top = std::max(top, sf.cars->speed(i));
+            changedRoad[i] = changedRoad[i] || sf.cars->path(i) != firstPath[i];
+        }
+    }
+    EXPECT_LE(top, CableCars::kMaxSpeed + 0.001f);
+    EXPECT_GT(top, 5.0f);
+    for (std::size_t i = 0; i < sf.cars->size(); ++i) {
+        EXPECT_GT(sf.cars->matrix(i).m3.dist(start[i]), 50.0f) << i;
+        EXPECT_TRUE(changedRoad[i]) << i;
+        EXPECT_GT(sf.cars->room(i), 0) << i;
+        std::vector<phys::Instance*> listed;
+        sf.cars->instancesIn(sf.cars->room(i), listed);
+        EXPECT_FALSE(listed.empty()) << i;
+        EXPECT_TRUE(std::isfinite(sf.cars->matrix(i).m3.y)) << i;
+    }
+}
+
+// aiCableCar::CheckForObstacles: a car stops short of the player standing
+// on its line.
+TEST(WorldCableCars, StopForThePlayer) {
+    MM2_REQUIRE_GAME_DATA();
+    CableCity sf;
+    ASSERT_TRUE(sf.load(*test::gameData(), "sf"));
+    ASSERT_GT(sf.cars->size(), 0u);
+    const float dt = 1.0f / 30.0f;
+    // Let car 0 get going, then put the player 20 m ahead of it. The car
+    // stops 2.5 m short of the first of its corners that blocks the way
+    // (aiVehicle::IsBlockingTarget takes them in order, front first).
+    for (int frame = 0; frame < 30 * 4; ++frame)
+        sf.cars->update(dt, nullptr, *sf.world);
+    const Mat34 m = sf.cars->matrix(0);
+    ai::TrackedCar player;
+    player.isPlayer = true;
+    player.position = m.m3 - m.m2 * 20.0f;
+    player.forward = m.m2; // facing the cable car: its front corners come first
+    player.right = -m.m0;
+    for (int frame = 0; frame < 30 * 10; ++frame)
+        sf.cars->update(dt, &player, *sf.world);
+    EXPECT_EQ(sf.cars->speed(0), 0.0f);
+    EXPECT_LT(sf.cars->matrix(0).m3.dist(player.position), 20.0f);
+    EXPECT_GT(sf.cars->matrix(0).m3.dist(player.position), 3.5f);
+    EXPECT_LT(sf.cars->matrix(0).m3.dist(player.position), 6.0f);
 }

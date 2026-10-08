@@ -42,6 +42,7 @@
 #include "game/CityLevel.h"
 #include "game/PlayerVehicle.h"
 #include "game/VehicleRenderer.h"
+#include "game/world/CableCars.h"
 #include "game/world/Gizmos.h"
 #include "phys/World.h"
 #include "render/Projection.h"
@@ -112,6 +113,9 @@ public:
         if (m_cityLevel && m_gizmos)
             m_cityLevel->removeSource(m_gizmos.get());
         m_gizmos.reset(); // its sounds hold slots of m_audioSlots
+        if (m_cityLevel && m_cableCars)
+            m_cityLevel->removeSource(m_cableCars.get());
+        m_cableCars.reset();
         m_carAudio.stop();
         for (auto& o : m_opponents)
             if (o.audio)
@@ -185,6 +189,11 @@ public:
         // the racers and the police, before the physics step.
         updateAmbient(ctx, static_cast<float>(dt));
         updateAiDrivers(static_cast<float>(dt));
+        // aiMap::Update's cable cars, after the racers.
+        if (m_cableCars && m_world) {
+            const ai::TrackedCar player = m_player ? trackedCar(m_player->sim(), 0, true) : ai::TrackedCar{};
+            m_cableCars->update(static_cast<float>(dt), m_player ? &player : nullptr, *m_world);
+        }
         if (m_ai)
             m_ai->updateLights(); // the light sets last (aiMap::Update)
         // The gizmo managers, nodes of mmGame (bridges, trains, ferries,
@@ -365,6 +374,8 @@ public:
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera, {m_detail.objects, night});
         if (m_gizmos)
             m_gizmos->draw(dev, *m_models, *m_textures, frustum, camera, m_detail.objects);
+        if (m_cableCars)
+            m_cableCars->draw(dev, *m_models, *m_textures, frustum, camera, m_detail.objects);
         const bool lights = carLights();
         if (m_vehicle && playerBody) {
             m_pose.headlights = lights;
@@ -1260,6 +1271,8 @@ private:
                     c.driver->reset();
                 if (m_gizmos)
                     m_gizmos->reset(); // the gizmo managers are nodes of mmGame
+                if (m_cableCars && m_world)
+                    m_cableCars->reset(*m_world); // aiMap::Reset
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -1998,6 +2011,17 @@ private:
                 m_cityLevel->addSource(m_gizmos.get());
             if (m_bank && ctx.mixer)
                 m_gizmos->loadAudio(ctx.game->vfs, *m_bank, *ctx.mixer, &m_audioSlots);
+            // aiMap::Init: the cable cars, unless the network game cleared
+            // the state pack's EnableCableCars (mmGameMulti::Init).
+            if (m_ai && !multiplayer(ctx)) {
+                m_cableCars = std::make_unique<game::world::CableCars>(*m_ai, *m_bangerData, *m_bangers);
+                m_cableCars->create(m_gizmoRand);
+                m_cableCars->reset(*m_world);
+                if (m_cityLevel)
+                    m_cityLevel->addSource(m_cableCars.get());
+                if (m_bank && ctx.mixer)
+                    m_cableCars->loadAudio(*m_bank, *ctx.mixer, &m_audioSlots);
+            }
             // The props are instances of the level's rooms.
             if (m_cityLevel)
                 m_cityLevel->addSource(m_bangers.get());
@@ -2279,6 +2303,8 @@ private:
         m_ambience.update(m_camera.transform, dt, m_tunnel);
         if (m_gizmos)
             m_gizmos->updateAudio(m_camera.transform, dt, m_tunnel);
+        if (m_cableCars)
+            m_cableCars->updateAudio(m_camera.transform, dt);
         // mmPlayer::SetCamera sets mmRainAudio's interior flag: on for the
         // hood camera (car view 1) and the dashboard, off for the others.
         const auto view = m_cams.view();
@@ -3010,6 +3036,7 @@ private:
     // The gizmos (src/game/world) and the irand / frand of their loading
     // (MM2's global rand(); its seed here is OpenMM2's).
     std::unique_ptr<game::world::Gizmos> m_gizmos;
+    std::unique_ptr<game::world::CableCars> m_cableCars;
     game::fx::Rand m_gizmoRand{1u};
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;

@@ -333,6 +333,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/session/Session.cpp` | 1321 | P | session |
 | `src/game/session/Session.h` | 269 | P | session |
 | `src/game/session/Types.h` | 115 | P | session |
+| `src/game/world/CableCars.cpp` | 830 | P | mm2-world-objects |
+| `src/game/world/CableCars.h` | 164 | P | mm2-world-objects |
 | `src/game/world/Gizmos.cpp` | 885 | P | mm2-world-objects |
 | `src/game/world/Gizmos.h` | 289 | P | mm2-world-objects |
 | `src/game/world/PathSpline.cpp` | 146 | P | mm2-world-objects |
