@@ -292,6 +292,8 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
                 return std::nullopt;
             }
             le.checkpoints = std::move(*cps);
+            for (auto& cp : le.checkpoints)
+                cp.standDepth = 15.0f; // mmWaypoints::InitStatic's radius 15
             s.lessonEvents.push_back(std::move(le));
         }
         s.checkpoints = s.lessonEvents.front().checkpoints;

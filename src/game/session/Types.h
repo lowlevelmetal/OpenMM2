@@ -66,6 +66,10 @@ struct Checkpoint {
     // Column 6 of the point list (mmWaypointObject hit flag): crash course
     // any-order events clear this one by distance (RadiusHit) instead of the gate.
     bool hitByRadius = false;
+    // The stand's depth scale (0: the radius). mmWaypoints::InitStatic builds
+    // the crash course's stands 15 deep and mmWaypointObject::SetRadius
+    // changes only their width, so lesson stands stay 15 deep.
+    float standDepth = 0.0f;
 };
 
 // Things that happened during an update, for audio, music, voice and the
