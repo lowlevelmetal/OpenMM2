@@ -367,6 +367,11 @@ private:
         loadEffects(ctx);
         spawnOpponents(ctx);
         spawnPolice(ctx);
+        // Every vehCar::Init builds a vehSiren, whose constructor sets the
+        // light glow scales to 0.2 / 0.6; aiMap::Init ends with
+        // aiVehicleManager::Init, which sets 0.2 / 0.95 (network cars set up
+        // later bring the 0.6 back, see drawRemoteCars).
+        game::VehicleRenderer::setLightGlowScales(0.2f, 0.95f);
         m_hud = std::make_unique<game::session::Hud>(ctx.device(), *m_textures, *m_models, ctx.game->vfs,
                                                      ctx.game->strings, m_result.config.city, m_result.config.vehicle);
         m_hud->options().metric = ctx.settings.metricUnits;
@@ -1544,6 +1549,8 @@ private:
                     rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                           *rv.model, rv.color);
                     setupVehicleRenderer(ctx, *rv.renderer);
+                    // mmNetObject::Init -> vehCar::Init -> vehSiren::vehSiren.
+                    game::VehicleRenderer::setLightGlowScales(0.2f, 0.6f);
                 }
             }
             if (!rv.renderer)
