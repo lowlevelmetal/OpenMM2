@@ -3,6 +3,7 @@
 #include "core/StringUtil.h"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 
 namespace mm2::asset {
@@ -64,8 +65,8 @@ std::optional<VehicleModel> loadVehicleModel(std::string_view baseName, const Re
         const Mtx* m = model.pivot(std::format("whl{}", i));
         if (!m)
             continue;
-        const Vec3 half = m->halfExtent();
-        model.wheels.push_back({i, m->origin, half.y, half.x * 2.0f});
+        // vehWheel::Init: radius |(max.y - min.y) * 0.5|, width max.x - min.x.
+        model.wheels.push_back({i, m->origin, std::abs((m->max.y - m->min.y) * 0.5f), m->max.x - m->min.x});
     }
     return model;
 }

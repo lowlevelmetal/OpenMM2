@@ -34,6 +34,8 @@ std::vector<vfs::EntryInfo> matching(const vfs::FileSystem& fs, std::string_view
 std::string_view formatName(asset::TexFormat f) {
     switch (f) {
     case asset::TexFormat::P8: return "P8";
+    case asset::TexFormat::P8A8: return "P8A8";
+    case asset::TexFormat::ARGB1555: return "ARGB1555";
     case asset::TexFormat::PA8: return "PA8";
     case asset::TexFormat::P4: return "P4";
     case asset::TexFormat::PA4: return "PA4";

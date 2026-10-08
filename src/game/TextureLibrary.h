@@ -20,7 +20,7 @@ struct WorldTexture {
     std::uint32_t width = 0, height = 0;
     std::uint32_t flags = 0;    // .tex flags (asset::TexFlags)
     bool translucent = false;   // some texels have alpha < 255
-    bool alphaFlag = false;     // .tex Alpha flag set
+    bool alphaFormat = false;   // the image format has alpha (MM2's alpha-texture test)
 };
 
 // Loads textures by base name ("cw_apt_brk"), looking for texture/<name>.tex

@@ -10,10 +10,13 @@
 
 namespace mm2::vfs {
 
-// Angel Game Engine "DAVE" archive (.AR), as used by MM2CORE.AR, MM2TEX.AR,
-// MM2AUD.AR and MM2AUDEX.AR. See docs/formats/dave.md.
+// An MM2 archive (.AR), read as zipFile::Init does: the Angel Game Engine
+// "DAVE" format of MM2CORE.AR, MM2TEX.AR, MM2AUD.AR and MM2AUDEX.AR, or an
+// ordinary PKZIP file (stored or deflated entries, no archive comment, one
+// part), which is how add-on archives are often made. See
+// docs/formats/dave.md.
 //
-// Layout (all little-endian):
+// DAVE layout (all little-endian):
 //   0x000  char[4]  "DAVE"
 //   0x004  u32      entry count
 //   0x008  u32      directory table size in bytes
@@ -21,7 +24,8 @@ namespace mm2::vfs {
 //   0x800  entry[]  16 bytes each: nameOffset, dataOffset, size, packedSize
 //   0x800 + dirSize: NUL-separated UTF-8/ASCII names, indexed by nameOffset
 // Entry data starts at dataOffset (2048-byte aligned). When packedSize != size
-// the payload is a raw DEFLATE stream (no zlib header).
+// the payload is a raw DEFLATE stream (no zlib header); the same rule decides
+// for zip entries.
 class DaveArchive final : public FileSystem {
 public:
     struct Entry {
@@ -50,6 +54,8 @@ public:
 private:
     DaveArchive() = default;
     bool load(std::string* error);
+    bool loadZip(std::string* error);
+    bool addEntry(Entry entry, std::string* error);
 
     std::shared_ptr<const RandomAccessFile> m_file;
     std::string m_label;

@@ -19,7 +19,12 @@ using ReadFileFn = std::function<std::optional<std::vector<std::byte>>(std::stri
 // A vehicle (or any multi-part model) together with the pivots of its parts.
 //
 // Car part names (chunk "<PART>_<LOD>" in the PKG; pivot in
-// geometry/<base>_<part>.mtx, lower case):
+// geometry/<base>_<part>.mtx, lower case). vehCarModel::Init asks for these,
+// in this order: body, shadow, hlight, tlight, rlight, slight0, slight1,
+// blight, bodydamage, siren0, siren1, decal, driver, shock0-3, arm0-3,
+// shaft2, shaft3, axle0, axle1, engine, whl0-3, break0-3, break01, break12,
+// break23, break03, hub0-3, trailer_hitch, srn0-3, headlight0/1, fndr0/1,
+// whl4, whl5, variant0-9. Notably:
 //   BODY            car body
 //   SHADOW          ground shadow quad
 //   HLIGHT/TLIGHT/RLIGHT/BLIGHT  head/tail/reverse/brake light glows
@@ -29,11 +34,13 @@ using ReadFileFn = std::function<std::optional<std::vector<std::byte>>(std::stri
 //                   3 rear right, 4/5 an extra rear axle (semi)
 //   TWHL0..TWHL5    trailer wheels (in <base>_trailer.pkg)
 //   FNDR0/1         fenders that steer with the front wheels
-//   BREAK01..       detachable parts (bumpers, mirrors, ...)
+//   BREAK0-3, BREAK01/12/23/03  detachable parts (vehBreakableMgr)
 //   TRAILER, TRAILER_HITCH
-// Pivot-only names with no mesh: exhaust0/1, trailer_hitch.
+// Pivot-only names with no mesh: exhaust0/1 (vehCarDamage), trailer_hitch.
 // Dashboards are separate models "<base>_dash" with parts dash, roof, wheel
 // (steering wheel), speed_needle, tach_needle, damage_needle, gear_indicator.
+// This loader takes every part the package has; which ones are drawn is up
+// to the renderer.
 struct VehicleModel {
     struct Wheel {
         int index = 0;      // N in WHLN

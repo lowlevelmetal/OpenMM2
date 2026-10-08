@@ -3,6 +3,8 @@
 #include "asset/Reader.h"
 #include "core/StringUtil.h"
 
+#include <bit>
+#include <cmath>
 #include <cstring>
 #include <format>
 
@@ -18,22 +20,33 @@ bool fail(std::string* error, std::string msg) {
 }
 
 // Sanity limits well above anything in the retail data.
-constexpr std::uint32_t kMaxSections = 4096;
 constexpr std::uint32_t kMaxPackets = 4096;
 constexpr std::uint32_t kMaxVerts = 65536;
 constexpr std::uint32_t kMaxIndices = 1u << 20;
 constexpr std::uint32_t kMaxShaders = 4096;
 
+// A geometry chunk as modGetStatic reads it.
 bool parseGeometry(Reader& r, PkgMesh& mesh, std::vector<std::string>& warnings, std::string* error) {
-    const std::uint32_t sectionCount = r.u32();
+    // The first word is the section count, of which MM2 keeps the low byte.
+    // With bit 0x80 set the chunk holds no geometry: the count (low 7 bits),
+    // the vertex format and one shader index byte per section.
+    const std::uint32_t countWord = r.u32();
+    if (!r.ok())
+        return fail(error, "truncated geometry header");
+    if (countWord & 0x80) {
+        mesh.fvf = r.u32();
+        mesh.sections.resize(countWord & 0x7F);
+        for (auto& section : mesh.sections)
+            section.shaderIndex = r.u8();
+        return r.ok() || fail(error, "truncated geometry header");
+    }
+    const std::uint32_t sectionCount = countWord & 0xFF;
     const std::uint32_t totalVerts = r.u32();
     const std::uint32_t totalIndices = r.u32();
     const std::uint32_t sectionCount2 = r.u32();
     mesh.fvf = r.u32();
     if (!r.ok())
         return fail(error, "truncated geometry header");
-    if (sectionCount > kMaxSections)
-        return fail(error, std::format("implausible section count {}", sectionCount));
     const std::size_t stride = fvfVertexSize(mesh.fvf);
     if (stride == 0)
         return fail(error, std::format("unsupported vertex format 0x{:x}", mesh.fvf));
@@ -46,9 +59,8 @@ bool parseGeometry(Reader& r, PkgMesh& mesh, std::vector<std::string>& warnings,
     std::size_t vertsSeen = 0, indicesSeen = 0;
     mesh.sections.resize(sectionCount);
     for (auto& section : mesh.sections) {
-        const std::uint16_t packetCount = r.u16();
-        section.flags = r.u16();
-        section.shaderIndex = r.u32();
+        const std::uint32_t packetCount = r.u32();
+        section.shaderIndex = r.u32() & 0xFF;
         if (!r.ok() || packetCount > kMaxPackets)
             return fail(error, "truncated or corrupt section header");
         section.packets.resize(packetCount);
@@ -63,8 +75,12 @@ bool parseGeometry(Reader& r, PkgMesh& mesh, std::vector<std::string>& warnings,
                 v.position = r.vec3();
                 if (hasNormal)
                     v.normal = r.vec3();
-                if (hasDiffuse)
-                    v.color = r.u32();
+                if (hasDiffuse) {
+                    // Stored with red in the low byte; modGetStatic swaps
+                    // red and blue to get Direct3D's ARGB.
+                    const std::uint32_t c = r.u32();
+                    v.color = (c & 0xFF00FF00u) | ((c >> 16) & 0xFFu) | ((c & 0xFFu) << 16);
+                }
                 if (hasSpecular)
                     r.skip(4);
                 if (texCount > 0)
@@ -94,39 +110,71 @@ bool parseGeometry(Reader& r, PkgMesh& mesh, std::vector<std::string>& warnings,
     return true;
 }
 
-bool parseShaders(Reader& r, Pkg& pkg, std::string* error) {
-    pkg.shaderType = r.u32();
-    pkg.shadersPerPaintjob = r.u32();
-    if (!r.ok() || pkg.shadersPerPaintjob > kMaxShaders)
+// modShader::Load's rounding of a full material's colour component.
+float quantizeComponent(float v) {
+    if (v < 0.05f)
+        return 0.0f;
+    if (v > 0.95f)
+        return 1.0f;
+    return std::floor(v * 32.0f) * 0.03125f;
+}
+
+Vec4 quantize(const Vec4& c) {
+    return {quantizeComponent(c.x), quantizeComponent(c.y), quantizeComponent(c.z), quantizeComponent(c.w)};
+}
+
+// One compact colour: four bytes times MM2's 1/255 constant (the x87
+// product of the integer and the float constant, rounded once to float).
+Vec4 byteColor(Reader& r) {
+    constexpr float kInv255 = std::bit_cast<float>(0x3B808081u); // 0.003921569
+    auto channel = [&] {
+        return static_cast<float>(static_cast<double>(r.u8()) * static_cast<double>(kInv255));
+    };
+    const float red = channel(), green = channel(), blue = channel();
+    return {red, green, blue, channel()};
+}
+
+// modShader::LoadShaderSet / modShader::Load.
+bool readShaderTable(Reader& r, ShaderTable& table, std::string* error) {
+    table.type = r.u32();
+    table.perPaintjob = r.u32();
+    if (!r.ok() || table.perPaintjob > kMaxShaders)
         return fail(error, "truncated or corrupt shader header");
-    const bool compact = pkg.shaderType & 0x80;
-    const std::uint32_t paintjobs = pkg.shaderType & 0x7F;
-    pkg.paintjobs.resize(paintjobs);
-    for (auto& pj : pkg.paintjobs) {
-        pj.resize(pkg.shadersPerPaintjob);
+    const bool compact = table.type & 0x80;
+    table.paintjobs.resize(table.type & 0x7F);
+    for (auto& pj : table.paintjobs) {
+        pj.resize(table.perPaintjob);
         for (auto& m : pj) {
+            // Name length 0 means no texture.
             const std::uint8_t len = r.u8();
             m.texture = r.fixedString(len);
             if (compact) {
-                auto color = [&] {
-                    const float rr = r.u8() / 255.0f, gg = r.u8() / 255.0f, bb = r.u8() / 255.0f;
-                    return Vec4{rr, gg, bb, r.u8() / 255.0f};
-                };
-                m.diffuse = color();
-                m.ambient = color();
-                m.specular = color();
-                m.emissive = {0, 0, 0, 0};
+                // Diffuse, specular and emissive; the ambient colour is not stored.
+                m.diffuse = byteColor(r);
+                m.specular = byteColor(r);
+                m.emissive = byteColor(r);
             } else {
-                m.diffuse = r.vec4();
-                m.ambient = r.vec4();
-                m.specular = r.vec4();
-                m.emissive = r.vec4();
+                m.diffuse = quantize(r.vec4());
+                r.vec4(); // ambient: replaced below
+                m.specular = quantize(r.vec4());
+                m.emissive = quantize(r.vec4());
             }
+            m.ambient = m.diffuse;
             m.shininess = r.f32();
             if (!r.ok())
                 return fail(error, "truncated shader table");
         }
     }
+    return true;
+}
+
+bool parseShaders(Reader& r, Pkg& pkg, std::string* error) {
+    ShaderTable table;
+    if (!readShaderTable(r, table, error))
+        return false;
+    pkg.shaderType = table.type;
+    pkg.shadersPerPaintjob = table.perPaintjob;
+    pkg.paintjobs = std::move(table.paintjobs);
     return true;
 }
 
@@ -172,6 +220,17 @@ bool atChunkBoundary(const Reader& r, std::span<const std::byte> data) {
 }
 
 } // namespace
+
+std::optional<ShaderTable> parseShaderTable(std::span<const std::byte> data, std::size_t* consumed,
+                                            std::string* error) {
+    Reader r(data);
+    ShaderTable table;
+    if (!readShaderTable(r, table, error))
+        return std::nullopt;
+    if (consumed)
+        *consumed = r.pos();
+    return table;
+}
 
 std::size_t fvfVertexSize(std::uint32_t fvf) {
     std::size_t size = 0;
@@ -239,12 +298,11 @@ const PkgMesh* Pkg::find(std::string_view part, Lod lod) const {
 }
 
 const PkgMesh* Pkg::findBest(std::string_view part, Lod lod) const {
-    // Preferred LOD first, then progressively more detailed, then less.
+    // lvlInstance::GetGeomSet fills a missing level from the next less
+    // detailed one (VL -> L -> M -> H), so the requested level or the first
+    // less detailed one that exists is used.
     const int want = static_cast<int>(lod == Lod::None ? Lod::High : lod);
-    for (int l = want; l >= 0; --l)
-        if (const auto* m = find(part, static_cast<Lod>(l)))
-            return m;
-    for (int l = want + 1; l <= static_cast<int>(Lod::VeryLow); ++l)
+    for (int l = want; l <= static_cast<int>(Lod::VeryLow); ++l)
         if (const auto* m = find(part, static_cast<Lod>(l)))
             return m;
     return find(part, Lod::None);

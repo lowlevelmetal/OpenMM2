@@ -6,6 +6,17 @@ HUD text plus font descriptions. Read with `data::readPeStringTable`
 (`src/data/PeResources.cpp`); dump with `mm2tool strings <source>`. The DLL is
 parsed as data, never loaded.
 
+MM2 reads it through `AngelReadString` (**verified**): it loads the DLL with
+`LoadLibrary` on first use (when it is missing the game shows "MMLANG.DLL not
+found." and exits) and fetches each string with the Windows `LoadStringA`
+(`MyLoadStringA`), which picks the table of the user's language, converts
+the UTF-16 text to the ANSI code page, keeps at most 511 bytes and gives an
+empty string for an id that does not exist. OpenMM2 reads the string blocks
+itself (block *n* holds ids 16(*n*−1) … 16*n*−1; the first language found,
+or a preferred one), converts to UTF-8 for its own text rendering and leaves
+missing ids to the caller (**inferred** from the PE resource format; the
+retail DLL has one language and no string longer than 360 characters).
+
 Font entries have the form `Face, small height, height, charset, weight`,
 e.g. `Gill Sans MT, 12, 24, 0, 400` or `Arial Bold, 32, 64, 0, 400`
 (MM2 `mmText::CreateLocFont`): the game creates a GDI font whose cell height

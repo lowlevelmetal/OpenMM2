@@ -1,8 +1,10 @@
 #include "asset/Ped.h"
 
+#include "asset/Pkg.h"
 #include "asset/Reader.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "data/CNumbers.h"
 
 #include <algorithm>
 #include <array>
@@ -48,19 +50,22 @@ std::vector<std::string_view> lines(std::string_view text) {
     return out;
 }
 
+// datAsciiTokenizer::GetFloat: a token starting with a digit, '-' or '.',
+// read by atof (its numeric prefix). MM2 logs other tokens and reads 0; they
+// are rejected here because the line-based parser relies on them to spot
+// broken files.
 bool toFloat(std::string_view s, float& out) {
-    auto d = str::parseDouble(s);
-    if (!d)
+    if (s.empty() || !((s[0] >= '0' && s[0] <= '9') || s[0] == '-' || s[0] == '.'))
         return false;
-    out = static_cast<float>(*d);
+    out = static_cast<float>(data::cAtof(s));
     return true;
 }
 
+// datAsciiTokenizer::GetInt: a token starting with a digit or '-', read by atoi.
 bool toInt(std::string_view s, long long& out) {
-    auto v = str::parseInt(s);
-    if (!v)
+    if (s.empty() || !((s[0] >= '0' && s[0] <= '9') || s[0] == '-'))
         return false;
-    out = *v;
+    out = data::cAtoi(s);
     return true;
 }
 
@@ -95,8 +100,9 @@ std::string stem(std::string_view s) {
 // --- Skeleton ----------------------------------------------------------------------------
 
 int Skeleton::find(std::string_view name) const {
+    // crSkeletonData::FindBone compares names exactly.
     for (std::size_t i = 0; i < bones.size(); ++i)
-        if (str::iequals(bones[i].name, name))
+        if (bones[i].name == name)
             return static_cast<int>(i);
     return -1;
 }
@@ -152,6 +158,17 @@ std::optional<Skeleton> parseSkeleton(std::string_view text, std::string* error)
             }
             skel.bones[static_cast<std::size_t>(stack.back())].offset = {v[0], v[1], v[2]};
             i += 3;
+        } else if (t == "rotmin" || t == "rotmax") {
+            // crBoneData::Load: optional Euler limits.
+            float v[3];
+            if (stack.empty() || i + 3 >= toks.size() || !toFloat(toks[i + 1], v[0]) ||
+                !toFloat(toks[i + 2], v[1]) || !toFloat(toks[i + 3], v[2])) {
+                fail(error, std::format("bad {}", t));
+                return std::nullopt;
+            }
+            auto& bone = skel.bones[static_cast<std::size_t>(stack.back())];
+            (t == "rotmin" ? bone.rotMin : bone.rotMax) = {v[0], v[1], v[2]};
+            i += 3;
         } else if (t == "}") {
             if (stack.empty()) {
                 fail(error, "unbalanced '}'");
@@ -187,52 +204,67 @@ Vec3 PedAnimation::boneRotation(std::uint32_t frame, std::size_t bone) const {
 }
 
 std::optional<PedAnimation> parsePedAnimation(std::span<const std::byte> data, std::string* error) {
+    // crAnimation::LoadAnim.
     detail::Reader r(data);
     PedAnimation a;
     a.reserved = r.u32();
-    a.frameCount = r.u32();
+    const bool oldLayout = a.reserved != 0;
+    if (oldLayout) {
+        // The older layout starts with the frame count (not range checked).
+        a.frameCount = a.reserved;
+    } else {
+        a.frameCount = r.u32();
+        if (r.ok() && (a.frameCount < 1 || a.frameCount > 10000)) {
+            fail(error, std::format("corrupt header: {} frames", a.frameCount));
+            return std::nullopt;
+        }
+    }
     a.channelCount = r.u32();
+    if (r.ok() && (a.channelCount < 1 || a.channelCount > 1000)) {
+        fail(error, std::format("corrupt header: {} channels", a.channelCount));
+        return std::nullopt;
+    }
+    if (oldLayout)
+        a.channelCount = a.channelCount * 3 + 3; // stored as a bone count
     a.cycleDistance = r.f32();
     a.flags = r.u8();
     if (!r.ok()) {
         fail(error, "file too small for an animation header");
         return std::nullopt;
     }
-    if (a.frameCount == 0 || a.frameCount > 100000 || a.channelCount < 3 || a.channelCount > 1024 ||
-        (a.channelCount - 3) % 3 != 0) {
-        fail(error, std::format("implausible header: {} frames x {} channels", a.frameCount, a.channelCount));
+    // Posing needs the root translation plus three angles per bone.
+    if (a.channelCount < 3 || (a.channelCount - 3) % 3 != 0) {
+        fail(error, std::format("{} channels are not a root plus bones", a.channelCount));
         return std::nullopt;
     }
+    // MM2 reads frameCount x channelCount floats and ignores anything after.
     const std::size_t count = static_cast<std::size_t>(a.frameCount) * a.channelCount;
-    if (r.remaining() != count * 4) {
+    if (r.remaining() < count * 4) {
         fail(error, std::format("expected {} bytes of channel data, found {}", count * 4, r.remaining()));
         return std::nullopt;
     }
     a.channels.resize(count);
     for (auto& c : a.channels)
         c = r.f32();
-    for (float c : a.channels)
-        if (!std::isfinite(c)) {
-            fail(error, "non-finite channel value");
-            return std::nullopt;
-        }
     return a;
 }
 
 Mat34 matrixFromEulersXZY(const Vec3& e) {
-    // Port of Matrix34__FromEulersXZY (Open1560 game.asm), keeping its
-    // operation grouping. Zero angles skip the trig calls, as the original does.
+    // MM2's Matrix34::FromEulersXZY, with its operation grouping. Zero angles
+    // skip the trig calls, as the original does. (MM2 keeps the cosines and
+    // the z sine in x87 registers; here everything is 32-bit.)
     const float sx = e.x == 0.0f ? 0.0f : std::sin(e.x);
     const float cx = e.x == 0.0f ? 1.0f : std::cos(e.x);
     const float sy = e.y == 0.0f ? 0.0f : std::sin(e.y);
     const float cy = e.y == 0.0f ? 1.0f : std::cos(e.y);
     const float sz = e.z == 0.0f ? 0.0f : std::sin(e.z);
     const float cz = e.z == 0.0f ? 1.0f : std::cos(e.z);
-    const float cycx = cy * cx;
+    const float szcy = sz * cy;
+    const float szsy = sz * sy;
     Mat34 m;
     m.m0 = {cz * cy, sz, -(cz * sy)};
-    m.m1 = {sy * sx - sz * cycx, cz * cx, (cx * sz) * sy + cy * sx};
-    m.m2 = {(cy * sz) * sx + cx * sy, -(cz * sx), cycx - (sz * sy) * sx};
+    m.m1 = {sy * sx - szcy * cx, cz * cx, szsy * cx + cy * sx};
+    m.m2 = {szcy * sx + sy * cx, -(cz * sx), cy * cx - szsy * sx};
     m.m3 = {};
     return m;
 }
@@ -280,7 +312,7 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
         std::vector<std::array<long long, 6>> adj;
         std::vector<std::array<long long, 3>> tri;
         std::vector<long long> mtx;
-        long long declAdj = 0, declTri = 0, declMtx = 0;
+        long long declAdj = 0, declTri = 0, declMtx = 0, declReskin = 0, reskins = 0;
     };
 
     PedMesh mesh;
@@ -324,6 +356,11 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
                 mtl->primitives = n;
             else if (k == "textures:" && t.size() >= 2 && toInt(t[1], n))
                 mtl->mtl.textureCount = static_cast<int>(n);
+            else if (k == "texture:" && t.size() >= 3 && toInt(t[1], n)) {
+                // "texture: <n> <name>"; modModel::LoadAscii uses the first.
+                if (mtl->mtl.texture.empty())
+                    mtl->mtl.texture = std::string(t[2]);
+            }
             else if (k == "illum:" && t.size() >= 2)
                 mtl->mtl.illum = std::string(t[1]);
             else if (k == "ambient:" && floats(t, 1, 3, v))
@@ -340,16 +377,21 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
             if (k == "}") {
                 if (static_cast<long long>(pk->adj.size()) != pk->declAdj ||
                     static_cast<long long>(pk->tri.size()) != pk->declTri ||
-                    static_cast<long long>(pk->mtx.size()) != pk->declMtx)
+                    static_cast<long long>(pk->mtx.size()) != pk->declMtx || pk->reskins != pk->declReskin)
                     return bad("packet contents do not match its header");
                 pk = nullptr;
                 continue;
             }
             if (k == "adj") {
+                // The matrix slot is only there when the packet has matrices.
                 std::array<long long, 6> a{};
-                if (!ints(t, 1, 6, a.data()))
+                if (!ints(t, 1, pk->declMtx ? 6 : 5, a.data()))
                     return bad("bad adj");
                 pk->adj.push_back(a);
+            } else if (k == "reskin") {
+                // Blend weights (gfxReskin: two indices, a weight and a
+                // vector); none in the retail models, so they are skipped.
+                ++pk->reskins;
             } else if (k == "tri") {
                 std::array<long long, 3> a{};
                 if (!ints(t, 1, 3, a.data()))
@@ -401,14 +443,18 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
             mtl = &materials.back();
             mtl->mtl.name = std::string(t[1]);
         } else if (k == "packet") {
-            long long h[3];
-            if (!ints(t, 1, 3, h) || t.size() < 5 || t[4] != "{" || h[0] < 0 || h[1] < 0 || h[2] < 0)
-                return bad("expected 'packet <adjuncts> <triangles> <matrices> {'");
+            // An optional fourth count (reskins) comes before the brace.
+            long long h[4] = {0, 0, 0, 0};
+            const bool reskin = t.size() == 6;
+            if (!ints(t, 1, reskin ? 4 : 3, h) || t.back() != "{" || (t.size() != 5 && t.size() != 6) ||
+                h[0] < 0 || h[1] < 0 || h[2] < 0 || h[3] < 0)
+                return bad("expected 'packet <adjuncts> <triangles> <matrices> [<reskins>] {'");
             packets.emplace_back();
             pk = &packets.back();
             pk->declAdj = h[0];
             pk->declTri = h[1];
             pk->declMtx = h[2];
+            pk->declReskin = h[3];
         } else if (k == "adj") {
             std::array<long long, 5> a{};
             if (!ints(t, 1, 5, a.data()))
@@ -435,8 +481,14 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
         return bad("unterminated block");
 
     auto headerCount = [&](const char* key) { return header.contains(key) ? header[key] : -1; };
+    // modGetModel: 1.08 and 1.09 are text, 2.00 binary; anything else fails.
     if (mesh.version.empty())
         return bad("missing version");
+    if (mesh.version != "1.08" && mesh.version != "1.09")
+        return bad(std::format("unsupported version {}", mesh.version));
+    // With fewer than two colours modModel::LoadAscii reads the one colour
+    // line but gives the vertices no colour (white).
+    const bool perVertexColor = colors.size() >= 2;
     if (headerCount("verts") != static_cast<long long>(verts.size()) ||
         headerCount("normals") != static_cast<long long>(normals.size()) ||
         headerCount("colors") != static_cast<long long>(colors.size()) ||
@@ -456,10 +508,11 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
             return false;
         out.position = verts[static_cast<std::size_t>(v)];
         out.normal = normals[static_cast<std::size_t>(n)];
-        if (c >= 0 && c < static_cast<long long>(colors.size()))
+        if (perVertexColor) {
+            if (c < 0 || c >= static_cast<long long>(colors.size()))
+                return false;
             out.color = colors[static_cast<std::size_t>(c)];
-        else if (!colors.empty())
-            return false;
+        }
         if (tx >= 0 && tx < static_cast<long long>(tex1.size()))
             out.uv = tex1[static_cast<std::size_t>(tx)];
         else if (!tex1.empty())
@@ -483,11 +536,16 @@ std::optional<PedMesh> parsePedMesh(std::string_view text, std::string* error) {
                 const Packet& pkt = packets[nextPacket++];
                 const auto base = static_cast<std::uint32_t>(mesh.vertices.size());
                 for (const auto& a : pkt.adj) {
-                    const long long slot = a[5];
-                    if (slot < 0 || slot >= static_cast<long long>(pkt.mtx.size()))
-                        return bad("adjunct matrix slot out of range");
+                    // A packet without matrices uses bone 0 (inferred).
+                    long long bone = 0;
+                    if (pkt.declMtx) {
+                        const long long slot = a[5];
+                        if (slot < 0 || slot >= static_cast<long long>(pkt.mtx.size()))
+                            return bad("adjunct matrix slot out of range");
+                        bone = pkt.mtx[static_cast<std::size_t>(slot)];
+                    }
                     PedMesh::Vertex vx;
-                    if (!makeVertex(a[0], a[1], a[2], a[3], pkt.mtx[static_cast<std::size_t>(slot)], vx))
+                    if (!makeVertex(a[0], a[1], a[2], a[3], bone, vx))
                         return bad("adjunct index out of range");
                     mesh.vertices.push_back(vx);
                 }
@@ -561,41 +619,22 @@ const PedShader* PedShaderSet::get(std::uint32_t variant, std::uint32_t material
 }
 
 std::optional<PedShaderSet> parsePedShaders(std::span<const std::byte> data, std::string* error) {
-    detail::Reader r(data);
+    // modShader::LoadShaderSet, as for a package's "shaders" chunk. Anything
+    // after the table is ignored.
+    auto table = parseShaderTable(data, nullptr, error);
+    if (!table)
+        return std::nullopt;
     PedShaderSet set;
-    set.variantCount = r.u32();
-    set.materialCount = r.u32();
-    if (!r.ok() || set.variantCount == 0 || set.materialCount == 0 || set.variantCount > 4096 ||
-        set.materialCount > 4096) {
-        fail(error, "bad shader header");
+    set.variantCount = static_cast<std::uint32_t>(table->paintjobs.size());
+    set.materialCount = table->perPaintjob;
+    if (set.variantCount == 0 || set.materialCount == 0) {
+        fail(error, "empty shader table");
         return std::nullopt;
     }
-    const std::size_t total = static_cast<std::size_t>(set.variantCount) * set.materialCount;
-    if (total * 69 > r.remaining()) { // each entry is at least 1 + 17 * 4 bytes
-        fail(error, "shader table larger than the file");
-        return std::nullopt;
-    }
-    set.shaders.reserve(total);
-    for (std::size_t i = 0; i < total; ++i) {
-        PedShader s;
-        const std::uint8_t len = r.u8();
-        for (std::uint8_t c = 0; c < len; ++c)
-            s.texture.push_back(static_cast<char>(r.u8()));
-        s.diffuse = r.vec4();
-        s.ambient = r.vec4();
-        s.specular = r.vec4();
-        s.emissive = r.vec4();
-        s.power = r.f32();
-        if (!r.ok()) {
-            fail(error, "truncated shader table");
-            return std::nullopt;
-        }
-        set.shaders.push_back(std::move(s));
-    }
-    if (r.remaining() != 0) {
-        fail(error, std::format("{} trailing bytes after the shader table", r.remaining()));
-        return std::nullopt;
-    }
+    set.shaders.reserve(static_cast<std::size_t>(set.variantCount) * set.materialCount);
+    for (const auto& variant : table->paintjobs)
+        for (const auto& m : variant)
+            set.shaders.push_back({m.texture, m.diffuse, m.ambient, m.specular, m.emissive, m.shininess});
     return set;
 }
 
@@ -672,13 +711,17 @@ std::optional<std::vector<int>> parsePedRemap(std::string_view text, std::string
 // --- Animation table ----------------------------------------------------------------------------
 
 const PedAnimState* PedAnimTable::find(std::string_view name) const {
+    // pedAnimation::LookupSequence: exact name, first match.
     for (const auto& s : states)
-        if (str::iequals(s.name, name))
+        if (s.name == name)
             return &s;
     return nullptr;
 }
 
 std::optional<PedAnimTable> parsePedAnimTable(std::string_view text, std::string* error) {
+    // pedAnimation::Load: lines starting with '#' are skipped, the rest are
+    // split with strtok (so empty fields between commas vanish) and the
+    // numbers read with atoi/atof. The next state is optional.
     PedAnimTable table;
     int lineNo = 0;
     for (auto line : lines(text)) {
@@ -686,25 +729,33 @@ std::optional<PedAnimTable> parsePedAnimTable(std::string_view text, std::string
         const auto trimmed = str::trim(line);
         if (trimmed.empty() || trimmed.starts_with('#'))
             continue;
-        auto cells = str::split(trimmed, ',');
-        if (cells.size() < 9) {
-            fail(error, std::format("line {}: expected 9 columns", lineNo));
+        std::vector<std::string_view> cells;
+        for (auto c : str::split(trimmed, ','))
+            if (!c.empty())
+                cells.push_back(str::trim(c));
+        if (cells.size() < 8) {
+            fail(error, std::format("line {}: expected at least 8 columns", lineNo));
             return std::nullopt;
         }
         PedAnimState s;
-        s.name = std::string(str::trim(cells[0]));
+        s.name = std::string(cells[0]);
         s.animFile = stem(cells[1]);
-        long long first = 0, last = 0;
-        if (s.name.empty() || s.animFile.empty() || !toInt(str::trim(cells[2]), first) ||
-            !toInt(str::trim(cells[3]), last) || !toFloat(str::trim(cells[4]), s.forwardOffset) ||
-            !toFloat(str::trim(cells[5]), s.forwardDistance) || !toFloat(str::trim(cells[6]), s.sideOffset) ||
-            !toFloat(str::trim(cells[7]), s.sideDistance) || first < 1 || last < first) {
+        const int first = data::cAtoi(cells[2]);
+        const int last = data::cAtoi(cells[3]);
+        s.forwardOffset = static_cast<float>(data::cAtof(cells[4]));
+        s.forwardDistance = static_cast<float>(data::cAtof(cells[5]));
+        s.sideOffset = static_cast<float>(data::cAtof(cells[6]));
+        s.sideDistance = static_cast<float>(data::cAtof(cells[7]));
+        // MM2 plays a sequence whose last frame precedes its first backwards;
+        // that is not supported here (no retail table has one).
+        if (s.name.empty() || s.animFile.empty() || first < 1 || last < first) {
             fail(error, std::format("line {}: bad values", lineNo));
             return std::nullopt;
         }
-        s.firstFrame = static_cast<int>(first);
-        s.lastFrame = static_cast<int>(last);
-        s.next = std::string(str::trim(cells[8]));
+        s.firstFrame = first;
+        s.lastFrame = last;
+        if (cells.size() > 8)
+            s.next = std::string(cells[8]);
         table.states.push_back(std::move(s));
     }
     if (table.states.empty()) {
@@ -718,7 +769,14 @@ std::optional<PedAnimTable> parsePedAnimTable(std::string_view text, std::string
 
 const PedAnimation* PedType::animation(std::string_view stateOrFile) const {
     std::string key = stem(stateOrFile);
-    if (const PedAnimState* s = table.find(stateOrFile))
+    const PedAnimState* s = table.find(stateOrFile);
+    if (!s) {
+        // Convenience for tools: state names in any case.
+        for (const auto& st : table.states)
+            if (str::iequals(st.name, stateOrFile))
+                s = &st;
+    }
+    if (s)
         key = s->animFile;
     const auto it = animations.find(key);
     return it == animations.end() ? nullptr : &it->second;
@@ -762,13 +820,26 @@ std::optional<PedType> loadPedType(std::string_view name, const ReadFileFn& read
         return std::nullopt;
     }
 
-    auto sh = required(base + ".shaders");
-    if (!sh)
-        return std::nullopt;
-    auto shaders = parsePedShaders(*sh, &err);
-    if (!shaders) {
-        fail(error, std::format("{}.shaders: {}", base, err));
-        return std::nullopt;
+    // pedAnimationInstance::Load: without a .shaders file the type has one
+    // variant, the .mod's own materials.
+    std::optional<PedShaderSet> shaders;
+    if (auto sh = read(base + ".shaders")) {
+        shaders = parsePedShaders(*sh, &err);
+        if (!shaders) {
+            fail(error, std::format("{}.shaders: {}", base, err));
+            return std::nullopt;
+        }
+    } else {
+        shaders.emplace();
+        shaders->variantCount = 1;
+        shaders->materialCount = static_cast<std::uint32_t>(type.mesh.materials.size());
+        for (const auto& mtl : type.mesh.materials)
+            shaders->shaders.push_back({mtl.texture,
+                                        {mtl.diffuse.x, mtl.diffuse.y, mtl.diffuse.z, 1.0f},
+                                        {mtl.ambient.x, mtl.ambient.y, mtl.ambient.z, 1.0f},
+                                        {mtl.specular.x, mtl.specular.y, mtl.specular.z, 1.0f},
+                                        {0.0f, 0.0f, 0.0f, 0.0f},
+                                        0.0f});
     }
     if (shaders->materialCount != type.mesh.materials.size()) {
         fail(error, std::format("{}: {} shader materials for {} mesh materials", base, shaders->materialCount,
@@ -779,8 +850,14 @@ std::optional<PedType> loadPedType(std::string_view name, const ReadFileFn& read
 
     if (auto rays = read(base + ".rays")) {
         type.rays = parsePedRays(asText(*rays), &err);
-        if (!type.rays)
+        if (!type.rays) {
             log::warn("ped: {}.rays: {}", base, err);
+        } else if (type.rays->bones.size() != type.skeleton.bones.size()) {
+            // "Number of bones changed, can't load rays file."
+            log::warn("ped: {}.rays has {} bones, the skeleton {}; ignored", base, type.rays->bones.size(),
+                      type.skeleton.bones.size());
+            type.rays.reset();
+        }
     }
     if (auto remap = read(base + ".remap")) {
         if (auto v = parsePedRemap(asText(*remap), &err))

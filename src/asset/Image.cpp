@@ -49,6 +49,7 @@ constexpr std::size_t kTexHeaderSize = 14;
 std::size_t paletteEntries(TexFormat f) {
     switch (f) {
     case TexFormat::P8:
+    case TexFormat::P8A8:
     case TexFormat::PA8: return 256;
     case TexFormat::P4:
     case TexFormat::PA4: return 16;
@@ -56,14 +57,17 @@ std::size_t paletteEntries(TexFormat f) {
     }
 }
 
-// Bytes for one level of the given size (P4 packs two texels per byte).
+// Bytes of one level as gfxLoadTexImage reads them. The 4-bit formats read
+// w*h/2 bytes (rounded down), so a 1x1 level has no data.
 std::size_t levelBytes(TexFormat f, std::uint32_t w, std::uint32_t h) {
     const std::size_t texels = std::size_t{w} * h;
     switch (f) {
     case TexFormat::P8:
     case TexFormat::PA8: return texels;
+    case TexFormat::P8A8:
+    case TexFormat::ARGB1555: return texels * 2;
     case TexFormat::P4:
-    case TexFormat::PA4: return (texels + 1) / 2;
+    case TexFormat::PA4: return texels / 2;
     case TexFormat::RGB888: return texels * 3;
     case TexFormat::RGBA8888: return texels * 4;
     }
@@ -73,6 +77,8 @@ std::size_t levelBytes(TexFormat f, std::uint32_t w, std::uint32_t h) {
 bool knownFormat(std::uint16_t f) {
     switch (static_cast<TexFormat>(f)) {
     case TexFormat::P8:
+    case TexFormat::P8A8:
+    case TexFormat::ARGB1555:
     case TexFormat::PA8:
     case TexFormat::P4:
     case TexFormat::PA4:
@@ -81,6 +87,17 @@ bool knownFormat(std::uint16_t f) {
     }
     return false;
 }
+
+// gfxLoadTexImage builds an RGB888 gfxImage for P8 and P4 (no alpha) and an
+// RGBA8888 or ARGB1555 one for the rest.
+bool hasAlpha(TexFormat f) { return f != TexFormat::P8 && f != TexFormat::P4 && f != TexFormat::RGB888; }
+
+// texImage_CheckRes: a side must be a power of two.
+bool powerOfTwo(std::uint32_t v) { return (v & (0u - v)) == v; }
+
+// Expands a 5-bit channel to 8 bits by bit replication (inferred: the
+// conversion happens in the Direct3D driver, which MM2 does not control).
+std::uint8_t expand5(std::uint32_t v) { return static_cast<std::uint8_t>((v << 3) | (v >> 2)); }
 
 } // namespace
 
@@ -111,8 +128,10 @@ std::optional<TexHeader> parseTexHeader(std::span<const std::byte> data, std::st
         return std::nullopt;
     }
     h.format = static_cast<TexFormat>(format);
-    if (h.width == 0 || h.height == 0 || h.width > 4096 || h.height > 4096 || h.mipCount == 0 || h.mipCount > 13) {
-        fail(error, std::format("implausible texture header {}x{} with {} mips", h.width, h.height, h.mipCount));
+    // texImage_CheckRes accepts any power of two (and, as an artefact of its
+    // bit test, zero); a zero-sized texture is rejected here.
+    if (h.width == 0 || h.height == 0 || !powerOfTwo(h.width) || !powerOfTwo(h.height)) {
+        fail(error, std::format("bad resolution {} x {}", h.width, h.height));
         return std::nullopt;
     }
     return h;
@@ -125,6 +144,7 @@ std::optional<Texture> parseTex(std::span<const std::byte> data, std::string* er
     Texture tex;
     tex.header = *header;
     const TexFormat fmt = header->format;
+    tex.image.alphaFormat = hasAlpha(fmt);
 
     std::size_t pos = kTexHeaderSize;
     const std::size_t palCount = paletteEntries(fmt);
@@ -143,11 +163,25 @@ std::optional<Texture> parseTex(std::span<const std::byte> data, std::string* er
         }
         pos += palCount * 4;
     }
-    // Opaque palette formats keep their stored alpha bytes as they are; all
-    // retail P8 palettes store 0xFF for every entry that is referenced.
+    // P8 and P4 become RGB888 images in MM2: the palette's alpha is dropped.
+    const bool paletteAlpha = hasAlpha(fmt);
+    auto paletteTexel = [&](std::uint8_t* d, std::size_t index) {
+        std::memcpy(d, tex.palette.data() + index * 4, 4);
+        if (!paletteAlpha)
+            d[3] = 255;
+    };
 
+    // gfxImage::Create adds a mip level only while both sides are above 1;
+    // gfxLoadTexImage reads that many levels at most (a mip count of 0 reads
+    // the whole chain).
     std::uint32_t w = header->width, h = header->height;
-    for (std::uint16_t level = 0; level < header->mipCount; ++level) {
+    for (std::uint32_t level = 0; header->mipCount == 0 || level < header->mipCount; ++level) {
+        if (level > 0) {
+            if (w <= 1 || h <= 1)
+                break;
+            w /= 2;
+            h /= 2;
+        }
         const std::size_t bytes = levelBytes(fmt, w, h);
         if (data.size() < pos + bytes) {
             fail(error, std::format("truncated mip level {} ({}x{})", level, w, h));
@@ -164,15 +198,33 @@ std::optional<Texture> parseTex(std::span<const std::byte> data, std::string* er
         case TexFormat::P8:
         case TexFormat::PA8:
             for (std::size_t i = 0; i < texels; ++i)
-                std::memcpy(dst + i * 4, tex.palette.data() + std::to_integer<std::size_t>(src[i]) * 4, 4);
+                paletteTexel(dst + i * 4, std::to_integer<std::size_t>(src[i]));
+            break;
+        case TexFormat::P8A8:
+            // Palette index, then the texel's own alpha.
+            for (std::size_t i = 0; i < texels; ++i) {
+                paletteTexel(dst + i * 4, std::to_integer<std::size_t>(src[i * 2]));
+                dst[i * 4 + 3] = std::to_integer<std::uint8_t>(src[i * 2 + 1]);
+            }
             break;
         case TexFormat::P4:
         case TexFormat::PA4:
-            // Untested: no retail file uses 4-bit textures. Low nibble first.
+            // Two texels per byte, low nibble first. A level with an odd texel
+            // count (only 1x1) has no byte for its last texel in MM2, which
+            // leaves it uninitialised; it takes palette entry 0 here
+            // (inferred).
             for (std::size_t i = 0; i < texels; ++i) {
-                const auto b = std::to_integer<std::size_t>(src[i / 2]);
-                const std::size_t idx = (i & 1) ? (b >> 4) : (b & 0xF);
-                std::memcpy(dst + i * 4, tex.palette.data() + idx * 4, 4);
+                const std::size_t b = i / 2 < bytes ? std::to_integer<std::size_t>(src[i / 2]) : 0;
+                paletteTexel(dst + i * 4, (i & 1) ? (b >> 4) : (b & 0xF));
+            }
+            break;
+        case TexFormat::ARGB1555:
+            for (std::size_t i = 0; i < texels; ++i) {
+                const std::uint32_t v = loadLE<std::uint16_t>(src + i * 2);
+                dst[i * 4 + 0] = expand5((v >> 10) & 31);
+                dst[i * 4 + 1] = expand5((v >> 5) & 31);
+                dst[i * 4 + 2] = expand5(v & 31);
+                dst[i * 4 + 3] = (v & 0x8000) ? 255 : 0;
             }
             break;
         case TexFormat::RGB888:
@@ -185,8 +237,6 @@ std::optional<Texture> parseTex(std::span<const std::byte> data, std::string* er
         }
         tex.image.levels.push_back(std::move(out));
         pos += bytes;
-        w = std::max(1u, w / 2);
-        h = std::max(1u, h / 2);
     }
     return tex;
 }
@@ -293,9 +343,15 @@ std::optional<Image> decodeTga(std::span<const std::byte> data, std::string* err
     }
 
     // Output is bottom-up, which is the TGA default (origin bit 5 clear).
+    // MM2's gfxLoadTargaImage stores the picture's top row first instead;
+    // asset::Image keeps the bottom row first for every non-.tex image, and
+    // its users draw it accordingly (see docs/formats/images.md).
     const bool topDown = (descriptor & 0x20) != 0;
     const bool rightToLeft = (descriptor & 0x10) != 0;
     Image img;
+    // gfxLoadTargaImage makes a 32-bit TGA an RGBA8888 image, anything else RGB888.
+    img.alphaFormat = pixelBytes == 4 || (pixelBytes == 2 && bpp == 16 && (descriptor & 0x0F)) ||
+                      (baseType == 1 && cmapBits == 32);
     Image::Level level;
     level.width = width;
     level.height = height;
@@ -344,6 +400,7 @@ std::optional<Image> decodeStb(std::span<const std::byte> data, std::string* err
         return std::nullopt;
     }
     Image img;
+    img.alphaFormat = comp == 4 || comp == 2;
     Image::Level level;
     level.width = static_cast<std::uint32_t>(w);
     level.height = static_cast<std::uint32_t>(h);

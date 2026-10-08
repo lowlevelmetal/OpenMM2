@@ -143,11 +143,12 @@ std::optional<WorldTexture> TextureLibrary::load(const std::string& name, bool d
     t.height = top.height;
     t.flags = flags;
     t.translucent = image->hasTranslucency();
-    t.alphaFlag = (flags & asset::TexFlags::Alpha) != 0;
-    // Wrap flags apply to .tex files; everything else repeats.
-    const bool isTex = path.ends_with(".tex");
-    t.sampler.addressU = !isTex || (flags & asset::TexFlags::WrapU) ? render::AddressMode::Wrap : render::AddressMode::Clamp;
-    t.sampler.addressV = !isTex || (flags & asset::TexFlags::WrapV) ? render::AddressMode::Wrap : render::AddressMode::Clamp;
+    t.alphaFormat = image->alphaFormat;
+    // gfxRenderState::DoFlush: textures repeat unless their .tex flags clamp
+    // U (0x1) or V (0x10000); other image types carry no flags and repeat.
+    using render::AddressMode;
+    t.sampler.addressU = (flags & asset::TexFlags::ClampU) ? AddressMode::Clamp : AddressMode::Wrap;
+    t.sampler.addressV = (flags & asset::TexFlags::ClampV) ? AddressMode::Clamp : AddressMode::Wrap;
     t.sampler.filter = render::Filter::Trilinear;
     return t;
 }
