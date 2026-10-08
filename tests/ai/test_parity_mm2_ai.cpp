@@ -2,6 +2,7 @@
 // aiMap::Reset does on a restart, the ambient cars' set-up draws and the
 // lights aiVehicleInstance::DrawGlow shows. See docs/parity/mm2/ai.md.
 #include "ai/Driving.h"
+#include "ai/MapView.h"
 #include "ai/Pedestrians.h"
 #include "ai/Random.h"
 #include "ai/RoadNetwork.h"
@@ -310,4 +311,22 @@ TEST(ParityMm2Ai, DriversSeePropsAsMm2Does) {
     EXPECT_FLOAT_EQ(right.z, 4.0f);
     EXPECT_FLOAT_EQ(left.x, 10.0f);
     EXPECT_FLOAT_EQ(left.z, -4.0f);
+}
+
+// aiMap::PredictIntersectionPath (aiVehiclePlayer::Reset): in an
+// intersection, the road the car is leaving, by its m2 (its back), turned
+// round while it reverses.
+TEST(ParityMm2Ai, PlayerInAnIntersectionKeepsTheRoadItLeaves) {
+    const auto map = square();
+    const auto net = ai::RoadNetwork::build(map, {});
+    const ai::MapView view(net);
+    // At corner 1, driving north (-Z) off road 0 (which ends there).
+    bool fromStart = true;
+    EXPECT_EQ(view.predictIntersectionPath(1, {0, 0, 1}, &fromStart), 0);
+    EXPECT_FALSE(fromStart);
+    // An axis pointing west: road 1 (east) scores lowest, road 0 wins.
+    EXPECT_EQ(view.predictIntersectionPath(1, {-1, 0, 0}, &fromStart), 0);
+    // Facing west (back to the east): road 1 leaves eastwards from its start.
+    EXPECT_EQ(view.predictIntersectionPath(1, {1, 0, 0}, &fromStart), 1);
+    EXPECT_TRUE(fromStart);
 }

@@ -2,8 +2,8 @@
 
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
-Summary: 507 reachable functions in 35 classes; ported 408 (of which newly
-ported 15, and 9 more fixed in this pass), replaced 6, not needed 92, open 1.
+Summary: 507 reachable functions in 35 classes; ported 409 (of which newly
+ported 17, and 9 more fixed in this pass), replaced 6, not needed 92, open 0.
 
 Scope: every ai* class except aiSubway and aiCableCar (world objects), and
 lvlAiMap / lvlAiRoad. The first audit verified OpenMM2's side
@@ -37,7 +37,8 @@ Fixed or newly ported in this pass:
 - **Racers and police steer round props** (aiVehiclePhysics::IsTargetBlocked's
   prop lists, aiBanger::IsBlockingTarget / PreAvoid / CurrentRoadIdx).
 - **-pedpool** sets the pedestrian pool (aiCityData).
-- **Players' tracked roads** forgotten at a reset (aiVehiclePlayer::Reset).
+- **Players' tracked roads** found afresh at a reset (aiVehiclePlayer::Reset,
+  aiMap::PredictIntersectionPath).
 - OpenMM2's stranded-racer recovery places the car as MM2 places racers
   (vehCarSim::SetResetPos, 0.9 m above the road) and stops once the racer
   has arrived.
@@ -102,7 +103,7 @@ racers, the police, and the children (light sets, the vehicle manager).
 | `ReadBinary`, `MapRoadToRooms` | ported | `city::parseBai`, `MapView::buildRooms` | Verified by the first audit. |
 | `InitRouting`, `AddRoutingNode`, `RemoveRoutingNode`, `FindInt` | ported | `ai::calcRoute` (Course.cpp) | CalcRoute's node table and open list; OpenMM2's Dijkstra keeps its own. |
 | `CalcRoute` | ported | `ai::calcRoute` | First audit. Its branch for a start inside an intersection with its last argument false (the route then starts with the road aiMap::PredictIntersectionPath predicts) is not ported: the police pass a register left from their caller there, inferred non-zero. |
-| `PredictIntersectionPath` | open |  | The road a player in an intersection is taking (by heading, reversed when the car reverses), for aiVehiclePlayer::Reset and that CalcRoute branch. OpenMM2 keeps no road until the player is on one (`MapView::resetPlayers`). Needs the player's reverse flag in TrackedCar; small. |
+| `PredictIntersectionPath` | ported (new) | `MapView::predictIntersectionPath` | For aiVehiclePlayer::Reset: of the roads with side-1 sidewalks at the intersection, the one whose first section away from it points most along the car's m2 (its back; turned round while it reverses): the road it is leaving. Its use in CalcRoute's other branch is not taken (above). |
 | `PredictAmbIntersectionPath`, `PredictAmbFreewayIntersectionPath` | ported | `Traffic::predictIntersectionPath` | Both, by its freeway flag (aiGoalRegainRail::Reset). |
 | `Reset` | ported (new) | `World::reset`, `Traffic::reset`, `Pedestrians::reset`, `TrafficBodies::reset`, RaceScreen | See above; was missing. |
 | `Update` | ported | `World::step`, `RaceScreen::updateAmbient` / `updateAiDrivers` | Order verified; the AI steps at a fixed 30 Hz (deviation recorded by the first audit). |
@@ -345,7 +346,7 @@ The player as the AI sees it.
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
 | `Update`, `Position`, `Speed`, `CurrentRoadIdx` | ported | `MapView::trackPlayer`, `ai::trackedCar` | First audit. |
-| `Reset` | ported | `MapView::resetPlayers` | New: the tracked road is forgotten at aiMap::Reset; the intersection prediction is open (aiMap::PredictIntersectionPath). |
+| `Reset` | ported (new) | `MapView::resetPlayers`, `trackPlayer` | The tracked road found afresh at aiMap::Reset (from room 0; in an intersection the predicted road, vertex 1). OpenMM2 kept the road from before the restart. |
 | `Attach`, `GetMatrix`, `FrontBumperDistance`, `BackBumperDistance`, `LSideDistance`, `RSideDistance`, `CurrentLane`, `CurrentRoadId`, `CurrentRdVert`, `Type` | ported | `ai::trackedCar` | Accessors (half the InertiaBox). |
 | `aiVehiclePlayer`, `~aiVehiclePlayer`, `DrawId` | not needed |  |  |
 

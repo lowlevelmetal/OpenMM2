@@ -248,9 +248,61 @@ int MapView::roadBetween(int from, int to, bool* forward) const {
     return -1;
 }
 
+int MapView::predictIntersectionPath(int node, const Vec3& axis, bool* leavesFromStart) const {
+    const Intersection* in = intersection(node);
+    if (!in)
+        return -1;
+    float best = -999999.0f;
+    int choice = -1;
+    for (int id : in->paths) {
+        const city::AiPath* p = path(id);
+        const PathInfo* info = pathInfo(id);
+        if (!p || !info || p->right.numSidewalks == 0 || p->center.size() < 2)
+            continue;
+        const std::size_t n = p->center.size();
+        const Vec3 d = info->intersection[1] == node ? p->center[1] - p->center[0]
+                                                     : p->center[n - 2] - p->center[n - 1];
+        const float score = (axis.x * d.x + d.y * axis.y) + d.z * axis.z;
+        if (best < score) {
+            best = score;
+            choice = id;
+        }
+    }
+    if (choice >= 0 && leavesFromStart)
+        *leavesFromStart = pathInfo(choice)->intersection[1] == node;
+    return choice;
+}
+
 void MapView::trackPlayer(TrackedCar& car) {
     PlayerTrack& t = m_players[car.id];
     int id = 0, type = kNoComponent;
+    if (t.reset) {
+        // aiVehiclePlayer::Reset (aiMap::Reset at the race start and at a
+        // restart): from room 0; on a road its vertex as below; in an
+        // intersection the road the car is leaving (by its m2, turned round
+        // while it reverses), vertex 1.
+        t.reset = false;
+        t.room = mapComponent(car.position, id, type, 0);
+        if (type == kIntersectionComponent) {
+            Vec3 axis = -car.forward; // m2
+            if (car.reversing)
+                axis = car.forward;
+            bool fromStart = false;
+            const int road = predictIntersectionPath(id, axis, &fromStart);
+            if (road >= 0) {
+                t.road = road;
+                t.vert = 1;
+            }
+        } else if (type == kRoadComponent) {
+            if (const city::AiPath* p = path(id)) {
+                t.road = id;
+                t.vert = pathRoadVertice(*p, car.position, 1);
+            }
+        }
+        car.playerRoad = t.road;
+        car.playerVert = t.vert;
+        return;
+    }
     t.room = mapComponent(car.position, id, type, t.room);
     if (type == kRoadComponent) {
         if (const city::AiPath* p = path(id)) {

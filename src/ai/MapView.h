@@ -96,11 +96,17 @@ public:
     // intersection or off the roads. Fills `car`'s playerRoad / playerVert.
     void trackPlayer(TrackedCar& car);
     // aiVehiclePlayer::Reset (aiMap::Reset): the players' rooms, roads and
-    // vertices are found afresh (from room 0) on their next update. (MM2
-    // maps the reset position at once and, in an intersection, predicts the
-    // road the player will take, aiMap::PredictIntersectionPath; OpenMM2
-    // keeps no road until the player is on one.)
+    // vertices are found afresh on their next update: from room 0, in an
+    // intersection the road the player is leaving
+    // (aiMap::PredictIntersectionPath). (MM2 maps the reset position at once;
+    // OpenMM2 at the next update, where the player still stands.)
     void resetPlayers() { m_players.clear(); }
+    // aiMap::PredictIntersectionPath: of the roads at intersection `node` that
+    // have side-1 sidewalks (the regular roads), the one whose first section
+    // away from the node points most along `axis` (a car's m2, its back,
+    // turned round while it reverses: the road it is leaving); `leavesFromStart`
+    // tells whether that road starts (its vertex 0) at the node. -1: none.
+    int predictIntersectionPath(int node, const Vec3& axis, bool* leavesFromStart) const;
 
 private:
     void buildRooms();
@@ -114,6 +120,7 @@ private:
         int room = 0;
         int road = -1;
         int vert = 0;
+        bool reset = true; // aiVehiclePlayer::Reset still to run
     };
     std::unordered_map<int, PlayerTrack> m_players;
 };
