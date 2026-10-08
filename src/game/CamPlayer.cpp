@@ -20,6 +20,7 @@ const char* viewName(PlayerCameras::View view) {
     case PlayerCameras::View::Dash: return "dash";
     case PlayerCameras::View::Pre: return "pre";
     case PlayerCameras::View::Point: return "point";
+    case PlayerCameras::View::Polar: return "polar";
     }
     return "?";
 }
@@ -72,6 +73,7 @@ CarCamera& PlayerCameras::camera(View view) {
     case View::Dash: return m_dash;
     case View::Pre: return m_pre;
     case View::Point: return m_point;
+    case View::Polar: return m_polar;
     }
     return m_near;
 }
@@ -132,6 +134,7 @@ void PlayerCameras::reset(const CameraTarget& target) {
     m_preRace = false;
     m_postRace = false;
     m_postPending = false;
+    m_mpPostPending = false;
     m_waterPending = false;
     m_waterDone = false;
     m_restoreCityCam = false;
@@ -171,6 +174,26 @@ void PlayerCameras::update(float dt, const CameraTarget& target, const CameraPro
         m_point.setMinDist(5.0f);
         m_point.setAppRate(5.0f);
         m_view.newCam(&m_point, CameraView::Blend::EaseInOut, 0.8f);
+        m_postRace = true;
+    }
+    if (m_mpPostPending) {
+        // mmPlayer::SetMPPostCam (from mmGameMulti::SetFinishCam)
+        m_mpPostPending = false;
+        m_far.update(dt, target, probe, input, m_view.perspective());
+        m_polar.setInterest(Mat34::translation(m_mpPostFinish));
+        PolarCamera::Params& p = m_polar.params();
+        if ((target.roomFlags & 0x0A) == 0) {
+            p.polarDistance = 21.5f;
+            p.polarIncline = 0.34f;
+        } else {
+            p.polarDistance = 15.5f;
+            p.polarIncline = 0.0f;
+        }
+        p.polarAzimuth = m_mpPostAzimuth;
+        // Set like the post-race point camera's, but camPolarCS never reads them.
+        p.app.maxDist = 25.0f;
+        p.app.minDist = 5.0f;
+        m_view.newCam(&m_polar, CameraView::Blend::EaseInOut, 0.8f);
         m_postRace = true;
     }
     if (m_waterPending && !m_waterDone) {
@@ -298,6 +321,12 @@ void PlayerCameras::startPreRace() {
 }
 
 void PlayerCameras::startPostRace() { m_postPending = true; }
+
+void PlayerCameras::startMultiplayerPostRace(const Vec3& finish, float azimuth) {
+    m_mpPostPending = true;
+    m_mpPostFinish = finish;
+    m_mpPostAzimuth = azimuth;
+}
 
 void PlayerCameras::startWaterCam() { m_waterPending = true; }
 

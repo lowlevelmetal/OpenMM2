@@ -105,3 +105,79 @@ TEST(ParityCameraProps, BigVehicleIndCameraUnderGeometryInFlag20Rooms) {
             EXPECT_EQ(cams.viewManager().current(), &cams.nearCam());
     }
 }
+
+// camPolarCS: constructor defaults and the keyboard orbit.
+TEST(ParityCameraProps, PolarCameraDefaultsAndKeys) {
+    PolarCamera cam;
+    auto& p = cam.params();
+    EXPECT_FLOAT_EQ(p.polarHeight, 2.5f);
+    EXPECT_FLOAT_EQ(p.polarDistance, 10.0f);
+    EXPECT_FLOAT_EQ(p.polarAzimuth, 2.5f);
+    EXPECT_FLOAT_EQ(p.polarIncline, 0.25f);
+    EXPECT_FLOAT_EQ(p.polarDelta, 2.0f);
+    EXPECT_EQ(p.azimuthLock, 0);
+    EXPECT_FLOAT_EQ(cam.base().cameraNear, 0.1f);
+
+    const CameraTarget t = carAt({10.0f, 0.0f, -4.0f}, 0.3f, true);
+    cam.update(0.5f, t, {}, {}, {});
+    // The view sits PolarDistance from the car (plus PolarHeight) and looks
+    // back at it along -m2.
+    const Mat34& m = cam.matrix();
+    const Vec3 rel = m.m3 - Vec3{10.0f, 2.5f, -4.0f};
+    EXPECT_NEAR(rel.mag(), 10.0f, 1e-4f);
+    EXPECT_NEAR(rel.normalized().dot(m.m2), 1.0f, 1e-5f);
+    EXPECT_NEAR(std::asin(rel.y / 10.0f), 0.25f, 1e-5f);
+
+    CameraInput in;
+    in.orbit.azimuthUp = true;
+    in.orbit.farther = true;
+    in.orbit.inclineDown = true;
+    cam.update(0.5f, t, {}, in, {});
+    EXPECT_FLOAT_EQ(p.polarAzimuth, 2.5f + 0.5f * 2.0f * 0.3f);
+    EXPECT_FLOAT_EQ(p.polarDistance, 10.0f + 2.0f);
+    EXPECT_FLOAT_EQ(p.polarIncline, 0.25f - 0.3f);
+    in.orbit.fast = true;
+    cam.update(0.5f, t, {}, in, {});
+    EXPECT_FLOAT_EQ(p.polarDistance, 12.0f + 5.0f);
+    EXPECT_FLOAT_EQ(p.polarAzimuth, 2.8f + 1.0f);
+    // Distance within 0.5 .. 200, incline within +-pi.
+    CameraInput down;
+    down.orbit.closer = true;
+    down.orbit.inclineDown = true;
+    down.orbit.fast = true;
+    for (int i = 0; i < 100; ++i)
+        cam.update(0.5f, t, {}, down, {});
+    EXPECT_FLOAT_EQ(p.polarDistance, 0.5f);
+    EXPECT_FLOAT_EQ(p.polarIncline, -cam::kPi);
+}
+
+// mmPlayer::SetMPPostCam: a 0.8 s blend to the polar camera orbiting the
+// finish line, 21.5 m away and 0.34 rad up (15.5 m and level in rooms with
+// flag 0x02 or 0x08); camera changes are then ignored.
+TEST(ParityCameraProps, MultiplayerFinishCamera) {
+    for (const int flags : {0, 0x08}) {
+        PlayerCameras cams;
+        CameraTarget t = carAt({}, 0.0f, true);
+        t.roomFlags = flags;
+        cams.reset(t);
+        cams.update(kStep, t, {}, {});
+        const Vec3 finish{50.0f, 1.0f, -80.0f};
+        cams.startMultiplayerPostRace(finish, 1.0f);
+        cams.update(kStep, t, {}, {});
+        EXPECT_TRUE(cams.postRace());
+        EXPECT_EQ(cams.viewManager().transitionTo(), &cams.polarCam());
+        for (int i = 0; i < 30; ++i)
+            cams.update(kStep, t, {}, {});
+        ASSERT_EQ(cams.viewManager().current(), &cams.polarCam());
+        const float distance = flags ? 15.5f : 21.5f;
+        const float incline = flags ? 0.0f : 0.34f;
+        const Vec3 rel = cams.polarCam().matrix().m3 - (finish + Vec3{0.0f, 2.5f, 0.0f});
+        EXPECT_NEAR(rel.mag(), distance, 1e-3f);
+        EXPECT_NEAR(std::asin(rel.y / distance), incline, 1e-4f);
+        EXPECT_NEAR(std::atan2(rel.x, rel.z), 1.0f, 1e-4f);
+        cams.toggleCamera();
+        EXPECT_EQ(cams.viewManager().current(), &cams.polarCam());
+        cams.reset(t);
+        EXPECT_FALSE(cams.postRace());
+    }
+}

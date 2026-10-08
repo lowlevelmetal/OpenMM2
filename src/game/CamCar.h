@@ -70,6 +70,20 @@ struct CameraInput {
     // (camTrackCS::Collide) keeps the corners of the near plane out of
     // walls, and their spacing depends on it.
     float aspect = 4.0f / 3.0f;
+    // Keys held for the orbit camera (camPolarCS::Update reads the keyboard
+    // itself): Delete / Page Down turn it left / right round its point,
+    // End / Home lower / raise it, Page Up / Insert bring it closer / move
+    // it away; either Shift key gives full speed.
+    struct OrbitKeys {
+        bool azimuthDown = false; // Delete
+        bool azimuthUp = false;   // Page Down
+        bool inclineDown = false; // End
+        bool inclineUp = false;   // Home
+        bool closer = false;      // Page Up
+        bool farther = false;     // Insert
+        bool fast = false;        // Left or right Shift
+    };
+    OrbitKeys orbit;
 };
 
 // mmInput::GetCamPan for the digital look buttons.

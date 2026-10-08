@@ -18,6 +18,7 @@ MM2 function.
 | `camPovCS` (hood / dashboard) | `PovCamera` | `CamPov.*` |
 | `camPreCS` (pre-race) | `PreCamera` | `CamRace.*` |
 | `camPointCS` (post-race, water) | `PointCamera` | `CamRace.*` |
+| `camPolarCS` (multiplayer finish line) | `PolarCamera` | `CamRace.*` |
 | `camViewCS` + `camTransitionCS` | `CameraView` | `CamView.*` |
 | `mmPlayer`, `mmViewMgr::SetViewSetting`, `mmGame::UpdateGameInput` (camera parts) | `PlayerCameras` | `CamPlayer.*` |
 | `Matrix34` / `Vector3` helpers | `cam::` functions | `CamMath.*` |
@@ -100,6 +101,7 @@ cams.display();                          // draw body / hide it / draw the dash 
 | dash | camPovCS | `<car>_dash.campovcs` |
 | pre | camPreCS | none: `camPreCS::Init` does not load, constructor defaults |
 | point | camPointCS | none |
+| polar | camPolarCS | none (`mmPlayer::Init` gives it no name) |
 
 A missing file leaves the camera at the constructor defaults, and its
 `AfterLoad` does not run (`asNode::Load` only calls it after a successful
@@ -143,6 +145,20 @@ camera's `Offset.z` by 0.7352941.
   at the car and narrows its FOV from 60 to 25 degrees as the car gets from
   7.5 m (0.3 x MaxDist) to 25 m away. Camera changes are ignored until the
   next reset.
+* **Multiplayer finish** (`mmPlayer::SetMPPostCam`, from
+  `mmGameMulti::SetFinishCam` when a multiplayer checkpoint race or circuit
+  is over; multiplayer blitz uses the post-race camera above): the far camera
+  is updated once and the view blends (mode 3, 0.8 s) to a `camPolarCS`
+  orbiting the finish line (the last waypoint, the first in a circuit),
+  2.5 m up, at azimuth (heading + 180) x -pi / 180 from the waypoint's
+  heading in degrees, 21.5 m away and 0.34 rad above the horizon, or 15.5 m
+  away and level while the car is in a room with flag 0x02 or 0x08
+  (`PlayerCameras::startMultiplayerPostRace`). `camPolarCS::Update` reads
+  the keyboard every update (`CameraInput::orbit`): Delete / Page Down turn
+  it, End / Home tilt it, Page Up / Insert zoom it, at 0.3 x PolarDelta
+  (2) rad/s and 2 x PolarDelta m/s, or with either Shift key PolarDelta
+  rad/s and 5 x PolarDelta m/s; the distance stays within 0.5 .. 200 m and
+  the incline within +-pi. Camera changes are ignored until the next reset.
 * **Water** (`mmPlayer::Update`, while the car's splash is active): the
   point camera is placed 9 m above the view and blended to (mode 3, 0.8 s),
   once per reset.
@@ -203,10 +219,10 @@ in the original.
 | `camPreCS`, `camPointCS` | ported |
 | `camViewCS::SetCam`, `NewCam`, `Update`, `Reset` | ported (the player's view: `camViewCS+0x48` set, so SetCam leaves the perspective) |
 | `camTransitionCS::Update`, `NewTransition`, `NextTransition`, `StartTransition`, `StartNextTransition`, `ReverseTransition` | ported |
-| `mmPlayer::Init`, `Reset`, `Update`, `SetCamera`, `GetCamera`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `SetPreRaceCam`, `SetPostRaceCam` (camera parts) | ported |
+| `mmPlayer::Init`, `Reset`, `Update`, `SetCamera`, `GetCamera`, `GetCurrentCameraPtr`, `IsPOV`, `SetWideFOV`, `SetPreRaceCam`, `SetPostRaceCam`, `SetMPPostCam` (camera parts) | ported |
 | `mmViewMgr::SetViewSetting` 0, 5, 6, `mmGame::UpdateGameInput` (CamPan), `mmInput::GetCamPan` | ported |
 | `Matrix34::LookAt`, `GetEulers("zxy")`, `FromEulersZXY`, `MakeRotate*`, `Dot`, `Dot3x3`, `Rotate`, `RotateFull`, `PolarView`, `Vector3::Approach`, `Angle`, `InvMag` | ported with the original association of every sum |
-| `camPolarCS` (the cheat "XCams" orbit cameras driven by the keyboard, and `mmPlayer::SetMPPostCam`, which nothing calls) | not ported |
+| `camPolarCS` | ported (`PolarCamera`), used for the multiplayer finish line; the two cheat "XCams" (`SetViewSetting(2)` with the camera cheat) are not ported |
 | `camAICS` (keyboard-driven free camera), `camPostCS` (only its `MakeActive` is called; it is never shown) | not ported |
 | `mmExternalView` (HUD gauges over the chase views), `mmMirror` (rear-view mirror) | HUD, not part of the cameras |
 | HUD hidden while looking around in the point-of-view cameras (`mmGame::UpdateGameInput`) | not ported (HUD) |
@@ -285,4 +301,6 @@ HillLerp 0.05, and a point-of-view camera AppXRot 0.5.
 `tests/game/test_parity_camera_props.cpp` (`test_game`, the parity audit,
 see `docs/parity/camera-props.md`): the chase camera keeping its offset over
 a car spinning in the air by angular momentum (and not by angular
-velocity); the _ind camera under geometry in flag 0x20 rooms.
+velocity); the _ind camera under geometry in flag 0x20 rooms; the polar
+camera's defaults, keys and limits; the multiplayer finish camera in open
+and covered rooms.
