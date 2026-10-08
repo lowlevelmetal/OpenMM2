@@ -25,12 +25,20 @@
 
 namespace mm2::game {
 
+struct VehicleInfo;
+
 // What the local player drives.
 struct NetCar {
     std::string vehicle = "vpbug"; // VehicleInfo::baseName
     int color = 0;                 // paint job
     int team = 0;                  // Cops & Robbers: 0 cops / blue, 1 robbers / red
 };
+
+// Cops & Robbers Free-For-All has no team buttons: the team follows the car,
+// 0 for a police car (VehicleInfo::kFlagCop) and 1 for any other
+// (mmMultiCR::InitMyPlayer; mmInterface::ChangePlayerData tests for vpcop).
+// The team games keep the lobby's choice (NetArena's team buttons).
+int freeForAllTeam(const VehicleInfo* car);
 
 struct NetOptions {
     std::string playerName = "Player";
