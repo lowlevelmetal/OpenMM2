@@ -10,6 +10,7 @@
 #include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
+#include "audio/game/PedAudio.h"
 #include "audio/game/SoundSlot.h"
 #include "core/File.h"
 #include "vfs/DirectoryFs.h"
@@ -75,6 +76,13 @@ float mixedGain(Mixer& mixer) {
     mixer.mix(out.data(), 64);
     return out[2 * 63] / (kLevel / 32768.0f);
 }
+
+struct FixedSeedSource {
+    explicit FixedSeedSource(std::int32_t seed) {
+        setRandomizeSeedSource([seed] { return seed; });
+    }
+    ~FixedSeedSource() { setRandomizeSeedSource({}); }
+};
 
 CarAudioInputs grounded() {
     CarAudioInputs in;
@@ -342,4 +350,75 @@ TEST(AudioParityWorld, CableCarStatesFollowItsSpeed) {
     EXPECT_EQ(car.state(), S::Stopping);
     EXPECT_EQ(mixer.activeVoices(), 1);
     car.stop();
+}
+
+TEST(AudioParityWorld, SurfaceSoundIsTheMaterialsShort) {
+    // vehWheel::GetSurfaceSound: the material's sound as a short, -1 as 0.
+    EXPECT_EQ(surfaceSoundIndex("default", -1), 0);
+    EXPECT_EQ(surfaceSoundIndex("grass", 2), 2);
+    EXPECT_EQ(surfaceSoundIndex("odd", 65535), 0); // -1 as a short
+    EXPECT_EQ(surfaceSoundIndex("odd", -2), -2);   // used as it is
+}
+
+TEST(AudioParityWorld, PedestrianVoicesFollowMm2) {
+    EXPECT_TRUE(PedestrianAudio::isWoman("pedmodel_woman"));
+    EXPECT_TRUE(PedestrianAudio::isWoman("PEDMODEL_WOMANW"));
+    EXPECT_TRUE(PedestrianAudio::isWoman("schoolgirl"));
+    EXPECT_TRUE(PedestrianAudio::isWoman("hooker"));
+    EXPECT_FALSE(PedestrianAudio::isWoman("pedmodel_man"));
+    EXPECT_FALSE(PedestrianAudio::isWoman("wwoman")); // the search does not back up
+
+    const std::string voice = "Min speed,Max speed,min time in range,max time out of range\n0,500,0.01,0\n"
+                              "sample name,volume,,\nFEMALESCREAM1,0.98,,\n";
+    TempData data({{"aud/creaturedata/numfemalepedvoicefiles.csv", "Num files\n1\n"},
+                   {"aud/creaturedata/nummalepedvoicefiles.csv", "Num files\n3\n"},
+                   {"aud/creaturedata/default_fpedvoice1.csv", voice}},
+                  {"femalescream1"});
+    SoundBank bank(data.vfs);
+    Mixer mixer(48000);
+    Object3DManager manager;
+    PedestrianAudio peds;
+    peds.load(data.vfs, bank, mixer, &manager);
+    // One voice file per sex for the session: RandomizeNumber(1, n + 0.25).
+    EXPECT_EQ(peds.femaleFile(), 1);
+    EXPECT_GE(peds.maleFile(), 1);
+    EXPECT_LE(peds.maleFile(), 3);
+
+    const Mat34 listener = Mat34::identity();
+    PedestrianSoundInput woman{7, "pedmodel_woman", {10, 0, 0}, false};
+    for (int i = 0; i < 5; ++i)
+        peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+    EXPECT_FALSE(peds.audible(7)); // a slot only for a reaction
+
+    // A dodge asks for a slot and queues a scream half of the time; the next
+    // update says it (AudCreatureAvoid::Update within 50 m).
+    bool screamed = false;
+    for (int seed = 1; seed < 40 && !screamed; ++seed) {
+        FixedSeedSource fixed(seed);
+        woman.avoiding = true;
+        peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+        woman.avoiding = false;
+        peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+        screamed = peds.speaking(7);
+    }
+    ASSERT_TRUE(screamed);
+    EXPECT_TRUE(peds.audible(7));
+    EXPECT_EQ(manager.used(), 1);
+    // Once the scream is over the pedestrian gives its slot back.
+    std::vector<float> scratch(2 * 48000);
+    mixer.mix(scratch.data(), 48000);
+    mixer.mix(scratch.data(), 4800);
+    peds.update({&woman, 1}, listener, 20.0f, 0.02f);
+    EXPECT_FALSE(peds.speaking(7));
+    EXPECT_FALSE(peds.audible(7));
+    EXPECT_EQ(manager.used(), 0);
+
+    // Beyond 40 m a dodge gets no slot; a man has no voice file here.
+    PedestrianSoundInput far{8, "pedmodel_woman", {45, 0, 0}, true};
+    peds.update({&far, 1}, listener, 20.0f, 0.02f);
+    EXPECT_FALSE(peds.audible(8));
+    PedestrianSoundInput man{9, "pedmodel_man", {5, 0, 0}, true};
+    peds.update({&man, 1}, listener, 20.0f, 0.02f);
+    EXPECT_FALSE(peds.audible(9));
+    peds.stop();
 }

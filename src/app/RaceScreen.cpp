@@ -10,6 +10,7 @@
 #include "audio/game/Ambience.h"
 #include "audio/game/CarAudio.h"
 #include "audio/game/Object3D.h"
+#include "audio/game/PedAudio.h"
 #include "audio/game/Voices.h"
 #include "data/DatFile.h"
 #include "data/TextTables.h"
@@ -94,6 +95,7 @@ public:
                 c.audio->stop();
         m_rain.stop();
         m_announcer.stop();
+        m_pedAudio.stop();
         if (m_ctxMixer)
             m_ctxMixer->stopAll();
         // The police drivers hand their cars' impact callbacks back when they
@@ -767,6 +769,17 @@ private:
         }
     }
 
+    // The pedestrians' screams (aiPedAudio): a dodge this step asks for a
+    // sound slot and queues a line; the voices take the player's speed.
+    void updatePedestrianAudio(float dt) {
+        if (!m_ai || !m_player)
+            return;
+        m_pedSounds.clear();
+        for (const auto& p : m_ai->peds())
+            m_pedSounds.push_back({p.id, p.typeName, p.transform.m3, p.scream});
+        m_pedAudio.update(m_pedSounds, m_camera.transform, m_player->sim().speed(), dt, m_tunnel);
+    }
+
     // Engine, tyre and siren sounds of the opponents and police, positioned.
     void updateAiAudio(float dt) {
         const Mat34& listener = m_camera.transform;
@@ -1360,6 +1373,8 @@ private:
         m_carAudioOk = m_carAudio.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.vehicle, opts, &error);
         if (!m_carAudioOk)
             log::warn("race: car audio: {}", error);
+        // mmGame::Init: the session's pedestrian voice files (aiPedAudio).
+        m_pedAudio.load(ctx.game->vfs, *m_bank, *ctx.mixer, &m_audioSlots);
         // mmPlayer::Init creates the city ambience only with CITY SOUNDS on.
         if (ctx.settings.citySounds)
             m_ambience.load(ctx.game->vfs, *m_bank, *ctx.mixer, m_result.config.city, &m_audioSlots);
@@ -1472,6 +1487,7 @@ private:
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
         updateAiAudio(dt);
+        updatePedestrianAudio(dt);
         if (m_announcerOk)
             m_announcer.update(dt); // AudSpeech::Update
         m_ambience.update(m_camera.transform, dt, m_tunnel);
@@ -2001,6 +2017,8 @@ private:
     audio::game::PlayerCarAudio m_carAudio;
     audio::game::CityAmbience m_ambience;
     audio::game::RainAudio m_rain;
+    audio::game::PedestrianAudio m_pedAudio;
+    std::vector<audio::game::PedestrianSoundInput> m_pedSounds;
     audio::game::Announcer m_announcer;
     bool m_announcerOk = false;
     bool m_carAudioOk = false;

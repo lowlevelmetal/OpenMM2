@@ -481,18 +481,18 @@ TEST(GameAudio, CreatureVoicesAnswerNearMisses) {
     CreatureVoice::resetGlobals();
     CreatureVoice voice;
     voice.load(mixer, bank, *def);
-    const Mat34 listener = Mat34::identity();
-    const Vec3 at{10, 0, 0};
+    // The container's UpdateAudio: attenuation, pan, squared distance (10 m).
+    voice.updateAttenuation(0.9f, 0.0f, 100.0f);
     // Nothing is said without a near miss, however long the speed stays in range.
     for (int i = 0; i < 100; ++i)
-        voice.update(10, 0.1f, at, listener);
+        voice.update(10, 0.1f);
     EXPECT_FALSE(voice.speaking());
     // A near miss queues a line half of the time (RandomizeNumber(2n) < n).
     bool spoke = false;
     for (int seed = 1; seed < 20 && !spoke; ++seed) {
         setRandomizeSeedSource([seed] { return seed; });
         voice.avoid();
-        voice.update(10, 0.05f, at, listener);
+        voice.update(10, 0.05f);
         spoke = voice.speaking();
     }
     setRandomizeSeedSource({});
@@ -501,18 +501,19 @@ TEST(GameAudio, CreatureVoicesAnswerNearMisses) {
     // Impact lines: none during the first minute (the shared clock starts at 0).
     CreatureVoice hit;
     hit.load(mixer, bank, *def);
+    hit.updateAttenuation(0.9f, 0.0f, 100.0f);
     hit.impact(9000.0f);
     for (int i = 0; i < 30; ++i)
-        hit.update(10, 0.1f, at, listener);
+        hit.update(10, 0.1f);
     EXPECT_FALSE(hit.speaking());
     CreatureVoice::advanceClock(60.0f);
     hit.impact(1000.0f); // too soft
-    hit.update(10, 2.0f, at, listener);
+    hit.update(10, 2.0f);
     EXPECT_FALSE(hit.speaking());
     hit.impact(9000.0f);
-    hit.update(10, 0.5f, at, listener); // the line waits 1 s
+    hit.update(10, 0.5f); // the line waits 1 s
     EXPECT_FALSE(hit.speaking());
-    hit.update(10, 0.6f, at, listener);
+    hit.update(10, 0.6f);
     EXPECT_TRUE(hit.speaking());
 }
 
