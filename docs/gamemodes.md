@@ -168,12 +168,39 @@ the path flag bits follow mm2hook's naming), facing -Z. In a multiplayer
 race each player takes a slot of `mmGameMulti::StartXYZ`'s grid behind the
 start: 2.25 m either side 6 m back, then 4.5 m to the sides and 6 m ahead,
 or for cars with a trailer or a radius over 6 m 2.75 / 5.5 m to the sides
-16 and 34 m back (the slot is taken as the player's id, inferred).
+16 and 34 m back (the slot is `NetStartArray`'s, which the host fills in
+the order it lists the players: OpenMM2 uses the place in the host's
+player list, inferred from DirectPlay's enumeration).
 Multiplayer cruise draws its intersection with the player's id as the
-seed. Spawn points drop onto the ground with the wheels' probe. Opponents start on the first
+seed. Opponents start on the first
 row of their `.opp` line, turned by its fourth column (degrees × 0.017444445,
 not negated as the player's start angle is; `aiRouteRacer::Init`); the last
 row is where the AI finishes.
+
+How a car is put on its place (`RaceSetup::playerPlace` / `playerDrop`
+say where and how per mode; `SimVehicle::setResetPos`, `reset`,
+`settleOnGround` do it): the modes call `vehCarSim::SetResetPos(p)` with a
+reset angle and `vehCar::Reset`, which puts the body (the centre of
+gravity) at p + CenterOfGravity, unrotated, and turns it about Y. Every
+later reset (a restart) goes back there. The modes then settle it:
+
+| Mode | Player | Racers |
+|---|---|---|
+| Blitz, circuit, checkpoint race, crash course | start waypoint, then `mmGame::InitOtherPlayers`: probe from 2 m above the body to 10 m below it, reset place 0.9 m above the hit | `.opp` row, then `mmGame::CollideAIOpponents`: the same probe from the model origin, and 0.9 m |
+| Cruise (single and multiplayer) | `RespawnXYZ`: 2 m above the intersection centre, angle 0, no probe | — |
+| Multiplayer Blitz, circuit, checkpoint race | grid slot, then `mmGame::FindGroundPos` (probe 7.5 m up to 15 m down, the hit itself) | — |
+| Police | their post and angle (`aiPoliceOfficer::Reset`), no probe | — |
+
+MM2's car models have their origin at the bottom of the car, so a race
+start leaves the car 0.7 m above the road (0.9 m plus twice a typical
+CenterOfGravity y of -0.1) and it drops onto its wheels. The water
+handlers that put the car back on a checkpoint (`mmSingleCircuit` /
+`mmGameMulti::HitWaterHandler`) reset it at that waypoint's place with its
+angle and no probe, and put the start back as the reset place for a
+restart through `SetResetPos`, which adds CenterOfGravity again: each such
+respawn moves the restart place by CenterOfGravity (`SimVehicle::respawnAt`
+keeps MM2's drift).
+A restart also puts every prop back (`lvlLevel::ResetInstances`).
 
 ### Water, falling out of the city, wrecks
 
@@ -223,11 +250,31 @@ neither; the multiplayer modes brake with the throttle tapering off and
 then call `SetDrivable(0, 1)` (OpenMM2: undrivable at once). Results
 follow 5 s after the end (`UpdateGame` states 4/5 with a 5 s wait); a lost
 race or lesson opens the in-race main menu without pausing
-(`mmPopup::ProcessEscape(0)`, see below). Multiplayer shows them 3 s
-after the finish (Blitz: when the clock would have run out). The race goes
-on behind the results in MM2 (opponents still finishing are added); OpenMM2
-shows the results as a frontend page, with the opponents that finished by
-then.
+(`mmPopup::ProcessEscape(0)`, see below). The race goes on behind the
+results in MM2 (opponents still finishing are added); OpenMM2 shows the
+results as a frontend page, with the opponents that finished by then.
+
+**Multiplayer finish** (`mmGameMulti`, `mmMultiRace` / `mmMultiCircuit` /
+`mmMultiBlitz::GameMessage`): each finish goes to the other players with
+its time (OpenMM2 broadcasts it as a `RaceFinished` event; MM2's clients
+ask the host, which acknowledges, inferred equivalent), who hear
+Messagenote and see the name over "finished in M:SS:HH" (host 152 / 110 /
+99, client 150 / 107 / 96). The first finish arms a finish timeout (race
+60 s, circuit 120 s; OpenMM2: every machine runs it, MM2: the host): when
+it runs out a player still racing is braked with "Race over" (143 / 100,
+clients 153 / 111) and does not finish (24 h, listed last as DNF). After
+its own finish a race or circuit player waits braked (3 s, then until
+everyone is counted or the timeout has run out); Blitz ends when the clock
+would have run out. The results list the players by time
+(`SortResults` / `UpdateResults`). The standings ("Place: n/N",
+`mmGameMulti::UpdateScore`) count the other players ahead with more
+waypoints passed (their counts travel as `CheckpointReached` events, MM2
+sends them in every position packet), finished, or level and nearer the
+player's target. When the host leaves the race everyone returns to the
+lobby (`BeDone(1)`, Quit2Lobby). A multiplayer race has no traffic,
+pedestrians, police or racers (the race modes load no AI map); multiplayer
+cruise and Cops and Robbers keep only the pedestrians
+(`mmGameMulti::Init` zeroes the traffic, cop and opponent densities).
 
 **Winning** (`mmSingleCircuit::ProgressCheck`, `mmSingleRace::ProgressCheck`):
 places 1-3 for amateurs, 1st for professionals, hard-coded; MM2 does not
@@ -341,21 +388,30 @@ HUD, car):
   `UpdateHideout`: a delivery's points meet the limit in the next frame.
   Nobody takes the gold in the frame it was knocked loose (each machine
   tests its own car and learns of the drop by message; inferred).
-* **Gold**: picked up within 5 m (+25 points); the carrier gets the gold's
+* **Gold**: picked up within 5 m in the gold's room (+25 points; a host
+  alone in the game cannot take it); the carrier gets the gold's
   mass (0 / 100 / 200 kg for the three gold weight options) and, above
   first gear, a throttle cap of 1 / 0.9 / 0.81 (`FondleCarMass`,
-  `mmGame::UpdateSteeringBrakes`). A hit of impulse 250 or more from
-  another player's car makes the carrier drop it where it is (on a road;
-  elsewhere it returns to the set's place); the carrier cannot take it back
-  for 2 s. A wrecked carrier drops it and sits out 5 s ("Wait...5 second
-  penalty!", 114); water or falling out sends it back to its place.
-* **Delivery**: within 12 m of the team's base, +100 points, the car is
-  repaired, and a new set follows.
+  `mmGame::UpdateSteeringBrakes`). A damaging hit whose summed total
+  reaches 250 from another player's car makes the carrier drop it where it
+  is ("You dropped the gold!"; back at the set's place only from a deep
+  water room) and locks it out for 2 s. A wrecked carrier drops it and sits
+  out 5 s ("Wait...5 second penalty!", 114); the water handler (5 s in the
+  water) or falling out of the city sends it back to its place. Dropped gold
+  lies on the ground under the point (`FindGround`, 2 m up to 10 m down).
+  When the carrier leaves the game the host drops it where it was. The
+  carrier does not see the gold it carries. Places come from the city's
+  `multicopwaypoints.csv` and the AI intersections (never one in a deep
+  water or terrain-instance room); a city with fewer than three rows uses
+  intersections only. Cops and Robbers plays the cruise music.
+* **Delivery**: within 12 m of the team's base, whose room is covered or
+  underground or is the car's room, +100 points, the car is repaired, and a
+  new set follows.
 * **Scores and limits**: team scores are the sum of the members'. Time
-  limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142) and end
-  below 0.1 s; point limits end the game when a player (Free-For-All) or a
-  team reaches them ("Time's up!" 118, "Point limit reached" 119); the
-  results follow 3 s later with the car braked (state 9, +0x2258).
+  limits warn as 20, 15, 10, 5 and 1 minutes are passed (138-142, 2 s) and
+  end below 0.1 s; point limits end the game when a player (Free-For-All) or
+  a team reaches them ("Time's up!" 118, "Point limit reached" 119, 3 s);
+  the results follow 3 s later with the car braked (state 9, +0x2258).
 * **Car**: regeneration while not carrying (`mmPlayer::UpdateRegen`); the
   gold's mass and throttle cap while carrying; a repair at a delivery.
   The throttle cap applies in a forward gear in every network game (1
@@ -365,9 +421,14 @@ HUD, car):
   delivered!" (117), "<name> delivered the Gold!" (137). The gold spins at
   3 rad/s 1.5 m above its place (`mmPowerupInstance`); the bases are
   billboards 12 x 7.5 x 12 (`mmBillInstance`); the arrow points at the gold,
-  or at the carrier's base. The team totals ("COPS" / "ROBBERS", or "BLUE" /
-  "RED") show in blue and red at the top left (mmCRHUD's corner inferred;
-  its roster of names is not drawn), the time limit's clock top centre.
+  or at the carrier's base. `mmCRHUD` (its corner at the top left,
+  inferred): in team games "COPS" / "ROBBERS" or "BLUE" / "RED" in blue and
+  red (font string 262) with the team totals under them; then the player's
+  name (blue, red on team 1) and score, and the roster of the other players
+  in their colours with their scores and "$" (string 268) by the gold
+  carrier. The numbers are yellow Gill Sans MT (20 and 16 pixels). While
+  the player carries the gold a `wpobj_gold` spins (0.05 rad a frame) 5.5 m
+  up and 13.1 m ahead of the camera. The time limit's clock is top centre.
   The announcer's Cops & Robbers lines are loaded but build 3393 never
   plays them.
 
@@ -401,18 +462,19 @@ fractions of the whole output.
 | Place / Check | Labels in light green (0.5, 1, 0.5), numbers white, no shadow, flush with the left edge; label font string 253, numbers 251 (both Gill Sans MT bold, 22 px). Checkpoint races: Place at 3.5 % of the height, Check at 8.5 %; Blitz and the crash course: Check at 3.5 %, hidden in follow and destroy lessons | `mmWPHUD::Init`, `mmSingleRace::InitHUD`, `mmSingleBlitz::InitHUD` |
 | Circuit readouts | Place, Check, Lap at 3.5 / 8.5 / 13.5 % (strings 259-261, fonts 258 / 256); one row per completed lap from 18.5 %, 5 % apart: "1." and the lap time as M:SS:HH (`GetLocTime`), the time starting at the width of "10.  " | `mmCircuitHUD::Init`, `::SetLapTime` |
 | Clean lessons | "Hit Objects:" at 14 %. The "Hit Vehicles:" line is created at 19 % but never added to the HUD, so it never shows | `mmCollideHUD::Init` |
-| Messages | Gill Sans MT 36 px (string 60), yellow, centred across the screen, word-wrapped, with a (15, 15, 15) shadow offset by 1/18 of the text height. A message box 15 % tall at 80 % of the height, or at 20 % for "upper" messages (`SetMessage` mode 1: countdown, water); MM2's second line sits at 87.5 % / 35 %. `HudMessage::top` selects the upper box | `mmHUD::mmHUD`, `::Update`, `::SetMessage`, `mmTextNode::RenderText` |
+| Messages | Gill Sans MT 36 px (string 60), yellow, centred across the screen, word-wrapped, with a (15, 15, 15) shadow offset by 1/18 of the text height. A message box 15 % tall at 80 % of the height, or at 20 % for "upper" messages (`SetMessage` mode 1: countdown, water); MM2's second line sits at 87.5 % / 35 %. While the 3D view does not start at the top of the screen (wide angle, full-screen map) both boxes move to 5 % / 10 %. `HudMessage::top` selects the upper box | `mmHUD::mmHUD`, `::Update`, `::SetMessage`, `mmTextNode::RenderText` |
 | Arrow | `hudarrow01` in every mode (the `_blitz` and `_cc` models are unused); camera space (0, 2.5, −6.1); points at the target taken at the camera's height (the vertical component is kept, the basis is not renormalised); tilted −20° about X; unlit, opaque, no depth test; paint job 1 (yellow) while the target is behind. None in cruise and circuits, nor in follow, destroy and map lessons; off after a Blitz is over. Drawn in the dashboard view too (under the dash) | `mmArrow::mmArrow`, `::Update`, `mmHUD::Init`, `mmSingleStunt::InitHUD`, `mmSingleBlitz::Update` |
 | Checkpoint stands | `pt_check` / `pt_finish` (2 × 1 units), rotated by −heading about Y, scaled by (radius, 7.5, radius) and centred 3.75 m above the waypoint, so the arch spans the gate and stands 7.5 m tall; pre-lit (no lighting); crash course stands use paint job 1 (`CCStand`) | `mmWaypointObject::mmWaypointObject`, `mmCheckpointInstance::Init`, `::Draw`, `mmSingleStunt::InitNewEvent` |
-| Opponent icons | "Opponent Position" (on for new players): a violet triangle facing the camera, 2 m wide, 4 m tall, tip 4 m above each opponent, drawn over everything. In Blitz the same cards in cyan mark the checkpoints still to clear, growing from 1.9 near the camera to 4.1 at 300 m, with their numbers as cyan labels (font string 48) 7 m above the checkpoint, sorted by depth; Blitz and the follow and destroy lessons force the icons on | `mmIcons::Cull`, `mmSingleBlitz::InitHUD`, `::Update`, `mmSingleStunt::InitHUD`, `mmPlayerConfig::DefaultViewSettings` |
-| Map: placement | Small: (Pos.x × W, Pos.y × H), size (Size.x × W − 10, Size.y × H − 10); at the left edge for right-hand-drive cars (vehicle Flags 0x40) in the dashboard view. Split: bottom half. Full screen: whole screen. No frame | `mmHudMap::SetMapMode` |
+| Opponent icons | "Opponent Position" (on for new players): a violet triangle facing the camera, 2 m wide, 4 m tall, tip 4 m above each opponent, drawn over everything. In checkpoint races and circuits each opponent's place (`UpdateScore`) shows above it as a digit of `opp_icon.tex` on a 4 × 4 m card 13 to 17 m up (the 4 m lift is scaled with the size there); the icons are drawn by place in as many passes as there are opponents, places over 7 in the first, so an opponent placed past the passes is not drawn. Network players: coloured by slot (blue, green, red, yellow, orange, violet, cyan, pink; red / blue by team in Cops & Robbers, the gold carrier marked "$"), their names in that colour with a dark outline (font string 48) over the cars within 300 m. In Blitz cyan cards mark the checkpoints still to clear, growing from 1.9 near the camera to 4.1 at 300 m (their number labels are registered but only network games draw labels); Blitz and the follow and destroy lessons force the icons on | `mmIcons::Cull`, `::RegisterOpponents`, `mmGame::mmGame`, `mmSingleRace::UpdateScore`, `mmGameMulti::RegisterMapNetObjects`, `mmSingleBlitz::InitHUD`, `::Update`, `mmSingleStunt::InitHUD`, `mmPlayerConfig::DefaultViewSettings` |
+| Map: placement | Small: (Pos.x × W, Pos.y × H), size (Size.x × W − 10, Size.y × H − 10); at the left edge for right-hand-drive cars (vehicle Flags 0x40) while the dashboard is on. Split: bottom half, the 3D view in the top half. Full screen: whole screen, drawn before the level, the 3D view in (Pos × screen, Size × screen) on black. No frame | `mmHudMap::SetMapMode`, `mmGameManager::Cull` |
 | Map: camera | Perspective, 60° vertical field of view, aspect 1.25 (2.5 split) regardless of the viewport's shape, near 10, far 1600; above the car at an absolute height = the zoom distance. Rotating: the car's heading up; otherwise −Z up and +X right. Zoom and icon size move linearly at (out − in) × 1.2 per second toward the Map Zoom setting (FS values in full screen) and snap on mode changes. "Approach Rate" and "Ocean Color" in the `.mmhudmap` are never read (datParser names are one token). OpenMM2 widens the horizontal field on non-4:3 outputs | `mmHudMap::mmHudMap`, `::FileIO`, `::Cull`, `::SetMapMode` |
 | Map: look | Cleared to a hard-coded ocean colour: London (0.92, 0.84, 0.778), elsewhere (0.084, 0.68, 0.92) (the `.mmhudmap` Ocean Color is overwritten); `hudmap_<city>.pkg` unlit | `mmHudMap::Init` |
-| Map: icons | Car arrows are flat untextured triangles (0, 0, −1), (±0.7, 0, 1) × icon scale, 15 m above the car: police (red) while chasing, opponents (violet), the player (yellow) over a black one 1.3 times larger; traffic is not shown; `hudmap_tri` is loaded but unused. Waypoints are `hudmap_square` × icon / 7.51, 10 m above: green to clear, yellow the current goal, grey cleared (circuits), the finish dot for the open finish (checkpoint races) or the start line (circuits) | `mmHudMap::DrawIcon`, `DrawColoredTri`, `::DrawPlayer`, `::DrawCops`, `::DrawOpponents`, `::DrawWaypoints`, `::DrawIndicator` |
+| Map: icons | Car arrows are flat untextured triangles (0, 0, −1), (±0.7, 0, 1) × icon scale, 15 m above the car: police (red) while chasing, opponents (violet; network players IconType slot + 4: red, yellow, orange, violet, cyan, pink, and two colours read past the table for the last two slots), the player (yellow) over a black one 1.3 times larger; traffic is not shown; `hudmap_tri` is loaded but unused. Waypoints are `hudmap_square` × icon / 7.51, 10 m above: green to clear, yellow the current goal, grey cleared (circuits), the finish dot for the open finish (checkpoint races) or the start line (circuits) | `mmHudMap::DrawIcon`, `DrawColoredTri`, `::DrawPlayer`, `::DrawCops`, `::DrawOpponents`, `::DrawWaypoints`, `::DrawIndicator` |
 | Dashboard | `<car>_dash.pkg` in camera space (DashPos, RoofPos), unlit, no depth test, painted dash, roof, gear indicator, speed, tach and damage needles, dash_extra, wheel. Needles turn by −angle about Z around (box centre of `<car>_dash_<part>.mtx` + PivotOffset) and are moved by Speed/Tach/DmgOffset; angle = RotMin + value / max × (RotMax − RotMin), clamped. Speed against 160, rpm against a fixed 8000 with a floor of 800, damage against its maximum. The gear indicator sits at GearPivotOffset with paint job = transmission gear (R, N, One…), also in automatics | `mmDashView::LoadPkg`, `::LoadPivotInfo`, `::Init`, `::Cull`, `RadialGauge::Cull`, `::GetArrowAngle` |
 | HUD toggle | The "HUD Toggle" key is `mmHUD::ToggleExternalView`: it hides and shows the instrument cluster only. `mmHUD::Disable` (looking around from a point-of-view camera, the in-race menu) hides the dashboard with the readouts, and the messages in single player only | `mmGame::UpdateGameInput`, `mmHUD::ToggleExternalView`, `::Disable` |
 | Circuit lap rows | `mmWaypoints::Update` sets the row of the lap being driven every frame, so a live time shows under the completed laps | `mmWaypoints::Update`, `mmCircuitHUD::SetLapTime` |
 | Map police | Police cars show on the map only while they pursue | `mmHudMap::DrawCops` |
+| Map: Cops & Robbers | After the player: the gold (`GOLD_DOT`), the bank and the hideout (`BANK_DOT`, `HIDEOUT_DOT`), or in Robber Teams the blue and red bases (`BLUE_DOT`, `RED_DOT`) | `mmHudMap::DrawCopsnRobbers`, `::RegisterCopsnRobbers`, `mmMultiCR::InitHUD` |
 
 Defaults for a new player in MM2: map off, rotating map on, zoomed out,
 opponent icons on, mirror off (`mmStatePack`,
@@ -454,12 +516,29 @@ with the remote inputs), declared as a type-3 mover, built with the
 polygonal bound, towing its trailer except in multiplayer cruise and Cops
 & Robbers.
 
-**Popup** (`mmPopup`, `PUMain`, `PUExit`, neither with a title): Escape
-opens the in-race main menu (pausing a single-player game; the HUD and map are disabled): Restart
-Race / Restart Lesson (read-only in a network game), Options (not ported,
-shown disabled), Quit to Race Menu / Back to School, Exit to Windows (asks
-first) and Resume Driving; Escape resumes. The popup card is (0.2, 0.1,
-0.6, 0.8) of the screen.
+**Popup** (`mmPopup`, `PUMain`, no title): Escape stops the announcer
+and opens the in-race main menu (pausing a single-player game; the HUD and
+map are disabled; the song's pause segment plays and the city ambience
+stops): Restart Race / Restart Lesson (read-only in a network game),
+Options (not ported, shown disabled), Quit to Race Menu / Back to School,
+Exit to Windows (at once: nothing in MM2 opens PUExit's question) and
+Resume Driving; Escape resumes, and Resume and Escape bring the music back
+(`PlayReturnMusic`; Restart restarts it through `mmGame::Reset` instead).
+Once a single-player race or lesson is over (`mmPopup::Lock`, the modes'
+states 4 and 5) Resume is off and Escape does nothing, or shows the
+results when the race ended with a finish (the race-over flag). The chat
+line also starts the pause music; sending a line leaves it playing (MM2's
+`ChatCB` closes with `DisablePU(0)`). The popup card is (0.2, 0.1, 0.6,
+0.8) of the screen.
+
+**Post-race camera and music per ending**: `SetPostRaceCam` (multiplayer
+`SetFinishCam`) at a finish and at the single-player wrecks that make the
+car undrivable, and in the lessons where the Update function sets it (a
+pass; Jump and course wrecks; Evade and Corner pursuit failures; Frogger
+and Collide time-ups); not after the water, a late Blitz finish or the
+other lesson failures. The music stops only in the single-player race
+modes: at a finish (`StopSegment(0)`) and a wreck (`StopSegment(1)`). A
+lost race opens the main menu with its pause music.
 
 **Sounds**: the modes load their 2D sounds in `InitGameObjects`
 (Startracelow, Startracehigh, Endofracetag, Youlose, Damgelose, Messagenote,
@@ -494,18 +573,8 @@ the camera (a probe from 100 m up).
 
 Not implemented, all verified to exist in MM2:
 
-* **Rear-view mirror** drawing ("Rear View Mirror", off by default;
-  `mmMirror`): a viewport `Size` (0.3 × 0.16 of the screen) at the top
-  right, one pixel from the edges, showing the city from `Position` in car
-  space looking backwards, mirrored left-right, with `Fov` / `Aspect` /
-  `NearClip` / `FarClip` from `tune/<car>.mmmirror`, and the player's car
-  hidden. The race toggles it (event 0x1E) and keeps the driver's choice;
-  the renderer draws it.
-* The 3D view moving to the top half (split map) or into the small rectangle
-  (full-screen map), `mmHudMap::SetMapMode`.
-* The CD player display (`mmCDPlayer`) and the Cops & Robbers roster of
-  names (`mmCRHUD`). (The mouse steering bar, `mouse_bar` / `mouse_ar` in
-  `mmExternalView::Cull`, is drawn with the instrument cluster.)
+* The CD player display (`mmCDPlayer`): unused in retail (the disc carries
+  `cdid.txt`, so the in-race CD player does nothing).
 * The far LOD of the stands (`pt_*` VL mesh: banner only).
 
 Inferred: the finish line's Blitz icon (shown while the finish is visible).

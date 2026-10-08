@@ -1,5 +1,6 @@
 // The results after a race or lesson (MM2 PUResults). MM2 shows them in the
-// game as a popup over the paused scene; OpenMM2 shows the same layout as
+// game as a popup over the running race (mmPopup::ShowResults does not
+// pause it); OpenMM2 shows the same layout as
 // the first page after the race. Positions are PUResults::Init640's,
 // as fractions of the 640x480 screen.
 #include "app/frontend/Frontend.h"
@@ -99,12 +100,15 @@ public:
         } else if (!m_result.standings.empty()) {
             for (const auto& st : m_result.standings) {
                 std::string name = player;
-                if (st.opponent >= 0) {
-                    name = s.get(4, "Opp.%d");
-                    if (const auto at = name.find("%d"); at != std::string::npos)
-                        name.replace(at, 2, std::to_string(st.opponent + 1));
+                if (!st.name.empty()) {
+                    name = st.name; // a network player (mmGameMulti::UpdateResults)
+                } else if (st.opponent >= 0) {
+                    // PUResults::AddName from UpdateOpponentStatus: the
+                    // mode's "Opponent N" (strings 13-20, mmGame's list).
+                    name = s.get(13 + static_cast<std::uint32_t>(std::min(st.opponent, 7)),
+                                 std::format("Opponent {}", st.opponent + 1));
                 }
-                line(std::to_string(st.place), name, formatTime(st.timeSeconds));
+                line(std::to_string(st.place), name, st.dnf ? s.get(499, "DNF") : formatTime(st.timeSeconds));
             }
         } else if (cfg.mode != GameMode::Cruise) {
             line("", player, s.get(499, "DNF")); // PUResults::AddLoser

@@ -236,9 +236,13 @@ its side leaving the intersection is open to traffic.
   position).
 * Stop-sign queues drop a recycled car at its own arrival intersection (MM2
   clears end A's for both directions).
-* Not done: cable cars and subways (`aiCableCar`, `aiSubway`), the ambient
-  horn and voice audio (`AmbientCar::horn` marks the attempt), breakable
-  parts and impact sounds of physical traffic, regaining onto another road.
+* Cable cars (`aiCableCar`) run in `game/world/CableCars` (see
+  docs/parity/mm2/world-objects.md); the ambient traffic does not see them
+  yet (MM2 lists them in its obstacle map and stop queues). No retail AI map
+  enables subways (`aiSubway`).
+* Not done: the ambient horn and voice audio (`AmbientCar::horn` marks the
+  attempt), breakable parts and impact sounds of physical traffic, regaining
+  onto another road.
 
 ## Pedestrians (`Pedestrians`, `aiPedestrian`)
 

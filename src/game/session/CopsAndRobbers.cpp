@@ -115,14 +115,25 @@ void CopsAndRobbers::newSet() {
     m_events.push_back({EventType::NewSet});
 }
 
-void CopsAndRobbers::drop(int carId, const Vec3& at, bool toSpawn) {
-    // mmMultiCR::DropGold: where the carrier is, unless that is off the
-    // roads or the car went into the water; then back to the set's place.
+void CopsAndRobbers::drop(int carId, const Vec3& at, bool toSpawn, bool knocked) {
+    // mmMultiCR::DropGold: where the carrier is, unless that is in deep
+    // water or the drop is forced (the water, a fall); then back to the
+    // set's place. Either way on the ground under it (FindGround).
     const bool stays = !toSpawn && (!m_settings.canDropAt || m_settings.canDropAt(at));
-    m_goldPos = stays ? at : m_set.gold;
+    const Vec3 p = stays ? at : m_set.gold;
+    m_goldPos = m_settings.findGround ? m_settings.findGround(p) : p;
     m_carrier = -1;
     m_goldActive = true;
-    m_events.push_back({EventType::GoldDropped, carId});
+    m_events.push_back({EventType::GoldDropped, carId, knocked ? 1 : 0});
+}
+
+std::vector<CopsAndRobbers::Message> CopsAndRobbers::playerLeft(int id, bool host) {
+    std::vector<Message> out;
+    if (!host || m_carrier != id || m_over)
+        return out;
+    drop(id, m_goldPos, false);
+    out.push_back({Message::Type::GoldDropped, id, m_goldPos});
+    return out;
 }
 
 void CopsAndRobbers::take(int carId) {
@@ -195,16 +206,17 @@ std::vector<CopsAndRobbers::Message> CopsAndRobbers::updateNetwork(float dt, int
     if (!me)
         return out;
 
-    // ImpactCallback (the physics step before this frame): a hard enough
-    // hit from another player's car knocks the local carrier's gold loose
-    // (DropGold, SendGoldDrop) and locks it out for 2 s (state 7).
+    // ImpactCallback (the physics step before this frame): a damaging hit
+    // from another player's car whose total reaches 250 knocks the local
+    // carrier's gold loose (DropGold, SendGoldDrop, "You dropped the
+    // gold!") and locks it out for 2 s (state 7).
     if (m_carrier == self) {
         for (const auto& im : impacts) {
             const int other = im.a == self ? im.b : (im.b == self ? im.a : -1);
             if (other < 0 || other == self || im.impulse < kStealImpulse)
                 continue;
             lock(self, kDropLockout);
-            drop(self, me->position, false);
+            drop(self, me->position, false, true);
             out.push_back({Message::Type::GoldDropped, self, m_goldPos});
             break;
         }
@@ -228,24 +240,31 @@ std::vector<CopsAndRobbers::Message> CopsAndRobbers::updateNetwork(float dt, int
         return out;
 
     // UpdateGold: the carried gold rides 2 m above its carrier; the local
-    // car takes free gold within 5 m (a host at once, telling the others;
-    // a client asks the host and the gold waits).
+    // car takes free gold within 5 m in the gold's room (a host at once,
+    // telling the others, and only with another player in the game; a
+    // client asks the host and the gold waits).
     if (m_carrier >= 0) {
         for (const auto& c : cars)
             if (c.id == m_carrier)
                 m_goldPos = c.position + Vec3{0.0f, 2.0f, 0.0f};
     } else if (m_goldActive && !locked(self) && !me->wrecked &&
-               me->position.dist2(m_goldPos) < kGoldRadius * kGoldRadius) {
+               me->position.dist2(m_goldPos) < kGoldRadius * kGoldRadius &&
+               (!m_settings.sameRoom || m_settings.sameRoom(m_goldPos, me->position))) {
         if (host) {
-            take(self);
-            out.push_back({Message::Type::GoldTaken, self, m_goldPos});
+            if (cars.size() > 1) {
+                take(self);
+                out.push_back({Message::Type::GoldTaken, self, m_goldPos});
+            }
         } else {
             m_goldActive = false;
             out.push_back({Message::Type::PickupRequest, self, m_goldPos});
         }
     }
-    // UpdateBank / UpdateHideout: the local carrier within 12 m of its base.
-    if (m_carrier == self && me->position.dist2(deliveryTarget(teamOf(self))) < kBaseRadius * kBaseRadius) {
+    // UpdateBank / UpdateHideout: the local carrier within 12 m of its base,
+    // whose room it can reach.
+    const Vec3 base = deliveryTarget(teamOf(self));
+    if (m_carrier == self && me->position.dist2(base) < kBaseRadius * kBaseRadius &&
+        (!m_settings.baseReachable || m_settings.baseReachable(base, me->position))) {
         deliver(self);
         out.push_back({Message::Type::GoldDelivered, self, m_goldPos});
         if (host) {
@@ -362,7 +381,7 @@ void CopsAndRobbers::update(float dt, const std::vector<Car>& cars, const std::v
             if (other < 0 || im.impulse < kStealImpulse || !find(other))
                 continue;
             lock(c->id, kDropLockout);
-            drop(c->id, c->position, false);
+            drop(c->id, c->position, false, true);
             droppedByImpact = true;
             break;
         }

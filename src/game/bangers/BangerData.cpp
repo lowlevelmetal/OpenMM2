@@ -107,6 +107,16 @@ const BangerData* BangerDataLibrary::find(std::string_view modelIn) const {
     return slot ? &*slot : nullptr;
 }
 
+void BangerDataLibrary::scaleMass(std::string_view model, float factor) {
+    // dgBangerDataManager::AddBangerDataEntry, then Mass (+0x48) and
+    // ImpulseLimit2 (+0x54) multiplied in place.
+    if (find(model)) {
+        auto& data = *m_cache[str::lower(model)];
+        data.mass = data.mass * factor;
+        data.impulseLimit2 = data.impulseLimit2 * factor;
+    }
+}
+
 const BangerData* BangerDataLibrary::part(std::string_view model, int i) const {
     return find(std::format("{}_break{:02}", str::lower(model), i + 1));
 }

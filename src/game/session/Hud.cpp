@@ -103,8 +103,18 @@ std::vector<std::string> wrapText(render::Overlay2D& ov, ui::TextRenderer& text,
     return lines;
 }
 
-// mmHudMap::DrawWaypoints: hudmap_square paint jobs.
-enum MapDot : int { kDotGreen = 2, kDotGrey = 3, kDotYellow = 4, kDotFinish = 5 };
+// mmHudMap::DrawIndicator's types: hudmap_square paint jobs.
+enum MapDot : int {
+    kDotRed = 0,
+    kDotBlue = 1,
+    kDotGreen = 2,
+    kDotGrey = 3,
+    kDotYellow = 4,
+    kDotFinish = 5,
+    kDotGold = 6,
+    kDotBank = 7,
+    kDotHideout = 8,
+};
 
 // mmTextNode colours (COLORREF from the Vector4 passed to SetFGColor).
 constexpr std::uint32_t kLabelColor = render::packColor(127, 255, 127); // (0.5, 1, 0.5)
@@ -215,7 +225,7 @@ Mat34 standMatrix(const Checkpoint& cp) {
     Mat34 m = Mat34::rotationY(-cp.headingDeg * kDegToRad);
     m.m0 *= cp.radius;
     m.m1 *= kHeight;
-    m.m2 *= cp.radius;
+    m.m2 *= cp.standDepth > 0.0f ? cp.standDepth : cp.radius;
     m.m3 = cp.position + Vec3{0.0f, kHeight * 0.5f, 0.0f};
     return m;
 }
@@ -267,10 +277,39 @@ Vec4 mapRect(const render::UiLayout& l, const HudMapParams& map, const HudOption
     case MapMode::Small: break;
     }
     // Small: Pos/Size less 10 pixels; right-hand-drive cars move it to the
-    // left edge in the dashboard view.
-    const float x = rightHandDrive && options.dashboard ? l.left : l.left + map.pos.x * w;
+    // left edge while the HUD's dashboard flag is set.
+    const float x = rightHandDrive && options.dashActive ? l.left : l.left + map.pos.x * w;
     const float inset = 10.0f * options.pixelSize;
     return {x, l.top + map.pos.y * h, map.size.x * w - inset, map.size.y * h - inset};
+}
+
+render::Rect sceneRect(int width, int height, const HudMapParams& map, MapMode mode, bool wideAngle) {
+    // __ftol truncates; the products are 32-bit floats as the original's.
+    auto trunc = [](float v) { return static_cast<std::int32_t>(v); };
+    auto rect = [](std::int32_t x, std::int32_t y, std::int32_t w, std::int32_t h) {
+        return render::Rect{x, y, static_cast<std::uint32_t>(std::max(w, 0)),
+                            static_cast<std::uint32_t>(std::max(h, 0))};
+    };
+    const float fw = static_cast<float>(width), fh = static_cast<float>(height);
+    switch (mode) {
+    case MapMode::Split: return rect(0, 0, trunc(fw), trunc(fh * 0.5f));
+    case MapMode::FullScreen:
+        return rect(trunc(fw * map.pos.x), trunc(fh * map.pos.y), trunc(fw * map.size.x),
+                    trunc(fh * map.size.y));
+    case MapMode::Off:
+    case MapMode::Small: break;
+    }
+    if (wideAngle)
+        return rect(0, trunc(fh * 0.18f), width, trunc(fh * 0.66f));
+    return rect(0, 0, width, height);
+}
+
+float messageTop(bool top, bool second, bool viewAtTop) {
+    if (!viewAtTop)
+        return second ? 0.1f : 0.05f;
+    if (top)
+        return second ? 0.2f + 0.15f : 0.2f;
+    return second ? 0.875f : 0.8f;
 }
 
 float approach(float current, float target, float rate, float dt) {
@@ -318,18 +357,45 @@ bool checkReadoutShown(GameMode mode, const LessonEvent* lesson) {
              (lesson->type == LessonType::Follow || lesson->type == LessonType::Destroy));
 }
 
-MapMode nextMapMode(MapMode mode, MapMode beforeFullScreen) {
-    if (mode == MapMode::FullScreen)
-        return beforeFullScreen;
-    return static_cast<MapMode>((static_cast<int>(mode) + 1) % 3);
+std::uint32_t mapIconColor(MapIcon icon) { return mapIconColor(static_cast<int>(icon)); }
+
+std::uint32_t mapIconColor(int iconType) {
+    // mmHudMap's IconType colour table (0xAARRGGBB). DrawOpponents gives the
+    // seventh and eighth network slots types 10 and 11, past the table's ten
+    // entries: MM2 reads the bytes that follow it (the 7.51 icon divisor and
+    // the start of the "hudmap_%s" name), kept here as colours.
+    static constexpr std::array<std::uint32_t, 12> kTable{
+        0xFF000000u, 0xFFFF0000u, 0xFF0000EFu, 0xFF00EF00u, 0xFFEF0000u, 0xFFFFFF00u,
+        0xFFFF5A00u, 0xFFB400FFu, 0xFF00FFFFu, 0xFFFF0390u, 0x40F051ECu, 0x6D647568u};
+    return kTable[static_cast<std::size_t>(std::clamp(iconType, 0, 11))];
 }
 
-std::uint32_t mapIconColor(MapIcon icon) {
-    // mmHudMap's IconType colour table (0xAARRGGBB).
-    static constexpr std::array<std::uint32_t, 10> kTable{0xFF000000u, 0xFFFF0000u, 0xFF0000EFu, 0xFF00EF00u,
-                                                          0xFFEF0000u, 0xFFFFFF00u, 0xFFFF5A00u, 0xFFB400FFu,
-                                                          0xFF00FFFFu, 0xFFFF0390u};
-    return kTable[static_cast<std::size_t>(icon) % kTable.size()];
+std::uint32_t netIconColor(int slot) {
+    // mmGame::mmGame fills the eight OppIconInfo colours from this table;
+    // single player then paints every opponent violet (mmGame::Init).
+    static constexpr std::array<std::uint32_t, 8> kTable{0xFF0000EFu, 0xFF00EF00u, 0xFFEF0000u, 0xFFFFFF00u,
+                                                         0xFFFF5A00u, 0xFFB400FFu, 0xFF00FFFFu, 0xFFFF0390u};
+    return kTable[static_cast<std::size_t>(std::clamp(slot, 0, 7))];
+}
+
+std::vector<std::size_t> iconDrawOrder(std::span<const int> places, int slots) {
+    std::vector<std::size_t> order;
+    std::vector<char> drawn(places.size(), 0);
+    for (int pass = 0; pass < slots; ++pass) {
+        for (std::size_t i = 0; i < places.size(); ++i) {
+            if (drawn[i] || !(places[i] == pass + 1 || places[i] > 7))
+                continue;
+            drawn[i] = 1;
+            order.push_back(i);
+        }
+    }
+    return order;
+}
+
+Vec2 iconDigitCell(int place) {
+    // C division and remainder (place - 1 is never negative for 1 .. 9).
+    const int i = place - 1;
+    return {static_cast<float>(i % 4), static_cast<float>(i / 4)};
 }
 
 } // namespace hud
@@ -411,6 +477,8 @@ Hud::Hud(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
     m_map = loadHudMapParams(vfs, m_city);
     m_options.zoomedIn = m_map.zoomIn;
     m_dash = loadDashParams(vfs, m_vehicle);
+    // mmCRHUD::Init: the gold sits 5.5 m up and 13.1 m ahead in camera space.
+    m_crGoldSpin.m3 = {0.0f, 5.5f, -13.1f};
     if (auto bytes = vfs.readAll("tune/" + m_vehicle + ".info")) {
         const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
         if (auto info = parseVehicleInfo(text))
@@ -485,10 +553,20 @@ void Hud::drawWorld(const Session& session, const Camera& camera, const PlayerSt
     drawIcons(session, camera, blips);
     if (m_options.visible)
         drawArrow(session, camera);
+    if (m_cr.enabled && m_options.visible)
+        drawCrGoldIcon(camera);
     // The dash view is a child of mmHUD's container node: mmHUD::Disable
     // hides it with the rest.
-    if (m_options.dashboard && m_options.visible)
+    if (m_options.dashboard && m_options.visible) {
+        if (m_dashFrameValid) {
+            render::FrameConstants near = m_sceneFrame;
+            near.proj = m_dashProj;
+            m_device.setFrameConstants(near);
+        }
         drawDash(camera, player, steering);
+        if (m_dashFrameValid)
+            m_device.setFrameConstants(m_sceneFrame);
+    }
 }
 
 void Hud::drawCrObjects(const Camera& camera) {
@@ -538,16 +616,31 @@ void Hud::drawStands(const Session& session) {
 }
 
 void Hud::drawIcons(const Session& session, const Camera& camera, std::span<const MapBlip> blips) {
+    m_labelBlips.clear();
     if (!m_options.opponentIcons)
         return;
-    // mmIcons::Cull: a triangle card facing the camera, pointing down: the
-    // corners (0, 4), (s/2, 2s + 4), (-s/2, 2s + 4) for an icon size s,
-    // drawn over everything. Opponents have size 2: 2 m wide and 4 m tall
-    // with the tip 4 m above the car.
+    // mmIcons::Cull: a triangle card facing the camera (gfxRenderState::
+    // SetCard), pointing down: the corners (0, 4), (s/2, 2s + 4),
+    // (-s/2, 2s + 4) for an icon size s, drawn over everything. Opponents
+    // have size 2: 2 m wide and 4 m tall with the tip 4 m above the car.
     const Mat34& cam = camera.transform;
     auto card = [&](const Vec3& p, float size, std::uint32_t argb) {
         const Vec3 top = p + cam.m1 * (2.0f * size + 4.0f);
         drawTriangle(p + cam.m1 * 4.0f, top + cam.m0 * (0.5f * size), top - cam.m0 * (0.5f * size), argb);
+    };
+    // Places 1 .. 9 add opp_icon's digit (or the "$") on a 2 x 2 quad from
+    // (-1, 2.5) to (1, 4.5); the 4 m lift is added before the size scales
+    // it here (unlike the triangle's), so at size 2 the number floats
+    // 13 to 17 m up, above the triangle.
+    const WorldTexture* digits = m_textures.get("opp_icon");
+    auto digit = [&](const Vec3& p, float size, int place) {
+        if (!digits || place < 1 || place >= 10)
+            return;
+        const Vec2 cell = hud::iconDigitCell(place);
+        auto at = [&](float x, float y) { return p + cam.m0 * (x * size) + cam.m1 * ((y + 4.0f) * size); };
+        auto uv = [&](float u, float v) { return Vec2{(cell.x + u) * 0.25f, (cell.y + v) * 0.25f}; };
+        drawCardQuad({at(1.0f, 2.5f), at(1.0f, 4.5f), at(-1.0f, 2.5f), at(-1.0f, 4.5f)},
+                     {uv(1.0f, 0.0f), uv(1.0f, 1.0f), uv(0.0f, 0.0f), uv(0.0f, 1.0f)}, *digits);
     };
     if (session.mode() == GameMode::Blitz) {
         // mmSingleBlitz::InitHUD / Update: cyan cards 5 m above the
@@ -563,10 +656,61 @@ void Hud::drawIcons(const Session& session, const Camera& camera, std::span<cons
         }
         return;
     }
-    // Opponents (registered for every single-player mode): violet.
-    for (const auto& b : blips)
-        if (b.kind == MapBlip::Kind::Opponent)
-            card(b.transform.m3, 2.0f, 0xFFB400FFu);
+    // The opponents (every single-player mode registers them) or the
+    // network players (mmGameMulti::RegisterMapNetObjects, eight slots),
+    // drawn by place (hud::iconDrawOrder).
+    std::vector<const MapBlip*> icons;
+    std::vector<int> places;
+    for (const auto& b : blips) {
+        if (b.kind == MapBlip::Kind::Opponent || b.kind == MapBlip::Kind::Remote) {
+            icons.push_back(&b);
+            places.push_back(b.place);
+        }
+    }
+    const int slots = session.multiplayer() ? 8 : std::min(static_cast<int>(icons.size()), 10);
+    for (const std::size_t i : hud::iconDrawOrder(places, slots)) {
+        card(icons[i]->transform.m3, 2.0f, icons[i]->iconColor);
+        digit(icons[i]->transform.m3, 2.0f, icons[i]->place);
+    }
+    // The labels are drawn in the 2D pass, network games only.
+    if (session.multiplayer()) {
+        m_labelEye = cam.m3;
+        for (const MapBlip* b : icons)
+            if (b->kind == MapBlip::Kind::Remote && !b->name.empty())
+                m_labelBlips.push_back(*b);
+    }
+}
+
+void Hud::drawCardQuad(const std::array<Vec3, 4>& corners, const std::array<Vec2, 4>& uvs,
+                       const WorldTexture& texture) {
+    // vglBegin(5): a strip of the four corners, white, textured, alpha
+    // blended over everything (the icons' z buffer is off).
+    render::Vertex3D v[6]{};
+    static constexpr int kStrip[6] = {0, 1, 2, 2, 1, 3};
+    for (int i = 0; i < 6; ++i) {
+        const auto k = static_cast<std::size_t>(kStrip[i]);
+        v[i].position[0] = corners[k].x;
+        v[i].position[1] = corners[k].y;
+        v[i].position[2] = corners[k].z;
+        v[i].normal[1] = 1.0f;
+        v[i].color = 0xFFFFFFFFu;
+        v[i].uv0[0] = uvs[k].x;
+        v[i].uv0[1] = uvs[k].y;
+    }
+    render::DrawCall call;
+    call.vertices =
+        m_device.uploadTransient(render::BufferKind::Vertex, std::span<const render::Vertex3D>(v));
+    call.count = 6;
+    call.constants.world = Mat44::identity();
+    call.constants.color = {1.0f, 1.0f, 1.0f, 1.0f};
+    call.constants.flags = render::DrawFlag::VertexColor | render::DrawFlag::Texture0;
+    call.constants.alphaRef = 0.02f;
+    call.textures[0] = {texture.handle, texture.sampler};
+    call.state.blend = render::BlendMode::Alpha;
+    call.state.cull = render::CullMode::None;
+    call.state.depthTest = false;
+    call.state.depthWrite = false;
+    m_device.draw(call);
 }
 
 void Hud::drawArrow(const Session& session, const Camera& camera) {
@@ -647,15 +791,9 @@ Vec4 Hud::mapRect(const render::UiLayout& l) const {
     return hud::mapRect(l, m_map, m_options, m_rightHandDrive);
 }
 
-void Hud::cycleMap() { m_options.mapMode = hud::nextMapMode(m_options.mapMode, m_mapModeBeforeFull); }
-
-void Hud::toggleFullScreenMap() {
-    if (m_options.mapMode == MapMode::FullScreen) {
-        m_options.mapMode = m_mapModeBeforeFull;
-    } else {
-        m_mapModeBeforeFull = m_options.mapMode;
-        m_options.mapMode = MapMode::FullScreen;
-    }
+render::Rect Hud::sceneRect(render::Extent2D scene) const {
+    return hud::sceneRect(static_cast<int>(scene.width), static_cast<int>(scene.height), m_map,
+                          m_options.mapMode, m_options.wideAngle);
 }
 
 void Hud::toggleMapZoom() {
@@ -671,7 +809,7 @@ void Hud::toggleMapRotation() {
 void Hud::toggleCluster() {
     if (m_options.cluster)
         m_options.cluster = false;
-    else if (!m_options.dashboard)
+    else if (!m_options.dashActive)
         m_options.cluster = true;
 }
 
@@ -784,14 +922,29 @@ void Hud::drawMap(const Session& session, const PlayerState& player, std::span<c
     for (const auto& b : blips)
         if (b.kind == MapBlip::Kind::Police)
             car(b.transform, hud::MapIcon::Police, m_mapIconScale);
+    // DrawOpponents: violet in single player, IconType slot + 4 for the
+    // network players.
     for (const auto& b : blips) {
         if (b.kind == MapBlip::Kind::Opponent)
             car(b.transform, hud::MapIcon::Opponent, m_mapIconScale);
-        else if (b.kind == MapBlip::Kind::Teammate)
-            car(b.transform, hud::MapIcon::Teammate, m_mapIconScale);
+        else if (b.kind == MapBlip::Kind::Remote)
+            car(b.transform, static_cast<hud::MapIcon>(std::clamp(b.slot, 0, 7) + 4), m_mapIconScale);
     }
     car(player.transform, hud::MapIcon::Outline, m_mapIconScale * 1.3f);
     car(player.transform, hud::MapIcon::Player, m_mapIconScale);
+
+    // mmHudMap::DrawCopsnRobbers (Cops and Robbers, after the player): the
+    // gold (GOLD_DOT, paint job 6), then the bank and the hideout
+    // (BANK_DOT 7, HIDEOUT_DOT 8), or in Robber Teams the blue and red
+    // bases (BLUE_DOT 1, RED_DOT 0), as mmMultiCR::InitHUD registers them.
+    if (m_cr.enabled) {
+        dot(m_cr.goldOnMap, kDotGold);
+        const bool robberTeams = m_cr.teams && !m_cr.copsVsRobbers;
+        if (m_cr.bases.size() >= 2) {
+            dot(m_cr.bases[0].position, robberTeams ? kDotBlue : kDotBank);
+            dot(m_cr.bases[1].position, robberTeams ? kDotRed : kDotHideout);
+        }
+    }
 
     m_device.setViewport({0, 0, static_cast<float>(scene.width), static_cast<float>(scene.height), 0, 1});
     m_device.setScissor(nullptr);
@@ -970,8 +1123,10 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
     const ui::FontSpec f = font(60, "Gill Sans MT, 20, 36, 0, 400");
     // mmHUD::Update places the nodes: the message at 0.8 (mode 0) or 0.2
     // (mode 1), 0.15 tall; the second line at 0.875 or 0.2 + 0.15, 0.075
-    // tall (mmHUD::mmHUD).
-    const float y0 = second ? (m.top ? 0.2f + 0.15f : 0.875f) : (m.top ? 0.2f : 0.8f);
+    // tall (mmHUD::mmHUD); both at the top (0.05, 0.1) while the 3D view
+    // does not start at the top of the screen.
+    const bool viewAtTop = sceneRect(m_device.sceneExtent()).y == 0;
+    const float y0 = hud::messageTop(m.top, second, viewAtTop);
     const float top = l.top + y0 * h;
     const float boxBottom = top + (second ? 0.075f : 0.15f) * h;
     const float lineHeight = static_cast<float>(f.size2); // DrawText steps by the cell height
@@ -990,61 +1145,131 @@ void Hud::drawMessage(render::Overlay2D& ov, ui::TextRenderer& text, const HudMe
     }
 }
 
-void Hud::drawCheckpointLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session) {
-    // mmSingleBlitz::InitHUD registers every checkpoint's number ("%d") with
-    // mmIcons as a label in font string 48, cyan; mmIcons::Cull draws each
-    // label whose point (2 m above the icon) is in front of the camera,
-    // centred over it with its bottom there, nearest first.
-    if (!m_viewProjValid)
+void Hud::drawIconLabels(render::Overlay2D& ov, ui::TextRenderer& text, const Session& session) {
+    // mmIcons::Cull, network games only (single-player Blitz registers its
+    // checkpoint numbers as labels too, but they are never drawn): each
+    // player's name (mmGameMulti::RegisterMapNetObjects, font string 48)
+    // whose point 2 m above the car is within 300 m of the view (distance
+    // squared under 90000, mmGame::Init) and in front of it, centred over
+    // the point with its bottom there, in the player's icon colour with a
+    // one-pixel 0x101010 outline (mmText::CreateFitBitmap), clipped to the
+    // 3D view and drawn in order of depth, nearest first.
+    if (!m_viewProjValid || !session.multiplayer() || m_labelBlips.empty())
         return;
     const render::UiLayout& l = ov.layout();
-    const render::Extent2D out = m_device.outputExtent(); // the scene fills the output
+    const render::Rect view = sceneRect(m_device.sceneExtent()); // the scene fills the output
     const ui::FontSpec f = font(48, "Gill Sans MT, 10, 16, 0, 400");
     struct Label {
         Vec2 at;
         float depth;
-        std::size_t index;
+        const MapBlip* blip;
     };
     std::vector<Label> labels;
-    const auto& cps = session.checkpoints();
-    for (std::size_t i = 1; i < cps.size(); ++i) {
-        const Vec3 p = cps[i].position + Vec3{0.0f, 5.0f + 2.0f, 0.0f};
+    for (const MapBlip& b : m_labelBlips) {
+        const Vec3 p = b.transform.m3 + Vec3{0.0f, 2.0f, 0.0f};
+        if (!(m_labelEye.dist2(p) < 90000.0f))
+            continue;
         const Vec4 c = m_viewProj.transform(Vec4{p.x, p.y, p.z, 1.0f});
         if (!(c.w > 0.0f))
             continue;
         const float inv = 1.0f / c.w;
-        const Vec2 pixel{(c.x * inv * 0.5f + 0.5f) * static_cast<float>(out.width),
-                         (0.5f - c.y * inv * 0.5f) * static_cast<float>(out.height)};
-        labels.push_back({l.toVirtual(pixel), c.z * inv, i});
+        const Vec2 pixel{static_cast<float>(view.x) + (c.x * inv * 0.5f + 0.5f) * static_cast<float>(view.width),
+                         static_cast<float>(view.y) + (0.5f - c.y * inv * 0.5f) * static_cast<float>(view.height)};
+        labels.push_back({l.toVirtual(pixel), c.z * inv, &b});
     }
     std::ranges::sort(labels, {}, &Label::depth);
+    const Vec2 v0 = l.toVirtual({static_cast<float>(view.x), static_cast<float>(view.y)});
+    const Vec2 v1 = l.toVirtual({static_cast<float>(view.x) + static_cast<float>(view.width),
+                                 static_cast<float>(view.y) + static_cast<float>(view.height)});
     const float lineHeight = static_cast<float>(f.size2);
-    for (const auto& lb : labels)
-        text.draw(ov, f, std::format("{}", lb.index), lb.at.x, lb.at.y - lineHeight, render::packColor(0, 255, 255),
-                  ui::Align::Center);
+    const float o = px(1.0f);
+    for (const auto& lb : labels) {
+        const float y = lb.at.y - lineHeight;
+        if (lb.at.y <= v0.y || y >= v1.y || lb.at.x <= v0.x || lb.at.x >= v1.x)
+            continue; // CopyClippedBitmap (whole labels outside the view)
+        const std::uint32_t argb = lb.blip->iconColor;
+        auto channel = [&](int shift) { return static_cast<std::uint8_t>((argb >> shift) & 0xFFu); };
+        const std::uint32_t colour = render::packColor(channel(16), channel(8), channel(0));
+        for (int dy = -1; dy <= 1; ++dy)
+            for (int dx = -1; dx <= 1; ++dx)
+                text.draw(ov, f, lb.blip->name, lb.at.x + o * static_cast<float>(dx), y + o * static_cast<float>(dy),
+                          render::packColor(0x10, 0x10, 0x10), ui::Align::Center);
+        text.draw(ov, f, lb.blip->name, lb.at.x, y, colour, ui::Align::Center);
+    }
+}
+
+void Hud::drawCrGoldIcon(const Camera& camera) {
+    // mmCRHUD::UpdateGold (PostUpdate, every frame while ActivateGold has
+    // its node on): turn 0.05 rad about Y per frame, then place it in the
+    // camera's frame; wpobj_gold without depth test. Lit in the original
+    // (EnableLighting); drawn unlit here like the gold in the world.
+    if (!m_cr.carryingGold)
+        return;
+    const GpuModel* model = m_models.get("wpobj_gold");
+    const GpuMesh* mesh = model ? model->find("", asset::Lod::High) : nullptr;
+    if (!mesh)
+        return;
+    const Vec3 at = m_crGoldSpin.m3;
+    m_crGoldSpin.m3 = {};
+    m_crGoldSpin = m_crGoldSpin * Mat34::rotationY(0.05f); // Matrix34::Rotate(YAXIS, 0.05)
+    m_crGoldSpin.m3 = at;
+    drawFlat(m_device, m_textures, *mesh, model->materials(0), m_crGoldSpin * camera.transform, false);
 }
 
 void Hud::drawCrReadouts(render::Overlay2D& ov, ui::TextRenderer& text, ui::TextureCache& art) {
-    // mmCRHUD::Init: "COPS" / "ROBBERS" (Cops vs. Robbers) or "BLUE" / "RED"
-    // in blue and red at 0 and 0.1 of the screen, each team's total under it
-    // (0.05, 0.15), from the node's corner (placed at the top left here,
-    // inferred; the roster of names and the gold icon are not drawn). In
-    // Free-For-All the player's own score. The time limit's clock is drawn
-    // top centre as mmHUD's.
+    // mmCRHUD::Init, in fractions of the screen from its top left corner
+    // (the node's corner: the top left, inferred). Team games: "COPS" /
+    // "ROBBERS" (Cops vs. Robbers) or "BLUE" / "RED" in blue and red at 0
+    // and 0.1 (font string 262), each team's total under it (0.05, 0.15);
+    // the rest starts 0.25 lower. Then the player's name at 12 / 640 of the
+    // width, blue or red (mmCRHUD::SetName), the player's score under it
+    // (+0.05) and the roster from +0.1: per row the "$" (string 268,
+    // yellow) at the left for the gold carrier, the name at 16 / 640 (font
+    // string 263) in the player's colour and its score 0.025 under it,
+    // rows 0.0625 apart. The numbers are yellow Gill Sans MT (mmNumberFont
+    // with 0xffff00), 20 pixels for the totals and the player's score, 16
+    // for the roster.
     const render::UiLayout& l = ov.layout();
-    const float h = l.bottom - l.top;
-    const ui::FontSpec f = font(251, "Gill Sans MT, 12, 22, 0, 700");
+    const float w = l.right - l.left, h = l.bottom - l.top;
+    const ui::FontSpec labelFont = font(262, "Gill Sans MT, 12, 20, 0, 700");
+    const ui::FontSpec rosterFont = font(263, "Gill Sans MT, 10, 16, 0, 400");
+    auto numberFont = [&](int pixels) {
+        ui::FontSpec f;
+        f.face = "Gill Sans MT";
+        f.size = pixels;
+        f.size2 = std::max(1, static_cast<int>(std::lround(static_cast<float>(pixels) * m_options.pixelSize)));
+        return f;
+    };
+    const ui::FontSpec bigNumbers = numberFont(20), smallNumbers = numberFont(16);
     const std::uint32_t blue = render::packColor(0, 0, 255), red = render::packColor(255, 0, 0);
+    const std::uint32_t yellow = render::packColor(255, 255, 0);
+    auto at = [&](float x, float y) { return Vec2{l.left + x * w, l.top + y * h}; };
+    auto put = [&](const ui::FontSpec& f, const std::string& s, Vec2 p, std::uint32_t colour) {
+        text.draw(ov, f, s, p.x, p.y, colour, ui::Align::Left);
+    };
+    float base = 0.0f;
     if (m_cr.teams) {
         const bool cvr = m_cr.copsVsRobbers;
-        text.draw(ov, f, m_strings.get(cvr ? 264 : 266, cvr ? "COPS" : "BLUE"), l.left, l.top, blue,
-                  ui::Align::Left);
-        text.draw(ov, f, std::format("{}", m_cr.blueScore), l.left, l.top + 0.05f * h, blue, ui::Align::Left);
-        text.draw(ov, f, m_strings.get(cvr ? 265 : 267, cvr ? "ROBBERS" : "RED"), l.left, l.top + 0.1f * h, red,
-                  ui::Align::Left);
-        text.draw(ov, f, std::format("{}", m_cr.redScore), l.left, l.top + 0.15f * h, red, ui::Align::Left);
-    } else {
-        text.draw(ov, f, std::format("{}", m_cr.playerScore), l.left, l.top, kNumberColor, ui::Align::Left);
+        put(labelFont, m_strings.get(cvr ? 264 : 266, cvr ? "COPS" : "BLUE"), at(0.0f, 0.0f), blue);
+        put(bigNumbers, std::format("{}", m_cr.blueScore), at(0.0f, 0.05f), yellow);
+        put(labelFont, m_strings.get(cvr ? 265 : 267, cvr ? "ROBBERS" : "RED"), at(0.0f, 0.1f), red);
+        put(bigNumbers, std::format("{}", m_cr.redScore), at(0.0f, 0.15f), yellow);
+        base = 0.25f;
+    }
+    const float nameX = 12.0f / 640.0f;
+    if (!m_cr.playerName.empty())
+        put(labelFont, m_cr.playerName, at(nameX, base), m_cr.playerRed ? red : blue);
+    put(bigNumbers, std::format("{}", m_cr.playerScore), at(nameX, base + 0.05f), yellow);
+    float y = base + 0.05f + 0.05f;
+    const float rosterX = 16.0f / 640.0f;
+    for (std::size_t i = 0; i < m_cr.roster.size() && i < 7; ++i) {
+        const auto& r = m_cr.roster[i];
+        if (r.gold)
+            put(rosterFont, m_strings.get(268, "$"), at(0.0f, y), yellow);
+        auto channel = [&](int shift) { return static_cast<std::uint8_t>((r.color >> shift) & 0xFFu); };
+        put(rosterFont, r.name.substr(0, 15), at(rosterX, y), render::packColor(channel(16), channel(8), channel(0)));
+        put(smallNumbers, std::format("{}", r.score), at(rosterX, y + 0.025f), yellow);
+        y += 0.025f + 0.0375f;
     }
     if (m_cr.timeLeft >= 0.0f)
         drawClock(ov, art, m_cr.timeLeft, (l.left + l.right) * 0.5f, l.top);
@@ -1091,8 +1316,9 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
     const GameMode mode = session.mode();
     trackLapTimes(session);
 
-    // The instrument cluster (mmExternalView) is replaced by the dashboard.
-    if (m_options.visible && m_options.cluster && !m_options.dashboard)
+    // The instrument cluster (mmExternalView): mmHUD::ActivateDash hides it,
+    // DeactivateDash shows it again when it was on.
+    if (m_options.visible && m_options.cluster && !m_options.dashActive)
         drawCluster(ov, art, player, l.left, l.bottom - px(100.0f));
 
     // Race clock, top centre (mmHUD::Cull): the count-down in Blitz and the
@@ -1106,8 +1332,8 @@ void Hud::drawOverlay(render::Overlay2D& ov, ui::TextRenderer& text, ui::Texture
 
     if (m_options.visible)
         drawReadouts(ov, text, session);
-    if (m_options.opponentIcons && mode == GameMode::Blitz)
-        drawCheckpointLabels(ov, text, session);
+    if (m_options.opponentIcons)
+        drawIconLabels(ov, text, session);
     // mmHUD::mmHUD puts the message nodes under the container mmHUD::Disable
     // hides in single player, and directly under the HUD in multiplayer.
     if (m_options.visible || session.multiplayer()) {

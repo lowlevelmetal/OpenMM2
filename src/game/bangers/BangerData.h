@@ -68,6 +68,9 @@ public:
     // Part i (0-based) of a breakable banger: "<model>_break%02d".
     const BangerData* part(std::string_view model, int i) const;
     bool has(std::string_view model) const;
+    // Multiplies an entry's Mass and ImpulseLimit2 (mmMultiCircuit::Init's
+    // barricades, x 26).
+    void scaleMass(std::string_view model, float factor);
     std::size_t available() const { return m_names.size(); }
     std::vector<std::string> names() const;
     // The game data the entries come from (dgBangerData::InitBound loads the

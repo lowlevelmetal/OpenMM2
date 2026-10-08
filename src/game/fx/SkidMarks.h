@@ -57,6 +57,8 @@ public:
     bool laying() const { return m_laying; }
 
 private:
+    // lvlTrackManager::AddVertex: the pair at the head of the ring; a full
+    // ring drops its oldest pair (and the next one when it starts a strip).
     void push(const Pair& p);
 
     std::vector<Pair> m_pairs;

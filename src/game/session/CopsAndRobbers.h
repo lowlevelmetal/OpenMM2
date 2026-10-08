@@ -25,8 +25,10 @@ enum class CrTeam : std::uint8_t { Robber, Cop, Red, Blue };
 // race/<city>/multicopwaypoints.csv: a pool of places. Each set (the start,
 // and after every delivery) puts the bank, the gold and the hideout on
 // random, different places of the pool (mmMultiCR::LoadCSV / GetRandomPoints;
-// the original never picks the last row). race/<city>/<city>sets.csv would
-// list fixed sets but no retail city has one.
+// the original never picks the last row); with fewer than three rows every
+// place is an AI intersection. race/<city>/multicopsets.csv (mmMultiCR::
+// LoadSets: bank, gold, hideout triples) would list fixed sets but no retail
+// city has one.
 struct CrLocations {
     std::vector<Vec3> points;
 };
@@ -46,9 +48,18 @@ struct CrSettings {
     // Half of the random places are AI intersections (mmGame::RespawnXYZ)
     // when this is set; the rest come from the pool.
     std::function<std::optional<Vec3>()> randomIntersection;
-    // Whether dropped gold may stay where it fell (on a road or
-    // intersection, mmMultiCR::DropGold); elsewhere it returns to its spawn.
+    // Whether dropped gold may stay where it fell (mmMultiCR::DropGold: not
+    // in a water-of-death room); elsewhere it returns to its spawn.
     std::function<bool(const Vec3&)> canDropAt;
+    // mmMultiCR::FindGround: the level under a point (2 m above it to 10 m
+    // below), or the point itself. DropGold puts the gold there.
+    std::function<Vec3(const Vec3&)> findGround;
+    // UpdateGold: the gold (its room found 1.5 m above it, mmWaypointObject::
+    // Move) and the car are in the same room.
+    std::function<bool(const Vec3& gold, const Vec3& car)> sameRoom;
+    // UpdateBank / UpdateHideout: the base's room (found 3.75 m above it) is
+    // covered or underground (level flags 0x0A), or is the car's room.
+    std::function<bool(const Vec3& base, const Vec3& car)> baseReachable;
 };
 
 class CopsAndRobbers {
@@ -71,6 +82,8 @@ public:
     };
     struct Impact {
         int a = 0, b = 0; // car ids
+        // vehDamageImpactInfo's total (the damage values summed while the
+        // impact lasts), of a damaging impact.
         float impulse = 0.0f;
     };
     enum class EventType : std::uint8_t { GoldTaken, GoldDropped, GoldDelivered, NewSet, TimeWarning, TimeUp,
@@ -78,7 +91,7 @@ public:
     struct Event {
         EventType type{};
         int car = -1;  // carrier / deliverer
-        int value = 0; // minutes left (TimeWarning), points
+        int value = 0; // minutes left (TimeWarning), points; GoldDropped: 1 knocked loose by a hit
     };
 
     CopsAndRobbers(const CrSettings& settings, const CrLocations& locations);
@@ -112,6 +125,9 @@ public:
                                        const std::vector<Impact>& impacts);
     // A message from another machine (`from`); a host may answer with more.
     std::vector<Message> receive(const Message& message, int from, bool host);
+    // A player left (mmMultiCR::SystemMessage 0x2d): the host drops a
+    // leaver's gold where it is (2 m above the car), not back to its spawn.
+    std::vector<Message> playerLeft(int id, bool host);
     // Whether the gold can be taken (mmWaypointObject active).
     bool goldActive() const { return m_goldActive; }
 
@@ -136,7 +152,7 @@ private:
     static bool teamZero(CrTeam t) { return t == CrTeam::Cop || t == CrTeam::Blue; }
     Vec3 randomPoint();
     void newSet();
-    void drop(int carId, const Vec3& at, bool toSpawn);
+    void drop(int carId, const Vec3& at, bool toSpawn, bool knocked = false);
     void take(int carId);
     void deliver(int carId);
     void tickLimits(float dt);

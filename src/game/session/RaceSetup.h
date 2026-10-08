@@ -9,11 +9,33 @@
 #include "vfs/Vfs.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace mm2::game::session {
+
+// The place a game mode gives a car: vehCarSim::SetResetPos(position) and
+// the reset angle (vehCarSim +0x250). vehCar::Reset then puts the body (the
+// centre of gravity) at position + CenterOfGravity, unrotated, turned by
+// `angle` radians about Y (game::SimVehicle::setResetPos and reset), and
+// every later vehCar::Reset (a restart) puts it back there.
+struct ResetPlace {
+    Vec3 position;
+    float angle = 0.0f;
+};
+
+// How a mode settles the player's car on its start (its InitOtherPlayers).
+enum class StartDrop : std::uint8_t {
+    None,       // mmSingleRoam: RespawnXYZ's point as it is
+    OnGround,   // mmGame / mmGameSingle and the race modes: game::SimVehicle::settleOnGround
+    FindGround, // the multiplayer races' grid slot: findGroundPos, once
+};
+
+// A segment probe of the level: dgPhysManager::Collide with the wheels'
+// mask (0x20), the nearest hit from `from` to `to`.
+using GroundProbe = std::function<std::optional<Vec3>(const Vec3& from, const Vec3& to)>;
 
 // A race opponent: car, driving line (race/<dir>/<race>-a|p-<n>.opp) and
 // starting place. `params` are the remaining numbers of its [Opponent] line
@@ -77,6 +99,10 @@ struct RaceSetup {
     std::optional<city::AiMapConfig> aiMap;     // race .aimap(_p), or roam.aimap(_p) for cruise
     std::vector<LessonEvent> lessonEvents;      // crash course
     Mat34 playerSpawn;
+    // Where the mode puts the player's car (the modes' InitGameObjects /
+    // InitOtherPlayers) and whether it is then settled on the ground.
+    ResetPlace playerPlace;
+    StartDrop playerDrop = StartDrop::OnGround;
 };
 
 // Loads the event described by `config`. Fails (returns std::nullopt and
@@ -95,6 +121,15 @@ std::vector<Checkpoint> buildCheckpoints(const std::vector<city::Waypoint>& poin
 
 // Start transform for a waypoint: at its position, facing its heading.
 Mat34 spawnAt(const Checkpoint& cp);
+
+// mmWaypoints::GetStart / GetStartAngle as the modes' InitGameObjects (and
+// mmSingleCircuit::HitWaterHandler) use them: the waypoint's position, its
+// heading x -0.017453292.
+ResetPlace startPlace(const Checkpoint& cp);
+
+// mmGame::FindGroundPos: the first hit from 7.5 m above `p` to 15 m below
+// it, else `p` itself.
+Vec3 findGroundPos(const Vec3& p, const GroundProbe& probe);
 
 // Driving direction of an Angel heading (degrees): (sin h, 0, -cos h).
 Vec3 headingDirection(float headingDeg);
