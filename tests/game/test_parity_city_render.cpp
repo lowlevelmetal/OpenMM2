@@ -7,6 +7,7 @@
 #include "asset/Pkg.h"
 #include "city/CityData.h"
 #include "core/StringUtil.h"
+#include "game/CityLevel.h"
 #include "game/CityRenderer.h"
 
 #include <gtest/gtest.h>
@@ -106,6 +107,49 @@ TEST(ParityCityRender, RetailPedestrianSequencesStartAtTheOrigin) {
         }
     }
     EXPECT_GT(rows, 40);
+}
+
+TEST(ParityCityRender, RoomListsPutMoversFirstAndStaticsNewestFirst) {
+    // lvlLevel::MoveToRoom: movable instances at the head of a room's list,
+    // static ones (flag 0x400) after them, each before the earlier ones.
+    MM2_REQUIRE_GAME_DATA();
+    auto city = city::loadCity(*test::gameData(), "london");
+    ASSERT_TRUE(city);
+    CityLevel level(*city, *test::gameData(), {});
+    struct Marker final : InstanceSource {
+        void instancesIn(int, std::vector<phys::Instance*>& out) const override { out.push_back(nullptr); }
+    } marker;
+    level.addSource(&marker);
+    // Load order of the collidable records, by name and position.
+    auto order = [&](const StaticInstance& si) {
+        for (std::size_t i = 0; i < city->instances.size(); ++i)
+            if (city->instances[i].name == si.name &&
+                city->instances[i].transform.m3.dist2(si.matrix().m3) < 1e-4f)
+                return static_cast<int>(i);
+        return -1;
+    };
+    int checked = 0;
+    std::vector<phys::Instance*> list;
+    for (int room = 1; room < static_cast<int>(city->psdl.rooms.size()); ++room) {
+        list.clear();
+        level.instances(room, list);
+        ASSERT_FALSE(list.empty());
+        EXPECT_EQ(list.front(), nullptr); // the source's instance comes first
+        int previous = -1;
+        for (std::size_t k = 1; k < list.size(); ++k) {
+            const auto* si = dynamic_cast<const StaticInstance*>(list[k]);
+            ASSERT_NE(si, nullptr);
+            const int o = order(*si);
+            if (previous >= 0 && o >= 0) {
+                EXPECT_LT(o, previous) << "room " << room;
+                ++checked;
+            }
+            if (o >= 0)
+                previous = o;
+        }
+    }
+    level.removeSource(&marker);
+    EXPECT_GT(checked, 0);
 }
 
 TEST(ParityCityRender, RetailFacadesUseTheirRecordVariant) {
