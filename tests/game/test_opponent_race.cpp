@@ -376,7 +376,7 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
                 r.lastLapStart = run.time;
                 r.lapsSeen = laps;
             }
-            if (r.driver->finished() && r.finishTime < 0.0f)
+            if ((r.driver->arrived() || r.driver->finished()) && r.finishTime < 0.0f)
                 r.finishTime = run.time;
             if (debugLevel() == 3)
                 printStuck(r, run.time, pos);
@@ -392,7 +392,7 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
                 r.seenDamage = sim.damage.currentDamage;
             }
             bool off = false;
-            if (!r.driver->finished()) {
+            if (!r.driver->arrived() && !r.driver->finished()) {
                 bool below = false;
                 const float beyond = beyondCurb(*r.driver, pos, &below);
                 off = beyond > 1.0f;
@@ -409,7 +409,7 @@ RaceRun runRace(CityWorld& cw, const vfs::Vfs& vfs, const game::session::RaceSet
             if (r.offRoad && !off)
                 r.endExcursion();
             r.offRoad = off;
-            allDone = allDone && r.driver->finished() && r.vehicle->sim().speed() < 1.0f;
+            allDone = allDone && (r.driver->arrived() || r.driver->finished()) && r.vehicle->sim().speed() < 1.0f;
         }
         if (allDone)
             break;
@@ -902,7 +902,7 @@ TEST(OpponentRace, EveryRaceSweep) {
         GTEST_SKIP() << "set OPENMM2_AI_SWEEP=1";
     const vfs::Vfs& vfs = *test::gameData();
     const char* only = std::getenv("OPENMM2_AI_ONLY");
-    int finished = 0, total = 0;
+    int finished = 0, total = 0, crossed = 0;
     for (const char* cityName : {"london", "sf"}) {
         if (only && std::string_view(only).substr(0, std::string_view(only).find(' ')) != cityName)
             continue;
@@ -926,10 +926,13 @@ TEST(OpponentRace, EveryRaceSweep) {
                                                                   mode == game::GameMode::Circuit))
                             longest = std::max(longest, c->raceDistance(1));
                     const RaceRun run = runRace(*cw, vfs, *setup, std::max(120.0f, longest / 6.0f + 60.0f));
-                    int done = 0, resets = 0, backups = 0, wrecked = 0;
+                    int done = 0, resets = 0, backups = 0, wrecked = 0, lines = 0;
                     float off = 0, slowest = 0, least = 1.0f;
                     for (const auto& r : run.racers) {
-                        done += r.driver->finished();
+                        // Route completion (what the sweep measures), and
+                        // the game's aiRouteRacer::Finished at the race's line.
+                        done += r.driver->arrived() || r.driver->finished();
+                        lines += r.driver->finished();
                         resets += r.driver->resets();
                         backups += r.driver->backups();
                         wrecked += r.vehicle->sim().damage.wrecked();
@@ -938,11 +941,12 @@ TEST(OpponentRace, EveryRaceSweep) {
                         least = std::min(least, r.driver->progress() / r.driver->course().raceDistance(1));
                     }
                     finished += done;
+                    crossed += lines;
                     total += static_cast<int>(run.racers.size());
-                    std::printf("%s: %d/%zu finished (%d wrecked), slowest %.0f s, line %.0f m, resets %d, "
-                                "backups %d, beyond sidewalk %.1f s, least progress %.0f%%\n",
-                                key.c_str(), done, run.racers.size(), wrecked, slowest, longest, resets, backups, off,
-                                least * 100.0f);
+                    std::printf("%s: %d/%zu finished (%d wrecked, %d across the line), slowest %.0f s, line %.0f m, "
+                                "resets %d, backups %d, beyond sidewalk %.1f s, least progress %.0f%%\n",
+                                key.c_str(), done, run.racers.size(), wrecked, lines, slowest, longest, resets, backups,
+                                off, least * 100.0f);
                     std::string file = key;
                     std::replace(file.begin(), file.end(), ' ', '_');
                     plotRun(*cw, run, file + ".png");
@@ -951,4 +955,5 @@ TEST(OpponentRace, EveryRaceSweep) {
         }
     }
     std::printf("sweep: %d/%d opponents finished\n", finished, total);
+    std::printf("sweep: %d/%d crossed the race's finish line (aiRouteRacer::Finished)\n", crossed, total);
 }

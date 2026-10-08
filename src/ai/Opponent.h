@@ -147,7 +147,15 @@ public:
     void onImpact(const phys::CarImpact& impact);
 
     Mode mode() const { return m_mode; }
+    // aiRouteRacer::Finished as the game keeps it: the racer crossed the
+    // race's finish line (setFinishLine); without a line, arrived().
     bool finished() const { return m_finished; }
+    // OpenMM2: the racer has driven its route: within 10 m of the end of its
+    // course on its last leg, or of its destination past the last waypoint
+    // of the last lap. MM2's racers stop at their destination (RegisterRoute
+    // with destination speed 0), which some .opp routes put short of the
+    // race's finish line, so a racer can arrive without ever finishing.
+    bool arrived() const { return m_arrived; }
     bool disabled() const { return m_disabled; }
     int lapsDone() const;
     // Metres driven along the course since the start (laps included).
@@ -198,6 +206,7 @@ private:
     bool m_held = false;
     bool m_wasHeld = false; // undrivable last frame (released: into first gear)
     bool m_finished = false;
+    bool m_arrived = false;
     bool m_disabled = false;
     bool m_hasFinishLine = false;
     Vec3 m_finishPoint;            // aiMap +0x1a0

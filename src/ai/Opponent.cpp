@@ -128,6 +128,7 @@ void Opponent::reset() {
     // aiRouteRacer::Reset / aiVehiclePhysics::Reset.
     m_mode = m_held ? Mode::Held : Mode::Racing;
     m_finished = false;
+    m_arrived = false;
     m_disabled = false;
     m_touchingPlayer = false;
     m_registered = false; // DriveRoute registers the route again
@@ -305,7 +306,9 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
 
     // OpenMM2 recovery (not in MM2): no progress for a long time, or fallen
     // out of the city, puts the car back on its line.
-    if (!m_finished && !m_disabled && !m_driver.wrecked()) {
+    // (Not once the car has arrived: MM2's racer simply stands at its
+    // destination, finished or not.)
+    if (!m_finished && !m_arrived && !m_disabled && !m_driver.wrecked()) {
         if (m_progress > m_bestProgress + 5.0f) {
             m_bestProgress = m_progress;
             m_noProgressTime = 0.0f;
@@ -356,12 +359,14 @@ void Opponent::update(float dt, std::span<const TrackedCar> cars) {
     const Vec3 toDest = m_route.destination - m_car.body.ics.matrix.m3;
     const bool atDestination = toDest.x * toDest.x + toDest.z * toDest.z <= kFinishRadius * kFinishRadius;
     const bool courseEnd = remaining <= m_lastLeg + 0.5f && remaining <= kFinishRadius;
+    if (courseEnd || (lastLeg && atDestination))
+        m_arrived = true;
     if (m_hasFinishLine) {
         // The game asks aiRouteRacer::Finished every frame (mmSingleRace /
         // mmSingleCircuit::UpdateOpponentStatus) and keeps the answer.
         if (crossedFinishLine())
             finish();
-    } else if (!m_finished && (courseEnd || (lastLeg && atDestination))) {
+    } else if (!m_finished && m_arrived) {
         finish();
     }
     // The race being over changes nothing in MM2 (aiRouteRacer::Finished is
