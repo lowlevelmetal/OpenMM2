@@ -1,3 +1,7 @@
+// Where props come from: cityLevel::Load / LoadPathSet / LoadPath / LoadProp,
+// dgPath::Load / Enumerate, cityPropulator, lvlSDL::Propulate / IsoLerp and
+// lvlAiMap's sidewalk vertices, from the code of midtown2.exe build 3393
+// (MM2Recomp). See docs/bangers.md.
 #include "game/bangers/PropPlacement.h"
 
 #include "core/Log.h"
@@ -5,41 +9,205 @@
 #include "data/TextTables.h"
 #include "game/fx/Random.h"
 
+#include <algorithm>
 #include <cmath>
 #include <format>
 #include <map>
+#include <span>
 
 namespace mm2::game::bangers {
 namespace {
 
-std::string_view text(const std::vector<std::byte>& b) { return {reinterpret_cast<const char*>(b.data()), b.size()}; }
-
-bool degenerate(const Vec3& v) { return v.x == 0.0f && v.y == 0.0f && v.z == 0.0f; }
-
-// A road's sidewalk edge (lvlAiMap's road vertices for one side): the curb
-// and outer edge polylines through all the road's rooms, and the room of
-// each segment.
-struct Sidewalk {
-    std::vector<Vec3> curb, outer;
-    std::vector<int> room; // per point; a segment belongs to its first point's room
-};
-
-// lvlSDL::IsoLerp: the point `d` metres along a polyline (and its segment's
-// room); false past the end.
-bool isoLerp(const std::vector<Vec3>& line, const std::vector<int>& rooms, float d, Vec3& out, int& room) {
-    for (std::size_t i = 0; i + 1 < line.size(); ++i) {
-        const Vec3 a = line[i], b = line[i + 1];
-        const float len = std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z));
-        room = rooms[i];
-        if (d <= len) {
-            const float t = d / len;
-            out = {(b.x - a.x) * t + a.x, (b.y - a.y) * t + a.y, (b.z - a.z) * t + a.z};
-            return true;
-        }
-        d -= len;
-    }
-    return false;
+std::string_view text(const std::vector<std::byte>& b) {
+    return {reinterpret_cast<const char*>(b.data()), b.size()};
 }
+
+bool zeroRow(const Vec3& v) { return v.x == 0.0f && v.y == 0.0f && v.z == 0.0f; }
+
+// lvlAiMap's flags of the current road (lvlAiRoad's first word: OpenMM2's
+// PsdlRoad keeps its bytes as flags, unknown1 and the high half).
+constexpr std::uint32_t kRoadPedBlocked = 0x4;       // lvlAiMap::IsPedBlocked
+constexpr std::uint32_t kRoadSidewalks = 0x40;       // the road strips have sidewalks
+constexpr std::uint32_t kRoadCurbToCentre = 0x400000; // no retail road has it
+
+// lvlAiMap's current road, as cityLevel::Load sets it up for the street props
+// (lvlAiMap::SetRoad with bevel mode off): one road attribute per room of the
+// road, and the sidewalk polylines GetSidewalkVertex derives from them.
+class AiRoad {
+public:
+    AiRoad(const city::Psdl& psdl, const city::PsdlRoad& road) : m_psdl(psdl) {
+        m_flags = road.flags | (std::uint32_t{road.unknown1} << 8) | (std::uint32_t{road.propRule} << 16);
+        // lvlAiMap::LoadCurrent, enumerated over the road's rooms in order:
+        // every road strip (4 vertices a section), rectangle strip (2) or
+        // divided road (6) fills the next slot until there is one per room.
+        for (const auto id : road.rooms) {
+            const auto r = city::PsdlRoad::roomId(id);
+            if (r >= psdl.rooms.size())
+                continue;
+            for (const auto& a : psdl.rooms[r].attributes) {
+                if (m_rooms.size() == road.rooms.size())
+                    break;
+                const int stride = a.type == city::PsdlAttrType::RoadStrip          ? 4
+                                   : a.type == city::PsdlAttrType::RectangleStrip   ? 2
+                                   : a.type == city::PsdlAttrType::DividedRoadStrip ? 6
+                                                                                    : 0;
+                if (!stride)
+                    continue;
+                const auto v = a.vertices();
+                m_rooms.push_back({v, stride, static_cast<int>(v.size()) / stride, 0});
+            }
+        }
+        // lvlAiMap::GetRoom: the n-th room of the road, without its sign.
+        for (std::size_t k = 0; k < m_rooms.size(); ++k)
+            m_rooms[k].room = city::PsdlRoad::roomId(road.rooms[k]);
+        // SetRoad: a road missing an attribute gets no vertices.
+        if (m_rooms.size() != road.rooms.size() || m_rooms.empty())
+            return;
+        // GetNumVertexs (every room chopped): two per section, the first
+        // section of each room after the first being the previous room's
+        // last.
+        const int count = static_cast<int>(m_rooms.size());
+        int n = 0;
+        for (int k = 0; k < count; ++k) {
+            const int sections = m_rooms[static_cast<std::size_t>(k)].sections;
+            if (count == 1) {
+                n = n + sections * 2;
+            } else {
+                n = n - 2 + sections * 2;
+                if (k == 0 || k == count - 1)
+                    n = n + 1;
+            }
+        }
+        m_numVertexs = n;
+    }
+
+    // lvlSDL::IsoLerp: the point `distance` metres along the left (side 1)
+    // or right (side 0) sidewalk's curb or outer edge, and the room of the
+    // segment it is on (the room lvlAiMap was left at by the segment's first
+    // vertex).
+    bool isoLerp(float distance, bool outerEdge, int side, Vec3& out, int& room) const {
+        const int last = m_numVertexs - 1;
+        for (int i = 0; i < last;) {
+            int current = 0;
+            const Vec3 a = sidewalkVertex(i, outerEdge, side, current);
+            room = m_rooms[static_cast<std::size_t>(current)].room;
+            ++i;
+            const Vec3 b = sidewalkVertex(i, outerEdge, side, current);
+            const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+            const float length = std::sqrt((dz * dz + dy * dy) + dx * dx);
+            if (distance <= length) {
+                // OpenMM2: a zero-length segment hit exactly gives its point
+                // (MM2 divides 0 by 0).
+                const float t = length > 0.0f ? distance / length : 0.0f;
+                out = {(b.x - a.x) * t + a.x, (b.y - a.y) * t + a.y, (b.z - a.z) * t + a.z};
+                return true;
+            }
+            distance = distance - length;
+        }
+        return false;
+    }
+
+private:
+    struct Room {
+        std::span<const std::uint16_t> vertices;
+        int stride = 0;
+        int sections = 0;
+        int room = 0;
+    };
+
+    Vec3 vertex(const Room& r, int index) const {
+        if (index < 0 || static_cast<std::size_t>(index) >= r.vertices.size())
+            return {}; // OpenMM2 guard: MM2 reads past the attribute
+        const auto v = r.vertices[static_cast<std::size_t>(index)];
+        return v < m_psdl.vertices.size() ? m_psdl.vertices[v] : Vec3{};
+    }
+
+    // lvlAiMap::GetSidewalkVertexSingle: section k of road room r. The left
+    // sidewalk (side != 0) is vertices 1 (curb) and 0 (outer edge), the
+    // right one 2 and 3 (4 and 5 on divided roads); without sidewalks both
+    // edges are vertex 0 on the left and 1 on the right.
+    Vec3 sidewalkVertexSingle(const Room& r, int k, bool outerEdge, int side) const {
+        const int base = r.stride * k;
+        if (side == 0) {
+            const int offset = r.stride == 6 ? 2 : 0;
+            if (!(m_flags & kRoadSidewalks))
+                return vertex(r, base + 1);
+            return vertex(r, base + offset + (outerEdge ? 3 : 2));
+        }
+        if (!(m_flags & kRoadSidewalks))
+            return vertex(r, base);
+        return vertex(r, base + (outerEdge ? 0 : 1));
+    }
+
+    // lvlAiMap::GetVertexSingleCenter: the middle of the road at section k.
+    Vec3 vertexSingleCenter(const Room& r, int k) const {
+        int base = r.stride * k;
+        if (r.stride == 4 || r.stride == 6)
+            base = base + 1;
+        const Vec3 a = vertex(r, base);
+        const Vec3 b = vertex(r, base + 1 + (r.stride == 6 ? 2 : 0));
+        return {(b.x - a.x) * 0.5f + a.x, (b.y - a.y) * 0.5f + a.y, (b.z - a.z) * 0.5f + a.z};
+    }
+
+    // lvlAiMap::GetSidewalkVertexMulti: section n of the whole road; sets the
+    // current room.
+    Vec3 sidewalkVertexMulti(int n, bool outerEdge, int side, int& current) const {
+        const int count = static_cast<int>(m_rooms.size());
+        int r = 0, start = 0;
+        for (; r < count; ++r) {
+            const int end = start + m_rooms[static_cast<std::size_t>(r)].sections - (r != 0 ? 1 : 0);
+            if (n < end)
+                break;
+            start = end;
+        }
+        if (r == count)
+            return {}; // MM2 reports the error and returns the origin
+        current = r;
+        const Room& room = m_rooms[static_cast<std::size_t>(r)];
+        const int k = n - start + (r != 0 ? 1 : 0);
+        if (!outerEdge && !(m_flags & kRoadPedBlocked) && (m_flags & kRoadCurbToCentre)) {
+            // The curb moves 95% of the way to the middle of the road.
+            const Vec3 c = vertexSingleCenter(room, k);
+            const Vec3 s = sidewalkVertexSingle(room, k, false, side);
+            return {(c.x - s.x) * 0.95f + s.x, (c.y - s.y) * 0.95f + s.y, (c.z - s.z) * 0.95f + s.z};
+        }
+        return sidewalkVertexSingle(room, k, outerEdge, side);
+    }
+
+    // lvlAiMap::GetSidewalkVertex: two vertices per section. The ends of the
+    // road are its first and last sections; inside, a section's point is
+    // moved towards the previous section (even index) or the next one (odd
+    // index) by a third of the way, at most 0.1 m (15 m for the second and
+    // second last vertex), which cuts the corners.
+    Vec3 sidewalkVertex(int i, bool outerEdge, int side, int& current) const {
+        float most = 0.1f;
+        if (i == 1 || i == m_numVertexs - 2)
+            most = 15.0f;
+        const int k = i / 2;
+        if (i == 0 || i == m_numVertexs - 1)
+            return sidewalkVertexMulti(k, outerEdge, side, current);
+        const bool odd = (i % 2) == 1;
+        const Vec3 p = sidewalkVertexMulti(k, outerEdge, side, current);
+        const int here = current;
+        const Vec3 q = sidewalkVertexMulti(odd ? k + 1 : k - 1, outerEdge, side, current);
+        if (!odd)
+            current = here; // the even vertex restores the current room
+        const float dx = q.x - p.x, dy = q.y - p.y, dz = q.z - p.z;
+        const float length = std::sqrt((dy * dy + dz * dz) + dx * dx);
+        const float m2 = (dz * dz + dy * dy) + dx * dx;
+        const float inv = m2 == 0.0f ? 0.0f : 1.0f / std::sqrt(m2);
+        float cut = length * 0.333f;
+        if (most < cut)
+            cut = most;
+        const Vec3 d{inv * dx, inv * dy, inv * dz};
+        return {p.x + d.x * cut, p.y + d.y * cut, p.z + d.z * cut};
+    }
+
+    const city::Psdl& m_psdl;
+    std::uint32_t m_flags = 0;
+    std::vector<Room> m_rooms;
+    int m_numVertexs = 0;
+};
 
 } // namespace
 
@@ -63,11 +231,17 @@ std::vector<PropDef> parsePropDefs(std::string_view t) {
         d.maxUse = csv.cellInt(r, maxUse, 1);
         d.minLerp = csv.cellFloat(r, minLerp, 0.1f);
         d.maxLerp = csv.cellFloat(r, maxLerp, d.minLerp);
-        // file1..file4; the variant count stops at the first missing one.
-        for (std::size_t c = file1; c < file1 + 4 && c < row.size() && !row[c].empty(); ++c)
+        // file1..file4, every cell the row has: parCsvFile keeps an empty
+        // cell between two commas as an empty name, but not the one after a
+        // comma that ends the line. (Its numbers are atof / atoi of the
+        // cells, which read the plain decimals of the retail files as
+        // cellFloat / cellInt do.)
+        std::size_t cells = row.size();
+        if (cells > 0 && row[cells - 1].empty())
+            --cells;
+        for (std::size_t c = file1; c < file1 + 4 && c < cells; ++c)
             d.files.push_back(str::lower(row[c]));
-        if (!d.files.empty())
-            out.push_back(std::move(d));
+        out.push_back(std::move(d));
     }
     return out;
 }
@@ -75,13 +249,16 @@ std::vector<PropDef> parsePropDefs(std::string_view t) {
 std::vector<PropRule> parsePropRules(std::string_view t) {
     std::vector<PropRule> out;
     const auto csv = data::CsvTable::parse(t);
+    const int first = csv.column("prop1");
+    const std::size_t prop1 = first >= 0 ? static_cast<std::size_t>(first) : 1;
     for (const auto& row : csv.rows()) {
         if (row.empty() || row[0].empty())
             continue;
         PropRule r;
         r.name = str::lower(row[0]);
-        // prop1... up to the end of the row; empty cells are skipped.
-        for (std::size_t c = 1; c < row.size(); ++c)
+        // cityPropulator::Propulate: from prop1 to the end of the row; empty
+        // cells are skipped.
+        for (std::size_t c = prop1; c < row.size(); ++c)
             if (!row[c].empty())
                 r.props.push_back(str::lower(row[c]));
         out.push_back(std::move(r));
@@ -94,21 +271,23 @@ PathPlacement decodePathPlacement(const city::PathSetPath& path) {
     if (path.points.empty())
         return p;
     // dgPath::Load: type byte, then the spacing byte in quarter metres
-    // (fmul by 0.25); a spacing of 0 means 5 m.
+    // (times 0.25); a spacing of 0 means 5 m.
     const std::uint32_t w = path.points.back().extra;
     p.type = static_cast<int>(w & 0xFF);
     const auto spacing = (w >> 8) & 0xFF;
-    p.spacing = spacing ? static_cast<float>(spacing) * 0.25f : 5.0f;
-    if (p.type > 2)
-        p.type = 0;
+    p.spacing = static_cast<float>(spacing) * 0.25f;
+    if (p.spacing == 0.0f)
+        p.spacing = 5.0f;
     return p;
 }
 
 std::vector<PlacedProp> placePathSet(const city::PathSet& set, PlacedProp::Source source,
                                      const BangerDataLibrary* bangerOnly) {
     std::vector<PlacedProp> out;
+    constexpr Vec3 kY{0.0f, 1.0f, 0.0f};
     for (const auto& path : set.paths) {
-        // Names may carry a prefix ("open:giz_bridge02_l").
+        // Names may carry a prefix ("open:giz_bridge02_l"); no retail path
+        // set placed through cityLevel::LoadPathSet has one.
         std::string model = str::lower(path.name);
         if (const auto colon = model.find(':'); colon != std::string::npos)
             model = model.substr(colon + 1);
@@ -117,28 +296,36 @@ std::vector<PlacedProp> placePathSet(const city::PathSet& set, PlacedProp::Sourc
         const PathPlacement pl = decodePathPlacement(path);
         const auto& pts = path.points;
         if (pl.type == 2) {
-            // Each segment on its own: floor(length / spacing) props at equal
-            // steps from its start, +X along the (possibly sloping) segment.
+            // dgPath::Enumerate, line strip: each segment on its own.
             for (std::size_t i = 0; i + 1 < pts.size(); ++i) {
                 const Vec3 a = pts[i].position, b = pts[i + 1].position;
-                const float length = a.dist(b);
-                const int n = static_cast<int>(std::floor(length / pl.spacing));
-                if (n <= 0)
-                    continue;
-                const Vec3 x = (b - a) * (1.0f / length);
-                const Vec3 z = x.cross({0, 1, 0});
-                if (degenerate(z)) {
-                    log::debug("bangers: {}: vertical path segment skipped", model);
-                    continue;
-                }
+                const float lx = a.x - b.x, ly = a.y - b.y, lz = a.z - b.z;
+                float remaining = std::sqrt((lz * lz + lx * lx) + ly * ly);
                 Mat34 m;
+                Vec3 x{b.x - a.x, b.y - a.y, b.z - a.z};
+                const float xx = (x.z * x.z + x.x * x.x) + x.y * x.y;
+                const float inv = xx == 0.0f ? 0.0f : 1.0f / std::sqrt(xx);
+                x = {x.x * inv, x.y * inv, x.z * inv};
                 m.m0 = x;
-                m.m2 = z.normalized();
+                m.m2 = x.cross(kY);        // not normalised: shorter on a slope
                 m.m1 = m.m2.cross(m.m0);
-                const float step = length / static_cast<float>(n);
-                for (int k = 0; k < n; ++k) {
-                    m.m3 = a + x * (step * static_cast<float>(k));
-                    out.push_back({model, m, 0, source, true});
+                const float count = std::floor(remaining / pl.spacing);
+                const float step = remaining / count;
+                Vec3 at = a;
+                // MM2 walks while at least the spacing is left. OpenMM2 also
+                // stops after `count` props (at most a million), which only
+                // matters when float steps no longer shorten the rest
+                // (malformed data).
+                const int most = count < 1.0e6f ? static_cast<int>(count) : 1000000;
+                for (int placed = 0; remaining >= pl.spacing && placed < most; ++placed) {
+                    if (zeroRow(m.m0) || zeroRow(m.m1) || zeroRow(m.m2)) {
+                        log::debug("bangers: {}: bad path data, prop skipped", model);
+                    } else {
+                        m.m3 = at;
+                        out.push_back({model, m, 0, source, true});
+                    }
+                    at = {x.x * step + at.x, step * x.y + at.y, x.z * step + at.z};
+                    remaining = remaining - step;
                 }
             }
         } else if (pl.type == 1) {
@@ -146,16 +333,16 @@ std::vector<PlacedProp> placePathSet(const city::PathSet& set, PlacedProp::Sourc
             for (std::size_t i = 0; i + 1 < pts.size(); i += 2) {
                 Vec3 x = pts[i + 1].position - pts[i].position;
                 x.y = 0.0f;
-                if (degenerate(x))
+                if (zeroRow(x))
                     continue;
                 Mat34 m;
                 m.m0 = x.normalized();
-                m.m1 = {0, 1, 0};
+                m.m1 = kY;
                 m.m2 = m.m0.cross(m.m1);
                 m.m3 = pts[i].position;
                 out.push_back({model, m, 0, source, false});
             }
-        } else {
+        } else if (pl.type == 0) {
             for (const auto& p : pts)
                 out.push_back({model, Mat34::translation(p.position), 0, source, false});
         }
@@ -168,20 +355,24 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
     std::vector<PlacedProp> out;
     std::map<std::string, const PropDef*, std::less<>> defByName;
     for (const auto& d : defs)
-        defByName[d.name] = &d;
+        defByName.try_emplace(d.name, &d);
     std::map<std::string, const PropRule*, std::less<>> ruleByName;
     for (const auto& r : rules)
-        ruleByName[r.name] = &r;
+        ruleByName.try_emplace(r.name, &r);
 
     for (const auto& road : psdl.roads) {
-        // Roads without sidewalks (flag 0x40 clear) have their curb on the
-        // outer edge: nothing is placed.
-        if (road.rooms.empty() || !(road.flags & 0x40))
+        // Without sidewalks (flag 0x40) the curb and the outer edge are the
+        // same point and nothing can stand: skipping the road changes nothing.
+        if (road.rooms.empty() || !(road.flags & kRoadSidewalks))
             continue;
         const auto firstRoom = city::PsdlRoad::roomId(road.rooms.front());
         if (firstRoom >= psdl.rooms.size())
             continue;
+        // The prop rule of the road's first room; rule 0 has no props.
         const int ruleNumber = psdl.rooms[firstRoom].propRule;
+        if (ruleNumber == 0)
+            continue;
+        // MM2 quits when a rule is missing; OpenMM2 leaves that side empty.
         const PropRule* sideRules[2] = {nullptr, nullptr};
         if (auto it = ruleByName.find(std::format("n{:02}left", ruleNumber)); it != ruleByName.end())
             sideRules[0] = it->second;
@@ -190,103 +381,60 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
         if (!sideRules[0] && !sideRules[1])
             continue;
 
-        // The road's sections through all its rooms (lvlAiMap::SetRoad); a
-        // room whose first section repeats the previous room's last one
-        // continues it. Joining and orientation are inferred: rooms whose
-        // sections run backwards are reversed.
-        struct Section {
-            std::uint16_t v[6];
-            int stride;
-            int room;
-        };
-        std::vector<Section> sections;
-        for (const auto rid : road.rooms) {
-            const auto r = city::PsdlRoad::roomId(rid);
-            if (r >= psdl.rooms.size())
-                continue;
-            std::vector<Section> mine;
-            for (const auto& a : psdl.rooms[r].attributes) {
-                const int stride = a.type == city::PsdlAttrType::RoadStrip           ? 4
-                                   : a.type == city::PsdlAttrType::DividedRoadStrip ? 6
-                                                                                     : 0;
-                if (!stride)
-                    continue;
-                const auto v = a.vertices();
-                for (std::size_t s = 0; s + static_cast<std::size_t>(stride) <= v.size(); s += static_cast<std::size_t>(stride)) {
-                    Section sec{};
-                    sec.stride = stride;
-                    sec.room = static_cast<int>(r);
-                    for (int k = 0; k < stride; ++k)
-                        sec.v[k] = v[s + static_cast<std::size_t>(k)];
-                    mine.push_back(sec);
-                }
-            }
-            if (mine.empty())
-                continue;
-            auto same = [](const Section& a, const Section& b) {
-                return a.stride == b.stride && std::equal(a.v, a.v + a.stride, b.v);
-            };
-            if (!sections.empty() && same(mine.back(), sections.back()))
-                std::reverse(mine.begin(), mine.end());
-            for (const auto& sec : mine)
-                if (sections.empty() || !same(sec, sections.back()))
-                    sections.push_back(sec);
-        }
-        if (sections.size() < 2)
-            continue;
-        auto vertex = [&](std::uint16_t i) { return i < psdl.vertices.size() ? psdl.vertices[i] : Vec3{}; };
-        Sidewalk walks[2];
-        for (const auto& sec : sections) {
-            // Left: curb 1, outer 0. Right: curb 2 / outer 3 (road strips) or
-            // curb 4 / outer 5 (divided roads).
-            const int rc = sec.stride == 6 ? 4 : 2, ro = sec.stride == 6 ? 5 : 3;
-            walks[0].curb.push_back(vertex(sec.v[1]));
-            walks[0].outer.push_back(vertex(sec.v[0]));
-            walks[1].curb.push_back(vertex(sec.v[rc]));
-            walks[1].outer.push_back(vertex(sec.v[ro]));
-            walks[0].room.push_back(sec.room);
-            walks[1].room.push_back(sec.room);
-        }
-        // Walks per prop: one per road strip of the first room.
+        const AiRoad ai(psdl, road);
+        // lvlSDL::Enumerate over the first room: one walk per road strip or
+        // divided road.
         int strips = 0;
         for (const auto& a : psdl.rooms[firstRoom].attributes)
             if (a.type == city::PsdlAttrType::RoadStrip || a.type == city::PsdlAttrType::DividedRoadStrip)
                 ++strips;
 
         fx::Rand rng(1); // ResetRandomSeed
-        for (int ruleSide = 0; ruleSide < 2; ++ruleSide) {
-            if (!sideRules[ruleSide])
+        // The left rule's props stand on side 1, the right rule's on side 0.
+        for (int ruleIndex = 0; ruleIndex < 2; ++ruleIndex) {
+            if (!sideRules[ruleIndex])
                 continue;
-            for (const auto& propName : sideRules[ruleSide]->props) {
+            const int ruleSide = ruleIndex == 0 ? 1 : 0;
+            for (const auto& propName : sideRules[ruleIndex]->props) {
                 const auto defIt = defByName.find(propName);
                 if (defIt == defByName.end())
-                    continue;
+                    continue; // MM2 quits
                 const PropDef& d = *defIt->second;
                 int maxUse = d.maxUse;
                 for (int strip = 0; strip < strips; ++strip) {
-                    for (int side = 0; side < 2; ++side) {
-                        const Sidewalk& w = walks[side];
+                    // lvlSDL::Propulate: the left sidewalk, then the right.
+                    for (const int side : {1, 0}) {
                         float along = d.start;
                         Vec3 curb, outer;
-                        int curbRoom = 0, outerRoom = 0;
-                        while (isoLerp(w.curb, w.room, along, curb, curbRoom) &&
-                               isoLerp(w.outer, w.room, along, outer, outerRoom)) {
+                        int room = 0;
+                        bool ok = ai.isoLerp(along, false, side, curb, room);
+                        while (ok && ai.isoLerp(along, true, side, outer, room)) {
                             const float f = (d.maxLerp - d.minLerp) * rng.frand() + d.minLerp;
+                            const Vec3 at{(outer.x - curb.x) * f + curb.x, (outer.y - curb.y) * f + curb.y,
+                                          (outer.z - curb.z) * f + curb.z};
                             Mat34 m;
-                            m.m0 = outer - curb;
-                            m.m1 = {0, 1, 0};
-                            m.m3 = {(outer.x - curb.x) * f + curb.x, (outer.y - curb.y) * f + curb.y + 0.15f,
-                                    (outer.z - curb.z) * f + curb.z};
-                            const float len2 = m.m0.mag2();
-                            m.m0 = len2 == 0.0f ? Vec3{} : m.m0 * (1.0f / std::sqrt(len2));
+                            m.m3 = {at.x, at.y + 0.15f, at.z};
+                            Vec3 x{outer.x - curb.x, outer.y - curb.y, outer.z - curb.z};
+                            const float xx = (x.z * x.z + x.y * x.y) + x.x * x.x;
+                            const float inv = xx == 0.0f ? 0.0f : 1.0f / std::sqrt(xx);
+                            m.m0 = {x.x * inv, x.y * inv, x.z * inv};
+                            m.m1 = {0.0f, 1.0f, 0.0f};
                             m.m2 = m.m0.cross(m.m1);
-                            if (!degenerate(m.m0) && !degenerate(m.m2) && side == ruleSide && maxUse != 0) {
+                            if (!zeroRow(m.m0) && !zeroRow(m.m1) && !zeroRow(m.m2) && side == ruleSide &&
+                                maxUse != 0) {
+                                // cityPropulator's callback: one use, then a
+                                // random variant among file1..file4 (as many
+                                // as the row has cells, at least one); an
+                                // empty or missing name places nothing.
                                 --maxUse;
-                                const std::string& file =
-                                    d.files[static_cast<std::size_t>(rng.irand()) % d.files.size()];
-                                out.push_back({file, m, outerRoom, PlacedProp::Source::StreetRule, false});
+                                const int cells = static_cast<int>(d.files.size());
+                                const int pick = rng.irand() % std::max(cells, 1);
+                                if (pick < cells && !d.files[static_cast<std::size_t>(pick)].empty())
+                                    out.push_back({d.files[static_cast<std::size_t>(pick)], m, room,
+                                                   PlacedProp::Source::StreetRule, false});
                             }
                             along = (d.distance - d.distance) * rng.frand() + d.distance + along;
+                            ok = ai.isoLerp(along, false, side, curb, room);
                         }
                     }
                 }
@@ -296,31 +444,60 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
     return out;
 }
 
-std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vfs& vfs, const BangerDataLibrary& data) {
+std::string racePropsName(GameMode mode, int raceIndex) {
+    // dgGameModeNames: "roam", "race%d", "multicop", "circuit%d", "blitz%d",
+    // "croam", "crash%d".
+    switch (mode) {
+    case GameMode::Cruise: return "roam";
+    case GameMode::CopsAndRobbers: return "multicop";
+    case GameMode::Checkpoint: return raceIndex >= 0 ? std::format("race{}", raceIndex) : std::string();
+    case GameMode::Circuit: return raceIndex >= 0 ? std::format("circuit{}", raceIndex) : std::string();
+    case GameMode::Blitz: return raceIndex >= 0 ? std::format("blitz{}", raceIndex) : std::string();
+    case GameMode::CrashCourse: return raceIndex >= 0 ? std::format("crash{}", raceIndex) : std::string();
+    }
+    return {};
+}
+
+std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vfs& vfs,
+                                       const BangerDataLibrary& data, std::string_view raceProps) {
     std::vector<PlacedProp> out;
-    // .inst banger entries keep their matrix unless instance flag 0x80 asks
-    // for a Y rotation (cityLevel::LoadInstances).
-    for (const auto* list : {&city.instances, &city.aiInstances})
-        for (const auto& inst : *list)
-            if (data.has(inst.name))
-                out.push_back({str::lower(inst.name), inst.transform, inst.room, PlacedProp::Source::Instance,
-                               !(inst.flags & 0x80)});
-    const std::string dir = "city/" + str::lower(city.info.mapName) + "/";
+    const std::string map = str::lower(city.info.mapName);
+    const std::string dir = "city/" + map + "/";
+    auto addPathSet = [&](const std::string& path, PlacedProp::Source source) {
+        auto bytes = vfs.readAll(path);
+        if (!bytes)
+            return; // dgPathSet::Load: no file, no props
+        std::string error;
+        if (auto set = city::parsePathSet(*bytes, &error)) {
+            auto props = placePathSet(*set, source, &data);
+            out.insert(out.end(), props.begin(), props.end());
+        } else {
+            log::warn("bangers: {}: {}", path, error);
+        }
+    };
+
+    // cityPropulator: the street rules.
     const auto defs = vfs.readAll(dir + "propdefs.csv");
     const auto rules = vfs.readAll(dir + "proprules.csv");
     if (defs && rules) {
         auto props = placeStreetProps(city.psdl, parsePropDefs(text(*defs)), parsePropRules(text(*rules)));
         out.insert(out.end(), props.begin(), props.end());
     }
-    if (auto bytes = vfs.readAll(dir + "props.pathset")) {
-        std::string error;
-        if (auto set = city::parsePathSet(*bytes, &error)) {
-            auto props = placePathSet(*set, PlacedProp::Source::PathSet, &data);
-            out.insert(out.end(), props.begin(), props.end());
-        } else {
-            log::warn("bangers: {}props.pathset: {}", dir, error);
-        }
-    }
+    // lvlLevel::LoadInstances of <map>.inst and <map>_ai.inst: banger records
+    // keep their matrix unless stored in the compact Y rotation form, and
+    // take the record's variant byte. MM2 picks them by the record's banger
+    // flag (0x200); OpenMM2 by their banger data, which retail data marks
+    // exactly alike (and CityLevel and CityRenderer skip by name too).
+    for (const auto* list : {&city.instances, &city.aiInstances})
+        for (const auto& inst : *list)
+            if (data.has(inst.name))
+                out.push_back({str::lower(inst.name), inst.transform, inst.room, PlacedProp::Source::Instance,
+                               !inst.rotY, inst.flags & 0xFF});
+    // cityLevel::LoadPathSet("city/<map>", "props").
+    addPathSet(dir + "props.pathset", PlacedProp::Source::PathSet);
+    // The race's props: cityLevel::LoadPathSet("race/<map>", <race name>).
+    if (!raceProps.empty())
+        addPathSet(std::format("race/{}/{}.pathset", map, str::lower(raceProps)), PlacedProp::Source::Race);
     return out;
 }
 

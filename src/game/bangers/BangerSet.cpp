@@ -92,6 +92,13 @@ Vec3 rowTimes(const Vec3& v, const Mat34& m) {
             (v.z * m.m2.z + v.y * m.m1.z) + m.m0.z * v.x};
 }
 
+// dgBangerInstance::SetVariant: the variant modulo the geometry's number of
+// variants (paint jobs).
+int variantOf(const GpuModel& model, int variant) {
+    const int count = static_cast<int>(model.paintjobs.size());
+    return count > 0 ? variant % count : 0;
+}
+
 } // namespace
 
 // dgBangerData's bound and what dgBangerInstance::GetBound derives from it.
@@ -351,13 +358,15 @@ void BangerSet::moveToRoom(std::size_t i, int room) {
 
 void BangerSet::placeUnroomed() {
     // Props placed without a room (path sets) go in the room containing
-    // their CG once the level is known (lvlLevel's room search, inferred).
+    // their placement point (cityLevel::LoadPath: the level's FindRoomId of
+    // the path matrix's position, before the CG offset) once the level is
+    // known.
     if (!roomsTracked())
         return;
     for (std::size_t i = 0; i < m_instances.size(); ++i) {
         const Instance& inst = m_instances[i];
         if (!inst.everHit && inst.state == State::Unhit && inst.room == 0 && !m_props[i]->listed)
-            moveToRoom(i, findRoom(inst.matrix.m3, 0));
+            moveToRoom(i, findRoom(inst.ground.m3, 0));
     }
 }
 
@@ -397,9 +406,13 @@ void BangerSet::add(const std::vector<PlacedProp>& props) {
             inst.ground.m1 = {0.0f, 1.0f, 0.0f};
             inst.ground.m2 = {-s, 0.0f, c};
         }
-        // The banger's frame sits at its CG (dgUnhitBangerInstance::Init).
+        // The banger's frame sits at its CG (dgUnhitBangerInstance::Init: the
+        // CG offset turned by the matrix as placed, before SetMatrix keeps
+        // only the Y rotation), with the instance data's variant
+        // (SetVariant).
         inst.matrix = inst.ground;
-        inst.matrix.m3 = inst.ground.transform(d->cg);
+        inst.matrix.m3 = p.transform.transform(d->cg);
+        inst.paint = p.variant;
         inst.state = State::Unhit;
         Prop& prop = *m_props[i];
         prop.banger = true;
@@ -1009,15 +1022,18 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
             options.lighting = false;
             options.alphaRef = kUnlitAlphaRef;
         }
-        drawGpuMesh(device, textures, *mesh, model->materials(inst.paint), Mat44::fromMat34(inst.matrix), options);
+        drawGpuMesh(device, textures, *mesh, model->materials(variantOf(*model, inst.paint)),
+                    Mat44::fromMat34(inst.matrix), options);
     }
-    // dgTreeRenderer::RenderTrees: unlit, alpha reference 120.
+    // dgTreeRenderer::RenderTrees (dgBangerInstance::DrawTree): unlit, alpha
+    // reference 120, with the prop's variant.
     for (const auto& [inst, mesh] : trees) {
         MeshDrawOptions options;
         options.lighting = false;
         options.alphaRef = kTreeAlphaRef;
-        drawGpuMesh(device, textures, *mesh, models.get(inst->model)->materials(0), Mat44::fromMat34(inst->matrix),
-                    options);
+        const GpuModel& model = *models.get(inst->model);
+        drawGpuMesh(device, textures, *mesh, model.materials(variantOf(model, inst->paint)),
+                    Mat44::fromMat34(inst->matrix), options);
     }
 
     // Lamp glows: s_yel_glow cards of half size 1.5 m with a 1% flicker,
