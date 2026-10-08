@@ -40,9 +40,15 @@ Angel titles; no retail MM2 archive uses it and it is rejected.
 
 ## Mount order
 
-`src/vfs/GameSource.cpp` mounts `MM2CORE`, `MM2TEX`, `MM2AUD`, `MM2AUDEX`
-first, then any other `*.ar` in the same folder in case-insensitive name
-order at higher priority, then (installations only) loose files in the game
-folder at the highest priority. The add-on behaviour mirrors how community
-content is distributed (extra `.ar` files dropped next to the game). The
-exact precedence rules of the original are **inferred**, not verified.
+`src/vfs/GameSource.cpp` mounts every `*.ar` in the game folder the way MM2
+does. **Verified** against `zipMultiAutoInit` and `zipFile::zipOpen`: the
+game finds all `*.ar` files in its folder (up to 256), upper-cases their
+paths and sorts them with `strcmp`, then creates the archives from the last
+to the first, each one pushed onto the front of the list that
+`zipFile::zipOpen` searches. A file is therefore taken from the first archive
+in upper-case name order that has it (`MM2AUD`, `MM2AUDEX`, `MM2CORE`,
+`MM2TEX`; an add-on named `A_MOD.AR` overrides them, one named `ZZ_MOD.AR`
+only adds files they lack). The retail archives share no paths, so their own
+order makes no difference. Opening the first archive replaces the default
+file methods with the archive ones, so loose files in the game folder are
+never read as game data; OpenMM2 does not mount them either.

@@ -14,13 +14,19 @@ void Context::applyAudioSettings() {
     if (!mixer)
         return;
     // Options > Audio: the volumes, with the toggles muting their buses
-    // (sound FX: effects and engines; commentary: voices; music; city sounds:
-    // the ambient sounds and the city's ambience segment).
+    // (sound FX: effects, engines and voices; commentary: voices; music; city
+    // sounds: the ambient sounds and the city's ambience segment).
+    // AudioOptions::SetAudioState: turning SOUND FX off sets the volume of
+    // every AudSoundBase sound to zero (audManager::SetVolAllSounds on the
+    // sound class that SOUND FX VOLUME scales through
+    // AudManager::AssignWaveVolume). The commentary's AudSpeech streams are
+    // AudSoundBase sounds, so commentary falls silent too.
     mixer->setMasterVolume(settings.masterVolume);
     mixer->setBusVolume(audio::Bus::Effects, settings.soundEffects ? settings.effectsVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Engine, settings.soundEffects ? settings.engineVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Ambient, settings.citySounds ? settings.ambientVolume : 0.0f);
-    mixer->setBusVolume(audio::Bus::Voice, settings.commentary ? settings.voiceVolume : 0.0f);
+    mixer->setBusVolume(audio::Bus::Voice,
+                        settings.soundEffects && settings.commentary ? settings.voiceVolume : 0.0f);
     mixer->setBusVolume(audio::Bus::Music, settings.music ? settings.musicVolume : 0.0f);
     mixer->setBalance(settings.balance);
 }

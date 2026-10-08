@@ -6,6 +6,8 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
+
 namespace mm2::platform {
 namespace {
 
@@ -87,6 +89,10 @@ EventSummary pollEvents(Input* input, const std::function<void(const SDL_Event&)
         input->updateDevices();
     dispatchDialogResults();
     return summary;
+}
+
+void waitForEvents(double timeoutSeconds) {
+    SDL_WaitEventTimeout(nullptr, static_cast<Sint32>(std::max(0.0, timeoutSeconds) * 1000.0));
 }
 
 std::uint64_t nowNs() { return SDL_GetTicksNS(); }

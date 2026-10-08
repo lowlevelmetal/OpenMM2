@@ -2,17 +2,17 @@
 
 #include "platform/Platform.h"
 
-#include <algorithm>
-
 namespace mm2::platform {
 
 FrameClock::FrameClock() : m_start(nowNs()), m_last(m_start) {}
 
-double FrameClock::tick(double maxDelta) {
+double FrameClock::tick(double minDelta, double maxDelta) {
     const std::uint64_t now = nowNs();
     const double dt = static_cast<double>(now - m_last) * 1e-9;
     m_last = now;
-    m_lastDelta = std::min(dt, maxDelta);
+    // datTimeManager::Update: below ClampMin becomes ClampMin, above ClampMax
+    // becomes ClampMax.
+    m_lastDelta = dt < minDelta ? minDelta : (dt > maxDelta ? maxDelta : dt);
     return m_lastDelta;
 }
 

@@ -13,7 +13,10 @@ namespace mm2::render {
 std::vector<std::uint8_t> encodePng(const Image& image);
 bool writePng(const std::filesystem::path& path, const Image& image);
 
-// Halves an image with a 2x2 box filter (odd sizes round down, minimum 1).
+// Halves an image with a 2x2 box filter (odd sizes round down, minimum 1),
+// each channel the truncated mean of its four texels as MM2's
+// gfxImage::GenerateMipmaps computes the mip levels of JPEG, Targa and BMP
+// images.
 Image downsample(const Image& image);
 // The full mip chain: level 0 is a copy of `image`.
 std::vector<Image> buildMipChain(const Image& image);

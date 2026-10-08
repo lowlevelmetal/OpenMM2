@@ -3,7 +3,6 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "vfs/DaveArchive.h"
-#include "vfs/DirectoryFs.h"
 #include "vfs/IsoImage.h"
 
 #include <algorithm>
@@ -22,14 +21,19 @@ void setError(std::string* error, std::string msg) {
         *error = std::move(msg);
 }
 
-bool isBaseArchive(std::string_view name) {
-    for (const char* a : kRequiredArchives)
-        if (str::iequals(name, a))
-            return true;
-    for (const char* a : kOptionalArchives)
-        if (str::iequals(name, a))
-            return true;
-    return false;
+bool isRequiredArchive(std::string_view name) {
+    return std::ranges::any_of(kRequiredArchives, [&](const char* r) { return str::iequals(name, r); });
+}
+
+// zipMultiAutoInit: the archive paths are upper-cased (_strupr) and sorted
+// with strcmp; zipFile objects are then created from the last to the first,
+// each pushed onto the front of the list zipFile::zipOpen searches, so the
+// search runs in sorted order and the first archive that has a file wins.
+// All archives share one folder, so this is the order of their names.
+void sortLikeMM2(std::vector<std::string>& names) {
+    std::ranges::sort(names, [](const std::string& a, const std::string& b) {
+        return str::upper(a) < str::upper(b);
+    });
 }
 
 // Case-insensitive lookup of a direct child of `dir`.
@@ -41,37 +45,19 @@ std::optional<std::filesystem::path> findChild(const std::filesystem::path& dir,
     return std::nullopt;
 }
 
-// Every *.ar file directly inside `dir`, base archives first (in their
-// canonical order), then the rest by case-insensitive name.
+// Every *.ar file directly inside `dir`, in MM2's search order.
 std::vector<std::string> listArchives(const std::filesystem::path& dir) {
-    std::vector<std::string> base, extra;
+    std::vector<std::string> names;
     std::error_code ec;
     for (std::filesystem::directory_iterator it(dir, ec), end; !ec && it != end; it.increment(ec)) {
         if (!it->is_regular_file(ec))
             continue;
         const std::string name = str::fromPath(it->path().filename());
-        if (!str::iendsWith(name, ".ar"))
-            continue;
-        (isBaseArchive(name) ? base : extra).push_back(name);
+        if (str::iendsWith(name, ".ar"))
+            names.push_back(name);
     }
-    auto rank = [](const std::string& n) {
-        int i = 0;
-        for (const char* a : kRequiredArchives) {
-            if (str::iequals(n, a))
-                return i;
-            ++i;
-        }
-        for (const char* a : kOptionalArchives) {
-            if (str::iequals(n, a))
-                return i;
-            ++i;
-        }
-        return i;
-    };
-    std::ranges::sort(base, {}, rank);
-    std::ranges::sort(extra, [](const std::string& a, const std::string& b) { return str::lower(a) < str::lower(b); });
-    base.insert(base.end(), extra.begin(), extra.end());
-    return base;
+    sortLikeMM2(names);
+    return names;
 }
 
 void fillMissing(GameSource& s) {
@@ -96,25 +82,13 @@ std::optional<GameSource> probeImage(const std::filesystem::path& path, std::str
     s.kind = GameSource::Kind::DiscImage;
     s.path = path;
     s.volumeId = iso->volumeId();
-    std::vector<std::string> base, extra;
     iso->forEachFile([&](const EntryInfo& e) {
         if (!e.path.starts_with("game/") || !str::iendsWith(e.path, ".ar") ||
             e.path.find('/', 5) != std::string::npos)
             return;
-        const std::string name = str::upper(e.path.substr(5));
-        (isBaseArchive(name) ? base : extra).push_back(name);
+        s.archives.push_back(str::upper(e.path.substr(5)));
     });
-    // Same ordering rules as for directories.
-    std::vector<std::string> ordered;
-    for (const char* a : kRequiredArchives)
-        if (std::ranges::find(base, a) != base.end())
-            ordered.emplace_back(a);
-    for (const char* a : kOptionalArchives)
-        if (std::ranges::find(base, a) != base.end())
-            ordered.emplace_back(a);
-    std::ranges::sort(extra);
-    ordered.insert(ordered.end(), extra.begin(), extra.end());
-    s.archives = std::move(ordered);
+    sortLikeMM2(s.archives);
     fillMissing(s);
     return s;
 }
@@ -200,26 +174,26 @@ bool mountGameSource(Vfs& vfs, const GameSource& source, std::string* error) {
             return false;
     }
 
-    for (const auto& name : source.archives) {
+    // Among equal priorities the Vfs prefers the most recent mount, so the
+    // archives go in from the last in MM2's search order to the first (as
+    // zipMultiAutoInit creates them). An archive that cannot be opened is
+    // left out, as zipFile::Init failing drops it from the list.
+    for (auto it = source.archives.rbegin(); it != source.archives.rend(); ++it) {
+        const std::string& name = *it;
         auto file = openGameDirFile(source, iso.get(), name);
         std::string arError;
         auto ar = file ? DaveArchive::open(file, name, &arError) : nullptr;
         if (!ar) {
-            const bool required =
-                std::ranges::any_of(kRequiredArchives, [&](const char* r) { return str::iequals(name, r); });
-            if (required) {
+            if (isRequiredArchive(name)) {
                 setError(error, std::format("cannot read {}: {}", name, file ? arError : "file not found"));
                 return false;
             }
             log::warn("vfs: skipping {}: {}", name, file ? arError : "file not found");
             continue;
         }
-        vfs.mount(std::move(ar), isBaseArchive(name) ? 0 : 10);
+        vfs.mount(std::move(ar), 0);
         log::info("vfs: mounted {}", name);
     }
-
-    if (source.kind == GameSource::Kind::InstallDirectory)
-        vfs.mount(std::make_shared<DirectoryFs>(source.path), 20);
     return true;
 }
 

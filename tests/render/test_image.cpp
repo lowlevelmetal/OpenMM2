@@ -36,7 +36,7 @@ TEST(ImageUtil, DownsampleAverages) {
     img.pixels[0] = 255; // red of the top-left texel
     const Image half = downsample(img);
     ASSERT_EQ(half.width, 1u);
-    EXPECT_EQ(half.pixels[0], 64); // (255 + 0 + 0 + 0 + 2) / 4
+    EXPECT_EQ(half.pixels[0], 63); // (255 + 0 + 0 + 0) >> 2, gfxImage::GenerateMipmaps
 }
 
 TEST(ImageUtil, FlipVertical) {

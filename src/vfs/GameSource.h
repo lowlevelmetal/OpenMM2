@@ -23,7 +23,9 @@ struct GameSource {
 
     // Volume label for discs ("MIDTOWN2"), empty otherwise.
     std::string volumeId;
-    // Archives found, in mount order (base archives first, then add-ons).
+    // Every *.ar in the game folder, in the order MM2 searches them
+    // (zipMultiAutoInit): by upper-case name, byte by byte. When several
+    // archives hold the same file, the first one in this order wins.
     std::vector<std::string> archives;
     // Required archives that were not found; empty when the source is usable.
     std::vector<std::string> missing;
@@ -33,9 +35,9 @@ struct GameSource {
 };
 
 // Archives every retail copy has. MM2AUDEX.AR holds extra (non-English
-// commentary / optional) audio and is mounted when present.
+// commentary / optional) audio and is mounted when present, like any other
+// archive in the folder.
 inline constexpr const char* kRequiredArchives[] = {"MM2CORE.AR", "MM2TEX.AR", "MM2AUD.AR"};
-inline constexpr const char* kOptionalArchives[] = {"MM2AUDEX.AR"};
 // Non-archive files read from the game folder: MMLANG.DLL carries the UI
 // strings (a resource-only DLL; it is parsed, never loaded or executed).
 inline constexpr const char* kLanguageModule = "MMLANG.DLL";
@@ -45,12 +47,14 @@ inline constexpr const char* kLanguageModule = "MMLANG.DLL";
 // is returned with `missing` filled in.
 std::optional<GameSource> probeGameSource(const std::filesystem::path& path, std::string* error = nullptr);
 
-// Mounts the archives of `source` into `vfs`:
-//   priority 0   base archives (MM2CORE, MM2TEX, MM2AUD, MM2AUDEX)
-//   priority 10  any other *.ar next to them, in case-insensitive name order
-//                (add-on content; later names override earlier ones)
-//   priority 20  loose files in the install directory (only for installs)
-// Returns false (and sets `error`) if a required archive cannot be opened.
+// Mounts the archives of `source` into `vfs` the way MM2 does
+// (zipMultiAutoInit, zipFile::zipOpen): every *.ar in the game folder, add-on
+// archives included, searched in `source.archives` order, so for a file that
+// several archives hold the archive whose upper-case name sorts first wins.
+// Loose files in the game folder are not mounted: once an archive is open
+// MM2's default file methods are the archive ones and loose game data is
+// never read. Returns false (and sets `error`) if a required archive cannot
+// be opened.
 bool mountGameSource(Vfs& vfs, const GameSource& source, std::string* error = nullptr);
 
 // Opens a file from the game folder of `source` (the GAME/ directory of a

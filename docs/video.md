@@ -33,6 +33,17 @@ with `vfs::openSourceFile(source, "LOGOS.AVI")`.
 * `tools/introplay`: `--compare-yuv`, `--compare-rgba`, `--png` and window
   playback through `IntroScreen`.
 
+## The original's playback
+
+`ebolaPlayMovie` (called at start-up unless the game runs in a window or with
+`-nomovie`, and only if `logos.avi` opens from the current folder) plays the
+file through an MCI window (`MCIWndCreate`, Video for Windows with the
+system's Indeo codec) at the movie's own size, centred on the desktop. Every
+250 ms it checks Escape, Space and the left mouse button (`GetAsyncKeyState`,
+cleared before playback starts); any of them stops the movie. While the game
+is inactive the movie is paused and resumed when it is active again. OpenMM2
+draws the movie itself, in any window mode.
+
 ## Verification
 
 * `test_video`: AVI parsing on a synthetic file, decoder robustness against

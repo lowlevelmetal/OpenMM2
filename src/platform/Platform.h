@@ -44,6 +44,10 @@ struct EventSummary {
 // Call Input::beginFrame() before this each frame.
 EventSummary pollEvents(Input* input, const std::function<void(const SDL_Event&)>& hook = {});
 
+// Blocks until an OS event is pending or `timeoutSeconds` passed, without
+// removing the event (the next pollEvents() handles it).
+void waitForEvents(double timeoutSeconds);
+
 // Monotonic high-resolution time.
 std::uint64_t nowNs();
 inline double nowSeconds() { return static_cast<double>(nowNs()) * 1e-9; }
