@@ -4,7 +4,8 @@ Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 206 rows (functions that share a verdict are grouped in one row);
 verified 75, fixed 96, deviation 9, inferred 10, open 1, openmm2 15. The
-Missing table adds 3 open items.
+Missing table adds 3 open items. The San Francisco race 11 damage
+investigation follows the World table.
 
 Scope: `src/core/Math`, `src/phys/AgeMath`, `Collider`, `Collision`,
 `Constants.h`, `Geometry`, `Impact`, `InertialCS`, `Joint`, `Level.h`,
@@ -318,8 +319,50 @@ and trailers use it.
 | `step` | dgPhysManager::Update (one sample) | fixed | Order matched: the entities' updates (weight, phSleep, ICS, the entity's own), GatherCollidables, per mover the city, the later movers (joint check, then TrivialCollideInstances) and the gathered instances, new movers 0x100 → 0x1b, UpdateMtx. Only the movers in this frame's table take part, by their flags (update, UpdateMtx and the hooks with 0x1; gathering and the gathered instances with 0x2 or 0x8; the movers with 0x10). World computed every collider's CalcMaxMoved each sample; MM2 never does (only aiVehicleActive::Attach), so movers keep barely-moved false: removed. The entity PreUpdate/PostUpdate run once per frame in MM2; OpenMM2's hooks run per sample (the same at one sample per frame). |
 | `trivialCollide` | dgPhysManager::TrivialCollideInstances | verified | Banger YRadius spheres (enabled by a global mmGame::Init sets) with the other centre's height; sums as the asm. |
 | `gatherCollidables` | dgPhysManager::GatherCollidables | verified | Room 0 skipped; rooms touched by the sphere (at most 8); flags 0x18/0x2; multi-room instances only from the mover's room; at most 32. |
-| `collideTerrain` | dgPhysManager::CollideTerrain | verified | Sphere and radius of bound 0, bound 1 for spheres and hotdogs (a box for every race object), the last matrix moved by the last push when the level pushed hardest, CollidePolyToLevel with sweeps, weight 1/n. The sphere and hotdog searches against the city (unreached: bound 1 is a box) are not ported. CollideTerrain's branch asking the entity whether it needs the city (vehCarSim / vehTrailer RequiresTerrainCollision) is gated by a global mmGame::Init sets to 0, so in a race MM2 never asks; World does not either. |
+| `collideTerrain` | dgPhysManager::CollideTerrain | verified | Sphere and radius of bound 0, bound 1 for spheres and hotdogs (a box for every race object), the last matrix moved by the last push when the level pushed hardest, CollidePolyToLevel with sweeps, weight 1/n. The sphere and hotdog searches against the city (unreached: bound 1 is a box) are not ported. CollideTerrain's branch asking the entity whether it needs the city (vehCarSim / vehTrailer RequiresTerrainCollision, and only in rooms with lvlRoomInfo flag 1) is gated by a global mmGame::Init sets to 0 (asm: the global tested for zero jumps past the whole branch), and the following bound-box precheck by a global nothing writes (zero); so in a race the body always collides with its room and the touched neighbours. World does neither (test UprightCarStillCollidesItsBodyWithTheCity). |
 | `collideInstances` | dgPhysManager::CollideInstances | verified | Temporary colliders, relPos, player marks, AttachEntity and the collider rewiring, NewMover, phContactMgr::CalcImpact or dgImpact for bangers. Force spheres (phCollision::TestBoundForce) are not ported: none in a race. |
+
+## Investigation: opponents wrecked in San Francisco race 11
+
+The sweep's "sf race11 p" wrecks every vppanozgt racer (MaxDamage 312,500,
+ImpactThreshold 1500). Traced on racer 1 (330,000 damage at 143 s):
+
+- The damage comes from the body's bound, a box from the car's .bnd as
+  vehCarModel::InitBound builds it for AI cars, against the city
+  (CollideTerrain, other collider = the level). The wheels' bottoming
+  (vehWheel::CalcSuspensionForce: phImpact::CalcCollisionNoFriction and
+  CalcNetPush) never goes through the collider's impact callback, in MM2
+  as in OpenMM2, so it never damages.
+- vehCarDamage::Impact / InsertImpact / ApplyImpact / Update match the
+  build 3393 code. The value is |impulse| × GetDamageModifier (1, the only
+  implementation) × the other body's mass share (1 for the city). A
+  collider already in the list re-applies above 1.25 × its last value;
+  otherwise any value above ImpactThreshold, at 10 mph or more, is added
+  silently. The 0.2 s RelaxTime only frees the entry, so every impact
+  above the threshold damages. There is no damage scale in MM2:
+  MM1's GlobalDamageScale does not exist there. mmGameSingle::EnableRacers
+  enables opponents' damage whatever the damage option, and
+  aiVehiclePhysics::DriveRoute stops driving once the damage passes
+  MaxDamage.
+- Racer 1's damage breaks down as follows:
+  - About 60,000 from a nose-first landing at 7.4 s. The car left a crest
+    at 44 m/s with a 1 rad/s nose-down pitch rate and kept it for the 1.6 s
+    flight. vehAero::Update fades each body-axis damping term by the
+    matching world-axis component of the angular velocity when that is
+    below 1 (asm: ICS + 0x90..0x98). Heading along world x, the pitch about
+    world z gets no damping at all, and vppanozgt's vehGyro Pitch is 0, as
+    on every car. The car fell 31 m and landed nose-first at 35 m/s, so the
+    damage is about the 1200 kg × 35 m/s it lost.
+  - About 107,000 from the box's front-bottom corners striking the road at
+    150-226 mph, 1,500 to 7,000 each. WheelFront SuspensionLimit is 0.02 m
+    and Aero Down 1, so the front sits on its bump stops above about
+    126 mph, 0.16 m of box clearance remains, and SF's grade changes catch
+    the bumper.
+  - About 163,000 from walls: a 31 mph hit, a 226 mph braking crash into a
+    corner, and a 113 mph hit after the line.
+- Nothing in this area differs from MM2. Whether MM2's racers wreck here
+  depends on whether they drive the same lines at the same speeds
+  (ai-vehicles, vehicle).
 
 ## Missing
 
