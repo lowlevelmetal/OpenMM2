@@ -53,52 +53,6 @@ std::uint32_t argbToRgba(std::uint32_t argb) {
     return (argb & 0xFF00FF00u) | ((argb >> 16) & 0xFFu) | ((argb & 0xFFu) << 16);
 }
 
-// A facade or sliver of a room and the wall light table entry it is drawn
-// with: sdlPage16::Draw keeps the angle word of the last FacadeBound
-// attribute it passed and shades the following facades and slivers with
-// sdlCommon's light table entry of that index.
-struct WallLight {
-    Vec3 p0, p1, outward;
-    std::uint8_t index = 0;
-};
-
-std::vector<WallLight> wallLights(const city::Psdl& psdl, std::size_t room) {
-    std::vector<WallLight> out;
-    if (room >= psdl.rooms.size())
-        return out;
-    int light = -1;
-    for (const auto& a : psdl.rooms[room].attributes) {
-        if (a.type == city::PsdlAttrType::FacadeBound) {
-            light = a.facadeBoundAngle() & 63;
-            continue;
-        }
-        if ((a.type != city::PsdlAttrType::Facade && a.type != city::PsdlAttrType::Sliver) || light < 0)
-            continue;
-        if (a.wallLeft() >= psdl.vertices.size() || a.wallRight() >= psdl.vertices.size())
-            continue;
-        WallLight w;
-        w.p0 = psdl.vertices[a.wallLeft()];
-        w.p1 = psdl.vertices[a.wallRight()];
-        const Vec3 n = (w.p1 - w.p0).cross({0, 1, 0});
-        w.outward = n.mag2() > 0.0f ? n.normalized() : Vec3{};
-        w.index = static_cast<std::uint8_t>(light);
-        out.push_back(w);
-    }
-    return out;
-}
-
-// The light table index of a wall vertex built by city::buildCityMesh: the
-// wall it is a corner of (same ground position, same facing). A wall the
-// lookup misses (no FacadeBound before it) takes the entry of its facing.
-std::uint8_t wallLightIndex(const std::vector<WallLight>& walls, const city::CityVertex& v) {
-    auto flatNear = [](const Vec3& a, const Vec3& b) { return sq(a.x - b.x) + sq(a.z - b.z) < 1e-6f; };
-    for (const auto& w : walls)
-        if ((flatNear(v.position, w.p0) || flatNear(v.position, w.p1)) && v.normal.dot(w.outward) > 0.99f)
-            return w.index;
-    const float a = std::atan2(v.normal.z, v.normal.x);
-    return static_cast<std::uint8_t>(static_cast<int>(std::floor((a + kPi / 2.0f) * 32.0f / kPi)) & 63);
-}
-
 } // namespace
 
 std::string sdlTextureName(std::string_view name) {
@@ -192,48 +146,87 @@ Environment makeEnvironment(const city::CityData& city, TimeOfDay time, Weather 
 CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
                            const city::CityData& city, const std::function<bool(std::string_view)>& isDynamic)
     : m_device(device), m_textures(textures), m_models(models), m_city(city), m_locator(city.psdl) {
-    const city::CityMesh mesh = city::buildCityMesh(city.psdl);
-    std::vector<std::uint32_t> indices;
-    m_streetVertices.reserve(mesh.vertexCount());
-    m_rooms.resize(mesh.rooms.size());
-    for (std::size_t r = 0; r < mesh.rooms.size(); ++r) {
-        const auto& roomMesh = mesh.rooms[r];
+    // sdlPage16::Draw's primitives for every room and level of detail; the
+    // tunnels (not ported) from the CityMesh reconstruction, at every level.
+    std::unordered_map<std::string, std::uint32_t> slots;
+    m_slotNames.emplace_back(); // 0: untextured
+    auto slotOf = [&](int texture) -> std::uint32_t {
+        const auto* name = city.psdl.texture(texture);
+        if (!name || name->empty())
+            return 0;
+        const std::string key = sdlTextureName(*name);
+        auto [it, added] = slots.try_emplace(key, static_cast<std::uint32_t>(m_slotNames.size()));
+        if (added)
+            m_slotNames.push_back(key);
+        return it->second;
+    };
+    auto addVertex = [&](const Vec3& p, const Vec2& uv, city::SdlShade shade, std::uint8_t light) {
+        render::Vertex3D rv{};
+        rv.position[0] = p.x;
+        rv.position[1] = p.y;
+        rv.position[2] = p.z;
+        rv.normal[1] = 1.0f;
+        rv.color = 0xFFFFFFFFu;
+        rv.uv0[0] = rv.uv1[0] = uv.x;
+        rv.uv0[1] = rv.uv1[1] = uv.y;
+        m_streetVertices.push_back(rv);
+        m_vertexShade.push_back(shade);
+        m_vertexLight.push_back(light);
+    };
+    m_rooms.resize(city.psdl.rooms.size());
+    for (std::size_t r = 1; r < m_rooms.size(); ++r) {
         Room& room = m_rooms[r];
-        room.bounds = roomMesh.bounds;
-        const auto walls = wallLights(city.psdl, r);
-        for (const auto& batch : roomMesh.batches) {
-            if (batch.indices.empty() || batch.kind == city::SurfaceKind::FacadeBound)
-                continue;
-            Batch b;
-            b.firstIndex = static_cast<std::uint32_t>(indices.size());
-            b.indexCount = static_cast<std::uint32_t>(batch.indices.size());
-            b.kind = batch.kind;
-            if (const auto* name = city.psdl.texture(batch.texture); name && !name->empty())
-                b.textureName = sdlTextureName(*name);
-            const auto base = static_cast<std::uint32_t>(m_streetVertices.size());
-            for (const auto& v : batch.vertices) {
-                render::Vertex3D rv{};
-                rv.position[0] = v.position.x;
-                rv.position[1] = v.position.y;
-                rv.position[2] = v.position.z;
-                rv.normal[0] = v.normal.x;
-                rv.normal[1] = v.normal.y;
-                rv.normal[2] = v.normal.z;
-                rv.color = 0xFFFFFFFFu;
-                rv.uv0[0] = rv.uv1[0] = v.uv.x;
-                rv.uv0[1] = rv.uv1[1] = v.uv.y;
-                m_streetVertices.push_back(rv);
-                m_streetKinds.push_back(batch.kind);
-                m_wallShade.push_back(batch.kind == city::SurfaceKind::Wall ? wallLightIndex(walls, v) : 0);
+        city::sdlRoomBoundSphere(city.psdl, r, room.centre, room.radius);
+        const city::SdlRoomDraw sdl = city::buildSdlRoomDraw(city.psdl, r);
+        const auto base = static_cast<std::uint32_t>(m_streetVertices.size());
+        // A vertex belongs to one primitive: take its shading from it.
+        std::vector<city::SdlShade> shade(sdl.vertices.size(), city::SdlShade::Room);
+        std::vector<std::uint8_t> light(sdl.vertices.size(), 0);
+        for (const auto& lod : sdl.lods)
+            for (const auto& prim : lod)
+                for (std::uint32_t i = 0; i < prim.indexCount; ++i) {
+                    const auto v = sdl.indices[prim.firstIndex + i];
+                    shade[v] = prim.shade;
+                    light[v] = prim.light;
+                }
+        for (std::size_t i = 0; i < sdl.vertices.size(); ++i)
+            addVertex(sdl.vertices[i].position, sdl.vertices[i].uv, shade[i], light[i]);
+        const auto indexBase = static_cast<std::uint32_t>(m_streetIndices.size());
+        for (const auto i : sdl.indices)
+            m_streetIndices.push_back(base + i);
+        for (std::size_t l = 0; l < 4; ++l) {
+            for (const auto& prim : sdl.lods[l]) {
+                Prim p;
+                p.first = indexBase + prim.firstIndex;
+                p.count = prim.indexCount;
+                p.slot = slotOf(prim.texture);
+                p.wall = prim.wall;
+                p.wall0 = prim.wall0;
+                p.wall1 = prim.wall1;
+                p.belowCamera = prim.belowCamera;
+                p.height = prim.height;
+                room.lods[l].push_back(p);
             }
-            for (auto i : batch.indices)
-                indices.push_back(base + i);
-            room.batches.push_back(b);
+        }
+        for (const auto& batch : city::buildRoomMesh(city.psdl, r).batches) {
+            if (batch.kind != city::SurfaceKind::Tunnel || batch.indices.empty())
+                continue;
+            const auto tunnelBase = static_cast<std::uint32_t>(m_streetVertices.size());
+            for (const auto& v : batch.vertices)
+                addVertex(v.position, v.uv, city::SdlShade::Room, 0);
+            Prim p;
+            p.first = static_cast<std::uint32_t>(m_streetIndices.size());
+            p.count = static_cast<std::uint32_t>(batch.indices.size());
+            p.slot = slotOf(batch.texture);
+            for (const auto i : batch.indices)
+                m_streetIndices.push_back(tunnelBase + i);
+            for (auto& lod : room.lods)
+                lod.push_back(p);
         }
     }
+    m_buckets.resize(m_slotNames.size());
     m_vertices = m_device.createBuffer(render::BufferKind::Vertex,
                                        m_streetVertices.size() * sizeof(render::Vertex3D), m_streetVertices.data());
-    m_indices = m_device.createBuffer(render::BufferKind::Index, indices.size() * sizeof(std::uint32_t), indices.data());
 
     for (const auto& inst : city.instances) {
         if (isDynamic && isDynamic(inst.name))
@@ -251,32 +244,30 @@ CityRenderer::CityRenderer(render::Device& device, TextureLibrary& textures, Mod
     if (city.sky)
         m_sky = m_models.get(city.sky->model);
     log::info("city: {} rooms, {} vertices, {} triangles, {} instances", m_rooms.size(), m_streetVertices.size(),
-              indices.size() / 3, m_instances.size());
+              m_streetIndices.size() / 3, m_instances.size());
 }
 
 CityRenderer::~CityRenderer() {
     m_device.destroyBuffer(m_vertices);
-    m_device.destroyBuffer(m_indices);
 }
 
 void CityRenderer::setEnvironment(const Environment& env) {
-    // sdlPage16::Draw lights nothing: road, sidewalk, roof and ground
-    // vertices take the room colour, curbs half of it, and facades and
-    // slivers the light table entry of their facing, shaded by the room
-    // colour. The room colours come from city/<map>.lmap, but its count
-    // never matches the room count cityLevel::Load checks (London 1340 for
-    // 1341, SF 1125 for 1171), so MM2 drops it and every room is white.
-    // The light table index of a wall is the one the room's preceding
-    // FacadeBound attribute stores (wallLights).
+    // sdlPage16::Draw lights nothing: it colours each primitive with the
+    // room colour, half of it (curb faces and caps), or for facades and
+    // slivers the light table entry of the room's last FacadeBound shaded by
+    // it (GetShadedColor). The room colours come from city/<map>.lmap, but
+    // its count never matches the room count cityLevel::Load checks (London
+    // 1340 for 1341, SF 1125 for 1171), so MM2 drops it and every room is
+    // white: GetShadedColor of white is the light itself.
+    constexpr std::uint32_t kRoomColor = 0xFFFFFFFFu;
     for (std::size_t i = 0; i < m_streetVertices.size(); ++i) {
-        auto& v = m_streetVertices[i];
-        std::uint32_t argb = 0xFFFFFFFFu;
-        switch (m_streetKinds[i]) {
-        case city::SurfaceKind::Wall: argb = env.wallShades[m_wallShade[i] & 63u]; break;
-        case city::SurfaceKind::Curb: argb = ((0xFFFFFFFFu >> 1) & 0x7F7F7Fu) | 0xFF000000u; break;
-        default: break;
+        std::uint32_t argb = kRoomColor;
+        switch (m_vertexShade[i]) {
+        case city::SdlShade::Wall: argb = env.wallShades[m_vertexLight[i] & 63u]; break;
+        case city::SdlShade::HalfRoom: argb = ((kRoomColor >> 1) & 0x7F7F7Fu) | 0xFF000000u; break;
+        case city::SdlShade::Room: break;
         }
-        v.color = argbToRgba(argb);
+        m_streetVertices[i].color = argbToRgba(argb);
     }
     if (!m_streetVertices.empty())
         m_device.updateBuffer(m_vertices, 0, std::as_bytes(std::span<const render::Vertex3D>(m_streetVertices)));
@@ -367,15 +358,29 @@ void CityRenderer::drawInstance(InstanceDraw& inst, const Frustum& frustum, cons
     ++m_stats.instancesDrawn;
 }
 
-void CityRenderer::drawStreets(std::size_t r, const Frustum& frustum, bool alphaPass) {
-    Room& room = m_rooms[r];
-    if (room.batches.empty() || !frustum.intersects(room.bounds))
-        return;
-    if (!alphaPass)
-        ++m_stats.roomsDrawn;
-    for (const auto& b : room.batches) {
+void CityRenderer::gatherStreets(const Room& room, int lod, const Vec3& eye) {
+    // sdlPage16::Draw: road fans, crosswalks and roofs are drawn only when
+    // they are not above the camera (cityLevel's iso height: the camera's,
+    // MM2 adding the view matrix's third row times the near distance), and
+    // facades and slivers only from in front (sdlCommon::BACKFACE).
+    for (const Prim& p : room.lods[static_cast<std::size_t>(lod)]) {
+        if (p.belowCamera && eye.y < p.height)
+            continue;
+        if (p.wall && city::sdlBackface(eye, p.wall0, p.wall1))
+            continue;
+        auto& bucket = m_buckets[p.slot];
+        const auto first = m_streetIndices.begin() + p.first;
+        bucket.insert(bucket.end(), first, first + p.count);
+    }
+}
+
+void CityRenderer::drawStreets(bool alphaPass) {
+    for (std::size_t slot = 0; slot < m_buckets.size(); ++slot) {
+        const auto& bucket = m_buckets[slot];
+        if (bucket.empty())
+            continue;
         // Looked up per frame so day/night texture sets can switch live.
-        const WorldTexture* tex = b.textureName.empty() ? nullptr : m_textures.get(b.textureName);
+        const WorldTexture* tex = slot == 0 ? nullptr : m_textures.get(m_slotNames[slot]);
         // vglEndBatch draws the textures whose format has no alpha first, with
         // alpha blending (and so the alpha test) off, then the others alpha
         // blended and tested (GREATER 100).
@@ -383,18 +388,17 @@ void CityRenderer::drawStreets(std::size_t r, const Frustum& frustum, bool alpha
             continue;
         render::DrawCall call;
         call.vertices = {m_vertices, 0};
-        call.indices = {m_indices, 0};
+        call.indices =
+            m_device.uploadTransient(render::BufferKind::Index, std::span<const std::uint32_t>(bucket));
         call.indexType = render::IndexType::U32;
-        call.count = b.indexCount;
-        call.first = b.firstIndex;
+        call.count = static_cast<std::uint32_t>(bucket.size());
+        call.first = 0;
         call.constants.color = {1, 1, 1, 1};
         // Street geometry is unlit: the vertex colours carry its shading.
         call.constants.flags = render::DrawFlag::Fog | render::DrawFlag::VertexColor;
         if (tex) {
             call.constants.flags |= render::DrawFlag::Texture0;
-            // The texture's own address modes (gfxRenderState::DoFlush):
-            // facades and most street textures repeat both ways, the road
-            // textures (flags 0x18006) clamp V.
+            // The texture's own address modes (gfxRenderState::DoFlush).
             call.textures[0] = {tex->handle, tex->sampler};
             if (alphaPass) {
                 call.constants.flags |= render::DrawFlag::AlphaTest;
@@ -402,11 +406,9 @@ void CityRenderer::drawStreets(std::size_t r, const Frustum& frustum, bool alpha
                 call.state.blend = render::BlendMode::Alpha;
             }
         }
-        // Street geometry is built with counter-clockwise front faces
-        // (railings are emitted double-sided); sdlPage16::Draw skips the
-        // walls facing away itself (sdlCommon::BACKFACE).
-        call.state.cull = std::getenv("OPENMM2_DEBUG_NOCULL_CITY") ? render::CullMode::None : render::CullMode::Back;
-        call.state.frontFace = render::FrontFace::CounterClockwise;
+        // The render state's culling is off (walls facing away were left
+        // out above).
+        call.state.cull = render::CullMode::None;
         m_device.draw(call);
         ++m_stats.drawCalls;
     }
@@ -433,22 +435,35 @@ void CityRenderer::draw(const Camera& camera, const Frustum& frustum, const Envi
                 m_roomMarks[r] = 1;
     } else {
         // No PVS (or never inside the city, an OpenMM2 debug case): every
-        // room within the far plane.
-        const float farSq = sq(env.farClip + 50.0f);
-        for (std::size_t r = 1; r < m_rooms.size(); ++r) {
-            const Aabb& b = m_rooms[r].bounds;
-            const Vec3 closest = vmax(b.min, vmin(eye, b.max));
-            if (b.valid() && closest.dist2(eye) < farSq)
-                m_roomMarks[r] = 1;
-        }
+        // room whose sphere is in view (MM2 floods out from the camera's
+        // room through the neighbours instead).
+        std::fill(m_roomMarks.begin() + 1, m_roomMarks.end(), std::uint8_t{1});
     }
-    // cityLevel::DrawRooms: the street geometry of every visible room in one
-    // batch (opaque textures, then those with alpha), then the static
+    // cityLevel::Draw lists the camera's room and the rooms whose spheres
+    // are in view, each with its sphere's depth minus its radius (the
+    // camera's room minus its radius). cityLevel::DrawRooms draws their
+    // street geometry in one batch at the level of detail that distance
+    // picks (opaque textures, then those with alpha), then the static
     // instances room by room from the last room in the list to the first.
+    for (auto& bucket : m_buckets)
+        bucket.clear();
+    for (std::size_t r = 1; r < m_rooms.size(); ++r) {
+        if (!m_roomMarks[r])
+            continue;
+        const Room& rm = m_rooms[r];
+        float distance = -rm.radius;
+        if (static_cast<int>(r) != room) {
+            if (!frustum.intersectsSphere(rm.centre, rm.radius)) {
+                m_roomMarks[r] = 0;
+                continue;
+            }
+            distance = viewDepth(camera.transform, rm.centre) - rm.radius;
+        }
+        gatherStreets(rm, city::sdlRoomLod(distance), eye);
+        ++m_stats.roomsDrawn;
+    }
     for (bool alphaPass : {false, true})
-        for (std::size_t r = 1; r < m_rooms.size(); ++r)
-            if (m_roomMarks[r])
-                drawStreets(r, frustum, alphaPass);
+        drawStreets(alphaPass);
     for (std::size_t r = m_rooms.size(); r-- > 1;)
         if (m_roomMarks[r])
             for (std::size_t i : m_rooms[r].instances)

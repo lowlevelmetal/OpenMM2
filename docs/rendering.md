@@ -31,7 +31,7 @@ decisions: levels of detail, distances, textures, states and order.
 | Light direction | the direction a light travels: (cos h cos p, sin p, sin h cos p); vertices take N · −L | MM2 (`cityLevel::SetLightDirection`; the old inferred convention was 90° off) |
 | Light quality | the Lighting option (0–1 → quality 0–3, default 3) turns on the key light from quality 1, fill1 from 2, fill2 from 3; the ambient is the file's at quality 3, 33% / 66% of the way to white at 2 / 1, white at 0 | MM2 (`cityLevel::SetupLighting`, `ComputeAmbientLightLevels`; the slider mapping is inferred). MM2 computes the reduced levels before reading the file (from the defaults on the first race); OpenMM2 uses the file's ambient |
 | Instance lighting | Direct3D 7-style per-vertex lighting (clamped per vertex) with those lights | MM2. MM2 also tints the directional lights of each room's instances by the room colour (`SetupPerRoomLighting`); every room is white in retail (below), so this has no effect |
-| Street geometry | unlit: roads, sidewalks, roofs, fans and ground take the room colour, curbs half of it, facades and slivers the wall light table entry of their facing (ambient + Σ max(0, n · −L) × light colour for 64 horizontal directions), shaded by the room colour | MM2 (`sdlPage16::Draw`, `sdlCommon::UpdateLighting`): a facade or sliver takes the table index of the room's preceding FacadeBound attribute (the stored index is the floor of the facing in 64ths, but at axis-aligned walls the data rounds either way, so it is read, not recomputed; the one retail wall without a FacadeBound uses its facing) |
+| Street geometry | unlit: roads, sidewalks, roofs, fans and ground take the room colour, curb faces and curb caps half of it, facades and slivers the wall light table entry (ambient + Σ max(0, n · −L) × light colour for 64 horizontal directions) shaded by the room colour | MM2 (`sdlPage16::Draw`, `GetShadedColor`, `sdlCommon::UpdateLighting`): a facade or sliver takes the table index the room's last FacadeBound attribute stores (the one retail wall without one uses entry 0, as Draw starts each room with it) |
 | Room colours | `city/<map>.lmap` holds one per room, but cityLevel::Load rejects it unless its count equals the PSDL room count including room 0 (London 1340 vs 1341, SF 1125 vs 1171), so in retail every room is white | MM2 (`cityLevel::Load`) |
 | Fog | `city/<map>_fog.csv` row (time × 4 + weather): linear fog colour, start = min(far − 30, start), end = min(far, end); the clear colour is the fog colour | MM2 (`lvlSky::SetupFog`, `cityLevel::DrawRooms`) |
 | Far plane | the Far Clip option (100–1000 m); OpenMM2's Visibility slider maps 0–1 to that range | MM2 (`PUGraphics::FixClip`); the slider mapping is inferred |
@@ -44,16 +44,24 @@ decisions: levels of detail, distances, textures, states and order.
 | Topic | Behaviour | Evidence |
 |---|---|---|
 | Camera room | the PSDL room under the camera; outside every room the last one found stays | MM2 (`cityLevel::Draw`, sm_LastPvsRoom; MM2 tests ordinary rooms in XZ only) |
-| Visibility | the CPVS row of the camera room; OpenMM2 falls back to every room within the far plane before the camera has ever been inside the city or without a PVS | MM2 (PVS path); the fallback is an OpenMM2 debug convenience |
+| Visibility | the camera room, and the rooms of its CPVS row whose bounding sphere (the perimeter's area centroid at the corners' mean height, and its farthest corner) is in view; OpenMM2 tests every room's sphere before the camera has ever been inside the city or without a PVS | MM2 (`cityLevel::Draw`, `gfxViewport::IsSphereVisible`, `sdlPage16::GetCentroid`, `ComputeBoundSphere`); the fallback is an OpenMM2 debug convenience |
+| Streets | `src/city/SdlDraw` builds what `sdlPage16::Draw` sends to vgl for each room and level of detail; every visible room's primitives are gathered per texture and drawn in one batch, opaque textures then those with alpha, with culling off | MM2 (`sdlPage16::Draw`, `vglBeginBatch`/`vglEndBatch`, `cityLevel::DrawRooms`) |
+| Street levels of detail | d = the room sphere's view depth − its radius (the camera's room: − radius): level 0 beyond 300 m, 1 beyond 100 m, 2 beyond 50 m, 3 otherwise. Road and divided road strips: level 0 one strip from outer edge to outer edge with the group's third texture over every other section, level 1 the same over every section with the edges 0.15 m lower, levels 2 and 3 the sidewalks (second texture) and the road (first texture, in two halves mirrored about the middle); only level 3 raises the curb line 0.15 m and adds the half-bright curb faces, sidewalk-strip curb faces and end caps. Dividers are drawn at levels 2 and 3 | MM2 (`cityLevel::DrawRooms`: sm_SDLVLowThresh 300, sm_SDLLowThresh 100, sm_SDLMedThresh 50, never changed; `sdlPage16::Draw`) |
+| Street texture coordinates | road, rectangle and divided strips: t across (1 at the curbs, 0 at the middle for the road halves), s from `sdlPage16::ArcMap`: the distance along the strip scaled to a whole number of repeats of its average width (at most 127 over the longest section) and run back and forth; sidewalk strips planar every 4 m, fans and roofs every 8 m (less the whole repeats at the first vertex); crosswalks 0–1 across and length / width along; facades the stored repeats read unsigned (v 0 at the bottom); slivers u = round(length × density), v = (height − top) × density | MM2 (`sdlPage16::Draw`, `ArcMap`) |
+| Skipped primitives | road fans, crosswalks and roofs above the camera's height; facades and slivers seen from behind (`sdlCommon::BACKFACE`); after a Texture attribute of value 0 the road, sidewalk, rectangle, crosswalk, fan and divided road attributes | MM2 (`sdlPage16::Draw`); MM2's height is the camera's plus the view matrix's third row times the near distance (ignored) |
+| Tunnels | walls, ceilings and railings from the CityMesh reconstruction at every level of detail | inferred: `sdlPage16::Draw`'s tunnel code is not ported yet |
 | City objects | `city/<map>.inst` instances, LOD by lvlInstance::IsVisible (below) with no distance limit beyond the far plane; a missing LOD takes the next less detailed one (VL → L → M → H) and a missing VL draws nothing; PKG xrefs drawn with their parent | MM2 (`lvlInstance::IsVisible`, `GetGeomSet`); the radius is the farthest vertex from the model origin over its levels of detail (`modGetStatic`) |
 | Object LOD | d = view depth − radius: H up to Med, M up to Low, L up to VLow, VL beyond; dynamic objects (cars, bangers) are not drawn deeper than NoDraw. Object Detail 0–3: Med 20/30/40/70, Low 70/90/100/130, VLow 150/175/200/200, NoDraw 200/250/300/300 m | MM2 (`cityLevel::SetObjectDetail`) |
 
-Not ported yet: street LODs (`sm_SDLMedThresh` 50, `LowThresh` 100,
-`VLowThresh` 300 m: the low-detail road strips with the `*_lo` textures and
-no curbs), cloud shadows (`shadmap_day`/`shadmap_nite` in a second pass with
-UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts, the room
-flood fill used without a PVS, and per-room instance lists (MM2 draws an
-object once from every room it touches).
+Not ported: `gfxTexture::sm_LOD` (3 − the street level), which only limits
+the mip levels Direct3D's texture manager keeps resident (`MarkHigherUse`,
+`SetLOD`; a texture's limit only ever drops to the most detailed level it has
+been drawn at). Not ported yet: cloud shadows (`shadmap_day`/`shadmap_nite` in a second
+pass with UVs (x + y, y + z) / 128), the `<name>_refl` reflection parts, the
+room flood fill used without a PVS, and multi-room objects: MM2 draws a
+collidable (.inst flag 0x2000) object through its stand-ins in the
+neighbouring rooms its sphere reaches (`lvlMultiRoomInstance::Draw`, once per
+frame), not from its own room.
 
 ## Cars
 

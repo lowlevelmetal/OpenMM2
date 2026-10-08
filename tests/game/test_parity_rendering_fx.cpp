@@ -3,6 +3,7 @@
 
 #include "TestData.h"
 #include "city/CityData.h"
+#include "city/SdlDraw.h"
 #include "game/CityLevel.h"
 #include "game/CityRenderer.h"
 #include "game/MeshDraw.h"
@@ -79,9 +80,8 @@ TEST(ParityRenderingFx, SdlMovieFrameNamesUseTheBaseName) {
 TEST(ParityRenderingFx, EveryWallHasAFacadeBoundLight) {
     // sdlPage16::Draw shades facades and slivers with the wall light table
     // entry the room's preceding FacadeBound attribute names. All but one
-    // retail wall has one before it (MM2 would use whatever its local held;
-    // CityRenderer takes the wall's facing), and the angle word fits the
-    // 64-entry table.
+    // retail wall has one before it (that one takes entry 0, which Draw
+    // starts each room with), and the angle word fits the 64-entry table.
     MM2_REQUIRE_GAME_DATA();
     for (const char* name : {"london", "sf"}) {
         auto city = city::loadCity(*test::gameData(), name);
@@ -150,4 +150,54 @@ TEST(ParityRenderingFx, MultiRoomInstancesLiveInTheNeighboursTheyReach) {
     }
     EXPECT_GT(multi, 0);
     EXPECT_GT(terrain, 0);
+}
+
+TEST(ParityRenderingFx, SdlArcMapRunsBackAndForth) {
+    // sdlPage16::ArcMap: the distance along the first vertices, scaled to a
+    // whole number of repeats of the average width (6 over 8 m here), added
+    // while the running value is not positive and subtracted while it is.
+    city::Psdl psdl;
+    psdl.vertices = {{0, 0, 0}, {2, 0, 0}, {0, 0, 4}, {2, 0, 4}, {0, 0, 8}, {2, 0, 8}};
+    const std::vector<std::uint16_t> strip = {0, 1, 2, 3, 4, 5};
+    const auto s = city::sdlArcMap(psdl, strip, 2, 3, 1);
+    ASSERT_EQ(s.size(), 3u);
+    EXPECT_FLOAT_EQ(s[0], 0.0f);
+    EXPECT_FLOAT_EQ(s[1], 3.0f);
+    EXPECT_FLOAT_EQ(s[2], 0.0f);
+}
+
+TEST(ParityRenderingFx, SdlLevelOfDetailAndBackface) {
+    // cityLevel::DrawRooms: beyond 300 m level 0, 100 m level 1, 50 m level 2.
+    EXPECT_EQ(city::sdlRoomLod(301.0f), 0);
+    EXPECT_EQ(city::sdlRoomLod(300.0f), 1);
+    EXPECT_EQ(city::sdlRoomLod(100.0f), 2);
+    EXPECT_EQ(city::sdlRoomLod(50.0f), 3);
+    EXPECT_EQ(city::sdlRoomLod(-20.0f), 3);
+    // sdlCommon::BACKFACE: a wall from a to b faces (b - a) x up.
+    EXPECT_FALSE(city::sdlBackface({0.5f, 0, 5}, {0, 0, 0}, {1, 0, 0}));
+    EXPECT_TRUE(city::sdlBackface({0.5f, 0, -5}, {0, 0, 0}, {1, 0, 0}));
+}
+
+TEST(ParityRenderingFx, SdlDrawLevelsOfDetail) {
+    // sdlPage16::Draw: only the top level draws the half-bright curb faces,
+    // and the lower levels draw less.
+    MM2_REQUIRE_GAME_DATA();
+    auto city = city::loadCity(*test::gameData(), "london");
+    ASSERT_TRUE(city);
+    std::array<std::size_t, 4> triangles{};
+    std::size_t halfBright = 0, halfBrightBelowTop = 0;
+    for (std::size_t r = 1; r < city->psdl.rooms.size(); ++r) {
+        const auto draw = city::buildSdlRoomDraw(city->psdl, r);
+        for (std::size_t l = 0; l < 4; ++l)
+            for (const auto& p : draw.lods[l]) {
+                triangles[l] += p.indexCount / 3;
+                if (p.shade == city::SdlShade::HalfRoom)
+                    ++(l == 3 ? halfBright : halfBrightBelowTop);
+            }
+    }
+    EXPECT_GT(halfBright, 1000u);
+    EXPECT_GT(halfBrightBelowTop, 0u); // raised dividers' walls at level 2
+    EXPECT_LT(triangles[0], triangles[1]);
+    EXPECT_LE(triangles[1], triangles[2]);
+    EXPECT_LT(triangles[2], triangles[3]);
 }
