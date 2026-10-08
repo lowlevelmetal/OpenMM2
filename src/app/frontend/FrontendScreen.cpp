@@ -117,8 +117,14 @@ void Frontend::playSound(std::string_view name, float volume) {
         slot.load(*ctx.mixer, *m_soundBank, name, audio::Bus::Effects);
         it = m_sounds.emplace(std::string(name), std::move(slot)).first;
     }
-    if (it->second.valid())
-        it->second.playOnce(volume);
+    if (!it->second.valid())
+        return;
+    // MenuManager::PlaySound(2): the sliders' and rollers' "Switch" is
+    // stopped, rewound and played again on every step; the other sounds
+    // keep playing when asked again.
+    if (name == "Switch")
+        it->second.stop();
+    it->second.playOnce(volume);
 }
 
 bool Frontend::soundPlaying(std::string_view name) const {
