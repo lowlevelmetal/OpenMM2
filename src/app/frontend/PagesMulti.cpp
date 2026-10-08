@@ -537,7 +537,8 @@ public:
             y += 44;
         }
         m_vehicle = &menu.add<ui::SpriteButton>(SpriteSheet{"texture/lobb_veh.tga", 4}, center(120), y, [&fe] {
-            // The vehicle page's GO DRIVE returns here in a session (Frontend::startRace).
+            // The garage as the lobby's sub-menu: no GO DRIVE, PREV brings
+            // the car back (VehiclePage, Frontend::applyLobbyCar).
             fe.push(makeVehiclePage(fe));
         });
         y += 44;

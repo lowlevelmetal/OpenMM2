@@ -468,8 +468,27 @@ public:
         });
         goButton.sound = "Uigo";
         goButton.soundVolume = 0.9f;
-        addBack(fe, *this);
+        auto& back = addBack(fe, *this);
         addNavStrip(fe, *this);
+        if (fe.ctx.netGame && fe.ctx.netGame->inSession()) {
+            // Opened from the lobby (mmInterface::UpdateLobby, the lobby's
+            // SELECT VEHICLE): Vehicle::SetSubMenu(1) turns GO DRIVE off, and
+            // PREV goes back through mmInterface::LobbySwitch, which refuses a
+            // locked car or paint job (ShowLockedVehicleMessage) and
+            // otherwise sends the new car to the session (ChangePlayerData).
+            // UpdateLobby handles only the garage's buttons: Escape does
+            // nothing there.
+            goButton.visible = false;
+            back.onClick = [this, &fe] {
+                if (!carUnlocked(fe) || !paintUnlocked(fe)) {
+                    fe.notice("jpg/lock_dlg.jpg", menu_id::kLocked);
+                    return;
+                }
+                fe.applyLobbyCar();
+                fe.pop();
+            };
+            menu.onBack = [] {};
+        }
         playSelectSound(fe);
     }
 

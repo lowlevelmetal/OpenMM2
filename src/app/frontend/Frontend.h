@@ -124,6 +124,9 @@ public:
     std::optional<game::Reward> recordResult(const game::RaceResult& result);
     // Starts the session described by `config`.
     void startRace();
+    // In a multiplayer session: the garage's car and paint job become the
+    // local player's (mmInterface::ChangePlayerData) and the driver's.
+    void applyLobbyCar();
 
     void update(double dt);
     void draw();

@@ -245,19 +245,25 @@ std::optional<game::Reward> Frontend::recordResult(const game::RaceResult& resul
     return reward;
 }
 
+void Frontend::applyLobbyCar() {
+    if (!ctx.netGame || !ctx.netGame->inSession())
+        return;
+    game::NetCar car = ctx.netGame->localCar();
+    car.vehicle = config.vehicle;
+    car.color = config.vehicleColor;
+    ctx.netGame->setLocalCar(car);
+    if (profile) {
+        profile->vehicle = config.vehicle;
+        profile->vehicleColor = config.vehicleColor;
+        saveProfile();
+    }
+}
+
 void Frontend::startRace() {
-    // In a multiplayer lobby the vehicle page's GO DRIVE only picks the car;
-    // the host starts the race for everyone.
+    // In a multiplayer lobby the host starts the race for everyone; the
+    // garage (whose GO DRIVE is off there) only picks the car.
     if (ctx.netGame && ctx.netGame->inSession()) {
-        game::NetCar car = ctx.netGame->localCar();
-        car.vehicle = config.vehicle;
-        car.color = config.vehicleColor;
-        ctx.netGame->setLocalCar(car);
-        if (profile) {
-            profile->vehicle = config.vehicle;
-            profile->vehicleColor = config.vehicleColor;
-            saveProfile();
-        }
+        applyLobbyCar();
         pop();
         return;
     }
