@@ -72,3 +72,36 @@ TEST(ParityCameraProps, ChaseCameraStopsTrackingASpinningAirborneCar) {
     // The same rate as an angular velocity (rad/s) never triggers it.
     EXPECT_LT(yawBehindAfterAirborneTurn({0.0f, 3.0f, 0.0f}), 0.05f);
 }
+
+// mmPlayer::Update: big vehicles also switch to the _ind camera in rooms
+// with flag 0x20 when a segment from 100 m above the camera down to it hits
+// something.
+TEST(ParityCameraProps, BigVehicleIndCameraUnderGeometryInFlag20Rooms) {
+    for (const bool roofed : {false, true}) {
+        PlayerCameras cams;
+        cams.setVehicleFlags(0x10);
+        int vertical = 0;
+        const CameraProbe probe = [&](const Vec3& from, const Vec3& to, CameraHit& hit) {
+            if (from.x == to.x && from.z == to.z && std::abs(from.y - to.y - 100.0f) < 1e-3f) {
+                ++vertical;
+                if (roofed) {
+                    hit.point = {to.x, to.y + 6.0f, to.z};
+                    hit.normal = {0.0f, -1.0f, 0.0f};
+                    hit.fraction = 0.94f;
+                    return true;
+                }
+            }
+            return false;
+        };
+        CameraTarget t = carAt({}, 0.0f, true);
+        cams.reset(t);
+        cams.update(kStep, t, probe, {});
+        t.roomFlags = 0x20;
+        cams.update(kStep, t, probe, {});
+        EXPECT_EQ(vertical, 1);
+        if (roofed)
+            EXPECT_EQ(cams.viewManager().transitionTo(), &cams.indCam());
+        else
+            EXPECT_EQ(cams.viewManager().current(), &cams.nearCam());
+    }
+}

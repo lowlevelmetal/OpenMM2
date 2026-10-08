@@ -149,8 +149,10 @@ camera's `Offset.z` by 0.7352941.
 * **Big vehicles** (`mmPlayer::Update`): with `tune/<car>.info` Flags & 0x13
   (vpbus, vpddbus, vpcentury, vpsemi), in a room with flags & 0x0A the near
   or far camera blends to the _ind camera (mode 3, 1 s), and back to the
-  selected camera when out of such rooms. The original also switches in rooms
-  with flag 0x20 when a probe finds geometry above; that probe is not ported.
+  selected camera when out of such rooms. It also switches in rooms with
+  flag 0x20 when a segment from 100 m above the last rendered camera
+  position down to it hits something (`dgPhysManager::Collide`; the
+  position is `gfxRenderState`'s camera, set by `camViewCS::Update`).
   vpsemi, vpcentury and vpddbus have no _ind file and use the defaults.
 * **Collision margin** (`mmPlayer::Update`): the near and far cameras keep
   their near plane 0.33 m out of walls, 1.11 m in rooms with flag 0x08.
@@ -283,4 +285,4 @@ HillLerp 0.05, and a point-of-view camera AppXRot 0.5.
 `tests/game/test_parity_camera_props.cpp` (`test_game`, the parity audit,
 see `docs/parity/camera-props.md`): the chase camera keeping its offset over
 a car spinning in the air by angular momentum (and not by angular
-velocity).
+velocity); the _ind camera under geometry in flag 0x20 rooms.

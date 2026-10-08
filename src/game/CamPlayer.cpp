@@ -199,10 +199,17 @@ void PlayerCameras::update(float dt, const CameraTarget& target, const CameraPro
         }
     }
     if ((m_vehicleFlags & 0x13) != 0) {
-        // Big vehicles use the _ind camera under cover. (The original also
-        // switches in rooms with flag 0x20 that have geometry overhead; that
-        // probe is not ported.)
-        if ((target.roomFlags & 0x0A) == 0) {
+        // Big vehicles use the _ind camera under cover: in rooms with flag
+        // 0x02 or 0x08, or in rooms with flag 0x20 when there is geometry
+        // over the camera (a segment from 100 m above the last rendered
+        // camera position down to it, dgPhysManager::Collide).
+        bool overhead = false;
+        if ((target.roomFlags & 0x20) != 0 && probe) {
+            const Vec3 eye = m_view.matrix().m3;
+            CameraHit hit;
+            overhead = probe({eye.x, eye.y + 100.0f, eye.z}, eye, hit);
+        }
+        if ((target.roomFlags & 0x0A) == 0 && !overhead) {
             if (m_restoreCityCam) {
                 if (!isPov())
                     m_view.newCam(carCam(m_camIndex), CameraView::Blend::EaseInOut, 1.0f);
