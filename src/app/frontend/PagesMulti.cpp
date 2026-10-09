@@ -1235,9 +1235,14 @@ private:
             fe.ctx.netGame->setGoldMass(m_goldMass);
             fe.ctx.netGame->setRaceConfig(m_cfg);
         }
-        // Remember the host's choices for the next session.
+        // Remember the host's choices for the next session, as the event the
+        // single race menu shows (MM2's HostRaceMenu edits the one state
+        // pack): the mode with its race and that race's defaults, so the
+        // menus never hold a race mode with another mode's race or setup.
         fe.config.mode = m_cfg.mode;
         fe.config.city = m_cfg.city;
+        fe.config.raceIndex = m_cfg.raceIndex;
+        fe.applyRaceDefaults(fe.config);
         fe.pop();
     }
 
