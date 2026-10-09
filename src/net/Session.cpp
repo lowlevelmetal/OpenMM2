@@ -72,6 +72,10 @@ constexpr double kEventRate = 30.0, kEventBurst = 60.0;
 // a crash's events never use up the race events' or the other way round. The
 // game sends at most ten a second.
 constexpr double kDamageEventRate = 15.0, kDamageEventBurst = 30.0;
+// A joiner's car's inputs (net/PlayerCars.h): the game sends one message a
+// frame that simulated a sample, at most 60 a second; the host only queues
+// them, so the budget bounds the work and the queue.
+constexpr double kInputRate = 90.0, kInputBurst = 180.0;
 
 // An address that sent this many wrong passwords within the window is turned
 // away until the window ends, so guessing a lobby password online costs
@@ -758,6 +762,19 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
             hostRelayState(id, msg.state);
         return;
     }
+    case MsgType::PlayerInput: {
+        // A joiner's car's inputs, during a race only (a late one from the
+        // last race is old), within its budget: the next message repeats
+        // what a dropped one carried.
+        PlayerInputMsg msg;
+        if (!replicating() || !r.inputs.take(monotonicMs(), kInputRate, kInputBurst) ||
+            !decodeMessage(data, msg))
+            return;
+        if (m_playerInputs.size() >= kMaxQueuedPlayerInputs)
+            m_playerInputs.erase(m_playerInputs.begin());
+        m_playerInputs.push_back({id, std::move(msg)});
+        return;
+    }
     case MsgType::RaceLoaded: {
         // Only the first report of the race being loaded counts: one for an
         // earlier race (sent before the return to the lobby reached the
@@ -1084,6 +1101,22 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         }
         return;
     }
+    case MsgType::CarStates: {
+        // The host's states of the players' cars: this machine's own with
+        // the last input it applied, the others into their buffers.
+        CarStatesMsg m;
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+            return;
+        for (auto& [id, state] : m.cars) {
+            state.time = m.time;
+            if (id != m_localId)
+                receiveState(id, state);
+        }
+        if (m_ownCarStates.size() >= kMaxQueuedOwnCarStates)
+            m_ownCarStates.erase(m_ownCarStates.begin());
+        m_ownCarStates.push_back({m.time, m.ack, m.waiting, m.hasOwn, m.own, timeMs()});
+        return;
+    }
     case MsgType::GameEvent: {
         GameEventMsg m;
         if (decodeMessage(data, m))
@@ -1288,6 +1321,23 @@ void Session::sendGameEvent(std::uint16_t type, std::vector<std::byte> payload, 
         hostRelayEvent(kHostPlayerId, std::move(msg));
     else
         sendTo(m_hostPeer, Channel::Events, std::move(msg));
+}
+
+void Session::sendPlayerInput(const PlayerInputMsg& msg) {
+    if (m_role != Role::Client || m_state != State::Active || !replicating() || msg.frames.empty())
+        return;
+    sendTo(m_hostPeer, Channel::State, msg);
+}
+
+std::size_t Session::sendCarStates(std::uint8_t playerId, const CarStatesMsg& msg) {
+    if (m_role != Role::Host || !m_transport || m_state != State::Active || !replicating() ||
+        playerId == m_localId)
+        return 0;
+    Remote* r = remoteForPlayer(playerId);
+    if (!r)
+        return 0;
+    const auto packet = encodeMessage(msg);
+    return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
 
 std::size_t Session::sendAmbientState(std::uint8_t playerId, const AmbientStateMsg& msg) {
