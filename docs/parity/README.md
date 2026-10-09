@@ -88,6 +88,45 @@ in-race options pages (PUOptions), force feedback, rebinding non-keyboard
 controllers, the Cops and Robbers roster, traffic turn signals and
 ambient traffic movers without a body.
 
+## The other direction: MM2 -> OpenMM2 (2026-10-13)
+
+The audit above starts from OpenMM2's code. A second audit started from
+MM2's: every function `midtown2.exe` can reach from its entry point (calls,
+tail jumps, fall-through into split functions, vtables and function
+tables, found in MM2Recomp's disassembly) was given a row in one of the
+records under [mm2/](mm2/), saying whether OpenMM2 does it, does it another
+way on purpose, does not need it (with the evidence), or still lacks it.
+That found whole features OpenMM2 never had, now ported: parked cars,
+drawbridges, London's tube trains, ferries, sailboats, San Francisco's cable
+cars, the in-race options pages, the garage's 3D car, every controller's
+bindings, force feedback, MM2's command-line options and its spawn
+placement.
+
+| Subsystem | Record | Reachable | Ported (new) | Replaced | Not needed | Open |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| world objects | [world-objects.md](mm2/world-objects.md) | 297 | 187 (124) | 30 | 75 | 5 |
+| game flow and spawns | [game-flow.md](mm2/game-flow.md) | 608 | 382 (62) | 66 | 151 | 9 |
+| AI | [ai.md](mm2/ai.md) | 507 | 409 (17) | 6 | 92 | 0 |
+| vehicle and physics | [vehicle-physics.md](mm2/vehicle-physics.md) | 736 | 574 (0) | 13 | 146 | 3 |
+| props and effects | [props-fx.md](mm2/props-fx.md) | 169 | 126 (1) | 0 | 43 | 0 |
+| city rendering | [city-render.md](mm2/city-render.md) | 354 | 233 (2) | 68 | 53 | 0 |
+| HUD and views | [hud-views.md](mm2/hud-views.md) | 373 | 222 (35) | 35 | 115 | 1 |
+| audio | [audio.md](mm2/audio.md) | 1053 | 625 (21) | 265 | 163 | 0 |
+| frontend | [frontend.md](mm2/frontend.md) | 1309 | 738 (85) | 163 | 404 | 4 |
+| input and force feedback | [input-ff.md](mm2/input-ff.md) | 219 | 125 (106) | 52 | 42 | 0 |
+| infrastructure | [infrastructure.md](mm2/infrastructure.md) | 2424 | 219 (7) | 1188 | 639 | 0 |
+
+The rows overlap a little (the infrastructure record hands 378 of its
+functions, pieces of split functions and small classes, to the other
+records, and a few classes are counted where they were ported as well as
+where they were listed). "Replaced" is mostly the C runtime, Direct3D,
+DirectPlay, DirectSound/DirectMusic and Windows plumbing, which OpenMM2's
+own platform, renderers, mixer and networking take over. The open rows,
+and the open behaviours inside ported functions, are listed in each
+record's Open section; the largest are late joins for network cruise and
+Cops and Robbers, the network tuning checksum, the water respawn sync and
+remote cars' sounds and damage.
+
 ## Manifest
 
 Lines as of the start of the audit (files the audit added: as of when
