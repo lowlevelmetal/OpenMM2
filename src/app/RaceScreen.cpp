@@ -1471,6 +1471,27 @@ private:
             if (c.audio)
                 feed(*c.audio, c.sim->sim(), c.driver->siren(), c.driver->target() == 0, c.driver->driver().wrecked(),
                      *c.impacts);
+        // The network players' cars (mmNetObject::PositionUpdate: the
+        // pedals, horn, siren and wreck from the packet; the engine follows
+        // the car's own vehCarSim, here the kinematic one placed from the
+        // snapshots).
+        for (const auto& rc : m_netCars) {
+            const auto it = m_remotes.find(rc.id);
+            if (!rc.hasState || it == m_remotes.end() || !it->second.audio || !it->second.sim)
+                continue;
+            audio::game::CarAudioInputs in = carAudioInputs(it->second.sim->sim());
+            in.throttle = rc.controls.throttle;
+            in.brake = rc.controls.brake;
+            in.gear = rc.controls.gear;
+            in.speed = rc.velocity.mag();
+            in.horn = (rc.flags & net::kVehicleHorn) != 0;
+            in.siren = (rc.flags & net::kVehicleSiren) != 0;
+            in.sirenPursuingPlayer = false;
+            in.wrecked = (rc.flags & net::kVehicleWrecked) != 0;
+            in.transform = rc.transform;
+            in.velocity = rc.velocity;
+            it->second.audio->update(in, dt, listener);
+        }
     }
 
     // The ambient cars' sounds (aiAmbientVehicleAudio, which aiVehicleSpline::Init
@@ -3456,6 +3477,11 @@ private:
                 }
                 // mmNetObject::Init -> vehCar::Init -> vehSiren::vehSiren.
                 game::VehicleRenderer::setLightGlowScales(0.2f, 0.6f);
+                // vehCar::Init gives the network car its vehCarAudioContainer
+                // (engine, tyres, horn; a police car's siren), which
+                // mmNetObject::PositionUpdate drives from the packets.
+                const auto* info = ctx.game->catalog.vehicle(vehicle);
+                rv.audio = loadAiCarAudio(ctx, vehicle, info && (info->flags & game::VehicleInfo::kFlagCop));
             }
             if (!rv.sim)
                 continue;
@@ -3480,6 +3506,8 @@ private:
             if (std::find(present.begin(), present.end(), it->first) == present.end()) {
                 if (it->second.sim)
                     it->second.sim->removeFrom(*m_world);
+                if (it->second.audio)
+                    it->second.audio->stop();
                 it = m_remotes.erase(it);
             } else {
                 ++it;
@@ -4082,6 +4110,7 @@ private:
         int color = -1;
         std::unique_ptr<game::SimVehicle> sim; // kinematic body (and its trailer)
         std::unique_ptr<game::VehicleRenderer> renderer, trailer;
+        std::unique_ptr<audio::game::OpponentCarAudio> audio;
         std::array<float, 6> spin{};
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
