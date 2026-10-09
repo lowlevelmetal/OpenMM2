@@ -260,6 +260,8 @@ public:
     std::vector<NetRemoteCar> remoteCars(double stateAgeMs = 0.0) const;
     // The session time update() last saw (ms).
     double frameTime() const { return m_frameTime; }
+    // How far in the past a player's car is shown (ms; net::Session::playoutDelay).
+    double playoutDelay(std::uint8_t playerId) const;
     // Development aid: with OPENMM2_NET_TRACE=<file> set, each session
     // writes every remote snapshot it takes in and, through this call from
     // the race once a frame, the local car and the remote cars as drawn (see

@@ -339,7 +339,7 @@ public:
         updateRemoteCars(ctx, static_cast<float>(dt));
         updateNetTraffic(ctx, static_cast<float>(dt)); // OpenMM2: a client's shared traffic
         if (netTrafficHost(ctx) && m_ai)
-            applyNetTrafficHits(ctx); // OpenMM2: the clients' hits on the host's traffic
+            applyNetTrafficHits(); // OpenMM2: the clients' hits on the host's traffic
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
         if (m_trafficBodies)
@@ -3533,8 +3533,8 @@ private:
     // it, allowing for the lag), leaves its rail with the impulse of a car of
     // the client's mass at the reported velocity meeting it (elasticity 0.25:
     // two lvlMaterial defaults of 0.5); anything else is dropped.
-    void applyNetTrafficHits(Context& ctx) {
-        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+    void applyNetTrafficHits() {
+        for (const auto& ev : m_netEvents) {
             if (static_cast<std::uint16_t>(ev.type) != net::kTrafficHitEvent || !m_trafficBodies)
                 continue;
             const auto hit = ev.as<net::TrafficHitEvent>();
@@ -3711,9 +3711,6 @@ private:
             return;
         for (const auto& m : ctx.netGame->takeAmbientStates())
             m_trafficClient->receive(m);
-        // Game events are the host's hit reports' channel; a client has no
-        // use for any in cruise.
-        (void)ctx.netGame->takeGameEvents();
         // The traffic cars the local car hit in the last physics step: the
         // host's view of this car lags behind, so it is told (at most once
         // a second per car), with the car's velocity before that step.
@@ -3745,8 +3742,13 @@ private:
                       "wrong");
             m_trafficCatalogWarned = true;
         }
-        const double renderTime =
-            static_cast<double>(ctx.netGame->sessionTime()) - m_trafficClient->options().interpolationDelayMs;
+        // The traffic comes over the host's link on the host's cadence, as
+        // the host's car does: it is shown at least as far back as that car's
+        // snapshots need (SnapshotBuffer::requiredDelay), or it would run
+        // past its newest message and be extrapolated on a slow link.
+        const double delay = std::max(m_trafficClient->options().interpolationDelayMs,
+                                      ctx.netGame->playoutDelay(net::kHostPlayerId));
+        const double renderTime = ctx.netGame->frameTime() - delay;
         m_trafficClient->update(renderTime);
         if (const auto steps = m_trafficClient->lightSteps(renderTime))
             m_ai->advanceLightsTo(*steps);
