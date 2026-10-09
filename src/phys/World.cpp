@@ -91,6 +91,7 @@ void Body::syncBoundMatrix() {
 void Body::resetCollider() {
     ImpactHandler* handler = collider.handler;
     collider.init(collisionBound, &boundMatrix, kinematic ? nullptr : &ics);
+    collider.motion = kinematic ? &ics : nullptr;
     collider.handler = handler;
     collider.joint = joint;
     collider.id = audioId;

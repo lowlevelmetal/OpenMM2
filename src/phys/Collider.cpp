@@ -18,6 +18,7 @@ void Collider::init(const Bound* b, const Mat34* m, InertialCS* inertia) {
     bound = b;
     matrix = m;
     ics = inertia;
+    motion = nullptr;
     handler = nullptr;
     joint = nullptr;
     body = nullptr;
@@ -88,7 +89,7 @@ Mat34 Collider::copyLastMatrix(const void* pusher) const {
 Vec3 Collider::localVelocity(const Vec3& position) const {
     // phColliderBase::GetLocalVelocity.
     if (!ics)
-        return {};
+        return motion ? motion->getVelocity(&position) : Vec3{};
     return ics->getVelocity(&position);
 }
 
