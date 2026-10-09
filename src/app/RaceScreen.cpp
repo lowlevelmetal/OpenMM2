@@ -4125,7 +4125,8 @@ private:
         controls.handbrake = m_lastPedals.handbrake;
         controls.gear = static_cast<std::int8_t>(sim.trans.getCurrentGear());
         std::uint8_t flags = 0;
-        if (m_pose.headlights)
+        // The simulated pose carries no lights (the drawn poses get them).
+        if (carLights())
             flags |= net::kVehicleHeadlights;
         if (m_pose.brakeLights)
             flags |= net::kVehicleBrakeLights;
