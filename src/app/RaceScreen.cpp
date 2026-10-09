@@ -5026,7 +5026,8 @@ private:
             std::string queues;
             for (const auto& [id, rv] : m_remotes)
                 if (rv.simulated)
-                    queues += std::format(" player {}: {} inputs missed;", id, rv.inputs.missed());
+                    queues += std::format(" player {}: {} inputs missed, {} dropped to catch up;", id,
+                                          rv.inputs.missed(), rv.inputs.skipped());
             log::info("netcars: host sent {} states ({:.0f} B/s);{}", m_netStatesSent,
                       static_cast<double>(m_netStatesBytes) / seconds, queues);
         } else if (verbose) {

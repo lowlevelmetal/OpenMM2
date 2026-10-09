@@ -164,6 +164,18 @@ std::optional<HostInputQueue::Next> HostInputQueue::next() {
     const std::int32_t waiting = static_cast<std::int32_t>(m_newest) - static_cast<std::int32_t>(m_next);
     m_leastWaiting = std::min(m_leastWaiting, waiting);
     ++m_next;
+    // Too far behind its client for a whole second: the newest few only.
+    m_slackLeast = std::min(m_slackLeast, waiting);
+    if (++m_slackSamples >= kSlackSamples) {
+        if (m_slackLeast > kMaxSlack) {
+            const std::uint32_t to = m_newest + 1 - kStartMargin;
+            m_skipped += to - m_next;
+            m_frames.erase(m_frames.begin(), m_frames.lower_bound(to));
+            m_next = to;
+        }
+        m_slackLeast = 1 << 20;
+        m_slackSamples = 0;
+    }
     return n;
 }
 
