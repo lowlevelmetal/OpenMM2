@@ -322,9 +322,12 @@ mapping on a background thread).
 Robbers, Robber Teams), `timeLimit`, `pointLimit`, `goldMass`. `raceId` is the
 race index (0xFFFF for cruise and Cops & Robbers). In Cops vs. Robbers the
 cars are fixed by team, as the original's help text says ("The Cop Team in
-Mustang Cruisers ... the Robber Team in Mustang GTs"): `NetGame::raceConfig()`
-returns `vpcop` for team 0 and `vpmustang99` for team 1. Robber Teams lets
-everyone choose. Free-For-All has no team lamps: the lobby sets the team
+Mustang Cruisers ... the Robber Team in Mustang GTs"): `game::raceCar` gives
+`vpcop` to team 0 and `vpmustang99` to team 1 (paint job 0), as MM2's lobby
+sets the player's car to it and sends it to the session. Every machine
+applies it to every player (`raceConfig()` for its own car, `playerCar()` and
+`remoteCars()` for the others), so all of them draw the same cars and count
+the same teams. Robber Teams lets everyone choose. Free-For-All has no team lamps: the lobby sets the team
 from the car, 0 for a police car (flag 0x08) and 1 for any other
 (`game::freeForAllTeam`, MM2's `mmMultiCR::InitMyPlayer`). The transmission
 is each driver's own (`NetCar::automatic`, the garage's TRANSMISSION) and

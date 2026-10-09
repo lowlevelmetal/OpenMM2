@@ -38,6 +38,14 @@ struct NetCar {
     bool automatic = true;
 };
 
+// The car a player drives in the race `race` describes, given the car the
+// player chose in the lobby. Cops vs. Robbers gives every cop (team 0) vpcop
+// and every robber vpmustang99, paint job 0: MM2's lobby sets the player's
+// car to it, locks every other car and sends it to the session
+// (mmInterface, under the cnr_team test, then ChangePlayerData). Every other
+// game keeps the lobby's car.
+NetCar raceCar(const RaceConfig& race, NetCar lobby);
+
 // Cops & Robbers Free-For-All has no team buttons: the team follows the car,
 // 0 for a police car (VehicleInfo::kFlagCop) and 1 for any other
 // (mmMultiCR::InitMyPlayer; mmInterface::ChangePlayerData tests for vpcop).
@@ -71,7 +79,7 @@ struct NetChatLine {
 struct NetRemoteCar {
     std::uint8_t id = net::kInvalidPlayerId;
     std::string name;
-    NetCar car;
+    NetCar car;      // the car it drives (raceCar)
     Mat34 transform; // model space -> world (car model origin, Angel conventions)
     Vec3 velocity;
     Vec3 angularVelocity;
@@ -162,7 +170,12 @@ public:
     const net::SessionSettings& settings() const;
     // The race everyone will drive, with the local player's car filled in.
     RaceConfig raceConfig() const;
+    // The car the local player chose in the lobby.
     NetCar localCar() const { return m_car; }
+    // The car a player (this one or another) drives in the race the current
+    // settings describe (raceCar); the transmission is known for the local
+    // player only.
+    NetCar playerCar(std::uint8_t playerId) const;
     int maxPlayers() const;
     bool hasPassword() const;
     int goldMass() const; // 0..kGoldMassChoices-1

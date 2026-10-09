@@ -2094,8 +2094,10 @@ private:
         };
         m_cr = std::make_unique<game::session::CopsAndRobbers>(st, *locations);
         m_crSelf = ctx.netGame->localId();
+        // Every machine counts each player with the car it drives
+        // (NetGame::playerCar: Cops vs. Robbers' cars by team).
         for (const auto& p : ctx.netGame->players()) {
-            m_cr->addCar(p.id, crTeam(ctx, p.id == m_crSelf ? m_result.config.vehicle : p.car, p.team));
+            m_cr->addCar(p.id, crTeam(ctx, ctx.netGame->playerCar(p.id).vehicle, p.team));
             m_crPlayers.insert(p.id);
         }
         m_crMyTeam = m_cr->teamOf(m_crSelf);

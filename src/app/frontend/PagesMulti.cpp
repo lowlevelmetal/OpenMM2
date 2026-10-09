@@ -779,10 +779,8 @@ public:
                 if (f.text.measure(f.overlay, small, name) > 0.09f * 640.0f)
                     name = name.substr(0, 6) + "...";
                 f.text.draw(f.overlay, small, name, rowX + 26, y, color);
-                // Cops vs. Robbers fixes the cars by team (see NetGame::raceConfig).
-                const bool cvr = cfg.mode == GameMode::CopsAndRobbers &&
-                                 cfg.copsAndRobbers == game::CopsAndRobbersMode::CopsVsRobbers;
-                const std::string car = vehicleName(fe, cvr ? (p.team == 0 ? "vpcop" : "vpmustang99") : p.car);
+                // Cops vs. Robbers fixes the cars by team (game::raceCar).
+                const std::string car = vehicleName(fe, net.playerCar(p.id).vehicle);
                 f.text.draw(f.overlay, small, car, rowX + 26 + rowW / 3.0f, y, color);
                 y += lh;
             }

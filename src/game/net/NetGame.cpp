@@ -417,20 +417,35 @@ const net::SessionSettings& NetGame::settings() const {
 
 int freeForAllTeam(const VehicleInfo* car) { return car && (car->flags & VehicleInfo::kFlagCop) ? 0 : 1; }
 
-RaceConfig NetGame::raceConfig() const {
-    RaceConfig c = fromSessionSettings(settings());
-    c.vehicle = m_car.vehicle;
-    c.vehicleColor = m_car.color;
-    c.automatic = m_car.automatic;
+NetCar raceCar(const RaceConfig& race, NetCar lobby) {
     // "The Cop Team in Mustang Cruisers takes the gold to the bank, while the
     // Robber Team in Mustang GTs takes it back to the hideout" (help picture
     // host_cvr.jpg): Cops vs. Robbers fixes the cars by team. Robber Teams lets
     // everyone choose (host_rt.jpg).
-    if (c.mode == GameMode::CopsAndRobbers && c.copsAndRobbers == CopsAndRobbersMode::CopsVsRobbers) {
-        c.vehicle = m_car.team == 0 ? "vpcop" : "vpmustang99";
-        c.vehicleColor = 0;
+    if (race.mode == GameMode::CopsAndRobbers && race.copsAndRobbers == CopsAndRobbersMode::CopsVsRobbers) {
+        lobby.vehicle = lobby.team == 0 ? "vpcop" : "vpmustang99";
+        lobby.color = 0;
     }
+    return lobby;
+}
+
+RaceConfig NetGame::raceConfig() const {
+    RaceConfig c = fromSessionSettings(settings());
+    const NetCar car = raceCar(c, m_car);
+    c.vehicle = car.vehicle;
+    c.vehicleColor = car.color;
+    c.automatic = car.automatic;
     return c;
+}
+
+NetCar NetGame::playerCar(std::uint8_t playerId) const {
+    const RaceConfig race = fromSessionSettings(settings());
+    if (playerId == localId())
+        return raceCar(race, m_car);
+    const net::PlayerInfo* p = player(playerId);
+    if (!p)
+        return {};
+    return raceCar(race, {p->car, p->color, p->team});
 }
 
 int NetGame::maxPlayers() const { return settings().maxPlayers; }
@@ -596,13 +611,14 @@ std::vector<NetRemoteCar> NetGame::remoteCars() const {
     std::vector<NetRemoteCar> out;
     if (!m_impl->session)
         return out;
+    const RaceConfig race = fromSessionSettings(settings());
     for (const auto& p : players()) {
         if (p.id == localId())
             continue;
         NetRemoteCar car;
         car.id = p.id;
         car.name = p.name;
-        car.car = {p.car, p.color, p.team};
+        car.car = raceCar(race, {p.car, p.color, p.team});
         net::VehicleSnapshot snap;
         const auto r = m_impl->session->sampleRemote(p.id, snap);
         if (r != net::SnapshotBuffer::Result::Empty) {

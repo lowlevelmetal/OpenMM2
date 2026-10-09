@@ -202,6 +202,52 @@ TEST(NetGameLobby, StaleGameEventsAreDroppedAtTheNextCountdown) {
     EXPECT_EQ(got.front().type, net::GameEventType::CheckpointReached);
 }
 
+// Cops vs. Robbers gives every cop vpcop and every robber vpmustang99 (MM2's
+// lobby sets the player's car to it and sends it to the session). Every
+// machine must see the same cars, and so the same teams: a robber whose lobby
+// car is a police car used to be drawn as that car, and taken for a cop, by
+// the others.
+TEST(NetGameLobby, CopsVsRobbersCarsAreTheSameOnEveryMachine) {
+    Lobby l;
+    ASSERT_NO_FATAL_FAILURE(l.open());
+    l.client.setLocalCar({"vpcop", 3, 1}); // a robber who picked a police car
+    auto cfg = cruise();
+    cfg.mode = game::GameMode::CopsAndRobbers;
+    cfg.copsAndRobbers = game::CopsAndRobbersMode::CopsVsRobbers;
+    l.host.setRaceConfig(cfg);
+    ASSERT_TRUE(pump({&l.host, &l.client}, [&] {
+        const auto* p = l.host.player(l.client.localId());
+        return p && p->car == "vpcop" && l.client.raceConfig().mode == game::GameMode::CopsAndRobbers;
+    }));
+    const std::uint8_t robber = l.client.localId();
+    EXPECT_EQ(l.client.raceConfig().vehicle, "vpmustang99");
+    EXPECT_EQ(l.client.raceConfig().vehicleColor, 0);
+    EXPECT_EQ(l.host.raceConfig().vehicle, "vpcop"); // the host is a cop (team 0)
+    // What the others draw and count.
+    EXPECT_EQ(l.host.playerCar(robber).vehicle, "vpmustang99");
+    EXPECT_EQ(l.client.playerCar(robber).vehicle, "vpmustang99");
+    EXPECT_EQ(l.client.playerCar(net::kHostPlayerId).vehicle, "vpcop");
+    ASSERT_NO_FATAL_FAILURE(l.start());
+    l.client.submitLocalState(Mat34::identity(), {}, {}, {}, 0.0f, 0);
+    ASSERT_TRUE(pump({&l.host, &l.client}, [&] {
+        const auto cars = l.host.remoteCars();
+        return cars.size() == 1 && cars[0].hasState;
+    }));
+    EXPECT_EQ(l.host.remoteCars()[0].car.vehicle, "vpmustang99");
+    EXPECT_EQ(l.host.remoteCars()[0].car.color, 0);
+
+    // Robber Teams and Free-For-All keep the lobby's car.
+    cfg.copsAndRobbers = game::CopsAndRobbersMode::RobberTeams;
+    l.host.returnToLobby();
+    l.host.setRaceConfig(cfg);
+    ASSERT_TRUE(pump({&l.host, &l.client}, [&] {
+        return l.client.raceConfig().copsAndRobbers == game::CopsAndRobbersMode::RobberTeams;
+    }));
+    EXPECT_EQ(l.client.raceConfig().vehicle, "vpcop");
+    EXPECT_EQ(l.host.playerCar(robber).vehicle, "vpcop");
+    EXPECT_EQ(l.host.playerCar(robber).color, 3);
+}
+
 // The driver's transmission choice reaches the network race: MM2's session
 // data carries none, and mmGame::Init sets the car's from the player's own
 // state. It used to be automatic for everyone.
