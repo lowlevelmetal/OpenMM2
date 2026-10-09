@@ -1719,7 +1719,14 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
         m_postWait -= dt;
         // A multiplayer race or circuit waits (braked) until everyone is
         // counted or the finish timeout has run out (0x211, state 5).
-        const bool counted = m_netResults.size() >= m_netRacers.size() + 1 || m_netTimedOut;
+        // MM2's host compares the finishes it counted with the players in
+        // the session as each finish arrives (mmMultiRace::GameMessage
+        // 0x206); OpenMM2 asks whether every player still in the race has
+        // finished, so a player who finished and then left does not end the
+        // race of one still driving (deviation: MM2 counts the leaver's
+        // finish against the smaller session at the next finish).
+        const bool counted =
+            m_netTimedOut || std::ranges::all_of(m_netRacers, [](const NetRacer& r) { return r.finished; });
         if (m_postWait <= 0.0f && (!netWaitsForAll() || counted)) {
             m_phase = Phase::Done;
             push(EventType::SessionOver);

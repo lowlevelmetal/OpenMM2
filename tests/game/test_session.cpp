@@ -959,3 +959,46 @@ TEST(SessionHudMap, MapModelMatchesTheCity) {
     std::printf("water on the map: %.2f (mirrored x %.2f, mirrored z %.2f)\n", straight, fraction(-1, 1),
                 fraction(1, -1));
 }
+
+// mmMultiRace::GameMessage 0x206: the host compares the finishes it counted
+// with the players in the session as each finish arrives. A player who
+// finished and then left must not end the race of one still driving.
+TEST(Session, MultiplayerRaceWaitsForThePlayersStillInIt) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(retail());
+    RaceConfig cfg;
+    cfg.mode = GameMode::Checkpoint;
+    cfg.city = "london";
+    cfg.raceIndex = 0;
+    cfg.multiplayer = true;
+    SessionOptions options;
+    options.seed = 7;
+    std::string error;
+    auto s = Session::create(cfg, retail()->london, *test::gameData(), retail()->strings, &error, options);
+    ASSERT_TRUE(s) << error;
+    s->setStartSignal(true);
+    Driver d(*s);
+    d.countdown();
+    ASSERT_EQ(s->phase(), Phase::Racing);
+    Session::NetRacer leaver, driver;
+    leaver.name = "Leaver";
+    driver.name = "Driver";
+    driver.position = leaver.position = s->playerSpawn().m3;
+    s->setNetRacers({leaver, driver});
+    d.tick();
+    // The leaver finishes first, then leaves the session.
+    s->remoteFinished("Leaver", 60.0f);
+    s->setNetRacers({driver});
+    for (std::size_t i = 1; i < s->checkpoints().size() && s->phase() == Phase::Racing; ++i)
+        d.driveTo(s->checkpoints()[i].position, 40.0f);
+    ASSERT_EQ(s->phase(), Phase::PostRace);
+    // Two results (the leaver's and the player's) for two racers left: the
+    // race still waits for the driver.
+    d.step(5.0f);
+    EXPECT_EQ(s->phase(), Phase::PostRace);
+    s->remoteFinished("Driver", 300.0f);
+    driver.finished = true;
+    s->setNetRacers({driver});
+    d.step(1.0f);
+    EXPECT_EQ(s->phase(), Phase::Done);
+}
