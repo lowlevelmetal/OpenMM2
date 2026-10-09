@@ -416,10 +416,14 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/net/DamageSync.h` | 283 | O | - |
 | `src/game/net/NetGame.cpp` | 659 | M | session |
 | `src/game/net/NetGame.h` | 229 | M | session |
+| `src/game/net/NetProps.cpp` | 230 | O | - |
+| `src/game/net/NetProps.h` | 120 | O | - |
 | `src/game/net/NetTrafficCars.cpp` | 101 | O | - |
 | `src/game/net/NetTrafficCars.h` | 106 | O | - |
 | `src/game/net/PlayerCars.cpp` | 483 | O | - |
 | `src/game/net/PlayerCars.h` | 235 | O | - |
+| `src/game/net/PropSync.cpp` | 649 | O | - |
+| `src/game/net/PropSync.h` | 263 | O | - |
 | `src/game/net/RaceStart.cpp` | 108 | M | session |
 | `src/game/net/RaceStart.h` | 106 | M | session |
 | `src/game/net/TrafficPrediction.cpp` | 164 | O | - |
@@ -463,6 +467,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/net/PlayerCars.h` | 315 | O | - |
 | `src/net/PortMapper.cpp` | 324 | O | - |
 | `src/net/PortMapper.h` | 164 | O | - |
+| `src/net/PropState.cpp` | 12 | O | - |
+| `src/net/PropState.h` | 215 | O | - |
 | `src/net/Protocol.cpp` | 31 | O | - |
 | `src/net/Protocol.h` | 587 | O | - |
 | `src/net/Session.cpp` | 942 | O | - |

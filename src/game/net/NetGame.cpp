@@ -806,6 +806,14 @@ void NetGame::traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, f
                  replayed, dx.x, dx.y, dx.z, dv, snapped ? 1 : 0);
 }
 
+void NetGame::traceLine(std::string_view line) {
+    std::FILE* f = m_impl->trace.get();
+    if (!f || !m_impl->session)
+        return;
+    std::fwrite(line.data(), 1, line.size(), f);
+    std::fputc('\n', f);
+}
+
 void NetGame::sendEvent(std::uint16_t type, std::vector<std::byte> payload, std::uint8_t target) {
     if (m_impl->session)
         m_impl->session->sendGameEvent(type, std::move(payload), target);
@@ -883,6 +891,14 @@ std::size_t NetGame::sendAmbientState(std::uint8_t playerId, const net::AmbientS
 
 std::vector<net::AmbientStateMsg> NetGame::takeAmbientStates() {
     return m_impl->session ? m_impl->session->takeAmbientStates() : std::vector<net::AmbientStateMsg>{};
+}
+
+std::size_t NetGame::sendPropState(std::uint8_t playerId, const net::PropStateMsg& msg) {
+    return m_impl->session ? m_impl->session->sendPropState(playerId, msg) : 0;
+}
+
+std::vector<net::PropStateMsg> NetGame::takePropStates() {
+    return m_impl->session ? m_impl->session->takePropStates() : std::vector<net::PropStateMsg>{};
 }
 
 net::PeerStats NetGame::peerStats(std::uint8_t playerId) const {

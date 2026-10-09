@@ -415,6 +415,10 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
         std::size_t count = 1;
         if (phys::Trailer* t = car.trailer())
             bodies[count++] = &t->body;
+        // OpenMM2: the props the replay meets (World::collideHeld), the samples
+        // having run for real one after another up to the world's time now.
+        const auto replays = static_cast<double>(m_history.size() - 1 - index);
+        world.beginReplay(world.time() - replays * static_cast<double>(phys::kFixedSampleStep));
         for (std::size_t k = index + 1; k < m_history.size(); ++k) {
             Entry& e = m_history[k];
             for (const auto& c : e.commands)

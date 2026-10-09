@@ -183,3 +183,33 @@ room of the player's car (type 4), an opponent's or a network player's
 its room, so a prop still moving vanishes when the cars leave it behind. A
 prop still standing (`dgUnhitBangerInstance`) keeps lvlInstance's empty
 Detach.
+
+## Network games
+
+MM2 sends nothing about props: every machine knocks its own with its own
+simulation of every car (`mmNetObject`, `mmGameMulti`). OpenMM2's host is the
+authority instead (docs/multiplayer.md, "Props"); BangerSet carries what that
+needs, all of it inert in a single-player race:
+
+* The placed props' indices name them on every machine (they are placed in
+  the same order everywhere); a hit instance remembers the placed prop it came
+  from (`Instance::source`, with `part` for a BREAKnn piece) or the tag its
+  thrower gave a car part (`Instance::tag`). The ring's slots count how often
+  they were handed out (`generation`).
+* `takeKnocks` (with `recordKnocks(true)`): the placed props that broke loose
+  (`dgUnhitBangerInstance::Impact`) and what hit them.
+* A client (`setReplica`): only its own car may touch its props, and the
+  props it simulates may knock a placed prop for their first 0.5 s
+  (`phys::Instance::acceptsContact`); `breakPlaced` takes a
+  prop out of its room as Impact does but without a body; `restoreStanding`
+  undoes a knock its car predicted that the host did not make (Reset for one
+  prop); `showMirror` / `hideMirror` show the host's ring slots in instances
+  of their own, drawn where the host has them. An active attached to a
+  mirror starts from the host's motion (`dgBangerActive::Attach` starts a
+  placed or resting prop at rest).
+* A client replaying its car (`phys::World::replaySample`) meets a prop with
+  the body an active would give it (`heldInertia`: `dgBangerActive::Attach`'s
+  mass and inertia, a mirror's host motion), which the world moves through
+  the replay only; a prop its car broke loose in the last second stands
+  again for the samples up to the one that broke it loose (`replayGhost`),
+  its pieces left out; the later samples meet the pieces.

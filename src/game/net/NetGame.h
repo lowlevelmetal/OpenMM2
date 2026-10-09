@@ -11,6 +11,7 @@
 #include "core/Math.h"
 #include "game/RaceConfig.h"
 #include "net/AmbientState.h"
+#include "net/PropState.h"
 #include "net/Discovery.h"
 #include "net/Protocol.h"
 #include "net/Session.h"
@@ -311,6 +312,9 @@ public:
     void traceDrawn(std::uint8_t id, bool own, const Mat34& transform, const Vec3& velocity);
     void traceImpact(std::uint8_t a, std::uint8_t b, const Vec3& position, float strength, double stateAgeMs);
     void traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, float dv, bool snapped);
+    // Another area's line in the same trace, written as given: a lowercase
+    // tag and its fields (the props', game::PropTrace).
+    void traceLine(std::string_view line);
 
     // --- The players' cars, simulated by the host (net/PlayerCars.h) -------------------
     // Client: this machine's car's inputs.
@@ -332,6 +336,12 @@ public:
     std::vector<net::AmbientStateMsg> takeAmbientStates();
     // Connection statistics to a player (host) or to the host (client).
     net::PeerStats peerStats(std::uint8_t playerId) const;
+
+    // --- The host's props (OpenMM2, net/PropState.h, game::PropSync) ------------------
+    // Host: sends one player the props' state (unreliable); returns the bytes sent.
+    std::size_t sendPropState(std::uint8_t playerId, const net::PropStateMsg& msg);
+    // Client: the host's messages received since the last call.
+    std::vector<net::PropStateMsg> takePropStates();
 
     // Game events (reliable, ordered). Race time is ms since the race start.
     void sendCheckpoint(int index, std::uint32_t raceTimeMs);

@@ -35,6 +35,9 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 6: in AmbientState a rail car's acceleration, curvature and speed over the
 // ground (the clients predict the shared traffic to their cars' time), and
 // up to 160 cars; no TrafficHit events.
+// 7: the host's props (net/PropState.h: PropState, the PropKnocks event).
+// 8: the host's rules (net/RulesState.h: the rules message; a player's own
+//    word on a checkpoint, a finish or the gold is refused).
 inline constexpr std::uint16_t kProtocolVersion = 8;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
@@ -100,7 +103,8 @@ enum class MsgType : std::uint8_t {
     RaceStart,
     PlayerInput, // net/PlayerCars.h
     CarStates,
-    Last = CarStates,
+    PropState, // net/PropState.h
+    Last = PropState,
 };
 
 // Sent as ENet disconnect data and in Reject/PlayerLeft messages.

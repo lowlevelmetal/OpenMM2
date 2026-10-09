@@ -1142,6 +1142,16 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         m_ambientStates.push_back(std::move(m));
         return;
     }
+    case MsgType::PropState: {
+        // As the cars' states: only during a race.
+        PropStateMsg m;
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+            return;
+        if (m_propStates.size() >= kMaxQueuedPropStates)
+            m_propStates.erase(m_propStates.begin());
+        m_propStates.push_back(std::move(m));
+        return;
+    }
     default: return;
     }
 }
@@ -1355,6 +1365,19 @@ std::size_t Session::sendAmbientState(std::uint8_t playerId, const AmbientStateM
         return 0;
     const auto packet = encodeMessage(msg);
     return m_transport->send(r->peer, Channel::Ambient, packet) ? packet.size() : 0;
+}
+
+std::size_t Session::sendPropState(std::uint8_t playerId, const PropStateMsg& msg) {
+    if (m_role != Role::Host || !m_transport || m_state != State::Active || m_phase == SessionPhase::Lobby ||
+        playerId == m_localId)
+        return 0;
+    Remote* r = remoteForPlayer(playerId);
+    if (!r)
+        return 0;
+    const auto packet = encodeMessage(msg);
+    // Unsequenced: a late message still fills the client's buffers (it
+    // orders them by their time).
+    return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
 
 PeerStats Session::peerStats(std::uint8_t playerId) const {

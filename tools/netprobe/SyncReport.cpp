@@ -1,13 +1,16 @@
 // netprobe syncreport: how far apart the machines of a network race show the
 // players' cars, how often a car jumps, and which collisions between players
-// one machine had and another did not. Reads each machine's
-// OPENMM2_NET_TRACE file (the D, K and C lines, see NetGame::traceDrawn).
+// one machine had and another did not, and how their props differ. Reads
+// each machine's OPENMM2_NET_TRACE file (the D, K and C lines, see
+// NetGame::traceDrawn; the props' lowercase lines, game::PropTrace).
 //
 // The machines must have run on one computer: "the same moment" is the same
 // monotonic wall clock, which every process on a machine shares, so the
 // comparison is what two screens side by side show.
 
 #include "SyncReport.h"
+
+#include "PropDiff.h"
 
 #include <algorithm>
 #include <cmath>
@@ -373,6 +376,12 @@ int syncReport(const SyncReportOptions& o) {
                      size.pct(0.5), size.pct(0.9), size.pct(0.99), size.pct(1.0), over10cm, over1, snaps,
                      replayed.pct(0.5), replayed.pct(1.0));
     }
+
+    // 5. The props (game::PropTrace's lines).
+    std::vector<std::string> names;
+    for (std::size_t m = 0; m < ms.size(); ++m)
+        names.push_back(who(ms, m));
+    propReport(o.traces, names);
     return 0;
 }
 
