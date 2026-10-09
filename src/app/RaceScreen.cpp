@@ -181,6 +181,12 @@ public:
         }
         if (m_state == State::Load) {
             loadStep(ctx);
+            // A network race keeps its session serviced between the parts
+            // (acknowledgements and pings), so that the others do not time
+            // this machine out while it loads more slowly than they do. What
+            // arrives meanwhile waits for the first frame of the race.
+            if (multiplayer(ctx))
+                ctx.netGame->update();
             return;
         }
         // GameLoop: AudManager::Update before the game's update, then again
@@ -746,7 +752,9 @@ private:
         auto city = city::loadCity(ctx.game->vfs, m_result.config.city, &error);
         if (!city) {
             log::error("race: cannot load city '{}': {}", m_result.config.city, error);
-            ctx.nextScreen = makeFrontendScreen(ctx, m_result);
+            // Back to the menus; the host of a network race takes everyone
+            // back to the lobby, which could otherwise never start another.
+            leaveRace(ctx, m_result);
             return;
         }
         for (const auto& w : city->warnings)
@@ -899,6 +907,10 @@ private:
         m_player = game::SimVehicle::loadPlayer(ctx.game->vfs, m_result.config.vehicle, &error, withTrailer);
         if (!m_player) {
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
+            // A network race without the player's car cannot be driven or
+            // seen by the others: back to the lobby (the host takes everyone).
+            if (multiplayer(ctx))
+                leaveRace(ctx, m_result);
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
