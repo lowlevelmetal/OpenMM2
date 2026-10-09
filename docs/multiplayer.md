@@ -46,7 +46,10 @@ In game, each machine simulates its own car and sends its state about 20 times
 a second. The host bundles the latest state of every car into one packet per
 tick for each client. Remote cars are drawn from an interpolation buffer about
 100 ms in the past. When packets stop coming, a remote car is extrapolated for
-up to 250 ms and then held still.
+up to 250 ms and then held still. Cars are replicated during a race only (its
+countdown and the game): a state submitted in the lobby is ignored, a late one
+arriving there is dropped, and the countdown and the return to the lobby both
+clear every car's buffer, so nothing of one race reaches the next.
 
 There is no host migration. If the host leaves, every client gets
 `Disconnected{HostShutdown}`.

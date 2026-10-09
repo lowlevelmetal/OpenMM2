@@ -166,7 +166,8 @@ public:
     }
 
     // --- Replication ---
-    // Latest state of the local vehicle; sent at snapshotRateHz.
+    // Latest state of the local vehicle; sent at snapshotRateHz during a
+    // race (countdown and game; ignored in the lobby).
     void submitLocalState(const VehicleSnapshot& state);
     // Remote vehicle state at (time() - interpolationDelay).
     SnapshotBuffer::Result sampleRemote(std::uint8_t playerId, VehicleSnapshot& out) const;
@@ -198,6 +199,7 @@ private:
     void hostAdvertise();
     void close(DisconnectReason reason, std::string message, bool failedJoin);
     void tickCountdown();
+    void resetReplication();
     PlayerInfo* findPlayer(std::uint8_t id);
     Remote* remoteForPlayer(std::uint8_t id);
     std::uint8_t allocatePlayerId() const;
