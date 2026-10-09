@@ -27,9 +27,11 @@ What this audit found and ported:
   OpenMM2 kept the engines, skids and ambience sounding under the popup and
   the full-screen map. (`audio/game/AudioManager`.)
 * **The announcer's timing.** The speech container is updated by
-  `AudManager::Update` and again by `mmGame::Update`, so the queued delays
-  pass twice as fast while the game runs (the pre-race line starts 0.75 s
-  after it is queued) and keep counting while it is paused.
+  `AudManager::Update`, which runs twice a frame (GameLoop, then asRoot's
+  node), and again by `mmGame::Update`, so the queued delays pass three
+  times as fast while the game runs (the pre-race line starts 0.5 s after
+  it is queued; round 3's [order](../round3/order.md) audit) and keep
+  counting while it is paused.
 * **Resets.** `Aud3DObject::Reset` through the owners' Reset (cars,
   traffic, the world objects) takes the slot away and forgets the distance
   history; OpenMM2 had no such call.
@@ -62,11 +64,12 @@ its `Update` once a frame before the game's update. OpenMM2's
 replace the DirectSound side; the per-frame behaviour is
 `audio/game/AudioManager` (new): while the game is paused every sound stops
 on the first two paused frames, and while it runs the announcer's queue is
-updated here as well as in `mmGame::Update` (twice a frame).
+updated here (twice a frame, GameLoop and asRoot) as well as in
+`mmGame::Update` (three times a frame).
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `AudManager::Update` | ported (new) | `audio/game/AudioManager.cpp` `AudioManager::update`; `app/RaceScreen.cpp` at the start of the frame | Paused: the virtual UpdatePaused and nothing else. Running: the paused counter (+0x1e) back to 0, then `mmSpeechContainer::Update`, so with `mmGame::Update`'s own call the announcer's delays pass twice as fast as the clock (the pre-race line starts 0.75 s after it is queued). The `audManager::Update` and `AudMidi::MidiUpdate` calls are the mixer's job / never reached (no MIDI). |
+| `AudManager::Update` | ported (new) | `audio/game/AudioManager.cpp` `AudioManager::update`; `app/RaceScreen.cpp` at the start of the frame | Paused: the virtual UpdatePaused and nothing else. Running: the paused counter (+0x1e) back to 0, then `mmSpeechContainer::Update`, called twice a frame (GameLoop, then asRoot's node: `AudioManager::updateFrame`), so with `mmGame::Update`'s own call the announcer's delays pass three times as fast as the clock (the pre-race line starts 0.5 s after it is queued; round 3 order audit). The `audManager::Update` and `AudMidi::MidiUpdate` calls are the mixer's job / never reached (no MIDI). |
 | `AudManagerBase::UpdatePaused`, `AudManagerBase::StopAllSounds` | ported (new) | `AudioManager::update`, `Mixer::stopAll` | While the counter is at most 1 (a constant): `audManager::StopAllSounds` for all five sound types, then count. So every wave sound (engines, skids, sirens, ambience, rain, voices, the announcer's line) stops on two paused frames; the DirectMusic music is not one of them. Test `AudioParityMm2.PausedGameStopsEverySoundOnTwoUpdates`. |
 | `AudManagerBase::Update` | not needed | - | The base class's Update; the only manager MM2 makes is an AudManager, whose own Update overrides it. Its extra `AudStreamingMusic::StreamingMusicUpdate` has nothing to play (see AudStreamingMusic). |
 | `AudManager::AudManager`, `AudManagerBase::AudManagerBase`, `AudManager::Init`, `AudManager::Enable`, `AudManager::Disable`, `AudManagerBase::Enable`, `AudManagerBase::Disable`, `AudManagerBase::IsEnabled`, `AudManager::DeviceValid`, `AudManager::~AudManager`, `AudManagerBase::~AudManagerBase`, `AudManager::`scalar_deleting_destructor'`, `AudManagerBase::`scalar_deleting_destructor'`, `InitAudioManager`, `KillAudioManager` | replaced | `app/App.cpp` (the Mixer), `audio/AudioDevice.cpp`, `audio/SoundBank.cpp` | Creating and opening the DirectSound device and Angel's audio library. What the game hears from it is kept: 32 concurrent sounds (`Mixer::kMaxVoices`, SetMaxConcurrent(1, 32)), the 22 kHz files (`SoundBank`, SetDefSubPath aud22 / .22K), the SOUND FX volume at full (AssignWaveVolume(1)). InitAudioManager's CD half is in the CD row below. `-noaudio` / `-nosoundfx` are the infrastructure audit's (command-line options). |
@@ -338,8 +341,8 @@ mmSpeechContainer for the race (with COMMENTARY on): the race speech
 the crash course (mmCCSpeech), each an AudSpeech with groups of numbered
 lines streamed from `aud/aud11`, a small queue of delayed plays and the line
 playing. The game's events call the Play methods; the container is updated
-by AudManager::Update and by mmGame::Update (twice a frame while running,
-once while paused). OpenMM2: `Announcer` (Voices.cpp), first audit; the
+by AudManager::Update (twice a frame) and by mmGame::Update (three times a
+frame while running, once while paused). OpenMM2: `Announcer` (Voices.cpp), first audit; the
 update timing is new (`AudioManager`).
 
 | MM2 | Status | OpenMM2 | Notes |

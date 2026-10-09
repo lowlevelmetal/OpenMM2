@@ -3,9 +3,10 @@
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
 Summary: 608 reachable functions (overloads counted separately) in 38
-classes and the free functions; ported 383 (of which newly ported 62),
-replaced 65, not needed 151, open 9 (mmMultiCR::Reset moved from replaced
-to ported in round 3's cruise-spawn audit). Constructors, destructors and the
+classes and the free functions; ported 382 (of which newly ported 62),
+replaced 65, not needed 152, open 9 (mmMultiCR::Reset moved from replaced
+to ported in round 3's cruise-spawn audit; mmGame::UpdatePaused from ported
+to not needed in round 3's order audit). Constructors, destructors and the
 deleting destructors of a class share one row. Some behaviours inside
 ported or replaced functions are still open too; every open item is listed
 under Open items.
@@ -122,7 +123,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmGame::DropThruCityHandler` | ported | `Session::dropThroughCity` | below y = -50: the mode's Reset (single player), the water handler (multiplayer); string 29 only goes to a debug print |
 | `mmGame::HitWaterHandler` | ported | RaceScreen `Respawn` | `mmPlayer::Reset`, back to the reset place |
 | `mmGame::UpdateDebugInput` | ported (new) | `RaceScreen::update`, `debugKeys` | Escape stops the announcer then `ProcessEscape`; F1 the keymap; F4 restart (single player); F6 roster (network); Ctrl+Alt+Shift+F7 the single-player chat line; F2's pause is not ported (open: OpenMM2's fly camera holds F2) |
-| `mmGame::UpdatePaused` | ported | `RaceScreen::updateGameInput` | C / V camera keys; F1 while paused (new); F2 unpause open (above) |
+| `mmGame::UpdatePaused` | not needed | | never called in build 3393: it sits in the game's UpdatePaused slot, and `asNode::UpdatePaused` is only reached from its own recursion and `AudManager::Update`; a paused game takes its keys through `mmGame::Update`'s `UpdateGameInput` (round 3 [order](../round3/order.md) audit, which removed the raw C / V keys OpenMM2 had taken from it). F2's unpause belongs with F2's pause (open, above) |
 | `mmGame::UpdateHorn` | ported | `PlayerCarAudio::updateHorn` | the player's siren lights (vpcop, vpsemi) are not drawn: open (rendering) |
 | `mmGame::UpdateGameInput` | ported | `RaceScreen::updateGameInput` | session record; the CD player events are the open `mmCDPlayer` item |
 | `mmGame::UpdateSteeringBrakes` | ported | `ArcadeControls`, `RaceScreen::updatePlayer` | inputs read back from the replay buffer as bytes (input audit's `replayQuantize`); multiplayer forward-gear throttle cap |
