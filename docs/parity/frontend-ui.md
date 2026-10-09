@@ -95,7 +95,7 @@ the race loop to session (see "For other areas" at the end).
 | `timeOfDayName`, `weatherName` | — | openmm2 | English names for the lobby panel. |
 | `modeDisplayName` | strings 585-589, 78 | verified | |
 | `formatTime` | `GetLocTime` | verified | "%d:%02d:%02d" of t + 0.005 (double), "  ---  " for no time. |
-| `Script::*`, `scriptOnce`, `injectKey` | — | openmm2 | `OPENMM2_FRONTEND_SCRIPT` automation; still works (checked with the race menu). |
+| `Script::*`, `processScript`, `injectKey` | — | openmm2 | `OPENMM2_FRONTEND_SCRIPT` automation; still works (checked with the race menu). |
 | `FrontendScreen::FrontendScreen` (first start) | `mmInterface::InitPlayerInfo` | fixed | DriverX got the first car of the list; MM2's driver without a last car gets cruise in vpbug (`PlayerSetState`), the profile's default. |
 | `FrontendScreen::FrontendScreen` (after a race) | `mmInterface::ShowMain` | fixed | returns to the Crash Course page for every race started there, showing the event just driven; else the race menu. |
 | Results as a frontend page | `PUResults` popup over the paused race | deviation | shown after the race instead of in it (documented). |

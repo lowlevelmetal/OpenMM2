@@ -225,6 +225,7 @@ bool NetGame::host(const RaceConfig& config, const NetHostOptions& hostOptions, 
     }
     log::info("netgame: hosting '{}' on port {}", impl.sessionName, impl.session->port());
     m_chat.clear();
+    m_notices.clear(); // a new session: nothing left over from the last
     addSystemLine("**You are now the host**"); // string 70
     startPortMapping();
     return true;
@@ -259,6 +260,7 @@ bool NetGame::join(const net::Address& address, const std::string& password, con
     }
     m_impl->joining = true;
     m_chat.clear();
+    m_notices.clear(); // a new session: nothing left over from the last
     log::info("netgame: joining {}", address.toString());
     return true;
 }
@@ -271,7 +273,8 @@ void NetGame::leave() {
         m_impl->session.reset();
     }
     m_impl->joining = false;
-    m_raceStartPending = m_returnPending = m_raceStarted = false;
+    m_raceStartPending = m_raceStarted = false;
+    m_raceNumber = m_lobbyAfterRace = 0;
     m_gameEvents.clear();
 }
 
@@ -316,14 +319,20 @@ void NetGame::handleEvents() {
                                               ev.reason == net::DisconnectReason::Kicked ? "has been ejected"
                                                                                          : "has left")); // string 69
                 } else if constexpr (std::is_same_v<T, net::ev::Chat>) {
-                    m_chat.push_back({ev.from, playerName(ev.from), ev.text, false});
+                    addChatLine({ev.from, playerName(ev.from), ev.text, false});
                 } else if constexpr (std::is_same_v<T, net::ev::CountdownStarted>) {
+                    ++m_raceNumber;
+                    log::info("netgame: race {} starts at session time {}", m_raceNumber, ev.startTime);
                     m_raceStartPending = true;
                     m_raceStarted = false;
+                    // Whatever is still queued belongs to an earlier race
+                    // (late events, or a cruise that reads none).
+                    m_gameEvents.clear();
                 } else if constexpr (std::is_same_v<T, net::ev::GameStarted>) {
                     m_raceStarted = true;
                 } else if constexpr (std::is_same_v<T, net::ev::ReturnedToLobby>) {
-                    m_returnPending = true;
+                    log::info("netgame: back to the lobby after race {}", m_raceNumber);
+                    m_lobbyAfterRace = m_raceNumber;
                     m_raceStartPending = false;
                     m_raceStarted = false;
                     addSystemLine("**Session returning to Lobby**"); // string 73
@@ -336,8 +345,6 @@ void NetGame::handleEvents() {
             },
             e);
     }
-    while (m_chat.size() > kMaxChatLines)
-        m_chat.pop_front();
 }
 
 NetGame::Phase NetGame::phase() const {
@@ -441,19 +448,35 @@ std::string netVehicle(const Catalog& catalog, const std::string& name) {
     return kDefaultVehicle;
 }
 
-RaceConfig NetGame::raceConfig() const {
-    RaceConfig c = fromSessionSettings(settings());
-    c.vehicle = m_car.vehicle;
-    c.vehicleColor = m_car.color;
+NetCar raceCar(const RaceConfig& race, NetCar lobby) {
     // "The Cop Team in Mustang Cruisers takes the gold to the bank, while the
     // Robber Team in Mustang GTs takes it back to the hideout" (help picture
     // host_cvr.jpg): Cops vs. Robbers fixes the cars by team. Robber Teams lets
     // everyone choose (host_rt.jpg).
-    if (c.mode == GameMode::CopsAndRobbers && c.copsAndRobbers == CopsAndRobbersMode::CopsVsRobbers) {
-        c.vehicle = m_car.team == 0 ? "vpcop" : "vpmustang99";
-        c.vehicleColor = 0;
+    if (race.mode == GameMode::CopsAndRobbers && race.copsAndRobbers == CopsAndRobbersMode::CopsVsRobbers) {
+        lobby.vehicle = lobby.team == 0 ? "vpcop" : "vpmustang99";
+        lobby.color = 0;
     }
+    return lobby;
+}
+
+RaceConfig NetGame::raceConfig() const {
+    RaceConfig c = fromSessionSettings(settings());
+    const NetCar car = raceCar(c, m_car);
+    c.vehicle = car.vehicle;
+    c.vehicleColor = car.color;
+    c.automatic = car.automatic;
     return c;
+}
+
+NetCar NetGame::playerCar(std::uint8_t playerId) const {
+    const RaceConfig race = fromSessionSettings(settings());
+    if (playerId == localId())
+        return raceCar(race, m_car);
+    const net::PlayerInfo* p = player(playerId);
+    if (!p)
+        return {};
+    return raceCar(race, {p->car, p->color, p->team});
 }
 
 int NetGame::maxPlayers() const { return settings().maxPlayers; }
@@ -468,8 +491,11 @@ std::uint16_t NetGame::pingMs(std::uint8_t playerId) const {
 }
 
 void NetGame::setLocalCar(const NetCar& car) {
+    // The transmission stays here; the rest goes to the session when it
+    // changes.
+    const bool sent = car.vehicle != m_car.vehicle || car.color != m_car.color || car.team != m_car.team;
     m_car = car;
-    if (m_impl->session)
+    if (sent && m_impl->session)
         m_impl->session->setLocalPlayer(car.vehicle, static_cast<std::uint8_t>(car.color),
                                         static_cast<std::uint8_t>(car.team));
 }
@@ -587,8 +613,6 @@ std::string NetGame::portMappingStatus() const {
 
 bool NetGame::takeRaceStart() { return std::exchange(m_raceStartPending, false); }
 
-bool NetGame::takeReturnToLobby() { return std::exchange(m_returnPending, false); }
-
 std::uint32_t NetGame::sessionTime() const { return m_impl->session ? m_impl->session->time() : 0; }
 
 std::uint32_t NetGame::raceStartTime() const { return m_impl->session ? m_impl->session->countdownEnd() : 0; }
@@ -622,13 +646,14 @@ std::vector<NetRemoteCar> NetGame::remoteCars(double stateAgeMs) const {
     if (!m_impl->session)
         return out;
     const double at = m_frameTime - stateAgeMs;
+    const RaceConfig race = fromSessionSettings(settings());
     for (const auto& p : players()) {
         if (p.id == localId())
             continue;
         NetRemoteCar car;
         car.id = p.id;
         car.name = p.name;
-        car.car = {p.car, p.color, p.team};
+        car.car = raceCar(race, {p.car, p.color, p.team});
         net::VehicleSnapshot snap;
         car.time = at - m_impl->session->playoutDelay(p.id);
         const auto r = m_impl->session->sampleRemoteAt(p.id, car.time, snap);
@@ -704,8 +729,11 @@ std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gam
 // --- Helpers -----------------------------------------------------------------------------
 
 // NetArena::AddGameChatLine.
-void NetGame::addSystemLine(std::string text) {
-    m_chat.push_back({net::kInvalidPlayerId, {}, std::move(text), true});
+void NetGame::addSystemLine(std::string text) { addChatLine({net::kInvalidPlayerId, {}, std::move(text), true}); }
+
+void NetGame::addChatLine(NetChatLine line) {
+    line.serial = m_chatSerial++;
+    m_chat.push_back(std::move(line));
     while (m_chat.size() > kMaxChatLines)
         m_chat.pop_front();
 }

@@ -102,6 +102,12 @@ public:
     RaceScreen(Context& ctx, const game::RaceConfig& config)
         : m_ui(ctx.device(), ctx.game->vfs), m_text(ctx.device()) {
         m_result.config = config;
+        // The network race this screen runs (FrontendScreen starts it when
+        // the countdown arrives).
+        if (config.multiplayer && ctx.netGame) {
+            m_netRace = ctx.netGame->raceNumber();
+            m_chatSeen = ctx.netGame->chatSerial(); // the lobby's lines stay there
+        }
         // GetLoadScreenName: <city>_<mode><n>.jpg (cruise "roam" and Cops and
         // Robbers "multicop" without a number), else the generic one.
         const std::string prefix = modePrefix(config.mode);
@@ -175,6 +181,12 @@ public:
         }
         if (m_state == State::Load) {
             loadStep(ctx);
+            // A network race keeps its session serviced between the parts
+            // (acknowledgements and pings), so that the others do not time
+            // this machine out while it loads more slowly than they do. What
+            // arrives meanwhile waits for the first frame of the race.
+            if (multiplayer(ctx))
+                ctx.netGame->update();
             return;
         }
         // GameLoop: AudManager::Update before the game's update, then again
@@ -235,8 +247,10 @@ public:
             m_hud->updateChat(static_cast<float>(dt));
         if (multiplayer(ctx)) {
             ctx.netGame->update();
-            if (ctx.netGame->takeReturnToLobby() || !ctx.netGame->inSession()) {
-                leaveRace(ctx, m_result);
+            if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
+                log::info("race: the network race is over ({})",
+                          ctx.netGame->inSession() ? "back to the lobby" : "the session ended");
+                leaveRace(ctx, netRaceResult(ctx));
                 return;
             }
         }
@@ -738,7 +752,11 @@ private:
         auto city = city::loadCity(ctx.game->vfs, m_result.config.city, &error);
         if (!city) {
             log::error("race: cannot load city '{}': {}", m_result.config.city, error);
-            ctx.nextScreen = makeFrontendScreen(ctx, m_result);
+            // Back to the menus; the host of a network race takes everyone
+            // back to the lobby, which could otherwise never start another.
+            if (multiplayer(ctx))
+                ctx.netGame->addNotice(std::format("Cannot load the city '{}': {}", m_result.config.city, error));
+            leaveRace(ctx, m_result);
             return;
         }
         for (const auto& w : city->warnings)
@@ -891,6 +909,12 @@ private:
         m_player = game::SimVehicle::loadPlayer(ctx.game->vfs, m_result.config.vehicle, &error, withTrailer);
         if (!m_player) {
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
+            // A network race without the player's car cannot be driven or
+            // seen by the others: back to the lobby (the host takes everyone).
+            if (multiplayer(ctx)) {
+                ctx.netGame->addNotice(std::format("Cannot load the car '{}': {}", m_result.config.vehicle, error));
+                leaveRace(ctx, m_result);
+            }
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
@@ -1975,12 +1999,8 @@ private:
     void postIncomingChat(Context& ctx) {
         if (!multiplayer(ctx) || !m_hud)
             return;
-        const auto& lines = ctx.netGame->chat();
-        if (m_chatSeen > lines.size())
-            m_chatSeen = 0;
-        for (std::size_t i = m_chatSeen; i < lines.size(); ++i) {
-            const auto& line = lines[i];
-            if (line.system || line.text.starts_with("/wav"))
+        for (const auto& line : ctx.netGame->chat()) {
+            if (line.serial < m_chatSeen || line.system || line.text.starts_with("/wav"))
                 continue;
             const bool own = line.from == ctx.netGame->localId();
             m_hud->postChat(own ? line.text : std::format("{}: {}", line.name, line.text));
@@ -1989,7 +2009,7 @@ private:
             if (!own)
                 playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
         }
-        m_chatSeen = lines.size();
+        m_chatSeen = ctx.netGame->chatSerial();
     }
 
     // mmMultiRoam / Race / Circuit / Blitz / CR::SystemMessage 0x2d: a
@@ -2088,8 +2108,10 @@ private:
         };
         m_cr = std::make_unique<game::session::CopsAndRobbers>(st, *locations);
         m_crSelf = ctx.netGame->localId();
+        // Every machine counts each player with the car it drives
+        // (NetGame::playerCar: Cops vs. Robbers' cars by team).
         for (const auto& p : ctx.netGame->players()) {
-            m_cr->addCar(p.id, crTeam(ctx, p.id == m_crSelf ? m_result.config.vehicle : p.car, p.team));
+            m_cr->addCar(p.id, crTeam(ctx, ctx.netGame->playerCar(p.id).vehicle, p.team));
             m_crPlayers.insert(p.id);
         }
         m_crMyTeam = m_cr->teamOf(m_crSelf);
@@ -2106,6 +2128,21 @@ private:
         auto& ics = m_player->sim().body.ics;
         ics.init(ics.mass + kg, ics.inertia.x, ics.inertia.y, ics.inertia.z);
         m_throttleCap = kg > 0.0f ? m_cr->carrierThrottleCap() : 1.0f;
+    }
+
+    // mmMultiCR::FillResults: the game's scores for the results page.
+    game::RaceResult crResult(Context& ctx) const {
+        game::RaceResult r = m_session->result();
+        r.ended = true;
+        std::vector<frontend::CrResultPlayer> players;
+        for (const auto& p : ctx.netGame->players())
+            players.push_back({p.name, m_cr->playerScore(p.id), p.id == m_crSelf});
+        const auto& strings = ctx.game->strings;
+        r.standings = frontend::crResultRows(
+            m_result.config.copsAndRobbers, m_cr->score(game::session::CrTeam::Cop),
+            m_cr->score(game::session::CrTeam::Robber), players,
+            [&strings](std::uint32_t id, const char* fallback) { return strings.get(id, fallback); });
+        return r;
     }
 
     void sendCr(Context& ctx, const std::vector<game::session::CopsAndRobbers::Message>& messages) {
@@ -2262,17 +2299,7 @@ private:
             if (m_crEnd < 0.0f) {
                 // FillResults; mmPlayer +0x2258; ShowResults.
                 m_crFinished = true;
-                game::RaceResult r = m_session->result();
-                r.ended = true;
-                std::vector<frontend::CrResultPlayer> players;
-                for (const auto& p : ctx.netGame->players())
-                    players.push_back({p.name, m_cr->playerScore(p.id), p.id == m_crSelf});
-                const auto& strings = ctx.game->strings;
-                r.standings = frontend::crResultRows(
-                    m_result.config.copsAndRobbers, m_cr->score(game::session::CrTeam::Cop),
-                    m_cr->score(game::session::CrTeam::Robber), players,
-                    [&strings](std::uint32_t id, const char* fallback) { return strings.get(id, fallback); });
-                leaveRace(ctx, r);
+                leaveRace(ctx, crResult(ctx));
                 return;
             }
         }
@@ -2472,6 +2499,24 @@ private:
         leaveRace(ctx, r);
     }
 
+    // What a network race leaves with when the host ends it (or the session
+    // ends): a race this machine has already finished or lost, or a Cops and
+    // Robbers game whose limit it has announced, shows its results as at its
+    // own ending. The host ends the race once every player is counted
+    // (mmMultiRace / mmMultiCircuit 0x211, which takes every machine to its
+    // results); the last finisher, still in its post-race wait, used to go
+    // back without them.
+    game::RaceResult netRaceResult(Context& ctx) const {
+        if (m_resultsShown || !m_session)
+            return m_result;
+        if (m_cr && m_crEnd >= 0.0f)
+            return crResult(ctx);
+        const auto phase = m_session->phase();
+        if (phase == game::session::Phase::PostRace || phase == game::session::Phase::Done)
+            return m_session->result();
+        return m_result;
+    }
+
     // Back to the menus, the view settings stored before the frontend reads
     // the driver again. The host of a network game takes everyone back to
     // the lobby (mmGameMulti::BeDone(1): Quit2Lobby, 0x20c).
@@ -2479,8 +2524,10 @@ private:
         storeViewSettings();
         if (multiplayer(ctx) && ctx.netGame->isHost()) {
             const auto phase = ctx.netGame->phase();
-            if (phase == game::NetGame::Phase::Countdown || phase == game::NetGame::Phase::Racing)
+            if (phase == game::NetGame::Phase::Countdown || phase == game::NetGame::Phase::Racing) {
+                log::info("race: the host leaves the race: everyone back to the lobby");
                 ctx.netGame->returnToLobby();
+            }
         }
         ctx.nextScreen = makeFrontendScreen(ctx, result);
     }
@@ -3926,7 +3973,7 @@ private:
     std::set<std::uint8_t> m_crPlayers;   // the players last frame (who left)
     bool m_regen = false;       // mmPlayer::EnableRegen
     float m_throttleCap = 1.0f; // mmGame +0x40c
-    std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
+    std::uint64_t m_chatSeen = 0;            // NetChatLine::serial of the next line to post
     bool m_textInput = false;                // SDL text input on for the chat line
     std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)
     const vfs::Vfs* m_vfs = nullptr;
@@ -4011,6 +4058,7 @@ private:
     std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
     bool m_netPlayersKnown = false;
+    std::uint32_t m_netRace = 0; // NetGame::raceNumber() of this race
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;

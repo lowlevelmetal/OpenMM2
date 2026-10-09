@@ -681,6 +681,8 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
     }
     case MsgType::VehicleState: {
         VehicleStateMsg msg;
+        // Cars move in a race only (receiveState ignores the lobby's: a
+        // late one from the last race is old).
         if (decodeMessage(data, msg) && receiveState(id, msg.state))
             hostRelayState(id, msg.state);
         return;
@@ -898,6 +900,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
             return;
         m_phase = SessionPhase::Countdown;
         m_countdownEnd = m.startTime;
+        resetReplication();
         emit(ev::CountdownStarted{m.startTime});
         return;
     }
@@ -909,10 +912,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         for (auto& p : m_players)
             p.ready = false;
         m_request.ready = false;
-        m_remoteStates.clear();
-        // The last race's car must not be sent (or shown) in the next one.
-        m_localState.reset();
-        m_lastSentStateTime = 0;
+        resetReplication();
         emit(ev::ReturnedToLobby{});
         return;
     }
@@ -942,7 +942,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     }
     case MsgType::WorldState: {
         WorldStateMsg m;
-        if (!decodeMessage(data, m))
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
             return;
         for (const auto& [id, state] : m.vehicles) {
             if (id != m_localId)
@@ -1057,6 +1057,7 @@ void Session::startCountdown(std::uint32_t delayMs) {
         return;
     m_phase = SessionPhase::Countdown;
     m_countdownEnd = time() + delayMs;
+    resetReplication();
     sendToPlayers(Channel::Control, CountdownMsg{m_countdownEnd});
     emit(ev::CountdownStarted{m_countdownEnd});
 }
@@ -1067,9 +1068,7 @@ void Session::returnToLobby() {
     m_phase = SessionPhase::Lobby;
     for (auto& p : m_players)
         p.ready = false;
-    m_remoteStates.clear();
-    m_localState.reset();
-    m_lastSentStateTime = 0;
+    resetReplication();
     sendToPlayers(Channel::Control, ReturnToLobbyMsg{});
     emit(ev::ReturnedToLobby{});
 }
@@ -1077,8 +1076,18 @@ void Session::returnToLobby() {
 void Session::submitLocalState(const VehicleSnapshot& state) { submitLocalState(state, timeMs()); }
 
 void Session::submitLocalState(const VehicleSnapshot& state, double sessionTimeMs) {
+    if (m_phase == SessionPhase::Lobby)
+        return; // no race: nothing to show the others
     m_localState = state;
     m_localState->time = static_cast<std::uint32_t>(std::llround(std::max(0.0, sessionTimeMs)));
+}
+
+// The cars of one race: dropped when it starts and when it ends, so neither
+// the lobby nor the next race sees where they were.
+void Session::resetReplication() {
+    m_remoteStates.clear();
+    m_localState.reset();
+    m_lastSentStateTime = 0;
 }
 
 SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime, VehicleSnapshot& out) const {

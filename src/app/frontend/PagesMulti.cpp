@@ -64,6 +64,7 @@ game::NetCar netCar(Frontend& fe) {
     game::NetCar car;
     car.vehicle = fe.config.vehicle;
     car.color = fe.config.vehicleColor;
+    car.automatic = fe.config.automatic;
     if (fe.ctx.netGame)
         car.team = fe.ctx.netGame->localCar().team;
     return car;
@@ -162,7 +163,9 @@ public:
         fe.unlockedNetCar();
         NetGame& net = ensureNetGame(fe);
         std::string error;
-        if (!net.startLanScan(&error))
+        // Not under the lobby after a race: the browser searches while the
+        // sessions are on screen.
+        if (!net.inSession() && !net.startLanScan(&error))
             log::warn("multiplayer: LAN browser unavailable: {}", error);
 
         // Connection providers: only TCP/IP has a modern equivalent (OpenMM2's
@@ -455,7 +458,8 @@ public:
             menu.add<ui::TextEntry>(fe.layout.widget(kPasswordDialog, 0, {72, 91, 203, 22}, origin), &m_password, 24);
         auto join = [this, &fe] {
             const auto target = m_address;
-            const auto password = m_password;
+            // Trimmed as the host's is (HostOptionsDialog::host).
+            const auto password = std::string(str::trim(m_password));
             fe.pop();
             joinSession(fe, target, false, password);
         };
@@ -599,7 +603,7 @@ public:
         const auto& l = fe.layout;
         // NetArena::ResetGameChat: entering the lobby (after hosting,
         // joining or a race) starts an empty chat log.
-        m_chatStart = net.chat().size();
+        m_chatStart = net.chatSerial();
 
         menu.add<ChatEntry>(l.widget(id, 0, {274, 274, 355, 20}), [&fe](const std::string& text) {
             if (fe.ctx.netGame)
@@ -715,6 +719,9 @@ public:
             m_go->sheet.path = net.localReady() ? "texture/lobb_rdy.tga" : "texture/lobb_nr.tga";
         m_mapPath = mapPicture(fe, cfg);
         m_map->visible = !m_mapPath.empty();
+        // A notice while the session goes on: the race could not load.
+        if (auto notice = net.takeNotice())
+            fe.message(std::move(*notice));
     }
 
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {
@@ -781,10 +788,8 @@ public:
                     name = name.substr(0, end) + "...";
                 }
                 f.text.draw(f.overlay, small, name, rowX + 26, y, color);
-                // Cops vs. Robbers fixes the cars by team (see NetGame::raceConfig).
-                const bool cvr = cfg.mode == GameMode::CopsAndRobbers &&
-                                 cfg.copsAndRobbers == game::CopsAndRobbersMode::CopsVsRobbers;
-                const std::string car = vehicleName(fe, cvr ? (p.team == 0 ? "vpcop" : "vpmustang99") : p.car);
+                // Cops vs. Robbers fixes the cars by team (game::raceCar).
+                const std::string car = vehicleName(fe, net.playerCar(p.id).vehicle);
                 f.text.draw(f.overlay, small, car, rowX + 26 + rowW / 3.0f, y, color);
                 y += lh;
             }
@@ -811,11 +816,14 @@ public:
         {
             const Vec4 clip{274, 300, 355, 66};
             f.overlay.setClip(&clip);
-            const auto& chat = net.chat();
-            const std::size_t from = std::min(chat.size(), std::max(m_chatStart, chat.size() > 3 ? chat.size() - 3 : 0));
+            std::vector<const game::NetChatLine*> lines;
+            for (const auto& c : net.chat())
+                if (c.serial >= m_chatStart)
+                    lines.push_back(&c);
+            const std::size_t from = lines.size() > 3 ? lines.size() - 3 : 0;
             float y = 300;
-            for (std::size_t i = from; i < chat.size(); ++i, y += step) {
-                const auto& c = chat[i];
+            for (std::size_t i = from; i < lines.size(); ++i, y += step) {
+                const auto& c = *lines[i];
                 const std::string text = c.system ? " " + c.text : std::format(" {}> {}", c.name, c.text);
                 f.text.draw(f.overlay, font, text, 274, y, ui::style::kValueText);
             }
@@ -943,7 +951,7 @@ private:
     ui::Picture* m_map = nullptr;
     std::string m_mapPath;
     std::string m_settingsKey;
-    std::size_t m_chatStart = 0;
+    std::uint64_t m_chatStart = 0; // NetGame::chatSerial() on entering
 };
 
 // --- Host settings (host_bk) -----------------------------------------------------------------
@@ -1228,9 +1236,14 @@ private:
             fe.ctx.netGame->setGoldMass(m_goldMass);
             fe.ctx.netGame->setRaceConfig(m_cfg);
         }
-        // Remember the host's choices for the next session.
+        // Remember the host's choices for the next session, as the event the
+        // single race menu shows (MM2's HostRaceMenu edits the one state
+        // pack): the mode with its race and that race's defaults, so the
+        // menus never hold a race mode with another mode's race or setup.
         fe.config.mode = m_cfg.mode;
         fe.config.city = m_cfg.city;
+        fe.config.raceIndex = m_cfg.raceIndex;
+        fe.applyRaceDefaults(fe.config);
         fe.pop();
     }
 

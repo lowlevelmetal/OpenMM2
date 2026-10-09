@@ -172,9 +172,10 @@ public:
     }
 
     // --- Replication ---
-    // Latest state of the local vehicle; sent at snapshotRateHz (only while
-    // a race is loading or running). It is stamped with the session time at
-    // which the state was simulated, `sessionTimeMs`, or now.
+    // Latest state of the local vehicle; sent at snapshotRateHz during a
+    // race (countdown and game; ignored in the lobby). It is stamped with
+    // the session time at which the state was simulated, `sessionTimeMs`,
+    // or now.
     void submitLocalState(const VehicleSnapshot& state);
     void submitLocalState(const VehicleSnapshot& state, double sessionTimeMs);
     // Remote vehicle state at (now - the player's playout delay), or at
@@ -236,6 +237,7 @@ private:
     // Moves each remote vehicle's playout delay toward what it needs.
     void updatePlayout();
     bool replicating() const { return m_phase != SessionPhase::Lobby; }
+    void resetReplication();
     PlayerInfo* findPlayer(std::uint8_t id);
     Remote* remoteForPlayer(std::uint8_t id);
     std::uint8_t allocatePlayerId() const;
