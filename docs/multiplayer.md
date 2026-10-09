@@ -963,15 +963,16 @@ driving into props, traffic lights and parked cars (the record:
 `docs/review/multiplayer-desync-props.md`): with 0.3.1's props no knock on
 one machine was the same knock on another, 6-16 props differed between the
 screens at the end of a minute, and props two cars hit separately rested
-10.6 m apart (0.1-2.1 m once the host simulated the client's car, in two
-separate simulations); after, every knock reached every machine (150-260 ms
+10.6 m apart (0.1-2.4 m once the host simulated the client's car, in two
+separate simulations); after, every knock reached every machine (170-250 ms
 apart, a playout delay), no prop differed at the end, and the knocked-over
-props, parked cars and parts rested within 5 mm of the host's (the
+props, parked cars and parts rested within 3 mm of the host's (the
 position's quantization is 4 mm). A client alone among props had no
-correction of its car. The host sent 0.07-6 KB/s to each client (10 s
-averages; a big crash in the test, 27 props knocked by one car, 5 KB/s for a
-few seconds, at most 425 bytes a message); the ring bounds a message at 40
-slots, about 1 KB.
+correction of its car, and a client's corrections over 30 cm just after a
+prop hit (nothing else around) went from 31 in eight runs to 7. The host
+sent 0.1-5 KB/s to each client (10 s averages; a big crash in the test, 27
+props knocked by one car, 5 KB/s for a few seconds, at most 425 bytes a
+message); the ring bounds a message at 40 slots, about 1 KB.
 
 **Deviations.** MM2 lets each machine knock its own props; OpenMM2 shows the
 host's everywhere, as it does the traffic. The ring's wrapping (the oldest
