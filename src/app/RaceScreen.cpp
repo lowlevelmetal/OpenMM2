@@ -436,7 +436,7 @@ public:
         std::vector<game::fx::LensFlareQuad> flares;
         const Mat44 viewProj = frame.view * frame.proj;
         game::VehicleRenderer::setLensFlareTarget(&viewProj, proj.aspect, &flares);
-        drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
+        drawLevel(ctx, m_camera, frustum, playerBody);
         game::VehicleRenderer::setLensFlareTarget(nullptr, 1.0f, nullptr);
         if (!flares.empty()) {
             game::fx::drawLensFlares(dev, *m_textures, flares);
@@ -541,17 +541,15 @@ public:
 
     // The level as lvlLevel::Draw draws it for one view: the city, traffic,
     // props, the cars and their effects (lvlLevel's callbacks) and the rain.
-    // `playerBody` false hides the player's car; `dt` advances the remote
-    // cars' wheels (0 for a second view of the same frame).
-    void drawLevel(Context& ctx, const game::Camera& camera, const game::Frustum& frustum, bool playerBody,
-                   float dt) {
+    // `playerBody` false hides the player's car.
+    void drawLevel(Context& ctx, const game::Camera& camera, const game::Frustum& frustum, bool playerBody) {
         render::Device& dev = ctx.device();
         m_cityRenderer->draw(camera, frustum, m_env, m_detail);
         m_roadDecals.draw(dev, *m_textures);
         if (m_ai && m_aiRenderer)
             m_aiRenderer->draw(*m_ai, camera, frustum, m_result.config.timeOfDay, carLights(), m_detail.objects,
                                [this](int id) { return physicalTrafficCar(id); });
-        drawRemoteCars(ctx, dt, camera);
+        drawRemoteCars(ctx, camera);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera,
@@ -675,7 +673,7 @@ public:
         dev.clear(clear);
         dev.setFrameConstants(frame);
         dev.setFrontFaceFlipped(true);
-        drawLevel(ctx, camera, game::Frustum(frame.view * frame.proj), false, 0.0f);
+        drawLevel(ctx, camera, game::Frustum(frame.view * frame.proj), false);
         dev.setFrontFaceFlipped(false);
         dev.setScissor(nullptr);
         dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
@@ -3515,7 +3513,7 @@ private:
         }
     }
 
-    void drawRemoteCars(Context& ctx, float dt, const game::Camera& camera) {
+    void drawRemoteCars(Context& ctx, const game::Camera& camera) {
         if (!multiplayer(ctx))
             return;
         for (const auto& rc : m_netCars) {
@@ -3523,16 +3521,13 @@ private:
             if (!rc.hasState || it == m_remotes.end() || !it->second.renderer || !it->second.sim)
                 continue;
             RemoteVehicle& rv = it->second;
-            game::VehiclePose pose;
+            // vehCarModel::Draw takes the wheels from the car's vehCarSim: the
+            // kinematic one's wheels have run this frame's samples against
+            // the ground under the placed body (suspension, roll, steering
+            // from the snapshot's pedals), so they sit on the road instead of
+            // hanging at their rest positions.
+            game::VehiclePose pose = rv.sim->pose();
             pose.body = rc.transform;
-            // Wheels roll with the forward speed (radius from the model).
-            const float forward = -rc.velocity.dot(rc.transform.m2);
-            for (const auto& w : rv.sim->model().wheels) {
-                const auto i = static_cast<std::size_t>(std::clamp(w.index, 0, 5));
-                rv.spin[i] -= forward / std::max(w.radius, 0.1f) * dt;
-                pose.wheelSpin[i] = rv.spin[i];
-                pose.wheelSteer[i] = w.index < 2 ? -rc.controls.steering * 0.5f : 0.0f;
-            }
             pose.headlights = (rc.flags & net::kVehicleHeadlights) != 0;
             pose.brakeLights = (rc.flags & net::kVehicleBrakeLights) != 0;
             pose.reverseLights = rc.controls.gear < 0;
@@ -4111,7 +4106,6 @@ private:
         std::unique_ptr<game::SimVehicle> sim; // kinematic body (and its trailer)
         std::unique_ptr<game::VehicleRenderer> renderer, trailer;
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
-        std::array<float, 6> spin{};
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
     std::vector<game::NetRemoteCar> m_netCars; // this frame's sample (updateRemoteCars)
