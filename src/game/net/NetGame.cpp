@@ -8,6 +8,7 @@
 #include "net/Session.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <format>
@@ -745,13 +746,25 @@ void NetGame::traceFrame(const Mat34& transform, const Vec3& velocity, double st
 
 bool NetGame::tracing() const { return m_impl->trace && m_impl->session; }
 
+namespace {
+
+// The divergence lines' clock: the machine's monotonic clock (every process
+// on it shares it), so that traces of several instances on one computer
+// compare the same moments. net::monotonicMs counts from each process's start.
+double machineMs() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return std::chrono::duration<double, std::milli>(now).count();
+}
+
+} // namespace
+
 void NetGame::traceDrawn(std::uint8_t id, bool own, const Mat34& transform, const Vec3& velocity) {
     std::FILE* f = m_impl->trace.get();
     if (!f || !m_impl->session)
         return;
     // D wall frameTime id own x y z vx vy vz
     const Vec3& p = transform.m3;
-    std::fprintf(f, "D %.3f %.3f %u %d %.3f %.3f %.3f %.3f %.3f %.3f\n", net::monotonicMsPrecise(),
+    std::fprintf(f, "D %.3f %.3f %u %d %.3f %.3f %.3f %.3f %.3f %.3f\n", machineMs(),
                  m_frameTime, id, own ? 1 : 0, p.x, p.y, p.z, velocity.x, velocity.y, velocity.z);
 }
 
@@ -761,7 +774,7 @@ void NetGame::traceImpact(std::uint8_t a, std::uint8_t b, const Vec3& position, 
     if (!f || !m_impl->session)
         return;
     // K wall sessionTime a b x y z strength
-    std::fprintf(f, "K %.3f %.3f %u %u %.3f %.3f %.3f %.1f\n", net::monotonicMsPrecise(),
+    std::fprintf(f, "K %.3f %.3f %u %u %.3f %.3f %.3f %.1f\n", machineMs(),
                  m_frameTime - stateAgeMs, a, b, position.x, position.y, position.z, strength);
 }
 
@@ -770,7 +783,7 @@ void NetGame::traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, f
     if (!f || !m_impl->session)
         return;
     // C wall frameTime seq replayed dx dy dz dv snapped
-    std::fprintf(f, "C %.3f %.3f %u %d %.4f %.4f %.4f %.4f %d\n", net::monotonicMsPrecise(), m_frameTime, seq,
+    std::fprintf(f, "C %.3f %.3f %u %d %.4f %.4f %.4f %.4f %d\n", machineMs(), m_frameTime, seq,
                  replayed, dx.x, dx.y, dx.z, dv, snapped ? 1 : 0);
 }
 
@@ -818,6 +831,25 @@ void NetGame::sendLeftRace() {
 }
 
 std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gameEvents, {}); }
+
+// --- The players' cars ----------------------------------------------------------------------
+
+void NetGame::sendPlayerInput(const net::PlayerInputMsg& msg) {
+    if (m_impl->session)
+        m_impl->session->sendPlayerInput(msg);
+}
+
+std::vector<net::Session::ReceivedInput> NetGame::takePlayerInputs() {
+    return m_impl->session ? m_impl->session->takePlayerInputs() : std::vector<net::Session::ReceivedInput>{};
+}
+
+std::size_t NetGame::sendCarStates(std::uint8_t playerId, const net::CarStatesMsg& msg) {
+    return m_impl->session ? m_impl->session->sendCarStates(playerId, msg) : 0;
+}
+
+std::vector<net::Session::OwnCarUpdate> NetGame::takeOwnCarStates() {
+    return m_impl->session ? m_impl->session->takeOwnCarStates() : std::vector<net::Session::OwnCarUpdate>{};
+}
 
 // --- Shared ambient traffic --------------------------------------------------------------
 

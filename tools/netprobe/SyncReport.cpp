@@ -179,6 +179,26 @@ bool drawnGap(const Machine& m, int a, int b, double w, double& gap) {
     return true;
 }
 
+// The closest machine `m` drew the two cars within `window` ms of wall time
+// `w` (the same collision a machine shows a little earlier or later).
+bool closestGap(const Machine& m, int a, int b, double w, double window, double& gap) {
+    const auto ia = m.drawn.find(a);
+    if (ia == m.drawn.end())
+        return false;
+    bool any = false;
+    gap = 1e30;
+    for (const Drawn& d : ia->second) {
+        if (d.wall < w - window || d.wall > w + window)
+            continue;
+        double g = 0;
+        if (drawnGap(m, a, b, d.wall, g)) {
+            gap = std::min(gap, g);
+            any = true;
+        }
+    }
+    return any;
+}
+
 } // namespace
 
 int syncReport(const SyncReportOptions& o) {
@@ -272,7 +292,8 @@ int syncReport(const SyncReportOptions& o) {
     // (touching cars' centres are 2-5 m apart).
     std::println("\nCollisions between players' cars (episodes; matched: another machine reporting the");
     std::println("pair had one within 750 ms of session time and 4 m; gap: the two cars' centres as each");
-    std::println("machine drew them at that moment, median and largest):");
+    std::println("machine drew them at that moment, and the closest they came within 0.6 s of it; cars");
+    std::println("drawn less than 5 m apart are touching):");
     std::vector<std::map<std::pair<int, int>, std::vector<Hit>>> eps;
     for (const auto& m : ms)
         eps.push_back(episodes(m));
@@ -305,15 +326,22 @@ int syncReport(const SyncReportOptions& o) {
             }
             std::println("{}", line);
             for (std::size_t n = 0; n < ms.size(); ++n) {
-                Stats gaps;
+                Stats gaps, closest;
+                int touching = 0;
                 for (const Hit& h : it->second) {
                     double g = 0;
                     if (drawnGap(ms[n], pair.first, pair.second, h.wall, g))
                         gaps.add(g);
+                    if (closestGap(ms[n], pair.first, pair.second, h.wall, 600.0, g)) {
+                        closest.add(g);
+                        touching += g < 5.0 ? 1 : 0;
+                    }
                 }
                 if (!gaps.v.empty())
-                    std::println("      drawn gap on {:<9}: median {:.2f} m, largest {:.2f} m", who(ms, n),
-                                 gaps.pct(0.5), gaps.pct(1.0));
+                    std::println("      drawn gap on {:<9}: median {:.2f} m, largest {:.2f} m; "
+                                 "closest within 0.6 s median {:.2f} m, largest {:.2f} m ({} of {} touching)",
+                                 who(ms, n), gaps.pct(0.5), gaps.pct(1.0), closest.pct(0.5), closest.pct(1.0),
+                                 touching, closest.v.size());
             }
         }
     }

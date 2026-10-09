@@ -13,6 +13,7 @@
 #include "net/AmbientState.h"
 #include "net/Discovery.h"
 #include "net/Protocol.h"
+#include "net/Session.h"
 #include "net/Snapshot.h"
 #include "net/Transport.h"
 
@@ -293,7 +294,8 @@ public:
     void traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
                     const std::vector<NetRemoteCar>& cars);
     // The same trace's divergence lines (docs/review/multiplayer-desync-cars.md;
-    // `netprobe syncreport` reads them): every player's car as this frame
+    // `netprobe syncreport` reads them), stamped with the machine's monotonic
+    // clock (shared by every process on it): every player's car as this frame
     // draws it (`own`: this machine's player), a collision between two
     // players' cars in this machine's simulation, and a correction of this
     // player's car by the host's state (`dx`: how far the car moved).
@@ -301,6 +303,16 @@ public:
     void traceDrawn(std::uint8_t id, bool own, const Mat34& transform, const Vec3& velocity);
     void traceImpact(std::uint8_t a, std::uint8_t b, const Vec3& position, float strength, double stateAgeMs);
     void traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, float dv, bool snapped);
+
+    // --- The players' cars, simulated by the host (net/PlayerCars.h) -------------------
+    // Client: this machine's car's inputs.
+    void sendPlayerInput(const net::PlayerInputMsg& msg);
+    // Host: the clients' inputs received since the last call.
+    std::vector<net::Session::ReceivedInput> takePlayerInputs();
+    // Host: one client's states; returns the bytes sent.
+    std::size_t sendCarStates(std::uint8_t playerId, const net::CarStatesMsg& msg);
+    // Client: the host's word on this machine's car since the last call.
+    std::vector<net::Session::OwnCarUpdate> takeOwnCarStates();
 
     // --- Shared ambient traffic (multiplayer cruise, OpenMM2 extra) ----------------
     // Whether this session's cruise shares the host's traffic and police

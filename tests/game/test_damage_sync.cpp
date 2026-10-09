@@ -201,6 +201,13 @@ TEST(DamageSync, RecorderKeepsToItsBudget) {
 
 // --- DamageReplica -------------------------------------------------------------------------
 
+// The host's word on player `player`'s car (protocol 5: the host decides
+// every car's damage), as the replica receives it.
+bool fromHost(DamageReplica& rep, std::uint8_t player, net::VehicleDamageEvent e, double arrival) {
+    e.subject = static_cast<std::uint16_t>(net::kDamagePlayerCar + player);
+    return rep.receive(net::kHostPlayerId, e, arrival);
+}
+
 // Each entry shows when the car is drawn at the time it happened on its
 // owner's machine; the sparks, shards, sound and flying parts while fresh.
 TEST(DamageSync, ReplicaAppliesEachEntryAtItsTime) {
@@ -212,7 +219,7 @@ TEST(DamageSync, ReplicaAppliesEachEntryAtItsTime) {
     e.impacts[0].delay = 20;
     e.parts = 1u << 9;
     e.partsDelay = 80;
-    ASSERT_TRUE(rep.receive(1, overTheWire(e), 10050.0));
+    ASSERT_TRUE(fromHost(rep, 1, overTheWire(e), 10050.0));
     const auto key = DamageReplica::playerKey(1);
 
     EXPECT_TRUE(rep.advance(key, 9990.0, 10050.0).empty());
@@ -250,7 +257,7 @@ TEST(DamageSync, ReplicaWaitsAtMostTheHoldAndSkipsStaleEffects) {
     e.patches = {{0, {0.1f, 0.1f, 0.1f}, 1}};
     e.impacts = {sampleImpact()};
     e.parts = 1u;
-    ASSERT_TRUE(rep.receive(2, e, 1000.0));
+    ASSERT_TRUE(fromHost(rep, 2, e, 1000.0));
     const auto key = DamageReplica::playerKey(2);
     EXPECT_TRUE(rep.advance(key, 1000.0, 2999.0).empty());
     auto a = rep.advance(key, 1000.0, 3000.0);
@@ -264,7 +271,7 @@ TEST(DamageSync, ReplicaWaitsAtMostTheHoldAndSkipsStaleEffects) {
     e.epoch = 0;
     e.first = 1;
     e.parts = 3u;
-    ASSERT_TRUE(rep.receive(2, e, 5100.0));
+    ASSERT_TRUE(fromHost(rep, 2, e, 5100.0));
     a = rep.advance(key, 7000.0, 5200.0);
     EXPECT_EQ(a.patches.size(), 1u);
     EXPECT_TRUE(a.impacts.empty());
@@ -281,7 +288,7 @@ TEST(DamageSync, ReplicaClearsTheCarOnAReset) {
     rec.patch(1000, {0.1f, 0.1f, 0.1f}, 1);
     rec.part(1000, "BREAK1");
     for (const auto& e : rec.take(0))
-        ASSERT_TRUE(rep.receive(3, overTheWire(e), 1000.0));
+        ASSERT_TRUE(fromHost(rep, 3, overTheWire(e), 1000.0));
     auto a = rep.advance(key, 1100.0, 1100.0);
     EXPECT_EQ(a.patches.size(), 1u);
     EXPECT_EQ(a.partsOff, 2u);
@@ -289,7 +296,7 @@ TEST(DamageSync, ReplicaClearsTheCarOnAReset) {
     rec.reset(2000); // mmPlayer::Reset
     rec.patch(2010, {0.2f, 0.2f, 0.2f}, 2);
     for (const auto& e : rec.take(500))
-        ASSERT_TRUE(rep.receive(3, overTheWire(e), 2000.0));
+        ASSERT_TRUE(fromHost(rep, 3, overTheWire(e), 2000.0));
     EXPECT_TRUE(rep.advance(key, 1990.0, 2000.0).empty()); // still the old car
     a = rep.advance(key, 2005.0, 2005.0);
     EXPECT_TRUE(a.clear);
@@ -323,8 +330,8 @@ TEST(DamageSync, ReplicaConvergesAfterALostEvent) {
     batch(1100, "BREAK1");
     batch(1200, "WHL0");
     ASSERT_EQ(sent.size(), 3u);
-    ASSERT_TRUE(rep.receive(4, overTheWire(sent[0]), 1000.0));
-    ASSERT_TRUE(rep.receive(4, overTheWire(sent[2]), 1200.0)); // sent[1] lost
+    ASSERT_TRUE(fromHost(rep, 4, overTheWire(sent[0]), 1000.0));
+    ASSERT_TRUE(fromHost(rep, 4, overTheWire(sent[2]), 1200.0)); // sent[1] lost
     const auto a = rep.advance(key, 1300.0, 1300.0);
     EXPECT_EQ(a.patches.size(), 4u);
     EXPECT_EQ(a.partsOff, (1u << 0) | (1u << 1) | (1u << 9)); // all three parts
@@ -382,30 +389,39 @@ TEST(DamageSync, ReplicaRefusesHostileEvents) {
     e.subject = net::kDamageOwnCar;
     EXPECT_FALSE(rep.receive(net::kInvalidPlayerId, e, 0.0));
     EXPECT_FALSE(rep.receive(static_cast<std::uint8_t>(net::kMaxPlayers), e, 0.0));
+    // The host decides every player's car's damage: a player's word on its
+    // own car is refused, the host's on its own and on any player's taken.
+    EXPECT_FALSE(rep.receive(1, e, 0.0));
+    EXPECT_TRUE(rep.receive(net::kHostPlayerId, e, 0.0));
+    e.subject = net::kDamagePlayerCar + 3;
+    EXPECT_FALSE(rep.receive(2, e, 0.0)); // a player claiming another's car
+    EXPECT_TRUE(rep.receive(net::kHostPlayerId, e, 0.0));
+    e.subject = net::kDamageOwnCar;
     auto bad = e;
     bad.patches = {{0, {std::numeric_limits<float>::quiet_NaN(), 0.0f, 0.0f}, 0}};
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
     bad = e;
     bad.patches = {{0, {0.0f, 100.0f, 0.0f}, 0}};
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
     bad = e;
     bad.impacts = {sampleImpact()};
     bad.impacts[0].normal = {5.0f, 0.0f, 0.0f};
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
     bad.impacts[0] = sampleImpact();
     bad.impacts[0].speed = std::numeric_limits<float>::infinity();
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
     bad = e;
     bad.first = static_cast<std::uint16_t>(net::kMaxDamageRecord);
     bad.patches = {{0, {}, 0}};
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
     bad = e;
     bad.patches.assign(net::kMaxDamagePatches + 1, {});
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
     bad = e;
     bad.parts = 1u << net::kDamagePartCount;
-    EXPECT_FALSE(rep.receive(1, bad, 0.0));
-    EXPECT_TRUE(rep.receive(1, e, 0.0));
+    EXPECT_FALSE(fromHost(rep, 1, bad, 0.0));
+    EXPECT_TRUE(fromHost(rep, 1, e, 0.0));
+    EXPECT_FALSE(rep.receive(1, e, 0.0));
 
     // At most kMaxRecords cars.
     for (std::uint16_t id = 0; id < net::kMaxAmbientIds; ++id) {
@@ -440,7 +456,7 @@ TEST(DamageSync, RecordReachesTheReceiverIntact) {
     std::uint64_t now = 0;
     auto pump = [&] {
         for (const auto& e : rec.take(now))
-            ASSERT_TRUE(rep.receive(5, overTheWire(e), t));
+            ASSERT_TRUE(fromHost(rep, 5, overTheWire(e), t));
         rep.advance(key, t, t);
     };
     for (int i = 0; i < 30; ++i) {
@@ -612,7 +628,7 @@ TEST(DamageSync, ReplayedDentsMatchTheOwnersTexelForTexel) {
     EXPECT_NE(remote.texelDamageState(), before);
     remote.resetDamage();
     for (const auto& e : rec.take(0))
-        ASSERT_TRUE(rep.receive(1, overTheWire(e), t));
+        ASSERT_TRUE(fromHost(rep, 1, overTheWire(e), t));
     game::DamageTarget target;
     target.renderer = &remote;
     target.texelRadius = radius;
@@ -633,7 +649,7 @@ TEST(DamageSync, ReplayedDentsMatchTheOwnersTexelForTexel) {
     rec.reset(t);
     owner.resetDamage();
     for (const auto& e : rec.take(1000))
-        ASSERT_TRUE(rep.receive(1, overTheWire(e), t));
+        ASSERT_TRUE(fromHost(rep, 1, overTheWire(e), t));
     game::applyDamage(rep.advance(DamageReplica::playerKey(1), t + 1, t + 1), target);
     EXPECT_TRUE(device.damageCopies(ownerTag) == clean);
     const auto after = device.damageCopies(remoteTag);
@@ -677,9 +693,9 @@ bool pump(std::initializer_list<game::NetGame*> games, const std::function<bool(
 
 } // namespace
 
-// A client's car and the host's police car: each machine's damage reaches
-// the other through the session, and a client's claim to a police car's
-// damage is refused.
+// The host decides every car's damage (protocol 5): the host's record of a
+// client's car and of its police car reach the client through the session;
+// a client's word on its own car or on a police car is refused.
 TEST(DamageSync, DamageTravelsBetweenNetGames) {
     game::NetGame host(netOptions("Host"));
     game::NetGame client(netOptions("Client"));
@@ -698,8 +714,11 @@ TEST(DamageSync, DamageTravelsBetweenNetGames) {
 
     game::NetDamage hostSide, clientSide;
     for (int i = 0; i < 20; ++i)
-        clientSide.own().patch(host.sessionTime(), {0.1f * i, 0.5f, 0.0f}, static_cast<std::uint32_t>(i));
-    clientSide.own().part(host.sessionTime(), "WHL3");
+        hostSide.player(clientId).patch(host.sessionTime(), {0.1f * i, 0.5f, 0.0f},
+                                        static_cast<std::uint32_t>(i));
+    hostSide.player(clientId).part(host.sessionTime(), "WHL3");
+    // The client's own word on its car (OpenMM2 0.3's owner-based damage).
+    clientSide.own().patch(host.sessionTime(), {0.3f, 0.3f, 0.3f}, 7);
     clientSide.send(client, 0);
     hostSide.police(402).patch(host.sessionTime(), {0.2f, 0.4f, 0.6f}, 99);
     hostSide.police(402).part(host.sessionTime(), "BREAK0");
@@ -715,14 +734,15 @@ TEST(DamageSync, DamageTravelsBetweenNetGames) {
         clientSide.receive(client.takeGameEvents(), client.frameTime());
         hostSide.settle(host.frameTime() + 5000.0);
         clientSide.settle(client.frameTime() + 5000.0);
-        return hostSide.replica().recordSize(DamageReplica::playerKey(clientId)) == 20 &&
-               clientSide.replica().recordSize(DamageReplica::ambientKey(402)) == 1;
+        return clientSide.replica().recordSize(DamageReplica::playerKey(clientId)) == 20 &&
+               clientSide.replica().recordSize(DamageReplica::ambientKey(402)) == 1 &&
+               hostSide.stats().receivedEvents == 2;
     }));
-    EXPECT_EQ(hostSide.replica().replay(DamageReplica::playerKey(clientId)).partsOff, 1u << 12);
+    EXPECT_EQ(clientSide.replica().replay(DamageReplica::playerKey(clientId)).partsOff, 1u << 12);
     EXPECT_EQ(clientSide.replica().replay(DamageReplica::ambientKey(402)).partsOff, 1u);
     EXPECT_EQ(hostSide.replica().recordSize(DamageReplica::ambientKey(402)), 0u); // the client's claim
-    EXPECT_GE(hostSide.replica().stats().refused, 1u);
-    EXPECT_EQ(hostSide.stats().receivedEvents, 3u);
+    EXPECT_EQ(hostSide.replica().recordSize(DamageReplica::playerKey(clientId)), 0u); // its own word
+    EXPECT_GE(hostSide.replica().stats().refused, 2u);
 }
 
 // --- Knocked traffic cars' wheels ---------------------------------------------------------
