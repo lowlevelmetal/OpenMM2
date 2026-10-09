@@ -25,7 +25,14 @@
 
 namespace mm2::game {
 
+class Catalog;
 struct VehicleInfo;
+
+// mmVehList::GetVehicleInfo: a car name the vehicle list does not have gives
+// the default vehicle, which mmVehList::LoadAll sets to vpcoop. Another
+// player's car that this machine lacks (an add-on car) is shown as that.
+inline constexpr const char* kDefaultVehicle = "vpcoop";
+std::string netVehicle(const Catalog& catalog, const std::string& name);
 
 // What the local player drives.
 struct NetCar {

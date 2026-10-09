@@ -61,8 +61,7 @@ bool Transport::listen(const Address& bind, std::string* error) {
         setError(error, std::format("cannot listen on UDP {} (port in use?)", bind.toString()));
         return false;
     }
-    if (m_config.compress)
-        enet_host_compress_with_range_coder(m_host);
+    configureHost();
     log::info("net: listening on UDP port {}", port());
     return true;
 }
@@ -81,9 +80,15 @@ bool Transport::startClient(std::string* error) {
         setError(error, "cannot create a UDP socket");
         return false;
     }
+    configureHost();
+    return true;
+}
+
+void Transport::configureHost() {
     if (m_config.compress)
         enet_host_compress_with_range_coder(m_host);
-    return true;
+    m_host->maximumPacketSize = m_config.maxPacketSize;
+    m_host->maximumWaitingData = m_config.maxWaitingData;
 }
 
 PeerId Transport::registerPeer(ENetPeer* peer) {
@@ -178,7 +183,9 @@ void Transport::service(std::vector<TransportEvent>& out, std::uint32_t timeoutM
 
 bool Transport::send(PeerId peer, Channel channel, std::span<const std::byte> data) {
     ENetPeer* p = find(peer);
-    if (!p || p->state != ENET_PEER_STATE_CONNECTED)
+    // Every message has at least its type byte. ENet's range coder reads a
+    // zero-length packet's (null) data and crashes the sender.
+    if (!p || p->state != ENET_PEER_STATE_CONNECTED || data.empty())
         return false;
     ENetPacket* packet = enet_packet_create(data.data(), data.size(), packetFlags(channel));
     if (!packet)

@@ -181,11 +181,20 @@ public:
     PeerStats peerStats(std::uint8_t playerId) const;
 
 private:
+    // Token bucket: how many messages of a kind a joiner may make the host
+    // relay to everyone (each one goes out once per other player).
+    struct RateLimit {
+        double tokens = -1.0; // full on first use
+        std::uint64_t last = 0;
+        bool take(std::uint64_t now, double perSecond, double burst);
+    };
     struct Remote {
         PeerId peer = kInvalidPeer;
         std::uint8_t playerId = kInvalidPlayerId; // assigned after Hello
         std::array<std::byte, 16> nonce{};
         std::uint64_t connectedAt = 0;
+        RateLimit chat, updates, events;
+        bool updatePending = false; // a PlayerRequest applied but not yet relayed
     };
 
     void resetState();
@@ -195,6 +204,7 @@ private:
     void hostAcceptHello(Remote& r, HelloMsg& hello);
     void hostRemovePlayer(std::uint8_t id, DisconnectReason reason);
     void hostRelayEvent(std::uint8_t from, GameEventMsg msg);
+    void hostRelayUpdates();
     void hostSendWorldState();
     void hostAdvertise();
     void close(DisconnectReason reason, std::string message, bool failedJoin);
@@ -230,6 +240,8 @@ private:
     std::map<std::uint8_t, VehicleSnapshot> m_pendingStates; // newest unsent state per player
     std::function<bool(std::uint8_t, GameEventMsg&)> m_eventFilter;
     std::unique_ptr<LanBeacon> m_beacon;
+    // Wrong passwords per address: count and the time of the first one.
+    std::map<std::uint32_t, std::pair<int, std::uint64_t>> m_passwordFailures;
 
     // Client
     PeerId m_hostPeer = kInvalidPeer;

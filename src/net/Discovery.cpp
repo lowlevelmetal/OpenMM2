@@ -77,6 +77,88 @@ bool serializeAdvert(S& s, LanAdvert& a) {
 
 std::uint64_t sessionKey(const Address& a) { return (std::uint64_t{a.ip} << 16) | a.port; }
 
+// Replies a beacon sends per second, and its burst. A scanner asks about once
+// a second on each of its broadcast addresses, so this serves a LAN party with
+// room to spare and bounds what a flood of queries gets back.
+constexpr double kBeaconReplyRate = 20.0;
+constexpr double kBeaconReplyBurst = 40.0;
+
+// An advert's text is shown in the session list: cleaned up like everything
+// else that arrives from the network.
+void cleanAdvert(LanAdvert& a) {
+    a.sessionName = sanitizeText(a.sessionName, kMaxNameLength * 2);
+    a.hostName = sanitizeText(a.hostName, kMaxNameLength);
+    if (!isValidAssetName(a.city))
+        a.city.clear();
+    a.build = sanitizeText(a.build, kMaxShortStringLength);
+}
+
+struct Interface {
+    std::uint32_t ip = 0;
+    std::uint32_t mask = 0;
+    std::uint32_t broadcast = 0;
+    bool canBroadcast = false;
+};
+
+// Up, non-loopback IPv4 interfaces.
+std::vector<Interface> interfaces() {
+    std::vector<Interface> out;
+#ifdef _WIN32
+    ULONG size = 16 * 1024;
+    std::vector<std::byte> buffer(size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    ULONG rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                                    nullptr, adapters, &size);
+    if (rc == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(size);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+        rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+                                  nullptr, adapters, &size);
+    }
+    if (rc == NO_ERROR) {
+        for (auto* a = adapters; a; a = a->Next) {
+            if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+                continue;
+            for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
+                if (u->Address.lpSockaddr->sa_family != AF_INET)
+                    continue;
+                const auto* sin = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
+                const unsigned prefix = u->OnLinkPrefixLength;
+                if (prefix == 0 || prefix > 32)
+                    continue;
+                Interface f;
+                f.ip = ntohl(sin->sin_addr.s_addr);
+                f.mask = prefix == 32 ? 0xFFFFFFFFu : 0xFFFFFFFFu << (32 - prefix);
+                f.broadcast = f.ip | ~f.mask;
+                f.canBroadcast = prefix < 32;
+                out.push_back(f);
+            }
+        }
+    }
+#else
+    ifaddrs* list = nullptr;
+    if (getifaddrs(&list) == 0) {
+        for (ifaddrs* i = list; i; i = i->ifa_next) {
+            if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET)
+                continue;
+            if (!(i->ifa_flags & IFF_UP) || (i->ifa_flags & IFF_LOOPBACK))
+                continue;
+            Interface f;
+            f.ip = ntohl(reinterpret_cast<const sockaddr_in*>(i->ifa_addr)->sin_addr.s_addr);
+            if (i->ifa_netmask)
+                f.mask = ntohl(reinterpret_cast<const sockaddr_in*>(i->ifa_netmask)->sin_addr.s_addr);
+            if ((i->ifa_flags & IFF_BROADCAST) && i->ifa_broadaddr) {
+                f.broadcast = ntohl(reinterpret_cast<const sockaddr_in*>(i->ifa_broadaddr)->sin_addr.s_addr);
+                f.canBroadcast = true;
+            }
+            out.push_back(f);
+        }
+        freeifaddrs(list);
+    }
+#endif
+    return out;
+}
+
 } // namespace
 
 // --- Wire format --------------------------------------------------------------
@@ -135,55 +217,39 @@ bool decodeLanAdvert(std::span<const std::byte> packet, std::uint32_t& nonce, La
 
 std::vector<std::uint32_t> broadcastAddresses() {
     std::vector<std::uint32_t> out;
-#ifdef _WIN32
-    ULONG size = 16 * 1024;
-    std::vector<std::byte> buffer(size);
-    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-    ULONG rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
-                                    nullptr, adapters, &size);
-    if (rc == ERROR_BUFFER_OVERFLOW) {
-        buffer.resize(size);
-        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-        rc = GetAdaptersAddresses(AF_INET, GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
-                                  nullptr, adapters, &size);
-    }
-    if (rc == NO_ERROR) {
-        for (auto* a = adapters; a; a = a->Next) {
-            if (a->OperStatus != IfOperStatusUp || a->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
-                continue;
-            for (auto* u = a->FirstUnicastAddress; u; u = u->Next) {
-                if (u->Address.lpSockaddr->sa_family != AF_INET)
-                    continue;
-                const auto* sin = reinterpret_cast<const sockaddr_in*>(u->Address.lpSockaddr);
-                const std::uint32_t ip = ntohl(sin->sin_addr.s_addr);
-                const unsigned prefix = u->OnLinkPrefixLength;
-                if (prefix == 0 || prefix >= 32)
-                    continue;
-                const std::uint32_t mask = 0xFFFFFFFFu << (32 - prefix);
-                out.push_back(ip | ~mask);
-            }
-        }
-    }
-#else
-    ifaddrs* list = nullptr;
-    if (getifaddrs(&list) == 0) {
-        for (ifaddrs* i = list; i; i = i->ifa_next) {
-            if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET)
-                continue;
-            if (!(i->ifa_flags & IFF_UP) || (i->ifa_flags & IFF_LOOPBACK) || !(i->ifa_flags & IFF_BROADCAST))
-                continue;
-            if (!i->ifa_broadaddr)
-                continue;
-            const auto* sin = reinterpret_cast<const sockaddr_in*>(i->ifa_broadaddr);
-            out.push_back(ntohl(sin->sin_addr.s_addr));
-        }
-        freeifaddrs(list);
-    }
-#endif
+    for (const Interface& f : interfaces())
+        if (f.canBroadcast)
+            out.push_back(f.broadcast);
     out.push_back(0xFFFFFFFFu);
     std::ranges::sort(out);
     out.erase(std::unique(out.begin(), out.end()), out.end());
     return out;
+}
+
+std::vector<Subnet> localSubnets() {
+    std::vector<Subnet> out;
+    for (const Interface& f : interfaces())
+        if (f.mask != 0)
+            out.push_back({f.ip, f.mask});
+    return out;
+}
+
+bool answersLanQueryFrom(const Address& from, std::span<const Subnet> subnets) {
+    const std::uint32_t ip = from.ip;
+    // 0.0.0.0, 224/4 multicast, 240/4 reserved and 255.255.255.255.
+    if (ip == 0 || from.port == 0 || (ip >> 28) >= 0xE)
+        return false;
+    for (const Subnet& s : subnets) {
+        // A subnet's broadcast (and old-style all-zeros broadcast) address.
+        const std::uint32_t host = ~s.mask;
+        if (host > 1 && (ip & s.mask) == (s.ip & s.mask) && ((ip & host) == host || (ip & host) == 0))
+            return false;
+    }
+    if (from.isPrivate())
+        return true;
+    return std::ranges::any_of(subnets, [&](const Subnet& s) {
+        return s.mask != 0 && (ip & s.mask) == (s.ip & s.mask);
+    });
 }
 
 std::uint32_t primaryLocalAddress() {
@@ -278,6 +344,9 @@ bool LanBeacon::start(std::uint16_t discoveryPort, std::string* error) {
     if (m_targets.empty())
         for (std::uint32_t ip : broadcastAddresses())
             m_targets.push_back({ip, m_port});
+    m_subnets = localSubnets();
+    m_replyTokens = kBeaconReplyBurst;
+    m_replyRefill = monotonicMs();
     return true;
 }
 
@@ -290,6 +359,10 @@ std::uint16_t LanBeacon::port() const { return m_socket ? m_socket->localAddress
 void LanBeacon::update() {
     if (!m_socket)
         return;
+    const std::uint64_t now = monotonicMs();
+    m_replyTokens = std::min(kBeaconReplyBurst, m_replyTokens + static_cast<double>(now - m_replyRefill) *
+                                                                    kBeaconReplyRate / 1000.0);
+    m_replyRefill = now;
     std::array<std::byte, 1500> buf{};
     for (int i = 0; i < 64; ++i) {
         Address from;
@@ -297,10 +370,12 @@ void LanBeacon::update() {
         if (n <= 0)
             break;
         std::uint32_t nonce = 0;
-        if (decodeLanQuery(std::span(buf.data(), static_cast<std::size_t>(n)), nonce))
-            m_socket->sendTo(from, encodeLanAdvert(nonce, m_advert));
+        if (!decodeLanQuery(std::span(buf.data(), static_cast<std::size_t>(n)), nonce) ||
+            !answersLanQueryFrom(from, m_subnets) || m_replyTokens < 1.0)
+            continue;
+        m_replyTokens -= 1.0;
+        m_socket->sendTo(from, encodeLanAdvert(nonce, m_advert));
     }
-    const std::uint64_t now = monotonicMs();
     if (m_announceIntervalMs && now >= m_nextAnnounce) {
         m_nextAnnounce = now + m_announceIntervalMs;
         const auto packet = encodeLanAdvert(0, m_advert);
@@ -365,9 +440,16 @@ void LanScanner::receive(UdpSocket& socket) {
         LanAdvert advert;
         if (!decodeLanAdvert(std::span(buf.data(), static_cast<std::size_t>(n)), nonce, advert))
             continue;
+        cleanAdvert(advert);
+        if (advert.gamePort == 0)
+            continue;
         const std::uint64_t now = monotonicMs();
         const Address game{from.ip, advert.gamePort};
-        auto& entry = m_sessions[sessionKey(game)];
+        const std::uint64_t key = sessionKey(game);
+        // Spoofed adverts (any source, any port) must not grow the list without bound.
+        if (!m_sessions.contains(key) && m_sessions.size() >= kMaxLanSessions)
+            continue;
+        auto& entry = m_sessions[key];
         entry.address = game;
         entry.advert = std::move(advert);
         entry.lastSeenMs = now;

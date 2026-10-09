@@ -79,8 +79,15 @@ std::optional<MappingRecord> loadMappingRecord(const std::filesystem::path& file
     r.method = methodFromKey(ini.getString(kSection, "Method"));
     r.gatewayId = ini.getString(kSection, "Gateway");
     r.internalIp = ini.getString(kSection, "InternalIp");
-    r.internalPort = static_cast<std::uint16_t>(ini.getInt(kSection, "InternalPort", 0));
-    r.externalPort = static_cast<std::uint16_t>(ini.getInt(kSection, "ExternalPort", 0));
+    // A damaged file must not wrap a port around, nor name internal port 0:
+    // to PCP and NAT-PMP a deletion for internal port 0 removes every mapping
+    // this machine has.
+    const long long internalPort = ini.getInt(kSection, "InternalPort", 0);
+    const long long externalPort = ini.getInt(kSection, "ExternalPort", 0);
+    if (internalPort < 1 || internalPort > 65535 || externalPort < 1 || externalPort > 65535)
+        return std::nullopt;
+    r.internalPort = static_cast<std::uint16_t>(internalPort);
+    r.externalPort = static_cast<std::uint16_t>(externalPort);
     r.token = ini.getString(kSection, "Token");
     r.description = ini.getString(kSection, "Description");
     if (!r.valid())

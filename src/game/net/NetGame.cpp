@@ -133,8 +133,9 @@ RaceConfig fromSessionSettings(const net::SessionSettings& s) {
     case net::Weather::Snow: c.weather = Weather::Snow; break;
     }
     c.weather = static_cast<Weather>(std::clamp(extraInt(s, "weather", static_cast<int>(c.weather)), 0, 4));
-    c.trafficDensity = s.trafficDensity / 100.0f;
-    c.pedestrianDensity = s.pedDensity / 100.0f;
+    // Percent on the wire; the protocol's byte would allow 255.
+    c.trafficDensity = std::min<int>(s.trafficDensity, 100) / 100.0f;
+    c.pedestrianDensity = std::min<int>(s.pedDensity, 100) / 100.0f;
     c.copDensity = std::clamp(extraInt(s, "copDensity", s.cops ? 50 : 0), 0, 100) / 100.0f;
     if (const std::string* d = extra(s, "difficulty"))
         c.difficulty = *d == "pro" ? Difficulty::Professional : Difficulty::Amateur;
@@ -414,6 +415,12 @@ const net::SessionSettings& NetGame::settings() const {
 }
 
 int freeForAllTeam(const VehicleInfo* car) { return car && (car->flags & VehicleInfo::kFlagCop) ? 0 : 1; }
+
+std::string netVehicle(const Catalog& catalog, const std::string& name) {
+    if (catalog.vehicle(name) || !catalog.vehicle(kDefaultVehicle))
+        return name;
+    return kDefaultVehicle;
+}
 
 NetCar raceCar(const RaceConfig& race, NetCar lobby) {
     // "The Cop Team in Mustang Cruisers takes the gold to the bank, while the
