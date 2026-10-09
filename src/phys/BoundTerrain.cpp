@@ -484,6 +484,24 @@ int testBoundTerrainEdgesVsPoly(const BoundTerrain& terrain, const BoundPolygona
     return count;
 }
 
+// testBoundPolyTerrain's per-edge and per-vertex state. At namespace scope:
+// MSVC cannot default-construct a function-local class with default member
+// initializers inside std::vector.
+constexpr std::uint16_t kNoTerrainPolygon = 0xffff;
+
+struct EdgeCrossings {
+    std::uint16_t first = kNoTerrainPolygon, second = kNoTerrainPolygon;
+    float tFirst = 2.0f, tSecond = -1.0f;
+    float depthFirst = 0.0f, depthSecond = 0.0f;
+};
+
+struct VertexSweep {
+    std::uint16_t polygon = kNoTerrainPolygon;
+    float t = 2.0f;
+    float depth = 0.0f;
+    Vec3 last; // the vertex at the last pose, in the world
+};
+
 // phBoundTerrain::TestBoundPolyTerrain: the vertex sweeps (last pose to
 // current, when `sweep`) and edges of a polygonal bound with fewer than 31
 // vertices against the terrain polygons near it, in world space. Each sweep
@@ -494,18 +512,7 @@ int testBoundTerrainEdgesVsPoly(const BoundTerrain& terrain, const BoundPolygona
 int testBoundPolyTerrain(const BoundTerrain& terrain, const BoundPolygonal& poly, Collider* polyCollider,
                          const Mat34& m, const Mat34& last, Intersection* out, int max, int& count,
                          bool sweep) {
-    constexpr std::uint16_t kNone = 0xffff;
-    struct EdgeCrossings {
-        std::uint16_t first = kNone, second = kNone;
-        float tFirst = 2.0f, tSecond = -1.0f;
-        float depthFirst = 0.0f, depthSecond = 0.0f;
-    };
-    struct VertexSweep {
-        std::uint16_t polygon = kNone;
-        float t = 2.0f;
-        float depth = 0.0f;
-        Vec3 last; // the vertex at the last pose, in the world
-    };
+    constexpr std::uint16_t kNone = kNoTerrainPolygon;
     const int numVertices = poly.numVertices();
     const int numEdges = poly.numEdges();
     std::vector<EdgeCrossings> crossings(static_cast<std::size_t>(numEdges));
