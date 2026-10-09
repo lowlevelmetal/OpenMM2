@@ -104,6 +104,7 @@ net::SessionSettings toSessionSettings(const RaceConfig& c, const std::string& n
     s.trafficDensity = percent(c.trafficDensity);
     s.pedDensity = percent(c.pedestrianDensity);
     s.cops = c.copDensity > 0.0f;
+    s.sharedTraffic = c.netTraffic;
     s.maxPlayers = static_cast<std::uint8_t>(std::clamp(maxPlayers, 2, static_cast<int>(net::kMaxPlayers)));
     // Options without a protocol field.
     setExtra(s, "weather", std::to_string(static_cast<int>(c.weather)));
@@ -136,6 +137,7 @@ RaceConfig fromSessionSettings(const net::SessionSettings& s) {
     c.trafficDensity = s.trafficDensity / 100.0f;
     c.pedestrianDensity = s.pedDensity / 100.0f;
     c.copDensity = std::clamp(extraInt(s, "copDensity", s.cops ? 50 : 0), 0, 100) / 100.0f;
+    c.netTraffic = s.sharedTraffic;
     if (const std::string* d = extra(s, "difficulty"))
         c.difficulty = *d == "pro" ? Difficulty::Professional : Difficulty::Amateur;
     c.opponents = std::clamp(extraInt(s, "opponents", 0), 0, 7);
@@ -650,6 +652,25 @@ void NetGame::sendDamage(float damage, std::uint8_t source) {
 }
 
 std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gameEvents, {}); }
+
+// --- Shared ambient traffic --------------------------------------------------------------
+
+bool NetGame::sharedTraffic() const {
+    const auto& s = settings();
+    return m_impl->session && s.mode == net::GameMode::Cruise && s.sharedTraffic;
+}
+
+std::size_t NetGame::sendAmbientState(std::uint8_t playerId, const net::AmbientStateMsg& msg) {
+    return m_impl->session ? m_impl->session->sendAmbientState(playerId, msg) : 0;
+}
+
+std::vector<net::AmbientStateMsg> NetGame::takeAmbientStates() {
+    return m_impl->session ? m_impl->session->takeAmbientStates() : std::vector<net::AmbientStateMsg>{};
+}
+
+net::PeerStats NetGame::peerStats(std::uint8_t playerId) const {
+    return m_impl->session ? m_impl->session->peerStats(playerId) : net::PeerStats{};
+}
 
 // --- Helpers -----------------------------------------------------------------------------
 

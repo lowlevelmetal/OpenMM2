@@ -14,6 +14,7 @@
 // chat, a countdown, vehicle snapshots and opaque game events. The host may
 // install an event filter to validate or rewrite events before relaying.
 
+#include "net/AmbientState.h"
 #include "net/ClockSync.h"
 #include "net/Discovery.h"
 #include "net/Protocol.h"
@@ -179,6 +180,15 @@ public:
     // Connection quality to the host (clients) or to a player (host).
     PeerStats peerStats(std::uint8_t playerId) const;
 
+    // --- Shared ambient traffic (multiplayer cruise) ---
+    // Host: sends one player its cars on the unreliable Ambient channel.
+    // Returns the encoded size in bytes (0 when nothing was sent).
+    std::size_t sendAmbientState(std::uint8_t playerId, const AmbientStateMsg& msg);
+    // Client: the messages received since the last call, oldest first (at
+    // most kMaxQueuedAmbientStates; older ones are dropped).
+    std::vector<AmbientStateMsg> takeAmbientStates() { return std::exchange(m_ambientStates, {}); }
+    static constexpr std::size_t kMaxQueuedAmbientStates = 16;
+
 private:
     struct Remote {
         PeerId peer = kInvalidPeer;
@@ -245,6 +255,7 @@ private:
     std::map<std::uint8_t, SnapshotBuffer> m_remoteStates;
     std::optional<VehicleSnapshot> m_localState;
     std::uint64_t m_lastSnapshotSent = 0;
+    std::vector<AmbientStateMsg> m_ambientStates; // client: received, not yet taken
 };
 
 // Proof sent in Hello: SHA-256(nonce || password); all zeros when empty.

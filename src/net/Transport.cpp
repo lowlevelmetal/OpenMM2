@@ -27,7 +27,8 @@ std::uint32_t packetFlags(Channel channel) {
     switch (channel) {
     case Channel::Control:
     case Channel::Events: return ENET_PACKET_FLAG_RELIABLE;
-    case Channel::State: return 0; // unreliable, sequenced
+    case Channel::State:
+    case Channel::Ambient: return 0; // unreliable, sequenced
     }
     return ENET_PACKET_FLAG_RELIABLE;
 }
