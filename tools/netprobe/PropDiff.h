@@ -1,11 +1,13 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 namespace mm2::netprobe {
 
-// netprobe propdiff: compares two machines' OPENMM2_DEBUG_NETPROPS traces
-// (see PropDiff.cpp). Returns the process exit code.
-int propDiff(const std::string& pathA, const std::string& pathB);
+// The props section of `netprobe syncreport`: every pair of the machines'
+// OPENMM2_NET_TRACE files compared by their props lines (see PropDiff.cpp),
+// named `names`. Prints nothing when fewer than two traces have props lines.
+void propReport(const std::vector<std::string>& paths, const std::vector<std::string>& names);
 
 } // namespace mm2::netprobe

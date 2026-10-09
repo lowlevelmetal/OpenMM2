@@ -15,22 +15,8 @@ namespace mm2::game {
 
 // --- Trace ---------------------------------------------------------------------------------------
 
-std::unique_ptr<PropTrace> PropTrace::fromEnvironment() {
-    const char* path = std::getenv("OPENMM2_DEBUG_NETPROPS");
-    if (!path || !*path)
-        return nullptr;
-    std::FILE* f = std::fopen(path, "w");
-    if (!f) {
-        log::warn("netprops: cannot write the trace {}", path);
-        return nullptr;
-    }
-    std::fputs("# OpenMM2 network props trace 1\n", f);
-    return std::make_unique<PropTrace>(f);
-}
-
-PropTrace::~PropTrace() {
-    if (m_file)
-        std::fclose(m_file);
+std::unique_ptr<PropTrace> PropTrace::of(NetGame& net) {
+    return net.tracing() ? std::make_unique<PropTrace>(net) : nullptr;
 }
 
 std::string describe(const net::PropDescriptor& what) {
@@ -48,21 +34,19 @@ void PropTrace::placed(const bangers::BangerSet& set) {
     const std::size_t n = placedProps(set);
     for (std::size_t i = 0; i < n; ++i) {
         const auto& inst = set.instances()[i];
-        std::fprintf(m_file, "P %zu %s %.2f %.2f %.2f\n", i, inst.model.c_str(), inst.ground.m3.x,
-                     inst.ground.m3.y, inst.ground.m3.z);
+        const Vec3& p = inst.ground.m3;
+        m_net.traceLine(std::format("p {} {} {:.2f} {:.2f} {:.2f}", i, inst.model, p.x, p.y, p.z));
     }
 }
 
 void PropTrace::knock(double t, std::size_t prop, std::string_view model, std::string_view cause) {
-    std::fprintf(m_file, "K %.0f %zu %.*s %.*s\n", t, prop, static_cast<int>(model.size()), model.data(),
-                 static_cast<int>(cause.size()), cause.data());
+    m_net.traceLine(std::format("k {:.0f} {} {} {}", t, prop, model, cause));
 }
 
-void PropTrace::undo(double t, std::size_t prop) { std::fprintf(m_file, "X %.0f %zu\n", t, prop); }
+void PropTrace::undo(double t, std::size_t prop) { m_net.traceLine(std::format("x {:.0f} {}", t, prop)); }
 
 void PropTrace::impact(double t, std::string_view cause, float value, float damage) {
-    std::fprintf(m_file, "I %.0f %.*s %.1f %.1f\n", t, static_cast<int>(cause.size()), cause.data(), value,
-                 damage);
+    m_net.traceLine(std::format("i {:.0f} {} {:.1f} {:.1f}", t, cause, value, damage));
 }
 
 bool PropTrace::tick(double t) {
@@ -71,28 +55,27 @@ bool PropTrace::tick(double t) {
         m_next = std::ceil(t / kTick) * kTick;
     if (t < m_next)
         return false;
-    std::fprintf(m_file, "T %.0f %.1f\n", m_next, t);
+    m_net.traceLine(std::format("t {:.0f} {:.1f}", m_next, t));
     m_next += kTick * (std::floor((t - m_next) / kTick) + 1.0);
-    std::fflush(m_file);
     return true;
 }
 
 void PropTrace::broken(const bangers::BangerSet& set) {
-    std::fputs("B", m_file);
+    std::string line = "b";
     const std::size_t n = placedProps(set);
     for (std::size_t i = 0; i < n; ++i)
         if (!set.standing(i))
-            std::fprintf(m_file, " %zu", i);
-    std::fputs("\n", m_file);
+            line += std::format(" {}", i);
+    m_net.traceLine(line);
 }
 
 void PropTrace::shown(const net::PropDescriptor& what, const Mat34& m, bool moving, bool local) {
-    std::fprintf(m_file, "H %s %.3f %.3f %.3f %d %d\n", describe(what).c_str(), m.m3.x, m.m3.y, m.m3.z,
-                 moving ? 1 : 0, local ? 1 : 0);
+    m_net.traceLine(std::format("h {} {:.3f} {:.3f} {:.3f} {} {}", describe(what), m.m3.x, m.m3.y, m.m3.z,
+                                moving ? 1 : 0, local ? 1 : 0));
 }
 
 void PropTrace::car(std::string_view name, float level, float dents) {
-    std::fprintf(m_file, "D %.*s %.4f %.0f\n", static_cast<int>(name.size()), name.data(), level, dents);
+    m_net.traceLine(std::format("d {} {:.4f} {:.0f}", name, level, dents));
 }
 
 // --- NetProps ------------------------------------------------------------------------------------
@@ -104,7 +87,7 @@ void NetProps::setup(NetGame& net, bangers::BangerSet& set,
                      std::function<bool(const phys::Instance&)> localToucher) {
     m_set = &set;
     m_catalog = propCatalog(set);
-    m_trace = PropTrace::fromEnvironment();
+    m_trace = PropTrace::of(net);
     if (m_trace)
         m_trace->placed(set);
     set.recordKnocks(true);

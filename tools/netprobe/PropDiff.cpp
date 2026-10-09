@@ -1,7 +1,7 @@
-// netprobe propdiff <trace A> <trace B>: how two machines' props differ in a
-// network race, from their OPENMM2_DEBUG_NETPROPS traces (game::PropTrace,
-// docs/multiplayer.md "Props"). Same-named session times ("T" ticks every
-// 250 ms) are compared:
+// The props section of `netprobe syncreport`: how the machines' props differ
+// in a network race, from the props lines of their OPENMM2_NET_TRACE files
+// (game::PropTrace, docs/multiplayer.md "Props"). Same-named session times
+// (the "t" ticks every 250 ms) are compared, pair by pair:
 //
 //   knocks     the placed props knocked by the end on both, on one only, and
 //              how far apart in session time both knocked them
@@ -10,7 +10,7 @@
 //   resting    at the last common tick, how far apart the same knocked-over
 //              prop or thrown part rests (both at rest), and the ones only
 //              one machine shows
-//   damage     each car's damage at the common ticks
+//   damage     each car's damage level and dents at the common ticks
 //   impacts    the damaging impacts on each machine's own car, by cause
 
 #include "PropDiff.h"
@@ -68,27 +68,27 @@ bool load(const std::string& path, Trace& t) {
         std::istringstream s(line);
         std::string kind;
         s >> kind;
-        if (kind == "K") {
+        if (kind == "k") {
             double time;
             long prop;
             Knock k;
             s >> time >> prop >> k.model >> k.cause;
             k.time = time;
             t.knocks.try_emplace(prop, k);
-        } else if (kind == "X") {
+        } else if (kind == "x") {
             double time;
             long prop;
             s >> time >> prop;
             t.undone[prop] = time;
-        } else if (kind == "T") {
+        } else if (kind == "t") {
             double at;
             s >> at;
             tick = &t.ticks[static_cast<long>(at)];
-        } else if (kind == "B" && tick) {
+        } else if (kind == "b" && tick) {
             long id;
             while (s >> id)
                 tick->broken.insert(id);
-        } else if (kind == "H" && tick) {
+        } else if (kind == "h" && tick) {
             std::string what;
             Shown h;
             int moving = 0, local = 0;
@@ -96,13 +96,13 @@ bool load(const std::string& path, Trace& t) {
             h.moving = moving != 0;
             h.local = local != 0;
             tick->shown[what] = h;
-        } else if (kind == "D" && tick) {
+        } else if (kind == "d" && tick) {
             std::string car;
             double level = 0, dents = 0;
             s >> car >> level >> dents;
             tick->damage[car] = level;
             tick->dents[car] = dents;
-        } else if (kind == "I") {
+        } else if (kind == "i") {
             double time, value, damage;
             std::string cause;
             s >> time >> cause >> value >> damage;
@@ -132,21 +132,18 @@ std::string kindOf(const std::string& model) {
 
 } // namespace
 
-int propDiff(const std::string& pathA, const std::string& pathB) {
-    Trace a, b;
-    if (!load(pathA, a) || !load(pathB, b)) {
-        std::println(stderr, "propdiff: cannot read the traces");
-        return 1;
-    }
+namespace {
+
+void comparePair(Trace& a, Trace& b) {
     std::vector<long> common;
     for (const auto& [at, tick] : a.ticks)
         if (b.ticks.contains(at))
             common.push_back(at);
     if (common.empty()) {
-        std::println(stderr, "propdiff: the traces share no session time");
-        return 1;
+        std::println("\nA {}, B {}: no session time in common", a.name, b.name);
+        return;
     }
-    std::println("A {}\nB {}\n{} common ticks, session {} .. {} ms", pathA, pathB, common.size(),
+    std::println("\nA {}, B {}: {} common ticks, session {} .. {} ms", a.name, b.name, common.size(),
                  common.front(), common.back());
 
     // Knocks by the end (the last common tick's standing lists).
@@ -292,7 +289,26 @@ int propDiff(const std::string& pathA, const std::string& pathB) {
     };
     std::println("damaging impacts on A's own car:{}", impacts(a));
     std::println("damaging impacts on B's own car:{}", impacts(b));
-    return 0;
+}
+
+} // namespace
+
+void propReport(const std::vector<std::string>& paths, const std::vector<std::string>& names) {
+    std::vector<Trace> traces;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+        Trace t;
+        if (!load(paths[i], t) || t.ticks.empty())
+            continue;
+        t.name = i < names.size() ? names[i] : paths[i];
+        traces.push_back(std::move(t));
+    }
+    if (traces.size() < 2)
+        return;
+    std::println("\nProps (the traces' props lines): knocked props, where knocked-over props and parts");
+    std::println("rest, the cars' damage, pair by pair at the same session times:");
+    for (std::size_t i = 0; i < traces.size(); ++i)
+        for (std::size_t j = i + 1; j < traces.size(); ++j)
+            comparePair(traces[i], traces[j]);
 }
 
 } // namespace mm2::netprobe

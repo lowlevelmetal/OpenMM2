@@ -304,6 +304,9 @@ public:
     void traceDrawn(std::uint8_t id, bool own, const Mat34& transform, const Vec3& velocity);
     void traceImpact(std::uint8_t a, std::uint8_t b, const Vec3& position, float strength, double stateAgeMs);
     void traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, float dv, bool snapped);
+    // Another area's line in the same trace, written as given: a lowercase
+    // tag and its fields (the props', game::PropTrace).
+    void traceLine(std::string_view line);
 
     // --- The players' cars, simulated by the host (net/PlayerCars.h) -------------------
     // Client: this machine's car's inputs.

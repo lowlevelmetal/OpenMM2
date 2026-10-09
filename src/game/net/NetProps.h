@@ -10,7 +10,6 @@
 #include "game/net/PropSync.h"
 
 #include <cstdint>
-#include <cstdio>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -24,23 +23,24 @@ namespace mm2::game {
 class NetGame;
 struct NetGameEvent;
 
-// Development aid: OPENMM2_DEBUG_NETPROPS=<file> writes, one line each, the
-// placed props ("P ..."), every placed prop that broke loose on this machine ("K <session ms> <prop>
-// <model> <cause>"), every knock this machine predicted and undid ("X ..."),
-// and every 250 ms of session time ("T <ms>") the props not standing
-// ("B <ids>"), the knocked-over props and thrown parts shown ("H <what> <x>
-// <y> <z> <moving> <local>"), the cars' damage ("D <car> <level> <dents>")
-// and this machine's car's damaging impacts ("I <ms> <cause> <value>
-// <damage>"). `netprobe propdiff` compares two machines' files.
+// Development aid: the props' lines of the OPENMM2_NET_TRACE file (lowercase
+// tags; `netprobe syncreport` compares the machines' props from them): the
+// placed props once ("p <prop> <model> <x> <y> <z>"), every placed prop that
+// broke loose on this machine ("k <session ms> <prop> <model> <cause>"), every
+// knock this machine predicted and undid ("x <ms> <prop>"), and every 250 ms
+// of session time ("t <ms> <actual ms>") the props not standing ("b <ids>"),
+// the knocked-over props and thrown parts shown ("h <what> <x> <y> <z>
+// <moving> <local>"), the cars' damage ("d <car> <level> <dents>") and this
+// machine's car's damaging impacts ("i <ms> <cause> <value> <damage>").
 class PropTrace {
 public:
-    static std::unique_ptr<PropTrace> fromEnvironment();
-    explicit PropTrace(std::FILE* file) : m_file(file) {}
-    ~PropTrace();
+    // Null unless the session traces (NetGame::tracing).
+    static std::unique_ptr<PropTrace> of(NetGame& net);
+    explicit PropTrace(NetGame& net) : m_net(net) {}
     PropTrace(const PropTrace&) = delete;
     PropTrace& operator=(const PropTrace&) = delete;
 
-    // Every placed prop once ("P <prop> <model> <x> <y> <z>", its ground point).
+    // Every placed prop once (its ground point).
     void placed(const bangers::BangerSet& set);
     void knock(double t, std::size_t prop, std::string_view model, std::string_view cause);
     void undo(double t, std::size_t prop);
@@ -53,7 +53,7 @@ public:
     void car(std::string_view name, float level, float dents);
 
 private:
-    std::FILE* m_file = nullptr;
+    NetGame& m_net;
     double m_next = -1.0;
 };
 
@@ -91,7 +91,7 @@ public:
     using Classifier = std::function<std::string(const phys::Instance*)>;
     void afterStep(NetGame& net, double now, std::uint64_t nowMs, const Classifier& classify);
 
-    // The trace, when OPENMM2_DEBUG_NETPROPS is set; `traced()` tells whether
+    // The trace, when OPENMM2_NET_TRACE is set; `traced()` tells whether
     // afterStep began a tick this frame (the race adds its cars' lines).
     PropTrace* trace() { return m_trace.get(); }
     bool traced() const { return m_traced; }
