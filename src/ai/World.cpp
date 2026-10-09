@@ -6,11 +6,13 @@
 #include "asset/Ped.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
+#include "data/DatFile.h"
 #include "data/TextTables.h"
 
 #include <algorithm>
 #include <cstring>
 #include <format>
+#include <map>
 
 namespace mm2::ai {
 namespace {
@@ -199,9 +201,23 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
         single = str::lower(cityConfig->trafficLights[0]);
         dual = str::lower(cityConfig->trafficLights[1]);
     }
+    // Each model's CG from tune/banger/<model>.dgbangerdata
+    // (dgBangerDataManager::AddBangerDataEntry); none without the file.
+    std::map<std::string, Vec3> cgs;
+    auto cgOf = [&](const std::string& model) {
+        auto [it, added] = cgs.try_emplace(model);
+        if (added)
+            if (auto bytes = vfs.readAll(std::format("tune/banger/{}.dgbangerdata", model)))
+                if (auto dat = data::parseDat(
+                        std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+                    dat && dat->top())
+                    dat->top()->read("CG", it->second);
+        return it->second;
+    };
     for (const auto& site : world->m_network->lights()) {
         Signal s;
         s.model = site.arrivingLanes >= 2 ? dual : single;
+        s.cg = cgOf(s.model);
         // X along the unit direction from the pole to trafficLightAxis
         // (away from the road on retail data), Z = (-x.z, 0, x.x): the glows
         // on +Z face the approaching traffic.

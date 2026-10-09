@@ -42,8 +42,22 @@ struct Settings {
 // as MM2's DrawGlow does.
 struct Signal {
     std::string model; // e.g. "sp_traflitsingle_f"
-    Mat34 transform;   // model origin; +Z (the glows) faces the approaching traffic
+    Mat34 transform;   // model origin (the pole's base); +Z (the glows) faces the approaching traffic
+    // The model's dgBangerData CG. aiTrafficLightInstance::Init places the
+    // instance at the base + R * CG (its GetMatrix and GetPosition), and the
+    // body mesh is centred on that point; the glow meshes are modelled from
+    // the base, so DrawGlow takes R * CG off again.
+    Vec3 cg;
     LightState state = LightState::Red;
+
+    // GetMatrix: the instance's frame, at the CG.
+    Mat34 frame() const {
+        Mat34 m = transform;
+        m.m3 = transform.transform(cg);
+        return m;
+    }
+    // GetPosition: the CG in world space.
+    Vec3 position() const { return transform.transform(cg); }
 };
 
 class World {

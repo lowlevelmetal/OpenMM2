@@ -409,3 +409,34 @@ TEST(ParityMm2Ai, WorldWithoutARaceMapOrTraffic) {
     world->update(1.0f / 30.0f, {430, 0, -150}, {});
     EXPECT_TRUE(world->cars().empty());
 }
+
+// aiTrafficLightInstance::Init places a traffic light at its pole's base
+// plus R * CG (the model's dgBangerData CG), the frame its CG-centred body is
+// drawn with; DrawGlow takes R * CG off again for the glows, which are
+// modelled from the base.
+TEST(MM2AiParity, TrafficLightsStandOnTheirCG) {
+    ai::Signal s;
+    s.transform = Mat34::rotationY(0.5f);
+    s.transform.m3 = {10.0f, 2.0f, -4.0f};
+    s.cg = {0.5f, 3.892483f, -0.25f};
+    const Mat34 f = s.frame();
+    EXPECT_EQ(f.m0.x, s.transform.m0.x);
+    EXPECT_EQ(f.m2.z, s.transform.m2.z);
+    const Vec3 expect = s.transform.transform(s.cg);
+    EXPECT_FLOAT_EQ(f.m3.x, expect.x);
+    EXPECT_FLOAT_EQ(f.m3.y, 2.0f + 3.892483f);
+    EXPECT_FLOAT_EQ(f.m3.z, expect.z);
+    EXPECT_FLOAT_EQ(s.position().y, f.m3.y);
+
+    MM2_REQUIRE_GAME_DATA();
+    auto c = city::loadCity(*test::gameData(), "sf");
+    ASSERT_TRUE(c);
+    auto world = ai::World::create(*c, *test::gameData(), {});
+    ASSERT_TRUE(world);
+    ASSERT_FALSE(world->signals().empty());
+    for (const auto& sig : world->signals()) {
+        // sp_traflitsingle_f / sp_traflitdual_f: CG half the pole's height.
+        EXPECT_NEAR(sig.cg.y, 3.89f, 0.02f) << sig.model;
+        EXPECT_EQ(sig.cg.x, 0.0f) << sig.model;
+    }
+}

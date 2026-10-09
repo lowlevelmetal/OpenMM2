@@ -178,16 +178,17 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
     const GpuModel* model = m_models.get(signal.model);
     if (!model)
         return;
-    const Mat44 world = Mat44::fromMat34(signal.transform);
+    // aiTrafficLightInstance::Draw: the body at GetMatrix, the instance's
+    // frame at its CG (the body mesh is centred on it).
+    const Mat34 frame = signal.frame();
     // lvlInstance::IsVisible with the Object Detail thresholds, and
     // aiTrafficLightInstance::Draw's first shader set.
-    const auto lod =
-        objectLod(viewDepth(camera.transform, signal.transform.m3), geomRadius(*model, ""), m_detail);
+    const auto lod = objectLod(viewDepth(camera.transform, frame.m3), geomRadius(*model, ""), m_detail);
     if (!passes && !lod)
         return;
     if (lod && (!passes || passes->objects))
         if (const GpuMesh* body = findFilledLod(*model, "", *lod))
-            drawGpuMesh(m_device, m_textures, *body, model->materials(0), world);
+            drawGpuMesh(m_device, m_textures, *body, model->materials(0), Mat44::fromMat34(frame));
     // aiTrafficLightInstance::DrawGlow: the light's glow together with the
     // pedestrian signal (WALK only in the walk phase), both or neither.
     const char* colour = signal.state == ai::LightState::Green  ? "GREEN"
@@ -197,13 +198,16 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
     // whatever IsVisible says): unlit, no fog, added (ONE/ONE), no depth
     // writes. Without the city's room list the signal's own distance stands
     // in for its room's.
-    if (passes ? !passes->shadowsAndGlows : signal.transform.m3.dist2(camera.position()) >= sq(m_detail.noDraw))
+    if (passes ? !passes->shadowsAndGlows : frame.m3.dist2(camera.position()) >= sq(m_detail.noDraw))
         return;
     const char* time = nightGlows ? "NIGHT" : "DAY";
     const GpuMesh* glow = findFilledLod(*model, std::format("{}GLOW{}", colour, time), asset::Lod::High);
     const char* walkName = signal.state == ai::LightState::Walk ? "WALK" : "NOWALK";
     const GpuMesh* walk = findFilledLod(*model, std::format("{}_{}", walkName, time), asset::Lod::High);
     if (glow && walk) {
+        // DrawGlow: GetMatrix less R * CG, the base the glow meshes are
+        // modelled from.
+        const Mat44 world = Mat44::fromMat34(signal.transform);
         MeshDrawOptions opts;
         opts.lighting = false;
         opts.fog = false;
@@ -285,10 +289,10 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     int index = 0;
     for (const auto& signal : world.signals()) {
         const int id = index++;
-        if (!frustum.intersectsSphere(signal.transform.m3, 6.0f))
+        if (!frustum.intersectsSphere(signal.position(), 6.0f))
             continue;
         if (rooms) {
-            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, signal.transform.m3);
+            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, signal.position());
             if (!passes.objects && !passes.shadowsAndGlows)
                 continue;
             drawSignal(signal, camera, time >= TimeOfDay::Evening, &passes);

@@ -197,7 +197,7 @@ The light sets and their poles (first audit: ai-ambient-city).
 | --- | --- | --- | --- |
 | `aiTrafficLightSet::aiTrafficLightSet`, `Reset`, `SetFourWay`, `Update` | ported | `TrafficLights` | First audit. |
 | `aiTrafficLightSet::~aiTrafficLightSet`, `scalar_deleting_destructor` | not needed |  |  |
-| `aiTrafficLightInstance::Init`, `Draw`, `DrawGlow` | ported | `World::create`, `AiRenderer::drawSignal` | First audit. |
+| `aiTrafficLightInstance::Init`, `Draw`, `DrawGlow` | fixed | `World::create`, `AiRenderer::drawSignal`, `Signal::frame` | Init places the instance at the pole's base + R * CG (the model's dgBangerData CG) and Draw draws the CG-centred body at that frame; DrawGlow takes R * CG off again for the glow and WALK meshes, which are modelled from the base. OpenMM2 drew the body at the base, sinking the pole by its CG (3.9 m) under glows at the right height; the body, visibility, room and NoDraw now use the CG frame. |
 | `aiTrafficLightInstance::SizeOf` | not needed |  | Instance pool bookkeeping. |
 
 ## aiVehicleAmbient / aiVehicleSpline / aiVehicle / aiObstacle
