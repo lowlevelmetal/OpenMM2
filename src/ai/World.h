@@ -20,6 +20,7 @@
 #include "city/RoomLocator.h"
 #include "vfs/Vfs.h"
 
+#include <array>
 #include <memory>
 #include <span>
 #include <string>
@@ -115,6 +116,28 @@ public:
     void updateLights();
     void step(const Vec3& playerPos, const Vec3& playerVel) { step(PlayerCar::at(playerPos, playerVel)); }
 
+    // OpenMM2 extra, the shared traffic of a network cruise: the other
+    // players' cars, which the ambient traffic populates the roads round,
+    // avoids and lets pass as it does the local player's (MM2's aiMap keeps
+    // a list of players, aiMap::AddPlayer and RemovePlayer, of which a
+    // single-player game has one). `slot` 1..kMaxTrafficPlayers - 1 (the
+    // network player id). The pedestrians stay the local player's. Kept
+    // until replaced; an empty list is the single-player step.
+    struct OtherPlayer {
+        int slot = 1;
+        PlayerCar car;
+    };
+    void setOtherPlayers(std::vector<OtherPlayer> players) { m_others = std::move(players); }
+
+    // The light sets' steps since the last reset (each kAiStepSeconds).
+    std::uint32_t lightSteps() const { return m_lightSteps; }
+    // OpenMM2 extra (a client of the shared traffic): the light sets follow
+    // the host's instead of the local clock. Drops the steps update() left
+    // pending and runs the sets on to `steps` (at most `maxSteps` now); a
+    // set already past it waits. The sets are deterministic from a reset,
+    // so equal steps give equal lights.
+    void advanceLightsTo(std::uint32_t steps, int maxSteps = 9000);
+
     // Race opponents' positions: ambient cars are never placed within 50 m
     // of one (aiMap::AdjustAmbients).
     void setOpponents(std::span<const Vec3> positions) { m_traffic->setOpponents(positions); }
@@ -166,7 +189,10 @@ private:
     float m_vehicleClock = 0.0f; // aiVehicleManager's summed time (never reset)
     bool m_lightsDeferred = false;
     int m_pendingLightSteps = 0;
+    std::uint32_t m_lightSteps = 0; // light updates since the last reset
     int m_playerRoom = 0; // the player's last room, the next lookup's hint
+    std::vector<OtherPlayer> m_others;
+    std::array<int, kMaxTrafficPlayers> m_otherRooms{}; // their last rooms (hints)
 };
 
 // Vehicle types for ambient traffic of a city when no AI map lists them:

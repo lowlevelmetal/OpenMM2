@@ -500,7 +500,6 @@ void Traffic::resetReactTicks(int car) {
 // --- Population (aiMap::AdjustAmbients, aiPath::ClearAmbients) --------------
 
 void Traffic::activate(int path) {
-    m_pathActive[static_cast<std::size_t>(path)] = 1;
     m_activePaths.insert(m_activePaths.begin(), path);
 }
 
@@ -575,6 +574,7 @@ bool Traffic::placeCar(int slot, int path, int dir, int lane, float dist) {
         if (o.dist2(at) < sq(kAmbientOpponentClearance))
             return true;
     m_pool.pop_back();
+    ++c.spawns;
     // aiVehicleAmbient::Reset: aiVehicleSpline::Reset (speed, tyre
     // rotation, reaction ticks, the obstacle map state), then each goal's
     // Init (aiGoalRandomDrive::Init: acceleration and target speed 0, no
@@ -614,7 +614,8 @@ bool Traffic::placeCar(int slot, int path, int dir, int lane, float dist) {
     return true;
 }
 
-void Traffic::adjustAmbients(int oldRoom, int newRoom) {
+void Traffic::adjustAmbients(int oldRoom, int newRoom, int slot) {
+    const auto bit = static_cast<std::uint16_t>(1u << slot);
     const city::AiMap* map = m_net.source();
     if (!map)
         return;
@@ -638,9 +639,16 @@ void Traffic::adjustAmbients(int oldRoom, int newRoom) {
             if (std::ranges::find(to, p) == to.end() && p < m_net.paths().size())
                 removed.push_back(p);
     }
-    for (int p : removed)
-        if (m_pathActive[static_cast<std::size_t>(p)])
+    // aiPath::RemAmbPlayer: the player's bit off; a road no player keeps is
+    // emptied (aiPath::ClearAmbients).
+    for (int p : removed) {
+        std::uint16_t& mask = m_pathActive[static_cast<std::size_t>(p)];
+        if (mask == 0)
+            continue;
+        mask = static_cast<std::uint16_t>(mask & ~bit);
+        if (mask == 0)
             clearPath(p);
+    }
 
     // The total usable lane length of the new roads (centre length - 5 m per
     // lane, roads with an [Exceptions] entry aside) sets the spacing: about
@@ -660,8 +668,13 @@ void Traffic::adjustAmbients(int oldRoom, int newRoom) {
 
     float carry = 0.0f, leftover = 0.0f;
     for (int p : added) {
-        if (m_pathActive[static_cast<std::size_t>(p)])
-            continue; // already populated
+        // aiPath::AddAmbPlayer: the player's bit on; a road another player
+        // already keeps is populated already.
+        std::uint16_t& mask = m_pathActive[static_cast<std::size_t>(p)];
+        const std::uint16_t before = mask;
+        mask = static_cast<std::uint16_t>(mask | bit);
+        if (before != 0)
+            continue;
         activate(p);
         const PathInfo& info = m_net.paths()[static_cast<std::size_t>(p)];
         for (int dir : {-1, 1}) {
@@ -759,10 +772,11 @@ void Traffic::reset() {
         c.reactDist = kIntersectionReactDist;
         m_pool.push_back(static_cast<int>(i));
     }
-    // The next step populates the roads round the player's room
+    // The next step populates the roads round the players' rooms
     // (aiMap::Reset's AdjustAmbients from room 0).
     m_started = false;
-    m_room = 0;
+    m_slotRooms.fill(0);
+    m_slotPresent.fill(false);
     m_avoidEvents.clear();
     publish();
 }
@@ -926,7 +940,7 @@ void Traffic::resetRandomDrive(Car& c) {
     c.curReactTicks = c.totReactTicks;
     // Reset ends by posing the car on its curve (the pose solver Update
     // calls), whatever its speed.
-    solvePose(c, m_player);
+    solvePose(c);
 }
 
 bool Traffic::stopSignOkayToGo(int node, int car) {
@@ -1557,7 +1571,14 @@ void Traffic::changeLanes(int idx) {
 }
 
 // The car's matrix (the solver aiGoalRandomDrive calls after moving it).
-void Traffic::solvePose(Car& c, const PlayerCar& player) {
+bool Traffic::anyPlayerWithin(const Vec3& p, float radius2) const {
+    for (const PlayerCar& player : m_players)
+        if (player.valid && Vec2{player.transform.m3.x - p.x, player.transform.m3.z - p.z}.mag2() < radius2)
+            return true;
+    return false;
+}
+
+void Traffic::solvePose(Car& c) {
     const float t = c.segLen > 0.0f ? c.segDist / c.segLen : 0.0f;
     Vec3 F;
     Vec3 P = curvePoint(c, t, &F);
@@ -1576,8 +1597,8 @@ void Traffic::solvePose(Car& c, const PlayerCar& player) {
         c.fitted = false;
         return;
     }
-    const bool playerNear =
-        player.valid && Vec2{player.transform.m3.x - P.x, player.transform.m3.z - P.z}.mag2() < 10000.0f;
+    // Any player within 100 m (the pose solver walks aiMap's player list).
+    const bool playerNear = anyPlayerWithin(P, 10000.0f);
     const int S = static_cast<int>(src.center.size());
     if (!playerNear && c.goal != AmbientGoal::RegainRail && c.rail == Rail::Lane && c.section < S - 1 &&
         !src.xAxis.empty()) {
@@ -1628,7 +1649,7 @@ void Traffic::solvePose(Car& c, const PlayerCar& player) {
 }
 
 // aiGoalRandomDrive::Update.
-void Traffic::updateRandomDrive(int idx, float dt, const PlayerCar& player) {
+void Traffic::updateRandomDrive(int idx, float dt) {
     Car& c = m_cars[static_cast<std::size_t>(idx)];
     if (c.goalTicks == 0)
         resetRandomDrive(c);
@@ -1642,22 +1663,33 @@ void Traffic::updateRandomDrive(int idx, float dt, const PlayerCar& player) {
         c.laneChangeOk = false;
     }
     if (c.speed <= 0.0f) {
-        // A stopped car is only refitted once a player comes within 100 m.
-        if (!c.fitted && player.valid &&
-            Vec2{player.transform.m3.x - c.transform.m3.x, player.transform.m3.z - c.transform.m3.z}.mag2() <
-                10000.0f) {
-            c.fitted = true;
-            solvePose(c, player);
+        // A stopped car is only refitted once a player comes within 100 m
+        // (for each such player in the list, as coded).
+        if (!c.fitted) {
+            for (const PlayerCar& player : m_players) {
+                if (player.valid && Vec2{player.transform.m3.x - c.transform.m3.x,
+                                         player.transform.m3.z - c.transform.m3.z}
+                                            .mag2() < 10000.0f) {
+                    c.fitted = true;
+                    solvePose(c);
+                }
+            }
         }
     } else if (solveRailType(idx)) {
-        solvePose(c, player);
-        if (player.valid &&
-            Vec2{c.transform.m3.x - player.transform.m3.x, c.transform.m3.z - player.transform.m3.z}.mag2() <
-                sq(kPlayerZoneDistance) &&
-            detectPlayerCollision(c, player) && !ambientBlockingPlayer(idx, player)) {
-            c.goal = AmbientGoal::AvoidPlayer;
-            c.goalTicks = 0;
-            return;
+        solvePose(c);
+        // The first player of the list within 25 m, in its path and not
+        // behind the car ahead: the car avoids that player.
+        for (std::size_t k = 0; k < m_players.size(); ++k) {
+            const PlayerCar& player = m_players[k];
+            if (player.valid &&
+                Vec2{c.transform.m3.x - player.transform.m3.x, c.transform.m3.z - player.transform.m3.z}.mag2() <
+                    sq(kPlayerZoneDistance) &&
+                detectPlayerCollision(c, player) && !ambientBlockingPlayer(idx, player)) {
+                c.avoidSlot = m_playerSlots[k];
+                c.goal = AmbientGoal::AvoidPlayer;
+                c.goalTicks = 0;
+                return;
+            }
         }
     } else {
         return; // back in the pool
@@ -1746,8 +1778,10 @@ void Traffic::fitOffRail(Car& c) {
 }
 
 // aiGoalAvoidPlayer: off its rail, swerving round the player.
-void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
+void Traffic::updateAvoidPlayer(int idx, float dt) {
     Car& c = m_cars[static_cast<std::size_t>(idx)];
+    // aiMap::Player(+0xe6): the player it avoids.
+    const PlayerCar& p = m_slotCars[static_cast<std::size_t>(std::clamp(c.avoidSlot, 0, kMaxTrafficPlayers - 1))];
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
     const float cap = info.speedLimit + c.exceedLimit;
     const float R = p.radius;
@@ -2137,7 +2171,7 @@ void Traffic::resetRegainRail(int idx) {
 }
 
 // aiGoalRegainRail::Update.
-void Traffic::updateRegainRail(int idx, float dt, const PlayerCar& p) {
+void Traffic::updateRegainRail(int idx, float dt) {
     Car& c = m_cars[static_cast<std::size_t>(idx)];
     if (c.goalTicks == 0) {
         resetRegainRail(idx);
@@ -2145,10 +2179,14 @@ void Traffic::updateRegainRail(int idx, float dt, const PlayerCar& p) {
             return;
     }
     ++c.goalTicks;
-    if (p.valid && detectPlayerCollision(c, p)) {
-        c.goal = AmbientGoal::AvoidPlayer;
-        c.goalTicks = 0;
-        return;
+    // Any player of the list in its path: it avoids that one.
+    for (std::size_t k = 0; k < m_players.size(); ++k) {
+        if (m_players[k].valid && detectPlayerCollision(c, m_players[k])) {
+            c.avoidSlot = m_playerSlots[k];
+            c.goal = AmbientGoal::AvoidPlayer;
+            c.goalTicks = 0;
+            return;
+        }
     }
     if (c.speed > c.target)
         c.speed = c.target;
@@ -2156,7 +2194,7 @@ void Traffic::updateRegainRail(int idx, float dt, const PlayerCar& p) {
         c.speed = dt * c.accelFactor + c.speed;
     c.segDist = c.speed * dt + c.segDist;
     c.roadDist = c.segDist + c.regainBase;
-    solvePose(c, p);
+    solvePose(c);
     if (c.segDist > c.regainLength) {
         c.goal = AmbientGoal::RandomDrive;
         c.goalTicks = 0;
@@ -2263,21 +2301,72 @@ void Traffic::step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom) {
 }
 
 bool Traffic::populate(int playerRoom) {
+    TrafficPlayer local;
+    local.room = playerRoom;
+    return populate(std::span(&local, 1));
+}
+
+bool Traffic::populate(std::span<const TrafficPlayer> players) {
     if (m_started)
         return false;
     m_started = true;
-    m_room = playerRoom;
-    adjustAmbients(0, playerRoom);
+    for (const TrafficPlayer& p : players) {
+        if (p.slot < 0 || p.slot >= kMaxTrafficPlayers || m_slotPresent[static_cast<std::size_t>(p.slot)])
+            continue;
+        m_slotPresent[static_cast<std::size_t>(p.slot)] = true;
+        m_slotRooms[static_cast<std::size_t>(p.slot)] = p.room;
+        adjustAmbients(0, p.room, p.slot);
+    }
     m_populateAll = false;
     return true;
 }
 
 void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
-    m_player = player;
-    // Population: aiMap::Reset, then whenever the player enters a new room.
-    if (!populate(playerRoom) && playerRoom != 0 && playerRoom != m_room) {
-        adjustAmbients(m_room, playerRoom);
-        m_room = playerRoom;
+    TrafficPlayer local;
+    local.car = player;
+    local.room = playerRoom;
+    step(dt, std::span(&local, 1));
+}
+
+void Traffic::step(float dt, std::span<const TrafficPlayer> players) {
+    m_players.clear();
+    m_playerSlots.clear();
+    std::array<bool, kMaxTrafficPlayers> listed{};
+    for (const TrafficPlayer& p : players) {
+        if (p.slot < 0 || p.slot >= kMaxTrafficPlayers || listed[static_cast<std::size_t>(p.slot)])
+            continue;
+        listed[static_cast<std::size_t>(p.slot)] = true;
+        m_players.push_back(p.car);
+        m_playerSlots.push_back(p.slot);
+        m_slotCars[static_cast<std::size_t>(p.slot)] = p.car;
+    }
+    // Population: aiMap::Reset, then whenever a player enters a new room
+    // (aiMap::Update). A player gone from the list gives up its roads from
+    // the room they were populated for (aiMap::RemovePlayer asks the room
+    // of its car's last place; inferred equivalent), one new to it starts
+    // from room 0 (aiMap::AddPlayer).
+    if (!populate(players)) {
+        for (int slot = 0; slot < kMaxTrafficPlayers; ++slot) {
+            const auto s = static_cast<std::size_t>(slot);
+            if (m_slotPresent[s] && !listed[s]) {
+                adjustAmbients(m_slotRooms[s], 0, slot);
+                m_slotRooms[s] = 0;
+                m_slotPresent[s] = false;
+            }
+        }
+        for (const TrafficPlayer& p : players) {
+            if (p.slot < 0 || p.slot >= kMaxTrafficPlayers)
+                continue;
+            const auto s = static_cast<std::size_t>(p.slot);
+            if (!m_slotPresent[s]) {
+                m_slotPresent[s] = true;
+                m_slotRooms[s] = 0;
+            }
+            if (p.room != 0 && p.room != m_slotRooms[s]) {
+                adjustAmbients(m_slotRooms[s], p.room, p.slot);
+                m_slotRooms[s] = p.room;
+            }
+        }
     }
     // Lights that turned green restart their queues (aiTrafficLightSet::
     // Update -> aiPath::ResetVehicleReactTicks).
@@ -2318,7 +2407,7 @@ void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
                     if (m_cars[static_cast<std::size_t>(car)].lane == static_cast<int>(l) &&
                         !seen[static_cast<std::size_t>(car)]) {
                         seen[static_cast<std::size_t>(car)] = 1;
-                        updateCar(car, dt, player);
+                        updateCar(car, dt);
                     }
                     car = behind;
                 }
@@ -2330,13 +2419,13 @@ void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
 
 // aiVehicleAmbient::Update: the running goal (its Reset first), then
 // aiVehicleSpline::Update.
-void Traffic::updateCar(int idx, float dt, const PlayerCar& player) {
+void Traffic::updateCar(int idx, float dt) {
     Car& c = m_cars[static_cast<std::size_t>(idx)];
     if (!c.active)
         return;
     switch (c.goal) {
     case AmbientGoal::RandomDrive:
-        updateRandomDrive(idx, dt, player);
+        updateRandomDrive(idx, dt);
         break;
     case AmbientGoal::Collision:
         if (c.goalTicks == 0)
@@ -2348,10 +2437,10 @@ void Traffic::updateCar(int idx, float dt, const PlayerCar& player) {
             c.moverFlags = 0x08;
         break;
     case AmbientGoal::RegainRail:
-        updateRegainRail(idx, dt, player);
+        updateRegainRail(idx, dt);
         break;
     case AmbientGoal::AvoidPlayer:
-        updateAvoidPlayer(idx, dt, player);
+        updateAvoidPlayer(idx, dt);
         break;
     case AmbientGoal::Parked:
         break;
@@ -2537,6 +2626,7 @@ void Traffic::publish() {
         a.physical = c.physical;
         a.wreck = c.wreck;
         a.moverFlags = c.moverFlags;
+        a.spawns = c.spawns;
         m_public.push_back(std::move(a));
     }
 }
