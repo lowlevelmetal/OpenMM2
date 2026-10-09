@@ -407,7 +407,9 @@ velocity explains; a car not heard of for 1.5 s is dropped. The client
 (`game::TrafficClient`) interpolates the cars with the remote players'
 `SnapshotBuffer` (Hermite on the velocities, 100 ms behind, extrapolated at
 most 250 ms) and runs its light sets to the host's steps at that time (they
-are deterministic from a reset).
+are deterministic from a reset). Its physics proxies stand at that time; the
+cars are drawn a physics step (16.7 ms) earlier (`TrafficClient::transformAt`),
+where the rest of the scene is drawn.
 
 A client's car meets the received cars as kinematic instances moving at their
 interpolated velocities (`game::TrafficProxies` for the traffic, kinematic
@@ -575,11 +577,15 @@ When `config.multiplayer && ctx.netGame`:
    past, extrapolated up to 250 ms when packets are late), velocities,
    controls, damage and flags, sampled at the frame's session time less
    `simLagMs` (the remainder the frame's fixed steps will leave,
-   `phys::World::remainderAfter`). Use that one sample for everything in the
-   frame: the local car, the camera and every simulated object move in whole
-   steps, and a car sampled at the frame's own time shakes against them by up
-   to a step's travel (29 cm rms at 35 m/s and 144 fps; at 60 fps, a whole
-   step on 4-10% of frames). Draw cars with `hasState`; spawn one
+   `phys::World::remainderAfter`). Use that one sample for the cars' bodies,
+   the rules and the HUD: the local car and every simulated object are where
+   the frame's fixed steps leave them, and a car sampled at the frame's own
+   time shook against them by up to a step's travel (29 cm rms at 35 m/s and
+   144 fps; at 60 fps, a whole step on 4-10% of frames). The race draws its
+   scene between the last two steps, one step (16.7 ms) behind the frame
+   (docs/rendering.md, "Drawing between simulation steps"), so it draws the
+   cars from a second sample, `remoteCars(16.7)`, and their simulated wheels
+   and trailers blended like its own cars'. Draw cars with `hasState`; spawn one
    `VehicleRenderer` per `car.car.vehicle` / `car.car.color`. For collisions,
    use them as kinematic bodies driven by the transform/velocity: their
    colliders take the body's velocity, so a car touching one meets it at

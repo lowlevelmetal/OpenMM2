@@ -105,3 +105,110 @@ Parts that break off (effects.md) are no longer drawn on the car until it is
 reset. Not ported yet: suspension and engine parts (SHOCK, ARM, SHAFT, AXLE,
 ENGINE need the suspension matrices; no retail car has them). Traffic turn
 signals (SLIGHT0/1, blinking on a frame counter) are not ported.
+
+## Drawing between simulation steps
+
+**MM2.** The original ran its whole game once per rendered frame with that
+frame's measured time: `datTimeManager::Update` sets `Seconds` to the time
+since the last frame (clamped), `mmGame::Update` and the AI (`aiMap::Update`)
+use it, and `dgPhysManager::Update` splits it into equal samples of at most
+1/35 s, at most three (`mmGame::Init`'s SampleStep and MaxSamples;
+physics.md). Each
+frame then drew the state its own update had reached, so motion never
+juddered at any frame rate, but the simulation itself changed with the frame
+rate.
+
+**OpenMM2** keeps its simulation independent of the frame rate, for
+accuracy (it is the original's at 60 fps) and determinism (network play,
+tests, the opponent sweep): the physics runs whole 1/60 s samples
+(`phys::World::advanceFixed`) and the AI whole 1/30 s steps
+(`ai::World::update`), each carrying the rest of the frame's time to the next
+frame. A frame can therefore run no step or several. Drawing the last step's
+state made the cars, the camera and the props move in 60 Hz steps against the
+frame above 60 fps (and at 60 fps whenever a frame ran 0 or 2 samples), and
+the traffic and pedestrians in 30 Hz steps at any frame rate.
+
+Instead, the drawing blends each simulated object from its state when the
+last step began to its current state, by alpha = the time the simulation has
+not stepped yet / its step (`game::StepHistory`, `src/game/Interpolation`).
+`phys::World` and `ai::World` call a step observer at the start of every
+step; the race screen's observers record what they move into one history
+each, and the renderers ask the history for each object's drawn state. This
+is presentation only: the physics, the AI, the rules, the audio, the random
+streams and the network snapshots read the stepped state as before (tests
+`StepHistory.TheSimulationIsTheSameWhateverTheFrameTimes` and
+`TheTrafficIsTheSameWhateverTheFrameTimes` compare every step at 60, 90, 144
+and 240 fps and with uneven frames).
+
+| What | Drawn | Evidence |
+|---|---|---|
+| Blend | positions lerped, orientations slerped the short way, a scaled instance's row lengths lerped; alpha 1 gives the current state exactly | OpenMM2 |
+| Player's car, trailer, opponents, police | their vehicle poses (body and simulated wheels); the wheels blended in the body's frame and spun by the difference of their accumulated turns (vehWheel's rotation), so a wheel turning more than half a revolution a sample still turns forwards | OpenMM2 |
+| Shadow, lights, headlight beams, sirens, lens flares | from the drawn pose (VehicleRenderer) | OpenMM2 |
+| Cameras | every car camera follows the drawn car (`CameraTarget::matrix`), so the camera, the mirror (`mmMirror`'s frame on the drawn car) and the dashboard move with it; camera cuts and resets stay instant | OpenMM2 (camCarCS tracks vehCarSim's matrix) |
+| HUD | the opponent icons, the map and its player arrow follow the drawn cars (their phInertialCS matrices from the drawn model matrices) | OpenMM2 (mmIcons, mmHudMap follow the cars' matrices) |
+| Traffic with a body, props an active simulates in the world | their bodies' matrices (and the traffic's cheap wheels) blended | OpenMM2 |
+| Traffic on its rails, pedestrians | blended over the AI's 1/30 s steps, the rail cars' tyre turn too; pedestrians keep whole animation frames, as MM2 draws them | OpenMM2 |
+| Network players' cars | the snapshot sampled one physics sample further back than the sample the physics and the rules use (the frame's session time less the playout delay less 16.7 ms: alpha x step is the remainder, so that is where the rest of the scene is drawn); the kinematic car's simulated wheels blended in its body's frame; its trailer blended | OpenMM2 |
+| A client's shared traffic and police | sampled 16.7 ms before the time their physics proxies are placed at (`TrafficClient::transformAt`) | OpenMM2 |
+
+**Never blended.** An object not recorded at the start of the last step (new
+since, or not simulated in it) is drawn where it is, and so is one recorded
+under another generation: a car's reset count (`CarSim::resets`, every
+`vehCar::Reset` and placement: respawns, a race reset, an opponent or police
+car put back, a network car's first state), a recycled traffic slot (the
+slot's spawn count), a pedestrian put on a road in the last step; a race
+restart clears both histories. Any move longer than 5 m or a turn of more
+than 1.6 rad in one step counts as a jump too (300 m/s at 60 Hz). A traffic
+car that takes a body or gives it back switches between the AI's history
+and the physics' with one unblended frame. Camera cuts are instant since the
+camera itself is not blended.
+
+**Not blended.** The particles, tyre tracks, sparks, shards, engine smoke,
+debris and rain (game/fx) keep their own fixed 60 Hz updates (the sparks
+30 Hz) and are born where the simulation is, up to a step ahead of the drawn
+car: smoke and dust drift slowly, sparks and shards are brief, and a track's
+newest end is under the car; the gizmos, cable cars and sky already move once
+per frame with its time.
+
+**Latency.** The drawn state reaches the newest simulated one only just
+before the next step, and right after a step it is the one before: on average
+half a step later than before, 8.3 ms for what the physics moves and 16.7 ms
+for the AI's traffic and pedestrians (which are drawn 16.7 ms behind the
+physics' objects). That is the usual price of drawing between steps and is
+accepted. The ways to draw at the frame's own time were rejected:
+extrapolating from the current state by the remainder shows cars inside
+walls before each contact and snaps them back (up to 0.67 m at 40 m/s);
+simulating a throwaway copy of the world for the remainder (a partial
+sample) would show states the simulation never reaches, since every sample's
+terms scale with its length, would draw from the shared random streams, and
+doubles the physics' cost; a shorter fixed step changes the simulation away
+from the original's 60 fps behaviour.
+
+`OPENMM2_DEBUG_DRAW_TRACE=<file>` (a development aid, off unless set) writes
+a line a frame: the frame, its time, the physics samples it ran, alpha, the
+player's car as drawn, a point 40 m ahead of it and 6 m to its right (chosen
+again once behind the camera; the segment number counts them), the car's
+speed and the nearest other car as drawn, all in the camera's frame.
+
+**Measured** with it (and a scratch script): vppanozgt flat out
+in the San Francisco cruise from 20 m/s until its first contact (about 38
+m/s), `[Display] VSync=off` and `FrameCap`, 640 x 360. The second difference
+per frame of the drawn positions in the camera's frame (millimetres; real
+bumps of the road show in both builds):
+
+| fps | car, median / rms before | after | roadside point, median / rms before | after |
+|---|---|---|---|---|
+| 60 | 35 / 59 | 1.6 / 29 | 402 / 503 | 6.0 / 20 |
+| 90 | 36 / 49 | 0.65 / 12 | 388 / 391 | 3.2 / 8.9 |
+| 144 | 39 / 48 | 0.24 / 7.8 | 442 / 437 | 2.1 / 7.0 |
+| 240 | 13 / 36 | 0.09 / 3.8 | 12 / 339 | 1.3 / 4.1 |
+
+At a 60 fps cap 38% of the frames ran no sample or two before (the frame
+time hovers about the step); the remaining rms after is the car's real
+bounces on the road's bumps, which the camera follows with a lag. At 144 fps
+the nearest opponent in the San Francisco checkpoint race moved by 186 / 226
+mm before and 1.2 / 11 mm after; in a network cruise with shared traffic
+(host and client on UDP, both flat out) the host's car as the client draws
+it by 112 / 118 mm before and 1.5 / 5.6 mm after, the client's roadside
+point by 367 / 359 and 1.3 / 2.5 mm.

@@ -44,8 +44,9 @@ which is parsed as data.
 ## Timing
 
 The simulation runs on a fixed time step; rendering interpolates between the
-last two simulation states so any refresh rate works. Multiplayer exchanges
-simulation state at a fixed rate independent of the frame rate.
+last two simulation states so any refresh rate works (rendering.md, "Drawing
+between simulation steps"). Multiplayer exchanges simulation state at a fixed
+rate independent of the frame rate.
 
 Each frame's time step is the real time since the previous frame, held to
 0.0001–0.1 s as MM2's `datTimeManager::Update` does, so a long hitch slows

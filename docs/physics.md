@@ -51,6 +51,18 @@ scheme. (Several terms below scale with the sample length, e.g. the
 drivetrain's AngInertia * dt, so the original drove slightly differently at
 other frame rates.)
 
+The fixed step stays, for accuracy (the original at 60 fps) and determinism
+(network play, tests, the opponent sweep). A frame then runs no sample or
+several, and what is shown between two samples is OpenMM2's presentation:
+`World::step` calls a step observer before anything moves, the race screen
+keeps each body's state from before the sample (`game::StepHistory`), and
+the drawing blends it towards the current state by `interpolationAlpha()`
+(the unstepped remainder / the step; rendering.md, "Drawing between
+simulation steps"). The observer only reads; `CarSim::resets` (how many
+times `vehCar::Reset` put the car somewhere) tells the drawing not to blend
+across a reset, and nothing in the simulation reads it. The AI's fixed 1/30 s
+steps (`ai::World`) are drawn the same way.
+
 ## Rigid body (phInertialCS) — MM2
 
 * Every physics entity's update first adds its weight, Mass * -19.6 on y
