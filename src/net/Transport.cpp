@@ -183,7 +183,9 @@ void Transport::service(std::vector<TransportEvent>& out, std::uint32_t timeoutM
 
 bool Transport::send(PeerId peer, Channel channel, std::span<const std::byte> data) {
     ENetPeer* p = find(peer);
-    if (!p || p->state != ENET_PEER_STATE_CONNECTED)
+    // Every message has at least its type byte. ENet's range coder reads a
+    // zero-length packet's (null) data and crashes the sender.
+    if (!p || p->state != ENET_PEER_STATE_CONNECTED || data.empty())
         return false;
     ENetPacket* packet = enet_packet_create(data.data(), data.size(), packetFlags(channel));
     if (!packet)
