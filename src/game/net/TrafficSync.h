@@ -104,9 +104,15 @@ public:
         // ones, cars off their rails, the police and cars new to the
         // client get it in every message.
         float fullRateRadius = 80.0f;
+        // ... and beyond this every fourth (the client predicts it the while).
+        float slowRateRadius = 160.0f;
         // The message's size, bytes (the header included): one unfragmented
         // UDP datagram.
         std::size_t maxBytes = 1100;
+        // When the cars near a client do not all fit, the ones it has are
+        // kept ahead of new ones up to this much further away, so a car at the
+        // edge of what fits does not come and go with every message.
+        float keepMetres = 25.0f;
     };
 
     TrafficHost() = default;

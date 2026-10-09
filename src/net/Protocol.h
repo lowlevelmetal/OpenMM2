@@ -30,8 +30,9 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // RaceStart; the race in Welcome).
 // 4: the cars' damage (net/VehicleDamage.h events; in AmbientState the
 // police's damage at 10 bits and the knocked traffic cars' wheels).
-// 5: in AmbientState a rail car's acceleration and curvature (the clients
-// predict the shared traffic to the present).
+// 5: in AmbientState a rail car's acceleration, curvature and speed over the
+// ground (the clients predict the shared traffic to the present), and up to
+// 160 cars.
 inline constexpr std::uint16_t kProtocolVersion = 5;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 

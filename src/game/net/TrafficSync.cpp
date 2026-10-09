@@ -106,10 +106,12 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
     const std::uint32_t sequence = m_sequence[viewer.player]++;
     const float near2 = m_options.fullRateRadius * m_options.fullRateRadius;
 
+    const float slow2 = m_options.slowRateRadius * m_options.slowRateRadius;
     struct Candidate {
         const SharedCar* car;
         float distance2;
         bool chasing;
+        float rank; // its distance, less keepMetres for a car the client has
     };
     std::vector<Candidate> candidates;
     const float enter2 = m_options.enterRadius * m_options.enterRadius;
@@ -126,13 +128,16 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
         const float dx = c.transform.m3.x - viewer.position.x, dz = c.transform.m3.z - viewer.position.z;
         const float d2 = dx * dx + dz * dz;
         const bool chasing = c.kind == net::AmbientKind::Police && c.target == viewer.player;
-        if (chasing || d2 < enter2 || (d2 < leave2 && set.contains(c.id)))
-            candidates.push_back({&c, d2, chasing});
+        const bool known = set.contains(c.id);
+        if (chasing || d2 < enter2 || (d2 < leave2 && known))
+            candidates.push_back({&c, d2, chasing, std::sqrt(d2) - (known ? m_options.keepMetres : 0.0f)});
     }
+    // The police chasing the client, then the nearest (the client's own a
+    // little nearer, see keepMetres).
     std::ranges::stable_sort(candidates, [](const Candidate& a, const Candidate& b) {
         if (a.chasing != b.chasing)
             return a.chasing;
-        return a.distance2 < b.distance2;
+        return a.rank < b.rank;
     });
 
     // The header: type, time, light steps, catalog, origin, the count.
@@ -146,11 +151,13 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
             break;
         net::AmbientEntity e = toEntity(*c.car);
         // A far car on its rail, already known to the client: its state
-        // every other message, the ids alternating between messages.
+        // every other message (beyond slowRateRadius every fourth), the ids
+        // taking turns.
+        const std::uint32_t every = c.distance2 < slow2 ? 2u : 4u;
         const bool full = c.chasing || c.distance2 < near2 || !set.contains(c.car->id) ||
                           c.car->kind != net::AmbientKind::Traffic ||
                           (c.car->flags & net::kAmbientOffRail) != 0 ||
-                          ((sequence + static_cast<std::uint32_t>(c.car->id)) & 1u) == 0;
+                          (sequence + static_cast<std::uint32_t>(c.car->id)) % every == 0;
         if (!full)
             e.hasState = false;
         const std::size_t bits = net::ambientEntityBits(e);
