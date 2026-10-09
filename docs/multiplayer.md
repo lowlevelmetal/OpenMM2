@@ -42,11 +42,14 @@ Sessions are client/server. The host is a player too, and it is authoritative
 for the lobby: settings, the player list, ready flags, kicks and the countdown.
 Clients send requests and the host validates and broadcasts the result.
 
-In game, each machine simulates its own car and sends its state about 20 times
-a second. The host bundles the latest state of every car into one packet per
-tick for each client. Remote cars are drawn from an interpolation buffer about
-100 ms in the past. When packets stop coming, a remote car is extrapolated for
-up to 250 ms and then held still.
+In game, each machine simulates its own car and sends its state 20 times a
+second, stamped with the session time the simulation was at. The host bundles
+the latest state of every car into one packet per tick for each client.
+Remote cars are drawn from an interpolation buffer a playout delay in the past:
+for each car, what its snapshots needed to arrive in time over the last 3 s
+(50-500 ms; about 70 ms on a LAN, 150 ms over a 100 ms round trip, 250 ms from
+one client to another through the host). When packets stop coming, a remote
+car is extrapolated for up to 250 ms and then held still.
 
 There is no host migration. If the host leaves, every client gets
 `Disconnected{HostShutdown}`.
@@ -280,6 +283,13 @@ last 8 samples, the one with the lowest RTT is used, since it has the least
 asymmetry error. Countdown start, snapshot times and game event times are all
 in session time.
 
+The clock a client shows (`Session::time()` / `timeMs()`, sub-millisecond)
+takes a new estimate at once in the lobby. While a race is loading or running
+it slews toward it instead, at most 5% faster or slower than real time
+(`SlewedClock`; errors over 250 ms are still stepped): the remote cars are
+drawn at session times, and a stepped clock moves every car by its speed times
+the step.
+
 ### Vehicle snapshots
 
 `VehicleSnapshot` is 274 bits (about 35 bytes):
@@ -300,6 +310,28 @@ A 16-car `WorldState` fits in one packet below the ENet MTU (checked by a
 test). Receivers interpolate position with a cubic Hermite spline using the
 replicated velocities, and orientation with slerp. Extrapolation integrates
 linear and angular velocity.
+
+**Time stamps.** A snapshot's time is the session time its state belongs to.
+The game's simulation runs in fixed 1/60 s steps, so the car it sends is up to
+a step older than the frame; the race passes that age
+(`NetGame::submitLocalState(..., stateAgeMs)`), measured from the session time
+`NetGame::update()` saw at the start of the frame. Stamping the frame's time
+instead made 50 ms of stamps carry 3 or 4 steps of motion, and the car surged
+back and forth by up to a third of a metre at speed. A receiver drops states
+stamped more than 1 s ahead of its clock or 5 s behind it (a broken sender's
+times would drag the car), and the host does not relay them. Nothing is
+replicated in the lobby.
+
+**Playout delay.** `SnapshotBuffer::push(snapshot, arrival)` records, for each
+snapshot newer than all before it, its lateness (arrival minus stamp: transit,
+send interval, the host's relay tick, the sender's clock error) plus the gap
+since the previous one. `requiredDelay()` is the largest of these over the
+last 3 s, a gap left by a lost snapshot counting as at most 1.5 times the
+median gap (a single loss is bridged by a short extrapolation). The session
+moves each car's delay toward it plus 4 ms, within
+`SessionConfig::interpolationDelayMs` (50) and `maxInterpolationDelayMs`
+(500): up at 25% of real time, down at 2%, so the shown time never jumps or
+runs backwards.
 
 ### Game events
 
@@ -424,17 +456,26 @@ When `config.multiplayer && ctx.netGame`:
    Go are the last 3 s). `raceStarted()` becomes true at the start time.
 3. **Local car:** after stepping the simulation,
    `submitLocalState(car.modelMatrix(), linearVelocity, angularVelocity,
-   controls, damage01, flags)` where `controls` are the pedal/steering inputs
+   controls, damage01, flags, stateAgeMs)` where `stateAgeMs` is how far the
+   simulation is behind the frame (the fixed step's unstepped remainder),
+   `controls` are the pedal/steering inputs
    and gear, and `flags` combine `net::kVehicleBrakeLights`, `kVehicleHeadlights`,
    `kVehicleHorn`, `kVehicleSiren`, `kVehicleWrecked`. Sending is rate limited
    inside (20 Hz).
-4. **Remote cars:** `for (const auto& car : ctx.netGame->remoteCars())` gives
-   each other player's `transform` (car model matrix, ~100 ms in the past,
-   extrapolated up to 250 ms when packets are late), velocities, controls,
-   damage and flags. Draw cars with `hasState`; spawn one `VehicleRenderer`
-   per `car.car.vehicle` / `car.car.color`. For collisions, use them as
-   kinematic bodies driven by the transform/velocity (the original also showed
-   remote cars from received positions).
+4. **Remote cars:** once a frame, `ctx.netGame->remoteCars(simLagMs)` gives
+   each other player's `transform` (car model matrix, a playout delay in the
+   past, extrapolated up to 250 ms when packets are late), velocities,
+   controls, damage and flags, sampled at the frame's session time less
+   `simLagMs` (the remainder the frame's fixed steps will leave,
+   `phys::World::remainderAfter`). Use that one sample for everything in the
+   frame: the local car, the camera and every simulated object move in whole
+   steps, and a car sampled at the frame's own time shakes against them by up
+   to a step's travel (29 cm rms at 35 m/s and 144 fps; at 60 fps, a whole
+   step on 4-10% of frames). Draw cars with `hasState`; spawn one
+   `VehicleRenderer` per `car.car.vehicle` / `car.car.color`. For collisions,
+   use them as kinematic bodies driven by the transform/velocity: their
+   colliders take the body's velocity, so a car touching one meets it at
+   their relative speed (the original simulated them as cars).
 5. **Events:** report what the race rules decide: `sendCheckpoint(index,
    raceTimeMs)`, `sendLap(lap, lapTimeMs)`, `sendFinish(raceTimeMs, position)`,
    Cops & Robbers `sendGold(GoldPickedUp|GoldDropped|GoldDelivered, position,
@@ -471,3 +512,23 @@ off the lobby says which UDP port must be opened by hand.
 discovery, password refusal, chat, car and ready changes, settings
 propagation, countdown, vehicle state replication, game events, return to
 lobby, host shutdown and eject. Port forwarding is disabled in these tests.
+
+### Diagnosing replication
+
+`OPENMM2_NET_TRACE=<file>` (off unless set) makes each session write, one line
+each:
+
+* `S wall id stamp arrival delay x y z vx vy vz`: every remote snapshot taken
+  in (`wall` is the local monotonic clock, `stamp` and `arrival` session ms,
+  `delay` the car's playout delay);
+* `F wall frameTime stateAge x y z vx vy vz`: the local car once a frame, as
+  submitted (`frameTime - stateAge` is the session time its state belongs
+  to);
+* `R wall id stale x y z vx vy vz sampleTime`: each remote car as sampled for
+  the frame.
+
+With one trace per machine, a remote car as drawn (`R`) can be compared with
+where the other machine's car really was at `sampleTime` (its `F` lines).
+Latency, jitter and loss can be added between machines on one computer with a
+UDP relay in front of the host (any proxy that delays datagrams; tc/netem
+needs root).

@@ -64,6 +64,21 @@ TEST(Kinematic, TouchingAMovingKinematicBodyTakesTheRelativeSpeed) {
     EXPECT_LE(v, 30.0f);
 }
 
+TEST(World, RemainderAfterIsWhatAdvanceFixedLeaves) {
+    // RaceScreen samples the network cars at the time the frame's fixed
+    // steps will reach, before stepping.
+    World world;
+    const float frames[] = {0.0069f, 0.0071f, 0.0166f, 0.0167f, 0.0334f, 0.002f, 0.1f, 0.0f, 0.6f};
+    for (int k = 0; k < 3; ++k) {
+        for (float dt : frames) {
+            const float expected = world.remainderAfter(dt);
+            world.advanceFixed(dt);
+            EXPECT_EQ(world.remainder(), expected) << dt;
+            EXPECT_LT(world.remainder(), kFixedSampleStep);
+        }
+    }
+}
+
 TEST(Kinematic, AStillKinematicBodyIsAWall) {
     // At rest, a kinematic body is hit like a wall: the 5 m/s chaser stops.
     const float v = speedAfterCatchingUp(0.0f, 5.0f);

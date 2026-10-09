@@ -228,9 +228,10 @@ private:
     void close(DisconnectReason reason, std::string message, bool failedJoin);
     void tickCountdown();
     void updateShownClock();
-    // A remote vehicle's snapshot (ignored in the lobby: late packets of the
-    // last race).
-    void receiveState(std::uint8_t id, const VehicleSnapshot& state);
+    // Takes in a remote vehicle's snapshot; false when it is ignored (in the
+    // lobby, late packets of the last race; a time stamp far from this
+    // clock's).
+    bool receiveState(std::uint8_t id, const VehicleSnapshot& state);
     // Moves each remote vehicle's playout delay toward what it needs.
     void updatePlayout();
     bool replicating() const { return m_phase != SessionPhase::Lobby; }

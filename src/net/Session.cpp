@@ -465,13 +465,23 @@ void Session::updatePlayout() {
     }
 }
 
-void Session::receiveState(std::uint8_t id, const VehicleSnapshot& state) {
+bool Session::receiveState(std::uint8_t id, const VehicleSnapshot& state) {
+    // A state is stamped with the sender's session time, which can be off
+    // by its clock's error; one far ahead of this clock (a broken or hostile
+    // sender: it would drag the car toward it and hold the playout delay) or
+    // too old to be shown is dropped, and the host does not relay it.
+    constexpr double kMaxAheadMs = 1000.0;
+    constexpr double kMaxBehindMs = 5000.0;
     if (!replicating())
-        return;
+        return false;
     const double now = timeMs();
+    const auto t = static_cast<double>(state.time);
+    if (t > now + kMaxAheadMs || t < now - kMaxBehindMs)
+        return false;
     m_remoteStates[id].buffer.push(state, now);
     if (m_stateObserver)
         m_stateObserver(id, state, now);
+    return true;
 }
 
 void Session::tickCountdown() {
@@ -671,12 +681,11 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
     }
     case MsgType::VehicleState: {
         VehicleStateMsg msg;
-        if (!decodeMessage(data, msg) || !replicating())
+        if (!decodeMessage(data, msg) || !receiveState(id, msg.state))
             return;
         // The newest state is relayed with the next WorldState.
         if (const auto it = m_pendingStates.find(id); it == m_pendingStates.end() || it->second.time < msg.state.time)
             m_pendingStates[id] = msg.state;
-        receiveState(id, msg.state);
         return;
     }
     case MsgType::GameEvent: {
