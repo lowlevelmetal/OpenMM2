@@ -520,6 +520,8 @@ int World::advanceOversampled(float frameDelta, float sampleStep, int maxSamples
 void World::step(float dt) {
     if (dt <= 0)
         return;
+    if (m_stepObserver)
+        m_stepObserver();
     const float invDt = 1.0f / dt;
     // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
     sampleTime() = {dt, invDt};

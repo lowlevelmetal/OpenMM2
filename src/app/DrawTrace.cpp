@@ -37,8 +37,9 @@ void DrawTrace::frame(double dt, int steps, float alpha, const Mat34& camera, co
     const Vec3 c = camera.untransform(car.m3);
     const Vec3 p = camera.untransform(*m_point);
     const Vec3 o = other ? camera.untransform(other->m3) : Vec3{};
-    std::fprintf(m_file.get(), "%ld %.6f %d %.4f %.5f %.5f %.5f %.5f %.5f %.5f %d %.3f %d %.5f %.5f %.5f\n", m_frame++,
-                 dt, steps, alpha, c.x, c.y, c.z, p.x, p.y, p.z, m_segment, speed, other ? 1 : 0, o.x, o.y, o.z);
+    std::fprintf(m_file.get(), "%ld %.6f %d %.4f %.5f %.5f %.5f %.5f %.5f %.5f %d %.3f %d %.5f %.5f %.5f\n",
+                 m_frame++, dt, steps, alpha, c.x, c.y, c.z, p.x, p.y, p.z, m_segment, speed,
+                 other ? 1 : 0, o.x, o.y, o.z);
 }
 
 } // namespace mm2::app

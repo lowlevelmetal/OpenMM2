@@ -1085,7 +1085,12 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
                      const Frustum& frustum, const Camera& camera, const DrawParams& params) {
     const Mat34& cam = camera.transform;
     std::vector<Vec3> glows;
-    std::vector<std::pair<const Instance*, const GpuMesh*>> trees;
+    struct Tree {
+        const Instance* instance;
+        const GpuMesh* mesh;
+        Mat34 matrix;
+    };
+    std::vector<Tree> trees;
     // cityLevel::DrawRooms draws the props from their rooms (lvlLevel::
     // MoveToRoom's, which BangerSet keeps) when the city listed the view's.
     const bool rooms = params.rooms && params.rooms->active() && roomsTracked();
@@ -1108,9 +1113,11 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
         if (!model)
             continue;
         const float radius = (model->bounds.max - model->bounds.min).mag() * 0.5f;
+        const Mat34 matrix =
+            inst.active >= 0 && params.drawnMatrix ? params.drawnMatrix(i, inst.matrix) : inst.matrix;
         // lvlInstance::IsVisible with the dynamic objects' NoDraw limit.
-        const auto lod = objectLod(viewDepth(cam, inst.matrix.m3), radius, params.detail, params.detail.noDraw);
-        const bool visible = lod && frustum.intersectsSphere(inst.matrix.m3, radius);
+        const auto lod = objectLod(viewDepth(cam, matrix.m3), radius, params.detail, params.detail.noDraw);
+        const bool visible = lod && frustum.intersectsSphere(matrix.m3, radius);
         // Lamp glows of props still standing (dgBangerInstance::DrawGlow:
         // lvlInstance flag 1, which stays set while an active holds the prop
         // and only goes when it breaks loose). cityLevel_drawLights draws
@@ -1118,7 +1125,7 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
         // city's room list, with the prop.
         if (params.glows && standing(i) && (rooms ? passes.shadowsAndGlows : visible))
             for (const Vec3& g : inst.data->glowOffsets)
-                glows.push_back(inst.matrix.transform(g));
+                glows.push_back(matrix.transform(g));
         if (!visible || !passes.objects)
             continue;
         const std::string part = !inst.mesh.empty() ? inst.mesh
@@ -1130,7 +1137,7 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
         if (!mesh)
             continue;
         if (tree) {
-            trees.emplace_back(&inst, mesh);
+            trees.push_back({&inst, mesh, matrix});
             continue;
         }
         // dgBangerInstance::Draw. No local lights
@@ -1144,17 +1151,17 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
             options.alphaRef = kUnlitAlphaRef;
         }
         drawGpuMesh(device, textures, *mesh, model->materials(variantOf(*model, inst.paint)),
-                    Mat44::fromMat34(inst.matrix), options);
+                    Mat44::fromMat34(matrix), options);
     }
     // dgTreeRenderer::RenderTrees (dgBangerInstance::DrawTree): unlit, alpha
     // reference 120, with the prop's variant.
-    for (const auto& [inst, mesh] : trees) {
+    for (const Tree& t : trees) {
         MeshDrawOptions options;
         options.lighting = false;
         options.alphaRef = kTreeAlphaRef;
-        const GpuModel& model = *models.get(inst->model);
-        drawGpuMesh(device, textures, *mesh, model.materials(variantOf(model, inst->paint)),
-                    Mat44::fromMat34(inst->matrix), options);
+        const GpuModel& model = *models.get(t.instance->model);
+        drawGpuMesh(device, textures, *t.mesh, model.materials(variantOf(model, t.instance->paint)),
+                    Mat44::fromMat34(t.matrix), options);
     }
 
     // Lamp glows: s_yel_glow cards of half size 1.5 m with a 1% flicker,
