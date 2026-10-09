@@ -675,7 +675,8 @@ std::string formatTime(float seconds) {
 //   "profile:Test;page:races;wait:5;nav:down;nav:right"
 // Commands: profile:<name> (create/select), page:<name>, nav:<up|down|left|
 // right|accept|back|tab>, wait:<frames>, mode:<cruise|blitz|circuit|race|crash>,
-// city:<map>, vehicle:<name>, result:<position> (opens the results screen),
+// city:<map>, vehicle:<name>, time:<morning|noon|evening|night>,
+// result:<position> (opens the results screen),
 // mp:<host|join:addr|chat:text|ready|start|team:n|mode:m> (multiplayer).
 class Script {
 public:
@@ -739,6 +740,12 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
         fe.applyRaceDefaults(fe.config);
     } else if (cmd == "vehicle") {
         fe.config.vehicle = arg;
+    } else if (cmd == "time") {
+        // morning, noon, evening or night (after mode/city, which reset it).
+        static constexpr std::string_view kTimes[] = {"morning", "noon", "evening", "night"};
+        for (std::size_t k = 0; k < std::size(kTimes); ++k)
+            if (arg == kTimes[k])
+                fe.config.timeOfDay = static_cast<game::TimeOfDay>(k);
     } else if (cmd == "go") {
         fe.startRace();
     } else if (cmd == "mp") {
