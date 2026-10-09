@@ -90,8 +90,19 @@ public:
         // impact lasts), of a damaging impact.
         float impulse = 0.0f;
     };
-    enum class EventType : std::uint8_t { GoldTaken, GoldDropped, GoldDelivered, NewSet, TimeWarning, TimeUp,
-                                          PointLimit };
+    enum class EventType : std::uint8_t {
+        GoldTaken,
+        GoldDropped,
+        GoldDelivered,
+        NewSet,
+        TimeWarning,
+        TimeUp,
+        PointLimit,
+        // OpenMM2 (host authority): the pickup this machine predicted for
+        // its car was not the host's (another car took the gold, or the
+        // host never granted it): the gold leaves the car, without a line.
+        PickupUndone,
+    };
     struct Event {
         EventType type{};
         int car = -1;  // carrier / deliverer
@@ -116,11 +127,15 @@ public:
             GoldDropped,   // 0x259: the carrier lost it at `position`
             GoldDelivered, // 600: the carrier delivered it
             NewSet,        // 0x261 ChangeSet: the host's new places
+            Limit,         // SendLimitReached: the game is over (updateHost)
         };
         Type type{};
         int car = -1;
         Vec3 position;
         CrSet set;
+        bool knocked = false;    // GoldDropped: by a hit (ImpactCallback's "You dropped the gold!")
+        bool pointLimit = false; // Limit: a point limit (`car` and `value` the winner's), else the time
+        int value = 0;
     };
     // The local machine's frame for its car `self` (in `cars`, with the
     // others' places): `impacts` are its car's; `host` grants pickups at
@@ -136,6 +151,46 @@ public:
     // A player left (mmMultiCR::SystemMessage 0x2d): the host drops a
     // leaver's gold where it is (2 m above the car), not back to its spawn.
     std::vector<Message> playerLeft(int id, bool host);
+    // --- Under the host's authority (OpenMM2, docs/multiplayer.md "Rules") ---------
+    // The host simulates every car, so it runs mmMultiCR's rules for each as
+    // that car's own machine did (ImpactCallback, UpdateGame's wreck,
+    // HitWaterHandler, UpdateGold, UpdateBank / UpdateHideout) with its own
+    // answers to them (a pickup granted while nobody carries the gold,
+    // GetNewSet after a delivery), and tells everyone. `cars` are every
+    // player's car in the game, `impacts` the damaging hits between them.
+    // Returns the decisions, in order.
+    std::vector<Message> updateHost(float dt, const std::vector<Car>& cars, const std::vector<Impact>& impacts);
+    // A machine that is not the host: the clock and its warnings, and its
+    // own car `me` taking free gold within reach (UpdateGold's test, the
+    // car not locked out by a wreck or a lost gold): a prediction, shown at
+    // once (GoldTaken), which the host's decision confirms or undoes
+    // (applyHost, adopt). `players` counts the players in the game. Returns
+    // true when it predicted a pickup.
+    bool updatePredicted(float dt, const Car& me, int players);
+    // The host's decision (a Message from updateHost) on a machine that is
+    // not the host: as receive(), except that a predicted pickup it confirms
+    // shows nothing more, and one it gives to another car is undone.
+    void applyHost(const Message& m, int self);
+    // The host's state, which a machine that is not the host adopts as it
+    // stands (silently: the decisions showed what happened). `confirmed`:
+    // the host has seen this machine's car long enough after a predicted
+    // pickup that the pickup is undone unless the state has it.
+    struct State {
+        int carrier = -1;
+        bool goldActive = true;
+        Vec3 goldPosition;
+        CrSet set;
+        std::vector<std::pair<int, int>> scores;
+        bool over = false;
+    };
+    State state() const;
+    void adopt(const State& state, int self, bool confirmed);
+    // A pickup this machine predicted that the host has not confirmed yet.
+    bool pickupPending() const { return m_pending; }
+    // Lock this machine's own car out of pickups (its car was wrecked, or
+    // the host's word knocked the gold out of it).
+    void lockOut(int id, float seconds);
+
     // Whether the gold can be taken (mmWaypointObject active).
     bool goldActive() const { return m_goldActive; }
 
@@ -166,6 +221,9 @@ private:
     void tickLimits(float dt);
     void score(int id, int points);
     void checkLimits();
+    bool locked(int id) const;
+    void tickLockouts(float dt);
+    bool canTake(const Car& c) const;
 
     CrSettings m_settings;
     CrLocations m_locations;
@@ -181,6 +239,7 @@ private:
     float m_lastWarning = 0.0f;
     bool m_scored = false;
     bool m_over = false;
+    bool m_pending = false; // a predicted pickup (updatePredicted) not confirmed yet
     std::vector<Event> m_events;
 };
 

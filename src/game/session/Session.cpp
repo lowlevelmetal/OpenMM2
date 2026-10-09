@@ -4,6 +4,7 @@
 #include "core/StringUtil.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <format>
 #include <limits>
@@ -68,17 +69,21 @@ ModeText modeText(GameMode m, bool multi) {
 
 // The multiplayer races' finish lines (mmMultiRace / Circuit / Blitz::
 // GameMessage, UpdateGame): another player "finished in" (the host's line on
-// 0x206, a client's on 0x1f7) and the finish timeout's "Race over".
+// 0x206, a client's on 0x1f7), the finish timeout's "Race over" (the host's
+// own at the timeout, a client's on 0x1fe; a Blitz client's on the host's
+// 0x1fe), and the player's own "finished in" (the host's at its finish, a
+// client's when the host's 0x1f7 about it arrives).
 struct NetText {
     std::uint32_t otherFinished = 0, raceOver = 0;
     float timeout = 0.0f; // the timeout armed at the first finish (0: none)
+    std::uint32_t ownFinished = 0;
 };
 
 NetText netText(GameMode m, bool host) {
     switch (m) {
-    case GameMode::Checkpoint: return {host ? 152u : 150u, host ? 143u : 153u, 60.0f};
-    case GameMode::Circuit: return {host ? 110u : 107u, host ? 100u : 111u, 120.0f};
-    case GameMode::Blitz: return {host ? 99u : 96u, 0, 0.0f};
+    case GameMode::Checkpoint: return {host ? 152u : 150u, host ? 143u : 153u, 60.0f, host ? 148u : 149u};
+    case GameMode::Circuit: return {host ? 110u : 107u, host ? 100u : 111u, 120.0f, host ? 105u : 106u};
+    case GameMode::Blitz: return {host ? 99u : 96u, host ? 0u : 97u, 0.0f, host ? 93u : 95u};
     default: return {};
     }
 }
@@ -252,6 +257,9 @@ void Session::resetRace() {
     m_netResults.clear(); // mmGameMulti::Reset: the results table
     m_netTimeoutOn = m_netTimedOut = false;
     m_netRacerCount = 1;
+    m_netHits.clear();
+    m_netEvaluated = 0;
+    m_netFinishKnown = m_netAllCounted = false;
     // DisableRacers: the player takes no damage before "Go!".
     m_playerDamage = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers;
     m_resultFinished = m_resultWon = false;
@@ -577,8 +585,197 @@ void Session::showWaypointSteps(const std::vector<WaypointStep>& steps) {
 
 void Session::updateWaypoints(const PlayerState& player) {
     std::vector<WaypointStep> steps;
-    m_wp.update(m_checkpoints, player.transform, player.inertiaBox, steps);
+    const int index = m_wp.detect(m_checkpoints, player.transform, player.inertiaBox);
+    if (index < 0 || !m_wp.apply(m_checkpoints, index, player.transform.m3, steps))
+        return;
+    // A network race: the host's word on it follows (applyNetProgress).
+    if (netRules())
+        m_netHits.push_back({static_cast<std::uint8_t>(index), m_netSample});
     showWaypointSteps(steps);
+}
+
+// --- Network races under the host's authority (SessionOptions::netRules) ------------
+
+std::vector<std::uint8_t> Session::netHits() const {
+    std::vector<std::uint8_t> out;
+    for (const auto& h : m_netHits)
+        out.push_back(h.index);
+    return out;
+}
+
+namespace {
+
+// A hit's identity in a car's sequence of hits: the waypoint and how many
+// times the car had hit it before (a circuit's laps).
+std::vector<std::pair<std::uint8_t, int>> hitKeys(const std::vector<std::uint8_t>& hits) {
+    std::vector<std::pair<std::uint8_t, int>> keys;
+    std::array<int, 256> seen{};
+    for (const std::uint8_t h : hits)
+        keys.emplace_back(h, seen[h]++);
+    return keys;
+}
+
+} // namespace
+
+void Session::applyNetProgress(const NetProgress& progress, const Vec3& carPosition) {
+    if (!netRules() || progress.evaluated < m_netEvaluated)
+        return;
+    m_netEvaluated = progress.evaluated;
+    // The host's sequence: this machine's hits before `first`, then the
+    // host's.
+    std::vector<std::uint8_t> host;
+    for (std::size_t i = 0; i < m_netHits.size() && i < progress.first; ++i)
+        host.push_back(m_netHits[i].index);
+    host.insert(host.end(), progress.hits.begin(), progress.hits.end());
+    const std::vector<std::uint8_t> mine = netHits();
+    const auto hostKeys = hitKeys(host);
+    const auto myKeys = hitKeys(mine);
+    // The hits this machine predicted that the host has not counted are
+    // still on their way while the host has not run kNetHitMargin of the
+    // car's samples past them, and are taken back after that.
+    std::vector<std::uint8_t> next = host;
+    std::vector<std::uint32_t> nextSeq(host.size(), progress.evaluated);
+    for (std::size_t i = 0; i < m_netHits.size(); ++i) {
+        if (const auto hk = std::ranges::find(hostKeys, myKeys[i]); hk != hostKeys.end()) {
+            nextSeq[static_cast<std::size_t>(hk - hostKeys.begin())] = m_netHits[i].seq;
+            continue;
+        }
+        if (m_netHits[i].seq + kNetHitMargin > progress.evaluated) {
+            next.push_back(m_netHits[i].index);
+            nextSeq.push_back(m_netHits[i].seq);
+        }
+    }
+    if (next == mine) {
+        for (std::size_t i = 0; i < m_netHits.size(); ++i)
+            m_netHits[i].seq = nextSeq[i];
+        return;
+    }
+    // The waypoints as the host's word and the hits still on their way make
+    // them: every hit applied again from mmWaypoints::Reset (the same
+    // rules), the HUD showing the ones this machine had not shown.
+    WaypointTracker wp;
+    const LessonEvent* lesson = currentLesson();
+    wp.reset(m_checkpoints, rule(), m_setup.laps, lesson && lesson->singleCheckpoint);
+    std::vector<NetHit> hits;
+    std::vector<WaypointStep> shown;
+    std::array<int, 256> seen{};
+    for (std::size_t i = 0; i < next.size(); ++i) {
+        std::vector<WaypointStep> steps;
+        if (!wp.apply(m_checkpoints, next[i], carPosition, steps))
+            continue;
+        const std::pair<std::uint8_t, int> key{next[i], seen[next[i]]++};
+        hits.push_back({next[i], nextSeq[i]});
+        if (std::ranges::find(myKeys, key) == myKeys.end())
+            shown.insert(shown.end(), steps.begin(), steps.end());
+    }
+    // A lap taken back leaves the lap times.
+    if (wp.lap < m_wp.lap) {
+        m_lapTimes.resize(static_cast<std::size_t>(std::max(0, wp.lap)));
+        m_lapStart = 0.0f;
+        for (const float t : m_lapTimes)
+            m_lapStart += t;
+        m_lastLap = m_lapTimes.empty() ? 0.0f : m_lapTimes.back();
+        m_bestLap = m_lapTimes.empty() ? 0.0f : *std::ranges::min_element(m_lapTimes);
+    }
+    // The player's own target stays while it is still one (the Next / Prev.
+    // Checkpoint keys choose it); the any-order rules aim at the nearest
+    // otherwise.
+    const int n = static_cast<int>(m_checkpoints.size());
+    const int target = m_wp.current;
+    if (wp.rule() == WaypointRule::CheckpointRace || wp.rule() == WaypointRule::Blitz) {
+        const auto k = static_cast<std::size_t>(std::clamp(target, 0, std::max(0, n - 1)));
+        if (k < wp.cleared.size() && !wp.cleared[k] && wp.visible[k])
+            wp.setTarget(target);
+        else if (!wp.finished)
+            wp.closestTarget(m_checkpoints, carPosition);
+    }
+    log::debug("session: the host's word on the waypoints after sample {}: {} hits ({} predicted)",
+               progress.evaluated, hits.size(), m_netHits.size());
+    m_wp = std::move(wp);
+    m_netHits = std::move(hits);
+    showWaypointSteps(shown);
+}
+
+void Session::setNetStanding(int place, int racers) {
+    if (!netRules())
+        return;
+    m_rank = std::max(1, place);
+    m_netRacerCount = std::max(1, racers);
+}
+
+void Session::netFinished(float seconds) {
+    if (!netRules() || m_netFinishKnown || m_phase == Phase::Done)
+        return;
+    m_netFinishKnown = true;
+    const NetText nt = netText(mode(), m_options.netHost);
+    if (seconds >= kNetDnf) {
+        // Did not finish: its clock ran out (a Blitz), or the host timed the
+        // race out (its "Race over" came with netTimedOut).
+        addNetResult(m_options.playerName, kNetDnf, true);
+        if (m_phase == Phase::Racing) {
+            stopTimerWarning();
+            m_wp.stopped = true;
+            if (mode() == GameMode::Blitz) {
+                const ModeText mt = modeText(mode(), true);
+                m_timeUp = true;
+                push(EventType::TimeUp);
+                setMessage(mt.timeUp, "Time's up!", 5.0f, false);
+                deactivateFinish();
+                endRace(false, false, kPostRace);
+            } else {
+                setMessage(nt.raceOver, "Race over", 5.0f, false);
+                endRace(false, false, 3.0f, PlayerHold::Undrivable);
+            }
+        }
+        return;
+    }
+    // mmMultiRace / Circuit / Blitz: the host's own finish (UpdateGame state
+    // 3) or a client's on the host's 0x1f7 about it: "<name>" / "finished in
+    // M:SS:HH" with the host's time, the results, and the wait before them
+    // (a Blitz until its clock would have run out, the others 3 s).
+    stopTimerWarning();
+    m_raceTime = seconds;
+    setMessage(m_options.playerName, 5.0f, false);
+    setMessage2(std::format("{} {}", str(nt.ownFinished, "finished in"), formatTime(seconds)));
+    addNetResult(m_options.playerName, seconds, true);
+    int row = 0;
+    for (const auto& r : m_netResults) {
+        ++row;
+        if (r.self)
+            break;
+    }
+    m_resultPosition = row;
+    if (m_phase == Phase::PostRace) {
+        // Its own clock had run out first (a Blitz): the host's finish stands.
+        m_resultFinished = m_resultWon = true;
+        m_resultTime = seconds;
+        m_timeUp = false;
+        return;
+    }
+    push(EventType::PlayerFinished, row, seconds);
+    const float wait = mode() == GameMode::Blitz ? std::max(0.0f, m_clock) : 3.0f;
+    endRace(true, true, wait);
+}
+
+void Session::netTimedOut() {
+    // 0x1fe: a machine still racing stops, braked, with the mode's line for
+    // 5 s (a Blitz's with the net alert); MM2 then sends its did-not-finish,
+    // which the host has decided already.
+    if (!netRules() || m_phase != Phase::Racing)
+        return;
+    m_netTimedOut = true;
+    stopTimerWarning();
+    m_wp.stopped = true;
+    const NetText nt = netText(mode(), m_options.netHost);
+    if (mode() == GameMode::Blitz) {
+        sound(GameSound::NetAlert);
+        if (nt.raceOver)
+            setMessage(nt.raceOver, "Time's up!", 5.0f, false);
+        endRace(false, false, 5.0f, PlayerHold::Undrivable);
+    } else {
+        setMessage(nt.raceOver, "Race over", 5.0f, false);
+        endRace(false, false, 3.0f, PlayerHold::Undrivable);
+    }
 }
 
 // --- Opponents ---------------------------------------------------------------------
@@ -915,7 +1112,8 @@ void Session::addNetResult(std::string name, float time, bool self) {
     // SetTimeoutOn: the first finish (fewer than 2 counted) arms the
     // finish timeout of a race (60 s) or circuit (120 s).
     const NetText nt = netText(mode(), m_options.netHost);
-    if (netWaitsForAll() && nt.timeout > 0.0f && m_netResults.size() < 2 && m_phase != Phase::Done) {
+    if (!netRules() && netWaitsForAll() && nt.timeout > 0.0f && m_netResults.size() < 2 &&
+        m_phase != Phase::Done) {
         m_netTimeoutOn = true;
         m_netTimeout = nt.timeout;
     }
@@ -936,6 +1134,14 @@ void Session::remoteFinished(const std::string& name, float seconds) {
 }
 
 void Session::updateNetRace(float dt, const PlayerState& player) {
+    if (netRules()) {
+        // The host ranks everyone (setNetStanding, NetRacer::hostPlace) and
+        // runs the finish timeout (netTimedOut).
+        m_netPlaces.assign(m_netRacers.size(), 0);
+        for (std::size_t i = 0; i < m_netRacers.size(); ++i)
+            m_netPlaces[i] = m_netRacers[i].present && !m_netRacers[i].finished ? m_netRacers[i].hostPlace : 0;
+        return;
+    }
     // mmGameMulti::UpdateScore: the place among the other players, while
     // the player's waypoints are not done ("Place: n/N").
     const int n = static_cast<int>(m_checkpoints.size());
@@ -981,8 +1187,14 @@ void Session::updateNetRace(float dt, const PlayerState& player) {
                 else if (o.present && o.waypoints == r.waypoints && dist2(o.position, wp) < own)
                     ++place;
             }
+            // The player's own car: ahead with more waypoints or its
+            // waypoints done; level, when it is nearer its own target than
+            // that car is (mmGameMulti::UpdateScore measures both to the
+            // player's target there, not to the car's next waypoint).
+            const Vec3 target =
+                m_checkpoints[static_cast<std::size_t>(std::clamp(m_wp.current, 0, n - 1))].position;
             if (m_wp.count > r.waypoints || m_wp.finished ||
-                (m_wp.count == r.waypoints && dist2(player.transform.m3, wp) < own))
+                (m_wp.count == r.waypoints && dist2(player.transform.m3, target) < dist2(r.position, target)))
                 ++place;
             m_netPlaces[i] = place;
         }
@@ -1044,7 +1256,8 @@ void Session::updateRace(float dt, const PlayerState& player) {
         if (mode() == GameMode::Blitz && m_hasClock && m_clock < kTimerWarning)
             timerWarning(dt);
         wreckPenalty();
-        if (m_wp.finished) {
+        // Under the host's authority the finish is the host's (netFinished).
+        if (m_wp.finished && !netRules()) {
             stopTimerWarning();
             playerFinished();
             // The player's name, and "finished in M:SS:HH" under it.
@@ -1581,8 +1794,10 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
         // finished, so a player who finished and then left does not end the
         // race of one still driving (deviation: MM2 counts the leaver's
         // finish against the smaller session at the next finish).
+        // Under the host's authority its 0x211 says so (netAllCounted).
         const bool counted =
-            m_netTimedOut || std::ranges::all_of(m_netRacers, [](const NetRacer& r) { return r.finished; });
+            netRules() ? m_netAllCounted
+                       : m_netTimedOut || std::ranges::all_of(m_netRacers, [](const NetRacer& r) { return r.finished; });
         if (m_postWait <= 0.0f && (!netWaitsForAll() || counted)) {
             m_phase = Phase::Done;
             push(EventType::SessionOver);

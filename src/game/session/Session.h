@@ -68,6 +68,14 @@ struct SessionOptions {
     // Multiplayer: this machine hosts the session (the modes' host and client
     // lines differ: e.g. "finished in" 152 / 150).
     bool netHost = false;
+    // Multiplayer races under the host's authority (OpenMM2,
+    // docs/multiplayer.md "Rules"): the session predicts the player's
+    // checkpoints from its car and takes the host's word on them
+    // (applyNetProgress); the finish, the standings, the finish timeout and
+    // the end are the host's (netFinished, setNetStanding, netTimedOut,
+    // netAllCounted). Without it every machine decides its own (MM2's
+    // peers: remoteFinished and NetFinished).
+    bool netRules = false;
 };
 
 // The game's cheat flag (bCheating): mmGame::SendChatMessage's "/blubber"
@@ -247,6 +255,9 @@ public:
         Vec3 position;     // the car's (inertial) position
         bool present = true; // its car is in the race (mmNetObject +0x118 / +0x11c)
         bool finished = false;
+        // SessionOptions::netRules: its icon's number as the host ranks it
+        // on this machine (0 no icon).
+        int hostPlace = 0;
     };
     void setNetRacers(std::vector<NetRacer> racers) { m_netRacers = std::move(racers); }
     // Another player's finish (or kNetDnf) arrived (mmMulti*::GameMessage
@@ -255,6 +266,42 @@ public:
     void remoteFinished(const std::string& name, float seconds);
     // Waypoints passed, the start included (sent to the other players).
     int waypointsPassed() const { return m_wp.count; }
+
+    // --- Network races under the host's authority (SessionOptions::netRules) ---
+    // A predicted checkpoint the host has not counted by this many of the
+    // car's samples after the one it was hit in is taken back.
+    static constexpr std::uint32_t kNetHitMargin = 30;
+    // This machine's newest physics sample (its car's input number): the
+    // checkpoints the session predicts are stamped with it.
+    void setNetSample(std::uint32_t seq) { m_netSample = seq; }
+    // The host's word on the player's waypoints: the waypoints its car hit,
+    // in order, as the host's simulation of it saw them up to its sample
+    // `evaluated` (`first`: the number of the first of `hits`, the earlier
+    // ones as this machine has them). The predicted hits the host has
+    // counted are confirmed; the ones it has not counted within
+    // kNetHitMargin samples are taken back (silently: the marker shows
+    // again); the ones it counted that were not predicted are shown now.
+    struct NetProgress {
+        std::uint32_t evaluated = 0;
+        std::uint32_t first = 0;
+        std::vector<std::uint8_t> hits;
+    };
+    void applyNetProgress(const NetProgress& progress, const Vec3& carPosition);
+    // The waypoints this machine's car has hit, in order (for tests and
+    // the trace).
+    std::vector<std::uint8_t> netHits() const;
+    // The host's standings for the player (mmGameMulti::UpdateScore on this
+    // machine: "Place: n/N").
+    void setNetStanding(int place, int racers);
+    // The host's finish for the player (mmGameMulti::SendFinishAck to it:
+    // its line and its results), or kNetDnf.
+    void netFinished(float seconds);
+    // 0x1fe from the host: the race is over for everyone still racing
+    // ("Race over"; a Blitz with the net alert).
+    void netTimedOut();
+    // 0x211 from the host: every player is counted, the results follow.
+    void netAllCounted() { m_netAllCounted = true; }
+    bool netFinishKnown() const { return m_netFinishKnown; }
 
     // Where to put the player after Respawn.
     Mat34 respawnTransform() const { return m_respawn; }
@@ -403,6 +450,17 @@ private:
     int m_resultPosition = 0;
     float m_resultTime = 0.0f;
     float m_resultDamage = 0.0f;
+    // SessionOptions::netRules.
+    struct NetHit {
+        std::uint8_t index = 0;
+        std::uint32_t seq = 0; // this machine's sample it was hit in (or the host's word came)
+    };
+    std::vector<NetHit> m_netHits; // every hit m_wp took, in order
+    std::uint32_t m_netSample = 0;
+    std::uint32_t m_netEvaluated = 0;
+    bool m_netFinishKnown = false;
+    bool m_netAllCounted = false;
+    bool netRules() const { return m_options.netRules && multiplayer(); }
 
     // Crash course.
     int m_lessonEvent = 0;
