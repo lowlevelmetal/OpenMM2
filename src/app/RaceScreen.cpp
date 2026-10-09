@@ -3345,16 +3345,20 @@ private:
                 continue;
             present.push_back(rc.id);
             RemoteVehicle& rv = m_remotes[rc.id];
-            if (rv.base != rc.car.vehicle || rv.color != rc.car.color || !rv.renderer) {
+            if (rv.base != rc.car.vehicle || rv.color != rc.car.color) {
                 if (rv.sim)
                     rv.sim->removeFrom(*m_world);
                 rv = {};
                 rv.base = rc.car.vehicle;
                 rv.color = rc.car.color;
+                // mmNetObject::Init takes the car through mmVehList::
+                // GetVehicleInfo: one this machine lacks is the default car.
+                const std::string vehicle = game::netVehicle(ctx.game->catalog, rv.base);
                 std::string error;
-                rv.sim = game::SimVehicle::load(ctx.game->vfs, rv.base, &error, {}, true, towing);
+                rv.sim = game::SimVehicle::load(ctx.game->vfs, vehicle, &error, {}, true, towing);
                 if (!rv.sim) {
-                    log::warn("race: network car {}: {}", rv.base, error);
+                    // Tried once per car and paint job, not again every frame.
+                    log::warn("race: network car {}: {}", vehicle, error);
                     continue;
                 }
                 auto& sim = rv.sim->sim();
@@ -3375,6 +3379,8 @@ private:
                 // mmNetObject::Init -> vehCar::Init -> vehSiren::vehSiren.
                 game::VehicleRenderer::setLightGlowScales(0.2f, 0.6f);
             }
+            if (!rv.sim)
+                continue;
             auto& sim = rv.sim->sim();
             // The snapshot is the model matrix; the body is at the centre of
             // mass (vehCarSim::SetWorldMatrix's offset).
