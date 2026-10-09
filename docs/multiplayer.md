@@ -196,8 +196,10 @@ layouts must bump `kProtocolVersion`.** `Hello` carries the version again,
 along with a free-form build string. Version 2 added the shared cruise
 traffic, version 3 the race start handshake (`RaceLoad` in place of
 `Countdown`, `RaceLoaded`, `RaceStart`, the race in `Welcome`), version 4
-the cars' damage, version 5 what the clients predict the shared traffic
-with (a rail car's acceleration, curvature and speed over the ground).
+the cars' damage, version 5 the players' cars simulated by the host,
+version 6 what the clients predict the shared traffic with (a rail car's
+acceleration, curvature and speed over the ground), up to 160 shared cars
+a message and no traffic hit reports.
 
 ### Handshake
 
