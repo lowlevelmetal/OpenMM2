@@ -67,6 +67,9 @@ struct NetOptions {
     bool portMapping = true;             // forward the port on the router (UPnP, PCP, NAT-PMP)
     std::filesystem::path portMapState;  // crash-safe cleanup record of the mapping
     std::uint16_t discoveryPort = net::kDefaultDiscoveryPort; // LAN browser port (tests use others)
+    // Hosting: how long a race's start waits for players still loading
+    // (net::SessionConfig::loadWaitMs, the same default; tests use less).
+    std::uint32_t loadWaitMs = 60000;
 };
 
 struct NetHostOptions {

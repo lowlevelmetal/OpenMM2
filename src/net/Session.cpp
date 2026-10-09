@@ -910,8 +910,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
             m_raceOrderTime = w.raceOrderTime;
             m_startKnown = w.startKnown;
             m_startTime = w.startTime;
+            // The others who have loaded (this machine reports itself).
             for (const std::uint8_t id : w.loaded)
-                if (player(id) && !playerLoaded(id))
+                if (id != m_localId && player(id) && !playerLoaded(id))
                     m_loaded.push_back(id);
         }
         m_state = State::Active;

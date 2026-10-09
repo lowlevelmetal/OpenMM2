@@ -170,8 +170,10 @@ struct NetGame::Impl {
     std::unique_ptr<std::FILE, int (*)(std::FILE*)> trace{nullptr, &std::fclose}; // OPENMM2_NET_TRACE
 
     // A new session: the trace (when asked for) follows its snapshots.
-    void newSession() {
-        session = std::make_unique<net::Session>();
+    void newSession(const NetOptions& options) {
+        net::SessionConfig config;
+        config.loadWaitMs = options.loadWaitMs;
+        session = std::make_unique<net::Session>(config);
         const char* path = std::getenv("OPENMM2_NET_TRACE");
         if (!path || !*path)
             return;
@@ -222,7 +224,7 @@ bool NetGame::host(const RaceConfig& config, const NetHostOptions& hostOptions, 
     params.advertiseOnLan = hostOptions.advertiseOnLan;
     params.discoveryPort = m_options.discoveryPort;
 
-    impl.newSession();
+    impl.newSession(m_options);
     if (!impl.session->host(params, error)) {
         impl.session.reset();
         return false;
@@ -257,7 +259,7 @@ bool NetGame::join(const net::Address& address, const std::string& password, con
     params.password = password;
     params.player = {m_options.playerName, car.vehicle, static_cast<std::uint8_t>(car.color),
                      static_cast<std::uint8_t>(car.team)};
-    m_impl->newSession();
+    m_impl->newSession(m_options);
     if (!m_impl->session->join(params, error)) {
         m_impl->session.reset();
         return false;
