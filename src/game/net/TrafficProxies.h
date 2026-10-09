@@ -1,14 +1,14 @@
 #pragma once
 
 // The shared traffic of a network cruise in a client's physics world
-// (OpenMM2 extra; see TrafficSync.h): each received traffic car is an
-// instance of the level with its aiVehicleData box (as the host's rail cars,
-// game::TrafficBodies), at its interpolated place and moving at its
-// interpolated velocity (phys::Instance::kinematicMotion). The local car
-// collides with it as with a moving car of infinite mass; nothing knocks it
-// loose here, since only the host simulates the traffic: the host sees the
-// client's car hit its own car, and the result comes back with the next
-// messages.
+// (OpenMM2 extra; see TrafficSync.h): each received traffic car off its rail
+// on the host is an instance of the level with its aiVehicleData box (as the
+// host's rail cars, game::TrafficBodies), at its predicted place and moving
+// at its predicted velocity (phys::Instance::kinematicMotion). The local car
+// collides with it as with a moving car of infinite mass; the host simulates
+// the same collision with its body and the result comes back with the next
+// messages. (The cars on their rails are the client's TrafficBodies', which
+// its car knocks loose as the host's does: game::NetTrafficCars.)
 
 #include "ai/Traffic.h"
 #include "game/CityLevel.h"
@@ -35,9 +35,6 @@ public:
     // The received traffic cars this frame, before the physics step (cars
     // without vehicle data are left out). The ids are the network's.
     void update(std::span<const ai::AmbientCar> cars);
-    // The cars the local player's car hit in the last step (the level's
-    // hit-by-player mark), cleared.
-    std::vector<int> takeHits();
 
     // InstanceSource.
     void instancesIn(int room, std::vector<phys::Instance*>& out) const override;

@@ -81,17 +81,6 @@ void TrafficProxies::update(std::span<const ai::AmbientCar> cars) {
     std::ranges::sort(m_byRoom, [](const auto& a, const auto& b) { return a.first < b.first; });
 }
 
-std::vector<int> TrafficProxies::takeHits() {
-    std::vector<int> hits;
-    for (auto& [id, p] : m_proxies) {
-        if (p->hitByPlayer)
-            hits.push_back(id);
-        p->hitByPlayer = false;
-    }
-    std::ranges::sort(hits);
-    return hits;
-}
-
 void TrafficProxies::instancesIn(int room, std::vector<phys::Instance*>& out) const {
     const auto range = std::ranges::equal_range(m_byRoom, room, {}, &std::pair<int, Proxy*>::first);
     for (const auto& [r, p] : range)

@@ -56,9 +56,40 @@ class TrafficBodies final : public InstanceSource {
 public:
     using ImpactCallback = std::function<void(const TrafficImpact&)>;
 
+    // The traffic the cars belong to, aiVehicleAmbient's side of the
+    // hand-over: the AI's (ai::World), or on a network client of a
+    // shared-traffic cruise the cars received from the host (OpenMM2 extra,
+    // game::NetTrafficCars), which the client's car may knock loose ahead of
+    // the host.
+    class Source {
+    public:
+        virtual ~Source() = default;
+        virtual const std::vector<ai::AmbientCar>& cars() const = 0;
+        // aiVehicleAmbient::Impact(1): the car left its rail for a body.
+        virtual void impact(int carId) = 0;
+        // aiVehicleActive::Detach: back from its body at `pose`, upright or
+        // not (aiVehicleAmbient::Impact(0) or a wreck).
+        virtual void detach(int carId, const Mat34& pose, bool upright) = 0;
+        // aiGoalCollision::Update: the car's matrix follows its body.
+        virtual void setPhysicalTransform(int carId, const Mat34& transform) = 0;
+        // Whether a collision may give the car a body; `byPlayer`: the
+        // local player's car is in it. The AI's cars always may.
+        virtual bool attachable(int carId, bool byPlayer) const {
+            (void)carId;
+            (void)byPlayer;
+            return true;
+        }
+        // Whether the cars' bodies count as the local player's in what they
+        // hit (a client's knocked car knocks the next one loose, as on the
+        // host). The AI's do not (nothing of theirs asks).
+        virtual bool bodiesHitAsPlayer() const { return false; }
+    };
+
     // The world's level (phys::World::setLevel) gives the rail cars their
     // rooms; the level must list instancesIn() (CityLevel::addSource).
     TrafficBodies(ai::World& ai, phys::World& world);
+    TrafficBodies(Source& source, phys::World& world);
+    const Source& source() const { return m_source; }
     ~TrafficBodies() override;
     TrafficBodies(const TrafficBodies&) = delete;
     TrafficBodies& operator=(const TrafficBodies&) = delete;
@@ -98,15 +129,6 @@ public:
     // without one (OpenMM2: the shared traffic of a network cruise sends
     // them).
     bool motionOf(int carId, Vec3& velocity, Vec3& spin) const;
-    // OpenMM2 (the shared traffic of a network cruise): a network client's
-    // car hit rail car `carId` on the client. The car leaves its rail as a
-    // hit would make it (aiVehicleInstance::AttachEntity), joins the movers
-    // and takes `impulse` at `point` in the next step. False when the car
-    // is not on its rail as an instance (it has a body already, or the AI
-    // holds it).
-    bool knock(int carId, const Vec3& impulse, const Vec3& point);
-    // The mass of a car's aiVehicleData (0 when the car is unknown).
-    float massOf(int carId) const;
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 
@@ -137,7 +159,8 @@ private:
     // The body stops being simulated without going back to the AI.
     void drop(Active& active);
 
-    ai::World& m_ai;
+    std::unique_ptr<Source> m_ownSource; // the AI's, for the ai::World constructor
+    Source& m_source;
     phys::World& m_world;
     // One per AI car id, created when the car first appears (stable
     // addresses: the level holds pointers during the step).

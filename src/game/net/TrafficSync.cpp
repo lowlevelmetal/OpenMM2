@@ -30,6 +30,18 @@ net::AmbientEntity toEntity(const SharedCar& c) {
     e.position = c.transform.m3;
     e.orientation = Quat::fromMatrix(c.transform);
     e.speed = c.speed;
+    // A rail car's acceleration and curvature, 0 where they would move it by
+    // a centimetre or so over half a second (or 5 m): those cost 1 bit. A
+    // car standing still turns nowhere.
+    if (std::abs(c.motion.accel) >= 0.1f)
+        e.accel = std::clamp(c.motion.accel, -net::kAmbientAccelRange, net::kAmbientAccelRange);
+    constexpr float kMaxCurvature = net::kAmbientCurvatureRange;
+    if (std::abs(c.motion.curvature) >= 0.001f && (c.speed != 0.0f || e.accel > 0.0f))
+        e.curvature = std::clamp(c.motion.curvature, -kMaxCurvature, kMaxCurvature);
+    if (c.motion.slips) {
+        e.slips = true;
+        e.groundSpeed = std::clamp(c.motion.groundSpeed, -net::kAmbientSpeedRange, net::kAmbientSpeedRange);
+    }
     e.velocity = c.velocity;
     e.angularVelocity = c.angularVelocity;
     e.flags = c.flags;
@@ -94,10 +106,12 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
     const std::uint32_t sequence = m_sequence[viewer.player]++;
     const float near2 = m_options.fullRateRadius * m_options.fullRateRadius;
 
+    const float slow2 = m_options.slowRateRadius * m_options.slowRateRadius;
     struct Candidate {
         const SharedCar* car;
         float distance2;
         bool chasing;
+        float rank; // its distance, less keepMetres for a car the client has
     };
     std::vector<Candidate> candidates;
     const float enter2 = m_options.enterRadius * m_options.enterRadius;
@@ -114,42 +128,80 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
         const float dx = c.transform.m3.x - viewer.position.x, dz = c.transform.m3.z - viewer.position.z;
         const float d2 = dx * dx + dz * dz;
         const bool chasing = c.kind == net::AmbientKind::Police && c.target == viewer.player;
-        if (chasing || d2 < enter2 || (d2 < leave2 && set.contains(c.id)))
-            candidates.push_back({&c, d2, chasing});
+        const bool known = set.contains(c.id);
+        if (chasing || d2 < enter2 || (d2 < leave2 && known))
+            candidates.push_back({&c, d2, chasing, std::sqrt(d2) - (known ? m_options.keepMetres : 0.0f)});
     }
+    // The police chasing the client, then the nearest (the client's own a
+    // little nearer, see keepMetres).
     std::ranges::stable_sort(candidates, [](const Candidate& a, const Candidate& b) {
         if (a.chasing != b.chasing)
             return a.chasing;
-        return a.distance2 < b.distance2;
+        return a.rank < b.rank;
     });
 
     // The header: type, time, light steps, catalog, origin, the count.
     constexpr std::size_t kHeaderBits = 8 + 32 + 32 + 16 + 48 + 8;
     const std::size_t total = m_options.maxBytes * 8;
     const std::size_t budget = total > kHeaderBits ? total - kHeaderBits : 0;
-    std::size_t used = 0;
+    // Which cars go: as many as fit at their usual cost (a far car on its
+    // rail that the client has gets its state every other message, beyond
+    // slowRateRadius every fourth, the ids taking turns, and only its id in
+    // between), so that whose turn it is never decides which cars are left
+    // out (that made the cars at the edge come and go).
+    struct Chosen {
+        net::AmbientEntity entity;
+        std::size_t fullBits = 0;
+        bool full = true; // its state this time
+        bool canHold = false;
+    };
+    std::vector<Chosen> chosen;
     std::unordered_set<int> sent;
+    const std::size_t heldBits = 13;
+    double expected = 0.0;
     for (const Candidate& c : candidates) {
-        if (msg.entities.size() >= net::kMaxAmbientPerMessage)
+        if (chosen.size() >= net::kMaxAmbientPerMessage)
             break;
-        net::AmbientEntity e = toEntity(*c.car);
-        // A far car on its rail, already known to the client: its state
-        // every other message, the ids alternating between messages.
-        const bool full = c.chasing || c.distance2 < near2 || !set.contains(c.car->id) ||
-                          c.car->kind != net::AmbientKind::Traffic ||
-                          (c.car->flags & net::kAmbientOffRail) != 0 ||
-                          ((sequence + static_cast<std::uint32_t>(c.car->id)) & 1u) == 0;
-        if (!full)
-            e.hasState = false;
-        const std::size_t bits = net::ambientEntityBits(e);
+        if (sent.contains(c.car->id))
+            continue; // the same id twice: the first one counts
+        Chosen k{toEntity(*c.car)};
+        k.fullBits = net::ambientEntityBits(k.entity);
+        k.canHold = !c.chasing && c.distance2 >= near2 && set.contains(c.car->id) &&
+                    c.car->kind == net::AmbientKind::Traffic && (c.car->flags & net::kAmbientOffRail) == 0;
+        const std::uint32_t every = c.distance2 < slow2 ? 2u : 4u;
+        k.full = !k.canHold || (sequence + static_cast<std::uint32_t>(c.car->id)) % every == 0;
+        const double cost = k.canHold ? static_cast<double>(k.fullBits + (every - 1) * heldBits) / every
+                                      : static_cast<double>(k.fullBits);
+        // A car new to the client waits while the ones it has would leave
+        // less than a tenth of the budget: that tenth absorbs the changes in
+        // their cost from message to message, so that they all stay.
+        if (!set.contains(c.car->id) && expected + cost > static_cast<double>(budget) * 0.9)
+            continue;
+        if (expected + cost > static_cast<double>(budget))
+            break;
+        expected += cost;
+        sent.insert(c.car->id);
+        chosen.push_back(std::move(k));
+    }
+    // Then they are written; a far car whose turn it is goes without its
+    // state when it would not fit with it.
+    std::size_t used = 0;
+    std::unordered_set<int> written;
+    for (Chosen& k : chosen) {
+        std::size_t bits = k.full ? k.fullBits : heldBits;
+        if (used + bits > budget && k.full && k.canHold) {
+            k.full = false;
+            bits = heldBits;
+        }
         if (used + bits > budget)
             break;
         used += bits;
-        if (!sent.insert(c.car->id).second)
-            continue; // the same id twice: the first one counts
-        msg.entities.push_back(std::move(e));
+        if (!k.full)
+            k.entity.hasState = false;
+        written.insert(k.entity.id);
+        msg.entities.push_back(std::move(k.entity));
     }
-    set = std::move(sent);
+    set = std::move(written);
     return msg;
 }
 
@@ -177,6 +229,10 @@ void TrafficClient::restart(Entry& entry, const net::AmbientEntity& e, std::uint
     entry.goneAt.reset();
     entry.horn = false;
     entry.shown = false;
+    entry.motion = {};
+    entry.basis.reset();
+    entry.offset = {};
+    entry.offsetTurn = 0.0f;
 }
 
 void TrafficClient::receive(const net::AmbientStateMsg& msg) {
@@ -207,6 +263,7 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
         if (id >= static_cast<int>(net::kMaxAmbientIds) || e.model >= m_catalogSize ||
             e.paint > net::kMaxAmbientPaint || e.kind > net::AmbientKind::Last || !finite(e.position) ||
             !finite(e.velocity) || !finite(e.angularVelocity) || !std::isfinite(e.speed) ||
+            !std::isfinite(e.accel) || !std::isfinite(e.curvature) || !std::isfinite(e.groundSpeed) ||
             !listed.insert(id).second) {
             ++m_stats.refused;
             continue;
@@ -263,6 +320,10 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
             entry.lastTime = msg.time;
             entry.target = e.target;
             entry.rpm = e.rpm;
+            // A rail car's (the others move on at their velocities).
+            entry.motion = RailMotion{};
+            if (!e.fullMotion())
+                entry.motion = {e.accel, e.curvature, e.slips, e.groundSpeed};
         }
         if (later(msg.time, entry.firstTime) < 0)
             entry.firstTime = msg.time;
@@ -296,19 +357,64 @@ void TrafficClient::update(double renderTime) {
         ++it;
         if (renderTime < static_cast<double>(entry.firstTime))
             continue; // not on the host's screen yet at this time
+        // The drawing's correction fades (OpenMM2 presentation).
+        const double elapsed = std::max(0.0, renderTime - entry.updatedAt);
+        entry.updatedAt = renderTime;
+        if (m_options.correctionMs > 0.0) {
+            const auto keep = static_cast<float>(std::exp(-elapsed / m_options.correctionMs));
+            entry.offset = entry.offset * keep;
+            entry.offsetTurn *= keep;
+        }
         net::VehicleSnapshot s;
-        const auto result = entry.buffer.sample(renderTime, s, m_options.maxExtrapolationMs);
-        if (result == net::SnapshotBuffer::Result::Empty)
-            continue;
+        const net::VehicleSnapshot& newest = *entry.buffer.latest();
+        PredictedPose predicted;
+        const bool ahead = predict(entry, newest, entry.motion, renderTime, predicted);
+        auto result = net::SnapshotBuffer::Result::Interpolated;
+        if (ahead) {
+            // A newer basis: the drawing stays where it was and blends the
+            // difference away (beyond the snap distance it jumps).
+            PredictedPose before;
+            if (entry.shown && entry.basis && entry.basis->time != newest.time &&
+                predict(entry, *entry.basis, entry.basisMotion, renderTime, before)) {
+                const Vec3 offset = before.transform.m3 + entry.offset - predicted.transform.m3;
+                const float turn = std::remainder(groundHeading(-before.transform.m2) + entry.offsetTurn -
+                                                      groundHeading(-predicted.transform.m2),
+                                                  kTwoPi);
+                if (offset.mag() > m_options.snapDistance || std::abs(turn) > m_options.snapTurn) {
+                    ++m_stats.snaps;
+                    entry.offset = {};
+                    entry.offsetTurn = 0.0f;
+                } else {
+                    entry.offset = offset;
+                    entry.offsetTurn = turn;
+                }
+            }
+            entry.basis = newest;
+            entry.basisMotion = entry.motion;
+            s = newest;
+            result = net::SnapshotBuffer::Result::Extrapolated;
+        } else {
+            result = entry.buffer.sample(renderTime, s, 0.0);
+            if (result == net::SnapshotBuffer::Result::Empty)
+                continue;
+            entry.offset = {};
+            entry.offsetTurn = 0.0f;
+        }
         Car c;
         c.id = id;
         c.kind = entry.kind;
         c.generation = entry.generation;
         c.model = entry.model;
         c.paint = entry.paint;
-        c.transform = s.orientation.normalized().toMatrix(s.position);
-        c.velocity = s.linearVelocity;
-        c.angularVelocity = s.angularVelocity;
+        if (ahead) {
+            c.transform = predicted.transform;
+            c.velocity = predicted.velocity;
+            c.angularVelocity = s.angularVelocity;
+        } else {
+            c.transform = s.orientation.normalized().toMatrix(s.position);
+            c.velocity = s.linearVelocity;
+            c.angularVelocity = s.angularVelocity;
+        }
         c.speed = -c.transform.m2.dot(c.velocity);
         c.flags = s.flags;
         c.target = entry.target;
@@ -344,6 +450,7 @@ void TrafficClient::update(double renderTime) {
         c.hornStarted = horn && !entry.horn;
         entry.horn = horn;
         c.fresh = !entry.shown;
+        c.stateTime = newest.time;
         entry.shown = true;
         m_cars.push_back(c);
         entry.buffer.prune(renderTime - kDrawBehindMs);
@@ -372,6 +479,7 @@ SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const
     s.speed = car.speed;
     s.velocity = body ? body->velocity : car.velocity;
     s.angularVelocity = body ? body->angularVelocity : Vec3{};
+    s.body = body != nullptr;
     if (body && body->wheels) {
         s.wheels = true;
         s.wheelOffsets = *body->wheels;
@@ -456,12 +564,94 @@ void trafficWheelMatrices(const Mat34& transform, const std::array<Vec3, 4>& off
     }
 }
 
+bool TrafficClient::predict(const Entry& entry, const net::VehicleSnapshot& state, const RailMotion& motion,
+                            double time, PredictedPose& out) const {
+    const double ahead = time - static_cast<double>(state.time);
+    if (ahead <= 0.0)
+        return false;
+    const Mat34 m = state.orientation.normalized().toMatrix(state.position);
+    // A car on its rail goes on along it; a body (a police car, a car off
+    // its rail) at its velocity, for a shorter while.
+    const bool rail = entry.kind == net::AmbientKind::Traffic && (state.flags & net::kAmbientOffRail) == 0;
+    if (rail) {
+        const auto dt = static_cast<float>(std::min(ahead, m_options.maxRailPredictionMs) / 1000.0);
+        out = predictRailCar(m, -m.m2.dot(state.linearVelocity), motion, dt);
+    } else {
+        const auto dt = static_cast<float>(std::min(ahead, m_options.maxBodyPredictionMs) / 1000.0);
+        out = predictBody(m, state.linearVelocity, state.angularVelocity, dt);
+    }
+    return true;
+}
+
+std::optional<PredictedPose> TrafficClient::poseAt(int id, double time) const {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end())
+        return std::nullopt;
+    const Entry& entry = it->second;
+    const net::VehicleSnapshot* newest = entry.buffer.latest();
+    if (!newest)
+        return std::nullopt;
+    PredictedPose p;
+    if (predict(entry, *newest, entry.motion, time, p))
+        return p;
+    net::VehicleSnapshot s;
+    if (entry.buffer.sample(time, s, 0.0) == net::SnapshotBuffer::Result::Empty)
+        return std::nullopt;
+    p.transform = s.orientation.normalized().toMatrix(s.position);
+    p.velocity = s.linearVelocity;
+    p.speed = -p.transform.m2.dot(p.velocity);
+    return p;
+}
+
+float TrafficClient::setDrawn(int id, const Mat34& pose) {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end())
+        return 0.0f;
+    Entry& entry = it->second;
+    const net::VehicleSnapshot* newest = entry.buffer.latest();
+    PredictedPose p;
+    if (!newest || !predict(entry, *newest, entry.motion, entry.updatedAt, p))
+        return 0.0f;
+    const Vec3 offset = pose.m3 - p.transform.m3;
+    const float turn =
+        std::remainder(groundHeading(-pose.m2) - groundHeading(-p.transform.m2), kTwoPi);
+    entry.basis = *newest;
+    entry.basisMotion = entry.motion;
+    entry.shown = true;
+    if (offset.mag() > m_options.snapDistance || std::abs(turn) > m_options.snapTurn) {
+        ++m_stats.snaps;
+        entry.offset = {};
+        entry.offsetTurn = 0.0f;
+    } else {
+        entry.offset = offset;
+        entry.offsetTurn = turn;
+    }
+    return offset.mag();
+}
+
 std::optional<Mat34> TrafficClient::transformAt(int id, double time) const {
     const auto it = m_entries.find(id);
     if (it == m_entries.end())
         return std::nullopt;
+    const Entry& entry = it->second;
+    const net::VehicleSnapshot* newest = entry.buffer.latest();
+    if (!newest)
+        return std::nullopt;
+    PredictedPose p;
+    if (predict(entry, *newest, entry.motion, time, p)) {
+        // Drawn with the correction still being blended away.
+        Mat34 m = p.transform;
+        if (entry.offsetTurn != 0.0f) {
+            const Mat34 turn = Mat34::rotationY(entry.offsetTurn); // +y, from +z toward +x
+            m.m0 = turn.transformDir(m.m0);
+            m.m1 = turn.transformDir(m.m1);
+            m.m2 = turn.transformDir(m.m2);
+        }
+        m.m3 += entry.offset;
+        return m;
+    }
     net::VehicleSnapshot s;
-    if (it->second.buffer.sample(time, s, m_options.maxExtrapolationMs) == net::SnapshotBuffer::Result::Empty)
+    if (entry.buffer.sample(time, s, 0.0) == net::SnapshotBuffer::Result::Empty)
         return std::nullopt;
     return s.orientation.normalized().toMatrix(s.position);
 }

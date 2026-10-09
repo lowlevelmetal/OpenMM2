@@ -16,8 +16,10 @@
 // Positions travel relative to the message's origin (whole metres near the
 // receiving car), which keeps them at 3 cm resolution in 44 bits. A car on
 // its rail moves along its heading (ai::Traffic: velocity = -m2 x speed),
-// so only its speed is sent; a car off its rail (knocked loose, a wreck)
-// and every police car carry their full linear and angular velocity. A car
+// so only its speed is sent, with how it is changing (its acceleration and
+// its rail's curvature, which let a client predict it along its rail); a
+// car off its rail (knocked loose, a wreck) and every police car carry their
+// full linear and angular velocity. A car
 // far from the client may come without its state (13 bits: it is still
 // there, the same car); the host sends those cars' state every other
 // message.
@@ -34,11 +36,13 @@ inline constexpr std::uint32_t kMaxAmbientIds = 512;   // entity ids 0..511
 inline constexpr std::uint32_t kMaxAmbientModels = 64; // catalog indices 0..63
 inline constexpr std::uint32_t kMaxAmbientPaint = 15;  // paint job 0..15
 inline constexpr std::uint32_t kAmbientGenerations = 8;
-inline constexpr std::size_t kMaxAmbientPerMessage = 96;
+inline constexpr std::size_t kMaxAmbientPerMessage = 160;
 // Offsets from the origin: +-512 m across, +-256 m up and down.
 inline constexpr float kAmbientOffsetRange = 512.0f;
 inline constexpr float kAmbientHeightRange = 256.0f;
 inline constexpr float kAmbientSpeedRange = 64.0f;     // rail cars, m/s
+inline constexpr float kAmbientAccelRange = 16.0f;     // rail cars, m/s^2
+inline constexpr float kAmbientCurvatureRange = 0.5f;  // rail cars, rad/m (a 2 m radius)
 inline constexpr float kAmbientVelocityRange = 96.0f;  // off-rail cars and police, m/s
 inline constexpr float kAmbientSpinRange = 32.0f;      // rad/s
 inline constexpr float kAmbientMaxRpm = 10000.0f;
@@ -74,6 +78,16 @@ struct AmbientEntity {
     Vec3 position;          // model origin, world space
     Quat orientation;
     float speed = 0.0f;     // rail cars: along the car's forward axis (-m2)
+    // Rail cars: the speed's change (m/s^2) and the heading's turn per metre
+    // driven (rad/m, positive turning from +z toward +x: a spin about +y).
+    float accel = 0.0f;
+    float curvature = 0.0f;
+    // Rail cars: how fast it really moves over the ground when that is not
+    // its speed (ai::Traffic moves a car along its curves by their parameter,
+    // so in a turn it covers more or less ground than its speed; a car held
+    // at the end of its lane covers none). Unset: its speed.
+    bool slips = false;
+    float groundSpeed = 0.0f;
     Vec3 velocity;          // off-rail cars and police
     Vec3 angularVelocity;   // off-rail cars and police
     std::uint8_t flags = 0; // AmbientFlags
@@ -139,7 +153,24 @@ bool serializeAmbientEntity(S& s, AmbientEntity& e, const Vec3& origin) {
             e.speed = -(e.orientation.toMatrix().m2.dot(e.velocity));
     } else {
         s.quantized(e.speed, -kAmbientSpeedRange, kAmbientSpeedRange, 11);
+        // Its acceleration and curvature and its speed over the ground,
+        // unless they are 0, 0 and its speed (most cars stand or drive
+        // straight on at their speed: 1 bit).
+        bool changing = e.accel != 0.0f || e.curvature != 0.0f || e.slips;
+        s.boolean(changing);
+        if (changing) {
+            s.quantized(e.accel, -kAmbientAccelRange, kAmbientAccelRange, 7);
+            s.quantized(e.curvature, -kAmbientCurvatureRange, kAmbientCurvatureRange, 9);
+            s.boolean(e.slips);
+            if (e.slips)
+                s.quantized(e.groundSpeed, -kAmbientSpeedRange, kAmbientSpeedRange, 11);
+        } else if constexpr (S::kReading) {
+            e.accel = e.curvature = 0.0f;
+            e.slips = false;
+        }
         if constexpr (S::kReading) {
+            if (!e.slips)
+                e.groundSpeed = e.speed;
             // ai::Traffic's published velocity of a rail car.
             e.velocity = -e.orientation.toMatrix().m2 * e.speed;
             e.angularVelocity = {};
@@ -206,29 +237,5 @@ bool serialize(S& s, AmbientStateMsg& m) {
 
 // Bits one entity takes on the wire (for the host's packet budget).
 std::size_t ambientEntityBits(const AmbientEntity& e);
-
-// Client -> host, a game event (reliable): the client's car hit a shared
-// traffic car as the client was showing it. The host's view of the client's
-// car lags its own by the interpolation delay and the trip, so the host may
-// not see that collision itself; it knocks the car off its rail if it is
-// still on it there and the client's car is near it (see
-// docs/multiplayer.md). Sent at most once a second per car.
-inline constexpr std::uint16_t kTrafficHitEvent = static_cast<std::uint16_t>(GameEventType::Custom) + 16;
-struct TrafficHitEvent {
-    std::uint16_t id = 0;
-    std::uint8_t generation = 0;
-    Vec3 velocity; // the client's car's just before the hit, m/s
-};
-
-template <class S>
-bool serialize(S& s, TrafficHitEvent& e) {
-    std::int32_t id = e.id, generation = e.generation;
-    s.ranged(id, 0, static_cast<std::int32_t>(kMaxAmbientIds) - 1);
-    s.ranged(generation, 0, static_cast<std::int32_t>(kAmbientGenerations) - 1);
-    e.id = static_cast<std::uint16_t>(id);
-    e.generation = static_cast<std::uint8_t>(generation);
-    s.vec3Quantized(e.velocity, kAmbientVelocityRange, 12);
-    return s.ok();
-}
 
 } // namespace mm2::net
