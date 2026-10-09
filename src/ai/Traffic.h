@@ -109,20 +109,34 @@ public:
     // Vertical ground probe from `from` down to `to`; returns the hit point.
     using GroundProbe = std::function<bool(const Vec3& from, const Vec3& to, Vec3& hit)>;
 
+    // The traffic's own random stream, set to `seed` again by reset().
     Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
             const TrafficSettings& settings, std::uint64_t seed);
+    // MM2's global stream, shared with the pedestrians (ai::World):
+    // aiMap::Init's draws for the pool come from it as it stands, and its
+    // owner sets it back to 1 at a reset (aiMap::Reset's ResetRandomSeed).
+    Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
+            const TrafficSettings& settings, Random& random);
+    Traffic(const Traffic&) = delete;
+    Traffic& operator=(const Traffic&) = delete;
 
     // One update (aiMap::Update's ambient part). `playerRoom` is the PSDL room
     // the player is in (0: outside every room, nothing changes).
     void step(float dt, const PlayerCar& player, int playerRoom);
     // aiMap::Reset's ambient part (mmGame::Init after the AI map loads, and
-    // mmGame::Reset when a race restarts): the random seed back to its start
-    // (ResetRandomSeed), every road and intersection list emptied
+    // mmGame::Reset when a race restarts): the own random stream back to its
+    // seed (ResetRandomSeed; a shared one is its owner's to set), every road
+    // and intersection list emptied
     // (aiPath::Reset, aiIntersection::Reset), every car back in the pool in
     // index order with its rail reset (aiMap::AddAmbient, aiRailSet::Reset).
     // The next step populates the roads around the player's room. A car's
     // wreck flag (aiVehicleInstance flag 2) survives, as in MM2.
     void reset();
+    // aiMap::Reset's AdjustAmbients from room 0 to the player's room, which
+    // OpenMM2 makes on the first step after a reset (step() calls it; ai::World
+    // calls it before the pedestrians' population, as aiMap::Reset orders
+    // them, and before either updates). False when already populated.
+    bool populate(int playerRoom);
     // Convenience for tools: a player of default size at `pos` moving at `vel`.
     void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 
@@ -233,6 +247,8 @@ public:
 
 private:
     enum class Rail : std::uint8_t { Lane = 0, Turn = 1, LaneChange = 2, Regain = 3 };
+
+    void init(); // aiMap::Init's part for the ambient pool
 
     struct Car {
         // Pool slot, fixed for the session (aiVehicleAmbient ctor / Init).
@@ -393,8 +409,9 @@ private:
     std::vector<VehicleData> m_types;
     TrafficSettings m_settings;
     float m_density = 0.0f; // aiMap +0x3c
-    std::uint64_t m_seed = 1; // ResetRandomSeed's value for this stream
-    Random m_rng;
+    std::uint64_t m_seed = 1; // ResetRandomSeed's value for the own stream
+    Random m_ownRng;          // the stream when none is shared
+    Random* m_rng;            // the stream drawn from
     std::vector<Car> m_cars;
     std::vector<int> m_pool; // free cars, last = next to use (aiMap +0x44)
     std::vector<AmbientCar> m_public;

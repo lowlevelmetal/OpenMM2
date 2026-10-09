@@ -63,7 +63,18 @@ float turnTowards(float heading, float angle) {
 
 Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types,
                          const PedSettings& settings, std::uint64_t seed)
-    : m_net(network), m_types(std::move(types)), m_settings(settings), m_seed(seed), m_rng(seed) {
+    : m_net(network), m_types(std::move(types)), m_settings(settings), m_seed(seed), m_ownRng(seed),
+      m_rng(&m_ownRng) {
+    init();
+}
+
+Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types,
+                         const PedSettings& settings, Random& random)
+    : m_net(network), m_types(std::move(types)), m_settings(settings), m_rng(&random) {
+    init();
+}
+
+void Pedestrians::init() {
     // The sequences the AI asks for, by name (aiPedestrian::Init). LDIVE and
     // RDIVE are looked up too but no retail table has them.
     for (const auto& t : m_types) {
@@ -170,9 +181,9 @@ Pedestrians::Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> ty
         for (std::size_t t = 0; t < m_types.size(); ++t)
             allowed.push_back(static_cast<int>(t));
     for (auto& p : m_peds) {
-        p.type = allowed[static_cast<std::size_t>(m_rng.frand() * static_cast<float>(allowed.size()))];
+        p.type = allowed[static_cast<std::size_t>(m_rng->frand() * static_cast<float>(allowed.size()))];
         const int variants = m_types[static_cast<std::size_t>(p.type)].variants;
-        p.variant = static_cast<int>(m_rng.frand() * static_cast<float>(variants - 1));
+        p.variant = static_cast<int>(m_rng->frand() * static_cast<float>(variants - 1));
     }
     // aiMap::Reset: every pedestrian into the pool in index order, so the
     // last one is taken first.
@@ -541,7 +552,7 @@ int Pedestrians::pickNextRoad(Ped& p) {
     }
     int choice = 0;
     if (m_lights && m_lights->hasLights(node) && m_lights->cycleAt(node) != LightCycle::Rotate)
-        choice = m_rng.irand() % 3;
+        choice = m_rng->irand() % 3;
     // aiPedestrian::UpcomingAccident: a car out of normal driving there.
     if (m_accident && m_accident(node, -1, 0))
         choice = 0;
@@ -612,11 +623,11 @@ void Pedestrians::reset(int idx, int path, int side) {
     p.wall = false;
     p.side = p.prevSide = side;
     const int lanes = static_cast<int>(w.rowCum.size()) - 1;
-    const float dist = m_rng.frand() * subLength(path, side, 0, sections(path) - 1);
+    const float dist = m_rng->frand() * subLength(path, side, 0, sections(path) - 1);
     p.dist = dist;
-    p.lateral = ((w.outer - w.inner) * 0.5f - 0.5f) * std::sin(m_rng.frand() * 6.2831f);
+    p.lateral = ((w.outer - w.inner) * 0.5f - 0.5f) * std::sin(m_rng->frand() * 6.2831f);
     p.idx = sidewalkIndex(path, side, dist);
-    p.dir = p.prevDir = m_rng.frand() < 0.5f ? 1 : -1;
+    p.dir = p.prevDir = m_rng->frand() < 0.5f ? 1 : -1;
     // (MM2 turns the old heading round here for direction +1; it is
     // overwritten at once.)
     p.heading = getHeading(path, dist, lanes, p.dir);
@@ -640,7 +651,7 @@ void Pedestrians::reset(int idx, int path, int side) {
     pathAdd(path, idx);
     p.frameHeading = p.heading;
     startSeq(p, seqs(p).walk);
-    p.frame = static_cast<int>(m_rng.frand() * static_cast<float>(frameCount(p, seqs(p).walk)));
+    p.frame = static_cast<int>(m_rng->frand() * static_cast<float>(frameCount(p, seqs(p).walk)));
     solveTargetPoint(p, static_cast<float>(p.dir) * kPedLookAhead + dist);
     p.reversingAtDive = false;
     p.sideDist0 = 0.0f;
@@ -722,8 +733,10 @@ void Pedestrians::populateAll() {
 }
 
 void Pedestrians::reset() {
-    // aiMap::Reset: ResetRandomSeed first (OpenMM2: this stream's own seed).
-    m_rng.seed(static_cast<std::uint32_t>(m_seed));
+    // aiMap::Reset: ResetRandomSeed first. A shared stream is the owner's
+    // to seed (ai::World::reset); the pedestrians' own goes back to its seed.
+    if (m_rng == &m_ownRng)
+        m_rng->seed(static_cast<std::uint32_t>(m_seed));
     // aiPath::Reset: each road's pedestrian list (+0x20), its players' mask
     // and its link in the populated list (+0x34); aiMap +0x180 emptied.
     std::ranges::fill(m_pathHead, -1);
@@ -1162,7 +1175,7 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
                 backupAt(p);
             }
         } else if (p.seq == s.walk) {
-            if (m_rng.frand() >= 0.5f) {
+            if (m_rng->frand() >= 0.5f) {
                 // Run along the road the way the car is going.
                 startSeq(p, s.run);
                 const auto& centre = m_net.source()->paths[static_cast<std::size_t>(p.path)].center;
@@ -1352,7 +1365,7 @@ void Pedestrians::waitCross(Ped& p, const PlayerCar& c) {
         Vec3 nearSide, farSide;
         crossTargets(p, nearSide, farSide);
         p.target = farSide;
-        queueSeq(p, m_rng.frand() < 0.5f ? seqs(p).stand : seqs(p).stand2);
+        queueSeq(p, m_rng->frand() < 0.5f ? seqs(p).stand : seqs(p).stand2);
         p.lastReaction = p.reaction;
         p.lastCross = p.cross;
     }
@@ -1416,7 +1429,7 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
             const float r = c.radius;
             if ((p.position - c.transform.m3).dot(m) < 0.0f && (r + r) * (r + r) < d2) {
                 p.reaction = 0;
-                p.lateral = std::sin(m_rng.frand() * 6.2831f) * kPedMaxLateral;
+                p.lateral = std::sin(m_rng->frand() * 6.2831f) * kPedMaxLateral;
                 calcCurve(p, p.idx - 1, p.idx, p.lateral);
             }
         }
@@ -1547,22 +1560,7 @@ void Pedestrians::step(float dt, const PlayerCar& player, int room) {
             return kNone;
         return map->roomPathsIn[static_cast<std::size_t>(r)];
     };
-    for (Ped& p : m_peds)
-        p.placed = false;
-    if (!m_started) {
-        // aiMap::Reset: the player's first room.
-        m_started = true;
-        m_room = room;
-        if (m_populateAll) {
-            std::vector<std::uint16_t> all;
-            for (std::size_t p = 0; p < m_net.paths().size(); ++p)
-                all.push_back(static_cast<std::uint16_t>(p));
-            adjust(kNone, all);
-            m_populateAll = false;
-        } else {
-            adjust(list(0), list(room));
-        }
-    } else if (room != 0 && room != m_room) {
+    if (!populate(room) && room != 0 && room != m_room) {
         // aiMap::Update: the player entered another room.
         adjust(list(m_room), list(room));
         m_room = room;
@@ -1570,6 +1568,35 @@ void Pedestrians::step(float dt, const PlayerCar& player, int room) {
     for (int path = m_activeHead; path >= 0; path = m_activeNext[static_cast<std::size_t>(path)])
         updateRoad(path, dt, player);
     publish();
+    // A pedestrian placed (AudCreatureContainer::Reset) shows so in one
+    // step's list only.
+    for (Ped& p : m_peds)
+        p.placed = false;
+}
+
+bool Pedestrians::populate(int room) {
+    if (m_started)
+        return false;
+    // aiMap::Reset: the player's first room.
+    m_started = true;
+    m_room = room;
+    const city::AiMap* map = m_net.source();
+    static const std::vector<std::uint16_t> kNone;
+    if (m_populateAll) {
+        std::vector<std::uint16_t> all;
+        for (std::size_t p = 0; p < m_net.paths().size(); ++p)
+            all.push_back(static_cast<std::uint16_t>(p));
+        adjust(kNone, all);
+        m_populateAll = false;
+    } else if (map) {
+        auto list = [&](int r) -> const std::vector<std::uint16_t>& {
+            if (r < 0 || static_cast<std::size_t>(r) >= map->roomPathsIn.size())
+                return kNone;
+            return map->roomPathsIn[static_cast<std::size_t>(r)];
+        };
+        adjust(list(0), list(room));
+    }
+    return true;
 }
 
 void Pedestrians::publish() {

@@ -11,6 +11,7 @@
 // then the traffic light sets (children of aiMap, updated last).
 
 #include "ai/Pedestrians.h"
+#include "ai/Random.h"
 #include "ai/RoadNetwork.h"
 #include "ai/Traffic.h"
 #include "ai/TrafficLights.h"
@@ -34,6 +35,14 @@ struct Settings {
     int maxCars = kAmbientPoolSize;
     int maxPeds = -1;        // pedestrian pool; -1: the city's [Ped Pool] (default 100)
     bool winterPeds = false; // snow: the bad-weather pedestrian models (MM2: weather > 2)
+    // The traffic and the pedestrians draw from one stream, as from MM2's
+    // global seed: aiMap::Init's draws (the ambient pool, then the
+    // pedestrians), aiMap::Reset's population and their updates. `random`
+    // is that stream when the caller reproduces MM2's set-up order (MM2's
+    // global stream as aiMap::Init finds it); null gives the world its own,
+    // starting at `seed`. reset() sets it to `seed` (aiMap::Reset's
+    // ResetRandomSeed: 1).
+    Random* random = nullptr;
     std::uint64_t seed = 1;
 };
 
@@ -77,11 +86,14 @@ public:
     // One fixed step.
     void step(const PlayerCar& player);
     // aiMap::Reset (mmGame::Init calls it once the AI map has loaded and
-    // mmGame::Reset when a race restarts): the ambient traffic, the
-    // pedestrians and the light sets as at the start; the next step
-    // populates the roads round the player. (aiMap::Reset also resets the
-    // police force and officers and the racers, which the race owns here,
-    // and aiVehicleManager, game::TrafficBodies::reset.)
+    // mmGame::Reset when a race restarts): the random stream back to its
+    // seed (ResetRandomSeed), the ambient traffic, the pedestrians and the
+    // light sets as at the start; the next step populates the roads round
+    // the player, the traffic first, then the pedestrians, before either
+    // updates (aiMap::Reset's AdjustAmbients and AdjustPedestrians).
+    // (aiMap::Reset also resets the police force and officers and the
+    // racers, which the race owns here, and aiVehicleManager,
+    // game::TrafficBodies::reset.)
     void reset();
     // aiMap::Update runs the light sets after the racers and the police. A
     // race loop that drives those between update() and the lights sets this
@@ -129,6 +141,9 @@ private:
     World() = default;
     void updateSignals();
 
+    Random m_ownRandom;              // the stream when the caller shares none
+    Random* m_random = &m_ownRandom; // MM2's global seed for the traffic and pedestrians
+    std::uint32_t m_resetSeed = 1;   // aiMap::Reset's ResetRandomSeed
     std::unique_ptr<RoadNetwork> m_network;
     std::unique_ptr<city::RoomLocator> m_rooms;
     TrafficLights m_lights;

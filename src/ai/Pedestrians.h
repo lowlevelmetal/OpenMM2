@@ -99,8 +99,16 @@ public:
     // Whether a vehicle out of normal driving is at `intersection` or on `path`.
     using AccidentQuery = std::function<bool(int intersection, int path, int dir)>;
 
+    // The pedestrians' own random stream, set to `seed` again by reset().
     Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types, const PedSettings& settings,
                 std::uint64_t seed);
+    // MM2's global stream, shared with the traffic (ai::World): aiMap::Init's
+    // draws for the pedestrians come from it as it stands (after the
+    // traffic's), and its owner sets it back to 1 at a reset.
+    Pedestrians(const RoadNetwork& network, std::vector<PedTypeInfo> types, const PedSettings& settings,
+                Random& random);
+    Pedestrians(const Pedestrians&) = delete;
+    Pedestrians& operator=(const Pedestrians&) = delete;
 
     void setLights(const TrafficLights* lights) { m_lights = lights; }
     void setProbe(Probe probe) { m_probe = std::move(probe); }
@@ -116,14 +124,20 @@ public:
     // One update; `room` is the player's PSDL room (0: outside, no change).
     void step(float dt, const PlayerCar& player, int room);
     // aiMap::Reset's pedestrian part (mmGame::Init after the AI map loads,
-    // and mmGame::Reset when a race restarts): the random seed back to its
-    // start (ResetRandomSeed), every road's list and populated flag cleared
+    // and mmGame::Reset when a race restarts): the own random stream back to
+    // its seed (ResetRandomSeed; a shared one is its owner's to set), every
+    // road's list and populated flag cleared
     // (aiPath::Reset), the intersections' prop lists emptied
     // (aiIntersection::Reset clears what AddBangersToObsMap listed at load,
     // so pedestrians never see an intersection's props in play), every
     // pedestrian reset and back in the pool in index order. The next step
     // populates the roads round the player's room.
     void reset();
+    // aiMap::Reset's AdjustPedestrians from room 0 to the player's room,
+    // made on the first step after a reset (step() calls it; ai::World calls
+    // it after the traffic's population and before either updates). False
+    // when already populated.
+    bool populate(int room);
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
     // The props the roads and intersections list (aiPath / aiIntersection
@@ -261,13 +275,15 @@ private:
     void crossStreet(Ped& p, const PlayerCar& c);
 
     void publish();
+    void init(); // aiMap::Init's part for the pedestrians
 
     const RoadNetwork& m_net;
     std::vector<PedTypeInfo> m_types;
     std::vector<Seqs> m_seqs;
     PedSettings m_settings;
-    std::uint64_t m_seed = 1; // ResetRandomSeed's value for this stream
-    Random m_rng;
+    std::uint64_t m_seed = 1; // ResetRandomSeed's value for the own stream
+    Random m_ownRng;          // the stream when none is shared
+    Random* m_rng;            // the stream drawn from
     std::vector<Ped> m_peds;
     int m_poolHead = -1;                // aiMap +0x88
     std::vector<int> m_pathHead;        // first pedestrian of each road (aiPath +0x20)

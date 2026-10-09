@@ -119,6 +119,11 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     const std::optional<city::AiMapConfig> cityConfig = loadCityAiConfig(vfs, city);
 
     std::unique_ptr<World> world(new World());
+    // One stream for the traffic and the pedestrians (MM2's global seed).
+    world->m_resetSeed = static_cast<std::uint32_t>(settings.seed);
+    world->m_ownRandom.seed(world->m_resetSeed);
+    if (settings.random)
+        world->m_random = settings.random;
     NetworkOptions net;
     if (cityConfig && cityConfig->driveOnLeft) {
         net.driveOnLeft = *cityConfig->driveOnLeft != 0;
@@ -158,8 +163,9 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
         else
             log::warn("ai: {}", err);
     }
+    // aiMap::Init draws for the ambient pool first, then for the pedestrians.
     world->m_traffic = std::make_unique<Traffic>(*world->m_network, world->m_lights, std::move(data), traffic,
-                                                 settings.seed);
+                                                 *world->m_random);
     // The drivers' map: the rooms' components by the level's room lookup
     // (a city without PSDL rooms keeps MapView's own), and the traffic's
     // obstacle lists.
@@ -186,7 +192,7 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
     for (const auto& n : names)
         peds.names.push_back(settings.winterPeds ? n.second : n.first);
     world->m_peds =
-        std::make_unique<Pedestrians>(*world->m_network, loadPedTypes(vfs), peds, settings.seed * 7919u + 1u);
+        std::make_unique<Pedestrians>(*world->m_network, loadPedTypes(vfs), peds, *world->m_random);
     world->m_peds->setLights(&world->m_lights);
     Traffic* ambient = world->m_traffic.get();
     world->m_map->setProps(world->m_peds.get());
@@ -245,6 +251,10 @@ void World::step(const PlayerCar& player) {
     const int room = roomAt(player.transform.m3, m_playerRoom);
     if (room != 0)
         m_playerRoom = room;
+    // After a reset: aiMap::Reset's population, the traffic's then the
+    // pedestrians', before the updates draw from the same stream.
+    m_traffic->populate(room);
+    m_peds->populate(room);
     m_traffic->step(kAiStepSeconds, player, room);
     m_peds->step(kAiStepSeconds, player, room);
     if (m_lightsDeferred) {
@@ -256,9 +266,11 @@ void World::step(const PlayerCar& player) {
 }
 
 void World::reset() {
-    // aiMap::Reset: the light sets are children of aiMap (asNode::Reset,
-    // then aiIntersection::Reset resets each set again); the roads,
-    // intersections and ambient cars (Traffic::reset); the pedestrians.
+    // aiMap::Reset: ResetRandomSeed; the light sets are children of aiMap
+    // (asNode::Reset, then aiIntersection::Reset resets each set again); the
+    // roads, intersections and ambient cars (Traffic::reset); the
+    // pedestrians.
+    m_random->seed(m_resetSeed);
     m_lights.reset();
     m_traffic->reset();
     m_peds->reset();

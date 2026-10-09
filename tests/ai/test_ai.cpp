@@ -250,6 +250,8 @@ TEST(AiWorld, DeterministicAndWellBehaved) {
     int redRuns = 0;
     std::vector<float> redFor(a->signals().size(), 0.0f);
     std::map<int, bool> wasTurning;
+    std::map<int, bool> wasEntered;
+    std::map<int, int> committedBeforeRed; // the lane a car committed on before red, else -1
     for (int i = 0; i < 30 * 120; ++i) {
         a->step(player, {});
         b->step(player, {});
@@ -260,9 +262,22 @@ TEST(AiWorld, DeterministicAndWellBehaved) {
                 net.lanes()[static_cast<std::size_t>(d.lane)].line.project(car.transform.m3, &dist);
                 maxLaneError = std::max(maxLaneError, dist);
             }
+            // A car that committed to the intersection (aiVehicleSpline's
+            // enterInt) before its light turned red goes on whatever the
+            // light does next, however long the queue ahead keeps it.
+            if (d.entered && !wasEntered[car.id] && d.lane >= 0) {
+                const auto& lane = net.lanes()[static_cast<std::size_t>(d.lane)];
+                const bool red =
+                    lane.lightSlot >= 0 && redFor[static_cast<std::size_t>(lane.lightSlot)] > 0.0f;
+                committedBeforeRed[car.id] = red ? -1 : d.lane;
+            }
+            wasEntered[car.id] = d.entered;
             if (d.turning && !wasTurning[car.id] && d.lane >= 0) {
                 const auto& lane = net.lanes()[static_cast<std::size_t>(d.lane)];
-                if (lane.lightSlot >= 0 && redFor[static_cast<std::size_t>(lane.lightSlot)] > 2.0f)
+                const auto it = committedBeforeRed.find(car.id);
+                const bool committed = it != committedBeforeRed.end() && it->second == d.lane;
+                if (lane.lightSlot >= 0 && redFor[static_cast<std::size_t>(lane.lightSlot)] > 2.0f &&
+                    !committed)
                     ++redRuns;
             }
             wasTurning[car.id] = d.turning;

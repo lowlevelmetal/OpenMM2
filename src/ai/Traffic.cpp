@@ -98,7 +98,17 @@ PlayerCar PlayerCar::at(const Vec3& pos, const Vec3& vel) {
 Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
                  const TrafficSettings& settings, std::uint64_t seed)
     : m_net(network), m_lights(lights), m_types(std::move(types)), m_settings(settings), m_seed(seed),
-      m_rng(seed) {
+      m_ownRng(seed), m_rng(&m_ownRng) {
+    init();
+}
+
+Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<VehicleData> types,
+                 const TrafficSettings& settings, Random& random)
+    : m_net(network), m_lights(lights), m_types(std::move(types)), m_settings(settings), m_rng(&random) {
+    init();
+}
+
+void Traffic::init() {
     if (m_types.empty()) {
         VehicleData d;
         d.model = "va_sedans_s";
@@ -108,13 +118,22 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
     // all when the density is 0.
     const float density = clampf(m_settings.density, 0.0f, 1.0f);
     m_density = density * kAmbientDensityScale;
-    const int count = density == 0.0f ? 0 : std::max(0, m_settings.poolSize);
+    const int pool = std::max(0, m_settings.poolSize);
+    const int count = density == 0.0f ? 0 : pool;
     m_cars.resize(static_cast<std::size_t>(count));
     // Constructors of the vehicle array: aiRailSet (lane randomness), then
-    // aiVehicleSpline (reaction ticks), for every car.
-    for (auto& c : m_cars) {
-        c.laneRandomness = std::sin(m_rng.frand() * 6.2831f) * 0.5f;
-        c.totReactTicks = 8 - static_cast<int>(m_rng.frand() * -17.0f);
+    // aiVehicleSpline (reaction ticks), for every car. MM2 builds the array
+    // of the state's vehicle count before it looks at the density, so at
+    // density 0 the constructors still draw (aiMap::Init sets the count to 0
+    // after them).
+    for (int i = 0; i < pool; ++i) {
+        const float lane = m_rng->frand();
+        const float react = m_rng->frand();
+        if (i >= count)
+            continue;
+        Car& c = m_cars[static_cast<std::size_t>(i)];
+        c.laneRandomness = std::sin(lane * 6.2831f) * 0.5f;
+        c.totReactTicks = 8 - static_cast<int>(react * -17.0f);
     }
     // Then per car: its type, aiVehicleAmbient::Init: aiVehicleSpline::Init
     // builds the aiVehicleInstance, whose ctor keeps an arbitrary number
@@ -130,13 +149,13 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
         // stand-in for its address (inferred).
         const auto index = static_cast<std::uint32_t>(&c - m_cars.data());
         c.blinkPhase = static_cast<int>(((index * 0x40u) * 214013u + 2531011u) >> 16 & 0x7FFFu);
-        (void)m_rng.frand(); // aiVehicleInstance ctor's SetColor, overwritten below
-        c.paint = m_rng.frand();
+        (void)m_rng->frand(); // aiVehicleInstance ctor's SetColor, overwritten below
+        c.paint = m_rng->frand();
         c.exceedLimit = exceedCounter + exceedCounter;
         exceedCounter -= 1.0f;
         if (exceedCounter < 0.0f)
             exceedCounter = 4.0f;
-        const float f = m_rng.frand(); // one draw for both
+        const float f = m_rng->frand(); // one draw for both
         c.accelFactor = f * 3.0f + 5.0f;
         c.separation = f * 2.5f + 0.5f;
         // aiVehicleSpline::Init: bumper and side distances from the box bound
@@ -170,7 +189,7 @@ Traffic::Traffic(const RoadNetwork& network, TrafficLights& lights, std::vector<
 
 int Traffic::pickType() {
     // aiMap::Init: the first type whose cumulative probability exceeds frand.
-    const float r = m_rng.frand();
+    const float r = m_rng->frand();
     for (const auto& t : m_settings.types) {
         if (r < t.cumulative) {
             for (std::size_t i = 0; i < m_types.size(); ++i)
@@ -654,7 +673,7 @@ void Traffic::adjustAmbients(int oldRoom, int newRoom) {
                 for (int l = 0; l < lanes; ++l) {
                     const float space = laneLength(p, dir, l) / static_cast<float>(n + 1);
                     for (int i = 0; i < n && !m_pool.empty(); ++i) {
-                        const float jitter = std::sin(m_rng.frand() * 6.28f);
+                        const float jitter = std::sin(m_rng->frand() * 6.28f);
                         const float dist = (static_cast<float>(i + 1) * space - space * 0.5f) +
                                            (space - 10.0f) * jitter * 0.5f;
                         if (!placeCar(m_pool.back(), p, dir, l, dist))
@@ -693,8 +712,10 @@ int Traffic::poolFree() const {
 }
 
 void Traffic::reset() {
-    // aiMap::Reset: ResetRandomSeed first (OpenMM2: this stream's own seed).
-    m_rng.seed(static_cast<std::uint32_t>(m_seed));
+    // aiMap::Reset: ResetRandomSeed first. A shared stream is the owner's
+    // to seed (ai::World::reset); the traffic's own goes back to its seed.
+    if (m_rng == &m_ownRng)
+        m_rng->seed(static_cast<std::uint32_t>(m_seed));
     // aiPath::Reset: the lane lists, the section obstacle lists
     // (ResetObstacles), the populated flag and list link, the always
     // stop / go flags.
@@ -748,7 +769,7 @@ void Traffic::reset() {
 
 bool Traffic::chooseNext(Car& c) {
     RailLink next;
-    if (chooseNextLaneLink(m_net, {c.path, c.dir, c.drawLane}, m_rng, next)) {
+    if (chooseNextLaneLink(m_net, {c.path, c.dir, c.drawLane}, *m_rng, next)) {
         c.nextPath = next.path;
         c.nextDir = next.dir;
         c.nextLane = next.lane;
@@ -1753,7 +1774,7 @@ void Traffic::updateAvoidPlayer(int idx, float dt, const PlayerCar& p) {
         const Vec3 d = p.transform.m3 - c.transform.m3;
         const float lat = c.transform.m0.dot(d);
         const float fwd = (-c.transform.m2).dot(d);
-        const float f = m_rng.frand();
+        const float f = m_rng->frand();
         const float off = c.passOffset;
         float beta;
         if ((info.flags & 0x1) && c.drawLane == 0) {
@@ -2239,15 +2260,20 @@ void Traffic::step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom) {
     step(dt, PlayerCar::at(pos, vel), playerRoom);
 }
 
+bool Traffic::populate(int playerRoom) {
+    if (m_started)
+        return false;
+    m_started = true;
+    m_room = playerRoom;
+    adjustAmbients(0, playerRoom);
+    m_populateAll = false;
+    return true;
+}
+
 void Traffic::step(float dt, const PlayerCar& player, int playerRoom) {
     m_player = player;
     // Population: aiMap::Reset, then whenever the player enters a new room.
-    if (!m_started) {
-        m_started = true;
-        m_room = playerRoom;
-        adjustAmbients(0, playerRoom);
-        m_populateAll = false;
-    } else if (playerRoom != 0 && playerRoom != m_room) {
+    if (!populate(playerRoom) && playerRoom != 0 && playerRoom != m_room) {
         adjustAmbients(m_room, playerRoom);
         m_room = playerRoom;
     }
