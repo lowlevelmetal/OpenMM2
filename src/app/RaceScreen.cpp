@@ -3348,7 +3348,6 @@ private:
     // game is paused too.
     void updateGameInput(Context& ctx) {
         using controls::Action;
-        const auto& in = ctx.input;
         auto pressed = [&](Action a) { return m_gameInput.fired(a); };
         bool viewChanged = false;
         if (m_hud) {
@@ -3383,17 +3382,15 @@ private:
                 viewChanged = true;
             }
         }
-        // While paused, mmGame::UpdatePaused also takes the C and V keys
-        // themselves (key events 0x2E and 0x2F), whatever the two camera
-        // actions are bound to.
-        auto pausedKey = [&](Action a, platform::Key k) {
-            return m_paused && m_gameInput.binding(a) != controls::Binding::key(k) && in.keyPressed(k);
-        };
-        if (pressed(Action::ChangeCamera) || pausedKey(Action::ChangeCamera, platform::Key::C))
+        // A paused game takes these keys too: mmGame::Update runs while
+        // asRoot is paused. (mmGame::UpdatePaused, which would take the C and
+        // V keys themselves, is never called: nothing reaches the game's
+        // UpdatePaused slot in build 3393.)
+        if (pressed(Action::ChangeCamera))
             m_cams.toggleCamera();
         // mmViewMgr::SetViewSetting(2), input event 0x0C (Thrill Cam): the
         // XCam, orbiting the car under the keyboard (CameraInput::orbit).
-        if (pressed(Action::ThrillCam) || pausedKey(Action::ThrillCam, platform::Key::V))
+        if (pressed(Action::ThrillCam))
             m_cams.toggleXCam();
         if (pressed(Action::WideAngle))
             m_cams.toggleWideAngle();
