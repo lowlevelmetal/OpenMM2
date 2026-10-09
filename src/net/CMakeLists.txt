@@ -9,6 +9,7 @@ add_library(mm2_net STATIC
     Discovery.cpp
     Session.cpp
     AmbientState.cpp
+    PropState.cpp
     NatPmp.cpp
     NatPmpBackend.cpp
     UpnpBackend.cpp

@@ -727,6 +727,8 @@ void World::collideTerrain(Body& body) {
 
 bool World::collideInstances(Instance& a, Instance& b) {
     // dgPhysManager::CollideInstances.
+    if (!a.acceptsContact(b) || !b.acceptsContact(a))
+        return false; // OpenMM2: a network client's props (Instance::acceptsContact)
     const Bound* boundA = a.bound(0);
     const Bound* boundB = b.bound(0);
     if (!boundA || !boundB)

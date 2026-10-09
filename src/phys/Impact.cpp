@@ -10,6 +10,7 @@
 #include "phys/Collider.h"
 #include "phys/Geometry.h"
 #include "phys/InertialCS.h"
+#include "phys/World.h"
 
 #include <cmath>
 #include <utility>
@@ -461,20 +462,38 @@ bool calcBangerImpact(Impact& impact, float weight, float impulseLimit2) {
     Vec3 j;
     bool broke = false;
     impact.findFrictionAndElasticity();
+    // OpenMM2: a kinematic body that moves (a network car on this machine)
+    // has no ICS in its collider, so no impulse could stop it and the banger
+    // would hold forever. It breaks the banger as a body of its own mass
+    // would (Body::ics), keeps its motion and gives the banger all of the
+    // relative velocity. MM2's network cars are simulated vehCars.
+    const Body* kinematic =
+        !impact.colliderA->ics && impact.colliderA->moving ? impact.colliderA->body : nullptr;
+    if (kinematic && !(kinematic->ics.mass > 0.0f))
+        kinematic = nullptr;
     if (n.z * relVel.z + n.y * relVel.y + n.x * relVel.x <= 0.01f) {
-        j = age::solveSVD(ma, {-relVel.x, -relVel.y, -relVel.z});
+        Mat34 test = ma;
+        if (kinematic)
+            kinematic->ics.calcCMatrix(test, impact.position);
+        j = age::solveSVD(test, {-relVel.x, -relVel.y, -relVel.z});
         const float j2 = j.z * j.z + j.y * j.y + j.x * j.x;
         if (impulseLimit2 < j2) {
             const float s = std::sqrt(impulseLimit2 / j2);
             j = {j.x * s, j.y * s, j.z * s};
             // A's velocity after the limited impulse, relative to B.
-            const Vec3 after = transformed(ma, j);
-            const Vec3 remaining{after.x + relVel.x, after.y + relVel.y, after.z + relVel.z};
+            const Vec3 after = transformed(test, j);
+            Vec3 remaining{after.x + relVel.x, after.y + relVel.y, after.z + relVel.z};
             impulseA = j;
+            if (kinematic) {
+                remaining = relVel;
+                impulseA = {};
+            }
             mb = invMass(impact.colliderB, impact.position);
             m = added(m, mb);
             j = age::solveSVD(m, {-remaining.x, -remaining.y, -remaining.z});
             broke = true;
+        } else if (kinematic) {
+            j = age::solveSVD(ma, {-relVel.x, -relVel.y, -relVel.z});
         }
         j = frictionLimited(j, n, impact.friction, m, relVel, true);
         const float bounce = impact.elasticity + 1.0f;

@@ -803,6 +803,14 @@ std::vector<net::AmbientStateMsg> NetGame::takeAmbientStates() {
     return m_impl->session ? m_impl->session->takeAmbientStates() : std::vector<net::AmbientStateMsg>{};
 }
 
+std::size_t NetGame::sendPropState(std::uint8_t playerId, const net::PropStateMsg& msg) {
+    return m_impl->session ? m_impl->session->sendPropState(playerId, msg) : 0;
+}
+
+std::vector<net::PropStateMsg> NetGame::takePropStates() {
+    return m_impl->session ? m_impl->session->takePropStates() : std::vector<net::PropStateMsg>{};
+}
+
 net::PeerStats NetGame::peerStats(std::uint8_t playerId) const {
     return m_impl->session ? m_impl->session->peerStats(playerId) : net::PeerStats{};
 }
