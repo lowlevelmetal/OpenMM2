@@ -802,14 +802,17 @@ them, and dent them, through single player's code.
   included) come off without a throw: the host's ring shows the parts it
   threw.
 * **Replays.** When the host's state corrects its car, a client runs the
-  car's later samples again (`World::replaySample`) with everything else
-  held still. The props meet the replayed car with the mass a real hit gives
-  them (`Instance::heldInertia`: the active the prop would take; a copy of a
-  flying piece's), and a light one (under a quarter of the car's mass) gives
-  way after the replay's first hit, as the real one flies off; nothing is
-  knocked in a replay. A prop a client's car hits in its own samples is the
-  same knock on the host, sample for sample: a client driving alone through
-  props had no correction.
+  car's later samples again (`World::replaySample`) with the world held
+  still. A prop meets the replayed car with the body a real hit gives it
+  (`Instance::heldInertia`: the active `dgBangerActive::Attach` would give
+  it) and moves on through the replay as the hits push it (without gravity
+  or the city: a replay is short); a placed prop the car broke loose in the
+  last second stands again for the replay where it stood (its pieces left
+  out), so the replay takes the knock the real samples took; a flying piece
+  meets it with a copy of its body and gives way after one hit if light.
+  Nothing is knocked or moved in the world by a replay. A prop a client's
+  car hits in its own samples is the same knock on the host, sample for
+  sample: a client driving alone through props had no correction.
 * **A different placement** (an altered city, a mismatched build): the
   client follows only the cars' parts and simulates its props itself, as
   0.3 did, and logs it.

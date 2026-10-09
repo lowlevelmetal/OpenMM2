@@ -412,6 +412,36 @@ TEST(PropSync, ReplayThroughAKnockTakesTheSameKnock) {
     client.world.remove(&car.body);
 }
 
+// A replay that starts just after the knock, the car still across the
+// prop's place and pushing it, ends where the real samples did: it meets the
+// prop where it stood and pushes it on.
+TEST(PropSync, ReplayJustAfterAKnockEndsAsTheRealSamples) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    Machine client(lib);
+    client.place(layout());
+    Car car({0, 1, 4.5f}, {0, 0, -10});
+    client.set.setReplica([&car](const phys::Instance& other) { return &other == &car.body; });
+    client.world.add(&car.body);
+    while (client.set.standing(0))
+        client.step();
+    client.step(); // just after the knock, the car still across the prop's place
+    const Mat34 matrix = car.body.ics.matrix;
+    const Vec3 velocity = car.body.ics.linearVelocity;
+    for (int i = 0; i < 15; ++i)
+        client.step();
+    const float real = car.body.ics.linearVelocity.z;
+    car.body.place(matrix);
+    car.body.ics.linearVelocity = velocity;
+    car.body.ics.linearMomentum = velocity * car.body.ics.mass;
+    phys::Body* bodies[] = {&car.body};
+    client.world.beginReplay();
+    for (int i = 0; i < 15; ++i)
+        client.world.replaySample(bodies, kDt);
+    EXPECT_NEAR(car.body.ics.linearVelocity.z, real, 0.3f) << "real " << real;
+    client.world.remove(&car.body);
+}
+
 TEST(PropSync, ReplayedCarMeetsAPropAsARealSampleDoes) {
     TempBangers files;
     bangers::BangerDataLibrary lib(files.vfs);

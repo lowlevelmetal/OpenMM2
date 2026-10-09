@@ -208,4 +208,6 @@ needs, all of it inert in a single-player race:
   placed or resting prop at rest).
 * A client replaying its car (`phys::World::replaySample`) meets a prop with
   the body an active would give it (`heldInertia`: `dgBangerActive::Attach`'s
-  mass and inertia, a mirror's host motion), holding it still.
+  mass and inertia, a mirror's host motion), which the world moves through
+  the replay only; a prop its car broke loose in the last second stands
+  again for the replay (`replayGhost`), its pieces left out.
