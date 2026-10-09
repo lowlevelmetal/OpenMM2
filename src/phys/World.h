@@ -135,6 +135,12 @@ public:
     // integrated, others collide with it as with an object that does not
     // move (its collider has no ICS).
     bool kinematic = false;
+    // OpenMM2: a kinematic body that does move: what it hits sees this
+    // velocity and spin (about the body's centre of mass), while it keeps
+    // no momentum of its own (infinite mass).
+    bool kinematicMoves = false;
+    Vec3 kinematicVelocity, kinematicSpin;
+    bool kinematicMotion(Vec3& velocity, Vec3& spin, Vec3& centre) const override;
 
     // Places the body's centre of mass frame and resets its motion and
     // collider (the matrix the next sweep starts from).

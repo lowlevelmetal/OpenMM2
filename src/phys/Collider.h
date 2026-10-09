@@ -50,7 +50,7 @@ public:
     Mat34 copyLastMatrix(const void* pusher) const;
 
     // phColliderBase::GetLocalVelocity: the ICS's velocity at a world point
-    // (0 without an ICS; a kinematic collider's `motion`, see below).
+    // (0 without an ICS; a moving kinematic collider's motion, see below).
     Vec3 localVelocity(const Vec3& position) const;
     // phColliderBase::GetInvMassMatrix / phColliderJointed::GetInvMassMatrix:
     // the inverse mass matrix at a world point, through the joint while it
@@ -73,12 +73,6 @@ public:
     const Bound* bound = nullptr;
     InertialCS* ics = nullptr;
     const Mat34* matrix = nullptr;   // the bound's world matrix
-    // OpenMM2: a kinematic collider (a network player's car, which nothing
-    // here moves) has no ICS but moves all the same; impacts take its
-    // velocity from this (its body's ICS, not integrated), so a car touching
-    // it meets it at their relative speed instead of as a wall. MM2's network
-    // cars were simulated vehCars with velocities of their own.
-    const InertialCS* motion = nullptr;
     Mat34 lastMatrix;                // the matrix at the end of the previous sample
     bool justReset = true;
     bool barelyMoved = false;
@@ -93,6 +87,10 @@ public:
     const Joint* joint = nullptr;     // phColliderJointed's joint (phColliderJointed::Attach)
     Body* body = nullptr;             // the simulated body owning the collider (dgPhysEntity), if any
     bool active = true;               // ColliderIsActive without an ICS
+    // OpenMM2: a collider without an ICS that moves all the same (see
+    // Instance::kinematicMotion); localVelocity reads it. init() clears it.
+    bool moving = false;
+    Vec3 motionVelocity, motionSpin, motionCentre;
 
 private:
     const void* m_key = nullptr;

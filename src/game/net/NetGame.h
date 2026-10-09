@@ -10,9 +10,11 @@
 
 #include "core/Math.h"
 #include "game/RaceConfig.h"
+#include "net/AmbientState.h"
 #include "net/Discovery.h"
 #include "net/Protocol.h"
 #include "net/Snapshot.h"
+#include "net/Transport.h"
 
 #include <cstdint>
 #include <deque>
@@ -129,6 +131,10 @@ RaceConfig fromSessionSettings(const net::SessionSettings& settings);
 // Cops & Robbers gold weight choices (string table 332-335): Weightless,
 // Quarter Ton, Half Ton (index 0..2).
 inline constexpr int kGoldMassChoices = 3;
+
+// Game events kept until the race takes them; older ones are dropped first.
+// The relay budget (30 a second per peer) bounds the rate, this the total.
+inline constexpr std::size_t kMaxQueuedGameEvents = 256;
 
 class NetGame {
 public:
@@ -260,6 +266,17 @@ public:
     // docs/multiplayer.md, "Diagnosing replication").
     void traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
                     const std::vector<NetRemoteCar>& cars);
+
+    // --- Shared ambient traffic (multiplayer cruise, OpenMM2 extra) ----------------
+    // Whether this session's cruise shares the host's traffic and police
+    // (the host's lobby option, carried by the session settings).
+    bool sharedTraffic() const;
+    // Host: sends one player its cars (unreliable); returns the bytes sent.
+    std::size_t sendAmbientState(std::uint8_t playerId, const net::AmbientStateMsg& msg);
+    // Client: the host's messages received since the last call.
+    std::vector<net::AmbientStateMsg> takeAmbientStates();
+    // Connection statistics to a player (host) or to the host (client).
+    net::PeerStats peerStats(std::uint8_t playerId) const;
 
     // Game events (reliable, ordered). Race time is ms since the race start.
     void sendCheckpoint(int index, std::uint32_t raceTimeMs);

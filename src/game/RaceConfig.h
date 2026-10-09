@@ -52,6 +52,11 @@ struct RaceConfig {
 
     // Multiplayer (filled from the lobby; unused in single player).
     bool multiplayer = false;
+    // Multiplayer cruise: the host's ambient traffic and police (at the
+    // traffic and cop densities above) are shared with every player, an
+    // OpenMM2 extra; false gives MM2's network cruise, which has neither
+    // (mmGameMulti::Init) and keeps each machine's own pedestrians.
+    bool netTraffic = true;
     CopsAndRobbersMode copsAndRobbers = CopsAndRobbersMode::FreeForAll;
     float timeLimitMinutes = 0.0f;
     int pointLimit = 0;

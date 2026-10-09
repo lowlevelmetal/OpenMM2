@@ -15,8 +15,10 @@
 #include "core/Paths.h"
 #include "core/StringUtil.h"
 #include "game/net/NetGame.h"
+#include "game/session/RaceSetup.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cmath>
 #include <format>
@@ -360,9 +362,9 @@ private:
             cfg.laps = 3;
         // HostRaceMenu (RaceMenuBase::Init(1)) has no traffic, cop or
         // opponent settings, and mmGameMulti::Init runs the network games
-        // without traffic, police or racers: the session carries none.
-        cfg.trafficDensity = 0.0f;
-        cfg.copDensity = 0.0f;
+        // without traffic, police or racers. OpenMM2's shared cruise traffic
+        // takes the single-player cruise's densities (applyNetTrafficDefaults).
+        applyNetTrafficDefaults(cfg);
         cfg.opponents = 0;
         cfg.multiplayer = true;
         game::NetHostOptions opts;
@@ -931,6 +933,9 @@ private:
         // (427) and "%d Points" (424), "%d minutes" (425) or None (426).
         if (c.mode == GameMode::Circuit) {
             lines[4] = std::format("{}: {}", s.get(418, "Laps"), c.laps);
+        } else if (c.mode == GameMode::Cruise) {
+            // OpenMM2 extra: the host's shared traffic and police (or none).
+            lines[4] = c.netTraffic ? "Traffic: Shared" : "Traffic: None";
         } else if (c.mode == GameMode::CopsAndRobbers) {
             lines[4] = std::format("{}: {}", s.get(423, "Gold Weight"),
                                    s.get(420 + static_cast<std::uint32_t>(std::clamp(goldMass, 0, 2))));
@@ -1113,6 +1118,23 @@ public:
         m_goldBox->help = "jpg/host_gm.jpg";
         m_goldArrows = arrows(fe, 20, {530, 220}, {530, 238}, *m_goldBox);
 
+        // OpenMM2 extra: the shared traffic of a network cruise, in the
+        // upper right panel that cruise leaves empty: on or off (off is MM2's
+        // network cruise, with neither traffic nor police), and the
+        // single-player cruise's traffic and cop density sliders. Their
+        // places and the panel's look are OpenMM2's.
+        m_trafficBox = &menu.add<ui::ValueBox>(
+            Box{kTrafficValueX, kTrafficRowY[0], 123, 24},
+            [] { return std::vector<std::string>{"Off", "On"}; }, [this] { return m_cfg.netTraffic ? 1 : 0; },
+            [this](int i) { m_cfg.netTraffic = i != 0; });
+        m_trafficSliders[0] = &menu.add<ui::Slider>(
+            Box{kTrafficValueX, kTrafficRowY[1], 139, 31}, [this] { return m_cfg.trafficDensity; },
+            [this](float v) { m_cfg.trafficDensity = v; });
+        // A cop density above 1 (none from this menu) shows as full.
+        m_trafficSliders[1] = &menu.add<ui::Slider>(
+            Box{kTrafficValueX, kTrafficRowY[2], 139, 31},
+            [this] { return std::min(m_cfg.copDensity, 1.0f); }, [this](float v) { m_cfg.copDensity = v; });
+
         // 22-24: RACE LOCALE; 25-27: TIME (629-632); 28-30: WEATHER (625-628:
         // the menu offers no snow, RaceMenuBase::IncWeather stops at 3); all
         // with clamping arrows.
@@ -1180,6 +1202,12 @@ public:
         m_limitArrows.show(m_limitValue->visible);
         m_goldBox->visible = cr;
         m_goldArrows.show(cr);
+        const bool cruise = m_cfg.mode == GameMode::Cruise;
+        m_trafficBox->visible = cruise;
+        for (auto* s : m_trafficSliders) {
+            s->visible = cruise;
+            s->enabled = m_cfg.netTraffic;
+        }
     }
 
     // The panels go under the widgets: their value boxes and lamps sit on them.
@@ -1193,6 +1221,8 @@ public:
             ui::drawImage(f.overlay, f.textures.get("jpg/host_rnm.jpg"), 267, 59);
         if (m_cfg.mode == GameMode::Circuit)
             ui::drawImage(f.overlay, f.textures.get("jpg/host_lap.jpg"), 267, 94);
+        if (m_cfg.mode == GameMode::Cruise)
+            drawTrafficPanel(f);
         // Race map in the lower left panel, as on the races screen.
         std::string pic;
         if (race)
@@ -1206,6 +1236,35 @@ public:
     }
 
 private:
+    // OpenMM2's shared traffic panel (see the constructor): the rows' labels
+    // and the dark boxes the value box and sliders sit on, in the style of
+    // host_cr's.
+    static constexpr float kTrafficValueX = 470.0f;
+    static constexpr float kTrafficRowY[3] = {70.0f, 128.0f, 186.0f};
+    void drawTrafficPanel(ui::UiFrame& f) const {
+        f.overlay.rect(267, 44, 373, 214, render::packColor(0, 0, 0, 110));
+        const char* labels[3] = {"SHARED TRAFFIC", "TRAFFIC DENSITY", "COP DENSITY"};
+        const float heights[3] = {24.0f, 31.0f, 31.0f};
+        const float widths[3] = {123.0f, 139.0f, 139.0f};
+        const auto font = ui::style::valueFont();
+        for (int i = 0; i < 3; ++i) {
+            const float y = kTrafficRowY[i];
+            const float lh = f.text.lineHeight(f.overlay, font);
+            const float ty = y + (heights[i] - lh) * 0.5f;
+            f.text.draw(f.overlay, font, labels[i], 287, ty + 1, render::packColor(0, 0, 0));
+            f.text.draw(f.overlay, font, labels[i], 286, ty, render::packColor(255, 255, 255));
+            f.overlay.rect(kTrafficValueX - 2, y - 2, widths[i] + 4, heights[i] + 4,
+                           render::packColor(70, 70, 170));
+            f.overlay.rect(kTrafficValueX, y, widths[i], heights[i], render::packColor(8, 8, 40));
+            if (i > 0)
+                f.overlay.rect(278, y - 13, 352, 2, render::packColor(20, 20, 60, 200));
+        }
+        if (!m_cfg.netTraffic)
+            f.text.drawWrapped(f.overlay, ui::style::smallFont(),
+                               "Off: no traffic and no police, as in the original game.", 286, 228, 340,
+                               render::packColor(255, 255, 255), ui::Align::Left);
+    }
+
     // The roller_up / roller_down buttons beside a box (clamping).
     struct Arrows {
         ui::SpriteButton* up = nullptr;
@@ -1283,11 +1342,12 @@ private:
     // RaceMenuBase::SetStateRace: the race table's time of day, weather,
     // pedestrian density and laps (cruise: noon, clear, 0.25), which the
     // host can then change. The host menu has no traffic, cops or
-    // opponents.
+    // opponents, but OpenMM2's shared cruise traffic (applyNetTrafficDefaults).
     void applyDefaults(Frontend& fe) {
         fe.applyRaceDefaults(m_cfg);
-        m_cfg.trafficDensity = 0.0f;
-        m_cfg.copDensity = 0.0f;
+        const bool traffic = m_cfg.netTraffic;
+        applyNetTrafficDefaults(m_cfg);
+        m_cfg.netTraffic = traffic; // the host's choice stays
         m_cfg.opponents = 0;
     }
 
@@ -1334,6 +1394,8 @@ private:
     ui::ValueBox* m_goldBox = nullptr;
     Arrows m_goldArrows;
     std::vector<ui::Widget*> m_crItems;
+    ui::ValueBox* m_trafficBox = nullptr;
+    std::array<ui::Slider*, 2> m_trafficSliders{};
 };
 
 // --- Eject (ejct_dlg) -------------------------------------------------------------------------
@@ -1396,6 +1458,24 @@ std::unique_ptr<Page> makeLobbyPage(Frontend& fe) { return std::make_unique<Lobb
 std::unique_ptr<Page> makeHostSettingsPage(Frontend& fe) { return std::make_unique<HostSettingsPage>(fe); }
 std::unique_ptr<Page> makeEjectDialog(Frontend& fe) { return std::make_unique<EjectDialog>(fe); }
 
+void applyNetTrafficDefaults(game::RaceConfig& cfg) {
+    // OpenMM2 extra, the shared traffic of a network cruise: the
+    // single-player cruise's traffic and cop densities
+    // (RaceMenuBase::SetStateRace: 0.5 and 1) with the option on; the other
+    // network games have neither (mmGameMulti::Init).
+    game::RaceConfig cruise;
+    cruise.mode = GameMode::Cruise;
+    game::session::applyRaceTableDefaults(cruise, nullptr);
+    cfg.netTraffic = true;
+    if (cfg.mode == GameMode::Cruise) {
+        cfg.trafficDensity = cruise.trafficDensity;
+        cfg.copDensity = cruise.copDensity;
+    } else {
+        cfg.trafficDensity = 0.0f;
+        cfg.copDensity = 0.0f;
+    }
+}
+
 bool frontendHostSession(Frontend& fe, const std::string& password) {
     NetGame& net = ensureNetGame(fe);
     game::RaceConfig cfg = fe.config;
@@ -1404,8 +1484,7 @@ bool frontendHostSession(Frontend& fe, const std::string& password) {
         cfg.mode = GameMode::Cruise;
     if (cfg.laps <= 0)
         cfg.laps = 3;
-    cfg.trafficDensity = 0.0f; // as HostOptionsDialog::host
-    cfg.copDensity = 0.0f;
+    applyNetTrafficDefaults(cfg); // as HostOptionsDialog::host
     cfg.opponents = 0;
     net.stopLanScan();
     std::string error;

@@ -109,6 +109,28 @@ openmm2 10.
 | --- | --- | --- | --- |
 | `SessionSettings` defaults, `SnapshotBuffer` interpolation | DirectPlay transport, `mmNetObject` | openmm2 | The transport carries no rules: `game::NetGame::toSessionSettings` (session area) fills every setting from the race configuration, and remote cars' rules live in `game/net`. Notes for the session area: the protocol allows 16 players and `NetGame` clamps to 2..16 where MM2 allowed 8; traffic and pedestrian densities cross the wire as whole percent. |
 
+## Shared traffic of a network cruise
+
+Added 2026-10-09 on the maintainer's decision (2026-10-09: the traffic and
+police are shared, host-authoritative, a host option in the lobby, on by
+default). MM2's network cruise has neither: `mmGameMulti::Init` zeroes the
+traffic, cop and opponent densities and the cable cars, and each machine runs
+its own pedestrians. OpenMM2 keeps that exactly with the option off. With it
+on, the host runs the cruise's traffic and police for every player and the
+clients show them (docs/multiplayer.md, "Shared traffic"). These rows are not
+counted in the summary above.
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `RaceScreen::loadAi`, `spawnPolice` in a network cruise | `mmGameMulti::Init` (no traffic, police, racers or rail cars) | deviation | The host keeps its traffic density and the cruise's police posts (`RaceSetup`: the posts of the cruise's `.aimap` at the cop density, as single-player cruise); a client runs neither. Cops and Robbers and the network races are unchanged; the cable cars stay off. |
+| `ai::Traffic::step` with several players, `World::setOtherPlayers` | `aiMap::Update`, `aiMap::AddPlayer`, `aiMap::RemovePlayer`, `aiPath::AddAmbPlayer` / `RemAmbPlayer`, `aiGoalRandomDrive::Update`, `aiGoalRegainRail::Update`, `aiGoalAvoidPlayer` (+0xe6), the pose solver's player loop | deviation | MM2's own player list, which a single-player game fills with one player and its network games with only the local one. OpenMM2 lists the other players' cars on the host, in 16 slots where aiMap has four. A player gone from the list gives up its roads from the room they were populated for (`RemovePlayer` asks the room of its car's place; inferred equivalent). The pedestrians keep the local player only. The single-player step is unchanged (the opponent sweep's 516/517 and 508/517 hold). |
+| `ai::PoliceCar` chasing the other players | `aiPoliceOfficer::DetectPerpetrator` (walks the player list), `aiMap::Player(0)` | deviation | The other players are players to the police (detected, chased, apprehended by MM2's rules); the rules that read player 0 (the reversing check) read the local player, and only the local car's hits mark what it hits. |
+| `ai::World::advanceLightsTo` | `aiTrafficLightSet::Update` | openmm2 | A client's light sets run to the host's step count (they are deterministic from `aiMap::Reset`), so the received traffic stops at the lights it sees. |
+| `game::TrafficHost`, `TrafficClient`, `TrafficCatalog`, `TrafficProxies`, `net::AmbientStateMsg`, `TrafficHitEvent` | | openmm2 | Replication: interest by distance with hysteresis, a packet budget, complete messages, generations for recycled slots, interpolation with the remote players' buffer, the client's car meeting the received cars as moving kinematic instances, and the client's hit reports. |
+| `phys::Instance::kinematicMotion`, `Body::kinematicMoves` | | openmm2 | A kinematic instance (network car) that reports its motion strikes as a car moving at it (MM2 has no kinematic instances); off by default, on for the network cars of a shared-traffic cruise and the received traffic and police. |
+| The host settings' SHARED TRAFFIC panel (`HostSettingsPage`) | `HostRaceMenu` (no traffic or cop settings) | deviation | On / off and the single-player cruise's traffic and cop density sliders (defaults 0.5 and 1, `RaceMenuBase::SetStateRace`), drawn by OpenMM2 in the upper right panel cruise leaves empty. |
+| A client's pedestrians and the received cars | `aiPedestrian::UpcomingAccident` / `Accident` (`aiObstacle::InAccident` in the road's section lists) | inferred | The host's section lists do not travel: a received car off its rail counts for its whole road or intersection (`MapView::mapComponent` of its place). |
+
 ## Files
 
 | File | Class | Reason |
@@ -136,6 +158,8 @@ openmm2 10.
 | `src/core/Paths.h` | confirmed O | |
 | `src/core/StringUtil.cpp` | reclassified M | `parseDouble`, `parseInt` and the case folding stand in for MM2's atof, atoi and _stricmp in the data loaders (above). |
 | `src/core/StringUtil.h` | reclassified M | |
+| `src/net/AmbientState.cpp` | O | The shared cruise traffic's message (added 2026-10-09). |
+| `src/net/AmbientState.h` | O | |
 | `src/net/BitStream.cpp` | confirmed O | Wire encoding. |
 | `src/net/BitStream.h` | confirmed O | |
 | `src/net/ClockSync.cpp` | confirmed O | Host clock estimate. |

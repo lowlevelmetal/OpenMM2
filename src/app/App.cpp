@@ -219,7 +219,7 @@ int run(const CommandLine& cl) {
         ctx.imgui->render(ImGui::GetDrawData());
         dev.endOverlay();
 
-        const bool lastFrame = cl.frames && frame + 1 >= *cl.frames;
+        const bool lastFrame = (cl.frames && frame + 1 >= *cl.frames) || ctx.lastFrameRequested;
         if (lastFrame && cl.screenshot)
             dev.requestCapture();
         limiter.wait();

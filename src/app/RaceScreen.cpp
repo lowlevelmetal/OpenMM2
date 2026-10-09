@@ -41,6 +41,8 @@
 #include "game/fx/VehicleEffects.h"
 #include "game/fx/Weather.h"
 #include "game/net/NetGame.h"
+#include "game/net/TrafficProxies.h"
+#include "game/net/TrafficSync.h"
 #include "game/CamMirror.h"
 #include "game/CamPlayer.h"
 #include "game/CityRenderer.h"
@@ -65,6 +67,8 @@
 #include <optional>
 #include <set>
 #include <format>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace mm2::app {
 namespace {
@@ -83,6 +87,13 @@ bool serialize(S& s, CrSetEvent& e) {
     s.vec3(e.hideout);
     return s.ok();
 }
+
+// OpenMM2's shared traffic of a network cruise: the AI's ids of the other
+// players' cars (ai::TrackedCar), the network ids of the police cars (after
+// the traffic pool's), and how often the host sends (the snapshot rate).
+constexpr int kNetPlayerTrackedId = 30000;
+constexpr int kNetPoliceId = 400;
+constexpr std::uint64_t kNetTrafficIntervalMs = 50;
 
 const char* modePrefix(game::GameMode m) {
     switch (m) {
@@ -126,6 +137,14 @@ public:
     ~RaceScreen() override {
         if (m_cityLevel && m_trafficBodies)
             m_cityLevel->removeSource(m_trafficBodies.get());
+        if (m_cityLevel && m_trafficProxies)
+            m_cityLevel->removeSource(m_trafficProxies.get());
+        for (auto& [id, c] : m_netCops)
+            if (c.audio)
+                c.audio->stop();
+        for (auto& [model, c] : m_spareNetCops)
+            if (c.audio)
+                c.audio->stop();
         if (m_cityLevel && m_bangers)
             m_cityLevel->removeSource(m_bangers.get());
         if (m_cityLevel && m_gizmos)
@@ -245,6 +264,12 @@ public:
         updateNetPlayers(ctx);
         if (m_hud)
             m_hud->updateChat(static_cast<float>(dt));
+        // Development aid: OPENMM2_DEBUG_NET_SHOT_MS=<session ms> ends a
+        // network race at that session time (with --screenshot: every
+        // machine's picture of the same moment).
+        if (const char* shot = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shot && multiplayer(ctx) &&
+            ctx.netGame->raceStarted() && ctx.netGame->sessionTime() >= str::parseInt(shot).value_or(0))
+            ctx.lastFrameRequested = true;
         if (multiplayer(ctx)) {
             ctx.netGame->update();
             if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
@@ -301,8 +326,8 @@ public:
             const ai::TrackedCar player = m_player ? trackedCar(m_player->sim(), 0, true) : ai::TrackedCar{};
             m_cableCars->update(static_cast<float>(dt), m_player ? &player : nullptr, *m_world);
         }
-        if (m_ai)
-            m_ai->updateLights(); // the light sets last (aiMap::Update)
+        if (m_ai && !netTrafficClient(ctx))
+            m_ai->updateLights(); // the light sets last (aiMap::Update); a shared-traffic client: the host's
         // The gizmo managers, nodes of mmGame (bridges, trains, ferries,
         // sailboats); the player's car is the bridges' proximity trigger.
         if (m_gizmos) {
@@ -312,6 +337,9 @@ public:
             m_gizmos->update(static_cast<float>(dt), trigger);
         }
         updateRemoteCars(ctx, static_cast<float>(dt));
+        updateNetTraffic(ctx, static_cast<float>(dt)); // OpenMM2: a client's shared traffic
+        if (netTrafficHost(ctx) && m_ai)
+            applyNetTrafficHits(ctx); // OpenMM2: the clients' hits on the host's traffic
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
         if (m_trafficBodies)
@@ -347,6 +375,7 @@ public:
             if (multiplayer(ctx))
                 sendLocalState(ctx);
         }
+        sendNetTraffic(ctx); // OpenMM2: the host's shared traffic
         if (m_flyCamera || !m_player)
             updateFlyCamera(ctx, static_cast<float>(dt));
         else
@@ -436,7 +465,7 @@ public:
         std::vector<game::fx::LensFlareQuad> flares;
         const Mat44 viewProj = frame.view * frame.proj;
         game::VehicleRenderer::setLensFlareTarget(&viewProj, proj.aspect, &flares);
-        drawLevel(ctx, m_camera, frustum, playerBody);
+        drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
         game::VehicleRenderer::setLensFlareTarget(nullptr, 1.0f, nullptr);
         if (!flares.empty()) {
             game::fx::drawLensFlares(dev, *m_textures, flares);
@@ -501,7 +530,7 @@ public:
         // an icon turned off, place 0, once that player has finished).
         if (multiplayer(ctx)) {
             const auto& players = ctx.netGame->players();
-            for (const auto& rc : m_netCars) {
+            for (const auto& rc : m_remoteCars) {
                 if (!rc.hasState)
                     continue;
                 int slot = 0, other = 0, racer = -1;
@@ -536,13 +565,19 @@ public:
         for (const auto& c : m_cops)
             if (c.driver->mode() != ai::PoliceCar::Mode::Parked)
                 blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
+        // OpenMM2's shared traffic: the host's police in pursuit, on a client.
+        for (const auto& [id, c] : m_netCops)
+            if (c.sim && (c.state.flags & net::kAmbientPursuit))
+                blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
         return blips;
     }
 
     // The level as lvlLevel::Draw draws it for one view: the city, traffic,
     // props, the cars and their effects (lvlLevel's callbacks) and the rain.
-    // `playerBody` false hides the player's car.
-    void drawLevel(Context& ctx, const game::Camera& camera, const game::Frustum& frustum, bool playerBody) {
+    // `playerBody` false hides the player's car; `dt` advances the shared
+    // police cars' wheels (0 for a second view of the same frame).
+    void drawLevel(Context& ctx, const game::Camera& camera, const game::Frustum& frustum, bool playerBody,
+                   float dt) {
         render::Device& dev = ctx.device();
         m_cityRenderer->draw(camera, frustum, m_env, m_detail);
         m_roadDecals.draw(dev, *m_textures);
@@ -550,6 +585,7 @@ public:
             m_aiRenderer->draw(*m_ai, camera, frustum, m_result.config.timeOfDay, carLights(), m_detail.objects,
                                [this](int id) { return physicalTrafficCar(id); });
         drawRemoteCars(ctx, camera);
+        drawNetCops(dt, camera);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera,
@@ -673,7 +709,7 @@ public:
         dev.clear(clear);
         dev.setFrameConstants(frame);
         dev.setFrontFaceFlipped(true);
-        drawLevel(ctx, camera, game::Frustum(frame.view * frame.proj), false);
+        drawLevel(ctx, camera, game::Frustum(frame.view * frame.proj), false, 0.0f);
         dev.setFrontFaceFlipped(false);
         dev.setScissor(nullptr);
         dev.setViewport({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
@@ -1244,6 +1280,10 @@ private:
     void spawnPolice(Context& ctx) {
         if (!m_session || !m_world || !m_ai)
             return;
+        // A network client drives no police: the shared traffic's come from
+        // the host (OpenMM2 extra; the other network games have no posts).
+        if (multiplayer(ctx) && !ctx.netGame->isHost())
+            return;
         const auto& posts = m_session->police();
         const std::size_t count = ai::PoliceSquad::countForDensity(posts.size(), m_result.config.copDensity);
         std::optional<float> chaseDistance;
@@ -1281,6 +1321,8 @@ private:
                 livery = str::iequals(m_result.config.city, "sf") ? 0 : 1;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
+            cop.vehicle = p.vehicle;
+            cop.livery = livery;
             cop.renderer->setSirenFlares(flares);
             setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
@@ -1339,6 +1381,11 @@ private:
         for (const auto& o : m_opponents)
             racers.push_back(o.sim->sim().body.ics.matrix.m3);
         m_ai->setOpponents(racers);
+        // OpenMM2's shared traffic: on the host, the other players too.
+        if (netTrafficHost(ctx)) {
+            collectNetPlayers(ctx);
+            m_ai->setOtherPlayers(m_netTrafficPlayers);
+        }
         m_ai->update(dt, pc);
     }
 
@@ -1359,6 +1406,10 @@ private:
         if (m_ai)
             m_ai->map().trackPlayer(player);
         cars.push_back(player);
+        // OpenMM2's shared traffic: the host's police chase the other
+        // players too (after the local one, aiMap::Player(0)).
+        for (const auto& t : m_netTrackedPlayers)
+            cars.push_back(t);
         for (const auto& o : m_opponents) {
             ai::TrackedCar t = trackedCar(o.sim->sim(), 1 + static_cast<int>(o.sessionIndex));
             t.suspect = true;
@@ -1473,7 +1524,7 @@ private:
         // pedals, horn, siren and wreck from the packet; the engine follows
         // the car's own vehCarSim, here the kinematic one placed from the
         // snapshots).
-        for (const auto& rc : m_netCars) {
+        for (const auto& rc : m_remoteCars) {
             const auto it = m_remotes.find(rc.id);
             if (!rc.hasState || it == m_remotes.end() || !it->second.audio || !it->second.sim)
                 continue;
@@ -1507,7 +1558,9 @@ private:
         audio::game::CreatureVoice::advanceClock(dt);
         audio::game::CreatureVoice::advanceClock(dt);
         std::vector<char> seen;
-        for (const ai::AmbientCar& c : m_ai->cars()) {
+        // (A shared-traffic client hears the cars the host sends.)
+        const auto& ambient = netTrafficClient(ctx) ? m_netCars : m_ai->cars();
+        for (const ai::AmbientCar& c : ambient) {
             AmbientAudio* a = ambientAudio(ctx, c);
             if (!a)
                 continue;
@@ -1535,6 +1588,11 @@ private:
             if (AmbientAudio* a = ambientAudioOf(id); a && a->car.honk())
                 a->car.avoidReaction();
         }
+        // A shared-traffic client: the horns the host's cars sounded.
+        if (netTrafficClient(ctx))
+            for (const ai::AmbientCar& c : m_netCars)
+                if (AmbientAudio* a = c.horn ? ambientAudioOf(c.id) : nullptr; a && a->car.honk())
+                    a->car.avoidReaction();
         // aiVehicleActive's impact callback: AudImpact::Play and
         // PlayImpactHorn with |x| + |y| + |z| of the impulse, then
         // PlayImpactReaction.
@@ -2203,7 +2261,7 @@ private:
         // fall out of the city), not when the car touches the water.
         cars.push_back({m_crSelf, m_crMyTeam, m_player->sim().body.ics.matrix.m3, m_playerState.wrecked,
                         std::exchange(m_crWaterHandled, false)});
-        for (const auto& rc : m_netCars)
+        for (const auto& rc : m_remoteCars)
             if (rc.hasState)
                 cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
                                 false});
@@ -2932,8 +2990,12 @@ private:
             settings.maxPeds = std::max(0, *ctx.commandLine.pedPool);
         // mmGameMulti::Init: no traffic (nor cops, racers or rail cars) in
         // multiplayer cruise and Cops and Robbers; the pedestrians stay, at
-        // the host's density (the only density the session carries).
-        if (multiplayer(ctx))
+        // the host's density, each machine its own. OpenMM2 extra (the host's
+        // lobby option, on by default): in cruise the host runs the traffic
+        // at its traffic density, and the police, for every player
+        // (sendNetTraffic); the clients run none and show the host's
+        // (updateNetTraffic).
+        if (multiplayer(ctx) && !netTrafficHost(ctx))
             settings.trafficDensity = 0.0f;
         // mmSingleStunt::LoadEventFile sets the traffic density to the last
         // event's AmbDensity before aiMap::Init reads it.
@@ -3003,6 +3065,7 @@ private:
                 return true;
             });
         }
+        setupNetTraffic(ctx);
     }
 
     // aiMap's load lists the props standing in the city for the pedestrians
@@ -3368,6 +3431,7 @@ private:
         // The listener follows the camera.
         ctx.mixer->setListener(m_camera.transform, m_player->sim().body.ics.frameVelocity);
         updateAiAudio(dt);
+        updateNetCopsAudio(ctx, dt);
         updateAmbientAudio(ctx, dt);
         updatePedestrianAudio(dt);
         // mmGame::Update's mmSpeechContainer::Update (AudSpeech::Update); the
@@ -3384,6 +3448,539 @@ private:
         const auto view = m_cams.view();
         const bool interior = view == game::PlayerCameras::View::Pov || view == game::PlayerCameras::View::Dash;
         m_rain.update(m_result.config.weather == game::Weather::Rain, interior, m_tunnel, dt);
+    }
+
+    // --- Shared traffic of a network cruise (OpenMM2 extra) ---------------------------------
+    // MM2's network cruise has neither traffic nor police (mmGameMulti::Init).
+    // With the host's lobby option on, the host runs both for every player
+    // and sends each client the cars near it (game/net/TrafficSync,
+    // docs/multiplayer.md "Shared traffic"); the clients draw, hear and
+    // collide with them, and their pedestrians stay their own.
+
+    bool netTraffic(Context& ctx) const {
+        return multiplayer(ctx) && m_result.config.mode == game::GameMode::Cruise &&
+               m_result.config.netTraffic;
+    }
+    bool netTrafficHost(Context& ctx) const { return netTraffic(ctx) && ctx.netGame->isHost(); }
+    bool netTrafficClient(Context& ctx) const { return netTraffic(ctx) && !ctx.netGame->isHost(); }
+
+    // The models a shared car can be (the traffic's types, then the police
+    // posts' cars), and the host's or the client's side.
+    void setupNetTraffic(Context& ctx) {
+        if (!netTraffic(ctx) || !m_ai)
+            return;
+        std::vector<std::string> police;
+        if (m_session)
+            for (const auto& p : m_session->police())
+                police.push_back(p.vehicle);
+        m_trafficCatalog = game::buildTrafficCatalog(m_ai->traffic().types(), police);
+        if (ctx.netGame->isHost()) {
+            m_trafficHost.emplace();
+        } else {
+            m_trafficClient.emplace(m_trafficCatalog.size(), m_trafficCatalog.checksum());
+            if (m_aiRenderer)
+                m_aiRenderer->setCars(&m_netCars);
+            if (m_cityLevel) {
+                m_trafficProxies = std::make_unique<game::TrafficProxies>(m_cityLevel.get());
+                m_cityLevel->addSource(m_trafficProxies.get());
+            }
+            // The pedestrians shy away from the received cars that are out of
+            // normal driving, as from the host's (aiPedestrian::Accident).
+            m_ai->pedestrians().setAccidentQuery(
+                [this](int node, int path, int) { return netAccidentAt(node, path); });
+        }
+        const char* role = ctx.netGame->isHost() ? "host" : "client";
+        log::info("race: shared traffic, {} ({} models, catalog {:04x})", role, m_trafficCatalog.size(),
+                  m_trafficCatalog.checksum());
+    }
+
+    // The other players as the host's traffic and police see them: their
+    // kinematic cars (updateRemoteCars) with the controls they sent.
+    void collectNetPlayers(Context& ctx) {
+        m_netTrafficPlayers.clear();
+        m_netTrackedPlayers.clear();
+        for (const auto& rc : ctx.netGame->remoteCars()) {
+            const auto it = m_remotes.find(rc.id);
+            if (!rc.hasState || it == m_remotes.end() || !it->second.sim || rc.id == 0 ||
+                rc.id >= ai::kMaxTrafficPlayers)
+                continue;
+            const phys::CarSim& sim = it->second.sim->sim();
+            ai::PlayerCar pc;
+            pc.transform = sim.body.ics.matrix;
+            pc.velocity = rc.velocity;
+            pc.width = sim.params.inertiaBox.x;
+            pc.length = sim.params.inertiaBox.z;
+            pc.radius = sim.body.radius();
+            pc.steering = rc.controls.steering;
+            pc.reversing = rc.controls.gear < 0;
+            pc.horn = (rc.flags & net::kVehicleHorn) != 0;
+            m_netTrafficPlayers.push_back({rc.id, pc});
+            ai::TrackedCar t = trackedCar(sim, kNetPlayerTrackedId + rc.id, true);
+            t.velocity = rc.velocity;
+            t.speed = std::abs(rc.velocity.dot(sim.body.ics.matrix.m2));
+            t.suspect = true;
+            t.reversing = rc.controls.gear < 0;
+            if (m_ai)
+                m_ai->map().trackPlayer(t);
+            m_netTrackedPlayers.push_back(t);
+        }
+    }
+
+    // Host: every 50 ms, each client its cars (the police chasing it, then
+    // the nearest) with the light sets' steps.
+    // Host: the clients' reports of their cars hitting traffic cars. A car
+    // still on its rail here, near the client's car (as this machine shows
+    // it, allowing for the lag), leaves its rail with the impulse of a car of
+    // the client's mass at the reported velocity meeting it (elasticity 0.25:
+    // two lvlMaterial defaults of 0.5); anything else is dropped.
+    void applyNetTrafficHits(Context& ctx) {
+        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+            if (static_cast<std::uint16_t>(ev.type) != net::kTrafficHitEvent || !m_trafficBodies)
+                continue;
+            const auto hit = ev.as<net::TrafficHitEvent>();
+            const auto rv = m_remotes.find(ev.from);
+            if (!hit || rv == m_remotes.end() || !rv->second.sim)
+                continue;
+            const auto car = std::ranges::find_if(m_ai->cars(), [&](const ai::AmbientCar& c) {
+                const auto generation = static_cast<unsigned>(c.spawns) % net::kAmbientGenerations;
+                return c.id == hit->id && generation == hit->generation;
+            });
+            if (car == m_ai->cars().end() || car->physical)
+                continue;
+            const phys::Body& other = rv->second.sim->sim().body;
+            const Vec3 rel = hit->velocity - car->velocity;
+            const float reach = std::min(25.0f, 8.0f + rel.mag() * 0.5f);
+            if (other.ics.matrix.m3.dist(car->transform.m3) > reach)
+                continue;
+            const float mc = other.ics.mass, mt = m_trafficBodies->massOf(car->id);
+            const float speed = rel.mag();
+            if (mt <= 0.0f || mc <= 0.0f || speed < 0.5f)
+                continue;
+            const Vec3 n = rel * (1.0f / speed);
+            const float reduced = mc * mt / (mc + mt);
+            const Vec3 impulse = n * (reduced * speed * 1.25f);
+            // At the side facing the client's car, a metre up.
+            Vec3 toward = other.ics.matrix.m3 - car->transform.m3;
+            toward.y = 0.0f;
+            const float d = toward.mag();
+            const Vec3 side = d > 0.01f ? toward * (1.0f / d) : Vec3{};
+            const Vec3 point = car->transform.m3 + Vec3{0.0f, 1.0f, 0.0f} + side;
+            if (m_trafficBodies->knock(car->id, impulse, point) && m_debugNetTraffic)
+                log::info("nettraffic: host knocks traffic car {} for player {} ({:.1f} m/s)", car->id,
+                          ev.from, speed);
+        }
+    }
+
+    void sendNetTraffic(Context& ctx) {
+        if (!m_trafficHost || !m_ai || !netTrafficHost(ctx))
+            return;
+        // aiGoalAvoidPlayer::Reset's horn (the car's horn flag, for the step
+        // it started avoiding) waits for the next message.
+        for (const ai::AmbientCar& c : m_ai->cars())
+            if (c.horn)
+                m_hornLatch.insert(c.id);
+        const std::uint64_t now = net::monotonicMs();
+        if (now - m_trafficSentAt < kNetTrafficIntervalMs)
+            return;
+        m_trafficSentAt = now;
+        std::vector<game::SharedCar> cars;
+        cars.reserve(m_ai->cars().size() + m_cops.size());
+        for (const ai::AmbientCar& c : m_ai->cars()) {
+            const int model = m_trafficCatalog.find(c.model);
+            if (model < 0 || c.id < 0 || c.id >= kNetPoliceId)
+                continue;
+            int paint = 0;
+            if (m_aiRenderer) {
+                const int jobs = m_aiRenderer->paintJobs(c.model);
+                paint = jobs > 1 ? static_cast<int>(c.paint * static_cast<float>(jobs - 1)) : 0;
+            }
+            std::optional<game::TrafficBodyState> body;
+            if (const Mat34* m = m_trafficBodies ? m_trafficBodies->transformOf(c.id) : nullptr) {
+                body.emplace();
+                body->transform = *m;
+                m_trafficBodies->motionOf(c.id, body->velocity, body->angularVelocity);
+            }
+            const bool horn = m_hornLatch.contains(c.id);
+            cars.push_back(game::shareTrafficCar(c, model, paint, body ? &*body : nullptr, horn));
+        }
+        m_hornLatch.clear();
+        if (m_debugNetTraffic) {
+            std::unordered_set<int> knocked;
+            for (const ai::AmbientCar& c : m_ai->cars())
+                if (c.physical) {
+                    knocked.insert(c.id);
+                    if (!m_debugKnocked.contains(c.id))
+                        log::info("nettraffic: host traffic car {} knocked off its rail at session t {}",
+                                  c.id, ctx.netGame->sessionTime());
+                }
+            m_debugKnocked = std::move(knocked);
+        }
+        for (std::size_t i = 0; i < m_cops.size(); ++i) {
+            const Cop& cop = m_cops[i];
+            const int model = m_trafficCatalog.find(cop.vehicle);
+            if (model < 0 || kNetPoliceId + static_cast<int>(i) >= static_cast<int>(net::kMaxAmbientIds))
+                continue;
+            const phys::CarSim& sim = cop.sim->sim();
+            game::SharedCar s;
+            s.id = kNetPoliceId + static_cast<int>(i);
+            s.kind = net::AmbientKind::Police;
+            s.generation = cop.resets;
+            s.model = model;
+            s.paint = cop.livery;
+            s.transform = sim.modelMatrix();
+            s.velocity = sim.body.ics.linearVelocity;
+            s.angularVelocity = sim.body.ics.angularVelocity;
+            s.speed = sim.speed();
+            const auto mode = cop.driver->mode();
+            if (cop.driver->siren())
+                s.flags |= net::kAmbientSiren;
+            if (mode != ai::PoliceCar::Mode::Parked) // aiPoliceOfficer::InPersuit
+                s.flags |= net::kAmbientPursuit;
+            if (mode == ai::PoliceCar::Mode::Disabled)
+                s.flags |= net::kAmbientWrecked;
+            if (sim.brakes > 0.05f)
+                s.flags |= net::kAmbientBrake;
+            const int target = cop.driver->target();
+            if (target == 0)
+                s.target = ctx.netGame->localId();
+            else if (target > kNetPlayerTrackedId && target < kNetPlayerTrackedId + ai::kMaxTrafficPlayers)
+                s.target = static_cast<std::uint8_t>(target - kNetPlayerTrackedId);
+            s.damage = sim.damage.damage;
+            s.rpm = sim.engine.rpm;
+            s.throttle = sim.engine.throttle;
+            s.gear = sim.trans.getCurrentGear();
+            cars.push_back(s);
+        }
+        const std::uint32_t time = ctx.netGame->sessionTime();
+        std::set<std::uint8_t> viewers;
+        for (const auto& rc : ctx.netGame->remoteCars()) {
+            if (!rc.hasState)
+                continue;
+            viewers.insert(rc.id);
+            const auto msg = m_trafficHost->build({rc.id, rc.transform.m3}, cars, time, m_ai->lightSteps(),
+                                                  m_trafficCatalog.checksum());
+            const std::size_t bytes = ctx.netGame->sendAmbientState(rc.id, msg);
+            auto& st = m_trafficSent[rc.id];
+            st.bytes += bytes;
+            st.messages += bytes > 0 ? 1 : 0;
+            st.cars += msg.entities.size();
+            if (m_debugNetTraffic) // every message: the clients' logs are compared with these
+                for (const auto& e : msg.entities)
+                    if (e.position.dist(rc.transform.m3) < 120.0f)
+                        log::info("nettraffic: host t {} to {} id {} gen {} at {:.2f} {:.2f} {:.2f}", time,
+                                  rc.id, e.id, e.generation, e.position.x, e.position.y, e.position.z);
+        }
+        for (auto it = m_trafficSent.begin(); it != m_trafficSent.end();) {
+            if (viewers.contains(it->first)) {
+                ++it;
+                continue;
+            }
+            m_trafficHost->forget(it->first);
+            it = m_trafficSent.erase(it);
+        }
+        // Bandwidth, every 10 s.
+        if (m_trafficStatsAt == 0)
+            m_trafficStatsAt = now;
+        if (now - m_trafficStatsAt >= 10000) {
+            const double seconds = static_cast<double>(now - m_trafficStatsAt) / 1000.0;
+            for (auto& [id, st] : m_trafficSent) {
+                const double perMessage =
+                    st.messages ? static_cast<double>(st.cars) / static_cast<double>(st.messages) : 0.0;
+                log::info("nettraffic: to player {}: {:.1f} msg/s, {:.0f} B/s, {:.1f} cars a message", id,
+                          static_cast<double>(st.messages) / seconds, static_cast<double>(st.bytes) / seconds,
+                          perMessage);
+                st = {};
+            }
+            m_trafficStatsAt = now;
+        }
+    }
+
+    // The client's vehicle data of a traffic model (null: not a traffic model).
+    const ai::VehicleData* netVehicleData(const std::string& model) const {
+        for (const ai::VehicleData& d : m_ai->traffic().types())
+            if (str::iequals(d.model, model))
+                return &d;
+        return nullptr;
+    }
+
+    // Client, before the physics step: the host's messages, the cars at
+    // the interpolation delay, the light sets at the host's steps, the
+    // traffic's physics proxies and the police cars.
+    void updateNetTraffic(Context& ctx, float dt) {
+        if (!m_trafficClient || !m_ai || !netTrafficClient(ctx))
+            return;
+        for (const auto& m : ctx.netGame->takeAmbientStates())
+            m_trafficClient->receive(m);
+        // Game events are the host's hit reports' channel; a client has no
+        // use for any in cruise.
+        (void)ctx.netGame->takeGameEvents();
+        // The traffic cars the local car hit in the last physics step: the
+        // host's view of this car lags behind, so it is told (at most once
+        // a second per car), with the car's velocity before that step.
+        if (m_trafficProxies) {
+            const std::uint32_t now = ctx.netGame->sessionTime();
+            for (int id : m_trafficProxies->takeHits()) {
+                const auto it =
+                    std::ranges::find_if(m_netCars, [id](const ai::AmbientCar& c) { return c.id == id; });
+                if (it == m_netCars.end())
+                    continue;
+                const auto [entry, fresh] = m_netHitReported.try_emplace(id, now);
+                if (!fresh && now - entry->second < 1000)
+                    continue;
+                entry->second = now;
+                net::TrafficHitEvent hit;
+                hit.id = static_cast<std::uint16_t>(id);
+                hit.generation = static_cast<std::uint8_t>(it->spawns);
+                hit.velocity = m_netPreStepVelocity;
+                ctx.netGame->sendEvent(net::kTrafficHitEvent, net::encodePayload(hit), net::kHostPlayerId);
+                if (m_debugNetTraffic)
+                    log::info("nettraffic: client hit traffic car {} at session t {}", id, now);
+            }
+            std::erase_if(m_netHitReported, [now](const auto& e) { return now - e.second > 5000; });
+        }
+        if (m_player)
+            m_netPreStepVelocity = m_player->sim().body.ics.linearVelocity;
+        if (m_trafficClient->catalogMismatch() && !m_trafficCatalogWarned) {
+            log::warn("race: the host's traffic models differ from this game's data; some cars may look "
+                      "wrong");
+            m_trafficCatalogWarned = true;
+        }
+        const double renderTime =
+            static_cast<double>(ctx.netGame->sessionTime()) - m_trafficClient->options().interpolationDelayMs;
+        m_trafficClient->update(renderTime);
+        if (const auto steps = m_trafficClient->lightSteps(renderTime))
+            m_ai->advanceLightsTo(*steps);
+        m_netCars.clear();
+        std::unordered_set<int> seen;
+        for (const auto& c : m_trafficClient->cars()) {
+            const std::string* model = m_trafficCatalog.name(c.model);
+            if (c.kind != net::AmbientKind::Traffic || !model)
+                continue;
+            // aiVehicleSpline::Update's tyre turn, kept here.
+            float& turn = m_netTireRotation[c.id];
+            if (c.fresh)
+                turn = 0.0f;
+            turn += dt * c.speed;
+            if (turn > ai::kTireRotationWrap)
+                turn -= ai::kTireRotationWrap;
+            m_netCars.push_back(game::ambientCarOf(c, *model, netVehicleData(*model),
+                                                   m_aiRenderer ? m_aiRenderer->paintJobs(*model) : 1, turn));
+            seen.insert(c.id);
+        }
+        std::erase_if(m_netTireRotation, [&](const auto& e) { return !seen.contains(e.first); });
+        if (m_trafficProxies)
+            m_trafficProxies->update(m_netCars);
+        // The pedestrians' accidents: the components of the cars off their rails.
+        m_netAccidentNodes.clear();
+        m_netAccidentPaths.clear();
+        for (const ai::AmbientCar& c : m_netCars) {
+            if (c.goal == ai::AmbientGoal::RandomDrive)
+                continue;
+            int id = 0, type = ai::kNoComponent;
+            int& room = m_netAccidentRooms[c.id];
+            room = m_ai->map().mapComponent(c.transform.m3, id, type, room);
+            if (type == ai::kIntersectionComponent)
+                m_netAccidentNodes.insert(id);
+            else if (type == ai::kRoadComponent || type == ai::kShortcutComponent)
+                m_netAccidentPaths.insert(id);
+        }
+        updateNetCops(ctx, dt);
+        if (m_debugNetTraffic) {
+            const std::uint64_t now = net::monotonicMs();
+            if (now - m_trafficLoggedAt >= 500) {
+                m_trafficLoggedAt = now;
+                const Vec3 me = m_player ? m_player->sim().modelMatrix().m3 : m_camera.position();
+                for (const auto& c : m_trafficClient->cars())
+                    if (c.transform.m3.dist(me) < 120.0f)
+                        log::info(
+                            "nettraffic: client t {:.0f} id {} gen {} at {:.2f} {:.2f} {:.2f} flags {:#x}"
+                            "{}{}",
+                            renderTime, c.id, c.generation, c.transform.m3.x, c.transform.m3.y, c.transform.m3.z,
+                            c.flags, c.extrapolated ? " (extrapolated)" : "",
+                            c.kind == net::AmbientKind::Police ? std::format(" police target {}", c.target)
+                                                               : std::string());
+                log::info("nettraffic: client cops pursuing this player: {}",
+                          audio::game::SirenPlayer::copsPursuingPlayer());
+            }
+        }
+        const std::uint64_t now = net::monotonicMs();
+        if (m_trafficStatsAt == 0)
+            m_trafficStatsAt = now;
+        if (now - m_trafficStatsAt >= 10000) {
+            const auto& st = m_trafficClient->stats();
+            log::info("nettraffic: received {} messages ({} cars), {} refused, {} late, {} moved; showing {} "
+                      "cars, {} police",
+                      st.messages, st.entities, st.refused, st.outdated, st.teleports, m_netCars.size(),
+                      m_netCops.size());
+            m_trafficStatsAt = now;
+        }
+    }
+
+    // aiPedestrian::Accident's question on a client: a received car out of
+    // normal driving at the intersection or on the road (inferred: the
+    // host's section lists are not sent, so the whole road counts).
+    bool netAccidentAt(int node, int path) const {
+        return m_netAccidentNodes.contains(node) || (path >= 0 && m_netAccidentPaths.contains(path));
+    }
+
+    // The host's police on a client: kinematic cars (as the network
+    // players', updateRemoteCars) at their interpolated places, drawn and
+    // heard as the host's cops.
+    // The host's police car shown on a client.
+    struct NetCop {
+        std::string model;
+        int paint = -1;
+        int generation = -1;
+        std::unique_ptr<game::SimVehicle> sim; // kinematic body
+        std::unique_ptr<game::VehicleRenderer> renderer;
+        std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        game::TrafficClient::Car state;
+        std::array<float, 6> spin{};
+        float sirenAngle = 0.0f;
+    };
+
+    // A police car's parts out of the world, kept for another one of its
+    // model: each model is loaded once per car shown at a time.
+    void releaseNetCop(NetCop& cop) {
+        if (cop.sim && m_world)
+            cop.sim->removeFrom(*m_world);
+        if (cop.audio)
+            cop.audio->stop();
+        if (cop.sim) {
+            const std::string model = cop.model;
+            m_spareNetCops.emplace(model, std::move(cop));
+        }
+        cop = {};
+    }
+
+    void updateNetCops(Context& ctx, float dt) {
+        std::unordered_set<int> seen;
+        for (const auto& c : m_trafficClient->cars()) {
+            const std::string* model = m_trafficCatalog.name(c.model);
+            if (c.kind != net::AmbientKind::Police || !model || !m_world)
+                continue;
+            // As many as MM2's posts could give (a hostile host gets no more).
+            if (!m_netCops.contains(c.id) && m_netCops.size() >= kMaxNetCops)
+                continue;
+            seen.insert(c.id);
+            NetCop& cop = m_netCops[c.id];
+            if (cop.model != *model) {
+                releaseNetCop(cop);
+                cop.model = *model;
+                if (const auto spare = m_spareNetCops.find(*model); spare != m_spareNetCops.end()) {
+                    cop = std::move(spare->second);
+                    m_spareNetCops.erase(spare);
+                } else if (!m_badNetCopModels.contains(*model)) {
+                    std::string error;
+                    cop.sim = game::SimVehicle::load(ctx.game->vfs, *model, &error, {}, false, false);
+                    if (!cop.sim) {
+                        // Tried once, not again every frame.
+                        log::warn("race: shared police car {}: {}", *model, error);
+                        m_badNetCopModels.insert(*model);
+                        continue;
+                    }
+                    auto& sim = cop.sim->sim();
+                    sim.options.weatherFriction = weatherFriction();
+                    sim.body.kinematic = true;
+                    sim.body.resetCollider();
+                    cop.renderer = std::make_unique<game::VehicleRenderer>(
+                        ctx.device(), *m_textures, *m_models, cop.sim->model(), c.paint);
+                    setupVehicleRenderer(ctx, *cop.renderer);
+                    cop.paint = c.paint;
+                    cop.audio = loadAiCarAudio(ctx, *model, true);
+                }
+                if (!cop.sim)
+                    continue;
+                cop.sim->addTo(*m_world);
+                cop.generation = -1; // placed below
+            }
+            if (!cop.sim)
+                continue;
+            if (cop.paint != c.paint) {
+                cop.renderer->setPaintjob(c.paint);
+                cop.paint = c.paint;
+            }
+            if (cop.generation != c.generation) {
+                // A new car in the slot (or the host's cop put back): it
+                // starts afresh where it is.
+                cop.generation = c.generation;
+                cop.sim->reset(c.transform);
+                if (cop.audio)
+                    cop.audio->reset();
+                cop.spin = {};
+                cop.sirenAngle = 0.0f;
+            }
+            auto& sim = cop.sim->sim();
+            Mat34 ics = c.transform;
+            ics.m3 = c.transform.m3 - c.transform.transformDir(sim.centerOfGravity);
+            sim.body.place(ics);
+            sim.body.ics.linearVelocity = c.velocity;
+            sim.body.ics.angularVelocity = c.angularVelocity;
+            sim.body.kinematicMoves = true;
+            sim.body.kinematicVelocity = c.velocity;
+            sim.body.kinematicSpin = c.angularVelocity;
+            sim.body.declare(2, 0x1b);
+            cop.state = c;
+            // vehSiren::Update: the beams turn 2.5 pi a second while on.
+            if (c.flags & net::kAmbientSiren)
+                cop.sirenAngle = std::fmod(cop.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
+        }
+        for (auto it = m_netCops.begin(); it != m_netCops.end();) {
+            if (seen.contains(it->first)) {
+                ++it;
+                continue;
+            }
+            releaseNetCop(it->second);
+            it = m_netCops.erase(it);
+        }
+    }
+
+    void drawNetCops(float dt, const game::Camera& camera) {
+        const bool lights = carLights();
+        for (auto& [id, c] : m_netCops) {
+            if (!c.sim || !c.renderer)
+                continue;
+            game::VehiclePose pose;
+            pose.body = c.state.transform;
+            // The wheels roll with the forward speed (as the network players').
+            for (const auto& w : c.sim->model().wheels) {
+                const auto i = static_cast<std::size_t>(std::clamp(w.index, 0, 5));
+                c.spin[i] -= c.state.speed / std::max(w.radius, 0.1f) * dt;
+                pose.wheelSpin[i] = c.spin[i];
+            }
+            pose.headlights = lights;
+            pose.brakeLights = (c.state.flags & net::kAmbientBrake) != 0;
+            pose.reverseLights = c.state.gear < 0;
+            pose.siren = (c.state.flags & net::kAmbientSiren) != 0;
+            pose.sirenAngle = c.sirenAngle;
+            c.renderer->draw(pose, camera.transform);
+        }
+    }
+
+    // The host's police cars' engines and sirens on a client; a cop chasing
+    // this player counts for the cop chase music (aiPoliceOfficer::StartSiren).
+    void updateNetCopsAudio(Context& ctx, float dt) {
+        if (!netTrafficClient(ctx))
+            return;
+        for (auto& [id, c] : m_netCops) {
+            if (!c.audio)
+                continue;
+            audio::game::CarAudioInputs in;
+            in.rpm = c.state.rpm;
+            in.throttle = c.state.throttle;
+            in.brake = (c.state.flags & net::kAmbientBrake) != 0 ? 1.0f : 0.0f;
+            in.speed = std::abs(c.state.speed);
+            in.gear = c.state.gear;
+            for (auto& w : in.wheels)
+                w.onGround = true;
+            in.velocity = c.state.velocity;
+            in.inTunnel = m_tunnel;
+            in.transform = c.state.transform;
+            in.siren = (c.state.flags & net::kAmbientSiren) != 0;
+            in.sirenPursuingPlayer = c.state.target == ctx.netGame->localId();
+            in.wrecked = (c.state.flags & net::kAmbientWrecked) != 0;
+            c.audio->update(in, dt, m_camera.transform);
+        }
     }
 
     void sendLocalState(Context& ctx) {
@@ -3408,7 +4005,7 @@ private:
         const double age = m_world ? static_cast<double>(m_world->remainder()) * 1000.0 : 0.0;
         ctx.netGame->submitLocalState(m_pose.body, sim.body.ics.frameVelocity, sim.body.ics.angularVelocity, controls,
                                       sim.damage.damage, flags, age);
-        ctx.netGame->traceFrame(m_pose.body, sim.body.ics.frameVelocity, age, m_netCars);
+        ctx.netGame->traceFrame(m_pose.body, sim.body.ics.frameVelocity, age, m_remoteCars);
     }
 
     // mmNetObject: every other player's car is a vehCar of the level (built
@@ -3431,13 +4028,13 @@ private:
     void updateRemoteCars(Context& ctx, float dt) {
         if (!multiplayer(ctx) || !m_world)
             return;
-        m_netCars = ctx.netGame->remoteCars(static_cast<double>(m_world->remainderAfter(dt)) * 1000.0);
+        m_remoteCars = ctx.netGame->remoteCars(static_cast<double>(m_world->remainderAfter(dt)) * 1000.0);
         // A player who quit the race takes its car out of it.
-        std::erase_if(m_netCars, [this](const game::NetRemoteCar& c) { return m_netLeft.contains(c.id); });
+        std::erase_if(m_remoteCars, [this](const game::NetRemoteCar& c) { return m_netLeft.contains(c.id); });
         const auto mode = m_result.config.mode;
         const bool towing = mode != game::GameMode::Cruise && mode != game::GameMode::CopsAndRobbers;
         std::vector<std::uint8_t> present;
-        for (const auto& rc : m_netCars) {
+        for (const auto& rc : m_remoteCars) {
             if (!rc.hasState)
                 continue;
             present.push_back(rc.id);
@@ -3492,6 +4089,15 @@ private:
             sim.body.place(ics);
             sim.body.ics.linearVelocity = rc.velocity;
             sim.body.ics.angularVelocity = rc.angularVelocity;
+            // Everything meets the car as a moving one (the local car, and
+            // the shared traffic and police): as a still wall, a car closing
+            // on it at 1 m/s while both did 30 m/s lost 12.6 m/s, a rear tap
+            // threw the chaser back and rubbing side by side dragged as a
+            // barrier would. MM2's network car was a simulated vehCar with a
+            // velocity of its own.
+            sim.body.kinematicMoves = true;
+            sim.body.kinematicVelocity = rc.velocity;
+            sim.body.kinematicSpin = rc.angularVelocity;
             sim.setInputs(rc.controls.throttle, rc.controls.brake, rc.controls.steering, rc.controls.handbrake);
             sim.body.declare(3, 0x1b); // mmNetObject::Update
             if (auto* trailer = rv.sim->trailer()) {
@@ -3516,7 +4122,7 @@ private:
     void drawRemoteCars(Context& ctx, const game::Camera& camera) {
         if (!multiplayer(ctx))
             return;
-        for (const auto& rc : m_netCars) {
+        for (const auto& rc : m_remoteCars) {
             const auto it = m_remotes.find(rc.id);
             if (!rc.hasState || it == m_remotes.end() || !it->second.renderer || !it->second.sim)
                 continue;
@@ -4064,6 +4670,9 @@ private:
         std::unique_ptr<game::SimVehicle> sim;
         std::unique_ptr<game::VehicleRenderer> renderer;
         ai::PoliceCar* driver = nullptr; // owned by m_police
+        std::string vehicle;             // its [Police] car (the shared traffic's model)
+        int livery = 0;                  // its paint job
+        int resets = 0;                  // the shared traffic's generation
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
         std::unique_ptr<game::fx::VehicleEffects> fx;
         std::shared_ptr<std::vector<audio::game::ImpactInput>> impacts =
@@ -4108,7 +4717,7 @@ private:
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
-    std::vector<game::NetRemoteCar> m_netCars; // this frame's sample (updateRemoteCars)
+    std::vector<game::NetRemoteCar> m_remoteCars; // this frame's sample (updateRemoteCars)
     std::vector<game::NetGameEvent> m_netEvents; // this frame's game events (takeNetEvents)
     std::set<std::uint8_t> m_netLeft;            // players who quit this race
     std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
@@ -4119,6 +4728,35 @@ private:
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;
+
+    // OpenMM2's shared traffic of a network cruise (see netTraffic()).
+    game::TrafficCatalog m_trafficCatalog;
+    std::optional<game::TrafficHost> m_trafficHost;     // host: each client's cars
+    std::optional<game::TrafficClient> m_trafficClient; // client: the received cars
+    std::vector<ai::World::OtherPlayer> m_netTrafficPlayers; // host: the other players for the traffic
+    std::vector<ai::TrackedCar> m_netTrackedPlayers;         // host: and for the police
+    std::unordered_set<int> m_hornLatch;                     // host: horns since the last message
+    std::uint64_t m_trafficSentAt = 0, m_trafficStatsAt = 0, m_trafficLoggedAt = 0;
+    struct TrafficSent {
+        std::uint64_t bytes = 0, messages = 0, cars = 0;
+    };
+    std::map<std::uint8_t, TrafficSent> m_trafficSent; // host: per client, since the last log
+    std::vector<ai::AmbientCar> m_netCars;              // client: the received traffic this frame
+    std::unordered_map<int, float> m_netTireRotation;   // client: their wheels' turn
+    std::unique_ptr<game::TrafficProxies> m_trafficProxies; // client: their physics
+    std::unordered_set<int> m_netAccidentNodes, m_netAccidentPaths; // client: off-rail cars' components
+    std::unordered_map<int, int> m_netAccidentRooms;
+    std::unordered_map<int, std::uint32_t> m_netHitReported; // client: hits reported, by car (session ms)
+    Vec3 m_netPreStepVelocity;                                // client: the car's velocity before the step
+    std::map<int, NetCop> m_netCops; // client: the host's police
+    std::multimap<std::string, NetCop> m_spareNetCops; // client: police cars no longer shown, by model
+    std::set<std::string> m_badNetCopModels;           // client: police models that failed to load
+    static constexpr std::size_t kMaxNetCops = 32;
+    bool m_trafficCatalogWarned = false;
+    // Development aid: OPENMM2_DEBUG_NETTRAFFIC logs the shared cars near
+    // each client twice a second, on the host and on the client.
+    bool m_debugNetTraffic = std::getenv("OPENMM2_DEBUG_NETTRAFFIC") != nullptr;
+    std::unordered_set<int> m_debugKnocked;
 
     // Sound: the player's car, city ambience and rain (src/audio/game).
     std::unique_ptr<audio::SoundBank> m_bank;

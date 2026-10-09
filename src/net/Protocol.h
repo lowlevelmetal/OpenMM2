@@ -24,7 +24,9 @@
 namespace mm2::net {
 
 inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
-inline constexpr std::uint16_t kProtocolVersion = 1;
+// 2: the shared ambient traffic of multiplayer cruise (AmbientState, the
+// Ambient channel, SessionSettings::sharedTraffic).
+inline constexpr std::uint16_t kProtocolVersion = 2;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.
@@ -32,8 +34,9 @@ enum class Channel : std::uint8_t {
     Control = 0, // reliable, ordered: handshake, lobby, chat, clock sync
     State = 1,   // unreliable, sequenced: vehicle snapshots
     Events = 2,  // reliable, ordered: in-game events
+    Ambient = 3, // unreliable, sequenced: the shared ambient traffic (host -> client)
 };
-inline constexpr std::size_t kChannelCount = 3;
+inline constexpr std::size_t kChannelCount = 4;
 
 // Limits. The original game supported 8 players; the protocol allows more.
 inline constexpr std::size_t kMaxPlayers = 16;
@@ -83,7 +86,8 @@ enum class MsgType : std::uint8_t {
     WorldState,
     GameEvent,
     PlayerPings,
-    Last = PlayerPings,
+    AmbientState, // net/AmbientState.h
+    Last = AmbientState,
 };
 
 // Sent as ENet disconnect data and in Reject/PlayerLeft messages.
@@ -124,6 +128,10 @@ struct SessionSettings {
     std::uint8_t maxPlayers = 8;
     bool hasPassword = false; // the password itself never leaves the host
     bool allowJoinInProgress = false;
+    // Multiplayer cruise: the host's ambient traffic and police are shared
+    // with every player (OpenMM2 extra); false: MM2's network cruise, with
+    // local pedestrians only.
+    bool sharedTraffic = true;
     // Game-specific options that don't warrant a protocol change.
     std::vector<std::pair<std::string, std::string>> extra;
 
@@ -282,6 +290,7 @@ bool serialize(S& s, SessionSettings& m) {
     s.u8(m.maxPlayers);
     s.boolean(m.hasPassword);
     s.boolean(m.allowJoinInProgress);
+    s.boolean(m.sharedTraffic);
     auto count = static_cast<std::uint32_t>(std::min(m.extra.size(), kMaxExtraSettings));
     s.varU32(count);
     if (count > kMaxExtraSettings)

@@ -65,6 +65,12 @@ public:
     // in (RoomVisibility).
     void setRooms(const RoomVisibility* rooms) { m_rooms = rooms; }
 
+    // OpenMM2 extra (a network client of the shared cruise traffic): draws
+    // these cars instead of the world's traffic; null draws the world's.
+    void setCars(const std::vector<ai::AmbientCar>* cars) { m_carsOverride = cars; }
+    // The paint jobs of a traffic model (its package's), 1 without any.
+    int paintJobs(const std::string& model);
+
     struct Stats {
         int cars = 0;
         int peds = 0;
@@ -105,6 +111,7 @@ private:
     // spline, aiVehicleActive::Update), the pedestrians (aiPedestrian::Update)
     // and the signals (aiTrafficLightSet::SetFourWay), by id or index.
     std::unordered_map<int, int> m_carRooms, m_pedRooms, m_signalRooms;
+    const std::vector<ai::AmbientCar>* m_carsOverride = nullptr;
 };
 
 // aiTrafficLightInstance::DrawGlow's matrix for the glow and WALK meshes,

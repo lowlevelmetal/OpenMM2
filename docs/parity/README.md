@@ -410,6 +410,10 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/fx/Weather.h` | 44 | P | rendering-fx |
 | `src/game/net/NetGame.cpp` | 659 | M | session |
 | `src/game/net/NetGame.h` | 229 | M | session |
+| `src/game/net/TrafficProxies.cpp` | 101 | O | - |
+| `src/game/net/TrafficProxies.h` | 60 | O | - |
+| `src/game/net/TrafficSync.cpp` | 394 | O | - |
+| `src/game/net/TrafficSync.h` | 237 | O | - |
 | `src/game/session/CopsAndRobbers.cpp` | 252 | P | session |
 | `src/game/session/CopsAndRobbers.h` | 130 | P | session |
 | `src/game/session/Gate.cpp` | 92 | P | session |
@@ -427,6 +431,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/game/world/Gizmos.h` | 289 | P | mm2-world-objects |
 | `src/game/world/PathSpline.cpp` | 146 | P | mm2-world-objects |
 | `src/game/world/PathSpline.h` | 72 | P | mm2-world-objects |
+| `src/net/AmbientState.cpp` | 23 | O | - |
+| `src/net/AmbientState.h` | 207 | O | - |
 | `src/net/BitStream.cpp` | 243 | O | - |
 | `src/net/BitStream.h` | 200 | O | - |
 | `src/net/ClockSync.cpp` | 21 | O | - |

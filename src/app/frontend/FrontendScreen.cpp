@@ -766,7 +766,8 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
     } else if (cmd == "mp") {
         // Multiplayer automation: mp:host[:<password>], mp:join:<address>[|<password>], mp:chat:<text>,
         // mp:ready, mp:start, mp:team:<0|1>, mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>,
-        // mp:car:<vehicle>[:<paint>].
+        // mp:car:<vehicle>[:<paint>], mp:traffic:<on|off>[:<traffic density>:<cop density>] (the shared
+        // cruise traffic).
         const auto sub = arg.substr(0, arg.find(':'));
         const auto rest = arg.find(':') == std::string::npos ? std::string() : arg.substr(arg.find(':') + 1);
         if (sub == "host") {
@@ -809,6 +810,21 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             c.raceIndex = c.mode == GameMode::Cruise || c.mode == GameMode::CopsAndRobbers ? -1 : 0;
             if (c.mode == GameMode::CopsAndRobbers)
                 c.timeLimitMinutes = 10;
+            const bool traffic = c.netTraffic;
+            applyNetTrafficDefaults(c); // as the host settings' game type lamps
+            c.netTraffic = traffic;
+            fe.ctx.netGame->setRaceConfig(c);
+        } else if (fe.ctx.netGame && sub == "traffic") {
+            game::RaceConfig c = fe.ctx.netGame->raceConfig();
+            const auto parts = str::split(rest, ':');
+            c.netTraffic = parts.empty() || parts[0] != "off";
+            if (parts.size() >= 3) {
+                auto density = [&](std::size_t i, double fallback) {
+                    return std::clamp(static_cast<float>(str::parseDouble(parts[i]).value_or(fallback)), 0.0f, 1.0f);
+                };
+                c.trafficDensity = density(1, 0.5);
+                c.copDensity = density(2, 1.0);
+            }
             fe.ctx.netGame->setRaceConfig(c);
         }
     } else if (cmd == "result") {

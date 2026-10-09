@@ -90,6 +90,23 @@ struct AmbientCar {
     // regaining its rail (aiGoalAvoidPlayer / aiGoalRegainRail::Update),
     // 0x08 for a wreck (aiGoalCollision::Update); 0 not declared.
     unsigned moverFlags = 0;
+    // OpenMM2: how many times the pool slot was put on a road (a network
+    // cruise's shared traffic tells a recycled slot from the car before it).
+    int spawns = 0;
+};
+
+// The players the traffic sees: MM2's aiMap player list (aiMap::AddPlayer,
+// aiMap::RemovePlayer, aiVehiclePlayer). A single-player game has one, the
+// local player in slot 0. aiMap keeps four slots, one bit each in a road's
+// populated mask (aiPath::AddAmbPlayer / RemAmbPlayer); OpenMM2 keeps 16
+// for the shared traffic of its network cruise (an OpenMM2 extra, see
+// docs/parity/openmm2-only.md), whose other players take the slots of their
+// network ids.
+inline constexpr int kMaxTrafficPlayers = 16;
+struct TrafficPlayer {
+    int slot = 0; // aiVehiclePlayer +8: its place in the list (0..kMaxTrafficPlayers - 1)
+    PlayerCar car;
+    int room = 0; // the PSDL room it is in (0: outside every room)
 };
 
 struct TrafficSettings {
@@ -123,6 +140,14 @@ public:
     // One update (aiMap::Update's ambient part). `playerRoom` is the PSDL room
     // the player is in (0: outside every room, nothing changes).
     void step(float dt, const PlayerCar& player, int playerRoom);
+    // The same for every player in `players` (MM2's list order; slots must
+    // differ): the roads round each are populated, a player new to the list
+    // populates from room 0 (aiMap::AddPlayer) and one gone from it gives
+    // its roads up (aiMap::RemovePlayer), and the cars avoid and let pass
+    // any of them (aiGoalRandomDrive::Update, aiGoalRegainRail::Update,
+    // aiGoalAvoidPlayer for the player it avoids). One player in slot 0 is
+    // the single-player step.
+    void step(float dt, std::span<const TrafficPlayer> players);
     // aiMap::Reset's ambient part (mmGame::Init after the AI map loads, and
     // mmGame::Reset when a race restarts): the own random stream back to its
     // seed (ResetRandomSeed; a shared one is its owner's to set), every road
@@ -137,10 +162,15 @@ public:
     // calls it before the pedestrians' population, as aiMap::Reset orders
     // them, and before either updates). False when already populated.
     bool populate(int playerRoom);
+    // aiMap::Reset's AdjustAmbients for every player (`players` as step()).
+    bool populate(std::span<const TrafficPlayer> players);
     // Convenience for tools: a player of default size at `pos` moving at `vel`.
     void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 
     const std::vector<AmbientCar>& cars() const { return m_public; }
+    // The vehicle types of the pool (aiMap::Init's ambient types, in the AI
+    // map's order).
+    const std::vector<VehicleData>& types() const { return m_types; }
     // Ids of the cars that started avoiding the player since the last call
     // (aiGoalAvoidPlayer::Reset, where MM2 plays the avoidance horn and, if
     // it sounds, the driver's reaction).
@@ -263,6 +293,7 @@ private:
         float frontBumper = 2.0f, backBumper = 2.0f, leftSide = 1.0f, rightSide = 1.0f;
         bool active = false;
         bool wreck = false;
+        int spawns = 0; // placeCar count (AmbientCar::spawns)
         int regainAttempts = 1; // +0xea
         // aiVehicleSpline::UpdateObstacleMap's state (+0xdc id, +0xde type,
         // +0xe0 room hint, +0xe2 section, +0xe4 side).
@@ -293,7 +324,9 @@ private:
         int goalTicks = 0;        // the running goal's counter; Reset runs at 0
         bool laneChangeOk = false; // aiGoalRandomDrive +0x10
         bool atStopSign = false;   // aiGoalRandomDrive +0x12
-        // aiGoalAvoidPlayer.
+        // aiGoalAvoidPlayer: the player it avoids (aiVehicleSpline +0xe6, a
+        // slot of the player list), its heading and offsets.
+        int avoidSlot = 0;
         float heading = 0.0f, passOffset = 0.0f;
         bool centred = false;
         // aiGoalRegainRail.
@@ -362,7 +395,8 @@ private:
     void resetReactTicks(int car);
 
     // Population.
-    void adjustAmbients(int oldRoom, int newRoom);
+    // aiMap::AdjustAmbients for player `slot` (its bit in the roads' masks).
+    void adjustAmbients(int oldRoom, int newRoom, int slot);
     void activate(int path);
     void clearPath(int path);
     bool placeCar(int slot, int path, int dir, int lane, float dist);
@@ -372,7 +406,7 @@ private:
     // aiGoalRandomDrive.
     bool chooseNext(Car& c);
     void resetRandomDrive(Car& c);
-    void updateRandomDrive(int idx, float dt, const PlayerCar& player);
+    void updateRandomDrive(int idx, float dt);
     float speedLimit(const Car& c) const;
     float distanceToIntersection(const Car& c) const;
     float distanceToVehicle(const Car& a, const Car& b) const;
@@ -385,7 +419,7 @@ private:
     bool solveRailType(int idx);
     void solveLane(Car& c);
     void changeLanes(int idx);
-    void solvePose(Car& c, const PlayerCar& player);
+    void solvePose(Car& c);
 
     // Stop signs (aiIntersection).
     bool stopSignOkayToGo(int node, int car);
@@ -396,12 +430,12 @@ private:
     bool detectPlayerZoneCollision(const Car& c, const PlayerCar& p) const;
     bool playerInFront(const Car& c, const PlayerCar& p) const;
     bool ambientBlockingPlayer(int idx, const PlayerCar& p) const;
-    void updateAvoidPlayer(int idx, float dt, const PlayerCar& p);
+    void updateAvoidPlayer(int idx, float dt);
     void resetRegainRail(int idx);
-    void updateRegainRail(int idx, float dt, const PlayerCar& p);
+    void updateRegainRail(int idx, float dt);
     void fitOffRail(Car& c);
 
-    void updateCar(int idx, float dt, const PlayerCar& player);
+    void updateCar(int idx, float dt);
     void publish();
 
     const RoadNetwork& m_net;
@@ -426,7 +460,7 @@ private:
     void updateObstacleMap(int idx);
     std::vector<int>* obstacleList(int path, int side, int bucket);
     std::vector<std::vector<int>> m_queues;      // per network lane
-    std::vector<std::uint8_t> m_pathActive;      // aiPath AddAmbPlayer mask
+    std::vector<std::uint16_t> m_pathActive;     // aiPath AddAmbPlayer mask: a bit per player slot
     std::vector<int> m_activePaths;              // aiMap +0x17c, most recent first
     std::vector<std::vector<int>> m_stopWaiting; // per intersection (aiIntersection +0x8)
     std::vector<std::uint8_t> m_alwaysStop;      // per path (aiPath +0x162)
@@ -434,10 +468,18 @@ private:
     std::vector<Vec3> m_opponents;
     ImpactHandler m_onImpact;
     GroundProbe m_probe;
-    int m_room = 0;
     bool m_started = false;
     bool m_populateAll = false;
-    PlayerCar m_player;
+    // The player list of this step (aiMap +0x170) with their slots and, per
+    // slot, the last car seen there (a car avoiding a player who left keeps
+    // avoiding where it was, inferred), the room its roads were populated
+    // for and whether it is in the list.
+    std::vector<PlayerCar> m_players;
+    std::vector<int> m_playerSlots;
+    std::array<PlayerCar, kMaxTrafficPlayers> m_slotCars{};
+    std::array<int, kMaxTrafficPlayers> m_slotRooms{};
+    std::array<bool, kMaxTrafficPlayers> m_slotPresent{};
+    bool anyPlayerWithin(const Vec3& p, float radius2) const;
 };
 
 } // namespace mm2::ai

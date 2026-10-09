@@ -247,7 +247,7 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     const Vec3 eye = camera.position();
     const int blinkClock = world.blinkClock();
     const bool rooms = m_rooms && m_rooms->active();
-    for (const auto& car : world.cars()) {
+    for (const auto& car : m_carsOverride ? *m_carsOverride : world.cars()) {
         const std::optional<PhysicalCar> physical = physicalCar ? physicalCar(car.id) : std::nullopt;
         const Mat34& transform = physical ? physical->transform : car.transform;
         // cityLevel::DrawRooms: from the car's room; the renderer's
@@ -338,6 +338,11 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         }
         ++m_stats.signals;
     }
+}
+
+int AiRenderer::paintJobs(const std::string& model) {
+    const CarModel* cm = carModel(model);
+    return cm && cm->model ? cm->paintjobs : 1;
 }
 
 RoomVisibility::Passes AiRenderer::roomPasses(std::unordered_map<int, int>& rooms, int id, const Vec3& position) {

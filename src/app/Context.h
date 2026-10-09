@@ -66,6 +66,9 @@ struct Context {
     // frame; set `quit` to leave the game.
     std::unique_ptr<Screen> nextScreen;
     bool quit = false;
+    // Automation: this frame is the last (as --frames' last, with its
+    // --screenshot); set by OPENMM2_DEBUG_NET_SHOT_MS in a network race.
+    bool lastFrameRequested = false;
 
     // Writes settings (including [Display]) to disk.
     void saveSettings();

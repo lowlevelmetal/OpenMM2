@@ -416,9 +416,14 @@ void PoliceCar::update(float dt, std::span<const TrackedCar> cars, PoliceForce& 
                        bool active) {
     // aiPoliceOfficer::Update.
     (void)los;
-    for (const TrackedCar& c : cars)
-        if (c.isPlayer)
+    // The local player's car (the first player; the others of a network
+    // cruise's shared traffic follow it): what it hits is marked.
+    for (const TrackedCar& c : cars) {
+        if (c.isPlayer) {
             m_playerBody = c.body;
+            break;
+        }
+    }
     // dgPhysManager::CollideInstances marks what the player's car hits
     // (lvlInstance flag 0x8000, cleared each frame).
     const bool touching = m_touchingPlayer || m_car.body.hitByPlayer;

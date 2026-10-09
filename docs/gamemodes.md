@@ -274,7 +274,10 @@ player's target. When the host leaves the race everyone returns to the
 lobby (`BeDone(1)`, Quit2Lobby). A multiplayer race has no traffic,
 pedestrians, police or racers (the race modes load no AI map); multiplayer
 cruise and Cops and Robbers keep only the pedestrians
-(`mmGameMulti::Init` zeroes the traffic, cop and opponent densities).
+(`mmGameMulti::Init` zeroes the traffic, cop and opponent densities). As an
+OpenMM2 extra, a multiplayer cruise with the host's SHARED TRAFFIC option (on
+by default) has the host's traffic and police for everyone
+(docs/multiplayer.md, "Shared traffic"); off, it is MM2's.
 
 **Winning** (`mmSingleCircuit::ProgressCheck`, `mmSingleRace::ProgressCheck`):
 places 1-3 for amateurs, 1st for professionals, hard-coded; MM2 does not

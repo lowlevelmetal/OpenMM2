@@ -47,7 +47,8 @@ float speedAfterCatchingUp(float ahead, float behind) {
         Mat34 m = Mat34::identity();
         m.m3 = {ahead * dt * static_cast<float>(i), 5, 0};
         lead.body.place(m);
-        lead.body.ics.linearVelocity = {ahead, 0, 0};
+        lead.body.kinematicMoves = true; // as RaceScreen places a network car
+        lead.body.kinematicVelocity = {ahead, 0, 0};
         world.step(dt);
     }
     return chaser.body.ics.linearVelocity.x;

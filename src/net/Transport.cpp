@@ -31,6 +31,7 @@ std::uint32_t packetFlags(Channel channel) {
     // still fills a gap in the receiver's time-ordered buffer (ENet's
     // sequenced delivery would drop it).
     case Channel::State: return ENET_PACKET_FLAG_UNSEQUENCED;
+    case Channel::Ambient: return 0; // unreliable, sequenced
     }
     return ENET_PACKET_FLAG_RELIABLE;
 }

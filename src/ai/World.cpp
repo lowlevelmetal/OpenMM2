@@ -253,15 +253,36 @@ void World::step(const PlayerCar& player) {
         m_playerRoom = room;
     // After a reset: aiMap::Reset's population, the traffic's then the
     // pedestrians', before the updates draw from the same stream.
-    m_traffic->populate(room);
-    m_peds->populate(room);
-    m_traffic->step(kAiStepSeconds, player, room);
+    if (m_others.empty()) {
+        m_traffic->populate(room);
+        m_peds->populate(room);
+        m_traffic->step(kAiStepSeconds, player, room);
+    } else {
+        // The traffic sees every player (the local one first), the
+        // pedestrians only the local one.
+        std::vector<TrafficPlayer> players;
+        players.reserve(m_others.size() + 1);
+        players.push_back({0, player, room});
+        for (const OtherPlayer& o : m_others) {
+            if (o.slot <= 0 || o.slot >= kMaxTrafficPlayers)
+                continue;
+            int& hint = m_otherRooms[static_cast<std::size_t>(o.slot)];
+            const int r = roomAt(o.car.transform.m3, hint);
+            if (r != 0)
+                hint = r;
+            players.push_back({o.slot, o.car, r});
+        }
+        m_traffic->populate(players);
+        m_peds->populate(room);
+        m_traffic->step(kAiStepSeconds, players);
+    }
     m_peds->step(kAiStepSeconds, player, room);
     if (m_lightsDeferred) {
         ++m_pendingLightSteps;
         return;
     }
     m_lights.update(kAiStepSeconds);
+    ++m_lightSteps;
     updateSignals();
 }
 
@@ -277,7 +298,9 @@ void World::reset() {
     m_map->resetPlayers(); // aiVehiclePlayer::Reset
     m_accumulator = 0.0f;
     m_pendingLightSteps = 0;
+    m_lightSteps = 0;
     m_playerRoom = 0;
+    m_otherRooms.fill(0);
     updateSignals();
 }
 
@@ -296,9 +319,23 @@ void World::resetAndPopulate(const Vec3& playerResetPos) {
 void World::updateLights() {
     if (m_pendingLightSteps == 0)
         return;
-    for (; m_pendingLightSteps > 0; --m_pendingLightSteps)
+    for (; m_pendingLightSteps > 0; --m_pendingLightSteps) {
         m_lights.update(kAiStepSeconds);
+        ++m_lightSteps;
+    }
     updateSignals();
+}
+
+void World::advanceLightsTo(std::uint32_t steps, int maxSteps) {
+    m_pendingLightSteps = 0;
+    bool changed = false;
+    for (int n = 0; m_lightSteps < steps && n < maxSteps; ++n) {
+        m_lights.update(kAiStepSeconds);
+        ++m_lightSteps;
+        changed = true;
+    }
+    if (changed)
+        updateSignals();
 }
 
 void World::update(float dt, const PlayerCar& player) {
