@@ -222,6 +222,12 @@ void recordTrafficBodies(StepHistory& history, const ai::World& ai, const Traffi
             history.record(drawnKey(Drawn::TrafficCar, static_cast<std::uint64_t>(c.id)), *pose);
 }
 
+void recordTrafficBodies(StepHistory& history, const TrafficBodies& bodies) {
+    for (const ai::AmbientCar& c : bodies.source().cars())
+        if (const auto pose = trafficBodyPose(bodies, c.id))
+            history.record(drawnKey(Drawn::TrafficCar, static_cast<std::uint64_t>(c.id)), *pose);
+}
+
 void recordProps(StepHistory& history, const bangers::BangerSet& props, const phys::World& world) {
     const auto& instances = props.instances();
     for (std::size_t i = 0; i < instances.size(); ++i)

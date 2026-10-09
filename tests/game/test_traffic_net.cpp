@@ -130,24 +130,6 @@ TEST(SharedTrafficNet, HostAndClientInOneProcess) {
     EXPECT_EQ(tc.known(), 3u);
     EXPECT_EQ(tc.stats().refused, 0u);
 
-    // The client's hit report reaches the host.
-    net::TrafficHitEvent hit;
-    hit.id = 3;
-    hit.velocity = {0, 0, -20};
-    client.sendEvent(net::kTrafficHitEvent, net::encodePayload(hit), net::kHostPlayerId);
-    std::vector<game::NetGameEvent> got;
-    ASSERT_TRUE(pump({&host, &client}, [&] {
-        for (auto& e : host.takeGameEvents())
-            got.push_back(std::move(e));
-        return !got.empty();
-    }));
-    ASSERT_EQ(static_cast<std::uint16_t>(got[0].type), net::kTrafficHitEvent);
-    const auto back = got[0].as<net::TrafficHitEvent>();
-    ASSERT_TRUE(back);
-    EXPECT_EQ(back->id, 3);
-    EXPECT_NEAR(back->velocity.z, -20.0f, 0.05f);
-    EXPECT_EQ(got[0].from, client.localId());
-
     // Back in the lobby nothing more is sent.
     const std::uint32_t race = client.raceNumber();
     host.returnToLobby();

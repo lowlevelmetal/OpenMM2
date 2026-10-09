@@ -354,8 +354,12 @@ phys::Body* TrafficBodies::RailCar::attachEntity() {
     // body has already taken its speed).
     if (active)
         return &active->body;
+    // OpenMM2: a shared-traffic client's received cars leave their rails for
+    // its own car only (the world marks the player's hit before it asks).
+    if (!m_owner.m_source.attachable(id, hitByPlayer))
+        return nullptr;
     Active& a = m_owner.attach(*this);
-    m_owner.m_ai.traffic().impact(id, {});
+    m_owner.m_source.impact(id);
     return &a.body;
 }
 
@@ -382,6 +386,8 @@ void TrafficBodies::Active::attach(RailCar& car) {
     // phCollider::Init with the ICS (the ICS matrix places the bound),
     // SetImpactCB, Reset; the collider's id is 0.
     body.audioId = 0;
+    // OpenMM2: on a shared-traffic client its hits count as the player's.
+    body.player = m_owner.m_source.bodiesHitAsPlayer();
     body.resetCollider();
     body.collider.matrix = &ics.matrix;
     body.collider.reset();
@@ -425,7 +431,37 @@ void TrafficBodies::Active::onImpact(phys::Collider& self, const phys::Impact& i
 
 // --- TrafficBodies (aiVehicleManager) ----------------------------------------------------------
 
-TrafficBodies::TrafficBodies(ai::World& ai, phys::World& world) : m_ai(ai), m_world(world) {
+namespace {
+
+// The AI's traffic: aiVehicleAmbient's side of the hand-over.
+class AiSource final : public TrafficBodies::Source {
+public:
+    explicit AiSource(ai::World& ai) : m_ai(ai) {}
+    const std::vector<ai::AmbientCar>& cars() const override { return m_ai.cars(); }
+    void impact(int carId) override { m_ai.traffic().impact(carId, {}); }
+    void detach(int carId, const Mat34& pose, bool upright) override {
+        m_ai.traffic().detach(carId, pose, upright);
+    }
+    void setPhysicalTransform(int carId, const Mat34& transform) override {
+        m_ai.traffic().setPhysicalTransform(carId, transform);
+    }
+
+private:
+    ai::World& m_ai;
+};
+
+} // namespace
+
+TrafficBodies::TrafficBodies(ai::World& ai, phys::World& world)
+    : m_ownSource(std::make_unique<AiSource>(ai)), m_source(*m_ownSource), m_world(world) {
+    m_actives.reserve(m_order.size());
+    for (std::size_t i = 0; i < m_order.size(); ++i) {
+        m_actives.push_back(std::make_unique<Active>(*this));
+        m_order[i] = m_actives.back().get();
+    }
+}
+
+TrafficBodies::TrafficBodies(Source& source, phys::World& world) : m_source(source), m_world(world) {
     m_actives.reserve(m_order.size());
     for (std::size_t i = 0; i < m_order.size(); ++i) {
         m_actives.push_back(std::make_unique<Active>(*this));
@@ -523,7 +559,7 @@ void TrafficBodies::detach(Active& active) {
     // when it already is one, a wreck (flag 2); the AI decides. Its matrix
     // is where the body last left it.
     const Mat34 pose = active.body.boundMatrix;
-    m_ai.traffic().detach(car->id, pose, upright);
+    m_source.detach(car->id, pose, upright);
     // The car is an instance again (flag 0x10) without an active.
     car->railMatrix = pose;
     car->speed = 0.0f;
@@ -564,7 +600,7 @@ void TrafficBodies::reset() {
 }
 
 void TrafficBodies::beforeStep() {
-    const auto& cars = m_ai.cars();
+    const auto& cars = m_source.cars();
     const auto find = [&](int id) -> const ai::AmbientCar* {
         for (const ai::AmbientCar& c : cars)
             if (c.id == id)
@@ -676,7 +712,7 @@ void TrafficBodies::afterStep() {
             continue;
         const float y = a.body.ics.matrix.m3.y;
         if (a.sleep.state != phys::Sleep::Asleep && kFallOutY <= y) {
-            m_ai.traffic().setPhysicalTransform(a.rail->id, a.body.boundMatrix);
+            m_source.setPhysicalTransform(a.rail->id, a.body.boundMatrix);
             continue;
         }
         detach(a);
@@ -689,22 +725,6 @@ void TrafficBodies::instancesIn(int room, std::vector<phys::Instance*>& out) con
     for (const auto& [r, car] : range)
         if (!car->active && car->collidable)
             out.push_back(car);
-}
-
-bool TrafficBodies::knock(int carId, const Vec3& impulse, const Vec3& point) {
-    const auto index = static_cast<std::size_t>(carId);
-    RailCar* r = carId >= 0 && index < m_railCars.size() ? m_railCars[index].get() : nullptr;
-    if (!r || r->active || !r->data || !r->box || !r->collidable || !r->present || r->held)
-        return false;
-    phys::Body* body = r->attachEntity();
-    m_world.addNewMover(body);
-    body->ics.applyImpulse(impulse, point);
-    return true;
-}
-
-float TrafficBodies::massOf(int carId) const {
-    const RailCar* r = findRailCar(carId);
-    return r && r->data ? r->data->mass : 0.0f;
 }
 
 bool TrafficBodies::motionOf(int carId, Vec3& velocity, Vec3& spin) const {

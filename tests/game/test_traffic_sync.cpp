@@ -358,6 +358,38 @@ TEST(TrafficHost, FarCarsComeWithTheirStateEveryOtherMessage) {
     EXPECT_EQ(states(m), (std::vector<std::pair<int, bool>>{{1, true}, {10, true}, {11, true}, {300, true}}));
 }
 
+// When the cars near a client do not all fit, the ones it has stay ahead of
+// new ones a little nearer, so the car at the edge of what fits does not
+// come and go; beyond 160 m a known car gets its state every fourth message.
+TEST(TrafficHost, TheCarsThatFitStayAndTheFarthestComeEveryFourthMessage) {
+    game::TrafficHost::Options options;
+    options.maxBytes = 70; // the header and three cars with their state
+    TrafficHost host(options);
+    std::vector<SharedCar> cars = {railCar(1, {10, 0, 0}), railCar(2, {20, 0, 0}), railCar(3, {60, 0, 0}),
+                                   railCar(4, {75, 0, 0})};
+    auto ids = [](const net::AmbientStateMsg& m) {
+        std::vector<int> v;
+        for (const auto& e : m.entities)
+            v.push_back(e.id);
+        return v;
+    };
+    const game::TrafficViewer viewer{1, {0, 0, 0}};
+    EXPECT_EQ(ids(host.build(viewer, cars, 0, 0, 0)), (std::vector<int>{1, 2, 3}));
+    // Car 4 comes 10 m nearer than car 3: car 3 stays.
+    cars[3].transform.m3.x = 50.0f;
+    EXPECT_EQ(ids(host.build(viewer, cars, 50, 0, 0)), (std::vector<int>{1, 2, 3}));
+    // 30 m nearer: car 4 takes its place.
+    cars[3].transform.m3.x = 30.0f;
+    EXPECT_EQ(ids(host.build(viewer, cars, 100, 0, 0)), (std::vector<int>{1, 2, 4}));
+
+    TrafficHost far;
+    const std::vector<SharedCar> distant = {railCar(10, {180, 0, 0})};
+    int states = 0;
+    for (std::uint32_t i = 0; i < 9; ++i)
+        states += far.build(viewer, distant, i * 50, 0, 0).entities.at(0).hasState ? 1 : 0;
+    EXPECT_EQ(states, 3); // new, then every fourth of the next eight
+}
+
 TEST(TrafficClient, ACarWithoutItsStateIsStillThere) {
     TrafficClient client(8, 0x1234);
     client.receive(message(0, {railCar(10, {150, 0, 0}), railCar(11, {0, 0, 150})}));

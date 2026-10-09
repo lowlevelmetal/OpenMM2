@@ -32,8 +32,10 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // police's damage at 10 bits and the knocked traffic cars' wheels).
 // 5: the host simulates every player's car (net/PlayerCars.h: PlayerInput,
 // CarStates; damage events about a player's car from the host).
-// 7: the host's props (net/PropState.h: PropState, the PropKnocks event);
-// 6 is the shared traffic's (merged separately).
+// 6: in AmbientState a rail car's acceleration, curvature and speed over the
+// ground (the clients predict the shared traffic to their cars' time), and
+// up to 160 cars; no TrafficHit events.
+// 7: the host's props (net/PropState.h: PropState, the PropKnocks event).
 inline constexpr std::uint16_t kProtocolVersion = 7;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 

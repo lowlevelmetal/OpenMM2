@@ -150,6 +150,8 @@ void recordAiStep(StepHistory& history, const ai::World& world);
 // id) and the props an active simulates in the world (by instance), as they
 // stand before the sample.
 void recordTrafficBodies(StepHistory& history, const ai::World& ai, const TrafficBodies& bodies);
+// The same for the cars of `bodies`' source (a shared-traffic client's).
+void recordTrafficBodies(StepHistory& history, const TrafficBodies& bodies);
 void recordProps(StepHistory& history, const bangers::BangerSet& props, const phys::World& world);
 // A traffic car with a body as it is now: its matrix and its wheels
 // (aiVehicleActive's vehWheelCheaps); nullopt without a body.

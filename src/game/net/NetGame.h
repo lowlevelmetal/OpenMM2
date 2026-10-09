@@ -19,6 +19,7 @@
 #include "net/Transport.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -294,6 +295,9 @@ public:
     // docs/multiplayer.md, "Diagnosing replication").
     void traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
                     const std::vector<NetRemoteCar>& cars);
+    // That trace file (null when none is written), for the shared traffic's
+    // lines (game/net/TrafficTrace.h).
+    std::FILE* traceFile() const;
     // The same trace's divergence lines (docs/review/multiplayer-desync-cars.md;
     // `netprobe syncreport` reads them), stamped with the machine's monotonic
     // clock (shared by every process on it): every player's car as this frame
