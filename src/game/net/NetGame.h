@@ -142,7 +142,7 @@ public:
         Idle,       // no session
         Connecting, // join in progress
         Lobby,
-        Countdown,  // race starting: load the race now; it starts at raceStartTime()
+        Countdown,  // race starting: load it, report it loaded; it starts at raceStartTime()
         Racing,
         Closed,     // ended (see takeNotice())
     };
@@ -219,9 +219,10 @@ public:
     // Everyone except the host has pressed READY (and there is at least one
     // other player, unless `allowAlone`).
     bool everyoneReady(bool allowAlone = true) const;
-    // Starts the countdown: every machine loads the race and starts it at
-    // raceStartTime(). `delayMs` must cover loading the city.
-    void startRace(std::uint32_t delayMs = 6000);
+    // GO DRIVE: every machine loads the race and reports it loaded
+    // (reportLoaded); the host then sends its start (raceStartTime()), with
+    // the mode's countdown (NetRaceStart) before it.
+    void startRace();
     // Ends the race for everyone and returns to the lobby.
     void returnToLobby();
 
@@ -229,11 +230,24 @@ public:
     std::string portMappingStatus() const;
 
     // --- Race -------------------------------------------------------------------------
-    // True once when a countdown starts (the frontend switches to the race).
+    // True once when a race is ordered (the frontend switches to the race).
     bool takeRaceStart();
-    // The races this NetGame has seen start, counted from 1 (0 before the
-    // first). The race screen keeps the number of the race it runs.
-    std::uint32_t raceNumber() const { return m_raceNumber; }
+    // The host's number of the current (or last) race, from 1 (0 before the
+    // first): the same on every machine. The race screen keeps the number
+    // of the race it runs.
+    std::uint32_t raceNumber() const;
+    // Session time at which the host ordered the race (GO DRIVE): every
+    // machine knows it from the moment it starts loading.
+    std::uint32_t raceOrderTime() const;
+    // This machine has loaded the current race (MM2's RaceReady,
+    // NetRaceStart): the host starts it once every player still in the
+    // session has, or after net::SessionConfig::loadWaitMs without the ones
+    // still loading.
+    void reportLoaded();
+    // Whether a player (this one included) has reported the current race
+    // loaded; the other players still in the session who have not.
+    bool playerLoaded(std::uint8_t playerId) const;
+    int playersLoading() const;
     // Whether the host has taken everyone back to the lobby since race
     // `number` started. A return that arrives while the player is in the
     // menus (the host's own return, or one after the player quit the race
@@ -241,8 +255,12 @@ public:
     bool backToLobby(std::uint32_t number) const { return number != 0 && m_lobbyAfterRace >= number; }
     // Session clock (ms; the host's clock, estimated on clients).
     std::uint32_t sessionTime() const;
+    // Whether the host has sent the race's start, and its session time (the
+    // end of its countdown, when the cars go; 0 until known).
+    bool raceStartKnown() const;
     std::uint32_t raceStartTime() const;
-    // Seconds until the race starts (negative once it has started).
+    // Seconds from this frame (frameTime()) until the race starts: negative
+    // once it has started, infinite until the start is known.
     double secondsToStart() const;
     bool raceStarted() const;
 
@@ -256,7 +274,10 @@ public:
                           double stateAgeMs = 0.0);
     // Every other player in the session, sampled at this frame's session
     // time less `stateAgeMs` (so they move with a simulation that is behind
-    // the frame) and less each one's playout delay.
+    // the frame) and less each one's playout delay. A player who has not
+    // reported the race loaded has no state yet (MM2 activates a network
+    // car when its RaceReady or SendGameSet arrives: mmGameMulti::
+    // GameMessageCB 0x1f6, 0x1fa).
     std::vector<NetRemoteCar> remoteCars(double stateAgeMs = 0.0) const;
     // The session time update() last saw (ms).
     double frameTime() const { return m_frameTime; }
@@ -288,7 +309,8 @@ public:
     void sendCollision(std::uint8_t otherPlayer, const Vec3& position, float impulse);
     void sendDamage(float damage, std::uint8_t source);
     // The local player quits the race the others go on driving (MM2's
-    // player left the session: mmGameMulti::QuitNetwork).
+    // player left the session: mmGameMulti::QuitNetwork). It no longer holds
+    // the others' start either (SystemMessage 0x2d in state 0).
     void sendLeftRace();
     void sendEvent(std::uint16_t type, std::vector<std::byte> payload,
                    std::uint8_t target = net::kBroadcastTarget);
@@ -311,7 +333,6 @@ private:
     std::deque<std::string> m_notices;
     std::vector<NetGameEvent> m_gameEvents;
     bool m_raceStartPending = false;
-    std::uint32_t m_raceNumber = 0;     // countdowns seen
     std::uint32_t m_lobbyAfterRace = 0; // the race the last return to the lobby ended
     bool m_raceStarted = false;
     bool m_closed = false;

@@ -47,13 +47,25 @@ TEST(Protocol, LobbyMessagesRoundTrip) {
     w.players = {PlayerInfo{0, "Host", "vpcop", 1, 0, true, true, 0}, PlayerInfo{3, "Joe", "vpbug", 2, 1, false, false, 42}};
     w.phase = SessionPhase::Countdown;
     w.hostTime = 123456;
-    w.countdownEnd = 130000;
+    w.race = 7;
+    w.raceOrderTime = 120000;
+    w.startKnown = true;
+    w.startTime = 130000;
+    w.loaded = {0, 3};
     const auto w2 = roundTrip(w);
     EXPECT_EQ(w2.yourId, 3);
     EXPECT_EQ(w2.settings, w.settings);
     EXPECT_EQ(w2.players, w.players);
     EXPECT_EQ(w2.phase, SessionPhase::Countdown);
-    EXPECT_EQ(w2.countdownEnd, 130000u);
+    EXPECT_EQ(w2.race, 7u);
+    EXPECT_EQ(w2.raceOrderTime, 120000u);
+    EXPECT_TRUE(w2.startKnown);
+    EXPECT_EQ(w2.startTime, 130000u);
+    EXPECT_EQ(w2.loaded, w.loaded);
+    // At most one entry per player.
+    w.loaded.assign(kMaxPlayers + 1, 1);
+    WelcomeMsg tooMany;
+    EXPECT_FALSE(decodeMessage(encodeMessage(w), tooMany));
 
     HelloMsg h;
     h.name = "Player";
@@ -72,7 +84,10 @@ TEST(Protocol, LobbyMessagesRoundTrip) {
     EXPECT_EQ(roundTrip(RejectMsg{DisconnectReason::BadPassword, "nope"}).reason, DisconnectReason::BadPassword);
     EXPECT_EQ(roundTrip(PlayerLeftMsg{9, DisconnectReason::Kicked}).reason, DisconnectReason::Kicked);
     EXPECT_EQ(roundTrip(TimeResponseMsg{11, 22}).hostTime, 22u);
-    EXPECT_EQ(roundTrip(CountdownMsg{5000}).startTime, 5000u);
+    EXPECT_EQ(roundTrip(RaceLoadMsg{3, 5000}).orderTime, 5000u);
+    EXPECT_EQ(roundTrip(RaceLoadedMsg{3, 4}).player, 4);
+    EXPECT_EQ(roundTrip(RaceStartMsg{3, 9000}).startTime, 9000u);
+    EXPECT_EQ(roundTrip(RaceStartMsg{3, 9000}).race, 3u);
     roundTrip(ReturnToLobbyMsg{});
 
     GameEventMsg e;

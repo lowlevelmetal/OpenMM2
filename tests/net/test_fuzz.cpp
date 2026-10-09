@@ -83,7 +83,11 @@ std::vector<Bytes> corpus() {
         w.players.push_back(samplePlayer(i));
     w.phase = SessionPhase::Countdown;
     w.hostTime = 123456;
-    w.countdownEnd = 130000;
+    w.race = 4;
+    w.raceOrderTime = 120000;
+    w.startKnown = true;
+    w.startTime = 130000;
+    w.loaded = {0, 2, 5};
     c.push_back(encodeMessage(w));
     c.push_back(encodeMessage(RejectMsg{DisconnectReason::ServerFull, "full"}));
     c.push_back(encodeMessage(PlayerJoinedMsg{samplePlayer(4)}));
@@ -92,7 +96,9 @@ std::vector<Bytes> corpus() {
     c.push_back(encodeMessage(PlayerRequestMsg{"vpcoop", 4, 1, true}));
     c.push_back(encodeMessage(ChatMsg{1, "hello there, é"}));
     c.push_back(encodeMessage(SettingsMsg{sampleSettings()}));
-    c.push_back(encodeMessage(CountdownMsg{99999}));
+    c.push_back(encodeMessage(RaceLoadMsg{2, 99999}));
+    c.push_back(encodeMessage(RaceLoadedMsg{2, 3}));
+    c.push_back(encodeMessage(RaceStartMsg{2, 104000}));
     c.push_back(encodeMessage(ReturnToLobbyMsg{}));
     c.push_back(encodeMessage(KickMsg{"bye"}));
     c.push_back(encodeMessage(TimeRequestMsg{777}));
@@ -311,7 +317,9 @@ std::optional<E> payload(std::span<const std::byte> b) {
 void decodeEverything(std::span<const std::byte> b) {
     (void)peekMessageType(b);
     (void)decoded<ChallengeMsg>(b);
-    (void)decoded<CountdownMsg>(b);
+    (void)decoded<RaceLoadMsg>(b);
+    (void)decoded<RaceLoadedMsg>(b);
+    (void)decoded<RaceStartMsg>(b);
     (void)decoded<ReturnToLobbyMsg>(b);
     (void)decoded<TimeRequestMsg>(b);
     (void)decoded<TimeResponseMsg>(b);
@@ -326,6 +334,7 @@ void decodeEverything(std::span<const std::byte> b) {
         for (const auto& p : m->players)
             checkPlayer(p);
         ASSERT_LE(m->phase, SessionPhase::Last);
+        ASSERT_LE(m->loaded.size(), kMaxPlayers);
     }
     if (const auto m = decoded<RejectMsg>(b)) {
         ASSERT_LE(m->reason, DisconnectReason::Last);

@@ -246,11 +246,13 @@ TEST(Session, CountdownSnapshotsAndEvents) {
     EXPECT_TRUE(a.session->clockSynced());
     EXPECT_NEAR(static_cast<double>(a.session->time()), static_cast<double>(host.session->time()), 20.0);
 
-    host.session->startCountdown(300);
+    host.session->startRace(300);
     ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
+        for (Peer* p : {&host, &a, &b})
+            p->session->reportLoaded(); // nothing to load
         return host.find<ev::GameStarted>() && a.find<ev::GameStarted>() && b.find<ev::GameStarted>();
     }));
-    EXPECT_TRUE(a.find<ev::CountdownStarted>());
+    EXPECT_TRUE(a.find<ev::RaceLoading>());
     EXPECT_EQ(a.session->phase(), SessionPhase::InGame);
 
     // A drives along +X; B and the host see it through the interpolation buffer.
@@ -332,7 +334,8 @@ TEST(Session, KickAndHostShutdown) {
 TEST(Session, JoinInProgressPolicy) {
     Peer host, late;
     ASSERT_TRUE(host.session->host(hostParams()));
-    host.session->startCountdown(0);
+    host.session->startRace(0);
+    host.session->reportLoaded(); // alone: the start follows at once
     ASSERT_TRUE(pumpUntil({&host}, [&] { return host.find<ev::GameStarted>(); }));
     ASSERT_TRUE(late.session->join(joinParams(host, "Late")));
     ASSERT_TRUE(pumpUntil({&host, &late}, [&] { return late.find<ev::JoinFailed>(); }));

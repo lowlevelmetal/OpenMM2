@@ -93,8 +93,12 @@ void printEvent(const Session& s, const SessionEvent& e) {
                 std::println("<{}> {}", name(ev.from), ev.text);
             else if constexpr (std::is_same_v<T, ev::SettingsChanged>)
                 std::println("settings: city {}, mode {}", ev.settings.city, static_cast<int>(ev.settings.mode));
-            else if constexpr (std::is_same_v<T, ev::CountdownStarted>)
-                std::println("countdown: race starts at session time {} ms", ev.startTime);
+            else if constexpr (std::is_same_v<T, ev::RaceLoading>)
+                std::println("race {} ordered at session time {} ms: loading", ev.race, ev.orderTime);
+            else if constexpr (std::is_same_v<T, ev::PlayerLoaded>)
+                std::println("{} has loaded race {}", name(ev.id), ev.race);
+            else if constexpr (std::is_same_v<T, ev::RaceStartSet>)
+                std::println("race {} starts at session time {} ms", ev.race, ev.startTime);
             else if constexpr (std::is_same_v<T, ev::GameStarted>)
                 std::println("game started");
             else if constexpr (std::is_same_v<T, ev::ReturnedToLobby>)
@@ -182,8 +186,12 @@ int cmdJoin(const Args& a) {
     const auto start = std::chrono::steady_clock::now();
     while (keepRunning(start, a.getInt("--seconds", 0)) && s.state() != Session::State::Closed) {
         s.update();
-        for (const auto& e : s.takeEvents())
+        for (const auto& e : s.takeEvents()) {
             printEvent(s, e);
+            // Nothing to load: a probe never holds the others' start.
+            if (std::holds_alternative<ev::RaceLoading>(e))
+                s.reportLoaded();
+        }
         if (!chat.empty() && !chatted && s.state() == Session::State::Active) {
             s.sendChat(chat);
             chatted = true;

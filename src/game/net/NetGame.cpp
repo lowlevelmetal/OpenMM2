@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "game/Catalog.h"
 #include "core/StringUtil.h"
+#include "game/net/RaceStart.h"
 #include "net/PortMapper.h"
 #include "net/Session.h"
 
@@ -10,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <limits>
 #include <thread>
 
 namespace mm2::game {
@@ -276,7 +278,7 @@ void NetGame::leave() {
     }
     m_impl->joining = false;
     m_raceStartPending = m_raceStarted = false;
-    m_raceNumber = m_lobbyAfterRace = 0;
+    m_lobbyAfterRace = 0;
     m_gameEvents.clear();
 }
 
@@ -322,19 +324,22 @@ void NetGame::handleEvents() {
                                                                                          : "has left")); // string 69
                 } else if constexpr (std::is_same_v<T, net::ev::Chat>) {
                     addChatLine({ev.from, playerName(ev.from), ev.text, false});
-                } else if constexpr (std::is_same_v<T, net::ev::CountdownStarted>) {
-                    ++m_raceNumber;
-                    log::info("netgame: race {} starts at session time {}", m_raceNumber, ev.startTime);
+                } else if constexpr (std::is_same_v<T, net::ev::RaceLoading>) {
+                    log::info("netgame: race {} ordered at session time {}: loading", ev.race, ev.orderTime);
                     m_raceStartPending = true;
                     m_raceStarted = false;
                     // Whatever is still queued belongs to an earlier race
                     // (late events, or a cruise that reads none).
                     m_gameEvents.clear();
+                } else if constexpr (std::is_same_v<T, net::ev::PlayerLoaded>) {
+                    log::info("netgame: {} has loaded race {}", playerName(ev.id), ev.race);
+                } else if constexpr (std::is_same_v<T, net::ev::RaceStartSet>) {
+                    log::info("netgame: race {} starts at session time {}", ev.race, ev.startTime);
                 } else if constexpr (std::is_same_v<T, net::ev::GameStarted>) {
                     m_raceStarted = true;
                 } else if constexpr (std::is_same_v<T, net::ev::ReturnedToLobby>) {
-                    log::info("netgame: back to the lobby after race {}", m_raceNumber);
-                    m_lobbyAfterRace = m_raceNumber;
+                    log::info("netgame: back to the lobby after race {}", ev.race);
+                    m_lobbyAfterRace = ev.race;
                     m_raceStartPending = false;
                     m_raceStarted = false;
                     addSystemLine("**Session returning to Lobby**"); // string 73
@@ -570,9 +575,15 @@ bool NetGame::everyoneReady(bool allowAlone) const {
     return others > 0 || allowAlone;
 }
 
-void NetGame::startRace(std::uint32_t delayMs) {
-    if (isHost() && phase() == Phase::Lobby)
-        m_impl->session->startCountdown(delayMs);
+void NetGame::startRace() {
+    if (!isHost() || phase() != Phase::Lobby)
+        return;
+    // The start the host sends ends the mode's countdown (Ready... Set...
+    // in the races, none in Cops and Robbers and cruise).
+    const auto kind = NetRaceStart::kindOf(fromSessionSettings(settings()).mode);
+    const auto countdownMs =
+        static_cast<std::uint32_t>(NetRaceStart::countdownSeconds(kind) * 1000.0f + 0.5f);
+    m_impl->session->startRace(countdownMs);
 }
 
 void NetGame::returnToLobby() {
@@ -621,12 +632,38 @@ bool NetGame::takeRaceStart() { return std::exchange(m_raceStartPending, false);
 
 std::uint32_t NetGame::sessionTime() const { return m_impl->session ? m_impl->session->time() : 0; }
 
-std::uint32_t NetGame::raceStartTime() const { return m_impl->session ? m_impl->session->countdownEnd() : 0; }
+std::uint32_t NetGame::raceNumber() const { return m_impl->session ? m_impl->session->raceNumber() : 0; }
+
+std::uint32_t NetGame::raceOrderTime() const {
+    return m_impl->session ? m_impl->session->raceOrderTime() : 0;
+}
+
+void NetGame::reportLoaded() {
+    if (m_impl->session)
+        m_impl->session->reportLoaded();
+}
+
+bool NetGame::playerLoaded(std::uint8_t playerId) const {
+    return m_impl->session && m_impl->session->playerLoaded(playerId);
+}
+
+int NetGame::playersLoading() const {
+    int n = 0;
+    for (const auto& p : players())
+        n += p.id != localId() && !playerLoaded(p.id);
+    return n;
+}
+
+bool NetGame::raceStartKnown() const { return m_impl->session && m_impl->session->raceStartKnown(); }
+
+std::uint32_t NetGame::raceStartTime() const {
+    return m_impl->session ? m_impl->session->raceStartTime() : 0;
+}
 
 double NetGame::secondsToStart() const {
-    if (!m_impl->session)
-        return 0.0;
-    return (static_cast<double>(raceStartTime()) - static_cast<double>(sessionTime())) / 1000.0;
+    if (!raceStartKnown())
+        return std::numeric_limits<double>::infinity();
+    return (static_cast<double>(raceStartTime()) - m_frameTime) / 1000.0;
 }
 
 bool NetGame::raceStarted() const { return m_raceStarted; }
@@ -660,6 +697,10 @@ std::vector<NetRemoteCar> NetGame::remoteCars(double stateAgeMs) const {
         car.id = p.id;
         car.name = p.name;
         car.car = raceCar(race, {p.car, p.color, p.team});
+        if (!playerLoaded(p.id)) {
+            out.push_back(std::move(car));
+            continue;
+        }
         net::VehicleSnapshot snap;
         car.time = at - m_impl->session->playoutDelay(p.id);
         const auto r = m_impl->session->sampleRemoteAt(p.id, car.time, snap);
@@ -734,7 +775,13 @@ void NetGame::sendDamage(float damage, std::uint8_t source) {
               net::encodePayload(net::DamageEvent{damage, source}));
 }
 
-void NetGame::sendLeftRace() { sendEvent(static_cast<std::uint16_t>(net::GameEventType::LeftRace), {}); }
+void NetGame::sendLeftRace() {
+    // A player who leaves the race before reporting it loaded no longer
+    // holds the others' start (MM2: SystemMessage 0x2d takes one off the
+    // count in state 0).
+    reportLoaded();
+    sendEvent(static_cast<std::uint16_t>(net::GameEventType::LeftRace), {});
+}
 
 std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gameEvents, {}); }
 

@@ -70,6 +70,17 @@ JoinParams joinParams(const Peer& host, const std::string& name) {
     return j;
 }
 
+// GO DRIVE, and every machine reports the race loaded (there is nothing to
+// load) until it has started.
+void startRace(Peer& host, Peer& a, Peer& b) {
+    host.session->startRace(100);
+    pumpUntil({&host, &a, &b}, [&] {
+        for (Peer* p : {&host, &a, &b})
+            p->session->reportLoaded();
+        return host.session->phase() == SessionPhase::InGame;
+    });
+}
+
 VehicleSnapshot at(float x) {
     VehicleSnapshot s;
     s.position = {x, 0, 0};
@@ -93,7 +104,7 @@ TEST(SessionLobby, NoVehicleStatesBetweenRaces) {
     }));
     const std::uint8_t aId = a.session->localId();
 
-    host.session->startCountdown(100);
+    startRace(host, a, b);
     ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return a.session->phase() == SessionPhase::InGame; }));
     VehicleSnapshot seen;
     ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
@@ -117,7 +128,7 @@ TEST(SessionLobby, NoVehicleStatesBetweenRaces) {
 
     // The next race starts with nothing from the last one; A's new start
     // place comes through.
-    host.session->startCountdown(100);
+    startRace(host, a, b);
     ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return b.session->phase() == SessionPhase::InGame; }));
     settle({&host, &a, &b}, 100);
     EXPECT_EQ(b.session->sampleRemote(aId, seen), SnapshotBuffer::Result::Empty);

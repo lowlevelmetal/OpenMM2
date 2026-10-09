@@ -210,7 +210,9 @@ void Session::resetState() {
     m_players.clear();
     m_localId = kInvalidPlayerId;
     m_password.clear();
-    m_countdownEnd = 0;
+    m_race = 0;
+    m_raceOrderTime = 0;
+    clearRace();
     m_hostEpoch = 0;
     m_lastPingBroadcast = 0;
     m_passwordFailures.clear();
@@ -394,6 +396,8 @@ void Session::update() {
 
         if (snapshotDue() && replicating())
             hostSendWorldState();
+        if (m_phase == SessionPhase::Countdown && !m_startKnown)
+            hostCheckStart();
 
         if (m_beacon) {
             hostAdvertise();
@@ -485,12 +489,73 @@ bool Session::receiveState(std::uint8_t id, const VehicleSnapshot& state) {
 }
 
 void Session::tickCountdown() {
-    if (m_phase != SessionPhase::Countdown || !clockSynced())
+    if (m_phase != SessionPhase::Countdown || !m_startKnown || !clockSynced())
         return;
-    if (static_cast<std::int64_t>(time()) - static_cast<std::int64_t>(m_countdownEnd) >= 0) {
+    if (static_cast<std::int64_t>(time()) - static_cast<std::int64_t>(m_startTime) >= 0) {
         m_phase = SessionPhase::InGame;
         emit(ev::GameStarted{});
     }
+}
+
+// --- The race start -------------------------------------------------------------
+//
+// MM2's network races (mmMultiRace / mmMultiCircuit / mmMultiBlitz::
+// UpdateGame state 0): every machine sends RaceReady (0x1f6) once its race
+// has loaded, every machine counts the others' (GameMessage 0x1f6 and 0x213,
+// less one for each player who leaves meanwhile: SystemMessage 0x2d), and
+// the host sends the start (0x20f) when its count reaches 0, at which every
+// machine begins Ready / Set / Go. OpenMM2's host sends a shared start time
+// instead, a lead ahead, so every countdown ends at the same moment.
+
+void Session::clearRace() {
+    m_startKnown = false;
+    m_startTime = 0;
+    m_countdownMs = 0;
+    m_loaded.clear();
+}
+
+bool Session::playerLoaded(std::uint8_t id) const {
+    return std::ranges::find(m_loaded, id) != m_loaded.end();
+}
+
+void Session::markLoaded(std::uint8_t id) {
+    m_loaded.push_back(id);
+    emit(ev::PlayerLoaded{id, m_race});
+}
+
+void Session::hostCheckStart() {
+    if (m_role != Role::Host || m_phase != SessionPhase::Countdown || m_startKnown || !m_transport)
+        return;
+    const bool everyone =
+        std::ranges::all_of(m_players, [&](const PlayerInfo& p) { return playerLoaded(p.id); });
+    const std::uint32_t now = time();
+    const bool waitedEnough = now - m_raceOrderTime >= m_config.loadWaitMs;
+    if (!everyone && !waitedEnough)
+        return;
+    if (!everyone) {
+        // OpenMM2's limit (MM2 has none): the race goes on without the
+        // players still loading, who join it when they have loaded.
+        std::string missing;
+        for (const auto& p : m_players)
+            if (!playerLoaded(p.id))
+                missing += (missing.empty() ? "" : ", ") + p.name;
+        log::warn("net: race {} starts without {}: still loading {} ms after the order", m_race, missing,
+                  now - m_raceOrderTime);
+    }
+    // The start message must reach every machine before its countdown: twice
+    // the slowest round trip (a loss and its resend) plus 100 ms.
+    std::uint32_t rtt = 0;
+    for (const auto& [peer, r] : m_remotes)
+        if (r.playerId != kInvalidPlayerId)
+            rtt = std::max(rtt, m_transport->stats(peer).rttMs);
+    const std::uint32_t lead = std::clamp(2 * std::min(rtt, 60000u) + 100, m_config.startLeadMinMs,
+                                          std::max(m_config.startLeadMinMs, m_config.startLeadMaxMs));
+    m_startKnown = true;
+    m_startTime = now + lead + m_countdownMs;
+    log::info("net: race {} starts at session time {} (countdown from {}, lead {} ms)", m_race, m_startTime,
+              m_startTime - m_countdownMs, lead);
+    sendToPlayers(Channel::Control, RaceStartMsg{m_race, m_startTime});
+    emit(ev::RaceStartSet{m_race, m_startTime});
 }
 
 void Session::hostSendWorldState() {
@@ -688,6 +753,22 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
             hostRelayState(id, msg.state);
         return;
     }
+    case MsgType::RaceLoaded: {
+        // Only the first report of the race being loaded counts: one for an
+        // earlier race (sent before the return to the lobby reached the
+        // player), a repeat, or one in the lobby is dropped. A report that
+        // comes after the start (a player the host stopped waiting for) no
+        // longer changes it, but the others still learn that the player is
+        // in the race.
+        RaceLoadedMsg msg;
+        if (!decodeMessage(data, msg) || m_phase == SessionPhase::Lobby || msg.race != m_race ||
+            playerLoaded(id))
+            return;
+        markLoaded(id);
+        sendToPlayers(Channel::Control, RaceLoadedMsg{m_race, id}, id);
+        hostCheckStart();
+        return;
+    }
     case MsgType::GameEvent: {
         GameEventMsg msg;
         if (!decodeMessage(data, msg))
@@ -729,7 +810,13 @@ void Session::hostAcceptHello(Remote& r, HelloMsg& hello) {
     welcome.players = m_players;
     welcome.phase = m_phase;
     welcome.hostTime = time();
-    welcome.countdownEnd = m_countdownEnd;
+    if (m_phase != SessionPhase::Lobby) {
+        welcome.race = m_race;
+        welcome.raceOrderTime = m_raceOrderTime;
+        welcome.startKnown = m_startKnown;
+        welcome.startTime = m_startTime;
+        welcome.loaded = m_loaded;
+    }
     sendTo(r.peer, Channel::Control, std::move(welcome));
     sendToPlayers(Channel::Control, PlayerJoinedMsg{p}, id);
     emit(ev::PlayerJoined{p});
@@ -757,6 +844,7 @@ void Session::hostRemovePlayer(std::uint8_t id, DisconnectReason reason) {
     PlayerInfo p = *it;
     m_players.erase(it);
     m_remoteStates.erase(id);
+    std::erase(m_loaded, id); // no longer waited for (update() checks the start)
     log::info("net: {} left ({})", p.name, describe(reason));
     sendToPlayers(Channel::Control, PlayerLeftMsg{id, reason});
     emit(ev::PlayerLeft{p, reason});
@@ -816,7 +904,16 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         m_settings = std::move(w.settings);
         m_players = std::move(w.players);
         m_phase = w.phase;
-        m_countdownEnd = w.countdownEnd;
+        clearRace();
+        if (m_phase != SessionPhase::Lobby) {
+            m_race = w.race;
+            m_raceOrderTime = w.raceOrderTime;
+            m_startKnown = w.startKnown;
+            m_startTime = w.startTime;
+            for (const std::uint8_t id : w.loaded)
+                if (player(id) && !playerLoaded(id))
+                    m_loaded.push_back(id);
+        }
         m_state = State::Active;
         if (const PlayerInfo* self = player(m_localId))
             m_request = PlayerRequestMsg{self->car, self->color, self->team, self->ready};
@@ -827,10 +924,13 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         updateShownClock();
         m_nextTimeRequest = now;
         emit(ev::JoinAccepted{m_localId});
-        if (m_phase == SessionPhase::Countdown)
-            emit(ev::CountdownStarted{m_countdownEnd});
-        else if (m_phase == SessionPhase::InGame)
+        if (m_phase == SessionPhase::Countdown) {
+            emit(ev::RaceLoading{m_race, m_raceOrderTime});
+            if (m_startKnown)
+                emit(ev::RaceStartSet{m_race, m_startTime});
+        } else if (m_phase == SessionPhase::InGame) {
             emit(ev::GameStarted{});
+        }
         return;
     }
     case MsgType::Reject: {
@@ -865,6 +965,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         PlayerInfo p = *it;
         m_players.erase(it);
         m_remoteStates.erase(m.id);
+        std::erase(m_loaded, m.id);
         emit(ev::PlayerLeft{p, m.reason});
         return;
     }
@@ -895,14 +996,36 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         emit(ev::SettingsChanged{std::move(m.settings)});
         return;
     }
-    case MsgType::Countdown: {
-        CountdownMsg m;
-        if (!decodeMessage(data, m))
+    case MsgType::RaceLoad: {
+        // The host numbers its races upwards; anything else is not a new race.
+        RaceLoadMsg m;
+        if (!decodeMessage(data, m) || m.race <= m_race)
             return;
         m_phase = SessionPhase::Countdown;
-        m_countdownEnd = m.startTime;
+        m_race = m.race;
+        m_raceOrderTime = m.orderTime;
+        clearRace();
         resetReplication();
-        emit(ev::CountdownStarted{m.startTime});
+        emit(ev::RaceLoading{m.race, m.orderTime});
+        return;
+    }
+    case MsgType::RaceLoaded: {
+        RaceLoadedMsg m;
+        // The host tells of the others (its own report it sends itself).
+        if (!decodeMessage(data, m) || m_phase == SessionPhase::Lobby || m.race != m_race ||
+            !player(m.player) || m.player == m_localId || playerLoaded(m.player))
+            return;
+        markLoaded(m.player);
+        return;
+    }
+    case MsgType::RaceStart: {
+        // Once per race, while it is starting.
+        RaceStartMsg m;
+        if (!decodeMessage(data, m) || m_phase != SessionPhase::Countdown || m.race != m_race || m_startKnown)
+            return;
+        m_startKnown = true;
+        m_startTime = m.startTime;
+        emit(ev::RaceStartSet{m.race, m.startTime});
         return;
     }
     case MsgType::ReturnToLobby: {
@@ -913,8 +1036,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         for (auto& p : m_players)
             p.ready = false;
         m_request.ready = false;
+        clearRace();
         resetReplication();
-        emit(ev::ReturnedToLobby{});
+        emit(ev::ReturnedToLobby{m_race});
         return;
     }
     case MsgType::Kick: {
@@ -1063,14 +1187,30 @@ void Session::kick(std::uint8_t playerId, const std::string& reason) {
     hostRemovePlayer(playerId, DisconnectReason::Kicked);
 }
 
-void Session::startCountdown(std::uint32_t delayMs) {
+void Session::startRace(std::uint32_t countdownMs) {
     if (m_role != Role::Host || m_state != State::Active)
         return;
     m_phase = SessionPhase::Countdown;
-    m_countdownEnd = time() + delayMs;
+    ++m_race;
+    m_raceOrderTime = time();
+    clearRace();
+    m_countdownMs = countdownMs;
     resetReplication();
-    sendToPlayers(Channel::Control, CountdownMsg{m_countdownEnd});
-    emit(ev::CountdownStarted{m_countdownEnd});
+    log::info("net: race {} ordered at session time {}", m_race, m_raceOrderTime);
+    sendToPlayers(Channel::Control, RaceLoadMsg{m_race, m_raceOrderTime});
+    emit(ev::RaceLoading{m_race, m_raceOrderTime});
+}
+
+void Session::reportLoaded() {
+    if (m_state != State::Active || m_phase == SessionPhase::Lobby || m_race == 0 || playerLoaded(m_localId))
+        return;
+    markLoaded(m_localId);
+    if (m_role == Role::Host) {
+        sendToPlayers(Channel::Control, RaceLoadedMsg{m_race, m_localId});
+        hostCheckStart();
+    } else {
+        sendTo(m_hostPeer, Channel::Control, RaceLoadedMsg{m_race, m_localId});
+    }
 }
 
 void Session::returnToLobby() {
@@ -1079,9 +1219,10 @@ void Session::returnToLobby() {
     m_phase = SessionPhase::Lobby;
     for (auto& p : m_players)
         p.ready = false;
+    clearRace();
     resetReplication();
     sendToPlayers(Channel::Control, ReturnToLobbyMsg{});
-    emit(ev::ReturnedToLobby{});
+    emit(ev::ReturnedToLobby{m_race});
 }
 
 void Session::submitLocalState(const VehicleSnapshot& state) { submitLocalState(state, timeMs()); }

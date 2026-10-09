@@ -41,6 +41,7 @@
 #include "game/fx/VehicleEffects.h"
 #include "game/fx/Weather.h"
 #include "game/net/NetGame.h"
+#include "game/net/RaceStart.h"
 #include "game/net/TrafficProxies.h"
 #include "game/net/TrafficSync.h"
 #include "game/CamMirror.h"
@@ -203,9 +204,16 @@ public:
             // A network race keeps its session serviced between the parts
             // (acknowledgements and pings), so that the others do not time
             // this machine out while it loads more slowly than they do. What
-            // arrives meanwhile waits for the first frame of the race.
-            if (multiplayer(ctx))
+            // arrives meanwhile waits for the first frame of the race, except
+            // the end of the race (the host took everyone back, or left).
+            if (multiplayer(ctx) && !ctx.nextScreen) {
                 ctx.netGame->update();
+                if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
+                    log::info("race: the network race is over before it has loaded ({})",
+                              ctx.netGame->inSession() ? "back to the lobby" : "the session ended");
+                    leaveRace(ctx, m_result);
+                }
+            }
             return;
         }
         // GameLoop: AudManager::Update before the game's update, then again
@@ -279,6 +287,7 @@ public:
                 return;
             }
             takeNetEvents(ctx);
+            updateNetStart(ctx, static_cast<float>(dt));
         }
         if (ctx.input.keyPressed(platform::Key::F2))
             m_flyCamera = !m_flyCamera;
@@ -777,8 +786,28 @@ private:
             placeRespawnStart(ctx);
             m_loadPercent = 100;
             return;
-        default: loadFinish(ctx); return;
+        default:
+            if (debugLoadStalled()) {
+                --m_loadStep; // this step again next frame
+                return;
+            }
+            loadFinish(ctx);
+            return;
         }
+    }
+
+    // Development aid: OPENMM2_DEBUG_LOAD_DELAY_MS=<ms> keeps the loading
+    // screen up until that long after the loading began (the frames go on,
+    // and a network race keeps its session serviced), to try a slow loader.
+    bool debugLoadStalled() const {
+        static const long long delayMs = [] {
+            const char* env = std::getenv("OPENMM2_DEBUG_LOAD_DELAY_MS");
+            return env ? str::parseInt(env).value_or(0) : 0;
+        }();
+        if (delayMs <= 0)
+            return false;
+        const auto elapsed = std::chrono::steady_clock::now() - m_loadStart;
+        return elapsed < std::chrono::milliseconds(delayMs);
     }
 
     void loadCityPart(Context& ctx) {
@@ -789,8 +818,11 @@ private:
             log::error("race: cannot load city '{}': {}", m_result.config.city, error);
             // Back to the menus; the host of a network race takes everyone
             // back to the lobby, which could otherwise never start another.
-            if (multiplayer(ctx))
+            if (multiplayer(ctx)) {
                 ctx.netGame->addNotice(std::format("Cannot load the city '{}': {}", m_result.config.city, error));
+                if (!ctx.netGame->isHost())
+                    ctx.netGame->sendLeftRace(); // the others stop waiting for this machine
+            }
             leaveRace(ctx, m_result);
             return;
         }
@@ -875,6 +907,8 @@ private:
             m_session->start();
             if (m_player)
                 m_player->sim().damage.enabled = m_session->playerDamageEnabled();
+            if (multiplayer(ctx))
+                m_netStart.emplace(game::NetRaceStart::kindOf(m_result.config.mode));
             setupCopsAndRobbers(ctx);
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -948,6 +982,8 @@ private:
             // seen by the others: back to the lobby (the host takes everyone).
             if (multiplayer(ctx)) {
                 ctx.netGame->addNotice(std::format("Cannot load the car '{}': {}", m_result.config.vehicle, error));
+                if (!ctx.netGame->isHost())
+                    ctx.netGame->sendLeftRace();
                 leaveRace(ctx, m_result);
             }
             return;
@@ -1735,8 +1771,11 @@ private:
         const auto phaseBefore = m_session->phase();
         m_session->setPreRaceCamera(m_cams.preRace());
         // The multiplayer countdown (2.5 s) starts with the host's start
-        // message; OpenMM2 shares the start time instead.
-        m_session->setStartSignal(!multiplayer(ctx) || ctx.netGame->secondsToStart() <= 2.5);
+        // message; OpenMM2's follows the shared start time (updateNetStart).
+        if (multiplayer(ctx))
+            m_session->setNetStart(m_netToGo);
+        else
+            m_session->setStartSignal(true);
         m_session->update(dt, m_playerState, opps, cops);
         // DisableRacers / EnableRacers: the player's vehCarDamage switch.
         m_player->sim().damage.enabled = m_session->playerDamageEnabled();
@@ -2093,6 +2132,35 @@ private:
     // mmMultiRoam / Race / Circuit / Blitz / CR::SystemMessage 0x2d: a
     // player who leaves while the game runs gets "<name>" / "has left the
     // game" (38) for 5 s at the bottom with mmHUD::PlayNetAlert.
+    // The network race's start on this machine (game::NetRaceStart): the
+    // loaded report, "Waiting for N players" while others still load, the
+    // countdown on the shared start, and a cruise's "<name> has joined".
+    void updateNetStart(Context& ctx, float dt) {
+        if (!m_netStart)
+            return;
+        const auto out = m_netStart->update(dt, *ctx.netGame);
+        m_netHeld = out.held;
+        m_netToGo = out.secondsToGo;
+        if (!m_session)
+            return;
+        // mmMulti*::UpdateGame state 0: mmHUD::SetMessage(text, 5.0, 0)
+        // every frame while the count is above 0.
+        if (out.waitingFor > 0) {
+            const auto& strings = ctx.game->strings;
+            m_session->showMessage(game::NetRaceStart::waitingText(strings, out.waitingFor), 5.0f, false);
+        }
+        // mmGameMulti::GameMessageCB 0x1fa: the net alert, the name for 5 s
+        // and "has joined" (string 42) under it.
+        for (const auto id : out.joined) {
+            const auto* p = ctx.netGame->player(id);
+            if (!p)
+                continue;
+            playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
+            m_session->showMessage(p->name, 5.0f, false);
+            m_session->showMessage2(ctx.game->strings.get(42, "has joined"));
+        }
+    }
+
     void updateNetPlayers(Context& ctx) {
         if (!multiplayer(ctx) || !m_session)
             return;
@@ -2100,7 +2168,10 @@ private:
         for (const auto& p : ctx.netGame->players())
             if (!m_netLeft.contains(p.id))
                 now[p.id] = p.name;
-        if (m_netPlayersKnown && m_session->phase() == game::session::Phase::Racing) {
+        // The race modes say it while racing (state 3); Cops and Robbers in
+        // any state (mmMultiCR::SystemMessage 0x2d).
+        if (m_netPlayersKnown && (m_session->phase() == game::session::Phase::Racing ||
+                                  m_result.config.mode == game::GameMode::CopsAndRobbers)) {
             for (const auto& [id, name] : m_netPlayers) {
                 if (now.contains(id))
                     continue;
@@ -2145,9 +2216,10 @@ private:
         st.goldMass = ctx.netGame->goldMass();
         st.timeLimitSeconds = m_result.config.timeLimitMinutes * 60.0f;
         st.pointLimit = m_result.config.pointLimit;
-        // Every machine starts with the same places (OpenMM2: the shared
-        // start time seeds them; the host's sets follow by message).
-        st.seed = std::max(1u, ctx.netGame->raceStartTime());
+        // Every machine starts with the same places (OpenMM2: the time the
+        // host ordered the race seeds them, which every machine knows when it
+        // loads; the host's sets follow by message).
+        st.seed = std::max(1u, ctx.netGame->raceOrderTime());
         m_crRng = st.seed;
         // GetRandomPoints' picker: mmGame::RespawnXYZ(false, false, false)
         // less its 2 m: an intersection whose room (FindRoomId of its
@@ -2270,8 +2342,9 @@ private:
         // and every machine runs its rules on the session clock from there,
         // so the time limit runs out on all of them together (each counting
         // frames from its own load did not agree by the loads' difference).
-        const double raceClock =
-            std::max(0.0, (ctx.netGame->frameTime() - static_cast<double>(ctx.netGame->raceStartTime())) / 1000.0);
+        const double sinceStart =
+            ctx.netGame->frameTime() - static_cast<double>(ctx.netGame->raceStartTime());
+        const double raceClock = ctx.netGame->raceStartKnown() ? std::max(0.0, sinceStart / 1000.0) : 0.0;
         const float ruleDt = static_cast<float>(std::max(0.0, raceClock - m_crClock));
         m_crClock = std::max(m_crClock, raceClock);
         sendCr(ctx, m_cr->updateNetwork(ruleDt, m_crSelf, host, cars, m_crImpacts));
@@ -4201,11 +4274,10 @@ private:
         if (over) {
             pedals = {};
             m_player->drive(pedals);
-        } else if ((m_session && m_session->playerHeld()) ||
-                   (multiplayer(ctx) && m_result.config.mode != game::GameMode::Cruise &&
-                    ctx.netGame->secondsToStart() > 0.0)) {
+        } else if ((m_session && m_session->playerHeld()) || (multiplayer(ctx) && m_netHeld)) {
             // (mmMultiRoam says "Go!" and lets the car go two updates after
-            // its own load, with no shared start.)
+            // its own load, with no shared start: NetRaceStart never holds
+            // a cruise.)
             m_player->hold(pedals); // vehCar::SetDrivable(0, 1)
             pedals.brake = 1.0f;
         } else {
@@ -4727,6 +4799,9 @@ private:
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
     bool m_netPlayersKnown = false;
     std::uint32_t m_netRace = 0; // NetGame::raceNumber() of this race
+    std::optional<game::NetRaceStart> m_netStart; // from the end of the loading (updateNetStart)
+    bool m_netHeld = true;                        // its car hold
+    std::optional<float> m_netToGo;               // its countdown (Session::setNetStart)
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;
