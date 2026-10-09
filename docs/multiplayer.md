@@ -16,6 +16,7 @@ decides what they mean.
 | `net/Session.h` | Lobby + in-game session (host or client), event queue |
 | `net/Protocol.h` | Wire messages, settings/player structs, game event payloads |
 | `net/Snapshot.h` | `VehicleSnapshot` and the receive-side `SnapshotBuffer` |
+| `net/PlayerCars.h` | The players' cars simulated by the host: `PlayerInputMsg`, `CarStatesMsg` |
 | `net/AmbientState.h` | The shared cruise traffic: `AmbientStateMsg`, `TrafficHitEvent` |
 | `net/ClockSync.h` | Session clock estimation on clients |
 | `net/Discovery.h` | LAN beacon/scanner, broadcast addresses, small UDP socket |
@@ -44,12 +45,17 @@ for the lobby: settings, the player list, ready flags, kicks and the race
 start.
 Clients send requests and the host validates and broadcasts the result.
 
-In game, each machine simulates its own car and sends its state 20 times a
-second, stamped with the session time the simulation was at. The host sends
-its own car on that cadence and passes each joiner's state on to the others
-as soon as it arrives (bundling them per tick added up to a tick of latency
-and dropped one of two states that arrived within a tick).
-Remote cars are drawn from an interpolation buffer a playout delay in the past:
+In game the host is the authority for every player's car (protocol 5, see
+"Players' cars"): each client sends its car's inputs, the host simulates
+every player's car from them and sends each client, 20 times a second, the
+last input it applied to that client's car with the car's state after it,
+and every other player's car. A client runs its own car ahead on its inputs
+(no latency) and corrects it from the host's states. (Before protocol 5
+each machine simulated its own car and sent its state, which the host
+passed on; `VehicleState` and `WorldState` remain in the protocol, unused by
+the game.)
+The other players' cars are drawn from an interpolation buffer a playout
+delay in the past:
 for each car, what its snapshots needed to arrive in time over the last 3 s
 (50-500 ms; about 70 ms on a LAN, 150 ms over a 100 ms round trip, 250 ms from
 one client to another through the host). When packets stop coming, a remote
@@ -195,7 +201,10 @@ incompatible builds never parse each other's messages. **Any change to message
 layouts must bump `kProtocolVersion`.** `Hello` carries the version again,
 along with a free-form build string. Version 2 added the shared cruise
 traffic, version 3 the race start handshake (`RaceLoad` in place of
-`Countdown`, `RaceLoaded`, `RaceStart`, the race in `Welcome`).
+`Countdown`, `RaceLoaded`, `RaceStart`, the race in `Welcome`), version 4
+the cars' damage, version 5 the host-simulated players' cars
+(`PlayerInput`, `CarStates`, damage events about a player's car from the
+host).
 
 ### Handshake
 
@@ -240,8 +249,10 @@ attempt within `connectTimeoutMs` (8 s).
 | ReturnToLobby | H→C | — (ready flags reset) |
 | Kick | H→C | reason text (then disconnect `Kicked`) |
 | TimeRequest / TimeResponse | C↔H | client send time / + host time |
-| VehicleState | C→H | own `VehicleSnapshot` |
-| WorldState | H→C | `(id, VehicleSnapshot)` pairs: the host's car each tick, a joiner's as it arrives |
+| VehicleState | C→H | own `VehicleSnapshot` (unused by the game since protocol 5) |
+| WorldState | H→C | `(id, VehicleSnapshot)` pairs (unused by the game since protocol 5) |
+| PlayerInput | C→H | the inputs of the samples the host has not acknowledged and the commands (resets) it has not (see "Players' cars") |
+| CarStates | H→C | the last input applied to the client's car, its inputs in hand, the car's state, every other player's car |
 | GameEvent | both | from, target, type, session time, payload ≤ 1 KiB |
 | PlayerPings | H→C | measured RTT per player, every 2 s |
 | AmbientState | H→C | the shared traffic and police near the client (see "Shared traffic") |
@@ -290,6 +301,18 @@ packet to the game or discovery port, and whatever answers as the router.
 * **Floats.** Snapshot fields are quantized to fixed ranges and event floats
   must be finite (`ReadStream::f32`), so no NaN or infinity reaches physics or
   rendering.
+* **The players' cars.** A `PlayerInput` holds 1-48 input frames numbered
+  from 1 (a first number that would wrap is refused), switch and key bits
+  masked, the gold's mass at most 2000 kg, and at most 4 commands whose
+  positions lie within ±16384 m and rotations within ±64 rad. The host takes
+  a joiner's inputs during a race only, within a budget of 90 messages a
+  second (burst 180), queues at most 256, ignores inputs for samples already
+  applied or more than 240 ahead, holds every car before the start whatever
+  its input says, and lets a command move a car only inside the city's box
+  (with 200 m to spare) and at most four times a second. A `CarStates`
+  holds at most 16 cars; its own-car state must be a rotation matrix (entries
+  within ±2), a position within ±16384 m and every other value finite and
+  within ±10^7, or the whole message is refused.
 * **Damage.** A `VehicleDamage` event has at most 16 patches and 8 impacts,
   record indices below 1024, 20 part bits, and every value quantized to its
   range (points ±8 m, normals ±1, speeds 0-128 m/s, strengths 0-10^6 on a log
@@ -380,7 +403,9 @@ types, with payload structs in `Protocol.h`:
 `Damage{damage, source}`, `Wrecked`, `LeftRace` (a joiner quit the race it
 was driving and stays in the session: the others take its car out and stop
 waiting for its finish). Ids from `GameEventType::Custom` (0x8000)
-up are free for the game: Cops and Robbers uses 0x8001 and 0x8002, the shared
+up are free for the game: Cops and Robbers uses 0x8001 to 0x8003 (0x8003 the
+host's word that a limit was reached, `mmMultiCR::SendLimitReached`: the
+host alone checks the time and point limits, `mmMultiCR::UpdateLimit`), the shared
 cruise traffic's hit report (`TrafficHitEvent`, client to host) 0x8010, a
 car's damage (`VehicleDamageEvent`, see "Damage") 0x8020.
 
@@ -491,6 +516,110 @@ and both went at 22993 for 22988. A joiner that never finished loading was
 waited for 60 s, the host raced alone from then, and when the host returned
 to the lobby the joiner left its loading screen for the lobby.
 
+### Players' cars
+
+**MM2** (`mmNetObject`, `mmGameMulti`) ran every network car on every
+machine as a `vehCar` of the level, declared each frame as a type-3 mover
+that collides with everything (`mmNetObject::Update`: DeclareMover(3,
+0x1b)) and drivable once the race starts (`mmGameMulti::EnableRacers`).
+Each machine sent its own car to every other player
+(`mmGameMulti::SendPosition`: to each player in the first frame after 0.05 s
+since the last, 0.1 s for a player whose session data carry a flag that
+`mmNetObject::Init` is given (inferred: a slow link); a dial-up session one
+broadcast at its own interval) in a 68-byte packet
+(`mmNetObject::SetPositionData`, message 0x1f5): its time, the steering,
+throttle and brake as bytes, the manual gear, the orientation as Euler
+angles, the position as three floats, the acceleration (averaged over ten
+packets by `mmAccelCompute`), velocity and spin as a magnitude and three
+signed bytes of direction each, the damage, the score, the horn, siren,
+handbrake, gearbox and drivable flags, a reset bit and a packet counter. The
+receiver (`mmNetObject::PositionUpdate`) dropped a packet older than the
+newest, gave its car the packet's velocity and momentum, pedals, damage,
+horn, siren and gearbox, and predicted it forward by the average interval of the last ten packets
+(position plus velocity and half the acceleration, orientation turned by
+the spin); a car more than 10 m from the packet (or with the reset bit) was
+put there at once, a nearer one was given the packet's orientation and a
+Hermite path (`mmNetPath`) from where it was to the predicted place, which
+`mmNetObject::Predict` followed every frame by the share of the average
+packet interval since the packet when the car was further than its radius
+from the packet; otherwise the car's place and orientation moved toward the
+predicted ones by the frame's seconds as a fraction (`Matrix34::Interpolate`).
+Between packets the car drove itself on the last pedals. Every machine
+thus had its own version of every collision between players: each car
+bounced off where the other was on that machine.
+
+**OpenMM2** (the maintainer's decision: the host is the authority) runs
+every player's car on the host:
+
+* **Inputs.** Every player's car takes its input once a physics sample
+  (`game::NetCarDriver`, the same code on every machine): the gearbox
+  switch and keys (`mmGame::UpdateGameInput`), the gold's mass
+  (`mmMultiCR::FondleCarMass`) and throttle cap, the finish brake
+  (mmPlayer +0x2258), the grid hold (`vehCar::SetDrivable(0, 1)`), then
+  `mmGame::UpdateSteeringBrakes` (MM2 applies these once a frame; a sample
+  is a frame at 60 fps). A client numbers its samples from 1 and sends,
+  every frame that ran one, all the inputs the host has not acknowledged
+  (the newest 48; a frame like the one before it costs one bit, so a second
+  of driving costs a few bytes): a lost packet loses nothing.
+* **Commands.** What the client's rules decide about its car travels with
+  the inputs, numbered with the sample it applies at, until the host
+  acknowledges it: the first sample's placement (where that machine
+  started the car), mmPlayer::Reset (a fall, the debug respawn), the
+  `HitWaterHandler`s' respawn at a checkpoint and `vehCar::ClearDamage`
+  (Cops and Robbers' repairs). The client applies it at once and the host at
+  the same sample, so a reset is no correction.
+* **The host** (`game::HostInputQueue` per client) starts a client's car
+  once three of its inputs are in hand, applies one per sample, repeats the
+  last one (without its keys) for a quarter of a second when the next is
+  missing and then lets the car coast, ignores inputs for samples it has
+  passed, and reports in each state how many inputs it had in hand at the
+  least. The cars are full cars of the level (polygonal bound, type-3
+  movers, the player's input overrides, damage on with the race), so
+  collisions between players, with the traffic and with the props happen
+  there, once. Each car draws its wheels' bump numbers from its own random
+  stream (`CarSim::ownRandom`) on every machine, so the host and the car's
+  own machine simulate it alike whatever else each simulates (deviation:
+  MM2 has one `rand()` for the game).
+* **States.** 20 times a second the host sends each client its
+  `CarStates`: the number of the last input applied to its car, the car's
+  state after it at full precision (the body's matrix, momenta, velocities
+  and last push; the wheels' spin, turn, springs and tyre deflections; the
+  engine, gearbox, drivetrains, stuck watcher, damage and random stream; the
+  pedal swap and the hold: about 270 bytes), and every other player's car
+  as a `VehicleSnapshot`.
+* **Prediction** (`game::CarPrediction`). A client runs its car on its
+  inputs at once and keeps each sample's input and the car's whole state
+  after it (`CarSim::saveState`, 3 s). When a host state for a sample
+  differs from the prediction for it (by 3 mm, 3 cm/s, 0.0015 in the
+  matrix, or in the damage, gear or hold), the client puts the car back to
+  its saved state for that sample with the host's on top and runs the later
+  samples again on their inputs (`phys::World::replaySample`: the car alone,
+  everything it touches held still and moving at its own velocity, the
+  other players' cars where each sample first met them; no sound or effect),
+  at most 120 samples. The drawing keeps the car where it was and eases it
+  onto the corrected place with a 60 ms half-life (`game::CorrectionBlend`;
+  more than 4 m is a jump, drawn at once). The client's simulation runs up
+  to 3% faster when the host had fewer than one of its inputs in hand over
+  the last second and 2% slower above three, which keeps its inputs a
+  sample or three ahead of the host's need.
+* **The other cars** on a client are drawn interpolated from the host's
+  states a playout delay in the past, as before, and its own car collides
+  with them there as kinematic bodies moving at their velocity; the host's
+  collision is the one that counts. (`OPENMM2_NET_OTHERS`, a development
+  aid, places them ahead instead; see
+  `docs/review/multiplayer-desync-cars.md`.)
+* **The host's own car** has no latency and no prediction.
+
+Measured through `netprobe relay` (60 ± 20 ms each way, 2% loss,
+reordering), a host and a client ramming each other: the client's car was
+corrected about 4 times a second, by 4 cm at the median, 1 m or more about
+4 times a minute (at collisions); the host never ran short of its inputs.
+The inputs cost a client about 0.9 KB/s of payload (3.3 KB/s on the wire),
+the states about 0.3 KB/s per client plus 35 bytes per other car per
+message (6 KB/s on the wire for two players; about 9 KB/s per client and
+60 KB/s for the host with eight). See
+`docs/review/multiplayer-desync-cars.md` for the measurements against 0.3.1.
+
 ### Shared traffic
 
 An OpenMM2 extra (MM2's network cruise has no traffic and no police,
@@ -577,9 +706,16 @@ fenders thrown off by speed (`vehCarModel::EjectOneshot`). The dents are
 texel damage only: `mmDamage::Apply` is empty (no vertex damage), and no
 light ever breaks (`vehCarModel::BreakElectrics` has no caller).
 
-**OpenMM2** (`game/net/DamageSync`, `net/VehicleDamage.h`) draws the network
-cars kinematically, so they collide with nothing of their own, and replays
-their owner's damage instead:
+**OpenMM2** (`game/net/DamageSync`, `net/VehicleDamage.h`) decides every
+player's car's damage on the host (protocol 5), which simulates them all:
+its own collisions of each car paint, break and dent it, and the host sends
+what they did about each car (subject 513 + the player's id; its own car
+512) to everyone, the car's own player included, whose machine shows its
+own car's dents and lost parts from them and keeps only the sparks and
+sounds it predicted itself. A player's word on its own car's damage is
+refused. (Protocol 4 sent each car's damage from its owner; the text below
+keeps that layout, with the host as every car's owner.) The clients draw the
+other players' cars kinematically and replay the host's record of them:
 
 * **The level** is the snapshot's 10-bit fraction between MedDamage and
   MaxDamage (as before; the police's in `AmbientState`, now also 10 bits).
@@ -593,7 +729,7 @@ their owner's damage instead:
 
   | Field | Encoding |
   | --- | --- |
-  | subject | 0-512: 512 the sender's own car, below it a shared police car's id (from the host only) |
+  | subject | 0-528: 513 + a player's id that player's car, 512 the host's own car, below it a shared police car's id (all from the host only) |
   | epoch | u8: the car's damage resets so far |
   | time | u32: session ms the entries' delays count from |
   | first, patches | the record index of the first patch (0-1023), then up to 16: delay (u8 ms), the impact point in model space (3 × 16 bits over ±8 m, 0.24 mm), the texel damage's random state (u32) |
@@ -807,20 +943,21 @@ When `config.multiplayer && ctx.netGame`:
    `raceStarted()` becomes true at the start time. While the race loads the
    screen calls `update()` between its steps and leaves when
    `backToLobby(number)` or the session ends.
-3. **Local car:** after stepping the simulation,
-   `submitLocalState(car.modelMatrix(), linearVelocity, angularVelocity,
-   controls, damage01, flags, stateAgeMs)` where `stateAgeMs` is how far the
-   simulation is behind the frame (the fixed step's unstepped remainder),
-   `controls` are the pedal/steering inputs
-   and gear, and `flags` combine `net::kVehicleBrakeLights`, `kVehicleHeadlights`,
-   `kVehicleHorn`, `kVehicleSiren`, `kVehicleWrecked`. Sending is rate limited
-   inside (20 Hz).
+3. **The players' cars** (see "Players' cars"): the frame builds this
+   machine's car's input (`net::CarInputFrame`), and the physics' sample
+   hooks (`phys::World::setSampleHooks`) apply each player's input once a
+   sample. A client reconciles with `takeOwnCarStates()` before the frame's
+   samples (`game::CarPrediction::acknowledge`) and sends
+   `sendPlayerInput()` after them; the host takes `takePlayerInputs()`
+   before its samples and sends each client `sendCarStates()` every 50 ms
+   after them.
 4. **Remote cars:** once a frame, `ctx.netGame->remoteCars(simLagMs)` gives
    each other player's `transform` (car model matrix, a playout delay in the
    past, extrapolated up to 250 ms when packets are late), velocities,
    controls, damage and flags, sampled at the frame's session time less
    `simLagMs` (the remainder the frame's fixed steps will leave,
-   `phys::World::remainderAfter`). Use that one sample for the cars' bodies,
+   `phys::World::remainderAfter`; on the host, the cars it simulates). Use
+   that one sample for the cars' bodies,
    the rules and the HUD: the local car and every simulated object are where
    the frame's fixed steps leave them, and a car sampled at the frame's own
    time shook against them by up to a step's travel (29 cm rms at 35 m/s and
@@ -848,12 +985,12 @@ When `config.multiplayer && ctx.netGame`:
    `takeAmbientStates()` and places the received cars, and its light sets
    follow the host's (`World::advanceLightsTo`).
 7. **Damage** (`game::NetDamage`, see "Damage"): the frame's game events go
-   to `NetDamage::receive`; each network car (and a client's police car) is
-   brought up to date with `NetDamage::update` after it is placed (`fresh`
-   when shown afresh), the others with `settle`; this machine's car (and a
-   shared-traffic host's police) record their patches, parts, impacts and
-   resets (`DamageRecorder`), sent with `NetDamage::send` after the frame's
-   effects.
+   to `NetDamage::receive`; each network car (and a client's police car,
+   and a client's own car) is brought up to date with `NetDamage::update`
+   after it is placed (`fresh` when shown afresh), the others with
+   `settle`; the host records every car's patches, parts, impacts and
+   resets (`DamageRecorder`: `own()`, `player(id)`, `police(id)`), sent with
+   `NetDamage::send` after the frame's effects.
 8. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
    over (everyone finished, or the time/point limit); every machine sees
    `backToLobby(<its race number>)` and returns with `makeFrontendScreen(ctx, result)`.
@@ -889,6 +1026,15 @@ order); a comma-separated list of times saves a numbered picture at each but
 the last (`<screenshot>-1.png`, ...) and ends at the last. For the damage:
 `OPENMM2_DEBUG_NETDAMAGE` logs every damage event sent and received, and every
 2 s the network cars' and this machine's damage levels;
+`OPENMM2_DEBUG_NETCARS` logs every correction of a client's car (how far the
+prediction was off, how many samples ran again) and every 10 s what the
+players' cars cost and how often the host ran short of a client's inputs;
+`OPENMM2_NET_OTHERS=ahead` (an experiment) places and draws the other
+players' cars where the host will have them when it runs this machine's
+sample, `=ghost` keeps this machine's car from touching them;
+`OPENMM2_DEBUG_NETCARS_NOISE=<fraction>` nudges a client's car's momentum by
+about that fraction each sample, as a machine whose compiler rounds
+differently might (the prediction's tolerance);
 `OPENMM2_DEBUG_FOCUS=net:<player id>` frames a player's car (this machine's
 own, or another's as drawn), `police:<400 + post>` a shared police car,
 `knocked:<player id>` the knocked traffic car with a body within 60 m of a
@@ -936,7 +1082,13 @@ message, malformed input, delivery per client), `tests/game/test_traffic_sync.cp
 (interest, budget, spawn, update, despawn, loss, reordering, recycled slots,
 hostile messages), `tests/ai/test_shared_traffic.cpp` (several players'
 roads, avoidance, the light steps) and `tests/phys/test_kinematic_motion.cpp`.
-The damage by `tests/net/test_vehicle_damage.cpp` (the event's encoding, the
+The players' cars by `tests/net/test_player_cars.cpp` (the messages, their
+limits, mutated messages, delivery and the input budget through real
+sessions), `tests/game/test_player_cars.cpp` (the pedals' bytes, the host's
+queue, a client predicting a host's car through a simulated network with
+and without losses) and `tests/phys/test_net_prediction.cpp` (a car's
+state saved and run again, a car's sample alone, the sample hooks, a car's
+own random stream). The damage by `tests/net/test_vehicle_damage.cpp` (the event's encoding, the
 point arriving bit for bit, non-finite values, malformed events, the police
 damage and wheels in `AmbientState`), `tests/game/test_damage_sync.cpp` (the
 recorder's batches, splits, resets and budget; each entry at its time, the
@@ -959,6 +1111,22 @@ each:
   to);
 * `R wall id stale x y z vx vy vz sampleTime`: each remote car as sampled for
   the frame.
+
+* `D clock frameTime id own x y z vx vy vz`: every player's car as the frame
+  draws it (`own` 1 for this machine's);
+* `K clock sessionTime a b x y z strength`: a collision between players `a`
+  and `b`'s cars in this machine's simulation (the host's are the ones that
+  count; a client's are its prediction);
+* `C clock frameTime sample replayed dx dy dz dv snapped`: a correction of
+  this machine's car by the host's state.
+
+`D`, `K` and `C` use the machine's monotonic clock (shared by every process
+on it), so the traces of instances on one computer compare the same
+moments: `netprobe syncreport <host trace> <client trace>...` prints how far
+apart each machine draws each player's car from its own player's screen,
+the frames in which a car moves further than its velocity explains, the
+collisions between players each machine had (and how close every machine
+drew the two cars around them) and the corrections.
 
 With one trace per machine, a remote car as drawn (`R`) can be compared with
 where the other machine's car really was at `sampleTime` (its `F` lines).
