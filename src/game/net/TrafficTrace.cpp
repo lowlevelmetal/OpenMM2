@@ -2,8 +2,6 @@
 // TrafficTrace.h.
 #include "game/net/TrafficTrace.h"
 
-#include <string>
-
 namespace mm2::game {
 namespace {
 
@@ -47,11 +45,6 @@ void traceHit(std::FILE* f, double time, int id, int generation) {
 void traceKnock(std::FILE* f, double time, int id, int generation, int player) {
     if (f)
         std::fprintf(f, "TK %.3f %d %d %d\n", time, id, generationOf(generation), player);
-}
-
-void traceRefusedHit(std::FILE* f, double time, int from, int id, int generation, std::string_view why) {
-    if (f)
-        std::fprintf(f, "TR %.3f %d %d %d %s\n", time, from, id, generation, std::string(why).c_str());
 }
 
 void traceHandover(std::FILE* f, double time, int id, bool confirmed, float off) {

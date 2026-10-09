@@ -91,7 +91,7 @@ struct Event {
 
 struct HostTrace {
     std::map<Key, std::vector<Sample>> cars;
-    std::vector<Event> knocks, refused;
+    std::vector<Event> knocks;
 };
 
 struct ClientTrace {
@@ -120,8 +120,6 @@ bool readHost(const char* path, HostTrace& out) {
             out.cars[{integer(f[2]), integer(f[3])}].push_back(s);
         } else if (f[0] == "TK" && f.size() >= 5) {
             out.knocks.push_back({number(f[1]), integer(f[2]), integer(f[3]), integer(f[4])});
-        } else if (f[0] == "TR" && f.size() >= 5) {
-            out.refused.push_back({number(f[1]), integer(f[3]), integer(f[4]), integer(f[2])});
         }
     }
     for (auto& [key, samples] : out.cars)
@@ -287,29 +285,16 @@ int cmdNettrace(std::span<char* const> args) {
                  share(extra, present + extra));
     if (copFrames)
         std::println("police targets differ in {} of {} car-frames", copTargets, copFrames);
-    std::size_t applied = 0, refused = 0, unanswered = 0;
-    for (const Event& hit : client.hits) {
-        const auto same = [&](const Event& e) {
+    // The cars the client's car hit that the host had off their rails within
+    // 2.5 s too, and the host's knocks.
+    const auto knockedToo = std::ranges::count_if(client.hits, [&](const Event& hit) {
+        return std::ranges::any_of(host.knocks, [&](const Event& e) {
             return e.id == hit.id && e.generation == hit.generation && std::abs(e.time - hit.time) < 2500.0;
-        };
-        if (std::ranges::any_of(host.knocks, [&](const Event& e) { return same(e) && e.player != 255; }))
-            ++applied;
-        else if (std::ranges::any_of(host.refused, same))
-            ++refused;
-        else
-            ++unanswered;
-    }
-    // The host's own knocks: those no report made (a report's knock is
-    // listed twice, with the player and as the car leaving its rail).
-    const auto native = std::ranges::count_if(host.knocks, [&](const Event& e) {
-        return e.player == 255 && std::ranges::none_of(host.knocks, [&](const Event& r) {
-                   return r.player != 255 && r.id == e.id && r.generation == e.generation &&
-                          std::abs(r.time - e.time) < 200.0;
-               });
+        });
     });
-    std::println("client hit reports {}: applied {}, refused {}, unanswered {}; cars the host knocked off "
+    std::println("cars the client's car hit {}: off their rails on the host too {}; cars the host knocked off "
                  "their rails {}",
-                 client.hits.size(), applied, refused, unanswered, native);
+                 client.hits.size(), knockedToo, host.knocks.size());
     if (!client.handovers.empty()) {
         std::vector<double> confirmed, withdrawn;
         for (const Event& h : client.handovers)

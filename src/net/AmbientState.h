@@ -238,28 +238,4 @@ bool serialize(S& s, AmbientStateMsg& m) {
 // Bits one entity takes on the wire (for the host's packet budget).
 std::size_t ambientEntityBits(const AmbientEntity& e);
 
-// Client -> host, a game event (reliable): the client's car hit a shared
-// traffic car as the client was showing it. The host's view of the client's
-// car lags its own by the interpolation delay and the trip, so the host may
-// not see that collision itself; it knocks the car off its rail if it is
-// still on it there and the client's car is near it (see
-// docs/multiplayer.md). Sent at most once a second per car.
-inline constexpr std::uint16_t kTrafficHitEvent = static_cast<std::uint16_t>(GameEventType::Custom) + 16;
-struct TrafficHitEvent {
-    std::uint16_t id = 0;
-    std::uint8_t generation = 0;
-    Vec3 velocity; // the client's car's just before the hit, m/s
-};
-
-template <class S>
-bool serialize(S& s, TrafficHitEvent& e) {
-    std::int32_t id = e.id, generation = e.generation;
-    s.ranged(id, 0, static_cast<std::int32_t>(kMaxAmbientIds) - 1);
-    s.ranged(generation, 0, static_cast<std::int32_t>(kAmbientGenerations) - 1);
-    e.id = static_cast<std::uint16_t>(id);
-    e.generation = static_cast<std::uint8_t>(generation);
-    s.vec3Quantized(e.velocity, kAmbientVelocityRange, 12);
-    return s.ok();
-}
-
 } // namespace mm2::net

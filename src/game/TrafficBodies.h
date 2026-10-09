@@ -125,15 +125,6 @@ public:
     // without one (OpenMM2: the shared traffic of a network cruise sends
     // them).
     bool motionOf(int carId, Vec3& velocity, Vec3& spin) const;
-    // OpenMM2 (the shared traffic of a network cruise): a network client's
-    // car hit rail car `carId` on the client. The car leaves its rail as a
-    // hit would make it (aiVehicleInstance::AttachEntity), joins the movers
-    // and takes `impulse` at `point` in the next step. False when the car
-    // is not on its rail as an instance (it has a body already, or the AI
-    // holds it).
-    bool knock(int carId, const Vec3& impulse, const Vec3& point);
-    // The mass of a car's aiVehicleData (0 when the car is unknown).
-    float massOf(int carId) const;
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 
