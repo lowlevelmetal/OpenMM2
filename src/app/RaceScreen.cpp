@@ -271,6 +271,7 @@ public:
         if (const char* shot = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shot && multiplayer(ctx) &&
             ctx.netGame->raceStarted() && ctx.netGame->sessionTime() >= str::parseInt(shot).value_or(0))
             ctx.lastFrameRequested = true;
+        debugRespawn(ctx);
         if (multiplayer(ctx)) {
             ctx.netGame->update();
             if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
@@ -389,8 +390,10 @@ public:
         updateSession(ctx, static_cast<float>(dt));
         updateCopsAndRobbers(ctx, static_cast<float>(dt));
         // Development aid: OPENMM2_DEBUG_FOCUS=ped|car frames the nearest
-        // pedestrian or traffic car (for screenshots).
-        if (const char* focus = std::getenv("OPENMM2_DEBUG_FOCUS"); focus && m_ai) {
+        // pedestrian or traffic car (for screenshots); net:<player id> a
+        // network player's car (this machine's own, or another's as drawn),
+        // police:<ambient id> a shared-traffic police car (400 + its place).
+        if (const char* focus = std::getenv("OPENMM2_DEBUG_FOCUS"); focus && (m_ai || multiplayer(ctx))) {
             const Vec3 ref = m_player ? m_pose.body.m3 : m_camera.position();
             std::optional<Mat34> target;
             float best = 1e30f;
@@ -401,12 +404,28 @@ public:
                     target = m;
                 }
             };
-            if (std::string_view(focus) == "ped")
+            const std::string_view what(focus);
+            if (what.starts_with("net:") && multiplayer(ctx)) {
+                const int id = str::parseInt(what.substr(4)).value_or(-1);
+                if (id == ctx.netGame->localId() && m_player)
+                    consider(m_pose.body);
+                for (const auto& rc : m_remoteCars)
+                    if (rc.id == id && rc.hasState)
+                        consider(rc.transform);
+            } else if (what.starts_with("police:")) {
+                const int id = str::parseInt(what.substr(7)).value_or(-1);
+                const auto i = static_cast<std::size_t>(id - kNetPoliceId);
+                if (id >= kNetPoliceId && i < m_cops.size())
+                    consider(m_cops[i].sim->sim().modelMatrix());
+                if (const auto it = m_netCops.find(id); it != m_netCops.end() && it->second.sim)
+                    consider(it->second.state.transform);
+            } else if (what == "ped" && m_ai) {
                 for (const auto& p : m_ai->peds())
                     consider(p.transform);
-            else
+            } else if (m_ai) {
                 for (const auto& c : m_ai->cars())
                     consider(c.transform);
+            }
             if (target) {
                 const Vec3 eye = target->m3 + target->transformDir({2.5f, 1.6f, -3.5f});
                 m_camera.transform = game::Camera::lookAt(eye, target->m3 + Vec3{0, 0.9f, 0});
@@ -4277,13 +4296,29 @@ private:
     void updateNetFx(float dt) {
         game::fx::VehicleFxContext context;
         context.wheels = false;
+        const std::uint64_t now = net::monotonicMs();
+        const bool log = m_debugNetDamage && now - m_netFxLoggedAt >= 2000;
+        if (log && m_player) {
+            m_netFxLoggedAt = now;
+            const auto& d = m_player->sim().damage;
+            log::info("netdamage: own car damage {:.0f} of {:.0f} (med {:.0f}), level {:.3f}", d.currentDamage,
+                      d.maxDamage(), d.medDamage(), d.damage);
+        }
+        auto update = [&](const char* what, int id, game::fx::VehicleEffects& fx, const phys::CarSim& sim) {
+            fx.update(dt, sim, context);
+            if (log)
+                log::info("netdamage: {} {} damage {:.0f} of {:.0f} (med {:.0f}), smoke {}, sparks {}", what, id,
+                          sim.damage.currentDamage, sim.damage.maxDamage(), sim.damage.medDamage(),
+                          fx.smoke().count(), fx.sparks().count());
+        };
         for (auto& [id, rv] : m_remotes)
             if (rv.fx && rv.sim)
-                rv.fx->update(dt, rv.sim->sim(), context);
+                update("player", id, *rv.fx, rv.sim->sim());
         for (auto& [id, cop] : m_netCops)
             if (cop.fx && cop.sim)
-                cop.fx->update(dt, cop.sim->sim(), context);
+                update("police", id, *cop.fx, cop.sim->sim());
     }
+    std::uint64_t m_netFxLoggedAt = 0;
 
     void drawNetFx(render::Device& dev, const game::Camera& camera) {
         for (auto& [id, rv] : m_remotes)
@@ -4294,6 +4329,28 @@ private:
                 cop.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
     }
 
+    // Development aid: OPENMM2_DEBUG_RESPAWN_MS=<session ms>[,<ms>...] puts a
+    // network player's car back at its reset position at those session
+    // times, as the water does in a cruise (mmPlayer::Reset: its damage
+    // cleared on every machine).
+    void debugRespawn(Context& ctx) {
+        static const char* times = std::getenv("OPENMM2_DEBUG_RESPAWN_MS");
+        if (!times || !multiplayer(ctx) || !m_player || !ctx.netGame->raceStarted())
+            return;
+        const auto list = str::split(times, ',');
+        const auto k = static_cast<std::size_t>(m_debugRespawns);
+        if (k >= list.size() || ctx.netGame->sessionTime() < str::parseInt(list[k]).value_or(0))
+            return;
+        ++m_debugRespawns;
+        log::info("race: debug respawn at session t {}", ctx.netGame->sessionTime());
+        m_player->reset();
+        if (m_vehicleFx)
+            m_vehicleFx->reset();
+        clearVehicleDamage();
+        m_cams.reset(cameraTarget());
+    }
+    int m_debugRespawns = 0;
+
     // What this machine's cars painted and broke goes to the others, after
     // this frame's effects (this player's car; a shared-traffic host's police).
     void sendNetDamage(Context& ctx) {
@@ -4303,6 +4360,8 @@ private:
         m_netDamage.send(*ctx.netGame, now);
         m_netDamage.logStats(now);
     }
+
+    double m_debugInputTime = 0.0; // OPENMM2_DEBUG_INPUT's phases
 
     void updatePlayer(Context& ctx, float dt) {
         if (!m_player)
@@ -4320,9 +4379,15 @@ private:
             pedals.steering = m_gameInput.steering(dt);
         }
         // Development aid: constant pedal input "accel,brake,steer,handbrake"
-        // (the steering through the game pad's filter).
+        // (the steering through the game pad's filter); several separated by
+        // '/' take turns, each for OPENMM2_DEBUG_INPUT_MS (2000) of game time.
         if (const char* dbg = std::getenv("OPENMM2_DEBUG_INPUT")) {
-            const auto parts = str::split(dbg, ',');
+            const auto phases = str::split(dbg, '/');
+            const char* ms = std::getenv("OPENMM2_DEBUG_INPUT_MS");
+            const auto phaseMs = static_cast<double>(std::max(1LL, str::parseInt(ms ? ms : "").value_or(2000)));
+            m_debugInputTime += dt;
+            const auto phase = static_cast<std::size_t>(m_debugInputTime * 1000.0 / phaseMs);
+            const auto parts = str::split(phases[phase % phases.size()], ',');
             auto f = [&](std::size_t i) {
                 return i < parts.size() ? static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)) : 0.0f;
             };
