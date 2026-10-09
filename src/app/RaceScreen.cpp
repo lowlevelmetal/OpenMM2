@@ -912,13 +912,15 @@ private:
             m_session->start();
             if (m_player)
                 m_player->sim().damage.enabled = m_session->playerDamageEnabled();
-            if (multiplayer(ctx))
-                m_netStart.emplace(game::NetRaceStart::kindOf(m_result.config.mode));
             setupCopsAndRobbers(ctx);
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                 m_cams.startPreRace();
         }
+        // A network race's start begins with its first frame (state 0), with
+        // or without race rules: it reports this machine loaded.
+        if (multiplayer(ctx))
+            m_netStart.emplace(game::NetRaceStart::kindOf(m_result.config.mode));
         // -nomusic: mmGameMusicData::Load loads neither the song nor the
         // city's ambience segment, so the race plays neither.
         if (auto* music = ctx.music(); music && !ctx.commandLine.noMusic) {
