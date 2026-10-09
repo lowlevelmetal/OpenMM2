@@ -16,7 +16,7 @@ decides what they mean.
 | `net/Session.h` | Lobby + in-game session (host or client), event queue |
 | `net/Protocol.h` | Wire messages, settings/player structs, game event payloads |
 | `net/Snapshot.h` | `VehicleSnapshot` and the receive-side `SnapshotBuffer` |
-| `net/AmbientState.h` | The shared cruise traffic: `AmbientStateMsg`, `TrafficHitEvent` |
+| `net/AmbientState.h` | The shared cruise traffic: `AmbientStateMsg` |
 | `net/ClockSync.h` | Session clock estimation on clients |
 | `net/Discovery.h` | LAN beacon/scanner, broadcast addresses, small UDP socket |
 | `net/PortMapper.h` | Automatic port forwarding (UPnP, PCP, NAT-PMP) |
@@ -306,9 +306,7 @@ packet to the game or discovery port, and whatever answers as the router.
   race, keeps at most 16 unread, and the race refuses a car whose model is not
   in its own catalog, a repeated id, or a non-finite value, holds a paint job
   to the jobs the model can show, shows at most 32 police cars and loads each
-  model once per car shown (a model that fails is not tried again). The host
-  takes a client's `TrafficHit` only for a car still on its rail near that
-  client's car, with its velocity quantized to 96 m/s.
+  model once per car shown (a model that fails is not tried again).
 
 ### Session clock
 
@@ -382,9 +380,9 @@ types, with payload structs in `Protocol.h`:
 `Damage{damage, source}`, `Wrecked`, `LeftRace` (a joiner quit the race it
 was driving and stays in the session: the others take its car out and stop
 waiting for its finish). Ids from `GameEventType::Custom` (0x8000)
-up are free for the game: Cops and Robbers uses 0x8001 and 0x8002, the shared
-cruise traffic's hit report (`TrafficHitEvent`, client to host) 0x8010, a
-car's damage (`VehicleDamageEvent`, see "Damage") 0x8020.
+up are free for the game: Cops and Robbers uses 0x8001 and 0x8002, a car's
+damage (`VehicleDamageEvent`, see "Damage") 0x8020 (0x8010, the shared
+traffic's hit report until protocol 6, is unused).
 
 ### Race start
 
@@ -543,8 +541,13 @@ and, where it differs from its speed, its speed over the ground
 (`ai::Traffic` moves a car along its curves by their parameter: in a turn it
 covers 20-30 % more or less ground than its speed, and a car held at the end
 of its lane covers none). The client (`game::TrafficClient`) shows every car
-at the session time its own car reaches in the frame's steps
-(`RaceScreen::netTrafficPresentTime`), predicted from its newest state
+at the session time its own car's state is at on the host's clock
+(`RaceScreen::netTrafficCarTime`): the time its car reaches in the frame's
+steps plus its lead over the host's simulation of it (its inputs' way to the
+host and their wait in the host's queue, about half a round trip and a
+sample or two), which it measures from the host's states of its car (the
+host's session time after sample n against the time it ran sample n
+itself, smoothed). Each car is predicted there from its newest state
 (`game::TrafficPrediction`): a rail car along an arc at its speed over the
 ground and acceleration, stopping at 0; a police car or a knocked car along
 its velocity, turning with its yaw rate, at most 500 ms ahead (a rail car
@@ -566,27 +569,23 @@ client's level in `game::TrafficBodies`, as the host's rail cars are of its
 own, with the received cars as their traffic (`game::NetTrafficCars`): when
 the client's car hits one, it takes a body at once
 (`aiVehicleInstance::AttachEntity`, `aiVehicleActive`) and the collision runs
-the host's physics, the two cars pushing each other. Only the client's own
-car knocks a car loose there (the police and the other players' cars reach
-the client in the host's messages). The car stays the client's until a host
-message shows it off its rail too, or still on its rail at a time half a
-round trip and 150 ms after the hit (the host did not knock it); the drawing
-then blends from where the local body left it to the host's car. The cars
-off their rails on the host meet the client's car as kinematic instances
-moving at their predicted velocities (`game::TrafficProxies`), the police as
-kinematic bodies.
-
-The host's view of the client's car lags the client's own, so a client that
-hits a moving traffic car often misses it on the host; it therefore reports
-the hit (`TrafficHitEvent`: the car's id and generation and its own velocity
-before the step, reliable, at most once a second per car). If the car is
-still on its rail on the host and the client's car is near it there (8 m
-plus half a second of the relative speed, at most 25 m), the host knocks it
-off as the hit would have, with the impulse of a car of the client's mass
-meeting it at that velocity (elasticity 0.25); the next messages bring the
-result back. A hit the host saw itself has already taken the car off its
-rail, and the report is dropped. (With the host simulating every player's
-car, the hits happen on the host and the reports go: see the review.)
+the host's physics, the two cars pushing each other: the host simulates the
+same hit from the same inputs at the same session time (see "Players'
+cars"). Only the client's own car knocks a car loose there (the police and
+the other players' cars reach the client in the host's messages), and not
+while it runs its samples again after a correction (`World::replaySample`
+holds everything else still). While the knocked car moves, the local body
+leads, being the better guess (it runs the host's physics from the same
+hit; the host's knocked car arrives a trip old and is predicted along its
+velocity while it tumbles); once the host's messages show it off its rail
+too and the local body has come to rest, or the host's car is 5 m from it,
+or a host state stamped 150 ms after the hit still shows it on its rail (the
+host did not knock it), the host's messages lead and the drawing blends
+from where the local body left it. The cars off their rails on the host meet
+the client's car as kinematic instances moving at their predicted velocities
+(`game::TrafficProxies`), the police as kinematic bodies. The hits happen on
+the host: until protocol 6 a client reported its hits (`TrafficHitEvent`),
+because the host's copy of its car lagged.
 
 Bandwidth, two players in San Francisco at traffic density 0.5 (the
 single-player cruise default) and cop density 1, measured by the host's
@@ -883,8 +882,9 @@ When `config.multiplayer && ctx.netGame`:
 6. **Shared traffic** (cruise with `sharedTraffic`): the host runs
    `ai::World` with the other players (`World::setOtherPlayers`: the traffic
    populates the roads round them and avoids them; the police chase them as
-   players), applies the clients' `TrafficHitEvent`s before the physics step
-   and after it sends each client its cars (`sendAmbientState`, every 50 ms).
+   players; the clients' cars are its own simulated ones) and after the
+   physics step sends each client the cars round its car
+   (`sendAmbientState`, every 50 ms).
    A client runs no traffic or police: before its physics step it takes
    `takeAmbientStates()` and places the received cars, and its light sets
    follow the host's (`World::advanceLightsTo`).
@@ -1017,9 +1017,9 @@ In a cruise with shared traffic the trace also has the traffic and police
 (`game/net/TrafficTrace.h`): the host's `TH` lines, each car near a player at
 the session time its state belongs to (the AI's step or the physics'); a
 client's `TC` lines, the cars where its car meets them each frame, and `TV`,
-that frame's session time of its car; the client's hit reports (`TX`), the
-host's knocks and refused reports (`TK`, `TR`) and the client's own knocks
-going back to the host's messages (`TL`). `mm2tool nettrace <host trace>
+that frame's session time of its car on the host's clock; the cars the
+client's car knocked loose (`TX`), the host's cars leaving their rails
+(`TK`) and the client's knocks going back to the host's messages (`TL`). `mm2tool nettrace <host trace>
 <client trace>` compares them: each car's error against the host's at the
 session time of the client's car, the cars near the client one machine had
 and the other did not, the police targets, the hits and knocks.

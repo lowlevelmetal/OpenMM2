@@ -79,6 +79,10 @@ public:
             (void)byPlayer;
             return true;
         }
+        // Whether the cars' bodies count as the local player's in what they
+        // hit (a client's knocked car knocks the next one loose, as on the
+        // host). The AI's do not (nothing of theirs asks).
+        virtual bool bodiesHitAsPlayer() const { return false; }
     };
 
     // The world's level (phys::World::setLevel) gives the rail cars their

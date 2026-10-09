@@ -386,6 +386,8 @@ void TrafficBodies::Active::attach(RailCar& car) {
     // phCollider::Init with the ICS (the ICS matrix places the bound),
     // SetImpactCB, Reset; the collider's id is 0.
     body.audioId = 0;
+    // OpenMM2: on a shared-traffic client its hits count as the player's.
+    body.player = m_owner.m_source.bodiesHitAsPlayer();
     body.resetCollider();
     body.collider.matrix = &ics.matrix;
     body.collider.reset();

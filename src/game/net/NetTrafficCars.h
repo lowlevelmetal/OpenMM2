@@ -11,8 +11,9 @@
 // collision runs as it does on the host: the client's car pushes a car of
 // its mass instead of meeting a wall that never gives way, and the car
 // flies off when it is hit rather than a round trip later. Only this
-// machine's car knocks a car loose here; the host's police, the other
-// players and the cars it knocked itself reach the client in its messages.
+// machine's car, and the cars it knocked loose, knock a car loose here; the
+// host's police, the other players and the cars they knocked reach the
+// client in its messages.
 //
 // The knocked car is this machine's until either the host's messages show it
 // off its rail too and its body here has come to rest (or the host's car is
@@ -79,6 +80,8 @@ public:
     void detach(int carId, const Mat34& pose, bool upright) override;
     void setPhysicalTransform(int carId, const Mat34& transform) override;
     bool attachable(int carId, bool byPlayer) const override;
+    // A car knocked loose here knocks the next one loose too, as on the host.
+    bool bodiesHitAsPlayer() const override { return true; }
 
 private:
     struct Knock {
