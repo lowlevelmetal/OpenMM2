@@ -59,6 +59,14 @@ bool upsertPlayer(std::vector<PlayerInfo>& players, const PlayerInfo& p) {
     return true;
 }
 
+// What a joiner may make the host relay to everyone else, in messages per
+// second and burst. Far above what the game sends (chat typed by hand, a car,
+// colour, team or ready change, a few race events); a flood beyond it would
+// otherwise go out once per player on reliable channels.
+constexpr double kChatRate = 2.0, kChatBurst = 8.0;
+constexpr double kUpdateRate = 10.0, kUpdateBurst = 20.0;
+constexpr double kEventRate = 30.0, kEventBurst = 60.0;
+
 std::array<std::byte, 16> randomNonce() {
     std::random_device rd;
     std::array<std::byte, 16> n{};
@@ -79,6 +87,15 @@ std::array<std::byte, 32> passwordProof(const std::array<std::byte, 16>& nonce, 
     h.update(nonce);
     h.update(password);
     return h.finish();
+}
+
+bool Session::RateLimit::take(std::uint64_t now, double perSecond, double burst) {
+    tokens = tokens < 0.0 ? burst : std::min(burst, tokens + static_cast<double>(now - last) * perSecond / 1000.0);
+    last = now;
+    if (tokens < 1.0)
+        return false;
+    tokens -= 1.0;
+    return true;
 }
 
 Session::Session(SessionConfig config) : m_config(std::move(config)) {
@@ -315,6 +332,7 @@ void Session::update() {
             m_transport->disconnect(p, toData(DisconnectReason::JoinTimeout));
             m_remotes.erase(p);
         }
+        hostRelayUpdates();
 
         if (now - m_lastPingBroadcast >= m_config.pingBroadcastIntervalMs) {
             m_lastPingBroadcast = now;
@@ -528,8 +546,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         p->color = req.color;
         p->team = req.team;
         p->ready = req.ready;
-        sendToPlayers(Channel::Control, PlayerUpdateMsg{*p});
-        emit(ev::PlayerUpdated{*p});
+        // Every request carries the player's whole state, so one relayed
+        // later (hostRelayUpdates) still ends at the latest one.
+        r.updatePending = true;
+        hostRelayUpdates();
         return;
     }
     case MsgType::Chat: {
@@ -540,6 +560,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         chat.text = sanitize(chat.text, kMaxChatLength);
         if (chat.text.empty())
             return;
+        if (!r.chat.take(monotonicMs(), kChatRate, kChatBurst)) {
+            log::debug("net: dropped chat from player {}: too many lines", id);
+            return;
+        }
         sendToPlayers(Channel::Control, chat);
         emit(ev::Chat{id, chat.text});
         return;
@@ -562,6 +586,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         GameEventMsg msg;
         if (!decodeMessage(data, msg))
             return;
+        if (!r.events.take(monotonicMs(), kEventRate, kEventBurst)) {
+            log::debug("net: dropped game event {} from player {}: too many events", msg.type, id);
+            return;
+        }
         msg.from = id;
         hostRelayEvent(id, std::move(msg));
         return;
@@ -599,6 +627,21 @@ void Session::hostAcceptHello(Remote& r, HelloMsg& hello) {
     sendTo(r.peer, Channel::Control, std::move(welcome));
     sendToPlayers(Channel::Control, PlayerJoinedMsg{p}, id);
     emit(ev::PlayerJoined{p});
+}
+
+// Relays the joiners' applied PlayerRequests while their budget allows; a
+// joiner over it is relayed later, with whatever its latest state is then.
+void Session::hostRelayUpdates() {
+    const std::uint64_t now = monotonicMs();
+    for (auto& [peer, r] : m_remotes) {
+        if (!r.updatePending || !r.updates.take(now, kUpdateRate, kUpdateBurst))
+            continue;
+        r.updatePending = false;
+        if (const PlayerInfo* p = findPlayer(r.playerId)) {
+            sendToPlayers(Channel::Control, PlayerUpdateMsg{*p});
+            emit(ev::PlayerUpdated{*p});
+        }
+    }
 }
 
 void Session::hostRemovePlayer(std::uint8_t id, DisconnectReason reason) {

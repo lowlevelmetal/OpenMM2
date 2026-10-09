@@ -335,3 +335,55 @@ TEST(HostileInput, HostRejectsCarNamesThatAreNotBaseNames) {
     EXPECT_EQ(host.session->player(id)->car, "vpcoop");
     EXPECT_EQ(host.session->player(id)->color, 2);
 }
+
+// --- Floods -----------------------------------------------------------------------------
+
+// A client cannot make the host relay an unbounded stream of chat lines,
+// requests and events to everyone else.
+TEST(HostileInput, HostRateLimitsWhatItRelays) {
+    Peer host;
+    ASSERT_TRUE(host.session->host(hostParams()));
+    Peer watcher;
+    JoinParams jp;
+    jp.host = Address::loopback(host.session->port());
+    jp.player.name = "Watcher";
+    ASSERT_TRUE(watcher.session->join(jp));
+    ASSERT_TRUE(waitFor([&] {
+        host.pump();
+        watcher.pump();
+        return watcher.find<ev::JoinAccepted>() != nullptr;
+    }));
+    RawEnd raw;
+    const std::uint8_t id = rawJoin(host, raw);
+    ASSERT_NE(id, kInvalidPlayerId);
+    const int updatesBefore = watcher.count<ev::PlayerUpdated>();
+
+    for (int i = 0; i < 300; ++i) {
+        raw.send(ChatMsg{0, std::format("spam {}", i)});
+        raw.send(PlayerRequestMsg{"vpbug", static_cast<std::uint8_t>(i % 8), 0, false});
+        GameEventMsg ev;
+        ev.type = static_cast<std::uint16_t>(GameEventType::Custom);
+        raw.send(ev, Channel::Events);
+    }
+    waitFor([&] {
+        host.pump();
+        raw.pump();
+        watcher.pump();
+        return false;
+    }, 600);
+    EXPECT_LT(watcher.count<ev::Chat>(), 50);
+    EXPECT_LT(watcher.count<ev::PlayerUpdated>() - updatesBefore, 100);
+    EXPECT_LT(watcher.count<ev::GameEvent>(), 150);
+    EXPECT_GT(watcher.count<ev::Chat>(), 0); // a normal pace still gets through
+    EXPECT_GT(watcher.count<ev::GameEvent>(), 0);
+    // The player's last request (colour 299 % 8) still reaches everyone.
+    EXPECT_EQ(host.session->player(id)->color, 3);
+    ASSERT_TRUE(waitFor([&] {
+        host.pump();
+        raw.pump();
+        watcher.pump();
+        const PlayerInfo* p = watcher.session->player(id);
+        return p && p->color == 3;
+    }));
+}
+
