@@ -12,8 +12,11 @@ of that, OpenMM2 adds:
 - online multiplayer over UDP with automatic port forwarding (UPnP)
 - a Windows installer, and native Linux builds
 
-> **Status:** early development. OpenMM2 reads the original game data and its
-> subsystems are being built up; it is not playable yet.
+> **Status:** early but playable. London and San Francisco, cruise, Blitz,
+> checkpoint and circuit races, the crash courses, Cops and Robbers and online
+> multiplayer all run from the original game data. Behaviour is checked
+> against the original game function by function; the results, and the gaps
+> still open (mostly in network play), are in [docs/parity/](docs/parity/README.md).
 
 ## You need the original game
 
