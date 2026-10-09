@@ -77,7 +77,8 @@ bool isValidAssetName(std::string_view name) {
     if (name.empty() || name.size() > kMaxShortStringLength)
         return false;
     return std::ranges::all_of(name, [](char c) {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-';
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' ||
+               c == '-';
     });
 }
 

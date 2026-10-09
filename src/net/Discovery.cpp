@@ -247,8 +247,9 @@ bool answersLanQueryFrom(const Address& from, std::span<const Subnet> subnets) {
     }
     if (from.isPrivate())
         return true;
-    return std::ranges::any_of(subnets,
-                               [&](const Subnet& s) { return s.mask != 0 && (ip & s.mask) == (s.ip & s.mask); });
+    return std::ranges::any_of(subnets, [&](const Subnet& s) {
+        return s.mask != 0 && (ip & s.mask) == (s.ip & s.mask);
+    });
 }
 
 std::uint32_t primaryLocalAddress() {

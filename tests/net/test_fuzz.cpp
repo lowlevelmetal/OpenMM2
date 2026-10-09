@@ -317,7 +317,8 @@ void decodeEverything(std::span<const std::byte> b) {
     (void)payload<LapEvent>(b);
     (void)payload<FinishEvent>(b);
     if (const auto e = payload<GoldEvent>(b)) {
-        ASSERT_TRUE(std::isfinite(e->position.x) && std::isfinite(e->position.y) && std::isfinite(e->position.z));
+        ASSERT_TRUE(std::isfinite(e->position.x) && std::isfinite(e->position.y) &&
+                    std::isfinite(e->position.z));
     }
     if (const auto e = payload<CollisionEvent>(b)) {
         ASSERT_TRUE(std::isfinite(e->impulse) && std::isfinite(e->position.x));

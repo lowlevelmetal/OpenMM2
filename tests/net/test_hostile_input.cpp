@@ -92,7 +92,8 @@ struct RawEnd {
         return std::nullopt;
     }
     bool connected() const {
-        return std::ranges::any_of(events, [](const TransportEvent& e) { return e.type == TransportEvent::Type::Connected; });
+        return std::ranges::any_of(events,
+                                   [](const TransportEvent& e) { return e.type == TransportEvent::Type::Connected; });
     }
 };
 
@@ -157,7 +158,8 @@ void rawHost(RawEnd& raw, Peer& client, WelcomeMsg welcome) {
     ASSERT_TRUE(waitFor([&] {
         client.pump();
         raw.pump();
-        return client.session->state() == Session::State::Active || client.session->state() == Session::State::Closed;
+        const auto state = client.session->state();
+        return state == Session::State::Active || state == Session::State::Closed;
     }));
 }
 
@@ -493,8 +495,8 @@ TEST(HostileInput, BeaconAnswersOnlyLanSources) {
     }
 }
 
-// The beacon answers a query at a bounded rate (it would otherwise reflect
-// ~17 times the traffic it receives to whatever source a query claims).
+// The beacon answers queries at a bounded rate (it would otherwise reflect up
+// to 16 times the traffic it receives to whatever source a query claims).
 TEST(HostileInput, BeaconRepliesAreRateLimited) {
     LanBeacon beacon;
     ASSERT_TRUE(beacon.start(0));

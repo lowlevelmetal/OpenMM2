@@ -110,7 +110,8 @@ std::array<std::byte, 32> passwordProof(const std::array<std::byte, 16>& nonce, 
 }
 
 bool Session::RateLimit::take(std::uint64_t now, double perSecond, double burst) {
-    tokens = tokens < 0.0 ? burst : std::min(burst, tokens + static_cast<double>(now - last) * perSecond / 1000.0);
+    const double refill = static_cast<double>(now - last) * perSecond / 1000.0;
+    tokens = tokens < 0.0 ? burst : std::min(burst, tokens + refill);
     last = now;
     if (tokens < 1.0)
         return false;
@@ -841,8 +842,8 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         KickMsg m;
         decodeMessage(data, m);
         const std::string reason = sanitize(m.reason, kMaxReasonLength);
-        close(DisconnectReason::Kicked, reason.empty() ? describe(DisconnectReason::Kicked) : "kicked: " + reason,
-              false);
+        close(DisconnectReason::Kicked,
+              reason.empty() ? std::string(describe(DisconnectReason::Kicked)) : "kicked: " + reason, false);
         return;
     }
     case MsgType::TimeResponse: {
