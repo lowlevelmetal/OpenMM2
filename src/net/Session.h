@@ -224,6 +224,7 @@ private:
     void hostRelayEvent(std::uint8_t from, GameEventMsg msg);
     void hostRelayUpdates();
     void hostSendWorldState();
+    void hostRelayState(std::uint8_t from, const VehicleSnapshot& state);
     void hostAdvertise();
     void close(DisconnectReason reason, std::string message, bool failedJoin);
     void tickCountdown();
@@ -262,7 +263,6 @@ private:
     std::map<PeerId, Remote> m_remotes;
     std::uint64_t m_hostEpoch = 0; // monotonicMs() at session start
     std::uint64_t m_lastPingBroadcast = 0;
-    std::map<std::uint8_t, VehicleSnapshot> m_pendingStates; // newest unsent state per player
     std::function<bool(std::uint8_t, GameEventMsg&)> m_eventFilter;
     std::unique_ptr<LanBeacon> m_beacon;
     // Wrong passwords per address: count and the time of the first one.

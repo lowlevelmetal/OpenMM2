@@ -236,3 +236,37 @@ TEST(SessionSync, PlayoutDelayFollowsTheArrivals) {
     EXPECT_GE(host.session->playoutDelay(id), syncConfig().interpolationDelayMs);
     EXPECT_LT(host.session->playoutDelay(id), 200.0);
 }
+
+TEST(SessionSync, TheHostPassesEveryJoinersStateOnAtOnce) {
+    // The host's own tick is once a second here: a joiner's states must not
+    // wait for it (nor be thinned to one a tick) on their way to the others.
+    SessionConfig slow = syncConfig();
+    slow.snapshotRateHz = 1;
+    Peer host, a, b;
+    host.session = std::make_unique<Session>(slow);
+    connect(host, a);
+    JoinParams j;
+    j.host = Address::loopback(host.session->port());
+    j.player.name = "B";
+    ASSERT_TRUE(b.session->join(j));
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return b.has<ev::JoinAccepted>(); }));
+    pumpFor({&host, &a, &b}, 400);
+    host.session->startCountdown(100);
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return a.has<ev::GameStarted>() && b.has<ev::GameStarted>(); }));
+    const std::uint8_t aId = a.session->localId();
+    std::vector<std::uint32_t> seen;
+    b.session->setStateObserver([&](std::uint8_t id, const VehicleSnapshot& s, double) {
+        if (id == aId)
+            seen.push_back(s.time);
+    });
+    const auto start = std::chrono::steady_clock::now();
+    pumpUntil(
+        {&host, &a, &b},
+        [&] {
+            a.session->submitLocalState(VehicleSnapshot{});
+            return std::chrono::steady_clock::now() - start > std::chrono::milliseconds(400);
+        },
+        1000);
+    // 50 Hz for 0.4 s: about 20 states, not the one or two of a 1 Hz relay.
+    EXPECT_GE(seen.size(), 10u);
+}

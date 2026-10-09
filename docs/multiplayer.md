@@ -43,8 +43,10 @@ for the lobby: settings, the player list, ready flags, kicks and the countdown.
 Clients send requests and the host validates and broadcasts the result.
 
 In game, each machine simulates its own car and sends its state 20 times a
-second, stamped with the session time the simulation was at. The host bundles
-the latest state of every car into one packet per tick for each client.
+second, stamped with the session time the simulation was at. The host sends
+its own car on that cadence and passes each joiner's state on to the others
+as soon as it arrives (bundling them per tick added up to a tick of latency
+and dropped one of two states that arrived within a tick).
 Remote cars are drawn from an interpolation buffer a playout delay in the past:
 for each car, what its snapshots needed to arrive in time over the last 3 s
 (50-500 ms; about 70 ms on a LAN, 150 ms over a 100 ms round trip, 250 ms from
@@ -170,7 +172,7 @@ Transport is ENet 1.3 with range-coder compression and three channels:
 | Channel | Delivery | Traffic |
 | --- | --- | --- |
 | 0 Control | reliable, ordered | handshake, lobby, chat, clock sync, pings |
-| 1 State | unreliable, sequenced | `VehicleState` (client→host), `WorldState` (host→clients) |
+| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients) |
 | 2 Events | reliable, ordered | `GameEvent` |
 
 Every packet is one message: a `MsgType` byte, then the body, bit-packed with
@@ -228,7 +230,7 @@ attempt within `connectTimeoutMs` (8 s).
 | Kick | H→C | reason text (then disconnect `Kicked`) |
 | TimeRequest / TimeResponse | C↔H | client send time / + host time |
 | VehicleState | C→H | own `VehicleSnapshot` |
-| WorldState | H→C | `(id, VehicleSnapshot)` for every other car |
+| WorldState | H→C | `(id, VehicleSnapshot)` pairs: the host's car each tick, a joiner's as it arrives |
 | GameEvent | both | from, target, type, session time, payload ≤ 1 KiB |
 | PlayerPings | H→C | measured RTT per player, every 2 s |
 

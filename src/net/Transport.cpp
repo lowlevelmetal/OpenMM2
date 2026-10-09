@@ -27,7 +27,10 @@ std::uint32_t packetFlags(Channel channel) {
     switch (channel) {
     case Channel::Control:
     case Channel::Events: return ENET_PACKET_FLAG_RELIABLE;
-    case Channel::State: return 0; // unreliable, sequenced
+    // Unreliable and unsequenced: a snapshot that arrives after a newer one
+    // still fills a gap in the receiver's time-ordered buffer (ENet's
+    // sequenced delivery would drop it).
+    case Channel::State: return ENET_PACKET_FLAG_UNSEQUENCED;
     }
     return ENET_PACKET_FLAG_RELIABLE;
 }
@@ -142,6 +145,16 @@ void Transport::service(std::vector<TransportEvent>& out, std::uint32_t timeoutM
                 configurePeer(ev.peer);
                 id = registerPeer(ev.peer);
             }
+            // ENet's packet throttle drops unreliable packets (the vehicle
+            // snapshots) at the sender after round trips spike above their
+            // recent average (it stood at 0.94 for seconds after spikes in
+            // tests with 30 ms of jitter), and a lost snapshot is a hole the
+            // receiver must extrapolate across. The game sends a few small
+            // packets and needs every one more than ENet's congestion guess:
+            // our side never throttles down (set on the peer here, after the
+            // handshake, which takes the connecting side's settings).
+            ev.peer->packetThrottleDeceleration = 0;
+            ev.peer->packetThrottle = ev.peer->packetThrottleLimit;
             te.type = TransportEvent::Type::Connected;
             te.peer = id;
             te.data = ev.data;

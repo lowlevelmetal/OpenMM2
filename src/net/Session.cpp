@@ -242,7 +242,6 @@ void Session::leave() {
         m_state = State::Closed;
     m_remotes.clear();
     m_remoteStates.clear();
-    m_pendingStates.clear();
 }
 
 void Session::close(DisconnectReason reason, std::string message, bool failedJoin) {
@@ -494,23 +493,24 @@ void Session::tickCountdown() {
 }
 
 void Session::hostSendWorldState() {
-    if (m_localState && m_localState->time != m_lastSentStateTime) {
-        m_lastSentStateTime = m_localState->time;
-        m_pendingStates[kHostPlayerId] = *m_localState;
-    }
-    if (m_pendingStates.empty())
+    // The host's own car, on its snapshot cadence.
+    if (!m_localState || m_localState->time == m_lastSentStateTime)
         return;
-    for (const auto& [peer, r] : m_remotes) {
-        if (r.playerId == kInvalidPlayerId)
-            continue;
-        WorldStateMsg msg;
-        for (const auto& [id, state] : m_pendingStates)
-            if (id != r.playerId)
-                msg.vehicles.emplace_back(id, state);
-        if (!msg.vehicles.empty())
-            sendTo(peer, Channel::State, std::move(msg));
-    }
-    m_pendingStates.clear();
+    m_lastSentStateTime = m_localState->time;
+    WorldStateMsg msg;
+    msg.vehicles.emplace_back(kHostPlayerId, *m_localState);
+    sendToPlayers(Channel::State, std::move(msg));
+}
+
+void Session::hostRelayState(std::uint8_t from, const VehicleSnapshot& state) {
+    // A joiner's car goes on to the others as soon as it arrives. Held for
+    // the host's next tick, it waited up to a tick longer, and of two that
+    // arrived within one tick (network jitter) only the newer went on: the
+    // other players lost a quarter of each other's snapshots at 30 ms of
+    // jitter.
+    WorldStateMsg msg;
+    msg.vehicles.emplace_back(from, state);
+    sendToPlayers(Channel::State, std::move(msg), from);
 }
 
 void Session::hostAdvertise() {
@@ -681,11 +681,8 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
     }
     case MsgType::VehicleState: {
         VehicleStateMsg msg;
-        if (!decodeMessage(data, msg) || !receiveState(id, msg.state))
-            return;
-        // The newest state is relayed with the next WorldState.
-        if (const auto it = m_pendingStates.find(id); it == m_pendingStates.end() || it->second.time < msg.state.time)
-            m_pendingStates[id] = msg.state;
+        if (decodeMessage(data, msg) && receiveState(id, msg.state))
+            hostRelayState(id, msg.state);
         return;
     }
     case MsgType::GameEvent: {
@@ -757,7 +754,6 @@ void Session::hostRemovePlayer(std::uint8_t id, DisconnectReason reason) {
     PlayerInfo p = *it;
     m_players.erase(it);
     m_remoteStates.erase(id);
-    m_pendingStates.erase(id);
     log::info("net: {} left ({})", p.name, describe(reason));
     sendToPlayers(Channel::Control, PlayerLeftMsg{id, reason});
     emit(ev::PlayerLeft{p, reason});
@@ -1072,7 +1068,6 @@ void Session::returnToLobby() {
     for (auto& p : m_players)
         p.ready = false;
     m_remoteStates.clear();
-    m_pendingStates.clear();
     m_localState.reset();
     m_lastSentStateTime = 0;
     sendToPlayers(Channel::Control, ReturnToLobbyMsg{});
