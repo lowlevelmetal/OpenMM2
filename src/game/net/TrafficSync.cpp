@@ -332,8 +332,11 @@ ai::AmbientCar ambientCarOf(const TrafficClient::Car& car, const std::string& mo
     a.data = data;
     a.model = model;
     // AiRenderer's paint job is trunc(paint x (jobs - 1)): the middle of the
-    // job's range gives it back exactly.
-    a.paint = paintJobs > 1 ? (static_cast<float>(car.paint) + 0.5f) / static_cast<float>(paintJobs - 1) : 0.0f;
+    // job's range gives it back exactly. The job comes from the network: it
+    // is held to the jobs aiVehicleInstance::SetColor can pick (all but the
+    // last).
+    const int job = paintJobs > 1 ? std::clamp(car.paint, 0, paintJobs - 2) : 0;
+    a.paint = paintJobs > 1 ? (static_cast<float>(job) + 0.5f) / static_cast<float>(paintJobs - 1) : 0.0f;
     a.transform = car.transform;
     a.velocity = car.velocity;
     a.speed = car.speed;

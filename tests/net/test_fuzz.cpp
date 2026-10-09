@@ -3,6 +3,7 @@
 // reproduces. Nothing may crash, read out of bounds (run test_net under
 // AddressSanitizer/UBSan to check that) or produce a value outside what the
 // writer could have produced. See docs/review/multiplayer-input.md.
+#include "net/AmbientState.h"
 #include "net/Discovery.h"
 #include "net/NatPmp.h"
 #include "net/Session.h"
@@ -110,6 +111,37 @@ std::vector<Bytes> corpus() {
     PlayerPingsMsg pings;
     pings.pings = {{1, 30}, {2, 60}};
     c.push_back(encodeMessage(pings));
+    // The shared cruise traffic: a rail car, a knocked car and a police car.
+    AmbientStateMsg ambient;
+    ambient.time = 5000;
+    ambient.lightSteps = 300;
+    ambient.catalog = 0x45C1;
+    ambient.setOrigin({-1150.0f, 112.0f, 163.0f});
+    AmbientEntity car;
+    car.id = 12;
+    car.generation = 3;
+    car.model = 4;
+    car.paint = 2;
+    car.position = {-1140.0f, 111.0f, 150.0f};
+    car.orientation = Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 0.4f);
+    car.speed = 11.0f;
+    car.flags = kAmbientBrake | kAmbientSignalRight;
+    ambient.entities.push_back(car);
+    car.id = 13;
+    car.flags = kAmbientOffRail | kAmbientWrecked;
+    car.velocity = {3.0f, -1.0f, 2.0f};
+    car.angularVelocity = {0.5f, 1.0f, -0.5f};
+    ambient.entities.push_back(car);
+    car.id = 401;
+    car.kind = AmbientKind::Police;
+    car.flags = kAmbientSiren | kAmbientPursuit;
+    car.target = 1;
+    car.damage = 0.3f;
+    car.rpm = 4500.0f;
+    car.throttle = 1.0f;
+    car.gear = 3;
+    ambient.entities.push_back(car);
+    c.push_back(encodeMessage(ambient));
 
     LanAdvert advert;
     advert.sessionName = "Fuzz";
@@ -207,6 +239,31 @@ void checkSnapshot(const VehicleSnapshot& s) {
     ASSERT_LE(s.damage, 1.0f);
 }
 
+void checkAmbient(const AmbientStateMsg& m) {
+    ASSERT_LE(m.entities.size(), kMaxAmbientPerMessage);
+    const Vec3 origin = m.originVec();
+    for (const AmbientEntity& e : m.entities) {
+        ASSERT_LT(e.id, kMaxAmbientIds);
+        ASSERT_LT(e.generation, kAmbientGenerations);
+        ASSERT_LE(e.kind, AmbientKind::Last);
+        ASSERT_LT(e.model, kMaxAmbientModels);
+        ASSERT_LE(e.paint, kMaxAmbientPaint);
+        for (float v : {e.position.x, e.position.y, e.position.z, e.velocity.x, e.velocity.y, e.velocity.z,
+                        e.angularVelocity.x, e.angularVelocity.y, e.angularVelocity.z, e.speed, e.damage, e.rpm,
+                        e.throttle})
+            ASSERT_TRUE(std::isfinite(v));
+        ASSERT_LE(std::abs(e.position.x - origin.x), kAmbientOffsetRange + 0.01f);
+        ASSERT_LE(std::abs(e.position.y - origin.y), kAmbientHeightRange + 0.01f);
+        ASSERT_LE(std::abs(e.velocity.x), kAmbientVelocityRange + 0.01f);
+        ASSERT_TRUE(e.target == kAmbientNoTarget || e.target < kMaxPlayers);
+        ASSERT_GE(e.gear, -1);
+        ASSERT_LE(e.gear, 8);
+        const float n = std::sqrt(e.orientation.x * e.orientation.x + e.orientation.y * e.orientation.y +
+                                  e.orientation.z * e.orientation.z + e.orientation.w * e.orientation.w);
+        ASSERT_NEAR(n, 1.0f, 1e-3f);
+    }
+}
+
 void checkPlayer(const PlayerInfo& p) {
     ASSERT_LE(p.name.size(), kMaxNameLength);
     ASSERT_LE(p.car.size(), kMaxShortStringLength);
@@ -301,6 +358,9 @@ void decodeEverything(std::span<const std::byte> b) {
     }
     if (const auto m = decoded<PlayerPingsMsg>(b)) {
         ASSERT_LE(m->pings.size(), kMaxPlayers);
+    }
+    if (const auto m = decoded<AmbientStateMsg>(b)) {
+        checkAmbient(*m);
     }
 
     std::uint32_t nonce = 0;
@@ -523,4 +583,9 @@ TEST(Fuzz, ClientSurvivesMutatedTraffic) {
             checkSnapshot(snap);
         }
     }
+    // The shared traffic it kept: a bounded queue of messages within limits.
+    const auto ambient = client.takeAmbientStates();
+    EXPECT_LE(ambient.size(), Session::kMaxQueuedAmbientStates);
+    for (const auto& m : ambient)
+        checkAmbient(m);
 }

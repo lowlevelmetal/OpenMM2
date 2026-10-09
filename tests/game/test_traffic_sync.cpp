@@ -289,3 +289,45 @@ TEST(TrafficSettings, TheLobbyOptionCrossesTheWire) {
     off.netTraffic = false;
     EXPECT_FALSE(game::fromSessionSettings(game::toSessionSettings(off, "Cruise", 8)).netTraffic);
 }
+
+// A hostile host: random messages (decoded from noise, as the session would
+// hand them over) never put a car out of range, and the client keeps no more
+// cars than the ids allow.
+TEST(TrafficClient, NoiseNeverYieldsABadCar) {
+    TrafficClient client(10, 0x1234);
+    std::uint32_t seed = 99;
+    auto next = [&] {
+        seed = seed * 1664525u + 1013904223u;
+        return seed;
+    };
+    // A valid message with bits flipped (the length kept, so most decode).
+    std::vector<SharedCar> cars;
+    for (int i = 0; i < 20; ++i)
+        cars.push_back(i % 5 == 0 ? cop(300 + i, {static_cast<float>(i), 0, 0}, 1)
+                                  : railCar(i, {static_cast<float>(i) * 3.0f, 0, 5}));
+    TrafficHost host;
+    const auto valid = net::encodeMessage(host.build({1, {0, 0, 0}}, cars, 0, 0, 0x1234));
+    std::size_t decodedCount = 0;
+    for (int round = 0; round < 4000; ++round) {
+        std::vector<std::byte> junk = valid;
+        for (int k = 0, n = 1 + static_cast<int>(next() % 12); k < n; ++k)
+            junk[1 + next() % (junk.size() - 1)] ^= static_cast<std::byte>(1u << (next() % 8));
+        net::AmbientStateMsg m;
+        if (!net::decodeMessage(junk, m))
+            continue;
+        ++decodedCount;
+        m.time = static_cast<std::uint32_t>(round * 50); // a believable clock
+        client.receive(m);
+        client.update(static_cast<double>(round * 50) - 100.0);
+        for (const auto& c : client.cars()) {
+            ASSERT_LT(c.id, static_cast<int>(net::kMaxAmbientIds));
+            ASSERT_LT(c.model, 10);
+            ASSERT_LE(c.paint, static_cast<int>(net::kMaxAmbientPaint));
+            ASSERT_TRUE(std::isfinite(c.transform.m3.x) && std::isfinite(c.transform.m3.y) &&
+                        std::isfinite(c.transform.m3.z) && std::isfinite(c.speed));
+            ASSERT_TRUE(c.target == net::kAmbientNoTarget || c.target < net::kMaxPlayers);
+        }
+        ASSERT_LE(client.known(), static_cast<std::size_t>(net::kMaxAmbientIds));
+    }
+    EXPECT_GT(decodedCount, 0u);
+}

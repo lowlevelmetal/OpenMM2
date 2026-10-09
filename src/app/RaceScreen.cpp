@@ -136,6 +136,9 @@ public:
         for (auto& [id, c] : m_netCops)
             if (c.audio)
                 c.audio->stop();
+        for (auto& [model, c] : m_spareNetCops)
+            if (c.audio)
+                c.audio->stop();
         if (m_cityLevel && m_bangers)
             m_cityLevel->removeSource(m_bangers.get());
         if (m_cityLevel && m_gizmos)
@@ -3624,42 +3627,90 @@ private:
     // The host's police on a client: kinematic cars (as the network
     // players', updateRemoteCars) at their interpolated places, drawn and
     // heard as the host's cops.
+    // The host's police car shown on a client.
+    struct NetCop {
+        std::string model;
+        int paint = -1;
+        int generation = -1;
+        std::unique_ptr<game::SimVehicle> sim; // kinematic body
+        std::unique_ptr<game::VehicleRenderer> renderer;
+        std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        game::TrafficClient::Car state;
+        std::array<float, 6> spin{};
+        float sirenAngle = 0.0f;
+    };
+
+    // A police car's parts out of the world, kept for another one of its
+    // model: each model is loaded once per car shown at a time.
+    void releaseNetCop(NetCop& cop) {
+        if (cop.sim && m_world)
+            cop.sim->removeFrom(*m_world);
+        if (cop.audio)
+            cop.audio->stop();
+        if (cop.sim) {
+            const std::string model = cop.model;
+            m_spareNetCops.emplace(model, std::move(cop));
+        }
+        cop = {};
+    }
+
     void updateNetCops(Context& ctx, float dt) {
         std::unordered_set<int> seen;
         for (const auto& c : m_trafficClient->cars()) {
             const std::string* model = m_trafficCatalog.name(c.model);
             if (c.kind != net::AmbientKind::Police || !model || !m_world)
                 continue;
+            // As many as MM2's posts could give (a hostile host gets no more).
+            if (!m_netCops.contains(c.id) && m_netCops.size() >= kMaxNetCops)
+                continue;
             seen.insert(c.id);
             NetCop& cop = m_netCops[c.id];
-            if (cop.model != *model || cop.paint != c.paint || cop.generation != c.generation) {
-                if (cop.sim)
-                    cop.sim->removeFrom(*m_world);
-                if (cop.audio)
-                    cop.audio->stop();
-                cop = {};
+            if (cop.model != *model) {
+                releaseNetCop(cop);
                 cop.model = *model;
-                cop.paint = c.paint;
-                cop.generation = c.generation;
-                std::string error;
-                cop.sim = game::SimVehicle::load(ctx.game->vfs, *model, &error, {}, false, false);
-                if (!cop.sim) {
-                    log::warn("race: shared police car {}: {}", *model, error);
-                    continue;
+                if (const auto spare = m_spareNetCops.find(*model); spare != m_spareNetCops.end()) {
+                    cop = std::move(spare->second);
+                    m_spareNetCops.erase(spare);
+                } else if (!m_badNetCopModels.contains(*model)) {
+                    std::string error;
+                    cop.sim = game::SimVehicle::load(ctx.game->vfs, *model, &error, {}, false, false);
+                    if (!cop.sim) {
+                        // Tried once, not again every frame.
+                        log::warn("race: shared police car {}: {}", *model, error);
+                        m_badNetCopModels.insert(*model);
+                        continue;
+                    }
+                    auto& sim = cop.sim->sim();
+                    sim.options.weatherFriction = weatherFriction();
+                    sim.body.kinematic = true;
+                    sim.body.resetCollider();
+                    cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
+                                                                           cop.sim->model(), c.paint);
+                    setupVehicleRenderer(ctx, *cop.renderer);
+                    cop.paint = c.paint;
+                    cop.audio = loadAiCarAudio(ctx, *model, true);
                 }
-                auto& sim = cop.sim->sim();
-                sim.options.weatherFriction = weatherFriction();
-                sim.body.kinematic = true;
-                sim.body.resetCollider();
+                if (!cop.sim)
+                    continue;
                 cop.sim->addTo(*m_world);
-                cop.sim->reset(c.transform);
-                cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
-                                                                       cop.sim->model(), c.paint);
-                setupVehicleRenderer(ctx, *cop.renderer);
-                cop.audio = loadAiCarAudio(ctx, *model, true);
+                cop.generation = -1; // placed below
             }
             if (!cop.sim)
                 continue;
+            if (cop.paint != c.paint) {
+                cop.renderer->setPaintjob(c.paint);
+                cop.paint = c.paint;
+            }
+            if (cop.generation != c.generation) {
+                // A new car in the slot (or the host's cop put back): it
+                // starts afresh where it is.
+                cop.generation = c.generation;
+                cop.sim->reset(c.transform);
+                if (cop.audio)
+                    cop.audio->reset();
+                cop.spin = {};
+                cop.sirenAngle = 0.0f;
+            }
             auto& sim = cop.sim->sim();
             Mat34 ics = c.transform;
             ics.m3 = c.transform.m3 - c.transform.transformDir(sim.centerOfGravity);
@@ -3680,10 +3731,7 @@ private:
                 ++it;
                 continue;
             }
-            if (it->second.sim)
-                it->second.sim->removeFrom(*m_world);
-            if (it->second.audio)
-                it->second.audio->stop();
+            releaseNetCop(it->second);
             it = m_netCops.erase(it);
         }
     }
@@ -4471,18 +4519,10 @@ private:
     std::unique_ptr<game::TrafficProxies> m_trafficProxies; // client: their physics
     std::unordered_set<int> m_netAccidentNodes, m_netAccidentPaths; // client: off-rail cars' components
     std::unordered_map<int, int> m_netAccidentRooms;
-    struct NetCop {
-        std::string model;
-        int paint = -1;
-        int generation = -1;
-        std::unique_ptr<game::SimVehicle> sim; // kinematic body
-        std::unique_ptr<game::VehicleRenderer> renderer;
-        std::unique_ptr<audio::game::OpponentCarAudio> audio;
-        game::TrafficClient::Car state;
-        std::array<float, 6> spin{};
-        float sirenAngle = 0.0f;
-    };
     std::map<int, NetCop> m_netCops; // client: the host's police
+    std::multimap<std::string, NetCop> m_spareNetCops; // client: police cars no longer shown, by model
+    std::set<std::string> m_badNetCopModels;           // client: police models that failed to load
+    static constexpr std::size_t kMaxNetCops = 32;
     bool m_trafficCatalogWarned = false;
     // Development aid: OPENMM2_DEBUG_NETTRAFFIC logs the shared cars near
     // each client twice a second, on the host and on the client.
