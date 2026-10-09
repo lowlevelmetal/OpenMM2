@@ -524,6 +524,7 @@ void World::step(float dt) {
         m_stepObserver();
     if (m_beforeSample)
         m_beforeSample();
+    m_replayBodies.clear();
     const float invDt = 1.0f / dt;
     // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
     sampleTime() = {dt, invDt};
@@ -631,7 +632,11 @@ void World::replaySample(std::span<Body* const> bodies, float dt) {
     sampleTime() = {dt, invDt};
     const bool stepping = m_stepping;
     m_stepping = true;
+    m_replaying = true;
     const auto replayed = [&](const Body* b) { return std::ranges::find(bodies, b) != bodies.end(); };
+    // OpenMM2: the props the replay has pushed move on (collideHeld).
+    for (ReplayBody& r : m_replayBodies)
+        r.ics.update(dt, invDt);
     // The update, as step() runs it for these bodies.
     for (Body* b : bodies)
         if (b->updates && b->controller)
@@ -697,6 +702,8 @@ void World::replaySample(std::span<Body* const> bodies, float dt) {
         if (b->updates && b->controller)
             b->controller->afterCollisions(*b, dt, *this);
     m_stepping = stepping;
+    m_replaying = false;
+    m_replayTime += static_cast<double>(dt);
 }
 
 void World::bodiesNear(const Vec3& at, float radius, std::vector<Body*>& out) const {
@@ -711,22 +718,63 @@ bool World::collideHeld(Body& a, Instance& b) {
     // temporary collider without a body, moving at B's own velocity, so
     // that only A takes the impulse and the push; nothing is attached, no
     // banger breaks loose and nothing is marked hit.
+    if (!b.acceptsContact(a))
+        return false; // OpenMM2: as collideInstances (a network client's props)
     const Bound* boundA = a.bound(0);
     const Bound* boundB = b.bound(0);
     if (!boundA || !boundB || boundB->type == BoundType::ForceSphere)
         return false;
-    m_tempMatrixB = b.matrix();
-    const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
     Collider* colA = &a.collider;
     // A body (moved by the simulation or from outside) as a kinematic one,
-    // a static instance as itself.
+    // a static instance as itself. OpenMM2 (the props of a network race):
+    // what gives way when a car really hits it meets the replayed car with
+    // its mass, though the world is not changed. A simulated body (a
+    // knocked-over prop's active) with a copy of its ICS (the network
+    // client puts it back where it was for each sample run again, as the
+    // real car pushed it). An instance that takes a body when hit (a
+    // standing or resting prop, Instance::heldInertia) with the body it
+    // would take, which then moves for the rest of the replay as the hits
+    // push it (no gravity, no city: a replay is short).
     Body* entity = b.entity();
-    if (entity)
+    InertialCS* held = nullptr;
+    bool replayBody = false;
+    if (entity && !entity->kinematic && entity->ics.mass > 0.0f) {
+        m_heldIcs = entity->ics;
+        held = &m_heldIcs;
+    } else if (!entity) {
+        const auto it = std::ranges::find(m_replayBodies, &b, &ReplayBody::instance);
+        if (it != m_replayBodies.end()) {
+            held = &it->ics;
+            replayBody = true;
+        } else if (b.heldInertia(m_heldIcs)) {
+            m_heldIcs.gravity = {};
+            m_replayBodies.push_back({&b, m_heldIcs});
+            held = &m_replayBodies.back().ics;
+            replayBody = true;
+        }
+    }
+    m_tempMatrixB = replayBody ? held->matrix : b.matrix();
+    if (held && !replayBody) {
+        // A simulated body stands where this sample started it (the network
+        // client puts it back there); a real sample moves it on before the
+        // collisions, as this one does the replayed car.
+        const float dt = sampleTime().seconds;
+        const Vec3& v = held->linearVelocity;
+        m_tempMatrixB.m3 = {v.x * dt + m_tempMatrixB.m3.x, v.y * dt + m_tempMatrixB.m3.y,
+                            v.z * dt + m_tempMatrixB.m3.z};
+        held->matrix.m3 = m_tempMatrixB.m3;
+    }
+    const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
+    if (held)
+        m_tempB.init(boundB, &m_tempMatrixB, held);
+    else if (entity)
         m_tempB.init(boundB, &m_tempMatrixB, nullptr);
     else
         m_tempB.initStatic(boundB, &m_tempMatrixB);
     m_tempB.id = b.audioId;
-    if (entity && !entity->kinematic) {
+    if (held) {
+        // Its motion is its ICS's.
+    } else if (entity && !entity->kinematic) {
         m_tempB.moving = true;
         m_tempB.motionVelocity = entity->ics.linearVelocity;
         m_tempB.motionSpin = entity->ics.angularVelocity;
@@ -742,15 +790,28 @@ bool World::collideHeld(Body& a, Instance& b) {
         return false;
     std::span<Impact> impacts(m_impacts.data(), static_cast<std::size_t>(n));
     const float weight = 1.0f / static_cast<float>(n);
-    if (b.isBanger() && !entity) {
+    // A standing prop's break test, until it has broken loose in this replay.
+    const bool banger = b.isBanger() && !entity && !(replayBody && held->linearMomentum.mag2() > 0.0f);
+    if (banger) {
         const float limit2 = b.bangerImpulseLimit2();
+        bool broke = false;
         for (Impact& im : impacts)
-            calcBangerImpact(im, weight, limit2);
+            broke = calcBangerImpact(im, weight, limit2) || broke;
+        if (!broke && replayBody) {
+            // It held (dgBangerActive::DetachMe): it stays where it stands.
+            held->linearImpulse = {};
+            held->angularImpulse = {};
+        }
     } else {
         for (Impact& im : impacts)
             calcImpact(im, weight);
     }
     return true;
+}
+
+void World::beginReplay(double from) {
+    m_replayBodies.clear();
+    m_replayTime = from;
 }
 
 bool World::trivialCollide(const Instance& a, const Instance& b) const {
@@ -860,6 +921,8 @@ void World::collideTerrain(Body& body) {
 
 bool World::collideInstances(Instance& a, Instance& b) {
     // dgPhysManager::CollideInstances.
+    if (!a.acceptsContact(b) || !b.acceptsContact(a))
+        return false; // OpenMM2: a network client's props (Instance::acceptsContact)
     const Bound* boundA = a.bound(0);
     const Bound* boundB = b.bound(0);
     if (!boundA || !boundB)

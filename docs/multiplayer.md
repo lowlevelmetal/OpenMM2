@@ -184,7 +184,7 @@ Transport is ENet 1.3 with range-coder compression and four channels:
 | Channel | Delivery | Traffic |
 | --- | --- | --- |
 | 0 Control | reliable, ordered | handshake, lobby, chat, clock sync, pings |
-| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients) |
+| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients), `PropState` (host→clients) |
 | 2 Events | reliable, ordered | `GameEvent` |
 | 3 Ambient | unreliable, sequenced | `AmbientState` (host→clients): the shared cruise traffic |
 
@@ -206,7 +206,8 @@ the cars' damage, version 5 the players' cars simulated by the host
 (`PlayerInput`, `CarStates`, damage events about a player's car from the
 host), version 6 what the clients predict the shared traffic with (a rail
 car's acceleration, curvature and speed over the ground), up to 160 shared
-cars a message and no traffic hit reports.
+cars a message and no traffic hit reports, version 7 the host's props
+(`PropState`, the `PropKnocks` event).
 
 ### Handshake
 
@@ -258,6 +259,7 @@ attempt within `connectTimeoutMs` (8 s).
 | GameEvent | both | from, target, type, session time, payload ≤ 1 KiB |
 | PlayerPings | H→C | measured RTT per player, every 2 s |
 | AmbientState | H→C | the shared traffic and police near the client (see "Shared traffic") |
+| PropState | H→C | the host's ring of knocked-over props and thrown car parts (see "Props") |
 
 `SessionSettings` holds the session name, city, mode (Cruise, Checkpoint,
 Circuit, Blitz, Cops & Robbers, Crash Course), race id, laps, time of day,
@@ -322,6 +324,15 @@ packet to the game or discovery port, and whatever answers as the router.
   host only, keeps at most 96 cars' records with at most 1024 patches each,
   lets at most 64 events wait for their time per car (older ones go into the
   record at once) and waits at most 2 s for an entry's time.
+* **Props.** A `PropState` holds at most 64 slots (ranged: slot 0-63,
+  generation 0-15, placed prop 0-32767, piece 0-15, car part 0-19, owner
+  0-63, paint job 0-15), quantized positions (±8 km), velocities (±128 m/s)
+  and spin (±64 rad/s); a client keeps at most 16 unread, takes them only
+  during a race, refuses a repeated slot and a slot whose generation changes
+  what it holds, ignores a prop it has not placed and, when the host's
+  placement checksum differs from its own, every placed prop (it then
+  simulates its props itself). A `PropKnocks` event holds at most 512 knocks
+  and counts only from the host.
 * **Shared traffic.** An `AmbientState` holds at most 160 cars, ids 0-511,
   generations 0-7, catalog indices 0-63 and paint jobs 0-15 (ranged fields:
   nothing else can be read), quantized positions, velocities and spin, and a
@@ -406,8 +417,9 @@ waiting for its finish). Ids from `GameEventType::Custom` (0x8000)
 up are free for the game: Cops and Robbers uses 0x8001 to 0x8003 (0x8003 the
 host's word that a limit was reached, `mmMultiCR::SendLimitReached`: the
 host alone checks the time and point limits, `mmMultiCR::UpdateLimit`), a
-car's damage (`VehicleDamageEvent`, see "Damage") 0x8020 (0x8010, the shared
-traffic's hit report until protocol 6, is unused).
+car's damage (`VehicleDamageEvent`, see "Damage") 0x8020, the host's knocked
+props (`PropKnocksEvent`, see "Props") 0x8030 (0x8010, the shared traffic's
+hit report until protocol 6, is unused).
 
 ### Race start
 
@@ -787,10 +799,10 @@ other players' cars kinematically and replay the host's record of them:
   A patch copies the damaged texture's texels, so patches can land in any
   order. The parts are the owner's: the ones it broke off
   (`vehBreakableMgr::Impact`'s nearest, `EjectOneshot`'s by speed and its own
-  random numbers) come off on every machine, thrown as bangers when the event
-  is fresh (4 m/s, wheels at 1.3 times the car's speed), just taken off
-  otherwise. The sparks, shards and impact sound of each damaging impact are
-  replayed at the car as drawn.
+  random numbers) come off on every machine. The host throws them as bangers
+  (4 m/s, wheels at 1.3 times the car's speed) and every machine shows the
+  host's (see "Props"); a client takes them off without throwing. The sparks, shards and impact sound of each
+  damaging impact are replayed at the car as drawn.
 * **Timing.** Every entry happens when the receiving machine draws the car at
   the session time it happened on its owner's machine (the police: at the
   shared traffic's drawing time), so a dent appears when the car hits the
@@ -846,6 +858,127 @@ ramming the downtown San Francisco traffic with the client 40 m behind, 75
 cars knocked in 2 minutes): 10 bytes a second without a car on its body's
 wheels, 80-770 bytes a second while one to four were (about 1 to 4 cars a
 message), of 11-19 KB/s; the 1100-byte message budget still bounds it.
+
+### Props
+
+**MM2.** Nothing about props travels: no message of `mmGameMulti::GameMessageCB`
+or of the modes' `GameMessage` names one, and `mmNetObject` carries the cars
+only. Every machine simulates every player's car as a `vehCar`
+(`mmNetObject::Update` declares it a type-3 mover), so each machine's own
+collisions knock its props (`dgUnhitBangerInstance::Impact`), its parked cars,
+its traffic lights and the parts thrown off its simulation of each car
+(`vehBreakableMgr::Eject`), and each rests where that machine's simulation
+leaves it. What a network game has (`mmGame::InitGizmos`, `mmGameMulti::Init`):
+parked cars in the races only (none in a network cruise or Cops and Robbers),
+no ferries, no cable cars; traffic lights in cruise and Cops and Robbers (the
+races skip `aiMap::Init`). OpenMM2 0.3 differed in one more way: a network car
+was a kinematic body, against which `dgImpact::CalcImpact` holds every banger,
+so a prop another player knocked stood on every other screen, and the host's
+shared traffic knocked props on the host only.
+
+**OpenMM2** (the maintainer's decision: the host is the authority for
+everything; `game/net/PropSync`, `game/net/NetProps`, `net/PropState.h`): the
+host simulates the props for everyone, as a single-player race does, with
+every car it simulates: its own, the other players' (simulated from their
+inputs, protocol 5), the shared traffic and police; the props meet
+them, and dent them, through single player's code.
+
+* **Names.** Every machine places the same props in the same order (the street
+  props restart the random generator per road, the instances and path sets
+  come in file order, the parked cars draw from the stream the street props,
+  the player's `vehCar::Init` and the sailboats leave, the traffic lights come
+  from the AI map whatever the traffic density), so a placed prop's index
+  names it everywhere (test `PropSyncRetail.EveryMachinePlacesTheSameProps`;
+  7068 props in a San Francisco cruise, 6637 in its checkpoint races). A
+  checksum of the placement (`game::propCatalog`) travels with every
+  message. A knocked-over prop is a slot of the host's ring of 40
+  (`dgBangerManager`): the whole prop, one of its BREAKnn pieces, or a part
+  thrown off a car, named by the car (a player's id, or a shared car's catalog
+  index), the part (`damagePartIndex`) and the paint job.
+* **Knocks** (`PropKnocks`, reliable, to everyone): the placed props the host
+  broke loose, each with its session time. A machine that reports the race
+  loaded gets every knock so far at once, so props knocked earlier, anywhere,
+  are down when it gets there.
+* **The ring** (`PropState`, unreliable, the same message to every client):
+  every occupied slot, complete (a slot left out is empty from that message's
+  time), 20 times a second while a prop flies or a slot changed, 5 while props
+  only creep (slower than 0.5 m/s: a meter sliding down a hill, which phSleep
+  may never stop), 2 otherwise:
+
+  | Field | Encoding |
+  | --- | --- |
+  | header | u32 session time, u32 placement checksum, count |
+  | slot, generation | 6 + 4 bits; without a state only these travel (still there, at rest) |
+  | what | 2 bits; a prop 15, a piece 15 + 4, a car part 1 + 6 + 5 + 4 (owner, part, paint) |
+  | moving | 1 bit |
+  | frame at the CG | 3 × 22 bits over ±8 km (4 mm), smallest-three quaternion (32 bits) |
+  | motion (moving only) | velocity 3 × 13 bits (±128 m/s), spin 3 × 12 bits (±64 rad/s) |
+
+  A flying piece takes about 206 bits, a slot at rest 110, a slot only still
+  there 11. A slot carries its state while it moves (a creeping one every
+  fourth message), in the three messages after it changed, and in every
+  tenth otherwise.
+* **A client** shows the host's props as the host had them a playout delay
+  in the past (what the messages needed to arrive over the last 3 s plus a
+  send interval, 50-500 ms, as the other players' cars): a knock when it shows
+  that time, the ring in mirror slots interpolated on their velocities
+  (`net::SnapshotBuffer`). Only its own car may touch its props
+  (`phys::Instance::acceptsContact`), and the pieces it simulates itself may
+  knock a standing prop for their first 0.5 s: the other cars pass through
+  them, since the host decides what they do. Its car hits a
+  prop at once, as in single player (the impulse, the damage, the prop
+  breaking loose): a prediction. When the host's knock comes (from its copy
+  of the car, a playout delay later) the piece simulated here stands in for
+  the host's until both rest, then hands over to the host's, blended over
+  0.4 s; a knock the host has not made 2 s later is undone (the prop stands
+  again). A mirror its car touches is simulated here from the host's motion
+  (so a flying cone hits its car as on the host) and stays where it stopped
+  until the host's has moved and rests again, or 2 s. A piece simulated here
+  that the host's ring does not hold disappears 2 s after it was made once at
+  rest. The parts the host's damage records take off a car (its own
+  included) come off without a throw: the host's ring shows the parts it
+  threw.
+* **Replays.** When the host's state corrects its car, a client runs the
+  car's later samples again (`World::replaySample`) with the world held
+  still. A prop meets the replayed car with the body a real hit gives it
+  (`Instance::heldInertia`: the active `dgBangerActive::Attach` would give
+  it) and moves on through the replay as the hits push it (without gravity
+  or the city: a replay is short); a placed prop the car broke loose in the
+  last second stands again where it stood for the samples up to the one
+  that broke it loose (its pieces left out), so the replay takes the knock
+  the real samples took, and the later samples meet its pieces where they
+  were (the client puts the bodies around its car back where they stood for
+  each sample run again); a flying piece meets it with a copy of its body,
+  moved on over the sample as a real sample moves it before the collisions.
+  Nothing is knocked or moved in the world by a replay. A prop a client's
+  car hits in its own samples is the same knock on the host, sample for
+  sample: a client driving alone through props had no correction.
+* **A different placement** (an altered city, a mismatched build): the
+  client follows only the cars' parts and simulates its props itself, as
+  0.3 did, and logs it.
+
+Measured on this machine through `netprobe relay` (80 ±20 ms each way, 2 %
+loss, reordering; and 150 ±20 ms, 5 % loss), a host and one or two clients
+driving into props, traffic lights and parked cars (the record:
+`docs/review/multiplayer-desync-props.md`): with 0.3.1's props no knock on
+one machine was the same knock on another, 6-16 props differed between the
+screens at the end of a minute, and props two cars hit separately rested
+10.6 m apart (0.1-2.4 m once the host simulated the client's car, in two
+separate simulations); after, every knock reached every machine (170-250 ms
+apart, a playout delay), no prop differed at the end, and the knocked-over
+props, parked cars and parts rested within 3 mm of the host's (the
+position's quantization is 4 mm). A client alone among props had no
+correction of its car, and a client's corrections over 30 cm just after a
+prop hit (nothing else around) went from 31 in eight runs to 7. The host
+sent 0.1-5 KB/s to each client (10 s averages; a big crash in the test, 27
+props knocked by one car, 5 KB/s for a few seconds, at most 425 bytes a
+message); the ring bounds a message at 40 slots, about 1 KB.
+
+**Deviations.** MM2 lets each machine knock its own props; OpenMM2 shows the
+host's everywhere, as it does the traffic. The ring's wrapping (the oldest
+knocked-over prop disappears when the 41st is knocked) is the host's on every
+machine. A client's predicted knock that the host does not make stands up
+again, and a client's pieces move to the host's place when they rest.
 
 ### Disconnect reasons
 
@@ -1035,7 +1168,15 @@ When `config.multiplayer && ctx.netGame`:
    `settle`; the host records every car's patches, parts, impacts and
    resets (`DamageRecorder`: `own()`, `player(id)`, `police(id)`), sent with
    `NetDamage::send` after the frame's effects.
-8. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
+8. **Props** (`game::NetProps`, see "Props"): set up once the props are
+   placed (`setup`, with this machine's car as the only thing that may touch
+   a client's props); a client's `beforeStep` before the physics step (the
+   host's messages and knocks, the mirrors placed for the session time the
+   simulation will reach), every machine's `afterStep` after the props'
+   update (`BangerSet::update`: the host sends, a client takes its own
+   knocks as predictions). A part thrown off a car carries its tag
+   (`game::carPartTag`).
+9. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
    over (everyone finished, or the time/point limit); every machine sees
    `backToLobby(<its race number>)` and returns with `makeFrontendScreen(ctx, result)`.
    A player who quits early just returns to the frontend (it shows the lobby;
@@ -1082,8 +1223,12 @@ differently might (the prediction's tolerance);
 `OPENMM2_DEBUG_FOCUS=net:<player id>` frames a player's car (this machine's
 own, or another's as drawn), `police:<400 + post>` a shared police car,
 `knocked:<player id>` the knocked traffic car with a body within 60 m of a
-player's car with the lowest id, `traffic:<id>` a shared traffic car, so both
-machines take the same view; `OPENMM2_DEBUG_INPUT` takes several inputs
+player's car with the lowest id, `traffic:<id>` a shared traffic car,
+`prop:<index>` a placed prop or, once knocked, its first piece, so both
+machines take the same view. For the props: `OPENMM2_NET_TRACE` traces
+each machine's props too (see "Diagnosing replication"),
+`OPENMM2_NETPROPS=local` leaves every machine with its own props, as 0.3 did
+(for comparison); `OPENMM2_DEBUG_INPUT` takes several inputs
 separated by `/` in turn, each for `OPENMM2_DEBUG_INPUT_MS` (2000) of race
 time (`1,0,0.2,0/0,1,-0.2,0` rams a wall again and again);
 `OPENMM2_DEBUG_RESPAWN_MS=<ms>[,...]` (or `+<ms>`) puts the car back at its
@@ -1151,7 +1296,15 @@ hold, a reset clearing the car, convergence after a lost event, cars not
 drawn, hostile events; the same texels on two renderers from retail data;
 two `NetGame`s; the knocked cars' wheels through a message and the client's
 interpolation), the damage relay budget in `test_hostile_input.cpp` and the
-event in `test_fuzz.cpp`.
+event in `test_fuzz.cpp`. The props by `tests/net/test_prop_state.cpp` (the
+messages, their sizes and limits), `test_fuzz.cpp` (both messages, decoded
+and sent to a client) and `tests/game/test_prop_sync.cpp` (a host and a
+client in one process through a lossy link: the host's knocks and pieces,
+a predicted knock handed over and one undone, other cars passing through a
+client's props, a replayed car meeting a prop as a real sample does
+(through the knock, and from 1-8 samples after it), a replay moving no prop
+for real, loss and reordering, a big crash, the catch-up, thrown car parts, refused input,
+and on retail data the same placement on every machine).
 
 ### Diagnosing replication
 
@@ -1173,7 +1326,13 @@ each:
   and `b`'s cars in this machine's simulation (the host's are the ones that
   count; a client's are its prediction);
 * `C clock frameTime sample replayed dx dy dz dv snapped`: a correction of
-  this machine's car by the host's state.
+  this machine's car by the host's state;
+* the props' lines (lowercase tags, `game::PropTrace`): every placed prop
+  once (`p`), every prop that broke loose here and what broke it (`k`), a
+  prediction undone (`x`), every 250 ms of session time (`t`) the props down
+  (`b`), the knocked-over props and parts shown (`h`) and each car's damage
+  level and dents (`d`), and each simulated car's damaging impacts with their
+  cause (`i`).
 
 `D`, `K` and `C` use the machine's monotonic clock (shared by every process
 on it), so the traces of instances on one computer compare the same
@@ -1181,10 +1340,16 @@ moments: `netprobe syncreport <host trace> <client trace>...` prints how far
 apart each machine draws each player's car from its own player's screen,
 the frames in which a car moves further than its velocity explains, the
 collisions between players each machine had (and how close every machine
-drew the two cars around them) and the corrections.
+drew the two cars around them) and the corrections, then the props (by
+session time, see below).
 
 With one trace per machine, a remote car as drawn (`R`) can be compared with
 where the other machine's car really was at `sampleTime` (its `F` lines).
+`netprobe syncreport <trace>...` compares the machines' props pair by pair
+at the same session times: the props knocked on one machine only, how far
+apart in time both knocked them, where the knocked-over props and parts
+rest, each car's damage, and each car's damaging impacts as its own machine
+predicted them and as the host simulated them.
 
 In a cruise with shared traffic the trace also has the traffic and police
 (`game/net/TrafficTrace.h`): the host's `TH` lines, each car near a player at

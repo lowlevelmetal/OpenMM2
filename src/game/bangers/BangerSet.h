@@ -28,6 +28,7 @@
 #include <memory>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace mm2::game::bangers {
@@ -122,6 +123,17 @@ public:
         int active = -1; // index into the active pool
         int room = 0;
         int roomHint = 0; // with room 0: where FindRoomId starts (an xref's parent room)
+        // OpenMM2 network games (game/net/PropSync). A hit instance: the
+        // placed prop it came from (whole, or its BREAKnn `part`), else -1;
+        // the caller's tag of an ejected car part (0: none).
+        int source = -1;
+        std::uint32_t tag = 0;
+        // One of the host's ring slots shown on a network client
+        // (showMirror), where it is drawn while the host drives it and its
+        // motion there (an active attached to it here starts with it).
+        bool mirror = false;
+        std::optional<Mat34> drawn;
+        Vec3 mirrorVelocity, mirrorSpin;
     };
     // The placed props (in add() order) and the hit instances (created as
     // the ring first hands them out).
@@ -138,6 +150,7 @@ public:
     const phys::Bound* boundOf(const BangerData& data, int which) const;
     float boundRadius(const BangerData& data) const;
     std::size_t skipped() const { return m_skipped; } // props without banger data
+    const BangerDataLibrary& dataLibrary() const { return m_data; }
     int activeCount() const { return m_attached; }
     // dgBangerDataManager's age mode: actives declared by age rather than by
     // CollisionType. mmGame::Init turns it off; kept for completeness.
@@ -151,8 +164,10 @@ public:
     // `speed` +- 1 in a random upward direction and an angular impulse of
     // 1-3 (as momentum, not velocity: see the .cpp). Returns the hit
     // instance it became (vehBreakable +0x44 keeps it for Reset).
+    // `tag` (OpenMM2): the caller's name for the part across machines
+    // (Instance::tag), 0 for none.
     std::size_t ejectPart(const BangerData& data, const std::string& model, const std::string& mesh, int paint,
-                          const Mat34& frame, float speed, int room = -1);
+                          const Mat34& frame, float speed, int room = -1, std::uint32_t tag = 0);
 
     // dgHitBangerInstance::Detach of instance i, as vehBreakableMgr::Reset
     // calls it for an ejected car part when the car's damage is cleared: its
@@ -174,6 +189,99 @@ public:
     // loose (also while an active holds it, before dgUnhitBangerInstance::
     // Impact clears the flag). dgBangerInstance::DrawGlow tests it.
     bool standing(std::size_t i) const;
+
+    // --- OpenMM2: network games (game/net/PropSync) ---------------------------------------
+    //
+    // MM2 sends nothing about props: every machine knocks its own with its
+    // own simulation of every car. OpenMM2's host simulates them for
+    // everyone; its clients show the host's and simulate only what their
+    // own car touches (a prediction the host confirms or corrects).
+
+    // A placed prop that broke loose (dgUnhitBangerInstance::Impact) and
+    // what broke it (the instance whose impact did; null when unknown, and
+    // only valid until the next physics step).
+    struct Knock {
+        std::size_t prop = 0;
+        const phys::Instance* by = nullptr;
+    };
+    // Whether knocks are kept for takeKnocks (off by default: a
+    // single-player race never takes them).
+    void recordKnocks(bool on) { m_recordKnocks = on; }
+    // The knocks since the last call, oldest first.
+    std::vector<Knock> takeKnocks() { return std::exchange(m_knocks, {}); }
+    // dgBangerManager's ring as handed out so far: slot k's hit instance,
+    // and how many times slot k has been handed out (a new prop in the slot
+    // has a new generation).
+    const std::vector<std::size_t>& ring() const { return m_ring; }
+    std::uint32_t generation(std::size_t slot) const {
+        return slot < m_ringGeneration.size() ? m_ringGeneration[slot] : 0;
+    }
+    // Whether instance i has an active whose body is moving in the world.
+    bool moving(std::size_t i) const;
+    // Whether `i` is the body of one of this set's actives.
+    bool isActiveBody(const phys::Instance* i) const;
+    // The body an active would give instance i if a car hit it now
+    // (phys::Instance::heldInertia, for World::replaySample); false for an
+    // instance with an active or out of the world.
+    bool heldInertia(std::size_t i, phys::InertialCS& ics) const;
+    // A client's replay of its car (phys::World::replaying) meets a placed
+    // prop its car broke loose in the last kGhostSeconds as it stood there
+    // (a "ghost", standing again for the replay only), and not the pieces it
+    // became, in the samples up to the one that broke it loose: the replayed
+    // car takes the knock the real one took. The later samples meet the
+    // pieces.
+    bool replayGhost(std::size_t i) const;
+    bool replayGhostPiece(std::size_t i) const;
+    static constexpr double kGhostSeconds = 1.0;
+    // A client's own simulated prop knocks others for this long after it
+    // was set moving (a prediction of a prediction; inferred).
+    static constexpr float kPredictedChainSeconds = 0.5f;
+
+    // A network client: only this machine's own car (`localToucher`) and the
+    // props this set simulates itself may touch a prop (phys::Instance::
+    // acceptsContact); everything else passes through them, since the host
+    // decides what the other cars do to them.
+    void setReplica(std::function<bool(const phys::Instance&)> localToucher);
+    // Back to simulating every contact (a client that cannot follow the
+    // host's props).
+    void clearReplica() {
+        m_replica = false;
+        m_localToucher = nullptr;
+    }
+    bool replica() const { return m_replica; }
+    // Client: placed prop i broke loose on the host. It leaves its room as
+    // dgUnhitBangerInstance::Impact makes it leave, without a body (its
+    // pieces are the host's ring slots, showMirror).
+    void breakPlaced(std::size_t i);
+    // Client: a knock this machine predicted that the host did not make.
+    // Placed prop i stands in its room again and the hit instances it became
+    // here disappear (dgUnhitBangerInstance::Reset for one prop).
+    void restoreStanding(std::size_t i);
+    // Client: what one of the host's ring slots holds.
+    struct MirrorSpec {
+        const BangerData* data = nullptr;
+        std::string model;
+        int part = -1;
+        std::string mesh;
+        int paint = 0;
+        int source = -1;
+        std::uint32_t tag = 0;
+    };
+    // The instance showing host ring slot `slot` (made on first use, hidden).
+    std::size_t mirror(std::size_t slot);
+    // Shows host ring slot `slot` at `matrix` (the frame at the CG), drawn at
+    // `drawn`, moving at `velocity` and `spin` there. This machine's car may
+    // touch it: an active then simulates it here from that motion until it
+    // rests again. Not while the instance has an active: the local
+    // simulation drives it then.
+    void showMirror(std::size_t slot, const MirrorSpec& spec, const Mat34& matrix, const Mat34& drawn,
+                    const Vec3& velocity, const Vec3& spin);
+    // Takes it out of the world (not drawn, not collidable, no body).
+    void hideMirror(std::size_t slot);
+    // Ends this machine's simulation of it (its active detaches; it stays
+    // where it is).
+    void releaseMirror(std::size_t slot);
+    std::size_t mirrorCount() const { return m_mirrors.size(); }
 
 private:
     struct Active;
@@ -201,8 +309,9 @@ private:
     void declare(Active& a, float dt);
     void directUpdate(Active& a, float dt);
     bool inWorld(const Active& a) const;
-    void unhitImpact(std::size_t i);
+    void unhitImpact(std::size_t i, const phys::Instance* by);
     void syncActiveList();
+    bool acceptsFrom(std::size_t i, const phys::Instance& other) const;
 
     const BangerDataLibrary& m_data;
     phys::World* m_world = nullptr;
@@ -219,7 +328,20 @@ private:
     int m_attached = 0;
     std::vector<int> m_activeList; // the attached ones (the list's head), for drawing
     std::vector<std::size_t> m_ring; // dgBangerManager's hit instances by slot
+    std::vector<std::uint32_t> m_ringGeneration; // times each slot was handed out
     int m_ringNext = 0;
+    // OpenMM2 network games.
+    std::vector<Knock> m_knocks;
+    bool m_recordKnocks = false;
+    bool m_replica = false;
+    std::function<bool(const phys::Instance&)> m_localToucher;
+    std::vector<std::size_t> m_mirrors; // a client's instance per host ring slot (npos: none yet)
+    struct Ghost {
+        std::size_t prop = 0;
+        double time = 0.0; // world time it broke loose
+    };
+    std::vector<Ghost> m_ghosts; // a client's own car's knocks, for its replays
+    bool ghostStands(const Ghost& g) const; // in the sample being run again
     std::size_t m_skipped = 0;
     bool m_ageMode = false; // dgBangerDataManager +0x2a8a8 (cleared by mmGame::Init)
     fx::FixedTicker m_ticker;

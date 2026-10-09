@@ -8,6 +8,7 @@
 
 #include "phys/Bound.h"
 #include "phys/Collider.h"
+#include "phys/InertialCS.h"
 #include "phys/Material.h"
 
 #include <vector>
@@ -68,6 +69,16 @@ public:
     // or is hit by it sees it move. False: it does not move (MM2's static
     // instances).
     virtual bool kinematicMotion(Vec3& /*velocity*/, Vec3& /*spin*/, Vec3& /*centre*/) const { return false; }
+    // OpenMM2 (no MM2 counterpart): whether `other` may collide with this
+    // instance at all. A network client's props take contacts only from what
+    // this machine simulates itself (game::PropSync); MM2's answer is always
+    // yes.
+    virtual bool acceptsContact(const Instance& /*other*/) const { return true; }
+    // OpenMM2 (World::replaySample): the body this instance would take if a
+    // car hit it (a prop's active), at rest where it stands, so that a car
+    // replayed through it meets its mass as a real sample does. False: it
+    // holds like a wall.
+    virtual bool heldInertia(InertialCS& /*out*/) const { return false; }
 
     // The ids AudImpact plays for impacts against the instance
     // (the instance data's collider id): 0 for the world, cars and traffic, the banger's

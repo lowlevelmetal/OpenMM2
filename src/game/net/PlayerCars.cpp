@@ -479,6 +479,8 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
             bodies.push_back(&c.car->sim().body);
         }
         // (In the world's order: the companions come in player order.)
+        world.beginReplay(world.time() -
+                          static_cast<double>(later) * static_cast<double>(phys::kFixedSampleStep));
         for (std::size_t k = index + 1; k < m_history.size(); ++k) {
             restore(m_history[k - 1], car, driver); // the car as the sample met it
             for (const Companion& c : companions)
@@ -516,6 +518,10 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                 bodies.push_back(&c.car->sim().body);
         for (const Companion& c : companions)
             applyOwnCarState(*c.car, *c.state);
+        // OpenMM2: the props the replay meets (World::collideHeld), the samples
+        // having run for real one after another up to the world's time now.
+        world.beginReplay(world.time() -
+                          static_cast<double>(later) * static_cast<double>(phys::kFixedSampleStep));
         for (std::size_t k = index + 1; k < m_history.size(); ++k) {
             Entry& e = m_history[k];
             for (const auto& c : e.commands)

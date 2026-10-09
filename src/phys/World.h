@@ -257,6 +257,15 @@ public:
     // them at its own velocity. A network client runs its own car's samples
     // again with it once the host's state has corrected an earlier one.
     void replaySample(std::span<Body* const> bodies, float dt);
+    // OpenMM2: the samples replaySample runs from here on are one replay
+    // (the props the replayed car has pushed move on through it, until the
+    // next replay or sample; see collideHeld), the first of them run for
+    // real at world time `from`.
+    void beginReplay(double from);
+    // Inside replaySample (the level's sources may show what a replay meets).
+    bool replaying() const { return m_replaying; }
+    // The world time the sample replaySample runs again was first run at.
+    double replayTime() const { return m_replayTime; }
     // OpenMM2 (network prediction): the bodies in the world (not removed)
     // whose centre lies within `radius` of `at`, appended to `out`.
     void bodiesNear(const Vec3& at, float radius, std::vector<Body*>& out) const;
@@ -357,6 +366,14 @@ private:
     Mat34 m_identity;
     Collider m_levelCollider;
     Collider m_tempA, m_tempB;
+    InertialCS m_heldIcs; // replaySample: what a held body or prop would have (taken by nothing)
+    struct ReplayBody {
+        const Instance* instance = nullptr;
+        InertialCS ics; // the body the prop takes in the replay, pushed by its hits
+    };
+    std::vector<ReplayBody> m_replayBodies;
+    bool m_replaying = false;
+    double m_replayTime = 0; // replaySample: see replayTime
     Mat34 m_tempMatrixA, m_tempMatrixB;
     std::vector<Intersection> m_isectsA, m_isectsB;
     std::vector<Impact> m_impacts;

@@ -18,6 +18,7 @@
 #include "net/ClockSync.h"
 #include "net/Discovery.h"
 #include "net/PlayerCars.h"
+#include "net/PropState.h"
 #include "net/Protocol.h"
 #include "net/Snapshot.h"
 #include "net/Transport.h"
@@ -290,6 +291,15 @@ public:
     std::vector<AmbientStateMsg> takeAmbientStates() { return std::exchange(m_ambientStates, {}); }
     static constexpr std::size_t kMaxQueuedAmbientStates = 16;
 
+    // --- The host's props (OpenMM2, net/PropState.h) ---
+    // Host: sends one player the props' state on the unreliable State
+    // channel. Returns the encoded size in bytes (0 when nothing was sent).
+    std::size_t sendPropState(std::uint8_t playerId, const PropStateMsg& msg);
+    // Client: the messages received since the last call, oldest first (at
+    // most kMaxQueuedPropStates; older ones are dropped).
+    std::vector<PropStateMsg> takePropStates() { return std::exchange(m_propStates, {}); }
+    static constexpr std::size_t kMaxQueuedPropStates = 16;
+
 private:
     // Token bucket: how many messages of a kind a joiner may make the host
     // relay to everyone (each one goes out once per other player).
@@ -398,6 +408,7 @@ private:
     std::vector<AmbientStateMsg> m_ambientStates; // client: received, not yet taken
     std::vector<ReceivedInput> m_playerInputs;    // host: the clients' inputs, not yet taken
     std::vector<OwnCarUpdate> m_ownCarStates;     // client: the host's word on its car, not yet taken
+    std::vector<PropStateMsg> m_propStates;       // client: received, not yet taken
 };
 
 // Proof sent in Hello: SHA-256(nonce || password); all zeros when empty.

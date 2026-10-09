@@ -4,6 +4,7 @@
 // AddressSanitizer/UBSan to check that) or produce a value outside what the
 // writer could have produced. See docs/review/multiplayer-input.md.
 #include "net/AmbientState.h"
+#include "net/PropState.h"
 #include "net/Discovery.h"
 #include "net/NatPmp.h"
 #include "net/Session.h"
@@ -159,6 +160,49 @@ std::vector<Bytes> corpus() {
     car.gear = 3;
     ambient.entities.push_back(car);
     c.push_back(encodeMessage(ambient));
+    // The host's props: a piece flying, a prop at rest, a slot only still
+    // there, a car's thrown part; and their knocks.
+    PropStateMsg props;
+    props.time = 6000;
+    props.catalog = 0xF5672068u;
+    PropSlot piece;
+    piece.slot = 3;
+    piece.generation = 9;
+    piece.what.source = PropSource::PropPart;
+    piece.what.prop = 2714;
+    piece.what.part = 1;
+    piece.moving = true;
+    piece.position = {-1144.4f, 107.8f, 20.2f};
+    piece.orientation = Quat::fromAxisAngle(Vec3{1.0f, 0.0f, 0.0f}, 0.7f);
+    piece.velocity = {0.5f, -3.0f, 6.0f};
+    piece.angularVelocity = {2.0f, 0.0f, -1.0f};
+    props.slots.push_back(piece);
+    PropSlot rest = piece;
+    rest.slot = 4;
+    rest.what.source = PropSource::Prop;
+    rest.moving = false;
+    props.slots.push_back(rest);
+    PropSlot still;
+    still.slot = 39;
+    still.generation = 2;
+    still.hasState = false;
+    props.slots.push_back(still);
+    PropSlot part = piece;
+    part.slot = 0;
+    part.what = {PropSource::CarPart, 0, 12, PropOwner::Catalog, 7, 3};
+    props.slots.push_back(part);
+    c.push_back(encodeMessage(props));
+    PropKnocksEvent knocks;
+    knocks.time = 6100;
+    knocks.knocks = {{2714, 0}, {6906, 35}, {12, 65535}};
+    c.push_back(encodePayload(knocks));
+    knocks.catchUp = true;
+    c.push_back(encodePayload(knocks));
+    GameEventMsg knocksEvent;
+    knocksEvent.type = kPropKnocksEvent;
+    knocksEvent.time = 6100;
+    knocksEvent.payload = encodePayload(knocks);
+    c.push_back(encodeMessage(knocksEvent));
 
     LanAdvert advert;
     advert.sessionName = "Fuzz";
@@ -316,6 +360,35 @@ void checkAmbient(const AmbientStateMsg& m) {
     }
 }
 
+void checkProps(const PropStateMsg& m) {
+    ASSERT_LE(m.slots.size(), kMaxPropSlots);
+    for (const PropSlot& p : m.slots) {
+        ASSERT_LT(p.slot, kMaxPropSlots);
+        ASSERT_LT(p.generation, kPropGenerations);
+        if (!p.hasState)
+            continue;
+        ASSERT_LE(p.what.source, PropSource::Last);
+        ASSERT_LT(p.what.prop, kMaxPropIds);
+        if (p.what.source == PropSource::CarPart) {
+            ASSERT_LT(p.what.ownerId, kMaxPropOwners);
+            ASSERT_LT(p.what.part, kMaxPropCarParts);
+            ASSERT_LE(p.what.paint, kMaxPropPaint);
+        } else {
+            ASSERT_LT(p.what.part, kMaxPropParts);
+        }
+        for (float v : {p.position.x, p.position.y, p.position.z, p.velocity.x, p.velocity.y, p.velocity.z,
+                        p.angularVelocity.x, p.angularVelocity.y, p.angularVelocity.z})
+            ASSERT_TRUE(std::isfinite(v));
+        ASSERT_LE(std::abs(p.position.x), kPropPositionRange + 0.01f);
+        ASSERT_LE(std::abs(p.velocity.y), kPropVelocityRange + 0.01f);
+        ASSERT_LE(std::abs(p.angularVelocity.z), kPropSpinRange + 0.01f);
+        ASSERT_TRUE(p.moving || (p.velocity.mag2() == 0.0f && p.angularVelocity.mag2() == 0.0f));
+        const float n = std::sqrt(p.orientation.x * p.orientation.x + p.orientation.y * p.orientation.y +
+                                  p.orientation.z * p.orientation.z + p.orientation.w * p.orientation.w);
+        ASSERT_NEAR(n, 1.0f, 1e-3f);
+    }
+}
+
 void checkPlayer(const PlayerInfo& p) {
     ASSERT_LE(p.name.size(), kMaxNameLength);
     ASSERT_LE(p.car.size(), kMaxShortStringLength);
@@ -417,6 +490,9 @@ void decodeEverything(std::span<const std::byte> b) {
     if (const auto m = decoded<AmbientStateMsg>(b)) {
         checkAmbient(*m);
     }
+    if (const auto m = decoded<PropStateMsg>(b)) {
+        checkProps(*m);
+    }
 
     std::uint32_t nonce = 0;
     (void)decodeLanQuery(b, nonce);
@@ -440,6 +516,13 @@ void decodeEverything(std::span<const std::byte> b) {
     }
     if (const auto e = payload<DamageEvent>(b)) {
         ASSERT_TRUE(std::isfinite(e->damage));
+    }
+    if (const auto e = payload<PropKnocksEvent>(b)) {
+        ASSERT_LE(e->knocks.size(), kMaxPropKnocksPerEvent);
+        for (const auto& k : e->knocks) {
+            ASSERT_LT(k.prop, kMaxPropIds);
+            ASSERT_TRUE(!e->catchUp || k.delay == 0);
+        }
     }
     if (const auto e = payload<VehicleDamageEvent>(b)) {
         ASSERT_LE(e->subject, kDamageLastSubject);
@@ -682,6 +765,11 @@ TEST(Fuzz, ClientSurvivesMutatedTraffic) {
     EXPECT_LE(ambient.size(), Session::kMaxQueuedAmbientStates);
     for (const auto& m : ambient)
         checkAmbient(m);
+    // And the props.
+    const auto props = client.takePropStates();
+    EXPECT_LE(props.size(), Session::kMaxQueuedPropStates);
+    for (const auto& m : props)
+        checkProps(m);
 }
 
 // The race start under mutated race messages from a joiner: whatever it
