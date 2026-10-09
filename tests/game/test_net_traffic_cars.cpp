@@ -51,24 +51,44 @@ TEST(NetTrafficCars, AKnockIsConfirmedWhenTheHostKnocksTheCarToo) {
     cars.impact(1); // the local car hit it in the step
     EXPECT_TRUE(cars.knocked(1));
     EXPECT_EQ(cars.takeKnocks(), std::vector<int>{1});
-    Mat34 rest = Mat34::translation({5, 0, 5});
-    cars.setPhysicalTransform(1, rest);
+    Mat34 moved = Mat34::translation({2, 0, 1});
+    cars.setPhysicalTransform(1, moved);
     // Still on its rail in the host's older messages: the local body leads.
     cars.update(std::vector{car(1, 3, 1150)}, 1200.0, 200.0);
     const ai::AmbientCar* c = listed(cars, 1);
     ASSERT_NE(c, nullptr);
     EXPECT_TRUE(c->physical);
-    EXPECT_EQ(c->transform.m3, rest.m3);
+    EXPECT_EQ(c->transform.m3, moved.m3);
     EXPECT_TRUE(cars.takeHandovers().empty());
-    // The host knocked it too: its messages lead from now.
+    // The host knocked it too; while the local body moves it still leads
+    // (it runs the host's physics from the same hit).
     cars.update(std::vector{car(1, 3, 1250, false)}, 1350.0, 200.0);
+    EXPECT_TRUE(cars.knocked(1));
+    EXPECT_EQ(cars.stats().confirmed, 1u);
+    EXPECT_TRUE(cars.takeHandovers().empty());
+    // At rest: the host's messages lead from now.
+    const Mat34 rest = Mat34::translation({3, 0, 2});
+    cars.detach(1, rest, true);
+    cars.update(std::vector{car(1, 3, 1400, false)}, 1500.0, 200.0);
     EXPECT_FALSE(cars.knocked(1));
-    EXPECT_EQ(listed(cars, 1), nullptr);
+    EXPECT_EQ(listed(cars, 1), nullptr); // off its rail: a moving instance
     const auto h = cars.takeHandovers();
     ASSERT_EQ(h.size(), 1u);
     EXPECT_TRUE(h[0].confirmed);
     EXPECT_EQ(h[0].pose.m3, rest.m3);
     EXPECT_EQ(cars.stats().confirmed, 1u);
+}
+
+// A local body far from where the host has the knocked car goes back to the
+// host's messages at once.
+TEST(NetTrafficCars, AKnockFarFromTheHostsGoesBackAtOnce) {
+    NetTrafficCars cars;
+    cars.update(std::vector{car(1, 3, 1000)}, 1100.0, 200.0);
+    cars.impact(1);
+    cars.setPhysicalTransform(1, Mat34::translation({20, 0, 0}));
+    cars.update(std::vector{car(1, 3, 1150, false)}, 1250.0, 200.0);
+    EXPECT_FALSE(cars.knocked(1));
+    ASSERT_EQ(cars.takeHandovers().size(), 1u);
 }
 
 TEST(NetTrafficCars, AKnockTheHostNeverMakesIsWithdrawn) {

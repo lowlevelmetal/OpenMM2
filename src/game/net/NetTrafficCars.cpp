@@ -16,16 +16,30 @@ void NetTrafficCars::update(std::span<const Received> received, double now, doub
         present.insert(c.id);
         const bool onRail = c.goal == ai::AmbientGoal::RandomDrive;
         if (const auto it = m_knocks.find(c.id); it != m_knocks.end()) {
-            const Knock& k = it->second;
+            Knock& k = it->second;
             const double heard = static_cast<double>(r.stateTime);
+            if (!onRail && !k.confirmed && k.generation == c.spawns) {
+                k.confirmed = true; // the host has knocked it too
+                ++m_stats.confirmed;
+            }
             if (k.generation != c.spawns) {
                 m_knocks.erase(it); // another car in the slot
-            } else if (!onRail) {
-                // The host has knocked it too: its messages lead from now.
-                ++m_stats.confirmed;
-                handOver(c.id, k, true);
-                m_knocks.erase(it);
-                continue;
+            } else if (k.confirmed) {
+                // Knocked on the host too. Until its body here comes to rest
+                // the local one, which runs the host's physics from the same
+                // hit, is the better guess of the two; then (or when the
+                // host's car is far from it, or back on its rail) the host's
+                // messages lead.
+                if (k.resting || onRail || now > k.time + kMaxLocalMs ||
+                    c.transform.m3.dist(k.pose.m3) > kDivergeMetres) {
+                    handOver(c.id, k, true);
+                    m_knocks.erase(it);
+                    if (!onRail)
+                        continue;
+                } else {
+                    keepLocal(c, k);
+                    continue;
+                }
             } else if (heard > k.time + confirmMs || now > k.time + kMaxLocalMs) {
                 // On its rail well after the hit on the host: it was not hit
                 // there.
@@ -33,12 +47,7 @@ void NetTrafficCars::update(std::span<const Received> received, double now, doub
                 handOver(c.id, k, false);
                 m_knocks.erase(it);
             } else {
-                ai::AmbientCar a = c;
-                a.transform = k.pose;
-                a.goal = ai::AmbientGoal::Collision;
-                a.physical = true;
-                a.speed = 0.0f;
-                m_cars.push_back(a);
+                keepLocal(c, k);
                 continue;
             }
         }
@@ -47,6 +56,15 @@ void NetTrafficCars::update(std::span<const Received> received, double now, doub
             m_cars.push_back(c);
     }
     std::erase_if(m_knocks, [&](const auto& e) { return !present.contains(e.first); });
+}
+
+void NetTrafficCars::keepLocal(const ai::AmbientCar& c, const Knock& k) {
+    ai::AmbientCar a = c;
+    a.transform = k.pose;
+    a.goal = ai::AmbientGoal::Collision;
+    a.physical = true;
+    a.speed = 0.0f;
+    m_cars.push_back(a);
 }
 
 void NetTrafficCars::handOver(int id, const Knock& knock, bool confirmed) {
@@ -67,8 +85,10 @@ void NetTrafficCars::impact(int carId) {
 void NetTrafficCars::detach(int carId, const Mat34& pose, bool) {
     // The body came to rest: the car stays there until the host's messages
     // take it over.
-    if (const auto it = m_knocks.find(carId); it != m_knocks.end())
+    if (const auto it = m_knocks.find(carId); it != m_knocks.end()) {
         it->second.pose = pose;
+        it->second.resting = true;
+    }
 }
 
 void NetTrafficCars::setPhysicalTransform(int carId, const Mat34& transform) {

@@ -14,11 +14,15 @@
 // machine's car knocks a car loose here; the host's police, the other
 // players and the cars it knocked itself reach the client in its messages.
 //
-// The knocked car is this machine's until the host's messages either show it
-// off its rail too (it then follows them, the drawing blending from where
-// the local body left it) or show it still on its rail at a time well after
+// The knocked car is this machine's until either the host's messages show it
+// off its rail too and its body here has come to rest (or the host's car is
+// 5 m from it): it then follows them, the drawing blending from where the
+// local body left it; or they show it still on its rail at a time well after
 // the hit, when the host would have knocked it (the host did not: it goes
-// back to its rail, blended the same way).
+// back to its rail, blended the same way). With the host simulating the
+// client's car from the same inputs, the local body runs the host's physics
+// from the same hit, so it is the better guess while it moves: the host's
+// knocked car, a trip old and predicted along its velocity, is not.
 
 #include "ai/Traffic.h"
 #include "game/TrafficBodies.h"
@@ -45,6 +49,9 @@ public:
     // kMaxLocalMs whatever the host says.
     void update(std::span<const Received> received, double now, double confirmMs);
     static constexpr double kMaxLocalMs = 3000.0;
+    // A car the host has knocked too stays this machine's until its body
+    // comes to rest, unless the host's car is this far from it.
+    static constexpr float kDivergeMetres = 5.0f;
 
     // A car this machine knocked loose and handed back to the host's
     // messages this frame, and where it was then.
@@ -78,8 +85,12 @@ private:
         int generation = 0;
         double time = 0.0; // session ms of the hit
         Mat34 pose;
+        bool confirmed = false; // the host has knocked it too
+        bool resting = false;   // its body came to rest
     };
     void handOver(int id, const Knock& knock, bool confirmed);
+    // The car listed where the local body has it.
+    void keepLocal(const ai::AmbientCar& c, const Knock& k);
 
     std::map<int, Knock> m_knocks;
     std::vector<ai::AmbientCar> m_cars;

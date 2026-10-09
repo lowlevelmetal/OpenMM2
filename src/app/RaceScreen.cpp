@@ -4274,7 +4274,8 @@ private:
         if (m_trafficProxies) {
             std::vector<ai::AmbientCar> moving;
             for (const ai::AmbientCar& c : m_netCars)
-                if (!m_netTrafficCars || c.goal != ai::AmbientGoal::RandomDrive)
+                if (!m_netTrafficCars ||
+                    (c.goal != ai::AmbientGoal::RandomDrive && !m_netTrafficCars->knocked(c.id)))
                     moving.push_back(c);
             m_trafficProxies->update(moving);
         }
