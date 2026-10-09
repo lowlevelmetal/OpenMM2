@@ -253,8 +253,10 @@ in a crash that keeps all 40 slots flying.
   on retail data the same placement on every machine (cruise at the host's
   and a client's traffic density, a checkpoint race with parked cars) for
   San Francisco and London.
-* Full suite, the `_GLIBCXX_ASSERTIONS` suite, the opponent sweep and the
-  single-player smoke screenshots: see the final report.
+* Full suite with game data at 59ca116: 985 of 985 (3 skipped as always),
+  the same with `-D_GLIBCXX_ASSERTIONS`; the opponent sweep 516/517
+  finished, 508/517 across the line (as before); single-player smoke
+  screenshots (a San Francisco cruise, a London circuit) as before.
 
 ## For the players' cars agent
 
