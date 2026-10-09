@@ -670,8 +670,11 @@ bool Slider::adjust(UiFrame& f, int dir) {
     if (!enabled || readOnly)
         return true;
     // UISlider::Action: Left mmSlider::Dec, Right mmSlider::Inc, then
-    // "Switch", also at a limit.
-    set(std::clamp(get() + step() * static_cast<float>(dir), min, max));
+    // "Switch", also at a limit. The step starts from the slider's own value,
+    // which mmSlider::SetValue clamped when UISlider::Update took the bound
+    // variable (a race's cop count of 3 is 1 on the slider, so Left gives
+    // 1 - step).
+    set(std::clamp(std::clamp(get(), min, max) + step() * static_cast<float>(dir), min, max));
     f.play("Switch", 0.85f);
     m_clicked = 0;
     return true;

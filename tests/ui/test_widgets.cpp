@@ -248,6 +248,20 @@ TEST(Slider, TwentyPositionsOnTwoPixelSegments) {
     EXPECT_FLOAT_EQ(value, 0.0f);
 }
 
+// UISlider::Action steps mmSlider's own value, which SetValue clamped: a
+// bound value above the range (a race's cop count of 3) steps from the top.
+TEST(Slider, StepsFromTheClampedValue) {
+    float value = 3.0f;
+    ui::Slider s(ui::Box{450, 212, 183, 29}, [&] { return value; }, [&](float v) { value = v; });
+    Fixture fx;
+    auto f = fx.frame();
+    s.adjust(f, -1);
+    EXPECT_FLOAT_EQ(value, 1.0f - 1.0f / 19.0f);
+    value = 3.0f;
+    s.adjust(f, 1);
+    EXPECT_FLOAT_EQ(value, 1.0f);
+}
+
 TEST(TextEntry, FirstKeyReplacesTheText) {
     Fixture fx;
     ui::Menu m;

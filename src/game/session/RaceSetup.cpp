@@ -189,9 +189,13 @@ void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race) {
         return;
     }
     cfg.trafficDensity = std::clamp(s.ambientDensity, 0.0f, 1.0f);
-    // MM2 keeps the race's cop count in the cop density; OpenMM2's densities
-    // are 0..1, so the count is clamped (the slider shows full either way).
-    cfg.copDensity = std::clamp(static_cast<float>(s.cops), 0.0f, 1.0f);
+    // RaceMenuBase::SetStateRace keeps the race's cop count (0 to 8 in the
+    // retail tables) in the cop density as it is: aiMap::Init clamps it to
+    // 0..1 when it places the posts, the slider shows anything above 1 as
+    // full, and the modes' RegisterFinish compare it with the count, so a
+    // race with two or more cops is no longer recorded once the slider has
+    // been moved.
+    cfg.copDensity = static_cast<float>(s.cops);
     if (cfg.mode == GameMode::Checkpoint) {
         cfg.opponents = std::max(0, s.opponents);
         cfg.laps = 1;
