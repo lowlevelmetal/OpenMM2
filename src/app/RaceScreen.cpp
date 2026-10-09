@@ -4873,6 +4873,7 @@ private:
         }
         const game::VehiclePose before = drawnPose(game::Drawn::Player, 0, *m_player);
         const auto now = proxyPoses();
+        const auto replayStart = std::chrono::steady_clock::now();
         m_netReplaying = true;
         const auto c = m_prediction.acknowledge(
             *m_player, m_netDriver, *m_world, ack, *newest,
@@ -4891,6 +4892,10 @@ private:
             });
         placeProxies(now);
         m_netReplaying = false;
+        const double replayMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replayStart).count();
+        m_netReplayMs += replayMs;
+        m_netReplayWorstMs = std::max(m_netReplayWorstMs, replayMs);
         if (!c.corrected)
             return;
         const game::VehiclePose after = drawnPose(game::Drawn::Player, 0, *m_player);
@@ -5033,9 +5038,12 @@ private:
         } else if (verbose) {
             const auto& st = m_prediction.stats();
             log::info("netcars: client sent {} inputs ({:.0f} B/s); {} acks, {} corrections, {} samples "
-                      "replayed, {} too old; running at {:.3f}",
+                      "replayed ({:.1f} ms a second, at most {:.2f} ms a frame), {} too old; "
+                      "running at {:.3f}",
                       m_netInputsSent, static_cast<double>(m_netInputBytes) / seconds, st.acks,
-                      st.corrections, st.replayedSamples, st.unreplayable, m_netDilation);
+                      st.corrections, st.replayedSamples, m_netReplayMs / seconds, m_netReplayWorstMs,
+                      st.unreplayable, m_netDilation);
+            m_netReplayMs = m_netReplayWorstMs = 0.0;
         }
         m_netStatesBytes = m_netStatesSent = m_netInputBytes = m_netInputsSent = 0;
     }
@@ -5919,6 +5927,7 @@ private:
     bool m_ownDamageFresh = true;       // client: its car's damage record not shown yet
     float m_netDilation = 1.0f;         // client: the rate its samples run at
     double m_netLead = -1.0;            // client: how far (ms) its car runs ahead of the host
+    double m_netReplayMs = 0.0, m_netReplayWorstMs = 0.0; // client: what its corrections cost
     struct ProxyHistory {
         std::uint32_t seq = 0;
         std::vector<ProxyPose> poses;
