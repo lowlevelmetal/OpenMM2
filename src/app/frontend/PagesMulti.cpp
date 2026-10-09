@@ -162,7 +162,9 @@ public:
         fe.unlockedNetCar();
         NetGame& net = ensureNetGame(fe);
         std::string error;
-        if (!net.startLanScan(&error))
+        // Not under the lobby after a race: the browser searches while the
+        // sessions are on screen.
+        if (!net.inSession() && !net.startLanScan(&error))
             log::warn("multiplayer: LAN browser unavailable: {}", error);
 
         // Connection providers: only TCP/IP has a modern equivalent (OpenMM2's

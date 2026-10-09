@@ -938,8 +938,11 @@ public:
             // Back from a multiplayer race: the lobby, over the sessions list,
             // and a race or Cops and Robbers game that ended shows its
             // results first (mmGameMulti::UpdateResults, mmMultiCR::
-            // FillResults; MM2 shows them over the race).
-            m_fe.config = result->config;
+            // FillResults; MM2 shows them over the race). The menus keep the
+            // driver's own state (configFromProfile, with the network event
+            // and car saveNetEvent stored): the network race's setup
+            // (multiplayer, no traffic, police or opponents, the host's
+            // difficulty) must not become the next single-player race's.
             m_fe.push(frontend::makeDriverPage(m_fe));
             m_fe.push(frontend::makeSessionsPage(m_fe));
             m_fe.push(frontend::makeLobbyPage(m_fe));
