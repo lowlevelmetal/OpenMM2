@@ -198,8 +198,9 @@ needs, all of it inert in a single-player race:
   they were handed out (`generation`).
 * `takeKnocks` (with `recordKnocks(true)`): the placed props that broke loose
   (`dgUnhitBangerInstance::Impact`) and what hit them.
-* A client (`setReplica`): only its own car and the props it simulates may
-  touch its props (`phys::Instance::acceptsContact`); `breakPlaced` takes a
+* A client (`setReplica`): only its own car may touch its props, and the
+  props it simulates may knock a placed prop for their first 0.5 s
+  (`phys::Instance::acceptsContact`); `breakPlaced` takes a
   prop out of its room as Impact does but without a body; `restoreStanding`
   undoes a knock its car predicted that the host did not make (Reset for one
   prop); `showMirror` / `hideMirror` show the host's ring slots in instances

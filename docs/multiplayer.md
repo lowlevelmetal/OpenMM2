@@ -922,9 +922,10 @@ them, and dent them, through single player's code.
   in the past (what the messages needed to arrive over the last 3 s plus a
   send interval, 50-500 ms, as the other players' cars): a knock when it shows
   that time, the ring in mirror slots interpolated on their velocities
-  (`net::SnapshotBuffer`). Only its own car (and the props it sets moving
-  itself) may touch its props (`phys::Instance::acceptsContact`): the other
-  cars pass through them, since the host decides what they do. Its car hits a
+  (`net::SnapshotBuffer`). Only its own car may touch its props
+  (`phys::Instance::acceptsContact`), and the pieces it simulates itself may
+  knock a standing prop for their first 0.5 s: the other cars pass through
+  them, since the host decides what they do. Its car hits a
   prop at once, as in single player (the impulse, the damage, the prop
   breaking loose): a prediction. When the host's knock comes (from its copy
   of the car, a playout delay later) the piece simulated here stands in for
