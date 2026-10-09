@@ -29,4 +29,12 @@ bool AudioManager::update(bool paused, Mixer& mixer, Announcer* speech, float dt
     return false;
 }
 
+bool AudioManager::updateFrame(bool paused, Mixer& mixer, Announcer* speech, float dt) {
+    // GameLoop: AudManager::Update, then asRoot::Update, whose first node is
+    // the same manager.
+    const bool first = update(paused, mixer, speech, dt);
+    const bool second = update(paused, mixer, speech, dt);
+    return first || second;
+}
+
 } // namespace mm2::audio::game

@@ -177,11 +177,12 @@ public:
             loadStep(ctx);
             return;
         }
-        // GameLoop: AudManager::Update before the game's update, with the
-        // pause state the frame starts with (every sound stops while paused).
+        // GameLoop: AudManager::Update before the game's update, then again
+        // as asRoot's first node, with the pause state the frame starts with
+        // (every sound stops while paused).
         if (ctx.mixer)
-            m_audioManager.update(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
-                                  static_cast<float>(dt));
+            m_audioManager.updateFrame(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
+                                       static_cast<float>(dt));
         // mmInput::Update: the controller's bindings against the devices.
         {
             const auto size = ctx.window().size();
@@ -3125,7 +3126,7 @@ private:
         updateAmbientAudio(ctx, dt);
         updatePedestrianAudio(dt);
         // mmGame::Update's mmSpeechContainer::Update (AudSpeech::Update); the
-        // frame's first one was AudManager::Update's (m_audioManager).
+        // frame's first two were AudManager::Update's (m_audioManager).
         if (m_announcerOk)
             m_announcer.update(dt);
         m_ambience.update(m_camera.transform, dt, m_tunnel);
