@@ -133,6 +133,27 @@ counted in the summary above.
 | A client's police cars' damage (`game::DamageReplica`, `VehicleEffects`, `AmbientEntity::damage`) | `vehCarDamage::Update`, `ApplyImpact`, `fxTexelDamage::ApplyDamage`, `vehBreakableMgr::Eject`, `vehCarModel::EjectOneshot` on the host's cars | openmm2 | Added 2026-10-09 (protocol 4): the host's police damage level (10 bits) drives the received car's smoke as `vehCarDamage::Update` does, and its dents, broken parts, sparks, shards and impact sounds are replayed from the host's records (docs/multiplayer.md, "Damage"); the wreck (out of action) as before, with its black smoke and the explosion sound. Before, a client saw the wreck flag and the explosion only. |
 | A client's knocked traffic cars' wheels (`AmbientEntity::wheels`, `game::trafficWheelMatrices`) | `aiVehicleInstance::Draw` with an `aiVehicleActive` (`vehWheelCheap`'s drawing matrices) | openmm2 | Added 2026-10-09 (protocol 4): a car with a body on the host sends its four wheels' drawing offsets; the client draws it on them and lays its shadow as a physical car's. Before, it was drawn on its rail wheels. |
 
+## Props of a network race
+
+Added 2026-10-09 on the maintainer's decision (the host is the authority for
+everything). MM2 sends nothing about props: every machine knocks its own
+props, parked cars, traffic lights and thrown car parts with its own
+simulation of every car (`mmNetObject::Update` declares each network car a
+type-3 mover; no message of `mmGameMulti::GameMessageCB` or the modes'
+`GameMessage` names a prop). What a network game has is MM2's and unchanged:
+no parked cars in a network cruise or Cops and Robbers, no ferries, no cable
+cars (`mmGame::InitGizmos`, `mmGameMulti::Init`). These rows are not counted
+in the summary above.
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `game::PropHost`, `PropClient`, `NetProps`, `net::PropStateMsg`, `PropKnocksEvent` | (none) | openmm2 | The host simulates the props for everyone and sends the knocks (reliable, all of them to a machine that has loaded the race) and its ring of knocked-over props (`dgBangerManager`'s 40 slots); a client shows them a playout delay in the past, predicts its own car's knocks and hands them over (docs/multiplayer.md, "Props"). |
+| `BangerSet::setReplica`, `phys::Instance::acceptsContact` | `dgPhysManager::CollideInstances` | deviation | A client's props take contacts from its own car and its own simulated props only; MM2's take them from every mover. |
+| `BangerSet::breakPlaced`, `restoreStanding`, `showMirror`, `hideMirror` | `dgUnhitBangerInstance::Impact`, `Reset`, `dgHitBangerInstance` | openmm2 | A client's placed prop leaves its room as Impact makes it leave (without a body), stands again as Reset makes it stand (a prediction the host did not confirm), and the host's pieces are hit instances of their own. |
+| `BangerSet::attachEntity` on a mirror | `dgBangerActive::Attach` | deviation | MM2 starts an active at rest (a placed or resting prop is); a client's mirror of a host piece in flight starts from the host's motion. |
+| `phys::calcBangerImpact` with `Body::kinematicBreaksBangers` | `dgImpact::CalcImpact` | deviation | The host's kinematic copies of the other players' cars meet a banger with their phInertialCS (the same break test and share of the motion as a simulated car of their mass); their own response is left out. Without the flag a kinematic body cannot break a banger, as before. MM2's network cars are simulated vehCars. |
+| Thrown car parts (`ejectPart`'s tag, `game::carPartTag`) | `vehBreakableMgr::Eject` on every machine's simulation | deviation | The host throws them for everyone; a client takes another car's parts off without a throw and throws its own car's at once (handed over to the host's). |
+
 ## Files
 
 | File | Class | Reason |
@@ -162,6 +183,8 @@ counted in the summary above.
 | `src/core/StringUtil.h` | reclassified M | |
 | `src/net/AmbientState.cpp` | O | The shared cruise traffic's message (added 2026-10-09). |
 | `src/net/AmbientState.h` | O | |
+| `src/net/PropState.cpp` | O | The host's props on the wire (added 2026-10-09). |
+| `src/net/PropState.h` | O | |
 | `src/net/VehicleDamage.h` | O | A car's damage on the wire (added 2026-10-09); the rules it replays are MM2's (docs/multiplayer.md, "Damage"). |
 | `src/net/BitStream.cpp` | confirmed O | Wire encoding. |
 | `src/net/BitStream.h` | confirmed O | |

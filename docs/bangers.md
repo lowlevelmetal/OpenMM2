@@ -183,3 +183,30 @@ room of the player's car (type 4), an opponent's or a network player's
 its room, so a prop still moving vanishes when the cars leave it behind. A
 prop still standing (`dgUnhitBangerInstance`) keeps lvlInstance's empty
 Detach.
+
+## Network games
+
+MM2 sends nothing about props: every machine knocks its own with its own
+simulation of every car (`mmNetObject`, `mmGameMulti`). OpenMM2's host is the
+authority instead (docs/multiplayer.md, "Props"); BangerSet carries what that
+needs, all of it inert in a single-player race:
+
+* The placed props' indices name them on every machine (they are placed in
+  the same order everywhere); a hit instance remembers the placed prop it came
+  from (`Instance::source`, with `part` for a BREAKnn piece) or the tag its
+  thrower gave a car part (`Instance::tag`). The ring's slots count how often
+  they were handed out (`generation`).
+* `takeKnocks` (with `recordKnocks(true)`): the placed props that broke loose
+  (`dgUnhitBangerInstance::Impact`) and what hit them.
+* A client (`setReplica`): only its own car and the props it simulates may
+  touch its props (`phys::Instance::acceptsContact`); `breakPlaced` takes a
+  prop out of its room as Impact does but without a body; `restoreStanding`
+  undoes a knock its car predicted that the host did not make (Reset for one
+  prop); `showMirror` / `hideMirror` show the host's ring slots in instances
+  of their own, drawn where the host has them. An active attached to a
+  mirror starts from the host's motion (`dgBangerActive::Attach` starts a
+  placed or resting prop at rest).
+* A moving kinematic body allowed to (`phys::Body::kinematicBreaksBangers`,
+  the host's copies of the other players' cars) breaks a banger as a body of
+  its mass would (`calcBangerImpact`); every other kinematic body leaves it
+  standing, as before.
