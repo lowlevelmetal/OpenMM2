@@ -3273,8 +3273,9 @@ private:
         // mmReplayManager::Update reads mmInput::GetThrottle / GetBrakes /
         // GetSteering(playerFilterSteering) / GetHandBrake (the pedal swap
         // is ArcadeControls'); the steering filters use the parameters
-        // mmPlayer::Update set from the last frame's speed.
-        if (!m_flyCamera && m_popup == Popup::None) {
+        // mmPlayer::Update set from the last frame's speed. It records them
+        // in every frame the game runs, the menu up or not.
+        if (!m_flyCamera) {
             pedals.accelerator = m_gameInput.throttle();
             pedals.brake = m_gameInput.brakes();
             pedals.handbrake = m_gameInput.handBrake();
@@ -3295,6 +3296,14 @@ private:
         // ... and records them, and the car is driven with the recorded
         // values (bytes).
         pedals = controls::replayQuantize(pedals);
+        // mmGame::Update with the menu up (mmPopup enabled, the game not
+        // paused: a network game, a lost race, the chat line): the game's
+        // keys are off, but mmGame::UpdateSteeringBrakes still gives the car
+        // the recorded inputs for every controller but the mouse (inputDevice
+        // 0), whose car keeps the inputs it had.
+        if (m_popup != Popup::None && m_gameInput.controller() == controls::Controller::Mouse)
+            pedals = m_carPedals;
+        m_carPedals = pedals;
         m_steerApplied = pedals.steering; // mmPlayer::SetSteering: +0x2264
         m_gameInput.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during wreck
@@ -3710,6 +3719,9 @@ private:
     // mmReplayManager's reset flag (+0x19): the race starts over at the
     // start of the next frame (applyRestart).
     bool m_restartPending = false;
+    // What mmGame::UpdateSteeringBrakes last gave the car (the recorded
+    // inputs); with the menu up and the mouse controller the car keeps them.
+    phys::PedalInput m_carPedals;
     // The in-race popup (mmPopup). Options: one of the pages
     // frontend::PopupOptions builds (m_popupPage).
     Popup m_popup = Popup::None;
