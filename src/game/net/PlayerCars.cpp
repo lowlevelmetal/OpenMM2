@@ -164,6 +164,18 @@ std::optional<HostInputQueue::Next> HostInputQueue::next() {
     const std::int32_t waiting = static_cast<std::int32_t>(m_newest) - static_cast<std::int32_t>(m_next);
     m_leastWaiting = std::min(m_leastWaiting, waiting);
     ++m_next;
+    // Too far behind its client for a whole second: the newest few only.
+    m_slackLeast = std::min(m_slackLeast, waiting);
+    if (++m_slackSamples >= kSlackSamples) {
+        if (m_slackLeast > kMaxSlack) {
+            const std::uint32_t to = m_newest + 1 - kStartMargin;
+            m_skipped += to - m_next;
+            m_frames.erase(m_frames.begin(), m_frames.lower_bound(to));
+            m_next = to;
+        }
+        m_slackLeast = 1 << 20;
+        m_slackSamples = 0;
+    }
     return n;
 }
 
@@ -359,7 +371,8 @@ std::optional<net::PlayerInputMsg> CarPrediction::message() const {
 CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriver& driver,
                                                      phys::World& world, std::uint32_t ack,
                                                      const net::OwnCarState& host,
-                                                     const std::function<void()>& beforeLast) {
+                                                     const std::function<void()>& beforeLast,
+                                                     const std::function<void(std::uint32_t)>& beforeEach) {
     Correction out;
     if (ack <= m_acked)
         return out; // an older or repeated state
@@ -408,6 +421,8 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
             for (const auto& c : e.commands)
                 NetCarDriver::command(car, c);
             driver.apply(car, e.input);
+            if (beforeEach)
+                beforeEach(e.seq);
             if (k + 1 == m_history.size() && beforeLast)
                 beforeLast();
             world.replaySample(std::span<phys::Body* const>(bodies, count), phys::kFixedSampleStep);

@@ -80,6 +80,12 @@ public:
     // (the margin it keeps against late ones; the client's pace keeps it).
     static constexpr std::uint32_t kMaxAhead = 240;
     static constexpr std::uint32_t kStartMargin = 3;
+    // A queue that had more than this many inputs in hand at every sample
+    // for a second (a client whose inputs piled up while the host was busy
+    // loading, or a client that stalled and caught up) drops all but the
+    // newest few: its car would otherwise lag its player by that much.
+    static constexpr std::int32_t kMaxSlack = 12;
+    static constexpr int kSlackSamples = 60;
     // Samples a missing input repeats the last one before the car coasts
     // (no throttle, brake or steering).
     static constexpr int kRepeatSamples = 15;
@@ -109,9 +115,9 @@ public:
     // (negative: samples the queue ran short); for CarStatesMsg::waiting.
     std::int32_t takeLeastWaiting();
     // Inputs applied that the client did not send in time (repeated or
-    // coasted), and inputs that came too late, since the start.
+    // coasted), and inputs dropped to catch up (kMaxSlack), since the start.
     std::uint64_t missed() const { return m_missed; }
-    std::uint64_t late() const { return m_late; }
+    std::uint64_t skipped() const { return m_skipped; }
 
 private:
     std::map<std::uint32_t, net::CarInputFrame> m_frames;
@@ -122,7 +128,9 @@ private:
     net::CarInputFrame m_last;
     int m_starved = 0;
     std::int32_t m_leastWaiting = 1 << 20;
-    std::uint64_t m_missed = 0, m_late = 0;
+    std::int32_t m_slackLeast = 1 << 20; // the fewest in hand over the current second
+    int m_slackSamples = 0;
+    std::uint64_t m_missed = 0, m_skipped = 0;
 };
 
 // The car's state as the host sends it to its player, and the car put there
@@ -176,10 +184,13 @@ public:
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
     // there and runs the later samples again on their inputs (alone:
-    // phys::World::replaySample), calling `beforeLast` before the last one
-    // (the drawing keeps the car's pose before its last sample).
+    // phys::World::replaySample), calling `beforeEach` with each sample's
+    // number before it (the other players' cars put back where they stood
+    // when it first ran) and `beforeLast` before the last one (the drawing
+    // keeps the car's pose before its last sample).
     Correction acknowledge(SimVehicle& car, NetCarDriver& driver, phys::World& world, std::uint32_t ack,
-                           const net::OwnCarState& host, const std::function<void()>& beforeLast = {});
+                           const net::OwnCarState& host, const std::function<void()>& beforeLast = {},
+                           const std::function<void(std::uint32_t)>& beforeEach = {});
 
     // Statistics since the start.
     struct Stats {

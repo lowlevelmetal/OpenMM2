@@ -200,6 +200,26 @@ TEST(PlayerCars, TheHostQueueRepeatsThenCoastsAndSkipsLateInputs) {
     EXPECT_TRUE(n->commands.empty()); // the command was carried out
 }
 
+TEST(PlayerCars, AQueueFarBehindItsClientCatchesUp) {
+    // A backlog (the client drove while the host was loading): a second
+    // later the queue drops all but the newest few.
+    HostInputQueue q;
+    net::PlayerInputMsg m;
+    m.first = 1;
+    m.frames.resize(net::kMaxInputFrames);
+    q.receive(m);
+    std::uint32_t newest = net::kMaxInputFrames;
+    for (int i = 0; i < HostInputQueue::kSlackSamples; ++i) {
+        ASSERT_TRUE(q.next());
+        m.first = ++newest; // the client keeps sending one a sample
+        m.frames.resize(1);
+        q.receive(m);
+    }
+    EXPECT_GT(q.skipped(), 0u);
+    EXPECT_EQ(q.lastApplied() + HostInputQueue::kStartMargin + 1, newest); // before the last one came
+    EXPECT_EQ(q.missed(), 0u);
+}
+
 TEST(PlayerCars, AnInputFarAheadIsIgnored) {
     HostInputQueue q;
     net::PlayerInputMsg m;

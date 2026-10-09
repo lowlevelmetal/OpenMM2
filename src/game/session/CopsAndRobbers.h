@@ -60,6 +60,10 @@ struct CrSettings {
     // UpdateBank / UpdateHideout: the base's room (found 3.75 m above it) is
     // covered or underground (level flags 0x0A), or is the car's room.
     std::function<bool(const Vec3& base, const Vec3& car)> baseReachable;
+    // mmMultiCR::UpdateLimit runs on the host alone, which tells the others
+    // (SendLimitReached): a machine that is not the host counts the time
+    // down and shows the warnings, but ends only on limitReached().
+    bool limitsFromHost = false;
 };
 
 class CopsAndRobbers {
@@ -125,6 +129,10 @@ public:
                                        const std::vector<Impact>& impacts);
     // A message from another machine (`from`); a host may answer with more.
     std::vector<Message> receive(const Message& message, int from, bool host);
+    // The host's word that a limit was reached (TimeUp or PointLimit, the
+    // winner's car and points as its event had them): the game is over here
+    // too.
+    void limitReached(EventType type, int car, int value);
     // A player left (mmMultiCR::SystemMessage 0x2d): the host drops a
     // leaver's gold where it is (2 m above the car), not back to its spawn.
     std::vector<Message> playerLeft(int id, bool host);

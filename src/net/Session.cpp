@@ -1295,11 +1295,17 @@ void Session::resetReplication() {
     m_ambientStates.clear();
 }
 
-SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime, VehicleSnapshot& out) const {
+SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime,
+                                               VehicleSnapshot& out) const {
+    return sampleRemoteAt(playerId, sessionTime, out, m_config.maxExtrapolationMs);
+}
+
+SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime,
+                                               VehicleSnapshot& out, double maxExtrapolationMs) const {
     const auto it = m_remoteStates.find(playerId);
     if (it == m_remoteStates.end())
         return SnapshotBuffer::Result::Empty;
-    return it->second.buffer.sample(sessionTime, out, m_config.maxExtrapolationMs);
+    return it->second.buffer.sample(sessionTime, out, maxExtrapolationMs);
 }
 
 SnapshotBuffer::Result Session::sampleRemoteDelayed(std::uint8_t playerId, double sessionTimeMs,

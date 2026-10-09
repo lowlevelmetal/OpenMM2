@@ -263,6 +263,9 @@ public:
     void beginReplay();
     // Inside replaySample (the level's sources may show what a replay meets).
     bool replaying() const { return m_replaying; }
+    // OpenMM2 (network prediction): the bodies in the world (not removed)
+    // whose centre lies within `radius` of `at`, appended to `out`.
+    void bodiesNear(const Vec3& at, float radius, std::vector<Body*>& out) const;
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
     // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw
