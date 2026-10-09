@@ -372,6 +372,163 @@ TEST(HostileInput, WrongPasswordsLockTheAddressOut) {
     EXPECT_EQ(host.session->players().size(), 1u);
 }
 
+// --- The race start ---------------------------------------------------------------------
+
+// A joiner's race reports count only for itself, only for the race the host
+// is starting and only once: one in the lobby, for another race number, with
+// another player's id, or repeated changes nothing else and does not reach
+// the others again.
+TEST(HostileInput, HostCountsOnlyAJoinersOwnFirstReportOfTheRace) {
+    Peer host;
+    ASSERT_TRUE(host.session->host(hostParams()));
+    Peer watcher;
+    JoinParams jp;
+    jp.host = Address::loopback(host.session->port());
+    jp.player.name = "Watcher";
+    ASSERT_TRUE(watcher.session->join(jp));
+    ASSERT_TRUE(waitFor([&] {
+        host.pump();
+        watcher.pump();
+        return watcher.find<ev::JoinAccepted>() != nullptr;
+    }));
+    RawEnd raw;
+    const std::uint8_t id = rawJoin(host, raw);
+    ASSERT_NE(id, kInvalidPlayerId);
+    const std::uint8_t watcherId = watcher.session->localId();
+    auto pumpAll = [&](int ms) {
+        waitFor([&] {
+            host.pump();
+            raw.pump();
+            watcher.pump();
+            return false;
+        }, ms);
+    };
+
+    // In the lobby nothing is loading.
+    raw.send(RaceLoadedMsg{0, id});
+    raw.send(RaceLoadedMsg{1, id});
+    pumpAll(100);
+    EXPECT_EQ(host.count<ev::PlayerLoaded>(), 0);
+
+    host.session->startRace(0);
+    ASSERT_TRUE(waitFor([&] {
+        host.pump();
+        raw.pump();
+        watcher.pump();
+        return watcher.session->phase() == SessionPhase::Countdown && raw.take<RaceLoadMsg>().has_value();
+    }));
+    const std::uint32_t race = host.session->raceNumber();
+    raw.send(RaceLoadedMsg{race - 1, id});
+    raw.send(RaceLoadedMsg{race + 1, id});
+    raw.send(RaceLoadedMsg{0xFFFFFFFFu, id});
+    pumpAll(100);
+    EXPECT_FALSE(host.session->playerLoaded(id));
+    EXPECT_EQ(host.count<ev::PlayerLoaded>(), 0);
+
+    // Another player's id: the host takes the report as the sender's.
+    raw.send(RaceLoadedMsg{race, watcherId});
+    for (int i = 0; i < 100; ++i)
+        raw.send(RaceLoadedMsg{race, id});
+    pumpAll(200);
+    EXPECT_TRUE(host.session->playerLoaded(id));
+    EXPECT_FALSE(host.session->playerLoaded(watcherId));
+    EXPECT_EQ(host.count<ev::PlayerLoaded>(), 1);
+    EXPECT_EQ(watcher.count<ev::PlayerLoaded>(), 1);
+    EXPECT_TRUE(watcher.session->playerLoaded(id));
+    // The start still waits for the host and the watcher.
+    EXPECT_FALSE(host.session->raceStartKnown());
+    host.session->reportLoaded();
+    watcher.session->reportLoaded();
+    ASSERT_TRUE(waitFor([&] {
+        host.pump();
+        raw.pump();
+        watcher.pump();
+        return watcher.session->raceStartKnown();
+    }));
+    EXPECT_EQ(watcher.session->raceStartTime(), host.session->raceStartTime());
+}
+
+// A host's race messages out of turn leave a client's race alone: a start
+// or a report in the lobby, an order that does not number a new race, a
+// start for another race or a second one, a report for a player the client
+// does not know, for itself or for another race.
+TEST(HostileInput, ClientIgnoresRaceMessagesOutOfTurn) {
+    RawEnd raw;
+    Peer client;
+    rawHost(raw, client, welcomeFor(1));
+    ASSERT_EQ(client.session->state(), Session::State::Active);
+    auto pumpBoth = [&](int ms) {
+        waitFor([&] {
+            client.pump();
+            raw.pump();
+            return false;
+        }, ms);
+    };
+    raw.send(RaceStartMsg{1, 5000});
+    raw.send(RaceLoadedMsg{1, kHostPlayerId});
+    pumpBoth(100);
+    EXPECT_EQ(client.session->phase(), SessionPhase::Lobby);
+    EXPECT_FALSE(client.session->raceStartKnown());
+    EXPECT_FALSE(client.session->playerLoaded(kHostPlayerId));
+
+    raw.send(RaceLoadMsg{3, 100});
+    raw.send(RaceLoadMsg{2, 100}); // an earlier number
+    raw.send(RaceLoadMsg{3, 100}); // the same race again
+    raw.send(RaceStartMsg{2, 5000});
+    raw.send(RaceLoadedMsg{3, 9});
+    raw.send(RaceLoadedMsg{3, 1}); // the client itself: it reports that itself
+    raw.send(RaceLoadedMsg{2, kHostPlayerId});
+    pumpBoth(150);
+    EXPECT_EQ(client.session->phase(), SessionPhase::Countdown);
+    EXPECT_EQ(client.session->raceNumber(), 3u);
+    EXPECT_EQ(client.count<ev::RaceLoading>(), 1);
+    EXPECT_FALSE(client.session->raceStartKnown());
+    EXPECT_FALSE(client.session->playerLoaded(9));
+    EXPECT_FALSE(client.session->playerLoaded(1));
+    EXPECT_FALSE(client.session->playerLoaded(kHostPlayerId));
+    // The client's own report still goes out, for race 3.
+    client.session->reportLoaded();
+    std::optional<RaceLoadedMsg> report;
+    ASSERT_TRUE(waitFor([&] {
+        client.pump();
+        raw.pump();
+        report = raw.take<RaceLoadedMsg>();
+        return report.has_value();
+    }));
+    EXPECT_EQ(report->race, 3u);
+    EXPECT_EQ(report->player, 1);
+
+    raw.send(RaceLoadedMsg{3, kHostPlayerId});
+    raw.send(RaceStartMsg{3, 7000});
+    raw.send(RaceStartMsg{3, 9000}); // a second start
+    pumpBoth(150);
+    EXPECT_TRUE(client.session->playerLoaded(kHostPlayerId));
+    EXPECT_EQ(client.session->raceStartTime(), 7000u);
+    EXPECT_EQ(client.count<ev::RaceStartSet>(), 1);
+}
+
+// A Welcome during a race: the client takes the race, the start and the
+// players who have loaded, leaving out ids it does not know.
+TEST(HostileInput, WelcomeDuringARaceKeepsOnlyKnownLoadedPlayers) {
+    RawEnd raw;
+    Peer client;
+    WelcomeMsg w = welcomeFor(1);
+    w.phase = SessionPhase::Countdown;
+    w.race = 2;
+    w.raceOrderTime = 50;
+    w.loaded = {kHostPlayerId, kHostPlayerId, 7, 200, 1};
+    rawHost(raw, client, w);
+    ASSERT_EQ(client.session->state(), Session::State::Active);
+    client.pump();
+    EXPECT_EQ(client.session->raceNumber(), 2u);
+    EXPECT_TRUE(client.session->playerLoaded(kHostPlayerId));
+    EXPECT_FALSE(client.session->playerLoaded(7));
+    EXPECT_FALSE(client.session->playerLoaded(200));
+    EXPECT_FALSE(client.session->playerLoaded(1)); // it reports itself
+    EXPECT_FALSE(client.session->raceStartKnown());
+    EXPECT_EQ(client.count<ev::RaceLoading>(), 1);
+}
+
 // --- Floods -----------------------------------------------------------------------------
 
 // A client cannot make the host relay an unbounded stream of chat lines,

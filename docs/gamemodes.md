@@ -91,8 +91,10 @@ penalties (below).
 
 Circuits and checkpoint races start the countdown only once the pre-race
 camera has finished (`UpdateGame` state 0 waits for mmPlayer +0xE5A; Blitz
-does not), and the multiplayer races only after the host's start message
-(OpenMM2: 2.5 s before the shared start time). Each countdown line plays
+does not), and the multiplayer races only after the host's start message,
+which comes once every player has reported its race loaded (OpenMM2: a
+shared start time, the countdown's lines following the time left to it; see
+docs/multiplayer.md, "Race start"). Each countdown line plays
 "Startracelow", "Go!" plays "Startracehigh".
 
 ### Checkpoints
@@ -366,14 +368,18 @@ by the game. Falling into the water fails the event 0.5 s later.
 HUD, car):
 
 * **Start**: no countdown; "Go!" (113) for 2 s at the top with
-  "Startracehigh". Players start at random intersections drawn from a
-  stream seeded with their id (`mmGame::RespawnXYZ`).
+  "Startracehigh". MM2's host starts at once and each joiner when the host's
+  game state reaches it; OpenMM2's machines wait for everyone and go together
+  at the shared start (docs/multiplayer.md, "Race start"). Players start at
+  random intersections drawn from a stream seeded with their id
+  (`mmGame::RespawnXYZ`).
 * **Machines**: each machine runs the rules for its own car and tells the
   others (`CopsAndRobbers::updateNetwork` / `receive`): a client that
   reaches free gold asks the host (0x25e) and the gold waits; the host
   grants it (0x25a); the carrier's machine reports a drop (0x259) and a
   delivery (600); the host draws the next set and sends its places (0x261).
-  OpenMM2 seeds the first set with the shared start time.
+  OpenMM2 seeds the first set with the time the host ordered the race,
+  which every machine knows when it loads.
 
 * **Places**: `race/<city>/multicopwaypoints.csv` is a pool of places (at
   least 3; the last row is never picked). Each set, at the start and after

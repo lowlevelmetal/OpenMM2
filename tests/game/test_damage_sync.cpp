@@ -688,8 +688,12 @@ TEST(DamageSync, DamageTravelsBetweenNetGames) {
     ASSERT_TRUE(host.host(cruise, {"Damage", "", 2, false}, {"vpbug", 0, 0}, &err)) << err;
     ASSERT_TRUE(client.join(std::format("127.0.0.1:{}", damagePort()), "", {"vpbug", 0, 0}, &err)) << err;
     ASSERT_TRUE(pump({&host, &client}, [&] { return host.players().size() == 2; }));
-    host.startRace(200);
-    ASSERT_TRUE(pump({&host, &client}, [&] { return host.raceStarted() && client.raceStarted(); }));
+    host.startRace();
+    ASSERT_TRUE(pump({&host, &client}, [&] {
+        host.reportLoaded(); // nothing to load
+        client.reportLoaded();
+        return host.raceStarted() && client.raceStarted();
+    }, 10000));
     const std::uint8_t clientId = client.localId();
 
     game::NetDamage hostSide, clientSide;

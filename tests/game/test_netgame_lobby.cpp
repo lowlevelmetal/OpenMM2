@@ -81,15 +81,18 @@ struct Lobby {
         client.setReady(true);
         ASSERT_TRUE(pump({&host, &client}, [&] { return host.everyoneReady(false); }));
     }
-    // GO DRIVE: both machines see the race start once.
+    // GO DRIVE: both machines see the race start once, load it (nothing to
+    // load here) and report it loaded.
     void start() {
-        host.startRace(200);
+        host.startRace();
         bool h = false, c = false;
         ASSERT_TRUE(pump({&host, &client}, [&] {
             h = h || host.takeRaceStart();
             c = c || client.takeRaceStart();
             return h && c;
         }));
+        host.reportLoaded();
+        client.reportLoaded();
         ASSERT_TRUE(pump({&host, &client}, [&] { return host.raceStarted() && client.raceStarted(); }));
     }
 };
@@ -171,7 +174,7 @@ TEST(NetGameLobby, ReturnAndNewCountdownInOneUpdate) {
     ASSERT_NO_FATAL_FAILURE(l.start());
     const std::uint32_t first = l.client.raceNumber();
     l.host.returnToLobby();
-    l.host.startRace(500); // MultiAllReady is the lobby's check, not the session's
+    l.host.startRace(); // MultiAllReady is the lobby's check, not the session's
     // Only the host is serviced until both messages have left it.
     settle({&l.host}, 100);
     ASSERT_TRUE(pump({&l.client}, [&] { return l.client.raceNumber() == first + 1; }));

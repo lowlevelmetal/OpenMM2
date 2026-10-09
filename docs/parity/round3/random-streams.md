@@ -170,7 +170,7 @@ this reason).
 | `vehWheel::GetBumpDisplacement` (via `vehDrivetrain::Update`) | the wheels' own stream (`phys/vehicle/Wheel`) | deviation | Physics; per sample. |
 | `vehCarModel::EjectOneshot`, `vehBreakableMgr::Eject` (also via `aiVehicleActive::Impact`) | RaceScreen and BangerSet eject streams | deviation | On impacts. |
 | `mmPlayer::UpdateFF`, `FFImpactCallback` | `ForceFeedback` stream | deviation | Already recorded as inferred own. |
-| `mmMultiCR::GetRandomIndex` (global), the Cops and Robbers point picker (secondary, clock-seeded) | `CopsAndRobbers` (its own LCG of the same form, seeded from the race start time) | deviation | Network; MM2's picker is seeded from the clock, so nothing to reproduce. The LCG constants differ from MSVC's (session record). |
+| `mmMultiCR::GetRandomIndex` (global), the Cops and Robbers point picker (secondary, clock-seeded) | `CopsAndRobbers` (its own LCG of the same form, seeded from the race's order time) | deviation | Network; MM2's picker is seeded from the clock, so nothing to reproduce. The LCG constants differ from MSVC's (session record). |
 | `ptxGlass::AddShards`, `ptxGlass::Update` | — | not needed | No retail banger is glass (BillFlags 0x100). |
 | `pedActive::FirstImpactCallback` | — | not needed | No ragdolls exist in MM2 (pedRagdollMgr is never built). |
 

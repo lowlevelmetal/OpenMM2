@@ -26,6 +26,8 @@ namespace mm2::net {
 inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 2: the shared ambient traffic of multiplayer cruise (AmbientState, the
 // Ambient channel, SessionSettings::sharedTraffic).
+// 3: the race start handshake (RaceLoad in place of Countdown, RaceLoaded,
+// RaceStart; the race in Welcome).
 // 4: the cars' damage (net/VehicleDamage.h events; in AmbientState the
 // police's damage at 10 bits and the knocked traffic cars' wheels).
 inline constexpr std::uint16_t kProtocolVersion = 4;
@@ -79,7 +81,7 @@ enum class MsgType : std::uint8_t {
     PlayerRequest,
     Chat,
     Settings,
-    Countdown,
+    RaceLoad, // was Countdown (protocol 2): the start time now follows the loading
     ReturnToLobby,
     Kick,
     TimeRequest,
@@ -89,7 +91,9 @@ enum class MsgType : std::uint8_t {
     GameEvent,
     PlayerPings,
     AmbientState, // net/AmbientState.h
-    Last = AmbientState,
+    RaceLoaded,
+    RaceStart,
+    Last = RaceStart,
 };
 
 // Sent as ENet disconnect data and in Reject/PlayerLeft messages.
@@ -114,6 +118,8 @@ const char* describe(DisconnectReason reason);
 enum class GameMode : std::uint8_t { Cruise, Checkpoint, Circuit, Blitz, CopsAndRobbers, CrashCourse, Last = CrashCourse };
 enum class TimeOfDay : std::uint8_t { Morning, Noon, Evening, Night, Last = Night };
 enum class Weather : std::uint8_t { Clear, Cloudy, Rain, Snow, Last = Snow };
+// Countdown: a race is loading and starting (from GO DRIVE until the start
+// time the host sends once everyone has loaded).
 enum class SessionPhase : std::uint8_t { Lobby, Countdown, InGame, Last = InGame };
 
 struct SessionSettings {
@@ -179,7 +185,12 @@ struct WelcomeMsg {
     std::vector<PlayerInfo> players;
     SessionPhase phase = SessionPhase::Lobby;
     std::uint32_t hostTime = 0;
-    std::uint32_t countdownEnd = 0; // valid when phase == Countdown
+    // The current race (RaceLoad's number and time; in the lobby the last).
+    std::uint32_t race = 0;
+    std::uint32_t raceOrderTime = 0;
+    bool startKnown = false;      // the host has sent the race's start (RaceStart)
+    std::uint32_t startTime = 0;  // valid when startKnown
+    std::vector<std::uint8_t> loaded; // the players who have reported the race loaded
 };
 
 struct RejectMsg {
@@ -224,9 +235,30 @@ struct SettingsMsg {
     SessionSettings settings;
 };
 
-struct CountdownMsg {
-    static constexpr MsgType kType = MsgType::Countdown;
-    std::uint32_t startTime = 0; // session time at which the race starts
+// Host -> clients: GO DRIVE. Every machine loads race `race` (the host
+// numbers its races from 1) and reports it loaded (RaceLoaded); the start
+// time follows (RaceStart). `orderTime` is the session time of the order.
+struct RaceLoadMsg {
+    static constexpr MsgType kType = MsgType::RaceLoad;
+    std::uint32_t race = 0;
+    std::uint32_t orderTime = 0;
+};
+
+// Client -> host: this machine has loaded race `race` (mmGameMulti::
+// SendRaceReady, 0x1f6). Host -> clients: player `player` has (the host sets
+// it when relaying).
+struct RaceLoadedMsg {
+    static constexpr MsgType kType = MsgType::RaceLoaded;
+    std::uint32_t race = 0;
+    std::uint8_t player = kInvalidPlayerId;
+};
+
+// Host -> clients: race `race` starts (its countdown ends, the cars go) at
+// session time `startTime` (MM2's start message, 0x20f, as a shared time).
+struct RaceStartMsg {
+    static constexpr MsgType kType = MsgType::RaceStart;
+    std::uint32_t race = 0;
+    std::uint32_t startTime = 0;
 };
 
 struct ReturnToLobbyMsg {
@@ -362,7 +394,18 @@ bool serialize(S& s, WelcomeMsg& m) {
         serialize(s, p);
     s.enumeration(m.phase, SessionPhase::Last);
     s.u32(m.hostTime);
-    s.u32(m.countdownEnd);
+    s.u32(m.race);
+    s.u32(m.raceOrderTime);
+    s.boolean(m.startKnown);
+    s.u32(m.startTime);
+    auto loaded = static_cast<std::uint32_t>(m.loaded.size());
+    s.varU32(loaded);
+    if (loaded > kMaxPlayers)
+        return s.fail();
+    if constexpr (S::kReading)
+        m.loaded.resize(loaded);
+    for (auto& id : m.loaded)
+        s.u8(id);
     return s.ok();
 }
 
@@ -412,7 +455,22 @@ bool serialize(S& s, SettingsMsg& m) {
 }
 
 template <class S>
-bool serialize(S& s, CountdownMsg& m) {
+bool serialize(S& s, RaceLoadMsg& m) {
+    s.u32(m.race);
+    s.u32(m.orderTime);
+    return s.ok();
+}
+
+template <class S>
+bool serialize(S& s, RaceLoadedMsg& m) {
+    s.u32(m.race);
+    s.u8(m.player);
+    return s.ok();
+}
+
+template <class S>
+bool serialize(S& s, RaceStartMsg& m) {
+    s.u32(m.race);
     s.u32(m.startTime);
     return s.ok();
 }

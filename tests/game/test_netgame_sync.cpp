@@ -55,8 +55,12 @@ TEST(NetGameSync, StatesCarryTheSimulationTimeAndCarsAreSampledWithItsLag) {
     ASSERT_TRUE(client.join(std::format("127.0.0.1:{}", syncPort()), "", {"vpbug", 0, 0}, &err)) << err;
     ASSERT_TRUE(pump({&host, &client}, [&] { return host.players().size() == 2; }));
     pump({&host, &client}, [] { return false; }, 400); // clock sync
-    host.startRace(200);
-    ASSERT_TRUE(pump({&host, &client}, [&] { return host.raceStarted() && client.raceStarted(); }));
+    host.startRace();
+    ASSERT_TRUE(pump({&host, &client}, [&] {
+        host.reportLoaded(); // nothing to load
+        client.reportLoaded();
+        return host.raceStarted() && client.raceStarted();
+    }));
 
     // The client's simulation is 10 ms behind each frame; its car runs along
     // +X at 10 m/s, at x = time / 100 of the session time the state belongs

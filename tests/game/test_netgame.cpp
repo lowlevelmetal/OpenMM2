@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <format>
 #include <functional>
 #include <thread>
@@ -142,12 +143,19 @@ TEST(NetGame, HostJoinChatReadyCountdownAndState) {
     ASSERT_TRUE(pump({&host, &client}, [&] { return client.raceConfig().laps == 2; }));
     EXPECT_EQ(client.raceConfig().city, "london");
 
-    // Countdown: both sides get the race start, at the same session time.
-    host.startRace(400);
+    // GO DRIVE: both sides load the race; its start follows once both have
+    // reported it loaded, at the same session time.
+    host.startRace();
     ASSERT_TRUE(pump({&host, &client}, [&] { return client.phase() == NetGame::Phase::Countdown; }));
     EXPECT_TRUE(host.takeRaceStart());
     EXPECT_TRUE(client.takeRaceStart());
     EXPECT_FALSE(client.takeRaceStart()); // only once
+    EXPECT_EQ(host.raceOrderTime(), client.raceOrderTime());
+    EXPECT_FALSE(client.raceStartKnown());
+    EXPECT_TRUE(std::isinf(client.secondsToStart()));
+    host.reportLoaded();
+    client.reportLoaded();
+    ASSERT_TRUE(pump({&host, &client}, [&] { return client.raceStartKnown(); }));
     EXPECT_EQ(host.raceStartTime(), client.raceStartTime());
     EXPECT_GT(client.secondsToStart(), 0.0);
     ASSERT_TRUE(pump({&host, &client}, [&] { return host.raceStarted() && client.raceStarted(); }));

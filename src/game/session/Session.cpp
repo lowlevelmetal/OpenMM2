@@ -278,7 +278,10 @@ void Session::beginEvent(int index) {
     m_wp.singleVisible = lesson && lesson->singleCheckpoint;
     resetWaypoints();
 
-    m_phase = mode() == GameMode::Cruise || mode() == GameMode::CopsAndRobbers ? Phase::Racing : Phase::Countdown;
+    // A network Cops and Robbers game waits for its start (copsAndRobbersGo).
+    const bool noCountdown =
+        mode() == GameMode::Cruise || (mode() == GameMode::CopsAndRobbers && !multiplayer());
+    m_phase = noCountdown ? Phase::Racing : Phase::Countdown;
     m_stage = Stage::Intro;
     m_wait = 0.0f;
     // A later exam event goes straight to "Go"; UpdateCollide and
@@ -346,13 +349,9 @@ void Session::start() {
         return;
     }
     if (mode() == GameMode::CopsAndRobbers) {
-        // mmMultiCR::UpdateGame state 2: no countdown, "Go!" for 2 s at the
-        // top with its first sound ("Startracehigh"); the rules are
-        // CopsAndRobbers'.
-        m_phase = Phase::Racing;
-        setMessage(modeText(mode(), multiplayer()).go, "Go!", 2.0f, true);
-        sound(GameSound::StartRaceHigh);
-        m_released = true;
+        // A network game says "Go!" when it starts (updateCountdown).
+        if (!multiplayer())
+            copsAndRobbersGo();
         return;
     }
     if (m_options.skipCountdown)
@@ -405,12 +404,21 @@ void Session::updateCountdown(float dt) {
     if (m_stage == Stage::Intro && m_preRaceCamera && !multiplayer() &&
         (mode() == GameMode::Circuit || mode() == GameMode::Checkpoint))
         return;
-    // mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame state 0 waits
-    // for the host's start message.
-    if (m_stage == Stage::Intro && !m_startSignal)
+    // mmMultiCR::UpdateGame: the host goes to state 1 at once, a joiner when
+    // the host's game state arrives (0x25d), and state 2 lets the cars go.
+    // OpenMM2's machines go together at the shared start (NetRaceStart).
+    if (mode() == GameMode::CopsAndRobbers) {
+        if (m_startSignal && (!m_netToGo || *m_netToGo <= 0.0f))
+            copsAndRobbersGo();
         return;
+    }
+    // mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame state 0 waits
+    // for the host's start message; on OpenMM2's shared start the countdown
+    // begins when Ready... and Set... are what is left of it.
     const LessonEvent* lesson = currentLesson();
     ModeText mt = modeText(mode(), multiplayer());
+    if (m_stage == Stage::Intro && (!m_startSignal || (m_netToGo && *m_netToGo > mt.total)))
+        return;
     LessonText lt;
     if (lesson) {
         lt = lessonText(lesson->type);
@@ -442,7 +450,7 @@ void Session::updateCountdown(float dt) {
         sound(GameSound::StartRaceLow);
         return;
     case Stage::Ready:
-        m_wait -= dt;
+        m_wait = m_netToGo ? *m_netToGo : m_wait - dt;
         if (m_wait > kStep) {
             if (lesson && lesson->type == LessonType::MinimumSpeed) {
                 std::string text = str(mt.ready, "Maintain %.0f through the checkpoints");
@@ -463,7 +471,7 @@ void Session::updateCountdown(float dt) {
             push(EventType::PlayerDamageLimits, -1, kCleanMaxDamage);
         return;
     case Stage::Set: {
-        m_wait -= dt;
+        m_wait = m_netToGo ? *m_netToGo : m_wait - dt;
         const bool corner = lesson && lesson->type == LessonType::MinimumSpeed;
         if (corner ? m_wait >= 0.0f : m_wait > 0.0f) {
             if (mt.set)
@@ -474,6 +482,15 @@ void Session::updateCountdown(float dt) {
         return;
     }
     }
+}
+
+void Session::copsAndRobbersGo() {
+    // mmMultiCR::UpdateGame state 2: no countdown, "Go!" for 2 s at the top
+    // with its first sound ("Startracehigh"); the rules are CopsAndRobbers'.
+    m_phase = Phase::Racing;
+    setMessage(modeText(mode(), multiplayer()).go, "Go!", 2.0f, true);
+    sound(GameSound::StartRaceHigh);
+    m_released = true;
 }
 
 void Session::go() {

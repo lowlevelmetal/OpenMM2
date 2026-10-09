@@ -78,8 +78,12 @@ TEST(SharedTrafficNet, HostAndClientInOneProcess) {
     EXPECT_TRUE(client.sharedTraffic());
     // In the lobby nothing is sent.
     EXPECT_EQ(host.sendAmbientState(client.localId(), net::AmbientStateMsg{}), 0u);
-    host.startRace(200);
-    ASSERT_TRUE(pump({&host, &client}, [&] { return host.raceStarted() && client.raceStarted(); }));
+    host.startRace();
+    ASSERT_TRUE(pump({&host, &client}, [&] {
+        host.reportLoaded(); // nothing to load
+        client.reportLoaded();
+        return host.raceStarted() && client.raceStarted();
+    }));
 
     // Two cars along -Z at 10 m/s and a cop chasing the client.
     TrafficHost th;

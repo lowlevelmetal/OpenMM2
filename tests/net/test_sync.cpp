@@ -159,8 +159,12 @@ void connect(Peer& host, Peer& client) {
 }
 
 void startRace(Peer& host, Peer& client) {
-    host.session->startCountdown(100);
-    ASSERT_TRUE(pumpUntil({&host, &client}, [&] { return client.has<ev::GameStarted>(); }));
+    host.session->startRace(100);
+    ASSERT_TRUE(pumpUntil({&host, &client}, [&] {
+        host.session->reportLoaded(); // nothing to load
+        client.session->reportLoaded();
+        return client.has<ev::GameStarted>();
+    }));
 }
 
 } // namespace
@@ -251,8 +255,12 @@ TEST(SessionSync, TheHostPassesEveryJoinersStateOnAtOnce) {
     ASSERT_TRUE(b.session->join(j));
     ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return b.has<ev::JoinAccepted>(); }));
     pumpFor({&host, &a, &b}, 400);
-    host.session->startCountdown(100);
-    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return a.has<ev::GameStarted>() && b.has<ev::GameStarted>(); }));
+    host.session->startRace(100);
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
+        for (Peer* p : {&host, &a, &b})
+            p->session->reportLoaded();
+        return a.has<ev::GameStarted>() && b.has<ev::GameStarted>();
+    }));
     const std::uint8_t aId = a.session->localId();
     std::vector<std::uint32_t> seen;
     b.session->setStateObserver([&](std::uint8_t id, const VehicleSnapshot& s, double) {

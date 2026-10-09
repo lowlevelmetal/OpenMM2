@@ -108,9 +108,20 @@ public:
     void setPreRaceCamera(bool active) { m_preRaceCamera = active; }
     // Multiplayer races: whether the host's start message has arrived (the
     // countdown of mmMultiBlitz / mmMultiCircuit / mmMultiRace::UpdateGame
-    // waits for it in state 0; OpenMM2 sends a shared start time instead and
-    // signals 2.5 s before it). Single player ignores it.
-    void setStartSignal(bool received) { m_startSignal = received || !multiplayer(); }
+    // waits for it in state 0 and then runs on its own clock; Cops and
+    // Robbers says "Go!" with it). Single player ignores it.
+    void setStartSignal(bool received) {
+        m_startSignal = received || !multiplayer();
+        m_netToGo.reset();
+    }
+    // The same on OpenMM2's shared start (game::NetRaceStart): none while
+    // the start has not come, then the seconds left until the start, which
+    // the countdown follows (Ready... while more than 1.25 s are left, Set...
+    // while any are, Go! at 0) so that every machine ends it together.
+    void setNetStart(std::optional<float> secondsToGo) {
+        m_startSignal = secondsToGo.has_value() || !multiplayer();
+        m_netToGo = secondsToGo;
+    }
     // `opponents` in the order of opponents(); `police` in the order of
     // police() (crash course chasers, cop chase lessons).
     //
@@ -295,6 +306,7 @@ private:
     void updateCountdown(float dt);
     void enableLessonOpponents();
     void go();
+    void copsAndRobbersGo();
     void updateRules(float dt, const PlayerState& player, std::span<const OpponentState> opponents,
                      std::span<const OpponentState> police);
     void tickMessage(float dt);
@@ -348,6 +360,7 @@ private:
     bool m_skipToGo = false; // later crash course events start at once
     bool m_preRaceCamera = false;
     bool m_startSignal = true;
+    std::optional<float> m_netToGo; // setNetStart
     float m_wait = 0.0f;
     bool m_started = false;
     bool m_released = false;

@@ -84,7 +84,11 @@ std::vector<Bytes> corpus() {
         w.players.push_back(samplePlayer(i));
     w.phase = SessionPhase::Countdown;
     w.hostTime = 123456;
-    w.countdownEnd = 130000;
+    w.race = 4;
+    w.raceOrderTime = 120000;
+    w.startKnown = true;
+    w.startTime = 130000;
+    w.loaded = {0, 2, 5};
     c.push_back(encodeMessage(w));
     c.push_back(encodeMessage(RejectMsg{DisconnectReason::ServerFull, "full"}));
     c.push_back(encodeMessage(PlayerJoinedMsg{samplePlayer(4)}));
@@ -93,7 +97,9 @@ std::vector<Bytes> corpus() {
     c.push_back(encodeMessage(PlayerRequestMsg{"vpcoop", 4, 1, true}));
     c.push_back(encodeMessage(ChatMsg{1, "hello there, é"}));
     c.push_back(encodeMessage(SettingsMsg{sampleSettings()}));
-    c.push_back(encodeMessage(CountdownMsg{99999}));
+    c.push_back(encodeMessage(RaceLoadMsg{2, 99999}));
+    c.push_back(encodeMessage(RaceLoadedMsg{2, 3}));
+    c.push_back(encodeMessage(RaceStartMsg{2, 104000}));
     c.push_back(encodeMessage(ReturnToLobbyMsg{}));
     c.push_back(encodeMessage(KickMsg{"bye"}));
     c.push_back(encodeMessage(TimeRequestMsg{777}));
@@ -350,7 +356,9 @@ std::optional<E> payload(std::span<const std::byte> b) {
 void decodeEverything(std::span<const std::byte> b) {
     (void)peekMessageType(b);
     (void)decoded<ChallengeMsg>(b);
-    (void)decoded<CountdownMsg>(b);
+    (void)decoded<RaceLoadMsg>(b);
+    (void)decoded<RaceLoadedMsg>(b);
+    (void)decoded<RaceStartMsg>(b);
     (void)decoded<ReturnToLobbyMsg>(b);
     (void)decoded<TimeRequestMsg>(b);
     (void)decoded<TimeResponseMsg>(b);
@@ -365,6 +373,7 @@ void decodeEverything(std::span<const std::byte> b) {
         for (const auto& p : m->players)
             checkPlayer(p);
         ASSERT_LE(m->phase, SessionPhase::Last);
+        ASSERT_LE(m->loaded.size(), kMaxPlayers);
     }
     if (const auto m = decoded<RejectMsg>(b)) {
         ASSERT_LE(m->reason, DisconnectReason::Last);
@@ -472,6 +481,20 @@ bool pumpFor(int ms, const std::function<void()>& step) {
     return true;
 }
 
+// A session's race: loaded flags only for players it knows, no start in the
+// lobby.
+void checkRaceState(const Session& s) {
+    for (int id = 0; id < 256; ++id) {
+        if (s.playerLoaded(static_cast<std::uint8_t>(id))) {
+            EXPECT_NE(s.player(static_cast<std::uint8_t>(id)), nullptr) << id;
+        }
+    }
+    if (s.phase() == SessionPhase::Lobby) {
+        EXPECT_FALSE(s.raceStartKnown());
+        EXPECT_FALSE(s.playerLoaded(s.localId()));
+    }
+}
+
 template <class M>
 std::optional<M> takeMessage(std::vector<TransportEvent>& events) {
     for (auto it = events.begin(); it != events.end(); ++it) {
@@ -572,6 +595,7 @@ TEST(Fuzz, HostSurvivesMutatedTraffic) {
     });
     EXPECT_EQ(host.state(), Session::State::Active);
     EXPECT_LE(host.players().size(), static_cast<std::size_t>(host.settings().maxPlayers));
+    checkRaceState(host);
     for (const auto& p : host.players()) {
         EXPECT_TRUE(isValidAssetName(p.car)) << p.car;
         EXPECT_EQ(sanitizeText(p.name, kMaxNameLength), p.name);
@@ -639,6 +663,7 @@ TEST(Fuzz, ClientSurvivesMutatedTraffic) {
     EXPECT_EQ(client.state(), Session::State::Active);
     EXPECT_LE(client.players().size(), kMaxPlayers);
     EXPECT_EQ(client.player(kInvalidPlayerId), nullptr);
+    checkRaceState(client);
     for (const auto& p : client.players()) {
         EXPECT_TRUE(isValidAssetName(p.car)) << p.car;
         EXPECT_EQ(sanitizeText(p.name, kMaxNameLength), p.name);
@@ -657,4 +682,114 @@ TEST(Fuzz, ClientSurvivesMutatedTraffic) {
     EXPECT_LE(ambient.size(), Session::kMaxQueuedAmbientStates);
     for (const auto& m : ambient)
         checkAmbient(m);
+}
+
+// The race start under mutated race messages from a joiner: whatever it
+// sends counts at most as its own report; the start comes once, after the
+// honest players have reported, and the honest client has the same one.
+TEST(Fuzz, RaceStartSurvivesMutatedReports) {
+    Session host, honest;
+    HostParams hp;
+    hp.bind = Address::loopback(0);
+    hp.advertiseOnLan = false;
+    hp.player.name = "Host";
+    ASSERT_TRUE(host.host(hp));
+    JoinParams jp;
+    jp.host = Address::loopback(host.port());
+    jp.player.name = "Honest";
+    ASSERT_TRUE(honest.join(jp));
+    Transport fuzzer;
+    ASSERT_TRUE(fuzzer.startClient());
+    const PeerId toHost = fuzzer.connect(Address::loopback(host.port()));
+    std::vector<TransportEvent> events;
+    std::optional<ChallengeMsg> challenge;
+    pumpFor(300, [&] {
+        host.update();
+        honest.update();
+        fuzzer.service(events);
+        if (!challenge)
+            challenge = takeMessage<ChallengeMsg>(events);
+    });
+    ASSERT_TRUE(challenge);
+    HelloMsg hello;
+    hello.name = "Fuzzer";
+    hello.car = "vpbug";
+    fuzzer.send(toHost, Channel::Control, encodeMessage(hello));
+    pumpFor(300, [&] {
+        host.update();
+        honest.update();
+        fuzzer.service(events);
+    });
+    ASSERT_EQ(host.players().size(), 3u);
+    ASSERT_EQ(honest.players().size(), 3u);
+
+    host.startRace(0);
+    pumpFor(100, [&] {
+        host.update();
+        honest.update();
+        fuzzer.service(events);
+    });
+    ASSERT_EQ(honest.phase(), SessionPhase::Countdown);
+    const std::uint32_t race = host.raceNumber();
+    // Race messages of every kind, for this race and others.
+    std::vector<Bytes> c;
+    for (std::uint32_t r : {race - 1, race, race + 1}) {
+        for (std::uint8_t id : {std::uint8_t{0}, std::uint8_t{1}, std::uint8_t{2}, std::uint8_t{200}})
+            c.push_back(encodeMessage(RaceLoadedMsg{r, id}));
+        c.push_back(encodeMessage(RaceLoadMsg{r, 100}));
+        c.push_back(encodeMessage(RaceStartMsg{r, 1000}));
+    }
+    std::mt19937 rng(31337);
+    for (int i = 0; i < 2000; ++i) {
+        fuzzer.send(toHost, static_cast<Channel>(rng() % kChannelCount), mutate(c, rng));
+        if (i % 50 == 0) {
+            host.update();
+            honest.update();
+            fuzzer.service(events);
+            events.clear();
+        }
+    }
+    pumpFor(300, [&] {
+        host.update();
+        honest.update();
+        fuzzer.service(events);
+        events.clear();
+    });
+    EXPECT_EQ(host.state(), Session::State::Active);
+    EXPECT_EQ(host.phase(), SessionPhase::Countdown);
+    EXPECT_FALSE(host.raceStartKnown()); // the host and the honest client have not reported
+    EXPECT_FALSE(host.playerLoaded(host.localId()));
+    EXPECT_FALSE(host.playerLoaded(honest.localId()));
+    EXPECT_FALSE(honest.raceStartKnown());
+    checkRaceState(host);
+    checkRaceState(honest);
+
+    host.reportLoaded();
+    honest.reportLoaded();
+    std::vector<SessionEvent> hostEvents, honestEvents;
+    pumpFor(400, [&] {
+        host.update();
+        honest.update();
+        fuzzer.service(events);
+        events.clear();
+        for (auto& e : host.takeEvents())
+            hostEvents.push_back(std::move(e));
+        for (auto& e : honest.takeEvents())
+            honestEvents.push_back(std::move(e));
+    });
+    // Without the fuzzer's report the host waits for it (MM2 waits for every
+    // player in the session); with it, the start is set once.
+    if (host.playerLoaded(2)) {
+        ASSERT_TRUE(host.raceStartKnown());
+        ASSERT_TRUE(honest.raceStartKnown());
+        EXPECT_EQ(honest.raceStartTime(), host.raceStartTime());
+        auto starts = [](const std::vector<SessionEvent>& v) {
+            return std::ranges::count_if(
+                v, [](const SessionEvent& e) { return std::holds_alternative<ev::RaceStartSet>(e); });
+        };
+        EXPECT_EQ(starts(hostEvents), 1);
+        EXPECT_EQ(starts(honestEvents), 1);
+    } else {
+        EXPECT_FALSE(host.raceStartKnown());
+    }
 }

@@ -189,10 +189,12 @@ a cruise never took them, so they piled up (also capped by d7fb35b).
 | S7 | minor | `RaceScreen::sendLocalState` | The local player has no siren (a police car's horn key in MM2 toggles it), so `kVehicleSiren` is never sent; the remote audio and lights would play it. | outside this area (player controls). |
 
 Lobby review O1 (the race starts a fixed 6 s after GO DRIVE instead of after
-everyone's RaceReady) touches this area only in that a slow loader starts its
-own race countdown late: its clock and its finish time are measured from its
-own start, while Cops and Robbers' clock (finding 13) runs from the shared
-start time. Nothing here depends on it otherwise.
+everyone's RaceReady) touched this area only in that a slow loader started
+its own race countdown late. It is fixed (docs/multiplayer.md, "Race start"):
+every machine's countdown ends at the start the host sets once everyone has
+loaded, which Cops and Robbers' clock (finding 13) runs from; only a machine
+the host stopped waiting for (60 s) counts down on its own, its race time
+measured from its own start as in MM2.
 
 ### MM2 rules compared
 

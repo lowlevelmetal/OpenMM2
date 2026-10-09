@@ -66,6 +66,14 @@ struct SessionConfig {
     std::uint32_t joinTimeoutMs = 10000;     // handshake must finish within this
     std::uint32_t connectTimeoutMs = 8000;   // ENet connect attempt
     std::uint32_t pingBroadcastIntervalMs = 2000;
+    // The race start (host): how long after GO DRIVE the host waits for
+    // players still loading before it starts without them (OpenMM2's own
+    // limit: MM2 waits for every player still in the session), and the
+    // bounds of the lead it gives its start message to reach everyone
+    // (twice the slowest round trip plus 100 ms).
+    std::uint32_t loadWaitMs = 60000;
+    std::uint32_t startLeadMinMs = 200;
+    std::uint32_t startLeadMaxMs = 1000;
     std::string build = "OpenMM2";           // reported in Hello, informational
 };
 
@@ -100,11 +108,27 @@ struct Chat {
 struct SettingsChanged {
     SessionSettings settings;
 };
-struct CountdownStarted {
+// GO DRIVE: load race `race` now (RaceLoad).
+struct RaceLoading {
+    std::uint32_t race;
+    std::uint32_t orderTime; // session time of the order
+};
+// A player (this one included) has loaded the current race.
+struct PlayerLoaded {
+    std::uint8_t id;
+    std::uint32_t race;
+};
+// The host has set the current race's start (its countdown's end).
+struct RaceStartSet {
+    std::uint32_t race;
     std::uint32_t startTime; // session time
 };
+// The session clock has reached the start time.
 struct GameStarted {};
-struct ReturnedToLobby {};
+// The host took everyone back to the lobby, ending race `race`.
+struct ReturnedToLobby {
+    std::uint32_t race;
+};
 struct GameEvent {
     std::uint8_t from;
     std::uint16_t type;
@@ -113,9 +137,10 @@ struct GameEvent {
 };
 } // namespace ev
 
-using SessionEvent = std::variant<ev::JoinAccepted, ev::JoinFailed, ev::Disconnected, ev::PlayerJoined,
-                                  ev::PlayerLeft, ev::PlayerUpdated, ev::Chat, ev::SettingsChanged,
-                                  ev::CountdownStarted, ev::GameStarted, ev::ReturnedToLobby, ev::GameEvent>;
+using SessionEvent =
+    std::variant<ev::JoinAccepted, ev::JoinFailed, ev::Disconnected, ev::PlayerJoined, ev::PlayerLeft,
+                 ev::PlayerUpdated, ev::Chat, ev::SettingsChanged, ev::RaceLoading, ev::PlayerLoaded,
+                 ev::RaceStartSet, ev::GameStarted, ev::ReturnedToLobby, ev::GameEvent>;
 
 class Session {
 public:
@@ -151,7 +176,23 @@ public:
     std::uint32_t time() const;
     double timeMs() const; // the same with sub-millisecond precision
     bool clockSynced() const { return m_role == Role::Host || m_clock.synced(); }
-    std::uint32_t countdownEnd() const { return m_countdownEnd; }
+
+    // --- The race (docs/multiplayer.md, "Race start") ---
+    // The host's number of the current (or last) race, from 1; 0 before the
+    // first.
+    std::uint32_t raceNumber() const { return m_race; }
+    // Session time at which the host ordered it (GO DRIVE).
+    std::uint32_t raceOrderTime() const { return m_raceOrderTime; }
+    // Whether the host has set its start yet, and the session time it
+    // starts at (its countdown ends: the cars go).
+    bool raceStartKnown() const { return m_startKnown; }
+    std::uint32_t raceStartTime() const { return m_startKnown ? m_startTime : 0; }
+    // Whether a player has reported the current race loaded.
+    bool playerLoaded(std::uint8_t id) const;
+    // This machine has loaded the current race (MM2's RaceReady): the host
+    // starts the race once every player still in the session has.
+    // Repeated calls, and calls outside a race, do nothing.
+    void reportLoaded();
 
     // --- Lobby (both roles) ---
     void setLocalPlayer(const std::string& car, std::uint8_t color, std::uint8_t team);
@@ -162,9 +203,13 @@ public:
     void updateSettings(const SessionSettings& settings);
     void setPassword(const std::string& password);
     void kick(std::uint8_t playerId, const std::string& reason);
-    // Starts the race `delayMs` from now; GameStarted fires on every machine
-    // when the session clock reaches the start time.
-    void startCountdown(std::uint32_t delayMs);
+    // GO DRIVE: every machine loads a new race and reports it loaded
+    // (reportLoaded). When every player still in the session has (or
+    // SessionConfig::loadWaitMs after the order, without the ones still
+    // loading), the host sets the start: a lead for the message to reach
+    // everyone plus `countdownMs` from then. GameStarted fires on every
+    // machine when the session clock reaches it.
+    void startRace(std::uint32_t countdownMs);
     void returnToLobby();
     // Called for every game event before the host relays it (including the
     // host's own). Return false to drop it.
@@ -239,6 +284,9 @@ private:
     void hostAdvertise();
     void close(DisconnectReason reason, std::string message, bool failedJoin);
     void tickCountdown();
+    void hostCheckStart();
+    void markLoaded(std::uint8_t id);
+    void clearRace(); // no race loading: the loaded flags and the start
     void updateShownClock();
     // Takes in a remote vehicle's snapshot; false when it is ignored (in the
     // lobby, late packets of the last race; a time stamp far from this
@@ -269,7 +317,13 @@ private:
     std::vector<PlayerInfo> m_players;
     std::uint8_t m_localId = kInvalidPlayerId;
     std::string m_password;
-    std::uint32_t m_countdownEnd = 0;
+    // The race: its number, order time, start, and who has loaded it.
+    std::uint32_t m_race = 0;
+    std::uint32_t m_raceOrderTime = 0;
+    bool m_startKnown = false;
+    std::uint32_t m_startTime = 0;
+    std::uint32_t m_countdownMs = 0; // host: the start's countdown
+    std::vector<std::uint8_t> m_loaded;
 
     // Host
     std::map<PeerId, Remote> m_remotes;
