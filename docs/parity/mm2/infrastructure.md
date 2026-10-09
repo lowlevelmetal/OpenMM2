@@ -133,8 +133,8 @@ MM2 has two generators:
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `irand`, `frand` | ported | `ai/Random.h`, `game/fx/Random.h`, `phys/World.h`, `phys/vehicle/Wheel.h` | Same LCG and scaling. Deviation (documented in `ai/Random.h`): each OpenMM2 subsystem has its own generator, so identical inputs replay identically per subsystem, while MM2's systems share one sequence and their interleaving changes every draw. OpenMM2's per-subsystem split plays the role of the second seed. |
-| `ResetRandomSeed` | ported | `game/bangers/PropPlacement.cpp` (seed 1 before placing props); the AI generators are seeded per session | |
+| `irand`, `frand` | ported | `ai/Random.h` (`game::fx::Rand` is the same class), `phys/World.h`, `phys/vehicle/Wheel.h` | Same LCG and scaling. Round 3 (`docs/parity/round3/random-streams.md`): the race's set-up and the AI world draw from one stream in MM2's order (the street props' last road, the cars' sirens and splashes, the gizmos, the racers, the traffic, the pedestrians, the cable cars), so what a race shows at its start is MM2's; the systems that draw only during play keep their own generators. |
+| `ResetRandomSeed` | ported | `game/bangers/PropPlacement.cpp` (seed 1 before each road's props), `ai::World::reset` (aiMap::Reset) | |
 | `EnableGlobalSeed`, `DisableGlobalSeed` | ported | the effects' own generators (`game/fx`) | |
 | `Random::Seed`, `Random::Number` | ported | `audio/AngelRandom.cpp` | Audio record. |
 

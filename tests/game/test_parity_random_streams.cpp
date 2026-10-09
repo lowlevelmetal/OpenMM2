@@ -234,6 +234,8 @@ TEST(ParityRandomStreamsRetail, SanFranciscoCableCarsDrawAfterThePedestrians) {
     ASSERT_TRUE(s.load(*test::gameData(), "sf"));
     EXPECT_EQ(s.afterProps, 2380015889u);
     EXPECT_EQ(s.afterPlayer, advanced(s.afterProps, kVehCarInitDraws));
+    // The parked cars from there (90 from seed 1, as OpenMM2 had them).
+    EXPECT_EQ(s.parkedCars, 102u);
     const int cableCars = static_cast<int>(s.cableCars->size());
     ASSERT_GT(cableCars, 0);
     EXPECT_EQ(s.afterCableCars, advanced(s.afterAi, 2 * cableCars));

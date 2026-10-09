@@ -30,15 +30,16 @@ of mmGame (so they update before `dgPhysManager::Update` in
 | bridge | giz_bridge01_l | always (none without that model) | London 7 leaves (Tower Bridge and two Waterloo bridges two leaves each, the Tower's drawbridge open), SF 2 (the China Town gate, inactive) |
 | train | va_ug_l | always | London 8 tube trains of 3 cars |
 | ferry | giz_carferry01_f | single player only | London 6, SF 1 |
-| parkedcar | giz_pcar0N_l | single player, and network races (not network cruise or Cops and Robbers) | London 492, SF 90 (seed 1) |
+| parkedcar | giz_pcar0N_l | single player, and network races (not network cruise or Cops and Robbers) | London 488, SF 102 (from MM2's stream, round 3; 492 and 90 from seed 1) |
 
 In a network game in London every bridge is set open (type 3) and the bridge
 manager reset. `InitGizmos` also adds the player's car and each aiMap
 opponent as bridge proximity triggers, but aiMap has no opponents yet
 (`aiMap::Clean` zeroed them), so the player is the only trigger. The random
 draws (sailboat paint jobs and speeds, ferry speeds, parked cars) come from
-MM2's global `rand()`; OpenMM2 gives them their own generator seeded with 1
-(inferred: the draw order is MM2's, the global state is not reproducible).
+MM2's global `rand()`, which the street props leave at a known state and the
+player's car advances by 312 draws; since round 3 OpenMM2 draws them from that
+same stream (`docs/parity/round3/random-streams.md`).
 
 Then `aiMap::Init` creates the cable cars (see aiCableCar) unless the state
 pack's EnableCableCars is clear (`mmGameMulti::Init` clears it and
@@ -234,7 +235,7 @@ network game), updates them after the AI drivers, draws them, plays their
 
 | MM2 | Status | OpenMM2 | Notes |
 | --- | --- | --- | --- |
-| `aiCableCar::aiCableCar`, `~aiCableCar`, `Init` | ported (new) | `CableCars::create` | One frand per car, after the gizmos' draws (aiMap::Init follows InitGizmos). |
+| `aiCableCar::aiCableCar`, `~aiCableCar`, `Init` | ported (new) | `CableCars::create` | One frand per car for the array's constructors (aiRailSet), then one per car in Init, after the pedestrians' draws (round 3). |
 | `aiCableCar::DetermineSister` | ported (new) | `CableCars::determineSister` | As coded, the direction followed only changes through IsCableCarStart's outputs and the road it last reported is looked up. |
 | `aiCableCar::Reset` | ported (new) | `CableCars::resetCar` | |
 | `aiCableCar::Update` | ported (new) | `CableCars::updateCar`, `updateAudio` | The knocked-loose branch (instance flag 1 cleared: the sister stops, the car resets once `aiMap::FindAmbAppRoad` finds no ambient car coming) cannot run: see ImpactCB. |

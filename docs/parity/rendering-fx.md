@@ -151,7 +151,7 @@ GREATER 100, and that every retail room colour is white because
 | headlight sweep with the siren | `vehCarModel::DrawHeadlights` | deviation | ±42.4 rad/s sweep; the sweep's base direction is OpenMM2's |
 | suspension and engine parts | `vehSuspension::Update`, `vehCarModel::Init` (shock0–3, arm0–3, shaft2/3, axle0/1, engine) | deviation | not drawn; no retail vehicle model has any of these parts (scanned every geometry/v*.pkg) |
 | traffic turn signals | `aiVehicleInstance::DrawGlow` (SLIGHT0/1) | open | see Missing (ai-vehicles) |
-| `VehicleRenderer::setLensFlareTarget`, siren flares in `drawGlows` | `vehSiren::Init`, `vehSiren::Draw` | fixed | second pass: one ltLensFlare(20) per car with sirens; each siren light's flares queued with ltLight::ComputeIntensity(eye, 0.05) |
+| `VehicleRenderer::setLensFlareTarget`, siren flares in `drawGlows` | `vehSiren::Init`, `vehSiren::Draw` | fixed | second pass: one ltLensFlare(20) per car with sirens; each siren light's flares queued with ltLight::ComputeIntensity(eye, 0.05). Round 3: the flares are drawn from MM2's global stream at the car's vehCar::Init (`setSirenFlares`, `takeVehCarInitDraws`; `docs/parity/round3/random-streams.md`) |
 
 ## src/game/MeshDraw.h, MeshDraw.cpp
 

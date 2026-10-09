@@ -2,10 +2,10 @@
 
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07; second
 pass (the other areas' changes to the city code, room flags, props, numbers)
-on 2026-10-08.
+on 2026-10-08; two random-stream rows updated by round 3 (random-streams).
 
 Summary: 236 functions (named entries in the tables; a few constructors
-appear in several rows by aspect); verified 116, fixed 61, deviation 13,
+appear in several rows by aspect); verified 116, fixed 63, deviation 11,
 inferred 22, open 4, openmm2 20.
 
 ## Random (`src/ai/Random.h`)
@@ -14,7 +14,7 @@ inferred 22, open 4, openmm2 20.
 | --- | --- | --- | --- |
 | `Random::irand` | `irand()` | fixed | Was an xorshift64*. MM2's irand is the MSVC rand() generator: seed = seed x 214013 + 2531011, bits 16..30. |
 | `Random::frand` | `frand()` | fixed | Was 24-bit; MM2 is irand() x 3.0517578e-05, so probabilities come in 1/32768 steps. |
-| `Random::Random`, `seed` | `ResetRandomSeed` | deviation | MM2 has one global seed (set to 1 by aiMap::Reset) shared by traffic, pedestrians, police, audio and effects; OpenMM2 gives each AI subsystem its own generator (default seed 1) so runs replay deterministically. Exact draw sequences cannot match MM2 anyway, since other subsystems draw from the same global there. |
+| `Random::Random`, `seed` | `ResetRandomSeed` | fixed | Round 3 (`docs/parity/round3/random-streams.md`): the traffic and the pedestrians share one stream, which the race's set-up hands over in MM2's order and `World::reset` sets to 1; the police, glows, wheels and effects, which draw only during play (or from MM2's secondary seed), keep their own. |
 
 ## Pedestrians (`src/ai/Pedestrians.{h,cpp}`)
 
@@ -115,7 +115,7 @@ inferred 22, open 4, openmm2 20.
 | `World::step` | `aiMap::Update` | fixed | Order (ambient traffic, pedestrians, then the light sets as children) verified. The player's room is now looked up from the last room as the hint (MM2 passes aiVehiclePlayer's last room; using the last room found is inferred equivalent); 0 leaves the populations alone. |
 | `World::roomAt` | `cityLevel::FindRoomId` | fixed | Takes a hint (see RoomLocator). |
 | `World::create` | `aiMap::Init`, `aiCityData`, `aiTrafficLightInstance::Init` | fixed | Pool trunc([Ped Pool] x density), types (race list else city list, good/bad weather), light models (lanes >= 2: the second) and pole matrix verified. [Ped Pool] now comes from the config as sscanf "%d" (a "0" was lost before, see Race); the room locator gets the map name. |
-| `World::create` (seeds) | `ResetRandomSeed` | deviation | Traffic seeded with `seed`, pedestrians with `seed x 7919 + 1` (one global in MM2). |
+| `World::create` (seeds) | `ResetRandomSeed` | fixed | Round 3: one stream for the traffic and the pedestrians (`Settings::random`, else the world's own from `seed`), the pool's draws first; was traffic `seed`, pedestrians `seed x 7919 + 1`. |
 | `World::create` (drive on the left fallback) | `aiCityData` | deviation | With no city AI map MM2 drives on the right; OpenMM2 falls back to the cruise maps' flag (retail city maps have the key). |
 | `defaultAmbientTypes`, `citySuffix` | — | deviation | OpenMM2 fallback when no AI map lists ambient types (MM2 would have none). |
 | `loadPedTypes` | `pedAnimationInstance::Load` | inferred | Loads every type present; MM2 loads the named types on demand. Same tables. |

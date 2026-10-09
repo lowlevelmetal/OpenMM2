@@ -130,7 +130,7 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
-| `Splash::init` | `vehSplash::Init` | deviation | grid verified (asm); MM2 first fills the points with random directions (192 `frand` calls on the game's random stream) and overwrites them, which OpenMM2 skips |
+| `Splash::init` | `vehSplash::Init` | deviation | grid verified (asm); MM2 first fills the points with random directions (192 `frand` calls on the game's random stream) and overwrites them, which `Splash::init` skips; the race's set-up takes those draws (`game::takeVehCarInitDraws`, round 3: `docs/parity/round3/random-streams.md`) |
 | `Splash::reset` | `vehSplash::Reset` | verified | drag 0.08, buoyancy 0.7 |
 | `Splash::activate` | `vehSplash::Activate` | verified | |
 | `Splash::deactivate` | `vehCar::Reset` | fixed | vehCar::Reset clears only the active flag; CarSim::reset used to restore the buoyancy too (vehSplash::Reset runs once, from the constructor) |
