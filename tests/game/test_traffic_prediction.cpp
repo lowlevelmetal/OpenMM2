@@ -135,6 +135,18 @@ TEST(TrafficPrediction, ARailCarCoversTheGroundItReallyCovers) {
     EXPECT_NEAR(held.velocity.z, 14.0f, 1e-4f);
 }
 
+TEST(TrafficPrediction, ABodyStandingStillIsSharedStanding) {
+    game::StillBodies still;
+    const Vec3 p{10, 0, 10};
+    EXPECT_FALSE(still.still(1, p, 1000.0));
+    EXPECT_FALSE(still.still(1, p + Vec3{0.01f, 0, 0}, 1050.0));
+    EXPECT_TRUE(still.still(1, p + Vec3{0.02f, 0, 0}, 1100.0)); // 100 ms within 5 cm
+    EXPECT_FALSE(still.still(1, p + Vec3{1, 0, 0}, 1110.0));    // moving again
+    EXPECT_FALSE(still.still(2, p, 1110.0));
+    still.prune(2200.0);
+    EXPECT_FALSE(still.still(1, p + Vec3{1, 0, 0}, 2200.0)); // forgotten: starts again
+}
+
 TEST(TrafficPrediction, ABodyTurnsWithItsYawRate) {
     // A police car at 20 m/s turning at 0.5 rad/s: a 40 m radius.
     const Mat34 start = facing(0.0f, {0, 0, 0});

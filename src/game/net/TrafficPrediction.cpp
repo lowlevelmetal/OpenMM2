@@ -82,6 +82,24 @@ RailMotion RailMotionTracker::motion(int id) const {
     return it == m_cars.end() ? RailMotion{} : it->second.motion;
 }
 
+// --- StillBodies --------------------------------------------------------------------------
+
+bool StillBodies::still(int id, const Vec3& position, double time) {
+    auto [it, fresh] = m_anchors.try_emplace(id, Anchor{position, time, time});
+    Anchor& a = it->second;
+    a.seen = time;
+    if (fresh || a.position.dist2(position) > 0.05f * 0.05f) {
+        a.position = position;
+        a.since = time;
+        return false;
+    }
+    return time - a.since >= 100.0;
+}
+
+void StillBodies::prune(double time) {
+    std::erase_if(m_anchors, [time](const auto& e) { return e.second.seen < time - 1000.0; });
+}
+
 // --- Prediction ---------------------------------------------------------------------------
 
 PredictedPose predictRailCar(const Mat34& transform, float speed, const RailMotion& motion, float dt) {

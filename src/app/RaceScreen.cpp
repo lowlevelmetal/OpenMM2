@@ -4008,6 +4008,11 @@ private:
                 body.emplace();
                 body->transform = *m;
                 m_trafficBodies->motionOf(c.id, body->velocity, body->angularVelocity);
+                // A body that stands still is shared standing (game::StillBodies).
+                if (m_stillBodies.still(c.id, m->m3, netBodyStateTime(ctx))) {
+                    body->velocity = {};
+                    body->angularVelocity = {};
+                }
                 // Its wheels while the body is simulated (aiVehicleInstance::Draw).
                 if (const auto wheels = m_trafficBodies->wheelsOf(c.id); wheels && c.data)
                     body->wheels = game::trafficWheelOffsets(*m, wheels->matrix, *c.data);
@@ -4023,6 +4028,7 @@ private:
         }
         if (send)
             m_hornLatch.clear();
+        m_stillBodies.prune(netBodyStateTime(ctx));
         if (m_debugNetTraffic || trace) {
             std::unordered_set<int> knocked;
             for (const ai::AmbientCar& c : m_ai->cars())
@@ -5533,6 +5539,7 @@ private:
     std::unordered_set<int> m_debugKnocked;
     std::uint32_t m_traceAiSteps = 0; // OPENMM2_NET_TRACE: the AI step last traced (host)
     game::RailMotionTracker m_railMotion; // host: the rail cars' acceleration and curvature
+    game::StillBodies m_stillBodies;      // host: the knocked cars' bodies standing still
 
     // Sound: the player's car, city ambience and rain (src/audio/game).
     std::unique_ptr<audio::SoundBank> m_bank;

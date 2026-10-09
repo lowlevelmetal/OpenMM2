@@ -69,6 +69,25 @@ private:
     std::unordered_map<int, Last> m_cars;
 };
 
+// Host: whether a knocked car's body has stood still (moved less than 5 cm)
+// for 100 ms; its state is then shared standing, whatever its velocity says
+// (once a wreck was seen to keep 6.8 m/s for 40 s while it stood, and every
+// client predicted it 1.2 m ahead).
+class StillBodies {
+public:
+    bool still(int id, const Vec3& position, double time);
+    // Forgets the bodies not asked about since `time` less a second.
+    void prune(double time);
+
+private:
+    struct Anchor {
+        Vec3 position;
+        double since = 0.0;
+        double seen = 0.0;
+    };
+    std::unordered_map<int, Anchor> m_anchors;
+};
+
 // The heading on the ground plane of a forward direction (atan2(x, z)).
 float groundHeading(const Vec3& forward);
 

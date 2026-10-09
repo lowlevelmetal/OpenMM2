@@ -210,7 +210,7 @@ int cmdNettrace(std::span<char* const> args) {
         return 1;
     }
     constexpr int kOffRail = 0x10;
-    std::vector<double> rail, moving, offRail, police, near, local;
+    std::vector<double> rail, moving, offRail, police, near, local, shownMoving;
     std::size_t present = 0, extra = 0, missing = 0, copFrames = 0, copTargets = 0;
     for (std::size_t i = 0; i < client.frames.size(); ++i) {
         const Frame& fr = client.frames[i];
@@ -243,6 +243,11 @@ int cmdNettrace(std::span<char* const> args) {
             }
             if (fromMe < 40.0)
                 near.push_back(e);
+            // Against the host's at the time the client showed it (another
+            // time than its car's with OPENMM2_DEBUG_TRAFFIC_LEAD_MS).
+            if (const auto s = at(it->second, c.time); s && c.kind == 0 && (c.flags & kOffRail) == 0 &&
+                                                        std::abs(s->speed) > 2.0)
+                shownMoving.push_back(std::hypot(c.x - s->x, c.z - s->z));
         }
         // The host's cars near this client's car it did not have (every
         // fourth frame).
@@ -264,6 +269,8 @@ int cmdNettrace(std::span<char* const> args) {
     row("police", police);
     row("any car within 40 m", near);
     row("knocked by the client", local);
+    std::println("error against the host at the time the client showed the car:");
+    row("rail cars moving > 2 m/s", shownMoving);
     std::println("cars within {:.0f} m: on the host only {} car-frames ({:.2f}%), on the client only {} "
                  "({:.2f}%)",
                  radius - 20.0, missing, share(missing, present + missing), extra,
