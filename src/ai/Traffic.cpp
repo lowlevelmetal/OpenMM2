@@ -1681,10 +1681,9 @@ void Traffic::updateRandomDrive(int idx, float dt) {
         // behind the car ahead: the car avoids that player.
         for (std::size_t k = 0; k < m_players.size(); ++k) {
             const PlayerCar& player = m_players[k];
-            if (player.valid &&
-                Vec2{c.transform.m3.x - player.transform.m3.x, c.transform.m3.z - player.transform.m3.z}.mag2() <
-                    sq(kPlayerZoneDistance) &&
-                detectPlayerCollision(c, player) && !ambientBlockingPlayer(idx, player)) {
+            const Vec2 d{c.transform.m3.x - player.transform.m3.x, c.transform.m3.z - player.transform.m3.z};
+            if (player.valid && d.mag2() < sq(kPlayerZoneDistance) && detectPlayerCollision(c, player) &&
+                !ambientBlockingPlayer(idx, player)) {
                 c.avoidSlot = m_playerSlots[k];
                 c.goal = AmbientGoal::AvoidPlayer;
                 c.goalTicks = 0;
@@ -1781,7 +1780,8 @@ void Traffic::fitOffRail(Car& c) {
 void Traffic::updateAvoidPlayer(int idx, float dt) {
     Car& c = m_cars[static_cast<std::size_t>(idx)];
     // aiMap::Player(+0xe6): the player it avoids.
-    const PlayerCar& p = m_slotCars[static_cast<std::size_t>(std::clamp(c.avoidSlot, 0, kMaxTrafficPlayers - 1))];
+    const auto slot = static_cast<std::size_t>(std::clamp(c.avoidSlot, 0, kMaxTrafficPlayers - 1));
+    const PlayerCar& p = m_slotCars[slot];
     const PathInfo& info = m_net.paths()[static_cast<std::size_t>(c.path)];
     const float cap = info.speedLimit + c.exceedLimit;
     const float R = p.radius;

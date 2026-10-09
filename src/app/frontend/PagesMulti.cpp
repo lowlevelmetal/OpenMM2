@@ -1132,8 +1132,8 @@ public:
             [this](float v) { m_cfg.trafficDensity = v; });
         // A cop density above 1 (none from this menu) shows as full.
         m_trafficSliders[1] = &menu.add<ui::Slider>(
-            Box{kTrafficValueX, kTrafficRowY[2], 139, 31}, [this] { return std::min(m_cfg.copDensity, 1.0f); },
-            [this](float v) { m_cfg.copDensity = v; });
+            Box{kTrafficValueX, kTrafficRowY[2], 139, 31},
+            [this] { return std::min(m_cfg.copDensity, 1.0f); }, [this](float v) { m_cfg.copDensity = v; });
 
         // 22-24: RACE LOCALE; 25-27: TIME (629-632); 28-30: WEATHER (625-628:
         // the menu offers no snow, RaceMenuBase::IncWeather stops at 3); all
@@ -1253,7 +1253,8 @@ private:
             const float ty = y + (heights[i] - lh) * 0.5f;
             f.text.draw(f.overlay, font, labels[i], 287, ty + 1, render::packColor(0, 0, 0));
             f.text.draw(f.overlay, font, labels[i], 286, ty, render::packColor(255, 255, 255));
-            f.overlay.rect(kTrafficValueX - 2, y - 2, widths[i] + 4, heights[i] + 4, render::packColor(70, 70, 170));
+            f.overlay.rect(kTrafficValueX - 2, y - 2, widths[i] + 4, heights[i] + 4,
+                           render::packColor(70, 70, 170));
             f.overlay.rect(kTrafficValueX, y, widths[i], heights[i], render::packColor(8, 8, 40));
             if (i > 0)
                 f.overlay.rect(278, y - 13, 352, 2, render::packColor(20, 20, 60, 200));

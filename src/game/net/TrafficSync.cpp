@@ -133,7 +133,8 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
         // A far car on its rail, already known to the client: its state
         // every other message, the ids alternating between messages.
         const bool full = c.chasing || c.distance2 < near2 || !set.contains(c.car->id) ||
-                          c.car->kind != net::AmbientKind::Traffic || (c.car->flags & net::kAmbientOffRail) != 0 ||
+                          c.car->kind != net::AmbientKind::Traffic ||
+                          (c.car->flags & net::kAmbientOffRail) != 0 ||
                           ((sequence + static_cast<std::uint32_t>(c.car->id)) & 1u) == 0;
         if (!full)
             e.hasState = false;
@@ -309,7 +310,8 @@ void TrafficClient::update(double renderTime) {
     }
 }
 
-TrafficCatalog buildTrafficCatalog(std::span<const ai::VehicleData> types, std::span<const std::string> police) {
+TrafficCatalog buildTrafficCatalog(std::span<const ai::VehicleData> types,
+                                   std::span<const std::string> police) {
     TrafficCatalog c;
     for (const ai::VehicleData& t : types)
         c.add(t.model);
@@ -318,7 +320,8 @@ TrafficCatalog buildTrafficCatalog(std::span<const ai::VehicleData> types, std::
     return c;
 }
 
-SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const TrafficBodyState* body, bool horn) {
+SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const TrafficBodyState* body,
+                          bool horn) {
     SharedCar s;
     s.id = car.id;
     s.kind = net::AmbientKind::Traffic;
@@ -348,8 +351,8 @@ SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const
     return s;
 }
 
-ai::AmbientCar ambientCarOf(const TrafficClient::Car& car, const std::string& model, const ai::VehicleData* data,
-                            int paintJobs, float tireRotation) {
+ai::AmbientCar ambientCarOf(const TrafficClient::Car& car, const std::string& model,
+                            const ai::VehicleData* data, int paintJobs, float tireRotation) {
     ai::AmbientCar a;
     a.id = car.id;
     a.data = data;

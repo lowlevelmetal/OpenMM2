@@ -819,8 +819,11 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             const auto parts = str::split(rest, ':');
             c.netTraffic = parts.empty() || parts[0] != "off";
             if (parts.size() >= 3) {
-                c.trafficDensity = std::clamp(static_cast<float>(str::parseDouble(parts[1]).value_or(0.5)), 0.0f, 1.0f);
-                c.copDensity = std::clamp(static_cast<float>(str::parseDouble(parts[2]).value_or(1.0)), 0.0f, 1.0f);
+                auto density = [&](std::size_t i, double fallback) {
+                    return std::clamp(static_cast<float>(str::parseDouble(parts[i]).value_or(fallback)), 0.0f, 1.0f);
+                };
+                c.trafficDensity = density(1, 0.5);
+                c.copDensity = density(2, 1.0);
             }
             fe.ctx.netGame->setRaceConfig(c);
         }
