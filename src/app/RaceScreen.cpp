@@ -4803,9 +4803,25 @@ private:
         m_prediction.beginSample(*m_player, m_netDriver, in);
     }
     void afterNetSample() {
-        if (m_player && m_traceNet && !m_traceNet->isHost())
-            m_prediction.endSample(*m_player, m_netDriver);
+        if (!m_player || !m_traceNet || m_traceNet->isHost())
+            return;
+        // Development aid: OPENMM2_DEBUG_NETCARS_NOISE=<fraction> nudges a
+        // client's car's momentum by about that fraction each sample, as a
+        // machine built by another compiler might round differently.
+        static const float noise = [] {
+            const char* v = std::getenv("OPENMM2_DEBUG_NETCARS_NOISE");
+            return v ? static_cast<float>(str::parseDouble(v).value_or(0.0)) : 0.0f;
+        }();
+        if (noise > 0.0f) {
+            m_noiseState = m_noiseState * 1664525u + 1013904223u;
+            const float k = 1.0f + noise * (static_cast<float>(m_noiseState >> 8) / 8388608.0f - 1.0f);
+            auto& ics = m_player->sim().body.ics;
+            ics.linearMomentum = ics.linearMomentum * k;
+            ics.linearVelocity = ics.linearMomentum * ics.invMass;
+        }
+        m_prediction.endSample(*m_player, m_netDriver);
     }
+    std::uint32_t m_noiseState = 1;
 
     // Host: a simulated player's car was reset or its damage cleared
     // (vehCar::ClearDamage): its damage starts again on every machine.
