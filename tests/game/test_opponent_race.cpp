@@ -665,7 +665,7 @@ TEST(OpponentRace, RecoversWhenFacingAWall) {
 namespace {
 
 // A suspect (a player-tuned car driven by an Opponent along a road route,
-// flagged as the player) starts 70 m behind a parked cop and drives past it
+// flagged as the player) starts 75 m behind a parked cop and drives past it
 // at up to `speed` m/s, keeping to `slowSpeed` after `slowAfter` seconds.
 struct ChaseOptions {
     float speed = 20.0f;
@@ -704,7 +704,7 @@ ChaseResult runChase(const char* plotName, const ChaseOptions& opt) {
     const ai::RoadNetwork& net = cw->ai->network();
 
     // The first [Police] car of roam.aimap on a road that runs straight
-    // through its post: the suspect starts 70 m behind the cop (out of its
+    // through its post: the suspect starts 75 m behind the cop (out of its
     // view) and drives past it.
     const game::session::PoliceSetup* post = nullptr;
     Vec3 suspectStart, ahead;
@@ -712,7 +712,7 @@ ChaseResult runChase(const char* plotName, const ChaseOptions& opt) {
     for (const auto& p : setup->police) {
         phys::RayHit hit;
         const Vec3 fwd = -p.spawn.m2;
-        const Vec3 behind = p.spawn.m3 - fwd * 70.0f, front = p.spawn.m3 + fwd * 30.0f;
+        const Vec3 behind = p.spawn.m3 - fwd * 75.0f, front = p.spawn.m3 + fwd * 30.0f;
         if (!ai::locateOnRoads(net, behind).onRoad || !ai::locateOnRoads(net, front).onRoad ||
             std::abs(behind.y - p.spawn.m3.y) > 2.0f || std::abs(front.y - p.spawn.m3.y) > 2.0f ||
             cw->world->probe(behind + Vec3{0, 1, 0}, front + Vec3{0, 1, 0}, hit))
@@ -892,7 +892,7 @@ TEST(PoliceChase, ApprehendsAMovingSuspect) {
 
 TEST(PoliceChase, IgnoresACarBehindIt) {
     MM2_REQUIRE_GAME_DATA();
-    // The suspect stays 70 m behind the cop: outside its field of view.
+    // The suspect stays 75 m behind the cop: outside its field of view.
     ChaseOptions opt;
     opt.parked = true;
     opt.seconds = 10.0f;
