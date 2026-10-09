@@ -58,13 +58,15 @@ FlowRetail* flowRetail() {
     return r.get();
 }
 
-std::unique_ptr<Session> flowSession(GameMode mode, int index, bool multiplayer = false, int opponents = 0) {
+std::unique_ptr<Session> flowSession(GameMode mode, int index, bool multiplayer = false, int opponents = 0,
+                                     bool netTraffic = false) {
     RaceConfig cfg;
     cfg.mode = mode;
     cfg.city = "london";
     cfg.raceIndex = index;
     cfg.multiplayer = multiplayer;
     cfg.opponents = opponents;
+    cfg.netTraffic = netTraffic; // OpenMM2's shared cruise traffic (off: MM2's network game)
     SessionOptions options;
     options.seed = 11;
     std::string error;
@@ -268,6 +270,14 @@ TEST(GameFlowParity, MultiplayerHasNoRacersOrPolice) {
         ASSERT_TRUE(s);
         EXPECT_TRUE(s->opponents().empty());
         EXPECT_TRUE(s->police().empty());
+    }
+    // OpenMM2 extra: with the host's shared traffic on, a network cruise has
+    // its police posts (the host drives them); the races still have none.
+    for (const GameMode mode : {GameMode::Checkpoint, GameMode::Circuit, GameMode::Cruise}) {
+        auto s = flowSession(mode, mode == GameMode::Cruise ? -1 : 0, true, 0, true);
+        ASSERT_TRUE(s);
+        EXPECT_TRUE(s->opponents().empty());
+        EXPECT_EQ(s->police().empty(), mode != GameMode::Cruise);
     }
 }
 
