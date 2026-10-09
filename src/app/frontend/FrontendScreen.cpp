@@ -998,6 +998,11 @@ public:
         if (ctx.netGame) {
             ctx.netGame->update();
             if (ctx.netGame->takeRaceStart()) {
+                // The transmission as the menus have it now: the garage and
+                // the control options both change it.
+                game::NetCar car = ctx.netGame->localCar();
+                car.automatic = m_fe.config.automatic;
+                ctx.netGame->setLocalCar(car);
                 m_fe.saveNetEvent();
                 ctx.nextScreen = makeRaceScreen(ctx, ctx.netGame->raceConfig());
                 return;

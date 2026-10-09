@@ -458,8 +458,11 @@ std::uint16_t NetGame::pingMs(std::uint8_t playerId) const {
 }
 
 void NetGame::setLocalCar(const NetCar& car) {
+    // The transmission stays here; the rest goes to the session when it
+    // changes.
+    const bool sent = car.vehicle != m_car.vehicle || car.color != m_car.color || car.team != m_car.team;
     m_car = car;
-    if (m_impl->session)
+    if (sent && m_impl->session)
         m_impl->session->setLocalPlayer(car.vehicle, static_cast<std::uint8_t>(car.color),
                                         static_cast<std::uint8_t>(car.team));
 }
