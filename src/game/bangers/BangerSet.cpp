@@ -427,7 +427,8 @@ void BangerSet::instancesIn(int room, std::vector<phys::Instance*>& out) const {
     // lately, where they stood.
     if (m_world && m_world->replaying())
         for (const Ghost& g : m_ghosts)
-            if (m_instances[g.prop].room == room && m_instances[g.prop].state == State::Gone)
+            if (ghostStands(g) && m_instances[g.prop].room == room &&
+                m_instances[g.prop].state == State::Gone)
                 out.push_back(m_props[g.prop].get());
 }
 
@@ -1162,19 +1163,29 @@ bool BangerSet::heldInertia(std::size_t i, phys::InertialCS& ics) const {
     return true;
 }
 
+bool BangerSet::ghostStands(const Ghost& g) const {
+    // The samples up to the one that broke it loose (it started at g.time);
+    // the later ones meet its pieces where they were (the race screen puts
+    // them back there for each sample). A millisecond is far under a sample
+    // and far over the clocks' rounding.
+    return m_world && m_world->replaying() && m_world->replayTime() < g.time + 0.001;
+}
+
 bool BangerSet::replayGhost(std::size_t i) const {
     if (!m_world || !m_world->replaying() || m_ghosts.empty())
         return false;
-    return std::ranges::any_of(m_ghosts, [i](const Ghost& g) { return g.prop == i; });
+    return std::ranges::any_of(m_ghosts, [this, i](const Ghost& g) { return g.prop == i && ghostStands(g); });
 }
 
 bool BangerSet::replayGhostPiece(std::size_t i) const {
     if (!m_world || !m_world->replaying() || m_ghosts.empty() || i >= m_instances.size())
         return false;
     const int source = m_instances[i].source;
-    return m_instances[i].everHit && source >= 0 && std::ranges::any_of(m_ghosts, [source](const Ghost& g) {
-               return g.prop == static_cast<std::size_t>(source);
-           });
+    if (!m_instances[i].everHit || source < 0)
+        return false;
+    return std::ranges::any_of(m_ghosts, [this, source](const Ghost& g) {
+        return g.prop == static_cast<std::size_t>(source) && ghostStands(g);
+    });
 }
 
 bool BangerSet::isActiveBody(const phys::Instance* i) const {

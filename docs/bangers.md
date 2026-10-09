@@ -211,4 +211,5 @@ needs, all of it inert in a single-player race:
   the body an active would give it (`heldInertia`: `dgBangerActive::Attach`'s
   mass and inertia, a mirror's host motion), which the world moves through
   the replay only; a prop its car broke loose in the last second stands
-  again for the replay (`replayGhost`), its pieces left out.
+  again for the samples up to the one that broke it loose (`replayGhost`),
+  its pieces left out; the later samples meet the pieces.

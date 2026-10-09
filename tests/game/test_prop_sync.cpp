@@ -23,6 +23,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <deque>
 #include <filesystem>
@@ -123,6 +124,61 @@ struct Machine {
         world.step(kDt);
         set.update(kDt);
     }
+};
+
+// What the race screen keeps for a client's replays (RaceScreen bodyPoses /
+// placeBodies): where the bodies around its car stood for each sample, put
+// back there as that sample runs again, and where they stand now after.
+struct StoodPose {
+    phys::Body* body;
+    Mat34 ics, bound;
+    Vec3 velocity, spin;
+};
+
+class BodyHistory {
+public:
+    // Before a real sample.
+    void record(const phys::World& world, const phys::Body& car) {
+        std::vector<phys::Body*> near;
+        world.bodiesNear(car.ics.matrix.m3, 40.0f, near);
+        std::vector<StoodPose> poses;
+        for (phys::Body* b : near)
+            if (b != &car)
+                poses.push_back(poseOf(*b));
+        m_samples.push_back(std::move(poses));
+    }
+    // A replay of the recorded samples, as reconcileNetCar runs it.
+    void replay(phys::World& world, phys::Body& car, double from) {
+        std::vector<StoodPose> now;
+        for (const auto& poses : m_samples)
+            for (const auto& p : poses)
+                if (std::ranges::none_of(now, [&](const StoodPose& q) { return q.body == p.body; }) &&
+                    world.contains(p.body))
+                    now.push_back(poseOf(*p.body));
+        phys::Body* bodies[] = {&car};
+        world.beginReplay(from);
+        for (const auto& poses : m_samples) {
+            place(world, poses);
+            world.replaySample(bodies, kDt);
+        }
+        place(world, now);
+    }
+
+private:
+    static StoodPose poseOf(phys::Body& b) {
+        return {&b, b.ics.matrix, b.boundMatrix, b.ics.linearVelocity, b.ics.angularVelocity};
+    }
+    static void place(const phys::World& world, const std::vector<StoodPose>& poses) {
+        for (const auto& p : poses) {
+            if (!world.contains(p.body))
+                continue;
+            p.body->ics.matrix = p.ics;
+            p.body->boundMatrix = p.bound;
+            p.body->ics.linearVelocity = p.velocity;
+            p.body->ics.angularVelocity = p.spin;
+        }
+    }
+    std::vector<std::vector<StoodPose>> m_samples;
 };
 
 std::vector<PlacedProp> layout() {
@@ -394,52 +450,62 @@ TEST(PropSync, ReplayThroughAKnockTakesTheSameKnock) {
     ASSERT_TRUE(client.set.standing(0));
     const Mat34 matrix = car.body.ics.matrix;
     const Vec3 velocity = car.body.ics.linearVelocity;
-    for (int i = 0; i < 25; ++i)
+    const double from = client.world.time();
+    BodyHistory history;
+    for (int i = 0; i < 25; ++i) {
+        history.record(client.world, car.body);
         client.step();
+    }
     ASSERT_FALSE(client.set.standing(0)); // the real samples knocked it
     const float real = car.body.ics.linearVelocity.z;
+    const Vec3 realAt = car.body.ics.matrix.m3;
     // Back to the earlier state, and the same samples again as a replay.
     car.body.place(matrix);
     car.body.ics.linearVelocity = velocity;
     car.body.ics.linearMomentum = velocity * car.body.ics.mass;
-    phys::Body* bodies[] = {&car.body};
-    client.world.beginReplay();
-    for (int i = 0; i < 25; ++i)
-        client.world.replaySample(bodies, kDt);
+    history.replay(client.world, car.body, from);
     EXPECT_FALSE(client.set.standing(0)); // a replay changes no prop
-    EXPECT_NEAR(car.body.ics.linearVelocity.z, real, 0.5f) << "real " << real;
+    EXPECT_NEAR(car.body.ics.linearVelocity.z, real, 0.2f) << "real " << real;
+    EXPECT_LT(car.body.ics.matrix.m3.dist(realAt), 0.1f);
     EXPECT_GT(car.body.ics.linearVelocity.z, -9.9f); // it met the prop
     client.world.remove(&car.body);
 }
 
-// A replay that starts just after the knock, the car still across the
-// prop's place and pushing it, ends where the real samples did: it meets the
-// prop where it stood and pushes it on.
-TEST(PropSync, ReplayJustAfterAKnockEndsAsTheRealSamples) {
-    TempBangers files;
-    bangers::BangerDataLibrary lib(files.vfs);
-    Machine client(lib);
-    client.place(layout());
-    Car car({0, 1, 4.5f}, {0, 0, -10});
-    client.set.setReplica([&car](const phys::Instance& other) { return &other == &car.body; });
-    client.world.add(&car.body);
-    while (client.set.standing(0))
-        client.step();
-    client.step(); // just after the knock, the car still across the prop's place
-    const Mat34 matrix = car.body.ics.matrix;
-    const Vec3 velocity = car.body.ics.linearVelocity;
-    for (int i = 0; i < 15; ++i)
-        client.step();
-    const float real = car.body.ics.linearVelocity.z;
-    car.body.place(matrix);
-    car.body.ics.linearVelocity = velocity;
-    car.body.ics.linearMomentum = velocity * car.body.ics.mass;
-    phys::Body* bodies[] = {&car.body};
-    client.world.beginReplay();
-    for (int i = 0; i < 15; ++i)
-        client.world.replaySample(bodies, kDt);
-    EXPECT_NEAR(car.body.ics.linearVelocity.z, real, 0.3f) << "real " << real;
-    client.world.remove(&car.body);
+// A replay that starts after the knock, the car still across the prop's
+// place or past it, ends where the real samples did: it meets the pieces
+// where they were, not the prop where it stood (which would knock the car a
+// second time).
+TEST(PropSync, ReplayAfterAKnockEndsAsTheRealSamples) {
+    for (const int after : {1, 4, 8}) {
+        TempBangers files;
+        bangers::BangerDataLibrary lib(files.vfs);
+        Machine client(lib);
+        client.place(layout());
+        Car car({0, 1, 4.5f}, {0, 0, -10});
+        client.set.setReplica([&car](const phys::Instance& other) { return &other == &car.body; });
+        client.world.add(&car.body);
+        while (client.set.standing(0))
+            client.step();
+        for (int i = 0; i < after; ++i)
+            client.step();
+        const Mat34 matrix = car.body.ics.matrix;
+        const Vec3 velocity = car.body.ics.linearVelocity;
+        const double from = client.world.time();
+        BodyHistory history;
+        for (int i = 0; i < 15; ++i) {
+            history.record(client.world, car.body);
+            client.step();
+        }
+        const float real = car.body.ics.linearVelocity.z;
+        const Vec3 realAt = car.body.ics.matrix.m3;
+        car.body.place(matrix);
+        car.body.ics.linearVelocity = velocity;
+        car.body.ics.linearMomentum = velocity * car.body.ics.mass;
+        history.replay(client.world, car.body, from);
+        EXPECT_NEAR(car.body.ics.linearVelocity.z, real, 0.06f) << after << " samples after, real " << real;
+        EXPECT_LT(car.body.ics.matrix.m3.dist(realAt), 0.03f) << after << " samples after";
+        client.world.remove(&car.body);
+    }
 }
 
 // A replay knocks and moves no prop for real: the standing props stand, the
@@ -451,6 +517,7 @@ TEST(PropSync, AReplayMovesNoPropForReal) {
     Car mine({6, 1, 4.5f}, {0, 0, -10}); // the client's own car knocks prop 1
     r.clientCar = &mine.body;
     r.client.world.add(&mine.body);
+    const double from = r.client.world.time(); // the replay below meets prop 1 standing
     r.run(0.6);
     r.host.world.remove(&host.body);
     ASSERT_FALSE(r.client.set.standing(1));
@@ -476,7 +543,7 @@ TEST(PropSync, AReplayMovesNoPropForReal) {
     Car again({0, 1, 4.5f}, {3, 0, -12});
     r.client.world.add(&again.body);
     phys::Body* replayed[] = {&again.body};
-    r.client.world.beginReplay();
+    r.client.world.beginReplay(from);
     for (int i = 0; i < 40; ++i)
         r.client.world.replaySample(replayed, kDt);
     r.client.world.remove(&again.body);
@@ -513,7 +580,7 @@ TEST(PropSync, ReplayedCarMeetsAPropAsARealSampleDoes) {
     Car b({0, 1, 2.5f}, {0, 0, -10});
     replay.world.add(&b.body);
     phys::Body* bodies[] = {&b.body};
-    replay.world.beginReplay();
+    replay.world.beginReplay(replay.world.time());
     for (int i = 0; i < kSteps; ++i)
         replay.world.replaySample(bodies, kDt);
     EXPECT_TRUE(replay.set.standing(0)); // a replay knocks nothing

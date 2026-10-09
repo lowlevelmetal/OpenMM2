@@ -524,7 +524,6 @@ void World::step(float dt) {
         m_stepObserver();
     if (m_beforeSample)
         m_beforeSample();
-    m_replayYielded.clear();
     m_replayBodies.clear();
     const float invDt = 1.0f / dt;
     // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
@@ -704,6 +703,7 @@ void World::replaySample(std::span<Body* const> bodies, float dt) {
             b->controller->afterCollisions(*b, dt, *this);
     m_stepping = stepping;
     m_replaying = false;
+    m_replayTime += static_cast<double>(dt);
 }
 
 void World::bodiesNear(const Vec3& at, float radius, std::vector<Body*>& out) const {
@@ -729,15 +729,13 @@ bool World::collideHeld(Body& a, Instance& b) {
     // a static instance as itself. OpenMM2 (the props of a network race):
     // what gives way when a car really hits it meets the replayed car with
     // its mass, though the world is not changed. A simulated body (a
-    // knocked-over prop's active) with a copy of its ICS; a light one (under
-    // a quarter of the car's mass) has given way once hit, as the real one
-    // flies off (inferred stand-in for its flight). An instance that takes a
-    // body when hit (a standing or resting prop, Instance::heldInertia) with
-    // the body it would take, which then moves for the rest of the replay
-    // as the hits push it (no gravity, no city: a replay is short).
+    // knocked-over prop's active) with a copy of its ICS (the network
+    // client puts it back where it was for each sample run again, as the
+    // real car pushed it). An instance that takes a body when hit (a
+    // standing or resting prop, Instance::heldInertia) with the body it
+    // would take, which then moves for the rest of the replay as the hits
+    // push it (no gravity, no city: a replay is short).
     Body* entity = b.entity();
-    if (std::ranges::find(m_replayYielded, &b) != m_replayYielded.end())
-        return false;
     InertialCS* held = nullptr;
     bool replayBody = false;
     if (entity && !entity->kinematic && entity->ics.mass > 0.0f) {
@@ -756,6 +754,16 @@ bool World::collideHeld(Body& a, Instance& b) {
         }
     }
     m_tempMatrixB = replayBody ? held->matrix : b.matrix();
+    if (held && !replayBody) {
+        // A simulated body stands where this sample started it (the network
+        // client puts it back there); a real sample moves it on before the
+        // collisions, as this one does the replayed car.
+        const float dt = sampleTime().seconds;
+        const Vec3& v = held->linearVelocity;
+        m_tempMatrixB.m3 = {v.x * dt + m_tempMatrixB.m3.x, v.y * dt + m_tempMatrixB.m3.y,
+                            v.z * dt + m_tempMatrixB.m3.z};
+        held->matrix.m3 = m_tempMatrixB.m3;
+    }
     const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
     if (held)
         m_tempB.init(boundB, &m_tempMatrixB, held);
@@ -798,14 +806,12 @@ bool World::collideHeld(Body& a, Instance& b) {
         for (Impact& im : impacts)
             calcImpact(im, weight);
     }
-    if (held && !replayBody && colA->ics && held->mass < colA->ics->mass * 0.25f)
-        m_replayYielded.push_back(&b);
     return true;
 }
 
-void World::beginReplay() {
-    m_replayYielded.clear();
+void World::beginReplay(double from) {
     m_replayBodies.clear();
+    m_replayTime = from;
 }
 
 bool World::trivialCollide(const Instance& a, const Instance& b) const {

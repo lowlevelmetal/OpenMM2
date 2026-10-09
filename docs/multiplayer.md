@@ -944,9 +944,12 @@ them, and dent them, through single player's code.
   (`Instance::heldInertia`: the active `dgBangerActive::Attach` would give
   it) and moves on through the replay as the hits push it (without gravity
   or the city: a replay is short); a placed prop the car broke loose in the
-  last second stands again for the replay where it stood (its pieces left
-  out), so the replay takes the knock the real samples took; a flying piece
-  meets it with a copy of its body and gives way after one hit if light.
+  last second stands again where it stood for the samples up to the one
+  that broke it loose (its pieces left out), so the replay takes the knock
+  the real samples took, and the later samples meet its pieces where they
+  were (the client puts the bodies around its car back where they stood for
+  each sample run again); a flying piece meets it with a copy of its body,
+  moved on over the sample as a real sample moves it before the collisions.
   Nothing is knocked or moved in the world by a replay. A prop a client's
   car hits in its own samples is the same knock on the host, sample for
   sample: a client driving alone through props had no correction.
@@ -1297,8 +1300,9 @@ messages, their sizes and limits), `test_fuzz.cpp` (both messages, decoded
 and sent to a client) and `tests/game/test_prop_sync.cpp` (a host and a
 client in one process through a lossy link: the host's knocks and pieces,
 a predicted knock handed over and one undone, other cars passing through a
-client's props, a replayed car meeting a prop as a real sample does, loss
-and reordering, a big crash, the catch-up, thrown car parts, refused input,
+client's props, a replayed car meeting a prop as a real sample does
+(through the knock, and from 1-8 samples after it), a replay moving no prop
+for real, loss and reordering, a big crash, the catch-up, thrown car parts, refused input,
 and on retail data the same placement on every machine).
 
 ### Diagnosing replication

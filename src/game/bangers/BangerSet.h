@@ -227,7 +227,9 @@ public:
     // A client's replay of its car (phys::World::replaying) meets a placed
     // prop its car broke loose in the last kGhostSeconds as it stood there
     // (a "ghost", standing again for the replay only), and not the pieces it
-    // became: the replayed car takes the knock the real one took.
+    // became, in the samples up to the one that broke it loose: the replayed
+    // car takes the knock the real one took. The later samples meet the
+    // pieces.
     bool replayGhost(std::size_t i) const;
     bool replayGhostPiece(std::size_t i) const;
     static constexpr double kGhostSeconds = 1.0;
@@ -339,6 +341,7 @@ private:
         double time = 0.0; // world time it broke loose
     };
     std::vector<Ghost> m_ghosts; // a client's own car's knocks, for its replays
+    bool ghostStands(const Ghost& g) const; // in the sample being run again
     std::size_t m_skipped = 0;
     bool m_ageMode = false; // dgBangerDataManager +0x2a8a8 (cleared by mmGame::Init)
     fx::FixedTicker m_ticker;
