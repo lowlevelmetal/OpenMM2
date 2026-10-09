@@ -776,13 +776,15 @@ them, and dent them, through single player's code.
 Measured on this machine through `netprobe relay` (80 ±20 ms each way, 2 %
 loss, reordering; and 150 ±20 ms, 5 % loss), a host and one or two clients
 driving into props, traffic lights and parked cars (the record:
-`docs/review/multiplayer-desync-props.md`): before, no prop knocked on one
-machine was knocked on another by the same hit, 11-16 props differed between
-the screens at the end of a minute, and the props both cars hit separately
-rested 8-21 m apart; after, every knock reached every machine (150-290 ms
+`docs/review/multiplayer-desync-props.md`): with 0.3.1's props no knock on
+one machine was the same knock on another, 6-16 props differed between the
+screens at the end of a minute, and props two cars hit separately rested
+10.6 m apart (0.1-2.1 m once the host simulated the client's car, in two
+separate simulations); after, every knock reached every machine (150-260 ms
 apart, a playout delay), no prop differed at the end, and the knocked-over
-props, parked cars and parts rested within 3 mm of the host's (the
-position's quantization). The host sent 0.3-4.0 KB/s to each client (10 s
+props, parked cars and parts rested within 5 mm of the host's (the
+position's quantization is 4 mm). A client alone among props had no
+correction of its car. The host sent 0.07-6 KB/s to each client (10 s
 averages; a big crash in the test, 27 props knocked by one car, 5 KB/s for a
 few seconds, at most 425 bytes a message); the ring bounds a message at 40
 slots, about 1 KB.
