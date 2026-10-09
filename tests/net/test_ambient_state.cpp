@@ -57,6 +57,8 @@ AmbientStateMsg sampleMessage() {
     m.catalog = 0xBEEF;
     m.setOrigin({-1501.4f, 34.6f, 558.2f});
     m.entities.push_back(railCar(7, {-1480.31f, 33.02f, 620.77f}, 0.7f, 12.5f));
+    m.entities.back().accel = -3.5f;
+    m.entities.back().curvature = 0.08f;
     m.entities.push_back(copCar(301, {-1600.0f, 40.0f, 500.0f}));
     AmbientEntity knocked = railCar(299, {-1450.0f, 35.0f, 540.0f}, -1.0f, 0.0f);
     knocked.flags = kAmbientOffRail | kAmbientWrecked;
@@ -103,6 +105,8 @@ TEST(AmbientState, RoundTripKeepsEveryField) {
     EXPECT_LT(rail.velocity.dist(expected), 0.1f);
     EXPECT_EQ(rail.flags, kAmbientBrake | kAmbientSignalLeft);
     EXPECT_EQ(rail.target, kAmbientNoTarget);
+    EXPECT_NEAR(rail.accel, -3.5f, 0.13f);
+    EXPECT_NEAR(rail.curvature, 0.08f, 0.001f);
 
     const AmbientEntity& cop = out.entities[1];
     EXPECT_EQ(cop.id, 301);
@@ -132,6 +136,8 @@ TEST(AmbientState, OutOfRangeValuesAreClampedNotTrusted) {
     EXPECT_EQ(in.origin[2], -32768);
     AmbientEntity e = railCar(1, {}, 0.0f, std::numeric_limits<float>::infinity());
     e.position = {std::numeric_limits<float>::quiet_NaN(), 5000.0f, -5000.0f};
+    e.accel = std::numeric_limits<float>::quiet_NaN();
+    e.curvature = -std::numeric_limits<float>::infinity();
     in.entities.push_back(e);
     AmbientEntity cop = copCar(2, {});
     cop.target = 200; // not a player
@@ -143,6 +149,7 @@ TEST(AmbientState, OutOfRangeValuesAreClampedNotTrusted) {
         EXPECT_TRUE(std::isfinite(o.position.x) && std::isfinite(o.position.y) &&
                     std::isfinite(o.position.z));
         EXPECT_TRUE(std::isfinite(o.speed));
+        EXPECT_TRUE(std::isfinite(o.accel) && std::isfinite(o.curvature));
         EXPECT_LE(std::abs(o.position.x - static_cast<float>(in.origin[0])), kAmbientOffsetRange);
         EXPECT_TRUE(std::isfinite(o.velocity.x) && std::isfinite(o.velocity.y) &&
                     std::isfinite(o.velocity.z));
@@ -231,7 +238,13 @@ TEST(AmbientState, SizesFitTheBudget) {
     AmbientEntity offRail = rail;
     offRail.flags |= kAmbientOffRail;
     const AmbientEntity cop = copCar(2, {});
-    EXPECT_EQ(ambientEntityBits(rail), 119u);
+    // Version 5: a rail car's acceleration and curvature when either is not
+    // 0 (16 bits), else 1 bit.
+    EXPECT_EQ(ambientEntityBits(rail), 120u);
+    AmbientEntity turning = rail;
+    turning.accel = -2.0f;
+    turning.curvature = 0.05f;
+    EXPECT_EQ(ambientEntityBits(turning), 136u);
     // Version 4: a knocked car says whether its wheels follow (80 bits more
     // when they do), a police car's damage takes 10 bits.
     EXPECT_EQ(ambientEntityBits(offRail), 178u);

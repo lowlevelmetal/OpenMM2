@@ -30,6 +30,14 @@ net::AmbientEntity toEntity(const SharedCar& c) {
     e.position = c.transform.m3;
     e.orientation = Quat::fromMatrix(c.transform);
     e.speed = c.speed;
+    // A rail car's acceleration and curvature, 0 where they would move it by
+    // a centimetre or so over half a second (or 5 m): those cost 1 bit. A
+    // car standing still turns nowhere.
+    if (std::abs(c.motion.accel) >= 0.1f)
+        e.accel = std::clamp(c.motion.accel, -net::kAmbientAccelRange, net::kAmbientAccelRange);
+    constexpr float kMaxCurvature = net::kAmbientCurvatureRange;
+    if (std::abs(c.motion.curvature) >= 0.001f && (c.speed != 0.0f || e.accel > 0.0f))
+        e.curvature = std::clamp(c.motion.curvature, -kMaxCurvature, kMaxCurvature);
     e.velocity = c.velocity;
     e.angularVelocity = c.angularVelocity;
     e.flags = c.flags;
@@ -177,6 +185,10 @@ void TrafficClient::restart(Entry& entry, const net::AmbientEntity& e, std::uint
     entry.goneAt.reset();
     entry.horn = false;
     entry.shown = false;
+    entry.motion = {};
+    entry.basis.reset();
+    entry.offset = {};
+    entry.offsetTurn = 0.0f;
 }
 
 void TrafficClient::receive(const net::AmbientStateMsg& msg) {
@@ -207,7 +219,7 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
         if (id >= static_cast<int>(net::kMaxAmbientIds) || e.model >= m_catalogSize ||
             e.paint > net::kMaxAmbientPaint || e.kind > net::AmbientKind::Last || !finite(e.position) ||
             !finite(e.velocity) || !finite(e.angularVelocity) || !std::isfinite(e.speed) ||
-            !listed.insert(id).second) {
+            !std::isfinite(e.accel) || !std::isfinite(e.curvature) || !listed.insert(id).second) {
             ++m_stats.refused;
             continue;
         }
@@ -263,6 +275,8 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
             entry.lastTime = msg.time;
             entry.target = e.target;
             entry.rpm = e.rpm;
+            // A rail car's (the others move on at their velocities).
+            entry.motion = e.fullMotion() ? RailMotion{} : RailMotion{e.accel, e.curvature};
         }
         if (later(msg.time, entry.firstTime) < 0)
             entry.firstTime = msg.time;
@@ -296,19 +310,64 @@ void TrafficClient::update(double renderTime) {
         ++it;
         if (renderTime < static_cast<double>(entry.firstTime))
             continue; // not on the host's screen yet at this time
+        // The drawing's correction fades (OpenMM2 presentation).
+        const double elapsed = std::max(0.0, renderTime - entry.updatedAt);
+        entry.updatedAt = renderTime;
+        if (m_options.correctionMs > 0.0) {
+            const auto keep = static_cast<float>(std::exp(-elapsed / m_options.correctionMs));
+            entry.offset = entry.offset * keep;
+            entry.offsetTurn *= keep;
+        }
         net::VehicleSnapshot s;
-        const auto result = entry.buffer.sample(renderTime, s, m_options.maxExtrapolationMs);
-        if (result == net::SnapshotBuffer::Result::Empty)
-            continue;
+        const net::VehicleSnapshot& newest = *entry.buffer.latest();
+        PredictedPose predicted;
+        const bool ahead = predict(entry, newest, entry.motion, renderTime, predicted);
+        auto result = net::SnapshotBuffer::Result::Interpolated;
+        if (ahead) {
+            // A newer basis: the drawing stays where it was and blends the
+            // difference away (beyond the snap distance it jumps).
+            PredictedPose before;
+            if (entry.shown && entry.basis && entry.basis->time != newest.time &&
+                predict(entry, *entry.basis, entry.basisMotion, renderTime, before)) {
+                const Vec3 offset = before.transform.m3 + entry.offset - predicted.transform.m3;
+                const float turn = std::remainder(groundHeading(-before.transform.m2) + entry.offsetTurn -
+                                                      groundHeading(-predicted.transform.m2),
+                                                  kTwoPi);
+                if (offset.mag() > m_options.snapDistance || std::abs(turn) > m_options.snapTurn) {
+                    ++m_stats.snaps;
+                    entry.offset = {};
+                    entry.offsetTurn = 0.0f;
+                } else {
+                    entry.offset = offset;
+                    entry.offsetTurn = turn;
+                }
+            }
+            entry.basis = newest;
+            entry.basisMotion = entry.motion;
+            s = newest;
+            result = net::SnapshotBuffer::Result::Extrapolated;
+        } else {
+            result = entry.buffer.sample(renderTime, s, 0.0);
+            if (result == net::SnapshotBuffer::Result::Empty)
+                continue;
+            entry.offset = {};
+            entry.offsetTurn = 0.0f;
+        }
         Car c;
         c.id = id;
         c.kind = entry.kind;
         c.generation = entry.generation;
         c.model = entry.model;
         c.paint = entry.paint;
-        c.transform = s.orientation.normalized().toMatrix(s.position);
-        c.velocity = s.linearVelocity;
-        c.angularVelocity = s.angularVelocity;
+        if (ahead) {
+            c.transform = predicted.transform;
+            c.velocity = predicted.velocity;
+            c.angularVelocity = s.angularVelocity;
+        } else {
+            c.transform = s.orientation.normalized().toMatrix(s.position);
+            c.velocity = s.linearVelocity;
+            c.angularVelocity = s.angularVelocity;
+        }
         c.speed = -c.transform.m2.dot(c.velocity);
         c.flags = s.flags;
         c.target = entry.target;
@@ -457,12 +516,48 @@ void trafficWheelMatrices(const Mat34& transform, const std::array<Vec3, 4>& off
     }
 }
 
+bool TrafficClient::predict(const Entry& entry, const net::VehicleSnapshot& state, const RailMotion& motion,
+                            double time, PredictedPose& out) const {
+    const double ahead = time - static_cast<double>(state.time);
+    if (ahead <= 0.0)
+        return false;
+    const Mat34 m = state.orientation.normalized().toMatrix(state.position);
+    // A car on its rail goes on along it; a body (a police car, a car off
+    // its rail) at its velocity, for a shorter while.
+    const bool rail = entry.kind == net::AmbientKind::Traffic && (state.flags & net::kAmbientOffRail) == 0;
+    if (rail) {
+        const auto dt = static_cast<float>(std::min(ahead, m_options.maxRailPredictionMs) / 1000.0);
+        out = predictRailCar(m, -m.m2.dot(state.linearVelocity), motion, dt);
+    } else {
+        const auto dt = static_cast<float>(std::min(ahead, m_options.maxBodyPredictionMs) / 1000.0);
+        out = predictBody(m, state.linearVelocity, state.angularVelocity, dt);
+    }
+    return true;
+}
+
 std::optional<Mat34> TrafficClient::transformAt(int id, double time) const {
     const auto it = m_entries.find(id);
     if (it == m_entries.end())
         return std::nullopt;
+    const Entry& entry = it->second;
+    const net::VehicleSnapshot* newest = entry.buffer.latest();
+    if (!newest)
+        return std::nullopt;
+    PredictedPose p;
+    if (predict(entry, *newest, entry.motion, time, p)) {
+        // Drawn with the correction still being blended away.
+        Mat34 m = p.transform;
+        if (entry.offsetTurn != 0.0f) {
+            const Mat34 turn = Mat34::rotationY(entry.offsetTurn); // +y, from +z toward +x
+            m.m0 = turn.transformDir(m.m0);
+            m.m1 = turn.transformDir(m.m1);
+            m.m2 = turn.transformDir(m.m2);
+        }
+        m.m3 += entry.offset;
+        return m;
+    }
     net::VehicleSnapshot s;
-    if (it->second.buffer.sample(time, s, m_options.maxExtrapolationMs) == net::SnapshotBuffer::Result::Empty)
+    if (entry.buffer.sample(time, s, 0.0) == net::SnapshotBuffer::Result::Empty)
         return std::nullopt;
     return s.orientation.normalized().toMatrix(s.position);
 }

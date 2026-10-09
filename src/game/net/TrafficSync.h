@@ -19,6 +19,7 @@
 
 #include "ai/Traffic.h"
 #include "core/Math.h"
+#include "game/net/TrafficPrediction.h"
 #include "net/AmbientState.h"
 #include "net/Snapshot.h"
 
@@ -64,6 +65,7 @@ struct SharedCar {
     int paint = 0;      // paint job
     Mat34 transform;    // model origin
     float speed = 0.0f; // along -m2 (rail cars)
+    RailMotion motion;  // rail cars: acceleration and curvature (RailMotionTracker)
     Vec3 velocity;
     Vec3 angularVelocity;
     std::uint8_t flags = 0; // net::AmbientFlags
@@ -131,10 +133,19 @@ private:
 class TrafficClient {
 public:
     struct Options {
-        // As the remote players (net::SessionConfig): shown this far in the
-        // past, extrapolated at most this far beyond the newest message.
+        // The least delay a car is shown at when it is interpolated (as the
+        // remote players, net::SessionConfig).
         double interpolationDelayMs = 100.0;
-        double maxExtrapolationMs = 250.0;
+        // Beyond its newest message a car is predicted (TrafficPrediction.h)
+        // at most this far, then held: a car on its rail, and a body.
+        double maxRailPredictionMs = 1000.0;
+        double maxBodyPredictionMs = 500.0;
+        // A predicted car's drawing blends a newer message's correction away
+        // with this time constant; a correction beyond snapDistance (or
+        // snapTurn radians) is shown at once.
+        double correctionMs = 100.0;
+        float snapDistance = 4.0f;
+        float snapTurn = 1.0f;
         // A car not heard of for this long is dropped (the host stopped
         // sending, or every message for a while was lost).
         double staleMs = 1500.0;
@@ -150,8 +161,10 @@ public:
 
     // A message from the host (untrusted: checked as it is read).
     void receive(const net::AmbientStateMsg& msg);
-    // The cars at `renderTime` (session ms, normally session time less the
-    // interpolation delay); cars that have left by then are dropped.
+    // The cars at `renderTime` (session ms): interpolated between the
+    // host's messages while it is behind the newest, predicted beyond it
+    // (normally: the time this machine's car is at); cars that have left by
+    // then are dropped.
     void update(double renderTime);
 
     struct Car {
@@ -174,7 +187,7 @@ public:
         float rpm = 0.0f;
         float throttle = 0.0f;
         int gear = 0;
-        bool extrapolated = false; // beyond the newest message (late or lost packets)
+        bool extrapolated = false; // beyond the newest message (predicted)
         bool hornStarted = false;  // the horn sounded since the previous update
         bool fresh = false;        // shown for the first time (or put somewhere new) this update
     };
@@ -184,7 +197,8 @@ public:
     // OpenMM2 presentation: car `id` (one update() listed) as it was at
     // `time`, up to kDrawBehindMs before update()'s render time: the drawing
     // shows the shared cars a physics step further back, with everything
-    // else (game::StepHistory). Before the car's first state, that state.
+    // else (game::StepHistory). Before the car's first state, that state. A
+    // predicted car is drawn with the correction still being blended away.
     std::optional<Mat34> transformAt(int id, double time) const;
     static constexpr double kDrawBehindMs = 100.0;
     // The host's catalog differs from this client's.
@@ -198,6 +212,7 @@ public:
         std::uint64_t refused = 0;  // entries with a model out of range, duplicates, bad values
         std::uint64_t outdated = 0; // messages older than the newest
         std::uint64_t teleports = 0;
+        std::uint64_t snaps = 0; // predicted cars whose correction was shown at once
     };
     const Stats& stats() const { return m_stats; }
     const Options& options() const { return m_options; }
@@ -221,10 +236,23 @@ private:
         std::optional<std::uint32_t> goneAt; // missing from a newer message: gone from this time on
         std::uint8_t target = net::kAmbientNoTarget;
         float rpm = 0.0f;
+        RailMotion motion; // the newest state's
         bool horn = false;  // the horn flag as last shown
         bool shown = false; // shown since its last (re)start
+        // The prediction's last basis (the newest state then) and the
+        // drawing's correction: where it was drawn less where the newest
+        // prediction puts it, blended away.
+        std::optional<net::VehicleSnapshot> basis;
+        RailMotion basisMotion;
+        Vec3 offset;
+        float offsetTurn = 0.0f;
+        double updatedAt = 0.0;
     };
     void restart(Entry& entry, const net::AmbientEntity& e, std::uint32_t time);
+    // The car predicted from `state` (its newest) to `time`; false when
+    // `time` is not beyond it.
+    bool predict(const Entry& entry, const net::VehicleSnapshot& state, const RailMotion& motion, double time,
+                 PredictedPose& out) const;
 
     Options m_options;
     std::size_t m_catalogSize = 0;

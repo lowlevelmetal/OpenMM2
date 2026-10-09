@@ -6,7 +6,7 @@
 // multiplayer.md, "Diagnosing replication"). `mm2tool nettrace` compares a
 // host's trace with its clients' (docs/review/multiplayer-desync-traffic.md).
 //
-//   TH time id gen kind x y z fx fz speed flags target
+//   TH time id gen kind x y z fx fz speed flags target vx vy vz
 //       host: a car as its simulation has it at session time `time` (its own:
 //       the AI step's for a car on its rail, the physics step's for a body)
 //   TC frame time id gen kind x y z fx fz speed flags target mode

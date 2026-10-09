@@ -20,7 +20,7 @@ void traceHostCar(std::FILE* f, double time, const SharedCar& car) {
     std::fprintf(f, "TH %.3f %d %d %d", time, car.id, car.generation % static_cast<int>(net::kAmbientGenerations),
                  static_cast<int>(car.kind));
     traceCar(f, car.transform, car.speed, car.flags, car.target);
-    std::fputc('\n', f);
+    std::fprintf(f, " %.3f %.3f %.3f\n", car.velocity.x, car.velocity.y, car.velocity.z);
 }
 
 void traceClientCar(std::FILE* f, double frame, double time, const TrafficClient::Car& car, int mode) {
