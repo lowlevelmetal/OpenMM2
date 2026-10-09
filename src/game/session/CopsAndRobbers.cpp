@@ -371,9 +371,9 @@ std::vector<CopsAndRobbers::Message> CopsAndRobbers::updateHost(float dt, const 
     bool dropped = false;
     for (const auto& c : cars) {
         if (m_carrier == c.id) {
+            // The carrier's own impacts (its vehCarDamage::ApplyImpact).
             for (const auto& im : impacts) {
-                const int other = im.a == c.id ? im.b : (im.b == c.id ? im.a : -1);
-                if (other < 0 || other == c.id || im.impulse < kStealImpulse)
+                if (im.a != c.id || im.b < 0 || im.b == c.id || im.impulse < kStealImpulse)
                     continue;
                 lockOut(c.id, kDropLockout);
                 drop(c.id, c.position, false, true);
