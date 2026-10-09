@@ -618,20 +618,31 @@ void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
         }
     } else {
         // Headlight beams (vehCarModel::DrawHeadlights) with the light flag,
-        // or sweeping in opposite directions while the siren is on.
-        if ((pose.headlights || (pose.siren && !m_sirens.empty())) && (m_headlights[0] || m_headlights[1])) {
-            for (std::size_t i = 0; i < 2; ++i) {
-                if (!m_headlights[i])
-                    continue;
-                Vec3 direction = -pose.body.m2;
-                if (pose.siren && !m_sirens.empty()) {
-                    const float sweep = pose.sirenAngle / (2.5f * 3.1415927f) * kHeadlightSweep;
-                    direction = Mat34::rotationY(i == 0 ? sweep : -sweep).transformDir(direction);
-                }
-                addLightGlow(m_cards, pose.body.transform(m_headlights[i]->position), direction,
-                             m_headlights[i]->color, camera);
+        // or sweeping while the siren is on: the two ltLights keep their
+        // world-space directions, set to the car's forward axis without the
+        // siren and turned about Y by +-42.411503 rad/s of frame time from
+        // wherever they point while it is on (Vector3::RotateY), so the
+        // sweep does not follow the car's turning.
+        const bool sweeping = pose.siren && !m_sirens.empty();
+        if ((pose.headlights || sweeping) && (m_headlights[0] || m_headlights[1])) {
+            if (sweeping) {
+                // The frame's time from the siren's angle (2.5 pi rad/s,
+                // kept within a turn).
+                float turned = pose.sirenAngle - m_beamSirenAngle;
+                if (turned < 0.0f)
+                    turned = turned + 6.2831855f;
+                const float sweep = turned / (2.5f * 3.1415927f) * kHeadlightSweep;
+                m_beamDirection[0] = Mat34::rotationY(sweep).transformDir(m_beamDirection[0]);
+                m_beamDirection[1] = Mat34::rotationY(-sweep).transformDir(m_beamDirection[1]);
+            } else {
+                m_beamDirection[0] = m_beamDirection[1] = -pose.body.m2;
             }
+            for (std::size_t i = 0; i < 2; ++i)
+                if (m_headlights[i])
+                    addLightGlow(m_cards, pose.body.transform(m_headlights[i]->position), m_beamDirection[i],
+                                 m_headlights[i]->color, camera);
         }
+        m_beamSirenAngle = pose.sirenAngle;
         // Siren beams (vehSiren::Draw): world-space directions turning about
         // Y, a quarter turn apart.
         if (pose.siren)

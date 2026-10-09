@@ -123,6 +123,10 @@ public:
     // Not for the traffic renderers AiRenderer shares between cars.
     void setRooms(const RoomVisibility* rooms) { m_rooms = rooms; }
 
+    // vehCarModel::DrawHeadlights' two ltLight directions as last drawn
+    // (world space).
+    const std::array<Vec3, 2>& headlightDirections() const { return m_beamDirection; }
+
     // The level of detail at that camera; nullopt beyond NoDraw.
     std::optional<asset::Lod> lodFor(const VehiclePose& pose, const Mat34& camera) const;
 
@@ -177,6 +181,11 @@ private:
     std::optional<Vec3> m_fenderOffset; // fndr0 pivot relative to wheel 0
     fx::ParticleRenderer m_cards;
     std::optional<fx::LensFlare> m_flare; // vehSiren's ltLensFlare(20)
+    // The headlight ltLights' world-space directions (vehCarModel::
+    // DrawHeadlights; ltLight::Default points them down -Z) and the siren
+    // angle they were last turned to.
+    std::array<Vec3, 2> m_beamDirection{Vec3{0.0f, 0.0f, -1.0f}, Vec3{0.0f, 0.0f, -1.0f}};
+    float m_beamSirenAngle = 0.0f;
     std::unique_ptr<TexelDamage> m_texelDamage;
     std::set<std::string> m_detached;
     std::vector<std::size_t> m_ejectedBangers; // in ejection order

@@ -362,3 +362,46 @@ TEST(Round3Frames, StickFigureWidthAxis) {
     EXPECT_NEAR(tilted.y, -sa * sp, 1e-5f);
     EXPECT_NEAR(tilted.z, sa * ca * (cp - 1.0f), 1e-5f);
 }
+
+// vehCarModel::DrawHeadlights keeps the headlights' ltLight directions in
+// world space: the car's forward axis without the siren; with it, turned
+// about Y by +-42.411503 rad/s of frame time from wherever they point, so
+// the sweep does not turn with the car.
+TEST(Round3Frames, HeadlightSweepIsInWorldSpace) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& vfs = *test::gameData();
+    auto read = [&](std::string_view path) { return vfs.readAll(path); };
+    auto model = asset::loadVehicleModel("vpcop", read);
+    ASSERT_TRUE(model);
+    RecordingDevice device;
+    game::TextureLibrary textures(device, vfs);
+    game::ModelLibrary models(device, vfs);
+    game::VehicleRenderer r(device, textures, models, *model, 0);
+    Mat34 camera;
+    camera.m3 = {0.0f, 1.0f, 20.0f};
+    game::VehiclePose pose;
+    pose.headlights = true;
+    pose.body = Mat34::rotationY(0.3f);
+    r.draw(pose, camera);
+    const Vec3 forward = -pose.body.m2;
+    EXPECT_FLOAT_EQ(r.headlightDirections()[0].x, forward.x);
+    EXPECT_FLOAT_EQ(r.headlightDirections()[1].z, forward.z);
+
+    // The siren on for a tenth of a second, the car turned meanwhile.
+    pose.siren = true;
+    pose.sirenAngle = 0.1f * 2.5f * 3.1415927f;
+    pose.body = Mat34::rotationY(1.2f);
+    r.draw(pose, camera);
+    const float sweep = pose.sirenAngle / (2.5f * 3.1415927f) * 42.411503f;
+    const Vec3 left = Mat34::rotationY(sweep).transformDir(forward);
+    const Vec3 right = Mat34::rotationY(-sweep).transformDir(forward);
+    EXPECT_NEAR(r.headlightDirections()[0].x, left.x, 1e-5f);
+    EXPECT_NEAR(r.headlightDirections()[0].z, left.z, 1e-5f);
+    EXPECT_NEAR(r.headlightDirections()[1].x, right.x, 1e-5f);
+    EXPECT_NEAR(r.headlightDirections()[1].z, right.z, 1e-5f);
+
+    // Off again: forward.
+    pose.siren = false;
+    r.draw(pose, camera);
+    EXPECT_FLOAT_EQ(r.headlightDirections()[0].x, -pose.body.m2.x);
+}
