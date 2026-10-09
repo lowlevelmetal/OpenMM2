@@ -464,12 +464,14 @@ bool calcBangerImpact(Impact& impact, float weight, float impulseLimit2) {
     impact.findFrictionAndElasticity();
     // OpenMM2: a kinematic body that moves (a network car on this machine)
     // has no ICS in its collider, so no impulse could stop it and the banger
-    // would hold forever. It breaks the banger as a body of its own mass
-    // would (Body::ics), keeps its motion and gives the banger all of the
-    // relative velocity. MM2's network cars are simulated vehCars.
+    // would hold forever. One that may (Body::kinematicBreaksBangers: the
+    // host's copies of the other players' cars) breaks the banger as a body
+    // of its own mass would (Body::ics), keeps its motion and gives the
+    // banger all of the relative velocity. MM2's network cars are simulated
+    // vehCars.
     const Body* kinematic =
         !impact.colliderA->ics && impact.colliderA->moving ? impact.colliderA->body : nullptr;
-    if (kinematic && !(kinematic->ics.mass > 0.0f))
+    if (kinematic && (!kinematic->kinematicBreaksBangers || !(kinematic->ics.mass > 0.0f)))
         kinematic = nullptr;
     if (n.z * relVel.z + n.y * relVel.y + n.x * relVel.x <= 0.01f) {
         Mat34 test = ma;

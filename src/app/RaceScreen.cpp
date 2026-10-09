@@ -4555,6 +4555,9 @@ private:
             sim.body.kinematicMoves = true;
             sim.body.kinematicVelocity = rc.velocity;
             sim.body.kinematicSpin = rc.angularVelocity;
+            // OpenMM2: the host knocks the props it hits for everyone
+            // (game/net/NetProps); a client's props take its own car only.
+            sim.body.kinematicBreaksBangers = m_netProps.host();
             sim.setInputs(rc.controls.throttle, rc.controls.brake, rc.controls.steering, rc.controls.handbrake);
             sim.body.declare(3, 0x1b); // mmNetObject::Update
             if (auto* trailer = rv.sim->trailer()) {

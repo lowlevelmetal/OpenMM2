@@ -141,6 +141,10 @@ public:
     // no momentum of its own (infinite mass).
     bool kinematicMoves = false;
     Vec3 kinematicVelocity, kinematicSpin;
+    // OpenMM2: a moving kinematic body that breaks the bangers it hits as a
+    // body of its mass (ics) would (a network race's host: its copies of the
+    // other players' cars). Otherwise a banger holds against it.
+    bool kinematicBreaksBangers = false;
     bool kinematicMotion(Vec3& velocity, Vec3& spin, Vec3& centre) const override;
 
     // Places the body's centre of mass frame and resets its motion and
