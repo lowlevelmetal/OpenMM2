@@ -460,6 +460,7 @@ private:
     std::uint32_t m_netEvaluated = 0;
     bool m_netFinishKnown = false;
     bool m_netAllCounted = false;
+    bool m_netWord = false; // showing what the host's word brought
     bool netRules() const { return m_options.netRules && multiplayer(); }
 
     // Crash course.

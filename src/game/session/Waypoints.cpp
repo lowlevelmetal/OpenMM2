@@ -217,8 +217,8 @@ bool WaypointTracker::apply(std::span<const Checkpoint> checkpoints, int index, 
     return false;
 }
 
-void WaypointTracker::update(std::span<const Checkpoint> checkpoints, const Mat34& car, const Vec3& inertiaBox,
-                             std::vector<WaypointStep>& steps) {
+void WaypointTracker::update(std::span<const Checkpoint> checkpoints, const Mat34& car,
+                             const Vec3& inertiaBox, std::vector<WaypointStep>& steps) {
     const int index = detect(checkpoints, car, inertiaBox);
     if (index >= 0)
         apply(checkpoints, index, car.m3, steps);

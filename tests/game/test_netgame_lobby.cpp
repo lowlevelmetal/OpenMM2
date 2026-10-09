@@ -190,21 +190,21 @@ TEST(NetGameLobby, StaleGameEventsAreDroppedAtTheNextCountdown) {
     ASSERT_NO_FATAL_FAILURE(l.open());
     ASSERT_NO_FATAL_FAILURE(l.start());
     l.host.returnToLobby();
-    l.client.sendFinish(61000, 1); // sent before the client heard of the return
+    l.client.sendCollision(net::kHostPlayerId, {}, 1.0f); // sent before the client heard of the return
     ASSERT_TRUE(pump({&l.host, &l.client}, [&] { return l.client.phase() == NetGame::Phase::Lobby; }));
     settle({&l.host, &l.client});
     ASSERT_NO_FATAL_FAILURE(l.readyUp());
     ASSERT_NO_FATAL_FAILURE(l.start());
     EXPECT_TRUE(l.host.takeGameEvents().empty());
     // The new race's events come through.
-    l.client.sendCheckpoint(1, 5000);
+    l.client.sendCollision(net::kHostPlayerId, {}, 2.0f);
     std::vector<game::NetGameEvent> got;
     ASSERT_TRUE(pump({&l.host, &l.client}, [&] {
         for (auto& e : l.host.takeGameEvents())
             got.push_back(std::move(e));
         return !got.empty();
     }));
-    EXPECT_EQ(got.front().type, net::GameEventType::CheckpointReached);
+    EXPECT_EQ(got.front().type, net::GameEventType::Collision);
 }
 
 // Cops vs. Robbers gives every cop vpcop and every robber vpmustang99 (MM2's

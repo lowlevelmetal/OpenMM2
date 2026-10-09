@@ -105,6 +105,11 @@ enum class EventType : std::uint8_t {
     // (value = Session::kNetDnf): tell the other players
     // (mmGameMulti::SendFinishReq / SendFinishAck).
     NetFinished,
+    // Multiplayer under the host's authority (SessionOptions::netRules): the
+    // host's word took back waypoint `index`, which this machine had shown
+    // (the marker shows again; nothing is played). CheckpointCleared's value
+    // is 1 for a waypoint the host's word brought (0: as predicted).
+    CheckpointTakenBack,
 };
 
 // What the modes ask of the announcer (mmRaceSpeech, mmCCSpeech).

@@ -1,6 +1,7 @@
 #include "game/net/NetRules.h"
 
 #include "core/Log.h"
+#include "game/net/RulesTrace.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,7 +16,8 @@ using CrMessage = session::CopsAndRobbers::Message;
 std::uint32_t toMs(float seconds) {
     if (!(seconds < session::RaceReferee::kDnf))
         return net::kRuleDnfMs;
-    return std::min(net::kRuleDnfMs - 1, static_cast<std::uint32_t>(std::lround(std::max(0.0f, seconds) * 1000.0f)));
+    const auto ms = static_cast<std::uint32_t>(std::lround(std::max(0.0f, seconds) * 1000.0f));
+    return std::min(net::kRuleDnfMs - 1, ms);
 }
 
 float toSeconds(std::uint32_t ms) {
@@ -128,7 +130,8 @@ std::string NetRules::nameOf(std::uint8_t id) const {
     return it != m_names.end() ? it->second : std::format("Player {}", id);
 }
 
-void NetRules::hostSample(std::uint8_t id, std::uint32_t seq, const Mat34& car, const Vec3& inertiaBox, bool held) {
+void NetRules::hostSample(std::uint8_t id, std::uint32_t seq, const Mat34& car, const Vec3& inertiaBox,
+                          bool held) {
     if (!m_setup.host || m_left.contains(id))
         return;
     m_carSamples[id] = seq;
@@ -163,7 +166,8 @@ void NetRules::apply(const RuleDecisionMsg& d) {
     session::Session* s = m_setup.session;
     switch (d.type) {
     case RuleDecision::Finished:
-        m_finished.insert(d.player);
+        if (m_finished.insert(d.player).second)
+            traceRuleFinish(m_trace, m_frameTime, d.player, d.ms);
         if (s) {
             if (d.player == m_setup.self)
                 s->netFinished(toSeconds(d.ms));
@@ -225,10 +229,12 @@ net::RulesMsg NetRules::message(std::uint8_t player, Client& c) const {
         m.place = static_cast<std::uint8_t>(std::clamp(p->place, 1, static_cast<int>(net::kMaxPlayers)));
         m.racers = static_cast<std::uint8_t>(std::clamp(p->racers, 1, static_cast<int>(net::kMaxPlayers)));
     }
-    for (const auto& [id, q] : m_referee->players())
-        if (id != player && q.inRace && m.icons.size() < net::kMaxPlayers)
-            m.icons.emplace_back(id, static_cast<std::uint8_t>(std::clamp(
-                                         m_referee->iconPlace(player, id), 0, static_cast<int>(net::kMaxPlayers))));
+    for (const auto& [id, q] : m_referee->players()) {
+        if (id == player || !q.inRace || m.icons.size() >= net::kMaxPlayers)
+            continue;
+        const int icon = std::clamp(m_referee->iconPlace(player, id), 0, static_cast<int>(net::kMaxPlayers));
+        m.icons.emplace_back(id, static_cast<std::uint8_t>(icon));
+    }
     for (const auto& r : m_referee->results())
         if (m.results.size() < net::kMaxPlayers)
             m.results.emplace_back(r.player, toMs(r.seconds));
@@ -260,6 +266,12 @@ void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition
                 break;
             }
             decide(d);
+        }
+        for (const auto& [id, p] : m_referee->players()) {
+            std::size_t& traced = m_tracedHits[id];
+            for (; traced < p.hits.size(); ++traced)
+                traceRuleHostHit(m_trace, m_frameTime, id, p.hitSamples[traced], p.hits[traced],
+                                 static_cast<int>(traced) + 2, p.wp.lap);
         }
         // The host's own player takes the referee's word as a client does,
         // with no delay.

@@ -65,8 +65,10 @@ void RaceReferee::sample(std::uint8_t id, std::uint32_t seq, const Mat34& car, c
     const int index = p.wp.detect(m_config.checkpoints, car, inertiaBox);
     if (index >= 0) {
         std::vector<WaypointStep> steps;
-        if (p.wp.apply(m_config.checkpoints, index, car.m3, steps))
+        if (p.wp.apply(m_config.checkpoints, index, car.m3, steps)) {
             p.hits.push_back(static_cast<std::uint8_t>(index));
+            p.hitSamples.push_back(seq);
+        }
     }
     // mmMultiRace / mmMultiCircuit / mmMultiBlitz::UpdateGame state 3. A
     // held car (the wreck penalty's state 7) is not checked until it goes
@@ -96,7 +98,8 @@ void RaceReferee::decideFinish(std::uint8_t id, Player& p, float seconds) {
     // mmGameMulti::SortResults: a player is listed once, by time (a later
     // equal time goes after; did-not-finish last).
     if (std::ranges::none_of(m_results, [id](const Result& r) { return r.player == id; })) {
-        const auto at = std::ranges::find_if(m_results, [seconds](const Result& r) { return r.seconds > seconds; });
+        const auto at =
+            std::ranges::find_if(m_results, [seconds](const Result& r) { return r.seconds > seconds; });
         m_results.insert(at, Result{id, seconds});
     }
     m_decisions.push_back({Decision::Kind::Finished, id, seconds});

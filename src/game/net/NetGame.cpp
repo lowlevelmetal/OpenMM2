@@ -1,5 +1,7 @@
 #include "game/net/NetGame.h"
 
+#include "game/net/NetRules.h"
+
 #include "core/Log.h"
 #include "game/Catalog.h"
 #include "core/StringUtil.h"
@@ -230,6 +232,10 @@ bool NetGame::host(const RaceConfig& config, const NetHostOptions& hostOptions, 
         impl.session.reset();
         return false;
     }
+    // OpenMM2: the host decides the rules; a player's own word on them is
+    // refused (game/net/NetRules).
+    impl.session->setEventFilter(
+        [](std::uint8_t from, net::GameEventMsg& m) { return hostAcceptsGameEvent(from, m.type); });
     log::info("netgame: hosting '{}' on port {}", impl.sessionName, impl.session->port());
     m_chat.clear();
     m_notices.clear(); // a new session: nothing left over from the last

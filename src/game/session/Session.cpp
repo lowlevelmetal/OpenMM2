@@ -526,7 +526,7 @@ void Session::cycleTarget(bool forward) {
 
 void Session::displayCleared(int index, int count) {
     // mmWaypoints::DisplayHUDMessage (the waypoint was marked cleared).
-    push(EventType::CheckpointCleared, index);
+    push(EventType::CheckpointCleared, index, m_netWord ? 1.0f : 0.0f);
     // Its sound: "Waypoint" in the crash course; for any-order and in-order
     // waypoints, except for the one that leaves only the finish;
     // "Lastwaypoint" when a circuit lap is completed.
@@ -691,9 +691,19 @@ void Session::applyNetProgress(const NetProgress& progress, const Vec3& carPosit
     }
     log::debug("session: the host's word on the waypoints after sample {}: {} hits ({} predicted)",
                progress.evaluated, hits.size(), m_netHits.size());
+    // The ones taken back: their markers show again, nothing is played.
+    std::vector<std::uint8_t> kept;
+    for (const auto& h : hits)
+        kept.push_back(h.index);
+    const auto keptKeys = hitKeys(kept);
+    for (const auto& key : myKeys)
+        if (std::ranges::find(keptKeys, key) == keptKeys.end())
+            push(EventType::CheckpointTakenBack, key.first);
     m_wp = std::move(wp);
     m_netHits = std::move(hits);
+    m_netWord = true;
     showWaypointSteps(shown);
+    m_netWord = false;
 }
 
 void Session::setNetStanding(int place, int racers) {

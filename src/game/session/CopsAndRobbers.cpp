@@ -437,13 +437,17 @@ std::vector<CopsAndRobbers::Message> CopsAndRobbers::updateHost(float dt, const 
     return out;
 }
 
-bool CopsAndRobbers::updatePredicted(float dt, const Car& me, int players) {
+bool CopsAndRobbers::updatePredicted(float dt, const Car& me, const std::vector<Car>& cars, int players) {
     if (m_over)
         return false;
     tickLockouts(dt);
     if (me.wrecked && !locked(me.id))
         lockOut(me.id, kWreckPenalty);
     tickLimits(dt);
+    // UpdateGold: the carried gold rides 2 m above its carrier.
+    for (const auto& c : cars)
+        if (c.id == m_carrier)
+            m_goldPos = c.position + Vec3{0.0f, 2.0f, 0.0f};
     if (m_over || m_pending || players < 2 || !canTake(me))
         return false;
     // UpdateGold on a machine that is not the host: MM2 asks the host

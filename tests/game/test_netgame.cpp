@@ -184,19 +184,27 @@ TEST(NetGame, HostJoinChatReadyCountdownAndState) {
     EXPECT_NEAR(cars[0].damage, 0.2f, 0.01f);
     EXPECT_EQ(cars[0].controls.gear, 2);
 
-    // Game events.
+    // Game events. A player's own word on the rules (a checkpoint, a
+    // finish) is refused: the host decides them (protocol 8,
+    // game/net/NetRules); other events come through.
     client.sendCheckpoint(3, 61234);
     client.sendFinish(123456, 1);
+    client.sendCollision(net::kHostPlayerId, {1, 2, 3}, 4.0f);
+    client.sendDamage(0.5f, net::kHostPlayerId);
     std::vector<game::NetGameEvent> got;
     ASSERT_TRUE(pump({&host, &client}, [&] {
         for (auto& e : host.takeGameEvents())
             got.push_back(std::move(e));
         return got.size() == 2;
     }));
-    EXPECT_EQ(got[0].type, net::GameEventType::CheckpointReached);
-    ASSERT_TRUE(got[0].as<net::CheckpointEvent>());
-    EXPECT_EQ(got[0].as<net::CheckpointEvent>()->index, 3);
-    EXPECT_EQ(got[1].as<net::FinishEvent>()->raceTime, 123456u);
+    pump({&host, &client}, [] { return false; }, 150);
+    for (auto& e : host.takeGameEvents())
+        got.push_back(std::move(e));
+    ASSERT_EQ(got.size(), 2u);
+    EXPECT_EQ(got[0].type, net::GameEventType::Collision);
+    ASSERT_TRUE(got[0].as<net::CollisionEvent>());
+    EXPECT_FLOAT_EQ(got[0].as<net::CollisionEvent>()->impulse, 4.0f);
+    EXPECT_EQ(got[1].as<net::DamageEvent>()->damage, 0.5f);
     EXPECT_EQ(got[1].from, client.localId());
 
     // Back to the lobby.

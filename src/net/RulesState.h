@@ -97,7 +97,8 @@ namespace detail {
 template <class S>
 bool rulePosition(S& s, Vec3& v) {
     s.vec3(v);
-    if (std::fabs(v.x) > kMaxRulePosition || std::fabs(v.y) > kMaxRulePosition || std::fabs(v.z) > kMaxRulePosition)
+    if (std::fabs(v.x) > kMaxRulePosition || std::fabs(v.y) > kMaxRulePosition ||
+        std::fabs(v.z) > kMaxRulePosition)
         return s.fail();
     return s.ok();
 }

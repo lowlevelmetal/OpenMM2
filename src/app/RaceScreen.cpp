@@ -41,11 +41,14 @@
 #include "game/fx/SkidMarks.h"
 #include "game/fx/VehicleEffects.h"
 #include "game/fx/Weather.h"
+#include "game/net/Autopilot.h"
 #include "game/net/DamageSync.h"
 #include "game/net/NetGame.h"
+#include "game/net/NetRules.h"
 #include "game/net/NetTrafficCars.h"
 #include "game/net/PlayerCars.h"
 #include "game/net/RaceStart.h"
+#include "game/net/RulesTrace.h"
 #include "game/net/TrafficProxies.h"
 #include "game/net/TrafficSync.h"
 #include "game/net/TrafficTrace.h"
@@ -81,36 +84,6 @@
 
 namespace mm2::app {
 namespace {
-
-// Cops and Robbers' own messages (mmMultiCR's 0x25e pickup request and 0x261
-// ChangeSet) as OpenMM2 game events.
-constexpr auto kCrPickupRequest = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 1);
-constexpr auto kCrNewSet = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 2);
-// mmMultiCR::SendLimitReached: the host's word that the time ran out or a
-// point limit was reached (OpenMM2: with the winner and its points).
-constexpr auto kCrLimit = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 3);
-struct CrLimitEvent {
-    std::uint8_t pointLimit = 0; // 0: the time ran out
-    std::int32_t car = -1;
-    std::int32_t value = 0;
-};
-template <class S>
-bool serialize(S& s, CrLimitEvent& e) {
-    s.u8(e.pointLimit);
-    s.ranged(e.car, -1, static_cast<std::int32_t>(net::kMaxPlayers) - 1);
-    s.ranged(e.value, 0, 1 << 20);
-    return s.ok();
-}
-struct CrSetEvent {
-    Vec3 gold, bank, hideout;
-};
-template <class S>
-bool serialize(S& s, CrSetEvent& e) {
-    s.vec3(e.gold);
-    s.vec3(e.bank);
-    s.vec3(e.hideout);
-    return s.ok();
-}
 
 // OpenMM2's shared traffic of a network cruise: the AI's ids of the other
 // players' cars (ai::TrackedCar), the network ids of the police cars (after
@@ -448,8 +421,10 @@ public:
         updateAudio(ctx, static_cast<float>(dt));
         updateEffects(static_cast<float>(dt));
         sendNetDamage(ctx); // OpenMM2: what this machine's cars painted and broke
+        receiveNetRules(ctx); // OpenMM2: a client takes the host's word on the rules
         updateSession(ctx, static_cast<float>(dt));
         updateCopsAndRobbers(ctx, static_cast<float>(dt));
+        sendNetRules(ctx, static_cast<float>(dt)); // OpenMM2: the host decides them
         // Development aid: OPENMM2_DEBUG_FOCUS=ped|car frames the nearest
         // pedestrian or traffic car (for screenshots); net:<player id> a
         // network player's car (this machine's own, or another's as drawn),
@@ -1148,6 +1123,7 @@ private:
             if (m_player)
                 m_player->sim().damage.enabled = m_session->playerDamageEnabled();
             setupCopsAndRobbers(ctx);
+            beginNetRules(ctx);
             // mmPlayer::SetPreRaceCam (every single-player mode but cruise).
             if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
                 m_cams.startPreRace();
@@ -1410,6 +1386,8 @@ private:
             opts.scoringBias = info->scoringBias;
         opts.playerName = ctx.settings.playerName;
         opts.netHost = multiplayer(ctx) && ctx.netGame->isHost();
+        // OpenMM2: the host decides the rules (game/net/NetRules).
+        opts.netRules = multiplayer(ctx);
         // mmMultiRoam / mmMultiCR: RespawnXYZ draws the start from a random
         // stream seeded with the player's id (MM2: its DirectPlay id), so
         // every player starts elsewhere.
@@ -2068,11 +2046,20 @@ private:
         m_session->setPreRaceCamera(m_cams.preRace());
         // The multiplayer countdown (2.5 s) starts with the host's start
         // message; OpenMM2's follows the shared start time (updateNetStart).
-        if (multiplayer(ctx))
+        if (multiplayer(ctx)) {
             m_session->setNetStart(m_netToGo);
-        else
+            m_session->setNetSample(ctx.netGame->isHost() ? m_netOwnSample : m_prediction.nextSeq() - 1);
+        } else {
             m_session->setStartSignal(true);
+        }
         m_session->update(dt, m_playerState, opps, cops);
+        if (multiplayer(ctx) &&
+            (m_session->position() != m_tracedPlace || m_session->racerCount() != m_tracedRacers)) {
+            m_tracedPlace = m_session->position();
+            m_tracedRacers = m_session->racerCount();
+            game::traceRuleStanding(ctx.netGame->traceFile(), ctx.netGame->frameTime(), m_tracedPlace,
+                                    m_tracedRacers);
+        }
         // DisableRacers / EnableRacers: the player's vehCarDamage switch.
         m_player->sim().damage.enabled = m_session->playerDamageEnabled();
         // mmSingleStunt::UpdateEvade turns the map on during its first line.
@@ -2246,13 +2233,15 @@ private:
                 // line for the checkpoint (mmCCSpeech::PlayCheckPoint, 0.01 s).
                 if (m_announcerOk && m_result.config.mode == game::GameMode::CrashCourse)
                     m_announcer.playCrashCourseCheckPoint(e.index, 0.01f);
-                // mmGameMulti::SendPosition carries the waypoint count
-                // (mmPlayer +0x2254) for the others' standings.
+                // OpenMM2: the host counts every car's waypoints itself
+                // (MM2's SendPosition carried each machine's own count).
                 if (multiplayer(ctx))
-                    ctx.netGame->sendCheckpoint(m_session->waypointsPassed(),
-                                                static_cast<std::uint32_t>(m_session->raceTime() * 1000.0f));
-            } else if (e.type == EventType::NetFinished && multiplayer(ctx)) {
-                ctx.netGame->sendFinish(static_cast<std::uint32_t>(e.value * 1000.0f), 0);
+                    game::traceRuleShown(ctx.netGame->traceFile(), ctx.netGame->frameTime(),
+                                         ctx.netGame->localId(), e.index, m_session->waypointsPassed(),
+                                         e.value > 0.0f ? 1 : 0);
+            } else if (e.type == EventType::CheckpointTakenBack && multiplayer(ctx)) {
+                game::traceRuleTakenBack(ctx.netGame->traceFile(), ctx.netGame->frameTime(),
+                                         ctx.netGame->localId(), e.index);
             } else if (e.type == EventType::FinalCheckpoint || e.type == EventType::FinalLap) {
                 // mmWaypoints::Update: the last stretch switches the music to
                 // the cop chase segment; the final checkpoint is announced
@@ -2576,16 +2565,6 @@ private:
             m_announcer.beginCopsAndRobbers();
     }
 
-    // mmMultiCR::FondleCarMass: the gold's mass on the carrier
-    // (phInertialCS::Init with the mass changed) and its throttle cap.
-    // (OpenMM2: the car takes it with its inputs, game::NetCarDriver, on
-    // the host too.)
-    void fondleMass(float kg) {
-        const long gold = std::lround(static_cast<float>(m_netGold) + kg);
-        m_netGold = static_cast<std::uint16_t>(std::clamp(gold, 0L, static_cast<long>(net::kMaxExtraMass)));
-        m_throttleCap = kg > 0.0f ? m_cr->carrierThrottleCap() : 1.0f;
-    }
-
     // mmMultiCR::FillResults: the game's scores for the results page.
     game::RaceResult crResult(Context& ctx) const {
         game::RaceResult r = m_session->result();
@@ -2601,46 +2580,13 @@ private:
         return r;
     }
 
-    void sendCr(Context& ctx, const std::vector<game::session::CopsAndRobbers::Message>& messages) {
-        using Type = game::session::CopsAndRobbers::Message::Type;
-        for (const auto& m : messages) {
-            switch (m.type) {
-            case Type::PickupRequest:
-                ctx.netGame->sendEvent(kCrPickupRequest,
-                                       net::encodePayload(net::GoldEvent{m.position, static_cast<std::uint8_t>(m.car)}),
-                                       net::kHostPlayerId);
-                break;
-            case Type::GoldTaken: ctx.netGame->sendGold(net::GameEventType::GoldPickedUp, m.position, m.car); break;
-            case Type::GoldDropped: ctx.netGame->sendGold(net::GameEventType::GoldDropped, m.position, m.car); break;
-            case Type::GoldDelivered:
-                ctx.netGame->sendGold(net::GameEventType::GoldDelivered, m.position, m.car);
-                break;
-            case Type::NewSet:
-                ctx.netGame->sendEvent(kCrNewSet, net::encodePayload(CrSetEvent{m.set.gold, m.set.bank, m.set.hideout}));
-                break;
-            }
-        }
-    }
-
     void updateCopsAndRobbers(Context& ctx, float dt) {
         if (!m_cr || !m_player || !m_session)
             return;
         using game::session::CopsAndRobbers;
-        using Type = CopsAndRobbers::Message::Type;
         const bool host = ctx.netGame->isHost();
         // mmPlayer::UpdateRegen while regeneration is on: the car's input
         // carries it (net::kInputRegen; game::NetCarDriver).
-        // mmMultiCR::UpdateGame for the local car, with the others' places.
-        std::vector<CopsAndRobbers::Car> cars;
-        // mmMultiCR::HitWaterHandler / DropThruCityHandler drop the gold back
-        // at its place when the water handler fires (5 s in the water, or a
-        // fall out of the city), not when the car touches the water.
-        cars.push_back({m_crSelf, m_crMyTeam, m_player->sim().body.ics.matrix.m3, m_playerState.wrecked,
-                        std::exchange(m_crWaterHandled, false)});
-        for (const auto& rc : m_remoteCars)
-            if (rc.hasState)
-                cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
-                                false});
         // mmMultiCR::UpdateGame state 2 starts the clock (mmTimer::Start) when
         // it enables the racers. OpenMM2's cars go at the shared start time,
         // and every machine runs its rules on the session clock from there,
@@ -2651,9 +2597,8 @@ private:
         const double raceClock = ctx.netGame->raceStartKnown() ? std::max(0.0, sinceStart / 1000.0) : 0.0;
         const float ruleDt = static_cast<float>(std::max(0.0, raceClock - m_crClock));
         m_crClock = std::max(m_crClock, raceClock);
-        sendCr(ctx, m_cr->updateNetwork(ruleDt, m_crSelf, host, cars, m_crImpacts));
-        m_crImpacts.clear();
         // mmMultiCR::SystemMessage 0x2d: a player left.
+        std::vector<std::uint8_t> left;
         {
             std::set<std::uint8_t> now;
             for (const auto& p : ctx.netGame->players())
@@ -2661,58 +2606,72 @@ private:
                     now.insert(p.id);
             for (const auto id : m_crPlayers)
                 if (!now.contains(id))
-                    sendCr(ctx, m_cr->playerLeft(id, host));
+                    left.push_back(id);
             m_crPlayers = std::move(now);
         }
-        // The others' messages (mmMultiCR::GameMessage).
-        for (const auto& ev : m_netEvents) {
-            CopsAndRobbers::Message m;
-            const auto type = static_cast<std::uint16_t>(ev.type);
-            if (type == kCrPickupRequest) {
-                m.type = Type::PickupRequest;
-                m.car = ev.from;
-            } else if (type == kCrNewSet) {
-                const auto set = ev.as<CrSetEvent>();
-                if (!set)
-                    continue;
-                m.type = Type::NewSet;
-                m.set = {set->bank, set->gold, set->hideout};
-            } else if (type == kCrLimit) {
-                // GameMessage: the host's limit (taken from the host only).
-                const auto limit = ev.as<CrLimitEvent>();
-                if (limit && ev.from == net::kHostPlayerId && !host)
-                    m_cr->limitReached(limit->pointLimit ? CopsAndRobbers::EventType::PointLimit
-                                                         : CopsAndRobbers::EventType::TimeUp,
-                                       limit->car, limit->value);
-                continue;
-            } else if (const auto g = ev.as<net::GoldEvent>(); g && (ev.type == net::GameEventType::GoldPickedUp ||
-                                                                     ev.type == net::GameEventType::GoldDropped ||
-                                                                     ev.type == net::GameEventType::GoldDelivered)) {
-                m.type = ev.type == net::GameEventType::GoldPickedUp  ? Type::GoldTaken
-                         : ev.type == net::GameEventType::GoldDropped ? Type::GoldDropped
-                                                                      : Type::GoldDelivered;
-                m.car = g->team;
-                m.position = g->position;
-            } else {
-                continue;
+        const Vec3 own = m_player->sim().body.ics.matrix.m3;
+        if (host) {
+            // OpenMM2: the host simulates every player's car, so it runs
+            // mmMultiCR's rules for each as that car's own machine did
+            // (CopsAndRobbers::updateHost) and tells everyone
+            // (game/net/NetRules). mmMultiCR::HitWaterHandler /
+            // DropThruCityHandler drop the gold back at its place when the
+            // water handler fires (5 s in the water, or a fall out of the
+            // city): this car's, or a reset another player's car took.
+            std::vector<CopsAndRobbers::Car> cars;
+            cars.push_back(
+                {m_crSelf, m_crMyTeam, own, m_playerState.wrecked, std::exchange(m_crWaterHandled, false)});
+            for (const auto& [id, rv] : m_remotes)
+                if (rv.simulated && rv.placed && rv.sim && !m_netLeft.contains(id))
+                    cars.push_back({id, m_cr->teamOf(id), rv.sim->sim().body.ics.matrix.m3,
+                                    rv.sim->sim().damage.wrecked(), m_crResets.contains(id)});
+            m_crResets.clear();
+            auto decisions = m_cr->updateHost(ruleDt, cars, m_crImpacts);
+            for (const auto id : left) {
+                const auto dropped = m_cr->playerLeft(id, true);
+                decisions.insert(decisions.end(), dropped.begin(), dropped.end());
             }
-            sendCr(ctx, m_cr->receive(m, ev.from, host));
+            for (const auto& d : decisions)
+                if (d.type == CopsAndRobbers::Message::Type::GoldDelivered && d.car != m_crSelf && d.car >= 0)
+                    repairRemoteCar(static_cast<std::uint8_t>(d.car));
+            m_netRules.hostDecided(decisions);
+        } else {
+            // The host's word came with the frame's events
+            // (receiveNetRules); this machine predicts only its own car
+            // taking free gold, which the host confirms or undoes.
+            std::vector<CopsAndRobbers::Car> cars;
+            cars.push_back({m_crSelf, m_crMyTeam, own, m_playerState.wrecked, false});
+            for (const auto& rc : m_remoteCars)
+                if (rc.hasState)
+                    cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3,
+                                    (rc.flags & net::kVehicleWrecked) != 0, false});
+            int players = 0;
+            for (const auto& p : ctx.netGame->players())
+                players += m_netLeft.contains(p.id) ? 0 : 1;
+            if (m_cr->updatePredicted(ruleDt, cars.front(), cars, players))
+                m_netRules.predictedPickup(m_prediction.nextSeq() - 1);
+            m_crWaterHandled = false;
         }
+        m_crImpacts.clear();
         // What happened, on this machine's HUD and car.
         auto name = [&](int id) {
             const auto* p = ctx.netGame->player(static_cast<std::uint8_t>(id));
             return p ? p->name : std::string();
         };
         const auto& s = ctx.game->strings;
+        std::FILE* trace = ctx.netGame->traceFile();
         for (const auto& e : m_cr->takeEvents()) {
             using E = CopsAndRobbers::EventType;
             const bool me = e.car == m_crSelf;
+            if (e.type != E::TimeWarning)
+                game::traceCopsEvent(trace, ctx.netGame->frameTime(), static_cast<int>(e.type), e.car,
+                                     e.value);
             switch (e.type) {
             case E::GoldTaken:
                 if (me) {
-                    // StealGold: the mass, no regeneration, "You have the Gold!".
-                    fondleMass(m_cr->carrierExtraMassKg());
-                    m_regen = false;
+                    // StealGold: the mass, no regeneration (below), "You
+                    // have the Gold!" (OpenMM2: a client shows it when it
+                    // predicts the pickup, MM2 when the host's 0x25a came).
                     m_session->showMessage(s.get(host ? 115 : 134, "You have the Gold!"), 5.0f, false);
                 } else {
                     m_session->showMessage(std::format("{} {}", name(e.car), s.get(135, "has the Gold!")), 5.0f, false);
@@ -2720,8 +2679,6 @@ private:
                 break;
             case E::GoldDropped:
                 if (me) {
-                    fondleMass(-m_cr->carrierExtraMassKg());
-                    m_regen = true;
                     // Only ImpactCallback says so; the wreck and the water
                     // drop it without a line.
                     if (e.value == 1)
@@ -2735,10 +2692,11 @@ private:
                 break;
             case E::GoldDelivered:
                 if (me) {
-                    // UpdateBank / UpdateHideout: regeneration, a repaired car.
-                    fondleMass(-m_cr->carrierExtraMassKg());
-                    m_regen = true;
-                    netCommand({0, net::CarCommandKind::ClearDamage, {}, 0.0f});
+                    // UpdateBank / UpdateHideout: regeneration, a repaired
+                    // car (OpenMM2: the host repairs the car it simulates,
+                    // and a client's follows its states).
+                    if (host)
+                        netCommand({0, net::CarCommandKind::ClearDamage, {}, 0.0f});
                     clearVehicleDamage();
                     m_session->showMessage(s.get(117, "Gold delivered!"), 5.0f, false);
                 } else {
@@ -2759,17 +2717,37 @@ private:
             }
             case E::TimeUp:
             case E::PointLimit:
-                // SendLimitReached: the host tells the others.
-                if (host)
-                    ctx.netGame->sendEvent(kCrLimit, net::encodePayload(CrLimitEvent{
-                                                         static_cast<std::uint8_t>(e.type == E::PointLimit),
-                                                         e.car, e.value}));
-                // UpdateLimit: the message for 3 s, then 3 s to the results
+                // SendLimitReached: the host tells the others (its rules
+                // message). UpdateLimit: the message for 3 s, then 3 s to the results
                 // (state 9).
                 m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 3.0f, false);
                 m_crEnd = 3.0f;
                 break;
             case E::NewSet: break;
+            case E::PickupUndone:
+                log::info("race: the host did not give this car the gold it reached");
+                break;
+            }
+        }
+        // mmMultiCR::FondleCarMass and mmPlayer::EnableRegen: the gold's mass
+        // and throttle cap on the car that carries it, the regeneration on
+        // every other (this machine's car takes them with its inputs; the
+        // host's own rules set them on the cars it simulates).
+        {
+            const bool carrying = m_cr->goldCarrier() == m_crSelf;
+            const float kg = carrying ? m_cr->carrierExtraMassKg() : 0.0f;
+            m_netGold = static_cast<std::uint16_t>(
+                std::clamp(std::lround(kg), 0L, static_cast<long>(net::kMaxExtraMass)));
+            m_throttleCap = carrying && kg > 0.0f ? m_cr->carrierThrottleCap() : 1.0f;
+            m_regen = !carrying;
+        }
+        if (trace) {
+            std::vector<std::pair<int, int>> scores;
+            for (const auto& p : ctx.netGame->players())
+                scores.emplace_back(p.id, m_cr->playerScore(p.id));
+            if (scores != m_tracedScores) {
+                game::traceCopsScores(trace, ctx.netGame->frameTime(), scores);
+                m_tracedScores = std::move(scores);
             }
         }
         if (m_crEnd >= 0.0f) {
@@ -3030,44 +3008,135 @@ private:
         ctx.nextScreen = makeFrontendScreen(ctx, result);
     }
 
-    // The multiplayer races' exchange (mmGameMulti, mmMultiRace / Circuit /
-    // Blitz::GameMessage): the other players' finishes and their waypoint
-    // counts (which MM2 sends in every position packet) for the standings.
+    // The multiplayer races' standings (mmGameMulti::UpdateScore's icons):
+    // OpenMM2's host decides the finishes and ranks every car
+    // (game/net/NetRules); the other players' icons show its numbers.
     void updateNetRace(Context& ctx) {
         const auto mode = m_result.config.mode;
         if (!multiplayer(ctx) || !m_session ||
             !(mode == game::GameMode::Blitz || mode == game::GameMode::Circuit || mode == game::GameMode::Checkpoint))
             return;
-        for (const auto& ev : m_netEvents) {
-            if (ev.type == net::GameEventType::CheckpointReached) {
-                if (const auto e = ev.as<net::CheckpointEvent>())
-                    m_netWaypoints[ev.from] = e->index;
-            } else if (ev.type == net::GameEventType::RaceFinished) {
-                const auto e = ev.as<net::FinishEvent>();
-                const auto* p = ctx.netGame->player(ev.from);
-                if (!e || !p || m_netFinished.contains(ev.from))
-                    continue;
-                m_netFinished.insert(ev.from);
-                const float seconds = static_cast<float>(e->raceTime) * 0.001f;
-                m_session->remoteFinished(p->name, std::min(seconds, game::session::Session::kNetDnf));
-            }
-        }
         std::vector<game::session::Session::NetRacer> racers;
         for (const auto& p : ctx.netGame->players()) {
             if (p.id == ctx.netGame->localId() || m_netLeft.contains(p.id))
                 continue;
             game::session::Session::NetRacer r;
             r.name = p.name;
-            if (const auto it = m_netWaypoints.find(p.id); it != m_netWaypoints.end())
-                r.waypoints = it->second;
             const auto it = m_remotes.find(p.id);
             r.present = it != m_remotes.end() && it->second.sim;
             if (r.present)
                 r.position = it->second.sim->sim().body.ics.matrix.m3;
-            r.finished = m_netFinished.contains(p.id);
+            r.finished = m_netRules.finished(p.id);
+            r.hostPlace = m_netRules.iconPlace(p.id);
             racers.push_back(std::move(r));
         }
         m_session->setNetRacers(std::move(racers));
+    }
+
+    // --- OpenMM2: the rules the host decides (game/net/NetRules) ---------------------------
+
+    void beginNetRules(Context& ctx) {
+        if (!multiplayer(ctx) || !m_session)
+            return;
+        const auto mode = m_result.config.mode;
+        game::NetRules::Setup s;
+        s.host = ctx.netGame->isHost();
+        s.self = ctx.netGame->localId();
+        s.race = m_netRace;
+        const bool race = mode == game::GameMode::Blitz || mode == game::GameMode::Circuit ||
+                          mode == game::GameMode::Checkpoint;
+        if (race)
+            s.session = m_session.get();
+        else
+            s.cops = m_cr.get();
+        for (const auto& p : ctx.netGame->players())
+            s.players.push_back(p.id);
+        s.sampleSeconds = phys::kFixedSampleStep;
+        m_netRules.begin(s);
+        // Development aid: OPENMM2_DEBUG_AUTOPILOT=<line>[,<m/s>] drives this
+        // machine's car along the race's opponent line through its inputs
+        // (game/net/Autopilot.h), for automated runs.
+        if (const char* ap = std::getenv("OPENMM2_DEBUG_AUTOPILOT"); ap && m_player && m_world && s.session) {
+            const auto parts = str::split(ap, ',');
+            const int line = static_cast<int>(str::parseInt(parts.empty() ? "" : parts[0]).value_or(0));
+            const float speed =
+                parts.size() > 1 ? static_cast<float>(str::parseDouble(parts[1]).value_or(0.0)) : 0.0f;
+            std::string error;
+            m_autopilot = game::NetAutopilot::create(*m_city, ctx.game->vfs, m_session->setup(),
+                                                     m_player->sim(), line, speed, m_world.get(), &error);
+            if (m_autopilot)
+                log::info("race: the autopilot drives opponent line {}", line);
+            else
+                log::warn("race: no autopilot: {}", error);
+        }
+    }
+
+    // Client: the host's word on the rules among the frame's events.
+    void receiveNetRules(Context& ctx) {
+        if (!multiplayer(ctx) || !m_netRules.active())
+            return;
+        for (const auto& p : ctx.netGame->players())
+            m_netRules.setName(p.id, p.name);
+        m_netRules.setTrace(ctx.netGame->traceFile(), ctx.netGame->frameTime());
+        if (!ctx.netGame->isHost() && m_player)
+            m_netRules.receive(m_netEvents, m_player->sim().body.ics.matrix.m3);
+    }
+
+    // Host: its referee's frame, its word on its own player, each player's message.
+    void sendNetRules(Context& ctx, float dt) {
+        if (!multiplayer(ctx) || !m_netRules.active() || !ctx.netGame->isHost() || !m_player)
+            return;
+        for (const auto id : m_netRules.players())
+            if (m_netLeft.contains(id) || !ctx.netGame->player(id))
+                m_netRules.playerLeft(id);
+        m_netRules.hostUpdate(dt, net::monotonicMs(), m_player->sim().body.ics.matrix.m3,
+                              [&ctx](std::uint8_t player, std::vector<std::byte> payload) {
+                                  ctx.netGame->sendEvent(net::kRulesEvent, std::move(payload), player);
+                              });
+    }
+
+    // Host: after every physics sample, every player's car for the referee.
+    void netRulesSample() {
+        if (!m_player || !m_traceNet)
+            return;
+        ++m_netOwnSample;
+        m_netRules.hostSample(m_traceNet->localId(), m_netOwnSample, m_player->sim().body.ics.matrix,
+                              m_player->sim().params.inertiaBox, (m_netInput.flags & net::kInputHeld) != 0);
+        for (const auto& [id, rv] : m_remotes)
+            if (rv.simulated && rv.placed && rv.sim)
+                m_netRules.hostSample(id, rv.inputs.lastApplied(), rv.sim->sim().body.ics.matrix,
+                                      rv.sim->sim().params.inertiaBox,
+                                      (rv.input.flags & net::kInputHeld) != 0);
+    }
+
+    // Host: the gold's mass, its throttle cap and the regeneration on a
+    // player's car it simulates are its own rules' (who carries the gold),
+    // whatever that player's input says (mmMultiCR::FondleCarMass,
+    // mmPlayer::EnableRegen).
+    void hostGoldInput(std::uint8_t id, net::CarInputFrame& frame) const {
+        if (!m_cr)
+            return;
+        const bool carrying = m_cr->goldCarrier() == id;
+        const float kg = carrying ? m_cr->carrierExtraMassKg() : 0.0f;
+        const long mass = std::clamp(std::lround(kg), 0L, static_cast<long>(net::kMaxExtraMass));
+        frame.extraMass = static_cast<std::uint16_t>(mass);
+        const long cap = std::lround(m_cr->carrierThrottleCap() * 255.0f);
+        frame.throttleCap =
+            carrying && kg > 0.0f ? static_cast<std::uint8_t>(std::clamp(cap, 0L, 255L)) : std::uint8_t{255};
+        frame.flags = carrying ? static_cast<std::uint8_t>(frame.flags & ~net::kInputRegen)
+                               : static_cast<std::uint8_t>(frame.flags | net::kInputRegen);
+    }
+
+    // Host: 600 on every machine (mmMultiCR::GameMessage): the deliverer's
+    // car repaired (vehCar::ClearDamage), here on the car the host simulates.
+    void repairRemoteCar(std::uint8_t id) {
+        const auto it = m_remotes.find(id);
+        if (it == m_remotes.end() || !it->second.sim)
+            return;
+        const net::CarCommand repair{it->second.inputs.lastApplied(), net::CarCommandKind::ClearDamage, {},
+                                     0.0f};
+        game::NetCarDriver::command(*it->second.sim, repair);
+        hostCarReset(id, it->second);
     }
 
     void buildPopup(Context& ctx) {
@@ -4841,6 +4910,18 @@ private:
             rv.fx->impact(impact, rv.sim->sim());
         if (impact.damaging)
             m_netDamage.player(id).impact(m_netStateTime, game::damageImpactOf(impact, rv.sim->sim()));
+        // mmMultiCR::ImpactCallback for this car: a damaging hit from another
+        // player's car.
+        if (m_cr && impact.damaging && impact.otherBody) {
+            std::optional<std::uint8_t> other;
+            if (m_player && impact.otherBody == &m_player->sim().body && m_traceNet)
+                other = m_traceNet->localId();
+            for (const auto& [oid, orv] : m_remotes)
+                if (orv.sim && &orv.sim->sim().body == impact.otherBody)
+                    other = oid;
+            if (other && *other != id)
+                m_crImpacts.push_back({id, *other, impact.total});
+        }
         traceNetImpact(id, impact);
     }
 
@@ -4878,6 +4959,9 @@ private:
                 for (const auto& c : next->commands) {
                     if (!netCommandAllowed(rv, c))
                         continue;
+                    // mmMultiCR::HitWaterHandler / DropThruCityHandler on that machine.
+                    if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
+                        m_crResets.insert(id);
                     game::NetCarDriver::command(*rv.sim, c);
                     if (c.kind == net::CarCommandKind::ResetTo || c.kind == net::CarCommandKind::RespawnAt)
                         rv.lastMoveSeq = c.seq;
@@ -4887,6 +4971,7 @@ private:
                 // Nobody goes before the start, whatever its input says.
                 if (m_netHeld)
                     next->frame.flags |= net::kInputHeld;
+                hostGoldInput(id, next->frame);
                 if (rv.driver.apply(*rv.sim, next->frame))
                     hostCarReset(id, rv);
                 rv.input = next->frame;
@@ -4907,8 +4992,12 @@ private:
         m_prediction.beginSample(*m_player, m_netDriver, in);
     }
     void afterNetSample() {
-        if (!m_player || !m_traceNet || m_traceNet->isHost())
+        if (!m_player || !m_traceNet)
             return;
+        if (m_traceNet->isHost()) {
+            netRulesSample(); // OpenMM2: the host's referee sees every car after every sample
+            return;
+        }
         // Development aid: OPENMM2_DEBUG_NETCARS_NOISE=<fraction> nudges a
         // client's car's momentum by about that fraction each sample, as a
         // machine built by another compiler might round differently.
@@ -5436,6 +5525,15 @@ private:
             pedals.brake = f(1);
             pedals.steering = m_gameInput.filterAxis(clampf(f(2), -1.0f, 1.0f), dt);
             pedals.handbrake = f(3);
+        }
+        if (m_autopilot && m_player) {
+            const bool go = (!multiplayer(ctx) || ctx.netGame->raceStarted()) &&
+                            !(m_session && m_session->playerHeld());
+            const auto c = m_autopilot->drive(dt, m_player->sim(), !go);
+            pedals.accelerator = c.throttle;
+            pedals.brake = c.brake;
+            pedals.steering = c.steering;
+            pedals.handbrake = 0.0f;
         }
         // ... and records them, and the car is driven with the recorded
         // values (bytes).
@@ -6052,8 +6150,6 @@ private:
     std::map<std::uint8_t, Mat34> m_remoteStepBodies; // their bodies in the last sample (recordStepPoses)
     std::vector<game::NetGameEvent> m_netEvents; // this frame's game events (takeNetEvents)
     std::set<std::uint8_t> m_netLeft;            // players who quit this race
-    std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
-    std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
     bool m_netPlayersKnown = false;
     std::uint32_t m_netRace = 0; // NetGame::raceNumber() of this race
@@ -6091,6 +6187,13 @@ private:
     std::optional<game::NetRaceStart> m_netStart; // from the end of the loading (updateNetStart)
     bool m_netHeld = true;                        // its car hold
     std::optional<float> m_netToGo;               // its countdown (Session::setNetStart)
+    // OpenMM2: the rules the host decides (game/net/NetRules, docs/multiplayer.md "Rules").
+    game::NetRules m_netRules;
+    std::uint32_t m_netOwnSample = 0;                // host: its own car's samples
+    std::set<std::uint8_t> m_crResets;               // host: cars the water handlers reset this frame
+    std::unique_ptr<game::NetAutopilot> m_autopilot; // OPENMM2_DEBUG_AUTOPILOT
+    int m_tracedPlace = 0, m_tracedRacers = 0;       // OPENMM2_NET_TRACE's last RE line
+    std::vector<std::pair<int, int>> m_tracedScores; // and CS line
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     // A shared-traffic client's received cars as the bodies' traffic

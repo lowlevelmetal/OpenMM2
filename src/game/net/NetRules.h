@@ -26,6 +26,7 @@
 #include "net/RulesState.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <memory>
@@ -63,8 +64,14 @@ public:
     void begin(const Setup& setup);
     bool active() const { return m_setup.session != nullptr || m_setup.cops != nullptr; }
     bool host() const { return m_setup.host; }
+    const std::vector<std::uint8_t>& players() const { return m_setup.players; }
     // A player's name for the lines ("<name> finished in"); kept after it leaves.
     void setName(std::uint8_t id, std::string name) { m_names[id] = std::move(name); }
+    // OPENMM2_NET_TRACE's rules lines (game/net/RulesTrace.h), this frame.
+    void setTrace(std::FILE* f, double frameTime) {
+        m_trace = f;
+        m_frameTime = frameTime;
+    }
 
     // --- Host ---------------------------------------------------------------------------
     // After each physics sample of a player's car (the host's own too): `seq`
@@ -135,6 +142,9 @@ private:
     std::map<std::uint8_t, int> m_icons;
     bool m_timedOut = false, m_allCounted = false;
     std::map<std::uint8_t, std::string> m_names;
+    std::FILE* m_trace = nullptr;
+    double m_frameTime = 0.0;
+    std::map<std::uint8_t, std::size_t> m_tracedHits;
     Stats m_stats;
 };
 
