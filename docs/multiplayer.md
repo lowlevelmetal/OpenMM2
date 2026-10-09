@@ -589,14 +589,15 @@ because the host's copy of its car lagged.
 
 Bandwidth, two players in San Francisco at traffic density 0.5 (the
 single-player cruise default) and cop density 1, measured by the host's
-`nettraffic` log: 18.5 messages a second to the client, 63 cars a message,
-11.0 KB/s (17.5 KB/s before the far cars' alternation); with a second client
-600 m away, 10.6 and 10.0 KB/s (60 and 54 cars), each client its own cars and
-the roads round each populated. The 1100-byte budget bounds it at about
-20 KB/s per client, 140 KB/s for seven clients. The
-client's cars within 120 m were 2 cm from the host's at the same session time
-(median; 90 % within 10 cm, 27 cm at worst for far cars between their
-messages).
+`nettraffic` log: 20 messages a second to the client, 60-70 cars a message,
+10.5-11.6 KB/s (13.4-15.6 KB/s before a far car's state came every fourth
+message beyond 160 m); at density 1, 100-128 cars and about 21 KB/s, where
+the 1100-byte budget binds (about 22 KB/s per client, 150 KB/s for seven
+clients). The client's moving cars within 150 m were 3 cm (median) from the
+host's at the same moment, 12 cm at the 90th percentile, through a relay of
+60 ± 20 ms each way with 2 % loss; 2.6 m and 3.7 m before they were shown at
+the present (docs/review/multiplayer-desync-traffic.md, which has the other
+cases).
 
 ### Damage
 
