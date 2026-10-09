@@ -257,6 +257,10 @@ public:
     // them at its own velocity. A network client runs its own car's samples
     // again with it once the host's state has corrected an earlier one.
     void replaySample(std::span<Body* const> bodies, float dt);
+    // OpenMM2: the samples replaySample runs from here on are one replay
+    // (a light prop the replayed car has hit stays out of its way until the
+    // next replay or sample; see collideHeld).
+    void beginReplay();
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
     // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw
@@ -354,6 +358,8 @@ private:
     Mat34 m_identity;
     Collider m_levelCollider;
     Collider m_tempA, m_tempB;
+    InertialCS m_heldIcs; // replaySample: what a held body or prop would have (taken by nothing)
+    std::vector<const Instance*> m_replayYielded; // replaySample: light props the replay has hit
     Mat34 m_tempMatrixA, m_tempMatrixB;
     std::vector<Intersection> m_isectsA, m_isectsB;
     std::vector<Impact> m_impacts;

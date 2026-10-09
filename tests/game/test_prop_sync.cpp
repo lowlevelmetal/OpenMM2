@@ -369,6 +369,38 @@ TEST(PropSync, OtherCarsPassThroughAClientsProps) {
 
 // Lost, late and reordered messages: the client still ends with the host's
 // props, and every knock is applied once.
+// A client replays its car's samples when the host's state corrects it
+// (World::replaySample): the props it meets there hold still, but with the
+// mass a real hit gives them, so the replayed car loses what the real one
+// does instead of stopping as against a wall.
+TEST(PropSync, ReplayedCarMeetsAPropAsARealSampleDoes) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    constexpr int kSteps = 20;
+    Machine real(lib);
+    real.place(layout());
+    Car a({0, 1, 2.5f}, {0, 0, -10});
+    real.world.add(&a.body);
+    for (int i = 0; i < kSteps; ++i)
+        real.step();
+    ASSERT_FALSE(real.set.standing(0)); // the real car broke it loose
+    Machine replay(lib);
+    replay.place(layout());
+    Car b({0, 1, 2.5f}, {0, 0, -10});
+    replay.world.add(&b.body);
+    phys::Body* bodies[] = {&b.body};
+    replay.world.beginReplay();
+    for (int i = 0; i < kSteps; ++i)
+        replay.world.replaySample(bodies, kDt);
+    EXPECT_TRUE(replay.set.standing(0)); // a replay knocks nothing
+    const float realSpeed = a.body.ics.linearVelocity.mag();
+    const float replayedSpeed = b.body.ics.linearVelocity.mag();
+    EXPECT_GT(realSpeed, 5.0f);
+    EXPECT_NEAR(replayedSpeed, realSpeed, 1.0f) << "real " << realSpeed << ", replayed " << replayedSpeed;
+    real.world.remove(&a.body);
+    replay.world.remove(&b.body);
+}
+
 TEST(PropSync, LossyLinkConverges) {
     Race r;
     r.net.latencyMs = 120.0;

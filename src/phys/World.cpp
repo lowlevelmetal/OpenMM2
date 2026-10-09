@@ -524,6 +524,7 @@ void World::step(float dt) {
         m_stepObserver();
     if (m_beforeSample)
         m_beforeSample();
+    m_replayYielded.clear();
     const float invDt = 1.0f / dt;
     // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
     sampleTime() = {dt, invDt};
@@ -712,14 +713,35 @@ bool World::collideHeld(Body& a, Instance& b) {
     const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
     Collider* colA = &a.collider;
     // A body (moved by the simulation or from outside) as a kinematic one,
-    // a static instance as itself.
+    // a static instance as itself. OpenMM2 (the props of a network race):
+    // what gives way when a car really hits it meets the replayed car with
+    // its mass, though it still holds still and takes nothing: a simulated
+    // body (a knocked-over prop's active) with a copy of its ICS, an
+    // instance that takes a body when hit (a standing or resting prop) with
+    // the one it would take (Instance::heldInertia).
     Body* entity = b.entity();
-    if (entity)
+    // Such a light one (under a quarter of the car's mass: the props, not a
+    // parked car) has given way once the replayed car has hit it: the real
+    // one flies off. Inferred stand-in for its motion.
+    if (std::ranges::find(m_replayYielded, &b) != m_replayYielded.end())
+        return false;
+    InertialCS* held = nullptr;
+    if (entity && !entity->kinematic && entity->ics.mass > 0.0f) {
+        m_heldIcs = entity->ics;
+        held = &m_heldIcs;
+    } else if (!entity && b.heldInertia(m_heldIcs)) {
+        held = &m_heldIcs;
+    }
+    if (held)
+        m_tempB.init(boundB, &m_tempMatrixB, held);
+    else if (entity)
         m_tempB.init(boundB, &m_tempMatrixB, nullptr);
     else
         m_tempB.initStatic(boundB, &m_tempMatrixB);
     m_tempB.id = b.audioId;
-    if (entity && !entity->kinematic) {
+    if (held) {
+        // Its motion is its ICS's.
+    } else if (entity && !entity->kinematic) {
         m_tempB.moving = true;
         m_tempB.motionVelocity = entity->ics.linearVelocity;
         m_tempB.motionSpin = entity->ics.angularVelocity;
@@ -735,16 +757,23 @@ bool World::collideHeld(Body& a, Instance& b) {
         return false;
     std::span<Impact> impacts(m_impacts.data(), static_cast<std::size_t>(n));
     const float weight = 1.0f / static_cast<float>(n);
+    bool broke = false;
     if (b.isBanger() && !entity) {
         const float limit2 = b.bangerImpulseLimit2();
         for (Impact& im : impacts)
-            calcBangerImpact(im, weight, limit2);
+            broke = calcBangerImpact(im, weight, limit2) || broke;
     } else {
         for (Impact& im : impacts)
             calcImpact(im, weight);
     }
+    const bool gives = held && (broke || !b.isBanger()) && colA->ics &&
+                       held->mass < colA->ics->mass * 0.25f;
+    if (gives)
+        m_replayYielded.push_back(&b);
     return true;
 }
+
+void World::beginReplay() { m_replayYielded.clear(); }
 
 bool World::trivialCollide(const Instance& a, const Instance& b) const {
     // dgPhysManager::TrivialCollideInstances: bounding spheres. A banger

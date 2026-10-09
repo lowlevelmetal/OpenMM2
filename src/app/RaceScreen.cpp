@@ -3800,7 +3800,7 @@ private:
         if (m_result.config.multiplayer && impact.damaging && m_traceNet && m_traceNet->isHost())
             m_netDamage.own().impact(m_netStateTime, game::damageImpactOf(impact, m_player->sim()));
         if (impact.damaging)
-            if (auto* trace = m_netProps.trace()) // OPENMM2_DEBUG_NETPROPS
+            if (auto* trace = m_netProps.trace()) // OPENMM2_NET_TRACE
                 trace->impact(m_netStateTime, propToucher(impact.otherBody), impact.value,
                               m_player->sim().damage.currentDamage);
         if (impact.damaging) {
@@ -4990,6 +4990,9 @@ private:
         t.texelRadius = sim.damage.params.textelDamageRadius;
         const std::string base = m_player->model().baseName;
         t.eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
+            // OpenMM2: the host threw it for everyone (game/net/NetProps).
+            if (m_netProps.hostThrowsParts())
+                return false;
             return ejectCarPart(*m_vehicle, base, b, t.body, speed, sim.body.room);
         };
         t.sound = [](const Vec3&, float, int) {};
@@ -5193,7 +5196,7 @@ private:
         return trailer && other == &trailer->body;
     }
 
-    // What set a prop moving, for OPENMM2_DEBUG_NETPROPS.
+    // What set a prop moving, for OPENMM2_NET_TRACE's props lines.
     std::string propToucher(const phys::Instance* by) const {
         if (!by)
             return "world";
@@ -5278,15 +5281,28 @@ private:
         auto* trace = m_netProps.trace();
         if (!trace || !m_netProps.traced())
             return;
-        // Each car's damage as this machine shows it: the replicated level
-        // (0..1 between MedDamage and MaxDamage) and the dents painted.
+        // Each car's damage as this machine shows it: its level (0..1
+        // between MedDamage and MaxDamage) and its dents (the host's
+        // records, which it sends; a client's copies of them).
+        const std::uint8_t self = ctx.netGame->localId();
+        auto dentsOf = [&](std::uint8_t id) {
+            if (!ctx.netGame->isHost())
+                return m_netDamage.replica().recordSize(game::DamageReplica::playerKey(id));
+            return static_cast<std::size_t>(id == self ? m_netDamage.own().recorded()
+                                                       : m_netDamage.player(id).recorded());
+        };
         if (m_player)
-            trace->car(std::format("player{}", ctx.netGame->localId()), m_player->sim().damage.damage,
-                       static_cast<float>(m_netDamage.own().recorded()));
-        for (const auto& rc : m_remoteCars) {
-            const auto dents = m_netDamage.replica().recordSize(game::DamageReplica::playerKey(rc.id));
-            if (rc.hasState)
-                trace->car(std::format("player{}", rc.id), rc.damage, static_cast<float>(dents));
+            trace->car(std::format("player{}", self), m_player->sim().damage.damage,
+                       static_cast<float>(dentsOf(self)));
+        if (ctx.netGame->isHost()) {
+            for (const auto& [id, rv] : m_remotes)
+                if (rv.simulated && rv.placed && rv.sim)
+                    trace->car(std::format("player{}", id), rv.sim->sim().damage.damage,
+                               static_cast<float>(dentsOf(id)));
+        } else {
+            for (const auto& rc : m_remoteCars)
+                if (rc.hasState)
+                    trace->car(std::format("player{}", rc.id), rc.damage, static_cast<float>(dentsOf(rc.id)));
         }
     }
 

@@ -232,6 +232,8 @@ public:
     // OpenMM2: a network client's props take contacts from its own car and
     // its own props only.
     bool acceptsContact(const phys::Instance& other) const override { return m_set.acceptsFrom(other); }
+    // OpenMM2: the active a car's hit would attach (World::replaySample).
+    bool heldInertia(phys::InertialCS& out) const override { return m_set.heldInertia(m_index, out); }
 
     bool banger = false; // lvlInstance flag 1: a placed prop still standing
     bool listed = false; // in m_rooms[room]
@@ -1112,6 +1114,28 @@ bool BangerSet::moving(std::size_t i) const {
     if (i >= m_instances.size() || m_instances[i].active < 0)
         return false;
     return inWorld(*m_active[static_cast<std::size_t>(m_instances[i].active)]);
+}
+
+bool BangerSet::heldInertia(std::size_t i, phys::InertialCS& ics) const {
+    // dgBangerActive::Attach's body for instance i, as AttachEntity would
+    // make it now (a network client's mirror moving with the host's motion).
+    if (i >= m_instances.size())
+        return false;
+    const Instance& inst = m_instances[i];
+    if (!inst.data || inst.state == State::Gone || inst.active >= 0)
+        return false;
+    const BangerData& d = *inst.data;
+    ics = phys::InertialCS{};
+    ics.matrix = inst.matrix;
+    ics.setMass(d.size.x, d.size.y, d.size.z, d.mass);
+    smoothAngInertia(ics, kInertiaRatio);
+    if (inst.mirror) {
+        ics.linearVelocity = inst.mirrorVelocity;
+        ics.linearMomentum = inst.mirrorVelocity * ics.mass;
+        ics.angularVelocity = inst.mirrorSpin;
+        ics.angularMomentum = rowTimes(inst.mirrorSpin, ics.worldInertia());
+    }
+    return true;
 }
 
 bool BangerSet::isActiveBody(const phys::Instance* i) const {

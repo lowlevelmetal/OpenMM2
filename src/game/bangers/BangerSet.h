@@ -220,6 +220,10 @@ public:
     bool moving(std::size_t i) const;
     // Whether `i` is the body of one of this set's actives.
     bool isActiveBody(const phys::Instance* i) const;
+    // The body an active would give instance i if a car hit it now
+    // (phys::Instance::heldInertia, for World::replaySample); false for an
+    // instance with an active or out of the world.
+    bool heldInertia(std::size_t i, phys::InertialCS& ics) const;
 
     // A network client: only this machine's own car (`localToucher`) and the
     // props this set simulates itself may touch a prop (phys::Instance::

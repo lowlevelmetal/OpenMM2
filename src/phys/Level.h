@@ -8,6 +8,7 @@
 
 #include "phys/Bound.h"
 #include "phys/Collider.h"
+#include "phys/InertialCS.h"
 #include "phys/Material.h"
 
 #include <vector>
@@ -73,6 +74,11 @@ public:
     // this machine simulates itself (game::PropSync); MM2's answer is always
     // yes.
     virtual bool acceptsContact(const Instance& /*other*/) const { return true; }
+    // OpenMM2 (World::replaySample): the body this instance would take if a
+    // car hit it (a prop's active), at rest where it stands, so that a car
+    // replayed through it meets its mass as a real sample does. False: it
+    // holds like a wall.
+    virtual bool heldInertia(InertialCS& /*out*/) const { return false; }
 
     // The ids AudImpact plays for impacts against the instance
     // (the instance data's collider id): 0 for the world, cars and traffic, the banger's
