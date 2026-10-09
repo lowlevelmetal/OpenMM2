@@ -34,6 +34,17 @@ struct SharpTurn {
     Vec3 endDir;          // +0x38 and to its end
 };
 
+// aiVehiclePhysics' clamp of an offset across a road to the half-width `h`
+// the car may use (the road's half-width less the car's side and 1 m), as
+// CalcRoadTarget and CalcDestinationTarget compare: the lower bound first.
+// On a road narrower than that (h < 0) an offset below -h gives -h and any
+// other gives h; std::clamp has no answer there, its bounds must be ordered.
+inline float clampAcross(float v, float h) {
+    if (!(-h <= v))
+        return -h;
+    return h < v ? h : v;
+}
+
 // The side's curb (`which` 0) or outer sidewalk edge (1): aiPath +0x80 /
 // +0xe4, the pair after the lane, sidewalk, tram and train vertices.
 const std::vector<Vec3>& pathBoundary(const city::AiRoadSide& side, int which);

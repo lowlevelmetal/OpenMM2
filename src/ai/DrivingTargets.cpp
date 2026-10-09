@@ -693,7 +693,7 @@ void PhysicsDriver::calcRoadTarget(int i, Vec3& from) {
                   -ra.x(setupIdx).x * (ra.c(ra.n - 1 - v).x - from.x);
         if (i == 1) {
             if (v >= 1)
-                m_roadOffset = std::clamp(off, -h, h);
+                m_roadOffset = clampAcross(off, h);
             off = m_roadOffset;
         } else {
             off = off < -h ? -h : (h < off ? h : off);
@@ -780,13 +780,13 @@ void PhysicsDriver::calcRoadTarget(int i, Vec3& from) {
                 if (!dirOf(r)) {
                     const int last = ra.n - 1;
                     float o = dotXZ(ra.c(last) - node.pos, -ra.x(last));
-                    o = std::clamp(o, -hn, hn) / hn;
+                    o = clampAcross(o, hn) / hn;
                     const Vec3 edge = ra.b80(0) - ra.x(0) * (m_rightSide + 1.0f);
                     const Vec3& c = ra.c(0);
                     node.pos = {(edge.x - c.x) * o + c.x, (edge.y - c.y) * o + c.y, (edge.z - c.z) * o + c.z};
                 } else {
                     float o = dotXZ(ra.c(0) - node.pos, ra.x(0));
-                    o = std::clamp(o, -hn, hn) / hn;
+                    o = clampAcross(o, hn) / hn;
                     const int last = ra.n - 1;
                     const Vec3 edge = ra.be4(last) + ra.x(last) * (m_rightSide + 1.0f);
                     const Vec3& c = ra.c(last);
@@ -1080,7 +1080,7 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
         const RoadArrays ls = caseRoad(leftSlot);
         if (rs.p && !dirOf(rightSlot) && rightV < rs.n - 1) {
             const float w = (rs.halfWidth - R) - 1.0f;
-            const float s = std::clamp(dotXZ(P - rs.c(rs.n - 1), rs.x(rs.n - 1)), -w, w);
+            const float s = clampAcross(dotXZ(P - rs.c(rs.n - 1), rs.x(rs.n - 1)), w);
             const int kk = rs.n - rightV - 1;
             const float off = w - w * (s / w);
             node.pos = rs.b80(kk) - rs.x(kk) * (R + 1.0f) - rs.x(kk) * off;
@@ -1088,7 +1088,7 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
             finalV = rightV;
         } else if (ls.p && !dirOf(leftSlot) && leftV < ls.n - 1) {
             const float w = (ls.halfWidth - R) - 1.0f;
-            const float s = std::clamp(dotXZ(P - ls.c(ls.n - 1), ls.x(ls.n - 1)), -w, w);
+            const float s = clampAcross(dotXZ(P - ls.c(ls.n - 1), ls.x(ls.n - 1)), w);
             const int kk = ls.n - leftV - 1;
             const float f = (s / w + 1.0f) * ((ls.halfWidth - L) - 1.0f);
             node.pos = ls.be4(kk) + ls.x(kk) * (R + 1.0f) + ls.x(kk) * f;
@@ -1096,14 +1096,14 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
             finalV = leftV;
         } else if (rs.p && dirOf(rightSlot) && rightV < rs.n - 1) {
             const float w = (rs.halfWidth - R) - 1.0f;
-            const float s = std::clamp(dotXZ(rs.c(0) - P, rs.x(0)), -w, w);
+            const float s = clampAcross(dotXZ(rs.c(0) - P, rs.x(0)), w);
             const float off = w - w * (s / w);
             node.pos = rs.be4(rightV) + rs.x(rightV) * (R + 1.0f) + rs.x(rightV) * off;
             finalSlot = rightSlot;
             finalV = rightV;
         } else if (ls.p && dirOf(leftSlot) && leftV < ls.n - 1) {
             const float w = (ls.halfWidth - L) - 1.0f;
-            const float s = std::clamp(dotXZ(ls.c(0) - P, ls.x(0)), -w, w);
+            const float s = clampAcross(dotXZ(ls.c(0) - P, ls.x(0)), w);
             if (ls.divided) {
                 node.pos = ls.c(leftV) - ls.x(leftV) * (L + 1.0f);
             } else {

@@ -7,6 +7,7 @@
 #include "ai/Driving.h"
 #include "ai/MapView.h"
 #include "ai/Opponent.h"
+#include "ai/PathGeometry.h"
 #include "ai/Police.h"
 #include "ai/Traffic.h"
 #include "ai/World.h"
@@ -15,6 +16,8 @@
 #include "phys/vehicle/CarSim.h"
 
 #include <gtest/gtest.h>
+
+#include <cmath>
 
 #include <algorithm>
 #include <cstdio>
@@ -77,6 +80,26 @@ city::AiMap squareBlock() {
 
 // aiPoliceForce::RegisterPerp does not check whether the cop is on the
 // suspect already: a second registration takes a second place.
+// aiVehiclePhysics::CalcRoadTarget / CalcDestinationTarget clamp an offset
+// across a road to +-h with the lower bound first. A road narrower than the
+// car's side offset plus 1 m gives h < 0: MM2 then returns -h for an offset
+// below -h and h for any other. (std::clamp with those bounds aborted a
+// checked build in a race.)
+TEST(ParityAiRoute, ClampAcrossKeepsMm2sOrderOnANarrowRoad) {
+    EXPECT_FLOAT_EQ(ai::clampAcross(0.5f, 2.0f), 0.5f);
+    EXPECT_FLOAT_EQ(ai::clampAcross(3.0f, 2.0f), 2.0f);
+    EXPECT_FLOAT_EQ(ai::clampAcross(-3.0f, 2.0f), -2.0f);
+    EXPECT_FLOAT_EQ(ai::clampAcross(-2.0f, 2.0f), -2.0f);
+    EXPECT_FLOAT_EQ(ai::clampAcross(2.0f, 2.0f), 2.0f);
+    // h = -0.5: the bounds cross.
+    EXPECT_FLOAT_EQ(ai::clampAcross(-1.0f, -0.5f), 0.5f); // below -h = 0.5
+    EXPECT_FLOAT_EQ(ai::clampAcross(0.0f, -0.5f), 0.5f);
+    EXPECT_FLOAT_EQ(ai::clampAcross(0.7f, -0.5f), -0.5f); // not below -h: h
+    EXPECT_FLOAT_EQ(ai::clampAcross(0.5f, -0.5f), -0.5f);
+    // A NaN offset fails the first comparison, as in MM2.
+    EXPECT_FLOAT_EQ(ai::clampAcross(std::nanf(""), 2.0f), -2.0f);
+}
+
 TEST(ParityAiPolice, RegisterPerpCountsARepeatedCopTwice) {
     ai::PoliceForce force;
     EXPECT_TRUE(force.registerPerp(1, 100));
