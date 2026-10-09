@@ -437,10 +437,14 @@ void VehicleRenderer::drawTraffic(const VehiclePose& pose, asset::Lod lod) {
         return;
     drawReflection(pose.body);
     // The wheels on the rails turn about their axles at their pivots (no
-    // steering); WHL4 and WHL5 likewise at their own pivots.
+    // steering); WHL4 and WHL5 likewise at their own pivots. A car with a
+    // body has its wheels where its vehWheelCheaps put them (pose.wheelWorld).
     for (std::size_t i = 0; i < 6; ++i) {
         std::optional<Mat34> m;
-        if (i < 4) {
+        if (pose.hasWheelWorld) {
+            if (pose.wheelValid[i])
+                m = pose.wheelWorld[i];
+        } else if (i < 4) {
             m = wheelMatrix(pose, i);
         } else if (const auto* w = m_model.wheel(static_cast<int>(i))) {
             m = Mat34::rotationX(pose.wheelSpin[i]) * Mat34::translation(w->position) * pose.body;
@@ -450,16 +454,16 @@ void VehicleRenderer::drawTraffic(const VehiclePose& pose, asset::Lod lod) {
     }
 }
 
-std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
+std::optional<Mat34> groundShadowMatrix(const Mat34& body, const VehicleRenderer::GroundProbe& probe) {
     // lvlInstance::DrawPhysics: the ground 1 m above to 1 m below the car,
     // else to 5 m below; no shadow on slopes steeper than normal.y 0.7. The
     // car's frame is turned onto the ground (upside down: its flipped up axis).
-    if (!m_probe)
+    if (!probe)
         return std::nullopt;
     Vec3 point, normal;
     const Vec3 p = body.m3;
-    if (!m_probe(p + Vec3{0, 1, 0}, p - Vec3{0, 1, 0}, point, normal) &&
-        !m_probe(p + Vec3{0, 1, 0}, p - Vec3{0, 5, 0}, point, normal))
+    if (!probe(p + Vec3{0, 1, 0}, p - Vec3{0, 1, 0}, point, normal) &&
+        !probe(p + Vec3{0, 1, 0}, p - Vec3{0, 5, 0}, point, normal))
         return std::nullopt;
     if (normal.y < 0.7f)
         return std::nullopt;
@@ -474,13 +478,36 @@ std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
     return m;
 }
 
+Mat34 trafficShadowMatrix(const Mat34& body, bool physical, const VehicleRenderer::GroundProbe& probe) {
+    // aiVehicleInstance::DrawShadow: a car with a body (an aiVehicleActive)
+    // lays its shadow on the ground under the active's matrix
+    // (lvlInstance::DrawPhysics); otherwise, or with no ground there, the
+    // shadow sits at GetMatrix while the car is upright (m1.y >= 0) and on
+    // the ground under it when upside down and there is ground.
+    if (physical)
+        if (auto m = groundShadowMatrix(body, probe))
+            return *m;
+    if (!(body.m1.y >= 0.0f))
+        if (auto m = groundShadowMatrix(body, probe))
+            return *m;
+    return body;
+}
+
+std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
+    return groundShadowMatrix(body, m_probe);
+}
+
 void VehicleRenderer::drawShadow(const VehiclePose& pose) {
     // vehCarModel::DrawShadow: the high LOD shadow mesh on the ground,
     // alpha blended, depth tested without writes and pulled forward (MM2
     // narrows the depth range to 0.001-0.999).
-    // Without a ground probe (traffic on its rails, aiVehicleInstance::
-    // DrawShadow while upright) the shadow sits at the body.
-    const auto m = m_probe ? shadowMatrix(pose.body) : std::optional<Mat34>(pose.body);
+    std::optional<Mat34> m;
+    if (m_traffic)
+        m = trafficShadowMatrix(pose.body, pose.physical, m_probe);
+    else if (m_probe)
+        m = shadowMatrix(pose.body);
+    else
+        m = pose.body; // OpenMM2: without a ground probe the shadow sits at the body
     if (!m)
         return;
     MeshDrawOptions shadow;

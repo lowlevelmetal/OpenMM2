@@ -12,6 +12,7 @@
 #include "render/Device.h"
 #include "vfs/Vfs.h"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -28,14 +29,29 @@ class AiRenderer {
 public:
     AiRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs);
 
-    // `physicalTransform` returns the transform of cars that the physics
-    // simulation has taken over (null for cars on their rails). `lights` is
+    // A traffic car the physics simulation has taken over, or has just let
+    // go of (TrafficBodies): its matrix (model origin) and, while it has a
+    // body (aiVehicleActive), its wheels' matrices.
+    struct PhysicalCar {
+        Mat34 transform;
+        bool active = false;
+        std::array<Mat34, 6> wheels{};
+        std::array<bool, 6> wheelValid{};
+    };
+    using PhysicalCarQuery = std::function<std::optional<PhysicalCar>(int carId)>;
+
+    // `physicalCar` answers for the cars that the physics simulation has
+    // taken over (nullopt for cars on their rails). `lights` is
     // mmGame::InitWeather's light flag (evening, night or fog: the cars'
     // headlights and tail lights); the signals switch to their night glows
     // from the evening on (aiTrafficLightInstance::DrawGlow: time of day > 1).
     // `detail`: the Object Detail thresholds (lvlInstance::IsVisible).
     void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time, bool lights,
-              const ObjectDetail& detail, const std::function<const Mat34*(int)>& physicalTransform = {});
+              const ObjectDetail& detail, const PhysicalCarQuery& physicalCar = {});
+
+    // The ground under the cars for their shadows (aiVehicleInstance::
+    // DrawShadow's lvlInstance::DrawPhysics).
+    void setGroundProbe(VehicleRenderer::GroundProbe probe) { m_probe = std::move(probe); }
 
     // The rooms the city listed for the view (CityRenderer::rooms()): cars,
     // pedestrians and signals are then drawn from the rooms MM2 keeps them
@@ -76,6 +92,7 @@ private:
     ObjectDetail m_detail;
     Stats m_stats;
     const RoomVisibility* m_rooms = nullptr;
+    VehicleRenderer::GroundProbe m_probe;
     // The rooms of the traffic cars (aiVehicleAmbient's update after its
     // spline, aiVehicleActive::Update), the pedestrians (aiPedestrian::Update)
     // and the signals (aiTrafficLightSet::SetFourWay), by id or index.

@@ -28,6 +28,10 @@ struct VehiclePose {
     std::array<Mat34, 6> wheelWorld{};
     std::array<bool, 6> wheelValid{};
     bool hasWheelWorld = false;
+    // A traffic car the physics simulation has taken over (aiVehicleInstance
+    // with an aiVehicleActive): its wheels are wheelWorld and its shadow is
+    // laid on the ground first (aiVehicleInstance::Draw / DrawShadow).
+    bool physical = false;
     // mmGame::InitWeather's light flag (evening, night or fog): the tail
     // lights glow and the headlights shine.
     bool headlights = false;
@@ -180,5 +184,12 @@ private:
     const RoomVisibility* m_rooms = nullptr;
     int m_room = 0; // lvlInstance's room (vehCar::Update)
 };
+
+// lvlInstance::DrawPhysics: a shadow's matrix on the ground under `body`
+// (nullopt without ground or on a steep slope).
+std::optional<Mat34> groundShadowMatrix(const Mat34& body, const VehicleRenderer::GroundProbe& probe);
+// aiVehicleInstance::DrawShadow's placement of a traffic car's shadow;
+// `physical`: the car has a body (aiVehicleActive).
+Mat34 trafficShadowMatrix(const Mat34& body, bool physical, const VehicleRenderer::GroundProbe& probe);
 
 } // namespace mm2::game

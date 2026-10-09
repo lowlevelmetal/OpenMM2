@@ -510,7 +510,7 @@ public:
         m_roadDecals.draw(dev, *m_textures);
         if (m_ai && m_aiRenderer)
             m_aiRenderer->draw(*m_ai, camera, frustum, m_result.config.timeOfDay, carLights(), m_detail.objects,
-                               [this](int id) { return m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr; });
+                               [this](int id) { return physicalTrafficCar(id); });
         drawRemoteCars(ctx, dt, camera);
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
@@ -555,6 +555,22 @@ public:
                 c.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
         if (m_weather && rainVisible(camera.position()))
             m_weather->draw(dev, *m_textures, m_cards, camera.transform);
+    }
+
+    // A traffic car TrafficBodies holds: where it is, and its wheels while
+    // it has a body (aiVehicleInstance::Draw).
+    std::optional<game::AiRenderer::PhysicalCar> physicalTrafficCar(int id) const {
+        const Mat34* m = m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr;
+        if (!m)
+            return std::nullopt;
+        game::AiRenderer::PhysicalCar car;
+        car.transform = *m;
+        if (const auto wheels = m_trafficBodies->wheelsOf(id)) {
+            car.active = true;
+            car.wheels = wheels->matrix;
+            car.wheelValid = wheels->valid;
+        }
+        return car;
     }
 
     // mmMirror::Cull: the rear-view mirror's inset at the top right, cleared
@@ -2668,6 +2684,14 @@ private:
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
         if (m_cityRenderer)
             m_aiRenderer->setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
+        m_aiRenderer->setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
+            phys::RayHit hit;
+            if (!m_world || !m_world->probe(from, to, hit))
+                return false;
+            point = hit.position;
+            normal = hit.normal;
+            return true;
+        });
         if (m_world) {
             m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
             m_trafficBodies->setWeatherFriction(weatherFriction());

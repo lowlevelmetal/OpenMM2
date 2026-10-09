@@ -42,6 +42,10 @@ constexpr double kUprightCosine = 0.9;
 constexpr float kMaxCompressionRate = 3.0f; // the damper sees at most 3 m/s
 constexpr double kBottomedOutT = 0.1;       // the probe hit in its top tenth
 constexpr float kTyreGrip = 0.4f;           // deflection limit: 0.4 * load * WeatherFriction / RubberSpring
+// vehWheelCheap::Update: the drawn wheel moves back by these fractions of
+// the sideways and forward tyre deflections.
+constexpr float kDrawLateral = 0.2f;
+constexpr float kDrawLongitudinal = 0.3f;
 // vehWheelCheap::Init: a quarter of the car's weight preloads each spring.
 constexpr float kPreloadShare = -0.25f;
 
@@ -126,6 +130,10 @@ struct TrafficBodies::Wheel {
     float longitudinal = 0.0f; // and along it
     bool contact = false;
     bool bottomedOut = false;  // the probe hit near its top (aiVehicleActive::BottomedOut)
+    // The drawing matrix (+0x128) and its model-space position (+0x158's):
+    // aiVehicleInstance::Draw draws the wheel there while the car has a body.
+    Vec3 drawOffset;
+    Mat34 drawMatrix;
 
     // vehWheelCheap::Init.
     void init(const Vec3& wheelPivot, const ai::VehicleData& data, phys::InertialCS& body) {
@@ -138,6 +146,9 @@ struct TrafficBodies::Wheel {
         rubberDamp = data.rubberDamp;
         limit = data.limit;
         preload = body.mass * kGravityY * kPreloadShare;
+        // The drawing matrix: unturned, at the pivot.
+        drawOffset = pivot;
+        drawMatrix = Mat34::mul(Mat34::translation(drawOffset), body.matrix);
         reset();
     }
 
@@ -153,8 +164,7 @@ struct TrafficBodies::Wheel {
     // vehWheelCheap::Update, after the body's integration: probes the ground
     // from the top of the wheel's travel to the bottom along the car's up
     // axis and adds the spring's and the tyre's forces at the contact. (The
-    // wheel's drawing matrix, offset by the compression and deflections, is
-    // not kept: the renderer draws traffic wheels from the AI.)
+    // wheel's drawing matrix follows: see placeDrawing.)
     void update(const phys::GroundQuery& ground, const phys::Instance* self, float seconds, float invSeconds,
                 float weatherFriction) {
         phys::InertialCS& body = *ics;
@@ -175,6 +185,7 @@ struct TrafficBodies::Wheel {
             compression = -limit;
             lateral = 0.0f;
             longitudinal = 0.0f;
+            placeDrawing(m);
             return;
         }
 
@@ -224,6 +235,17 @@ struct TrafficBodies::Wheel {
                  total.y + (m.m0.y * fLateral - m.m2.y * fForward),
                  total.z + (fLateral * m.m0.z - m.m2.z * fForward)};
         body.applyForce(total, hit.position);
+        placeDrawing(m);
+    }
+
+    // The end of vehWheelCheap::Update: the drawing matrix, unturned, at the
+    // pivot moved along the car's up axis by the spring's travel and back by
+    // 0.2 of the sideways and 0.3 of the forward tyre deflection, carried by
+    // the body's matrix as it stands after this sample's integration.
+    void placeDrawing(const Mat34& m) {
+        drawOffset = {pivot.x - lateral * kDrawLateral, pivot.y + compression,
+                      pivot.z - longitudinal * kDrawLongitudinal};
+        drawMatrix = Mat34::mul(Mat34::translation(drawOffset), m);
     }
 };
 
@@ -667,6 +689,32 @@ void TrafficBodies::instancesIn(int room, std::vector<phys::Instance*>& out) con
     for (const auto& [r, car] : range)
         if (!car->active && car->collidable)
             out.push_back(car);
+}
+
+std::optional<TrafficBodies::Wheels> TrafficBodies::wheelsOf(int carId) const {
+    // aiVehicleInstance::Draw with the car's active: WHL0-3 at the four
+    // vehWheelCheaps' drawing matrices; WHL4 / WHL5 unturned at their pivots
+    // raised by WHL2's / WHL3's drawn height less the wheel radius, carried
+    // by GetMatrix (the matrix the wheels were placed with).
+    const RailCar* r = findRailCar(carId);
+    if (!r || !r->active || !r->data)
+        return std::nullopt;
+    const Active& a = *r->active;
+    const ai::VehicleData& d = *r->data;
+    Wheels w;
+    for (std::size_t i = 0; i < a.wheels.size(); ++i) {
+        w.matrix[i] = a.wheels[i].drawMatrix;
+        w.valid[i] = true;
+    }
+    for (std::size_t i = 4; i < 6; ++i) {
+        if (d.wheelCount <= static_cast<int>(i))
+            continue;
+        const Vec3& p = d.wheels[i];
+        const Vec3 local{p.x, (a.wheels[i - 2].drawOffset.y - d.wheelRadius) + p.y, p.z};
+        w.matrix[i] = Mat34::mul(Mat34::translation(local), a.body.boundMatrix);
+        w.valid[i] = true;
+    }
+    return w;
 }
 
 const Mat34* TrafficBodies::transformOf(int carId) const {

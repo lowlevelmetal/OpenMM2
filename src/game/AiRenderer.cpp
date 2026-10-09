@@ -220,16 +220,15 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
 }
 
 void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time,
-                      bool lights, const ObjectDetail& detail,
-                      const std::function<const Mat34*(int)>& physicalTransform) {
+                      bool lights, const ObjectDetail& detail, const PhysicalCarQuery& physicalCar) {
     m_stats = {};
     m_detail = detail;
     const Vec3 eye = camera.position();
     const int blinkClock = world.blinkClock();
     const bool rooms = m_rooms && m_rooms->active();
     for (const auto& car : world.cars()) {
-        const Mat34* physical = physicalTransform ? physicalTransform(car.id) : nullptr;
-        const Mat34& transform = physical ? *physical : car.transform;
+        const std::optional<PhysicalCar> physical = physicalCar ? physicalCar(car.id) : std::nullopt;
+        const Mat34& transform = physical ? physical->transform : car.transform;
         // cityLevel::DrawRooms: from the car's room; the renderer's
         // lvlInstance::IsVisible ends the car itself at NoDraw.
         RoomVisibility::Passes passes;
@@ -255,12 +254,20 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             r->setTraffic(true);
         }
         r->setDetail(detail);
+        r->setGroundProbe(m_probe);
         VehiclePose pose;
         pose.body = transform;
         // aiVehicleInstance::Draw: the rail's tyre rotation about each axle,
-        // no steering.
+        // no steering; with a body, the wheels where its vehWheelCheaps put
+        // them.
         for (std::size_t i = 0; i < 6; ++i)
             pose.wheelSpin[i] = -car.tireRotation; // rolling forward (-Z) spins about -X
+        if (physical && physical->active) {
+            pose.physical = true;
+            pose.hasWheelWorld = true;
+            pose.wheelWorld = physical->wheels;
+            pose.wheelValid = physical->wheelValid;
+        }
         pose.brakeLights = car.braking;
         pose.headlights = lights;
         // aiVehicleInstance::DrawGlow: the indicators the AI set (+0x1a),

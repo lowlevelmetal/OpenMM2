@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -84,6 +85,15 @@ public:
     // it and the AI has not caught up with yet (its list is refreshed by its
     // next update); null when the AI transform is current.
     const Mat34* transformOf(int carId) const;
+    // The wheels aiVehicleInstance::Draw draws for a car that has a body
+    // (aiVehicleActive's vehWheelCheaps instead of the rail's turning
+    // wheels): WHL0-5 world matrices, valid where the car has the pivot.
+    // Nullopt for a car without a body.
+    struct Wheels {
+        std::array<Mat34, 6> matrix{};
+        std::array<bool, 6> valid{};
+    };
+    std::optional<Wheels> wheelsOf(int carId) const;
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 
