@@ -139,10 +139,11 @@ std::vector<net::VehicleDamageEvent> DamageRecorder::take(std::uint64_t nowMs) {
     if (m_tokens < 0.0)
         m_tokens = m_options.burst;
     else
-        m_tokens = std::min(m_options.burst, m_tokens + static_cast<double>(nowMs - m_tokensAt) * 0.001 *
-                                                            m_options.perSecond);
+        m_tokens = std::min(m_options.burst,
+                            m_tokens + static_cast<double>(nowMs - m_tokensAt) * 0.001 * m_options.perSecond);
     m_tokensAt = nowMs;
-    while (!m_batches.empty()) {
+    bool starved = false; // out of tokens: the rest waits for the next ones
+    while (!m_batches.empty() && !starved) {
         Batch& b = m_batches.front();
         const bool isOpen = m_batches.size() == 1;
         if (b.empty()) {
@@ -156,8 +157,10 @@ std::vector<net::VehicleDamageEvent> DamageRecorder::take(std::uint64_t nowMs) {
         // One event per kMaxDamagePatches patches; the reset, the impacts and
         // the newly broken parts go with the first.
         while (!b.empty()) {
-            if (m_tokens < 1.0)
-                return out; // the rest waits for the next tokens
+            if (m_tokens < 1.0) {
+                starved = true;
+                break;
+            }
             m_tokens -= 1.0;
             net::VehicleDamageEvent e;
             e.subject = m_subject;
@@ -194,7 +197,7 @@ std::vector<net::VehicleDamageEvent> DamageRecorder::take(std::uint64_t nowMs) {
             b.resetTime.reset();
             out.push_back(std::move(e));
         }
-        if (isOpen)
+        if (isOpen || starved)
             break;
         m_batches.pop_front();
     }
