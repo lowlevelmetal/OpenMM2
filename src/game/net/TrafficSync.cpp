@@ -144,31 +144,59 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
     constexpr std::size_t kHeaderBits = 8 + 32 + 32 + 16 + 48 + 8;
     const std::size_t total = m_options.maxBytes * 8;
     const std::size_t budget = total > kHeaderBits ? total - kHeaderBits : 0;
-    std::size_t used = 0;
+    // Which cars go: as many as fit at their usual cost (a far car on its
+    // rail that the client has gets its state every other message, beyond
+    // slowRateRadius every fourth, the ids taking turns, and only its id in
+    // between), so that whose turn it is never decides which cars are left
+    // out (that made the cars at the edge come and go).
+    struct Chosen {
+        net::AmbientEntity entity;
+        std::size_t fullBits = 0;
+        bool full = true; // its state this time
+        bool canHold = false;
+    };
+    std::vector<Chosen> chosen;
     std::unordered_set<int> sent;
+    const std::size_t heldBits = 13;
+    double expected = 0.0;
     for (const Candidate& c : candidates) {
-        if (msg.entities.size() >= net::kMaxAmbientPerMessage)
+        if (chosen.size() >= net::kMaxAmbientPerMessage)
             break;
-        net::AmbientEntity e = toEntity(*c.car);
-        // A far car on its rail, already known to the client: its state
-        // every other message (beyond slowRateRadius every fourth), the ids
-        // taking turns.
+        if (sent.contains(c.car->id))
+            continue; // the same id twice: the first one counts
+        Chosen k{toEntity(*c.car)};
+        k.fullBits = net::ambientEntityBits(k.entity);
+        k.canHold = !c.chasing && c.distance2 >= near2 && set.contains(c.car->id) &&
+                    c.car->kind == net::AmbientKind::Traffic && (c.car->flags & net::kAmbientOffRail) == 0;
         const std::uint32_t every = c.distance2 < slow2 ? 2u : 4u;
-        const bool full = c.chasing || c.distance2 < near2 || !set.contains(c.car->id) ||
-                          c.car->kind != net::AmbientKind::Traffic ||
-                          (c.car->flags & net::kAmbientOffRail) != 0 ||
-                          (sequence + static_cast<std::uint32_t>(c.car->id)) % every == 0;
-        if (!full)
-            e.hasState = false;
-        const std::size_t bits = net::ambientEntityBits(e);
+        k.full = !k.canHold || (sequence + static_cast<std::uint32_t>(c.car->id)) % every == 0;
+        const double cost = k.canHold ? static_cast<double>(k.fullBits + (every - 1) * heldBits) / every
+                                      : static_cast<double>(k.fullBits);
+        if (expected + cost > static_cast<double>(budget))
+            break;
+        expected += cost;
+        sent.insert(c.car->id);
+        chosen.push_back(std::move(k));
+    }
+    // Then they are written; a far car whose turn it is goes without its
+    // state when it would not fit with it.
+    std::size_t used = 0;
+    std::unordered_set<int> written;
+    for (Chosen& k : chosen) {
+        std::size_t bits = k.full ? k.fullBits : heldBits;
+        if (used + bits > budget && k.full && k.canHold) {
+            k.full = false;
+            bits = heldBits;
+        }
         if (used + bits > budget)
             break;
         used += bits;
-        if (!sent.insert(c.car->id).second)
-            continue; // the same id twice: the first one counts
-        msg.entities.push_back(std::move(e));
+        if (!k.full)
+            k.entity.hasState = false;
+        written.insert(k.entity.id);
+        msg.entities.push_back(std::move(k.entity));
     }
-    set = std::move(sent);
+    set = std::move(written);
     return msg;
 }
 
