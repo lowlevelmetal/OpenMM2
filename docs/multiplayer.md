@@ -355,6 +355,13 @@ every machine and switches to `makeRaceScreen(ctx, netGame->raceConfig())`
 `raceStartTime()`. A `RaceResult` with `config.multiplayer` brings the player
 back to the lobby instead of the results screen.
 
+Every countdown counts a race (`NetGame::raceNumber()`, from 1); the race
+screen keeps the number of its race. A return to the lobby ends the race it
+arrives in (`backToLobby(number)`), even when the player is in the menus by
+then (the host's own return, which reaches the menus as an event after the
+race screen has gone, or a joiner who quit the race early). Game events still
+queued when a countdown starts are from an earlier race and are dropped.
+
 ### Per-frame contract for RaceScreen
 
 When `config.multiplayer && ctx.netGame`:
@@ -384,7 +391,7 @@ When `config.multiplayer && ctx.netGame`:
    (`event.as<net::FinishEvent>()` etc.) to rank players and show messages.
 6. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
    over (everyone finished, or the time/point limit); every machine sees
-   `takeReturnToLobby()` and returns with `makeFrontendScreen(ctx, result)`.
+   `backToLobby(<its race number>)` and returns with `makeFrontendScreen(ctx, result)`.
    A player who quits early just returns to the frontend (it shows the lobby;
    the others keep racing). If `ctx.netGame->inSession()` turns false (host
    quit), return to the frontend; `takeNotice()` has the message.
@@ -403,10 +410,18 @@ off the lobby says which UDP port must be opened by hand.
 `OPENMM2_FRONTEND_SCRIPT` has multiplayer commands: `mp:host[:<password>]`,
 `mp:join:<address>[|<password>]`,
 `mp:chat:<text>`, `mp:ready`, `mp:start`, `mp:team:<0|1>`,
-`mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>`, and the pages
-`hostoptions`, `address`, `hostsettings`, `eject`. Example: one process hosts
+`mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>`,
+`mp:car:<vehicle>[:<paint>]` (what SELECT VEHICLE, a pick in the garage and
+its PREV do), and the pages `hostoptions`, `address`, `hostsettings`,
+`eject`. The script survives a race: after it the menus carry on with the
+commands after the one that started it, and `wait:race` waits until a race
+has been driven. Example: one process hosts
 (`profile:A;page:sessions;mp:host;wait:900`), another joins
-(`profile:B;page:sessions;mp:join:127.0.0.1;wait:100;mp:ready`).
+(`profile:B;page:sessions;mp:join:127.0.0.1;wait:100;mp:ready`); a second
+race after changing cars in the lobby:
+`profile:A;mp:host;wait:1500;mp:start;wait:race;wait:300;mp:car:vpcop;wait:300;mp:start`
+with `OPENMM2_POPUP_SCRIPT="wait:500;open:quit;wait:5;nav:accept"` (Quit to
+Lobby) and `profile:B;mp:join:127.0.0.1;wait:100;mp:ready;wait:race;wait:100;mp:car:vpmustang99;wait:50;mp:ready`.
 
 `test_game` (`tests/game/test_netgame.cpp`) runs a host and a client
 `NetGame` in one process: settings round trip, join by address, LAN

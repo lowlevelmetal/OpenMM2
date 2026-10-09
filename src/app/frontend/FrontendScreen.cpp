@@ -674,10 +674,12 @@ std::string formatTime(float seconds) {
 // OPENMM2_FRONTEND_SCRIPT drives the menus for automated screenshots, e.g.
 //   "profile:Test;page:races;wait:5;nav:down;nav:right"
 // Commands: profile:<name> (create/select), page:<name>, nav:<up|down|left|
-// right|accept|back|tab>, wait:<frames>, mode:<cruise|blitz|circuit|race|crash>,
-// city:<map>, vehicle:<name>, time:<morning|noon|evening|night>,
-// result:<position> (opens the results screen),
-// mp:<host|join:addr|chat:text|ready|start|team:n|mode:m> (multiplayer).
+// right|accept|back|tab>, wait:<frames>, wait:race (until a race has been
+// driven), mode:<cruise|blitz|circuit|race|crash>, city:<map>,
+// vehicle:<name>, time:<morning|noon|evening|night>, result:<position>
+// (opens the results screen),
+// mp:<host|join:addr|chat:text|ready|start|team:n|mode:m|car:name[:paint]>
+// (multiplayer).
 class Script {
 public:
     explicit Script(const char* text) {
@@ -686,10 +688,14 @@ public:
                 if (!str::trim(part).empty())
                     m_commands.emplace_back(str::trim(part));
     }
-    bool active() const { return m_next < m_commands.size() || m_wait > 0; }
+    bool active() const { return m_next < m_commands.size() || m_wait > 0 || m_waitRace; }
+    // The menus came back after a race (ends a wait:race).
+    void raceDriven() { m_waitRace = false; }
 
     // Runs commands for this frame; may inject navigation into `nav`.
     void step(Frontend& fe) {
+        if (m_waitRace)
+            return;
         if (m_wait > 0) {
             --m_wait;
             return;
@@ -699,6 +705,11 @@ public:
             const auto colon = c.find(':');
             const std::string cmd = c.substr(0, colon);
             const std::string arg = colon == std::string::npos ? "" : c.substr(colon + 1);
+            if (cmd == "wait" && arg == "race") {
+                // wait:race: until a race has started and the menus are back.
+                m_waitRace = true;
+                return;
+            }
             if (cmd == "wait") {
                 m_wait = static_cast<int>(str::parseInt(arg).value_or(1));
                 return;
@@ -716,6 +727,7 @@ private:
     std::vector<std::string> m_commands;
     std::size_t m_next = 0;
     int m_wait = 0;
+    bool m_waitRace = false;
 };
 
 void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
@@ -750,7 +762,8 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
         fe.startRace();
     } else if (cmd == "mp") {
         // Multiplayer automation: mp:host[:<password>], mp:join:<address>[|<password>], mp:chat:<text>,
-        // mp:ready, mp:start, mp:team:<0|1>, mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>.
+        // mp:ready, mp:start, mp:team:<0|1>, mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>,
+        // mp:car:<vehicle>[:<paint>].
         const auto sub = arg.substr(0, arg.find(':'));
         const auto rest = arg.find(':') == std::string::npos ? std::string() : arg.substr(arg.find(':') + 1);
         if (sub == "host") {
@@ -766,6 +779,17 @@ void Script::run(Frontend& fe, const std::string& cmd, const std::string& arg) {
             fe.ctx.netGame->setReady(true);
         } else if (fe.ctx.netGame && sub == "start") {
             fe.ctx.netGame->startRace();
+        } else if (fe.ctx.netGame && sub == "car") {
+            // mp:car:<vehicle>[:<paint>]: what the lobby's SELECT VEHICLE (a
+            // joiner's ready is cleared), a pick in the garage and its PREV
+            // (Frontend::applyLobbyCar) do.
+            const auto paint = rest.find(':');
+            if (!fe.ctx.netGame->isHost())
+                fe.ctx.netGame->setReady(false);
+            fe.config.vehicle = rest.substr(0, paint);
+            fe.config.vehicleColor =
+                paint == std::string::npos ? 0 : static_cast<int>(str::parseInt(rest.substr(paint + 1)).value_or(0));
+            fe.applyLobbyCar();
         } else if (fe.ctx.netGame && sub == "team") {
             game::NetCar car = fe.ctx.netGame->localCar();
             car.team = static_cast<int>(str::parseInt(rest).value_or(0));
@@ -870,19 +894,18 @@ namespace {
 using frontend::Frontend;
 
 // The automation script runs once per process: when a scripted race ends,
-// the menus come back on the results screen instead of replaying it.
-const char* scriptOnce() {
-    static bool used = false;
-    if (used)
-        return nullptr;
-    used = true;
-    return std::getenv("OPENMM2_FRONTEND_SCRIPT");
+// the menus come back on the results screen (or the multiplayer lobby) and
+// the script carries on with the commands after the one that started the
+// race, instead of replaying it.
+frontend::Script& processScript() {
+    static frontend::Script script(std::getenv("OPENMM2_FRONTEND_SCRIPT"));
+    return script;
 }
 
 class FrontendScreen final : public Screen {
 public:
     FrontendScreen(Context& ctx, const game::RaceResult* result)
-        : m_fe(ctx), m_script(scriptOnce()) {
+        : m_fe(ctx), m_script(processScript()) {
         ctx.input.startTextInput(ctx.window());
         // mmInterface::PlayUIMusic.
         if (auto* music = ctx.music()) {
@@ -901,6 +924,8 @@ public:
                 p->save();
             }
         }
+        if (result)
+            m_script.raceDriven();
         const std::string last = m_fe.store.lastUsed();
         if (!last.empty())
             m_fe.selectProfile(last);
@@ -1003,7 +1028,7 @@ private:
     }
 
     Frontend m_fe;
-    frontend::Script m_script;
+    frontend::Script& m_script;
 };
 
 } // namespace

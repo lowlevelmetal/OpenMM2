@@ -102,6 +102,10 @@ public:
     RaceScreen(Context& ctx, const game::RaceConfig& config)
         : m_ui(ctx.device(), ctx.game->vfs), m_text(ctx.device()) {
         m_result.config = config;
+        // The network race this screen runs (FrontendScreen starts it when
+        // the countdown arrives).
+        if (config.multiplayer && ctx.netGame)
+            m_netRace = ctx.netGame->raceNumber();
         // GetLoadScreenName: <city>_<mode><n>.jpg (cruise "roam" and Cops and
         // Robbers "multicop" without a number), else the generic one.
         const std::string prefix = modePrefix(config.mode);
@@ -235,7 +239,9 @@ public:
             m_hud->updateChat(static_cast<float>(dt));
         if (multiplayer(ctx)) {
             ctx.netGame->update();
-            if (ctx.netGame->takeReturnToLobby() || !ctx.netGame->inSession()) {
+            if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
+                log::info("race: the network race is over ({})",
+                          ctx.netGame->inSession() ? "back to the lobby" : "the session ended");
                 leaveRace(ctx, m_result);
                 return;
             }
@@ -2479,8 +2485,10 @@ private:
         storeViewSettings();
         if (multiplayer(ctx) && ctx.netGame->isHost()) {
             const auto phase = ctx.netGame->phase();
-            if (phase == game::NetGame::Phase::Countdown || phase == game::NetGame::Phase::Racing)
+            if (phase == game::NetGame::Phase::Countdown || phase == game::NetGame::Phase::Racing) {
+                log::info("race: the host leaves the race: everyone back to the lobby");
                 ctx.netGame->returnToLobby();
+            }
         }
         ctx.nextScreen = makeFrontendScreen(ctx, result);
     }
@@ -3991,6 +3999,7 @@ private:
     std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
     bool m_netPlayersKnown = false;
+    std::uint32_t m_netRace = 0; // NetGame::raceNumber() of this race
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;

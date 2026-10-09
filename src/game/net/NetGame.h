@@ -191,8 +191,14 @@ public:
     // --- Race -------------------------------------------------------------------------
     // True once when a countdown starts (the frontend switches to the race).
     bool takeRaceStart();
-    // True once when the host returned everyone to the lobby.
-    bool takeReturnToLobby();
+    // The races this NetGame has seen start, counted from 1 (0 before the
+    // first). The race screen keeps the number of the race it runs.
+    std::uint32_t raceNumber() const { return m_raceNumber; }
+    // Whether the host has taken everyone back to the lobby since race
+    // `number` started. A return that arrives while the player is in the
+    // menus (the host's own return, or one after the player quit the race
+    // early) belongs to that race only, never to the next one.
+    bool backToLobby(std::uint32_t number) const { return number != 0 && m_lobbyAfterRace >= number; }
     // Session clock (ms; the host's clock, estimated on clients).
     std::uint32_t sessionTime() const;
     std::uint32_t raceStartTime() const;
@@ -232,7 +238,8 @@ private:
     std::deque<std::string> m_notices;
     std::vector<NetGameEvent> m_gameEvents;
     bool m_raceStartPending = false;
-    bool m_returnPending = false;
+    std::uint32_t m_raceNumber = 0;     // countdowns seen
+    std::uint32_t m_lobbyAfterRace = 0; // the race the last return to the lobby ended
     bool m_raceStarted = false;
     bool m_closed = false;
     net::DisconnectReason m_joinFailure = net::DisconnectReason::None;

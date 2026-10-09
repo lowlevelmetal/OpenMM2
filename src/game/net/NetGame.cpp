@@ -247,7 +247,8 @@ void NetGame::leave() {
         m_impl->session.reset();
     }
     m_impl->joining = false;
-    m_raceStartPending = m_returnPending = m_raceStarted = false;
+    m_raceStartPending = m_raceStarted = false;
+    m_raceNumber = m_lobbyAfterRace = 0;
     m_gameEvents.clear();
 }
 
@@ -293,12 +294,18 @@ void NetGame::handleEvents() {
                 } else if constexpr (std::is_same_v<T, net::ev::Chat>) {
                     m_chat.push_back({ev.from, playerName(ev.from), ev.text, false});
                 } else if constexpr (std::is_same_v<T, net::ev::CountdownStarted>) {
+                    ++m_raceNumber;
+                    log::info("netgame: race {} starts at session time {}", m_raceNumber, ev.startTime);
                     m_raceStartPending = true;
                     m_raceStarted = false;
+                    // Whatever is still queued belongs to an earlier race
+                    // (late events, or a cruise that reads none).
+                    m_gameEvents.clear();
                 } else if constexpr (std::is_same_v<T, net::ev::GameStarted>) {
                     m_raceStarted = true;
                 } else if constexpr (std::is_same_v<T, net::ev::ReturnedToLobby>) {
-                    m_returnPending = true;
+                    log::info("netgame: back to the lobby after race {}", m_raceNumber);
+                    m_lobbyAfterRace = m_raceNumber;
                     m_raceStartPending = false;
                     m_raceStarted = false;
                     addSystemLine("**Session returning to Lobby**"); // string 73
@@ -555,8 +562,6 @@ std::string NetGame::portMappingStatus() const {
 // --- Race --------------------------------------------------------------------------------
 
 bool NetGame::takeRaceStart() { return std::exchange(m_raceStartPending, false); }
-
-bool NetGame::takeReturnToLobby() { return std::exchange(m_returnPending, false); }
 
 std::uint32_t NetGame::sessionTime() const { return m_impl->session ? m_impl->session->time() : 0; }
 
