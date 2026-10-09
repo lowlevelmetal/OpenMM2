@@ -54,8 +54,8 @@ std::unique_ptr<Session> londonSession(GameMode mode, int index) {
     SessionOptions options;
     options.seed = 11;
     std::string error;
-    auto s = Session::create(cfg, conventionsRetail()->london, *test::gameData(), conventionsRetail()->strings,
-                             &error, options);
+    const ConventionsRetail& r = *conventionsRetail();
+    auto s = Session::create(cfg, r.london, *test::gameData(), r.strings, &error, options);
     EXPECT_TRUE(s) << error;
     return s;
 }

@@ -33,9 +33,10 @@ public:
 // FilterDiscreteSteering / FilterGamepadSteering) with the speed-sensitive
 // rates and response curve mmPlayer::Update sets from the player's tune
 // (mmPlayer::FileIO reads tune/<car>.asnode; Params holds mmPlayer's
-// constructor values, which a car without the file keeps). The filtered position moves towards the target (the key's full
-// lock, or the stick) at DeltaOut per second when turning further the same
-// way and DeltaIn per second otherwise; the car gets sign * |position|^Filter.
+// constructor values, which a car without the file keeps). The filtered
+// position moves towards the target (the key's full lock, or the stick) at
+// DeltaOut per second when turning further the same way and DeltaIn per
+// second otherwise; the car gets sign * |position|^Filter.
 class SteeringFilter {
 public:
     struct Params {
