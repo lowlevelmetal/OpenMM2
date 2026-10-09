@@ -17,6 +17,7 @@
 #include "net/Transport.h"
 
 #include <cstdint>
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <memory>
@@ -292,6 +293,9 @@ public:
     // docs/multiplayer.md, "Diagnosing replication").
     void traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
                     const std::vector<NetRemoteCar>& cars);
+    // That trace file (null when none is written), for the shared traffic's
+    // lines (game/net/TrafficTrace.h).
+    std::FILE* traceFile() const;
 
     // --- Shared ambient traffic (multiplayer cruise, OpenMM2 extra) ----------------
     // Whether this session's cruise shares the host's traffic and police

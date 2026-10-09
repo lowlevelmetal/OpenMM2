@@ -46,6 +46,7 @@
 #include "game/net/RaceStart.h"
 #include "game/net/TrafficProxies.h"
 #include "game/net/TrafficSync.h"
+#include "game/net/TrafficTrace.h"
 #include "game/CamMirror.h"
 #include "game/CamPlayer.h"
 #include "game/CityRenderer.h"
@@ -371,7 +372,7 @@ public:
         if (multiplayer(ctx))
             m_netDamage.settle(ctx.netGame->frameTime()); // OpenMM2: the damage of cars not drawn
         if (netTrafficHost(ctx) && m_ai)
-            applyNetTrafficHits(); // OpenMM2: the clients' hits on the host's traffic
+            applyNetTrafficHits(ctx); // OpenMM2: the clients' hits on the host's traffic
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
         if (m_trafficBodies)
@@ -3874,7 +3875,9 @@ private:
     // it, allowing for the lag), leaves its rail with the impulse of a car of
     // the client's mass at the reported velocity meeting it (elasticity 0.25:
     // two lvlMaterial defaults of 0.5); anything else is dropped.
-    void applyNetTrafficHits() {
+    void applyNetTrafficHits(Context& ctx) {
+        std::FILE* trace = ctx.netGame->traceFile();
+        const double now = ctx.netGame->frameTime();
         for (const auto& ev : m_netEvents) {
             if (static_cast<std::uint16_t>(ev.type) != net::kTrafficHitEvent || !m_trafficBodies)
                 continue;
@@ -3886,17 +3889,24 @@ private:
                 const auto generation = static_cast<unsigned>(c.spawns) % net::kAmbientGenerations;
                 return c.id == hit->id && generation == hit->generation;
             });
-            if (car == m_ai->cars().end() || car->physical)
+            if (car == m_ai->cars().end() || car->physical) {
+                game::traceRefusedHit(trace, now, ev.from, hit->id, hit->generation,
+                                      car == m_ai->cars().end() ? "gone" : "off-rail");
                 continue;
+            }
             const phys::Body& other = rv->second.sim->sim().body;
             const Vec3 rel = hit->velocity - car->velocity;
             const float reach = std::min(25.0f, 8.0f + rel.mag() * 0.5f);
-            if (other.ics.matrix.m3.dist(car->transform.m3) > reach)
+            if (other.ics.matrix.m3.dist(car->transform.m3) > reach) {
+                game::traceRefusedHit(trace, now, ev.from, hit->id, hit->generation, "far");
                 continue;
+            }
             const float mc = other.ics.mass, mt = m_trafficBodies->massOf(car->id);
             const float speed = rel.mag();
-            if (mt <= 0.0f || mc <= 0.0f || speed < 0.5f)
+            if (mt <= 0.0f || mc <= 0.0f || speed < 0.5f) {
+                game::traceRefusedHit(trace, now, ev.from, hit->id, hit->generation, "slow");
                 continue;
+            }
             const Vec3 n = rel * (1.0f / speed);
             const float reduced = mc * mt / (mc + mt);
             const Vec3 impulse = n * (reduced * speed * 1.25f);
@@ -3906,9 +3916,36 @@ private:
             const float d = toward.mag();
             const Vec3 side = d > 0.01f ? toward * (1.0f / d) : Vec3{};
             const Vec3 point = car->transform.m3 + Vec3{0.0f, 1.0f, 0.0f} + side;
-            if (m_trafficBodies->knock(car->id, impulse, point) && m_debugNetTraffic)
+            const bool knocked = m_trafficBodies->knock(car->id, impulse, point);
+            if (knocked)
+                game::traceKnock(trace, now, car->id, car->spawns, ev.from);
+            if (knocked && m_debugNetTraffic)
                 log::info("nettraffic: host knocks traffic car {} for player {} ({:.1f} m/s)", car->id,
                           ev.from, speed);
+        }
+    }
+
+    // OPENMM2_NET_TRACE on the host: the shared cars near any player, each at
+    // the session time its state belongs to (the AI's last step, or the
+    // physics step's for a body).
+    void traceNetTraffic(Context& ctx, std::FILE* trace, std::span<const game::SharedCar> cars) {
+        const double frame = ctx.netGame->frameTime();
+        const double aiTime =
+            frame - static_cast<double>(m_ai->interpolationAlpha() * ai::kAiStepSeconds) * 1000.0;
+        const double bodyTime = frame - (m_world ? static_cast<double>(m_world->remainder()) * 1000.0 : 0.0);
+        std::vector<Vec3> players;
+        if (m_player)
+            players.push_back(m_player->sim().modelMatrix().m3);
+        for (const auto& rc : ctx.netGame->remoteCars())
+            if (rc.hasState)
+                players.push_back(rc.transform.m3);
+        // The AI's cars once per AI step; the bodies every frame.
+        const bool aiStepped = m_ai->lightSteps() != m_traceAiSteps;
+        m_traceAiSteps = m_ai->lightSteps();
+        for (const game::SharedCar& c : cars) {
+            const auto near = [&](const Vec3& p) { return p.dist2(c.transform.m3) < 9e4f; };
+            if ((c.body || aiStepped) && std::ranges::any_of(players, near))
+                game::traceHostCar(trace, c.body ? bodyTime : aiTime, c);
         }
     }
 
@@ -3921,9 +3958,12 @@ private:
             if (c.horn)
                 m_hornLatch.insert(c.id);
         const std::uint64_t now = net::monotonicMs();
-        if (now - m_trafficSentAt < kNetTrafficIntervalMs)
+        std::FILE* trace = ctx.netGame->traceFile(); // OPENMM2_NET_TRACE: every frame
+        const bool send = now - m_trafficSentAt >= kNetTrafficIntervalMs;
+        if (!send && !trace)
             return;
-        m_trafficSentAt = now;
+        if (send)
+            m_trafficSentAt = now;
         std::vector<game::SharedCar> cars;
         cars.reserve(m_ai->cars().size() + m_cops.size());
         for (const ai::AmbientCar& c : m_ai->cars()) {
@@ -3947,15 +3987,18 @@ private:
             const bool horn = m_hornLatch.contains(c.id);
             cars.push_back(game::shareTrafficCar(c, model, paint, body ? &*body : nullptr, horn));
         }
-        m_hornLatch.clear();
-        if (m_debugNetTraffic) {
+        if (send)
+            m_hornLatch.clear();
+        if (m_debugNetTraffic || trace) {
             std::unordered_set<int> knocked;
             for (const ai::AmbientCar& c : m_ai->cars())
                 if (c.physical) {
                     knocked.insert(c.id);
-                    if (!m_debugKnocked.contains(c.id))
+                    if (!m_debugKnocked.contains(c.id) && m_debugNetTraffic)
                         log::info("nettraffic: host traffic car {} knocked off its rail at session t {}",
                                   c.id, ctx.netGame->sessionTime());
+                    if (!m_debugKnocked.contains(c.id))
+                        game::traceKnock(trace, ctx.netGame->frameTime(), c.id, c.spawns, 255);
                 }
             m_debugKnocked = std::move(knocked);
         }
@@ -3993,8 +4036,13 @@ private:
             s.rpm = sim.engine.rpm;
             s.throttle = sim.engine.throttle;
             s.gear = sim.trans.getCurrentGear();
+            s.body = true;
             cars.push_back(s);
         }
+        if (trace)
+            traceNetTraffic(ctx, trace, cars);
+        if (!send)
+            return;
         const std::uint32_t time = ctx.netGame->sessionTime();
         std::set<std::uint8_t> viewers;
         for (const auto& rc : ctx.netGame->remoteCars()) {
@@ -4089,6 +4137,7 @@ private:
                 hit.generation = static_cast<std::uint8_t>(it->spawns);
                 hit.velocity = m_netPreStepVelocity;
                 ctx.netGame->sendEvent(net::kTrafficHitEvent, net::encodePayload(hit), net::kHostPlayerId);
+                game::traceHit(ctx.netGame->traceFile(), ctx.netGame->frameTime(), id, hit.generation);
                 if (m_debugNetTraffic)
                     log::info("nettraffic: client hit traffic car {} at session t {}", id, now);
             }
@@ -4110,6 +4159,17 @@ private:
         const double renderTime = ctx.netGame->frameTime() - delay;
         m_trafficClient->update(renderTime);
         m_trafficRenderTime = renderTime;
+        if (std::FILE* trace = ctx.netGame->traceFile(); trace && m_player && m_world) {
+            // Where the received cars meet this machine's car in this frame's
+            // steps, and the session time that car reaches in them.
+            const double frame = ctx.netGame->frameTime();
+            const double own = frame - static_cast<double>(m_world->remainderAfter(dt)) * 1000.0;
+            const Vec3 me = m_player->sim().modelMatrix().m3;
+            game::traceClientView(trace, frame, own, me);
+            for (const auto& c : m_trafficClient->cars())
+                if (c.transform.m3.dist2(me) < 9e4f)
+                    game::traceClientCar(trace, frame, renderTime, c, c.extrapolated ? 1 : 0);
+        }
         if (const auto steps = m_trafficClient->lightSteps(renderTime))
             m_ai->advanceLightsTo(*steps);
         m_netCars.clear();
@@ -5368,6 +5428,7 @@ private:
     // OPENMM2_DEBUG_NETDAMAGE logs every damage event sent and received.
     bool m_debugNetDamage = std::getenv("OPENMM2_DEBUG_NETDAMAGE") != nullptr;
     std::unordered_set<int> m_debugKnocked;
+    std::uint32_t m_traceAiSteps = 0; // OPENMM2_NET_TRACE: the AI step last traced (host)
 
     // Sound: the player's car, city ambience and rain (src/audio/game).
     std::unique_ptr<audio::SoundBank> m_bank;

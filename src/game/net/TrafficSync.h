@@ -67,6 +67,9 @@ struct SharedCar {
     Vec3 velocity;
     Vec3 angularVelocity;
     std::uint8_t flags = 0; // net::AmbientFlags
+    // Its state is a physics body's (a police car, a knocked traffic car):
+    // it belongs to the physics step's time, not the AI step's.
+    bool body = false;
     // Traffic with a physics body: WHL0-3's drawing offsets from their
     // pivots (trafficWheelOffsets).
     bool wheels = false;

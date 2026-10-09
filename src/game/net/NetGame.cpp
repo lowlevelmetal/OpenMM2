@@ -726,6 +726,8 @@ double NetGame::playoutDelay(std::uint8_t playerId) const {
     return m_impl->session ? m_impl->session->playoutDelay(playerId) : 0.0;
 }
 
+std::FILE* NetGame::traceFile() const { return m_impl->session ? m_impl->trace.get() : nullptr; }
+
 void NetGame::traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
                          const std::vector<NetRemoteCar>& cars) {
     std::FILE* f = m_impl->trace.get();

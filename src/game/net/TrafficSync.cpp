@@ -372,6 +372,7 @@ SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const
     s.speed = car.speed;
     s.velocity = body ? body->velocity : car.velocity;
     s.angularVelocity = body ? body->angularVelocity : Vec3{};
+    s.body = body != nullptr;
     if (body && body->wheels) {
         s.wheels = true;
         s.wheelOffsets = *body->wheels;
