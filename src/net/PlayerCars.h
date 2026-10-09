@@ -14,7 +14,10 @@
 //                   the host applied to that client's car and the car's
 //                   state after it (full precision: the client puts its car
 //                   back to it and runs its later inputs again), and every
-//                   other player's car (VehicleSnapshot, drawn interpolated).
+//                   other player's car (VehicleSnapshot, drawn interpolated);
+//                   the few near the client's car also in full with the
+//                   input last applied to them (protocol 9), which the
+//                   client simulates along with its own.
 //
 // Both travel on the State channel (unreliable, unsequenced).
 
@@ -275,6 +278,17 @@ bool serialize(S& s, OwnCarState& o) {
     return s.ok();
 }
 
+// Another player's car near the receiving client's, in full (OpenMM2,
+// protocol 9): the client runs it along with its own car from this state on
+// the input the host last applied to it, so that the two meet where they
+// meet on the host instead of where the other was drawn a trip earlier.
+struct NearCarState {
+    std::uint8_t id = 0;
+    OwnCarState state;
+    CarInputFrame input; // the last applied (its keys, applied once, left out)
+};
+inline constexpr std::size_t kMaxNearCars = 3;
+
 struct CarStatesMsg {
     static constexpr MsgType kType = MsgType::CarStates;
     std::uint32_t time = 0; // session ms of the host's sample the states belong to
@@ -287,6 +301,8 @@ struct CarStatesMsg {
     OwnCarState own;
     // Every other player's car.
     std::vector<std::pair<std::uint8_t, VehicleSnapshot>> cars;
+    // The ones near the client's car (at most kMaxNearCars), in full.
+    std::vector<NearCarState> near;
 };
 inline constexpr std::int32_t kMaxReportedWaiting = 63;
 
@@ -308,6 +324,18 @@ bool serialize(S& s, CarStatesMsg& m) {
     for (auto& [id, state] : m.cars) {
         s.u8(id);
         serialize(s, state);
+    }
+    auto nearCount = static_cast<std::int32_t>(std::min(m.near.size(), kMaxNearCars));
+    s.ranged(nearCount, 0, static_cast<std::int32_t>(kMaxNearCars));
+    if constexpr (S::kReading)
+        m.near.resize(static_cast<std::size_t>(nearCount));
+    for (std::int32_t i = 0; i < nearCount; ++i) {
+        NearCarState& c = m.near[static_cast<std::size_t>(i)];
+        s.u8(c.id);
+        serialize(s, c.state);
+        c.input.events = 0; // keys are applied once: never repeated
+        serialize(s, c.input, CarInputFrame{});
+        c.input.events = 0;
     }
     return s.ok();
 }

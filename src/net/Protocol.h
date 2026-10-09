@@ -35,7 +35,10 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 6: in AmbientState a rail car's acceleration, curvature and speed over the
 // ground (the clients predict the shared traffic to their cars' time), and
 // up to 160 cars; no TrafficHit events.
-inline constexpr std::uint16_t kProtocolVersion = 6;
+// 9: in CarStates the players' cars near the client's in full, with the input
+// last applied to them (net/PlayerCars.h NearCarState). (7 and 8 are other
+// changes' numbers.)
+inline constexpr std::uint16_t kProtocolVersion = 9;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.

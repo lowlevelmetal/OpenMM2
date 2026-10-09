@@ -36,6 +36,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace mm2::game {
@@ -180,6 +181,17 @@ public:
         float rotationError = 0.0f;  // the largest difference of the matrices' entries
         bool damage = false, held = false, gear = false; // which of these differed
         Vec3 moved; // where the car is now against where it was predicted
+        bool rebased = false; // other cars were put to the host's state with it (companions)
+    };
+    // Another player's car the client simulates along with its own (the
+    // host sent it in full: net::NearCarState): put to the host's state at
+    // the acknowledged sample and run with it on the input the host last
+    // applied to it.
+    struct Companion {
+        SimVehicle* car = nullptr;
+        NetCarDriver* driver = nullptr;
+        const net::OwnCarState* state = nullptr;
+        net::CarInputFrame input;
     };
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
@@ -187,10 +199,14 @@ public:
     // phys::World::replaySample), calling `beforeEach` with each sample's
     // number before it (the other players' cars put back where they stood
     // when it first ran) and `beforeLast` before the last one (the drawing
-    // keeps the car's pose before its last sample).
+    // keeps the car's pose before its last sample). With `companions` the
+    // samples are run again whether the car's state differed or not, every
+    // companion with it from the host's state (the car's own state at `ack`
+    // is the host's only when it differed).
     Correction acknowledge(SimVehicle& car, NetCarDriver& driver, phys::World& world, std::uint32_t ack,
                            const net::OwnCarState& host, const std::function<void()>& beforeLast = {},
-                           const std::function<void(std::uint32_t)>& beforeEach = {});
+                           const std::function<void(std::uint32_t)>& beforeEach = {},
+                           std::span<const Companion> companions = {});
 
     // Statistics since the start.
     struct Stats {
