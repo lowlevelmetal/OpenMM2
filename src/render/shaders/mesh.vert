@@ -44,7 +44,11 @@ void main() {
     vec4 color = draw.color;
     if ((draw.flags & kVertexColor) != 0u)
         color *= aColor;
-    vec3 worldNormal = normalize(mat3(draw.world) * aNormal);
+    // Direct3D 7's fixed function takes normals through the inverse
+    // transpose of the world matrix and, with D3DRENDERSTATE_NORMALIZENORMALS
+    // off (MM2 never sets it), does not renormalise them: a scaled instance
+    // is lit in proportion to 1 / its scale (inferred from Direct3D).
+    vec3 worldNormal = transpose(inverse(mat3(draw.world))) * aNormal;
     if ((draw.flags & kLighting) != 0u) {
         vec3 light = frame.ambient.rgb;
         for (int i = 0; i < 3; ++i)

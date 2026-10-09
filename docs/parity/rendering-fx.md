@@ -330,7 +330,7 @@ GREATER 100, and that every retail room colour is white because
 
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
-| `mesh.vert`: lighting | Direct3D 7 fixed-function lighting | inferred | ambient + Σ max(0, N · −L) × colour, clamped per vertex (DirectX behaviour, outside midtown2.exe) |
+| `mesh.vert`: lighting | Direct3D 7 fixed-function lighting | inferred | ambient + Σ max(0, N · −L) × colour, clamped per vertex (DirectX behaviour, outside midtown2.exe). Round 3 (conventions): the normal goes through the inverse transpose of the world matrix and is not renormalised, as Direct3D does with NORMALIZENORMALS off (MM2 never sets it: gfxRenderState::Init zeroes the state block); OpenMM2 renormalised, which lit the 1,500-odd scaled .inst buildings and props at unit strength |
 | `mesh.vert`: environment map | `modShader::BeginEnvMap` (camera-space normals back to world space) | fixed | u = 0.5 + 0.5 x, v = 0.5 − 0.5 y of the world-space normal |
 | `mesh.vert`: fog | `gfxRenderState` fog vertex mode (offset 0x25, linear) | inferred | linear per-vertex fog by view depth (Direct3D's vertex fog) |
 | `mesh.frag`: alpha test, texture stages | `gfxRenderState::DoFlush` (ALPHAREF/ALPHAFUNC, texture stage modulate) | inferred | discard when alpha is below the reference: GREATER 100 as at least 101/255, the default NOTEQUAL 0 as at least 1/255; stages modulate as Direct3D's do |
