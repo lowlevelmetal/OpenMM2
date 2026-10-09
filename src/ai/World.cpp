@@ -281,6 +281,18 @@ void World::reset() {
     updateSignals();
 }
 
+void World::resetAndPopulate(const Vec3& playerResetPos) {
+    reset();
+    // aiMap::Reset: per player, AdjustAmbients then AdjustPedestrians from
+    // room 0 (with no ambient cars or pedestrians MM2 skips them; OpenMM2's
+    // draw nothing then either).
+    const int room = roomAt(playerResetPos, 0);
+    m_traffic->populate(room);
+    m_peds->populate(room);
+    if (room != 0)
+        m_playerRoom = room;
+}
+
 void World::updateLights() {
     if (m_pendingLightSteps == 0)
         return;

@@ -646,11 +646,15 @@ private:
         case 4:
             loadEffects(ctx);
             loadPedestrianProps(ctx);
-            // mmGame::Init: aiMap::Reset right after aiMap::Init.
+            // mmGame::Init: aiMap::Reset right after aiMap::Init (its
+            // population waits for the first step, except where the cruise
+            // start needs it: placeRespawnStart).
             if (m_ai)
                 m_ai->reset();
             spawnOpponents(ctx);
             spawnPolice(ctx);
+            // Then the mode's InitOtherPlayers.
+            placeRespawnStart(ctx);
             m_loadPercent = 100;
             return;
         default: loadFinish(ctx); return;
@@ -896,6 +900,13 @@ private:
         m_cams.load(ctx.game->vfs, m_result.config.vehicle, &missing, aspect);
         // mmMirror::Init: the defaults, then tune/<car>.mmmirror.
         m_mirror.load(ctx.game->vfs, m_result.config.vehicle);
+        // mmPlayer::Init: the player node, named after the car, loads
+        // tune/<car>.asnode (its steering tuning, mmPlayer::FileIO).
+        if (auto bytes = ctx.game->vfs.readAll("tune/" + str::lower(m_result.config.vehicle) + ".asnode")) {
+            const std::string_view text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
+            if (auto f = data::parseDat(text); f && f->top())
+                m_gameInput.setPlayerTune(*f->top());
+        }
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             m_cams.setVehicleFlags(static_cast<int>(info->flags));
         for (const auto& m : missing)
@@ -914,6 +925,40 @@ private:
         m_yaw = heading;
     }
 
+    // mmSingleRoam / mmGameMulti::InitOtherPlayers (cruise, Cops and
+    // Robbers): the car moves from its InitGameObjects place to
+    // mmGame::RespawnXYZ's start, SetResetPos and vehCar::Reset, and stays
+    // there 2 m above the intersection. The single-player start is drawn from
+    // MM2's one random stream (m_random) as mmGame::Init's aiMap::Reset left
+    // it: set to 1, then the traffic and pedestrians placed round the car's
+    // InitGameObjects place (ai::World::resetAndPopulate). mmGame::Reset's
+    // aiMap::Reset then sets it to 1 again, and the first step places them
+    // round the start.
+    void placeRespawnStart(Context& ctx) {
+        if (!m_session || !m_player || !m_session->setup().respawnStart || std::getenv("OPENMM2_DEBUG_SPAWN"))
+            return;
+        std::uint32_t seed = 1;
+        if (m_ai && !multiplayer(ctx)) {
+            m_ai->resetAndPopulate(m_player->sim().resetPos());
+            seed = m_random.state();
+        }
+        const auto pick = m_session->placeRespawnStart(*m_city, seed, [this](const Vec3& p) {
+            return m_cityRenderer ? m_cityRenderer->roomAt(p) : 0;
+        });
+        if (m_ai)
+            m_ai->reset(); // mmGame::Reset (mmGameManager::Reset)
+        if (!pick)
+            return;
+        log::info("race: start at intersection {} ({:.3f}, {:.3f}, {:.3f})", pick->intersection,
+                  pick->position.x, pick->position.y, pick->position.z);
+        m_player->setResetPos(pick->position, pick->angle);
+        m_player->reset();
+        m_pose = m_player->pose();
+        m_cams.reset(cameraTarget());
+        m_position = pick->position + Mat34::rotationY(pick->angle).transformDir({0, 2.2f, 7.0f});
+        m_yaw = pick->angle;
+    }
+
     void createSession(Context& ctx) {
         std::string error;
         game::session::SessionOptions opts;
@@ -921,8 +966,9 @@ private:
             opts.scoringBias = info->scoringBias;
         opts.playerName = ctx.settings.playerName;
         opts.netHost = multiplayer(ctx) && ctx.netGame->isHost();
-        // mmMultiRoam: RespawnXYZ draws the cruise start from a random stream
-        // seeded with the player's id, so every player starts elsewhere.
+        // mmMultiRoam / mmMultiCR: RespawnXYZ draws the start from a random
+        // stream seeded with the player's id (MM2: its DirectPlay id), so
+        // every player starts elsewhere.
         if (multiplayer(ctx))
             opts.seed = 1u + ctx.netGame->localId();
         // Crash course pursuit checks look through the level (the world is
@@ -1924,21 +1970,19 @@ private:
         st.seed = std::max(1u, ctx.netGame->raceStartTime());
         m_crRng = st.seed;
         // GetRandomPoints' picker: mmGame::RespawnXYZ(false, false, false)
-        // less its 2 m, which still never takes an intersection in a
-        // water-of-death or terrain-instance room (level flags 0x24).
+        // less its 2 m: an intersection whose room (FindRoomId of its
+        // centre) is neither water of death nor a terrain instance's (level
+        // flags 0x24). MM2's host draws it from the one global stream as its
+        // frames left it, respawnCounter() + 1 numbers a pick; every OpenMM2
+        // machine draws the first set itself from the shared start time, one
+        // number a pick, since the counter is each machine's own.
         st.randomIntersection = [this]() -> std::optional<Vec3> {
-            if (!m_city->aiMap || m_city->aiMap->intersections.size() < 2)
+            const auto pick = game::session::respawnXYZ(
+                *m_city, [this](const Vec3& p) { return m_cityRenderer ? m_cityRenderer->roomAt(p) : 0; }, {},
+                m_crRng, 1);
+            if (!pick)
                 return std::nullopt;
-            const auto& xs = m_city->aiMap->intersections;
-            const auto& flags = m_city->levelRoomFlags;
-            constexpr std::uint16_t kRejected = city::LevelRoomFlag::WaterOfDeath | city::LevelRoomFlag::TerrainInstance;
-            for (int attempt = 0; attempt < 1000; ++attempt) {
-                m_crRng = m_crRng * 1103515245u + 12345u;
-                const auto& x = xs[1 + ((m_crRng >> 16) & 0x7fffu) % (xs.size() - 1)];
-                if (x.room >= flags.size() || !(flags[x.room] & kRejected))
-                    return x.center;
-            }
-            return xs[1].center;
+            return pick->position - Vec3{0.0f, 2.0f, 0.0f};
         };
         // mmMultiCR::DropGold: aiMap::PositionToAIMapComp always answers for
         // a room, so the gold stays where it fell unless that room is deep

@@ -95,6 +95,17 @@ public:
     // racers, which the race owns here, and aiVehicleManager,
     // game::TrafficBodies::reset.)
     void reset();
+    // aiMap::Reset as mmGame::Init makes it before the mode's
+    // InitOtherPlayers: reset(), then the population at once rather than on
+    // the next step, round `playerResetPos` (cityLevel::FindRoomId with no
+    // hint of the player car's reset position, vehCarSim +0x210): the
+    // traffic's AdjustAmbients, then the pedestrians' AdjustPedestrians.
+    // random() is then where mmGame::RespawnXYZ draws the cruise start from;
+    // mmGame::Reset's aiMap::Reset (reset()) follows before the race runs.
+    void resetAndPopulate(const Vec3& playerResetPos);
+    // The stream the traffic and the pedestrians draw from (MM2's global
+    // seed; Settings::random when the caller gave one).
+    Random& random() { return *m_random; }
     // aiMap::Update runs the light sets after the racers and the police. A
     // race loop that drives those between update() and the lights sets this
     // and calls updateLights() after them: update() then leaves the lights'

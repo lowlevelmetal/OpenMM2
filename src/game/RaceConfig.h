@@ -43,7 +43,9 @@ struct RaceConfig {
 
     int laps = 0;      // circuit races
     int opponents = 0; // AI opponents
-    // Densities as chosen in the menus, 0 (none) .. 1 (maximum).
+    // Densities as chosen in the menus, 0 (none) .. 1 (maximum). A race
+    // starts the cop density at its table's cop count, which can be more
+    // than 1 (RaceMenuBase::SetStateRace); the police placement clamps it.
     float pedestrianDensity = 0.5f;
     float trafficDensity = 0.5f;
     float copDensity = 0.5f;

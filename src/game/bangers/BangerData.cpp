@@ -44,7 +44,16 @@ std::optional<BangerData> parseBangerData(std::string_view name, std::string_vie
     d.glowOffsets.resize(static_cast<std::size_t>(std::max(0, std::min<int>(numGlows, static_cast<int>(d.glowOffsets.size())))));
     if (d.name.find("_tree") != std::string::npos)
         d.billFlags |= BangerData::kTree;
-    if (const auto* rule = b.child("BirthRule")) {
+    // asBirthRule::Load skips the block's name, its brace and the first
+    // field's name before it reads by position, so the block counts
+    // whatever it is called (sp_tree1_s_break06 calls it "asBirthRule").
+    const data::DatNode* rule = nullptr;
+    for (const auto& c : b.children)
+        if (!c.children.empty()) {
+            rule = &c;
+            break;
+        }
+    if (rule) {
         fx::BirthRule r;
         if (fx::loadBirthRule(*rule, r)) {
             // asBirthRule::Load reads only the 24 fields dgBangerData::Save

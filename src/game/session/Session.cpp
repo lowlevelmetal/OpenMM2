@@ -7,7 +7,6 @@
 #include <cmath>
 #include <format>
 #include <limits>
-#include <random>
 
 namespace mm2::game::session {
 namespace {
@@ -134,10 +133,7 @@ void setCheating(bool on) { g_cheating = on; }
 
 std::unique_ptr<Session> Session::create(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
                                          const Strings& strings, std::string* error, const SessionOptions& options) {
-    std::uint32_t seed = options.seed;
-    if (seed == 0)
-        seed = std::random_device{}() | 1u;
-    auto setup = loadRaceSetup(config, city, vfs, error, seed);
+    auto setup = loadRaceSetup(config, city, vfs, error);
     if (!setup)
         return nullptr;
     std::unique_ptr<Session> s(new Session());
@@ -149,6 +145,21 @@ std::unique_ptr<Session> Session::create(const RaceConfig& config, const city::C
     s->m_oppEnabled.assign(s->m_setup.opponents.size(), 0);
     s->resetRace();
     return s;
+}
+
+std::optional<RespawnPick> Session::placeRespawnStart(const city::CityData& city, std::uint32_t globalSeed,
+                                                      const RoomLookup& findRoom) {
+    if (!m_setup.respawnStart)
+        return std::nullopt;
+    const auto pick = cruiseStart(city, findRoom, multiplayer(), globalSeed, m_options.seed);
+    if (!pick)
+        return std::nullopt;
+    // vehCarSim::SetResetPos(start) and the reset angle (+0x250), 0.
+    m_setup.playerPlace = {pick->position, pick->angle};
+    m_setup.playerSpawn = Mat34::rotationY(pick->angle);
+    m_setup.playerSpawn.m3 = pick->position;
+    m_respawn = m_setup.playerSpawn;
+    return pick;
 }
 
 std::string Session::str(std::uint32_t id, std::string_view fallback) const {

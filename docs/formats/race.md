@@ -39,14 +39,21 @@ editor files or crash-course event lists.
 Header plus one row per race: `Description`, then two blocks of 10 columns:
 amateur then professional. Each block is `CarType, TimeofDay (0..3),
 Weather (0..3), Opponents, Cops, Ambient (density 0..1), Peds (density),
-NumLaps, TimeLimit (seconds), Difficulty`.
+NumLaps, TimeLimit (seconds), Difficulty`. `Cops` is a count (0 to 8 in
+the retail tables) that the race menu keeps as the cop density unchanged;
+the police placement clamps it to 0..1 (all posts from 1 up).
 
 ### Waypoints: `<race>Nwaypoints.csv`
 
 `x,y,z,a,radius,...`: checkpoint position, heading in degrees, checkpoint
 radius. Some files label column 5 `poly count`. The remaining columns
 (`frame rate`, `state changes`, `texture changes`, `msg`) are editor profiling
-fields and are kept verbatim. Crash-course event lists, `copchase.csv` and
+fields and are kept verbatim, except that column 6 is the waypoint's hit
+flag. Heading h faces (sin h, 0, -cos h): 0 is -Z and 90 is +X. The game
+turns the car at the start by h x -0.017453292 about +Y
+(`mmWaypoints::GetStartAngle`); a heading of exactly 0 on a waypoint after
+the first means "towards the next waypoint" (`mmWaypoints::LoadCSV`). A
+radius of 0 means 15. Crash-course event lists, `copchase.csv` and
 `multicopwaypoints.csv` use the same layout.
 
 ### Opponent lines: `*.opp`
@@ -54,6 +61,14 @@ fields and are kept verbatim. Crash-course event lists, `copchase.csv` and
 CSV `x,y,z,brake,forward offset,side offset,target speed,speed start,side start`.
 Named `<race>-a-<n>.opp` (amateur) and `<race>-p-<n>.opp` (professional) and
 referenced from the `[Opponent]` section of the `.aimap`.
+
+MM2's `aiRouteRacer::Init` reads only the first four numbers of a row
+(`atof`). The first row is the racer's grid place: its fourth column (headed
+`brake`) is the start angle in degrees, stored as the car's reset rotation
+times 0.017444445 (MM2's own degree factor) and, unlike a waypoint heading,
+not negated: 90 faces -X. The rows in between become route waypoints (the
+first intersection of the room each point lies in) and the last row is the
+destination. The other columns are not read.
 
 ### AI setup: `*.aimap`, `*.aimap_p`
 
@@ -71,7 +86,7 @@ reproduces it for every retail file.
 | Ambients Drive On The Left | value | 0/1 |
 | Traffic Lights | value | two model names |
 | Exceptions | list | `road density speedLimit` per AI path id |
-| Police | list | `car x y z heading mode lane ? ?` (the file's comment header is stale) |
+| Police | list | `car x y z heading mode behaviours chance range` (the file's comment header is stale): heading in degrees, stored as the reset rotation heading x -0.017444445 (`aiRaceData::aiRaceData`); `mode` is read and never used; `behaviours` (default 15) are the apprehend bits; `chance` (default 0.5) and `range` (default 50 m) govern pursuing opponents |
 | Opponent | list | `car oppFile <numbers>` |
 | Ambient Types/Density | list | `model cumulativeProbability ?` |
 | GoodWeatherPedName / BadWeatherPedName | list | `goodModel badModel` |

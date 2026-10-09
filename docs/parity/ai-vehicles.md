@@ -10,7 +10,7 @@ Scope: `src/ai/Course.*`, `Driving.*` (with `DrivingRoute.cpp` and
 Summary (after the second pass): 170 rows (a row may cover several helpers
 of one MM2 function); verified 71, fixed 67, open 1, inferred 2, deviation 3,
 openmm2 26 (after merging integration and applying its physics API). The Missing table lists 10 MM2 functions or groups, 4 of them
-now ported. In the opponent sweep (`OPENMM2_AI_SWEEP=1`) 516 of 517
+now ported (5 with round 3's CreateRoadMap centre). In the opponent sweep (`OPENMM2_AI_SWEEP=1`) 516 of 517
 opponents finish (517 after the first pass, 516 before the audit). The one
 that does not, in sf race11 p, is wrecked by landing impacts: every racer
 of that 8 km professional race (vppanozgt at 40 - 100 m/s over SF's crests)
@@ -237,7 +237,7 @@ rather than on every row:
 | `Polyline::finalize`, `pointAt`, `project` | none | openmm2 | |
 | `RoadNetwork::build` | `aiMap::ReadBinary`, `aiPath::ReverseDirection`, `InitRoadTurns`, the speed-limit loop of aiMap's init, `aiIntersection::NumSources` / `NumSinks`, aiTrafficLightSet ctor | verified | Reverse only roads whose first side has lanes; exception limit, else city limit (+ 12.5 on freeways); sources and sinks as coded. Second pass: a loop road's light is its end-1 light (aiTrafficLightSet's constructor and SetFourWay take end 1 when the path's end-1 intersection is theirs; was end 0); each road's sharp turns; shortcut roads flagged, without lanes (their lane rows are zeros; no ambient drives them). |
 | `RoadNetwork::lane`, `exits`, `sidewalksAt` | none | openmm2 | Lookups. |
-| shortcut roads (`city::parseShortcutBai`, `addShortcuts`) | `aiMap::ReadBinary`, `aiPath::ReadShortcut`, `aiIntersection::AddRoad`, `CreateRoadMap` | fixed | New (second pass; src/city). <city>_sup.bai's roads (70 London, 49 SF) take the next path ids, both sides closed to ambients and pedestrians, and join their end intersections' lists, which are sorted round the centre and re-indexed. MM2 first moves the centre to the room's bound-sphere centre; OpenMM2 keeps the file's (inferred: the main lists are already sorted round it). Racers and police route over them; pedestrians step over them (GetRoadToRight / GetRoadToLeft). Their waypoint pairs: 317 of London's and 328 of SF's are joined only by a shortcut. |
+| shortcut roads (`city::parseShortcutBai`, `addShortcuts`) | `aiMap::ReadBinary`, `aiPath::ReadShortcut`, `aiIntersection::AddRoad`, `CreateRoadMap` | fixed | New (second pass; src/city). <city>_sup.bai's roads (70 London, 49 SF) take the next path ids, both sides closed to ambients and pedestrians, and join their end intersections' lists, which are sorted round the centre and re-indexed. MM2 first moves the centre to the room's bound-sphere centre; so does OpenMM2 since round 3 (cruise-spawn: the file's centres were within 0.21 m of it; RespawnXYZ starts there). Racers and police route over them; pedestrians step over them (GetRoadToRight / GetRoadToLeft). Their waypoint pairs: 317 of London's and 328 of SF's are joined only by a shortcut. |
 
 ## Vehicle data and physical traffic (`ai/VehicleData`, `game/TrafficBodies`)
 
@@ -264,7 +264,7 @@ rather than on every row:
 | `aiRouteRacer::Finished` | The game's finish-line test for opponents | session area |
 | `aiPoliceOfficer::Push`, `Barricade` | Apprehend behaviours | never chosen in this build (ApprehendPerpetrator always sets Block) |
 | `aiGoalAvoidPlayer` road re-mapping via `aiPath::DetermineRoadPosInfo` | The avoiding car's road position from its room's component | inferred (lane projection; DetermineRoadPosInfo is now ported for the regain and could serve here) |
-| `aiIntersection::CreateRoadMap`'s centre | The intersections a shortcut road joins take their room's bound-sphere centre | open (the file's centre is kept; affects the Shortcut target and the pedestrians' intersections there) |
+| `aiIntersection::CreateRoadMap`'s centre | The intersections a shortcut road joins take their room's bound-sphere centre | fixed in round 3 (docs/parity/round3/cruise-spawn.md): `addShortcuts` moves them to `sdlRoomBoundSphere`'s centre |
 | Entity-less traffic movers (`aiGoalCollision`, `aiGoalRegainRail` declaring the rail instance, flags 8 and 10) | Ambient cars off their rails that the physics manager moves without a body | open: needs phys::World to take Instance movers without a Body (phys-core) |
 
 ## Outside this area

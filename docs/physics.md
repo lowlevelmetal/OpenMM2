@@ -374,8 +374,12 @@ wheel pivots, with vpcop's body, bound, damage, gyro and stuck tunes
   `mmPlayer::Update` sets the three from the player's tune by speed:
   f = clamp(speed, 5, 100) / 95 (the clamped speed over the range), value =
   Lo + (Hi - Lo) f, with DeltaIn 2.5 → 1.5, DeltaOut 3.5 → 2.5, Filter 2 →
-  1 (the constructor's values; the retail game has no `mmPlayer` tune).
-  Mouse and wheel steering (`mmPlayer::FilterSteering`) are not ported.
+  1 by default (the constructor's values). The player node is named after
+  the car and loads `tune/<car>.asnode` (`mmPlayer::FileIO`), which every
+  retail car but vpcentury and vpdune ships: vpbug's, for example, has
+  SpeedBaseHi 44.6, DeltaOut 2.573 → 0.8, DeltaIn 5 → 5 and Filter 1.2 →
+  1.2, and the same file sets the mouse, joystick and wheel curves of
+  `mmPlayer::FilterSteering` (`GameInput::setPlayerTune`).
 * After `mmGame`'s input, `mmPlayer::Update`: once the race is over the car
   brakes with the wheel turned full left; a wreck loses throttle, steering
   and brake; below 4 mph without throttle the handbrake holds the car.

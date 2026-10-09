@@ -5,6 +5,7 @@
 
 #include "TestData.h"
 #include "city/CityData.h"
+#include "city/RoomLocator.h"
 #include "game/Strings.h"
 #include "game/bangers/BangerData.h"
 #include "game/session/CopsAndRobbers.h"
@@ -104,7 +105,8 @@ TEST(GameFlowParity, FindGroundPosProbesSevenAndAHalfUpFifteenDown) {
 }
 
 // Where each mode puts the player (retail data): the race modes on the first
-// waypoint with its angle, settled on the ground; cruise 2 m above a random
+// waypoint with its angle, settled on the ground; cruise first at mmGame's
+// (0, 10, 0) (mmSingleRoam::InitGameObjects), then 2 m above a random
 // intersection, facing -Z, as it is (mmSingleRoam::InitOtherPlayers).
 TEST(GameFlowParity, PlayerPlacePerMode) {
     MM2_REQUIRE_GAME_DATA();
@@ -122,6 +124,11 @@ TEST(GameFlowParity, PlayerPlacePerMode) {
     auto cruise = flowSession(GameMode::Cruise, -1);
     ASSERT_TRUE(cruise);
     EXPECT_EQ(cruise->setup().playerDrop, StartDrop::None);
+    EXPECT_TRUE(cruise->setup().respawnStart);
+    EXPECT_EQ(cruise->setup().playerPlace.position, Vec3(0.0f, 10.0f, 0.0f));
+    const city::RoomLocator rooms(flowRetail()->london.psdl, "london");
+    const RoomLookup findRoom = [&](const Vec3& p) { return rooms.find(p); };
+    ASSERT_TRUE(cruise->placeRespawnStart(flowRetail()->london, 1, findRoom));
     EXPECT_EQ(cruise->setup().playerPlace.angle, 0.0f);
     bool atIntersection = false;
     for (const auto& x : flowRetail()->london.aiMap->intersections)

@@ -81,9 +81,12 @@ name. A mass of 0 or less becomes 1 in OpenMM2 (no retail file has one).
    xrefs place (lvlLevel::LoadInstances, the "xrefs" chunk read by
    lvlInstance::EndGeom): each xref's matrix times the record's, dropped
    when a row is zero or two rows have a dot product above 0.01, rows
-   outside 0.97..1.03 squared length normalised, kept as a full matrix with
-   the record's variant, in the room FindRoomId finds from the record's
-   room. An xref whose model has no banger data is not placed at all (MM2
+   outside 0.97..1.03 squared length normalised, then requested as Y
+   bangers (RequestBanger(name, 0), dgUnhitYBangerInstance: only the turn
+   about Y is kept, the CG offset is turned by the whole matrix) with the
+   record's variant, in the room FindRoomId finds from the record's room.
+   68 retail xrefs were exported Z up (awnings, the Chinatown sign, the
+   bridge and tower lights): MM2 stands them upright. An xref whose model has no banger data is not placed at all (MM2
    reports it as not exported): cl10's trees. 33 retail models have xrefs
    (tower and bridge lights, awnings, doors, windows): 65 bangers in London,
    368 in San Francisco. They are not drawn with their parent model.

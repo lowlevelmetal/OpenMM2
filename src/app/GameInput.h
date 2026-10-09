@@ -10,6 +10,7 @@
 // first joystick is read the way DirectInput showed it to mmJoystick.
 
 #include "app/Controls.h"
+#include "data/DatFile.h"
 #include "phys/vehicle/Controls.h"
 
 #include <bitset>
@@ -153,6 +154,16 @@ public:
     // mmPlayer::Update: the filters' parameters for the car's forward
     // speed (m/s), used from the next frame.
     void setSpeed(float speed);
+    // mmPlayer::Init loads the player node named after the car, which reads
+    // tune/<car>.asnode (mmPlayer::FileIO: the speed bases, the keyboard and
+    // game pad rates, and the mouse, joystick and wheel curves) over
+    // mmPlayer's constructor values. Every retail car but vpcentury and vpdune
+    // ships one.
+    void setPlayerTune(const data::DatNode& node);
+    // The keyboard and game pad rates, and the analog devices' curves.
+    const phys::SteeringFilter::Params& discreteSteering() const { return m_keyFilter.params; }
+    const phys::SteeringFilter::Params& padSteering() const { return m_padFilter.params; }
+    const AnalogSteering& analogSteering() const { return m_analog; }
     // mmInput::GetCamPan: the joystick's POV hat (joystick controller), else
     // the look buttons (OpenMM2 may add its own look inputs).
     float camPan(bool left = false, bool right = false, bool back = false, bool forward = false) const;

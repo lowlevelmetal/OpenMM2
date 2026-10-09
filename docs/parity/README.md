@@ -73,14 +73,14 @@ record's summary counts them:
 | vehicle | 141 | 76 | 42 | 6 | 2 | 1 | 14 |
 | ai-vehicles | 170 | 71 | 67 | 3 | 2 | 1 | 26 |
 | ai-ambient-city | 236 | 116 | 61 | 13 | 22 | 4 | 20 |
-| session | 205 | 89 | 86 | 6 | 4 | 1 | 19 |
+| session | 205 | 87 | 89 | 5 | 4 | 1 | 19 |
 | camera-props | 195 | 107 | 57 | 11 | 2 | 0 | 18 |
 | rendering-fx | 197 | 67 | 95 | 8 | 3 | 4 | 20 |
 | audio | 265 | 69 | 155 | 11 | 10 | 0 | 20 |
 | frontend-ui | 151 | 80 | 39 | 11 | 3 | 2 | 16 |
 | formats | 119 | 23 | 44 | 11 | 7 | 0 | 34 |
 | OpenMM2-only | 34 | 6 | 8 | 5 | 4 | 1 | 10 |
-| **Total** | **2078** | **880** | **786** | **107** | **70** | **15** | **220** |
+| **Total** | **2078** | **878** | **789** | **106** | **70** | **15** | **220** |
 
 The open rows and each record's "Missing" table list what still differs
 from MM2 and what porting it needs. The larger missing features are the
@@ -105,7 +105,7 @@ placement.
 | Subsystem | Record | Reachable | Ported (new) | Replaced | Not needed | Open |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | world objects | [world-objects.md](mm2/world-objects.md) | 297 | 187 (124) | 30 | 75 | 5 |
-| game flow and spawns | [game-flow.md](mm2/game-flow.md) | 608 | 382 (62) | 66 | 151 | 9 |
+| game flow and spawns | [game-flow.md](mm2/game-flow.md) | 608 | 383 (62) | 65 | 151 | 9 |
 | AI | [ai.md](mm2/ai.md) | 507 | 409 (17) | 6 | 92 | 0 |
 | vehicle and physics | [vehicle-physics.md](mm2/vehicle-physics.md) | 736 | 574 (0) | 13 | 146 | 3 |
 | props and effects | [props-fx.md](mm2/props-fx.md) | 169 | 126 (1) | 0 | 43 | 0 |

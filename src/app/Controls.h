@@ -234,7 +234,8 @@ struct Options {
 // default) a rate-limited approach. Its parameters are blended by speed in
 // mmPlayer::Update with f = clamp(speed, SpeedBaseLow, SpeedBaseHi) /
 // (SpeedBaseHi - SpeedBaseLow); the defaults are mmPlayer's constructor's
-// (the names are mmPlayer::FileIO's).
+// (the names are mmPlayer::FileIO's), which tune/<car>.asnode replaces
+// (GameInput::setPlayerTune).
 class AnalogSteering {
 public:
     struct DeviceParams {

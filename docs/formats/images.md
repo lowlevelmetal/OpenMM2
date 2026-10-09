@@ -40,7 +40,7 @@ rectangle.
 MM2 stores these images the other way round: its TGA, BMP and JPEG readers
 all put the picture's top row first (only `.tex` files are copied in file
 order). Its 2D drawing blits them upright, as OpenMM2's UI does. On a 3D mesh
-MM2's v = 0 is the top of a TGA picture, while OpenMM2 uploads row 0 (the
-bottom) as v = 0, so a TGA on a mesh is upside down relative to MM2 unless
-the renderer flips it. The only retail case is the HUD map dots, which are
-symmetric.
+MM2's v = 0 is the first stored row, so the top of a TGA, BMP or JPEG picture
+and the bottom of a `.tex` one: `game::TextureLibrary::readImage` flips
+TGA, BMP and JPEG images to the top row first before it uploads them, so
+meshes sample every format as MM2 does.

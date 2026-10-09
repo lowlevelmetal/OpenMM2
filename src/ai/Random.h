@@ -20,6 +20,7 @@ public:
     explicit Random(std::uint64_t seed = 1) : m_seed(static_cast<std::uint32_t>(seed)) {}
 
     void seed(std::uint32_t s) { m_seed = s; }
+    // The seed the next draw starts from (MM2's gRandSeed).
     std::uint32_t state() const { return m_seed; }
 
     // irand(): 0 .. 32767.
