@@ -467,7 +467,8 @@ void VehicleRenderer::drawTrailer(const VehiclePose& pose, asset::Lod lod) {
     // shaders as stored; at the high LOD only, TLIGHT while the tow car
     // brakes harder than 0.1 (an ordinary lit draw in the object pass, not
     // a glow: its black, fully transparent fxltglowred material leaves it
-    // invisible under the pass's alpha test) and TWHL0-3 at the trailer's
+    // invisible under the pass's alpha test, inferred from the material)
+    // and TWHL0-3 at the trailer's
     // wheel matrices. None of vehCarModel's other parts: no reflection,
     // decal, breakables, fenders, hubs or TWHL4/5, so TWHL0/1's medium and
     // low meshes (modelled away from their pivots) are never drawn.
