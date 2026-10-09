@@ -732,7 +732,7 @@ them, and dent them, through single player's code.
   | --- | --- |
   | header | u32 session time, u32 placement checksum, count |
   | slot, generation | 6 + 4 bits; without a state only these travel (still there, at rest) |
-  | what | 2 bits: a placed prop (15 bits), a piece (15 + 4 bits), a car part (1 + 6 + 5 + 4 bits: owner kind and id, part, paint job) |
+  | what | 2 bits; a prop 15, a piece 15 + 4, a car part 1 + 6 + 5 + 4 (owner, part, paint) |
   | moving | 1 bit |
   | frame at the CG | 3 × 22 bits over ±8 km (4 mm), smallest-three quaternion (32 bits) |
   | motion (moving only) | velocity 3 × 13 bits (±128 m/s), spin 3 × 12 bits (±64 rad/s) |

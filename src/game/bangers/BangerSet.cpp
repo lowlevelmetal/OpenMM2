@@ -231,7 +231,9 @@ public:
     }
     // OpenMM2: a network client's props take contacts from its own car and
     // its own props only.
-    bool acceptsContact(const phys::Instance& other) const override { return m_set.acceptsFrom(m_index, other); }
+    bool acceptsContact(const phys::Instance& other) const override {
+        return m_set.acceptsFrom(m_index, other);
+    }
     // OpenMM2: the active a car's hit would attach (World::replaySample).
     bool heldInertia(phys::InertialCS& out) const override { return m_set.heldInertia(m_index, out); }
 
