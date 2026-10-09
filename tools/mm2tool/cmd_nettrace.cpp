@@ -210,7 +210,7 @@ int cmdNettrace(std::span<char* const> args) {
         return 1;
     }
     constexpr int kOffRail = 0x10;
-    std::vector<double> rail, moving, offRail, police, near, local, shownMoving;
+    std::vector<double> rail, moving, offRail, police, near, local, shownMoving, afterHit;
     std::size_t present = 0, extra = 0, missing = 0, copFrames = 0, copTargets = 0;
     for (std::size_t i = 0; i < client.frames.size(); ++i) {
         const Frame& fr = client.frames[i];
@@ -230,6 +230,12 @@ int cmdNettrace(std::span<char* const> args) {
             const double e = std::hypot(c.x - h->x, c.z - h->z);
             if (c.mode == 3)
                 local.push_back(e);
+            // In the second after the client's car hit it.
+            if (std::ranges::any_of(client.hits, [&](const Event& hit) {
+                    return hit.id == c.key.first && hit.generation == c.key.second && fr.own >= hit.time &&
+                           fr.own < hit.time + 1000.0;
+                }))
+                afterHit.push_back(e);
             if (c.kind == 1) {
                 police.push_back(e);
                 ++copFrames;
@@ -269,6 +275,7 @@ int cmdNettrace(std::span<char* const> args) {
     row("police", police);
     row("any car within 40 m", near);
     row("knocked by the client", local);
+    row("hit by the client, 1 s", afterHit);
     std::println("error against the host at the time the client showed the car:");
     row("rail cars moving > 2 m/s", shownMoving);
     std::println("cars within {:.0f} m: on the host only {} car-frames ({:.2f}%), on the client only {} "

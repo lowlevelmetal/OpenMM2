@@ -12,13 +12,16 @@ void traceCar(std::FILE* f, const Mat34& m, float speed, std::uint8_t flags, std
                  flags, target == net::kAmbientNoTarget ? -1 : static_cast<int>(target));
 }
 
+// The generation as it travels (its low bits).
+int generationOf(int generation) { return generation % static_cast<int>(net::kAmbientGenerations); }
+
 } // namespace
 
 void traceHostCar(std::FILE* f, double time, const SharedCar& car) {
     if (!f)
         return;
-    std::fprintf(f, "TH %.3f %d %d %d", time, car.id, car.generation % static_cast<int>(net::kAmbientGenerations),
-                 static_cast<int>(car.kind));
+    const int kind = static_cast<int>(car.kind);
+    std::fprintf(f, "TH %.3f %d %d %d", time, car.id, generationOf(car.generation), kind);
     traceCar(f, car.transform, car.speed, car.flags, car.target);
     std::fprintf(f, " %.3f %.3f %.3f\n", car.velocity.x, car.velocity.y, car.velocity.z);
 }
@@ -43,8 +46,7 @@ void traceHit(std::FILE* f, double time, int id, int generation) {
 
 void traceKnock(std::FILE* f, double time, int id, int generation, int player) {
     if (f)
-        std::fprintf(f, "TK %.3f %d %d %d\n", time, id, generation % static_cast<int>(net::kAmbientGenerations),
-                     player);
+        std::fprintf(f, "TK %.3f %d %d %d\n", time, id, generationOf(generation), player);
 }
 
 void traceRefusedHit(std::FILE* f, double time, int from, int id, int generation, std::string_view why) {
