@@ -56,13 +56,14 @@ enum CarInputFlags : std::uint8_t {
     kInputAutoReverse = 1 << 3, // the AUTO REVERSE option (mmInput +0x18c)
     kInputHorn = 1 << 4,
     kInputHeadlights = 1 << 5,
+    kInputRegen = 1 << 6, // Cops and Robbers' damage regeneration (mmPlayer::EnableRegen)
 };
 enum CarInputEvents : std::uint8_t {
     kInputShiftUp = 1 << 0,
     kInputShiftDown = 1 << 1,
     kInputReverse = 1 << 2, // reverse, or first gear from reverse
 };
-inline constexpr std::uint8_t kCarInputFlagMask = 0x3f;
+inline constexpr std::uint8_t kCarInputFlagMask = 0x7f;
 inline constexpr std::uint8_t kCarInputEventMask = 0x07;
 inline constexpr std::uint16_t kMaxExtraMass = 2000; // kg
 
@@ -116,7 +117,7 @@ bool serialize(S& s, CarInputFrame& f, const CarInputFrame& previous) {
     s.u8(f.brake);
     s.u8(f.handbrake);
     std::uint32_t flags = f.flags & kCarInputFlagMask;
-    s.bits(flags, 6);
+    s.bits(flags, 7);
     f.flags = static_cast<std::uint8_t>(flags);
     std::uint32_t events = f.events & kCarInputEventMask;
     s.bits(events, 3);

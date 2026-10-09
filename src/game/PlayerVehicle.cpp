@@ -246,10 +246,12 @@ bool SimVehicle::settleOnGround(const phys::World& world, const Vec3& from) {
     return true;
 }
 
-void SimVehicle::respawnAt(const Mat34& at) {
+void SimVehicle::respawnAt(const Mat34& at) { respawnAt(at.m3, phys::resetRotationOf(at)); }
+
+void SimVehicle::respawnAt(const Vec3& position, float rotation) {
     const Vec3 savedPos = m_sim.resetPos();
     const float savedRotation = m_sim.resetRotation;
-    setResetPos(at);
+    setResetPos(position, rotation);
     reset();
     // SetResetPos(the saved reset position): CenterOfGravity is added again.
     m_sim.setResetPos(savedPos);
