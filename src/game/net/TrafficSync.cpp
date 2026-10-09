@@ -88,6 +88,8 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
     msg.setOrigin(viewer.position);
     const Vec3 origin = msg.originVec();
     std::unordered_set<int>& set = m_sets[viewer.player];
+    const std::uint32_t sequence = m_sequence[viewer.player]++;
+    const float near2 = m_options.fullRateRadius * m_options.fullRateRadius;
 
     struct Candidate {
         const SharedCar* car;
@@ -128,6 +130,13 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
         if (msg.entities.size() >= net::kMaxAmbientPerMessage)
             break;
         net::AmbientEntity e = toEntity(*c.car);
+        // A far car on its rail, already known to the client: its state
+        // every other message, the ids alternating between messages.
+        const bool full = c.chasing || c.distance2 < near2 || !set.contains(c.car->id) ||
+                          c.car->kind != net::AmbientKind::Traffic || (c.car->flags & net::kAmbientOffRail) != 0 ||
+                          ((sequence + static_cast<std::uint32_t>(c.car->id)) & 1u) == 0;
+        if (!full)
+            e.hasState = false;
         const std::size_t bits = net::ambientEntityBits(e);
         if (used + bits > budget)
             break;
@@ -176,6 +185,20 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
     for (const net::AmbientEntity& e : msg.entities) {
         ++m_stats.entities;
         const int id = e.id;
+        if (!e.hasState) {
+            // Still there: the same car keeps going on its last state (an
+            // unknown one waits for a message with its state).
+            if (id >= static_cast<int>(net::kMaxAmbientIds) || !listed.insert(id).second) {
+                ++m_stats.refused;
+                continue;
+            }
+            const auto it = m_entries.find(id);
+            if (newest && it != m_entries.end() && it->second.generation == e.generation)
+                it->second.goneAt.reset();
+            else if (it != m_entries.end())
+                listed.erase(id); // another car now: the old one has gone
+            continue;
+        }
         if (id >= static_cast<int>(net::kMaxAmbientIds) || e.model >= m_catalogSize ||
             e.paint > net::kMaxAmbientPaint || e.kind > net::AmbientKind::Last || !finite(e.position) ||
             !finite(e.velocity) || !finite(e.angularVelocity) || !std::isfinite(e.speed) ||

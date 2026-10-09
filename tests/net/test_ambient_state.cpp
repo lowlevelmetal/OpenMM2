@@ -63,6 +63,11 @@ AmbientStateMsg sampleMessage() {
     knocked.velocity = {3.0f, 4.0f, -5.0f};
     knocked.angularVelocity = {1.0f, 2.0f, 3.0f};
     m.entities.push_back(knocked);
+    AmbientEntity held;
+    held.id = 44;
+    held.generation = 2;
+    held.hasState = false;
+    m.entities.push_back(held);
     return m;
 }
 
@@ -80,7 +85,10 @@ TEST(AmbientState, RoundTripKeepsEveryField) {
     EXPECT_EQ(out.origin[0], -1501);
     EXPECT_EQ(out.origin[1], 35);
     EXPECT_EQ(out.origin[2], 558);
-    ASSERT_EQ(out.entities.size(), 3u);
+    ASSERT_EQ(out.entities.size(), 4u);
+    EXPECT_FALSE(out.entities[3].hasState);
+    EXPECT_EQ(out.entities[3].id, 44);
+    EXPECT_EQ(out.entities[3].generation, 2);
 
     const AmbientEntity& rail = out.entities[0];
     EXPECT_EQ(rail.id, 7);
@@ -175,6 +183,7 @@ TEST(AmbientState, MalformedMessagesAreRejected) {
         p.writeVarU32(1);
         p.writeBits(4, 9);       // id
         p.writeBits(0, 3);       // generation
+        p.writeBits(1, 1);       // with its state
         p.writeBits(1, 1);       // kind: police
         p.writeBits(0, 6);       // model
         p.writeBits(0, 4);       // paint
@@ -222,9 +231,12 @@ TEST(AmbientState, SizesFitTheBudget) {
     AmbientEntity offRail = rail;
     offRail.flags |= kAmbientOffRail;
     const AmbientEntity cop = copCar(2, {});
-    EXPECT_EQ(ambientEntityBits(rail), 118u);
-    EXPECT_EQ(ambientEntityBits(offRail), 176u);
-    EXPECT_EQ(ambientEntityBits(cop), 203u);
+    EXPECT_EQ(ambientEntityBits(rail), 119u);
+    EXPECT_EQ(ambientEntityBits(offRail), 177u);
+    EXPECT_EQ(ambientEntityBits(cop), 204u);
+    AmbientEntity held = rail;
+    held.hasState = false;
+    EXPECT_EQ(ambientEntityBits(held), 13u);
     // 64 rail cars stay under one MTU.
     AmbientStateMsg m;
     for (std::uint16_t i = 0; i < 64; ++i)
@@ -299,7 +311,7 @@ TEST(AmbientState, HostSendsEachClientItsOwnState) {
     ASSERT_EQ(gotA.size(), 1u);
     ASSERT_EQ(gotB.size(), 1u);
     EXPECT_EQ(gotA[0].time, 1u);
-    EXPECT_EQ(gotA[0].entities.size(), 3u);
+    EXPECT_EQ(gotA[0].entities.size(), 4u);
     EXPECT_EQ(gotB[0].time, 2u);
     EXPECT_EQ(gotB[0].entities.size(), 1u);
 

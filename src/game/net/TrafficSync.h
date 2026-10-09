@@ -88,6 +88,11 @@ public:
         // edge does not come and go with every message.
         float enterRadius = 200.0f;
         float leaveRadius = 230.0f;
+        // Beyond this a traffic car on its rail gets its state every other
+        // message (the others say only that it is still there); nearer
+        // ones, cars off their rails, the police and cars new to the
+        // client get it in every message.
+        float fullRateRadius = 80.0f;
         // The message's size, bytes (the header included): one unfragmented
         // UDP datagram.
         std::size_t maxBytes = 1100;
@@ -101,13 +106,17 @@ public:
     net::AmbientStateMsg build(const TrafficViewer& viewer, std::span<const SharedCar> cars,
                                std::uint32_t time, std::uint32_t lightSteps, std::uint16_t catalog);
     // A player left: its set is forgotten.
-    void forget(std::uint8_t player) { m_sets.erase(player); }
+    void forget(std::uint8_t player) {
+        m_sets.erase(player);
+        m_sequence.erase(player);
+    }
 
     const Options& options() const { return m_options; }
 
 private:
     Options m_options;
     std::map<std::uint8_t, std::unordered_set<int>> m_sets; // the ids each client got last
+    std::map<std::uint8_t, std::uint32_t> m_sequence;       // messages built for each client
 };
 
 class TrafficClient {

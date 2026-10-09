@@ -331,3 +331,60 @@ TEST(TrafficClient, NoiseNeverYieldsABadCar) {
     }
     EXPECT_GT(decodedCount, 0u);
 }
+
+TEST(TrafficHost, FarCarsComeWithTheirStateEveryOtherMessage) {
+    TrafficHost host;
+    std::vector<SharedCar> cars = {railCar(1, {10, 0, 0}), railCar(10, {150, 0, 0}), railCar(11, {0, 0, 150}),
+                                   cop(300, {0, 0, 160}, 2)};
+    auto states = [&](const net::AmbientStateMsg& m) {
+        std::vector<std::pair<int, bool>> v;
+        for (const auto& e : m.entities)
+            v.emplace_back(e.id, e.hasState);
+        std::ranges::sort(v);
+        return v;
+    };
+    const game::TrafficViewer viewer{1, {0, 0, 0}};
+    // New to the client: everything with its state.
+    auto m = wire(host.build(viewer, cars, 0, 0, 0));
+    EXPECT_EQ(states(m), (std::vector<std::pair<int, bool>>{{1, true}, {10, true}, {11, true}, {300, true}}));
+    // Then the far rail cars alternate; the near one and the police always.
+    m = wire(host.build(viewer, cars, 50, 0, 0));
+    EXPECT_EQ(states(m), (std::vector<std::pair<int, bool>>{{1, true}, {10, false}, {11, true}, {300, true}}));
+    m = wire(host.build(viewer, cars, 100, 0, 0));
+    EXPECT_EQ(states(m), (std::vector<std::pair<int, bool>>{{1, true}, {10, true}, {11, false}, {300, true}}));
+    // A far car knocked off its rail: every message.
+    cars[1].flags |= net::kAmbientOffRail;
+    m = wire(host.build(viewer, cars, 150, 0, 0));
+    EXPECT_EQ(states(m), (std::vector<std::pair<int, bool>>{{1, true}, {10, true}, {11, true}, {300, true}}));
+}
+
+TEST(TrafficClient, ACarWithoutItsStateIsStillThere) {
+    TrafficClient client(8, 0x1234);
+    client.receive(message(0, {railCar(10, {150, 0, 0}), railCar(11, {0, 0, 150})}));
+    auto held = [](std::uint32_t time, std::initializer_list<std::pair<int, int>> ids) {
+        net::AmbientStateMsg m;
+        m.time = time;
+        m.catalog = 0x1234;
+        for (const auto& [id, gen] : ids) {
+            net::AmbientEntity e;
+            e.id = static_cast<std::uint16_t>(id);
+            e.generation = static_cast<std::uint8_t>(gen);
+            e.hasState = false;
+            m.entities.push_back(e);
+        }
+        return wire(m);
+    };
+    // 10 and 11 only said to be there (and 12, unknown, waits for its state).
+    client.receive(held(50, {{10, 0}, {11, 0}, {12, 0}}));
+    client.update(50.0);
+    ASSERT_NE(find(client, 10), nullptr);
+    ASSERT_NE(find(client, 11), nullptr);
+    EXPECT_EQ(find(client, 12), nullptr);
+    EXPECT_TRUE(find(client, 10)->extrapolated);
+    EXPECT_NEAR(find(client, 10)->transform.m3.z, -0.5f, 0.05f); // on along its velocity
+    // 11's slot now holds another car (another generation): the old one has gone.
+    client.receive(held(100, {{10, 0}, {11, 1}}));
+    client.update(100.0);
+    EXPECT_NE(find(client, 10), nullptr);
+    EXPECT_EQ(find(client, 11), nullptr);
+}

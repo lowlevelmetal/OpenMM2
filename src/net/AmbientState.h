@@ -17,7 +17,10 @@
 // receiving car), which keeps them at 3 cm resolution in 44 bits. A car on
 // its rail moves along its heading (ai::Traffic: velocity = -m2 x speed),
 // so only its speed is sent; a car off its rail (knocked loose, a wreck)
-// and every police car carry their full linear and angular velocity.
+// and every police car carry their full linear and angular velocity. A car
+// far from the client may come without its state (13 bits: it is still
+// there, the same car); the host sends those cars' state every other
+// message.
 
 #include "net/Protocol.h"
 
@@ -57,6 +60,9 @@ enum AmbientFlags : std::uint8_t {
 struct AmbientEntity {
     std::uint16_t id = 0;
     std::uint8_t generation = 0;
+    // False: only the id and generation travel (the car is still there; its
+    // state comes with a later message). The other fields are then unset.
+    bool hasState = true;
     AmbientKind kind = AmbientKind::Traffic;
     std::uint8_t model = 0; // index into the session's model catalog
     std::uint8_t paint = 0; // paint job
@@ -97,11 +103,14 @@ bool serializeAmbientEntity(S& s, AmbientEntity& e, const Vec3& origin) {
     std::int32_t id = e.id, generation = e.generation, model = e.model, paint = e.paint;
     s.ranged(id, 0, static_cast<std::int32_t>(kMaxAmbientIds) - 1);
     s.ranged(generation, 0, static_cast<std::int32_t>(kAmbientGenerations) - 1);
+    e.id = static_cast<std::uint16_t>(id);
+    e.generation = static_cast<std::uint8_t>(generation);
+    s.boolean(e.hasState);
+    if (!e.hasState)
+        return s.ok();
     s.enumeration(e.kind, AmbientKind::Last);
     s.ranged(model, 0, static_cast<std::int32_t>(kMaxAmbientModels) - 1);
     s.ranged(paint, 0, static_cast<std::int32_t>(kMaxAmbientPaint));
-    e.id = static_cast<std::uint16_t>(id);
-    e.generation = static_cast<std::uint8_t>(generation);
     e.model = static_cast<std::uint8_t>(model);
     e.paint = static_cast<std::uint8_t>(paint);
     Vec3 offset = e.position - origin;

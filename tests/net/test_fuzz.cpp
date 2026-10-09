@@ -127,6 +127,11 @@ std::vector<Bytes> corpus() {
     car.speed = 11.0f;
     car.flags = kAmbientBrake | kAmbientSignalRight;
     ambient.entities.push_back(car);
+    AmbientEntity held;
+    held.id = 40;
+    held.generation = 6;
+    held.hasState = false; // a far car, still there
+    ambient.entities.push_back(held);
     car.id = 13;
     car.flags = kAmbientOffRail | kAmbientWrecked;
     car.velocity = {3.0f, -1.0f, 2.0f};
@@ -245,6 +250,8 @@ void checkAmbient(const AmbientStateMsg& m) {
     for (const AmbientEntity& e : m.entities) {
         ASSERT_LT(e.id, kMaxAmbientIds);
         ASSERT_LT(e.generation, kAmbientGenerations);
+        if (!e.hasState)
+            continue;
         ASSERT_LE(e.kind, AmbientKind::Last);
         ASSERT_LT(e.model, kMaxAmbientModels);
         ASSERT_LE(e.paint, kMaxAmbientPaint);
