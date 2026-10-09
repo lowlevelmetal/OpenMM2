@@ -4754,8 +4754,30 @@ private:
             }
             if (rv.predicted) {
                 rv.input = it->input;
-                companions.push_back({rv.sim.get(), &rv.driver, &it->state, it->input});
+                companions.push_back(
+                    {rv.sim.get(), &rv.driver, &it->state, it->input, id < m_traceNet->localId()});
             }
+        }
+    }
+    // OpenMM2: every machine keeps the players' cars in the world's movers in
+    // player order (the host's first), so that two of them collide in the
+    // same order everywhere: World::step runs a mover's collisions with the
+    // city, then with the movers after it, then with the instances, and the
+    // order changes the outcome. A car that joins puts the ones after it
+    // behind it again.
+    void orderPlayerCars() {
+        if (!m_world || !m_traceNet)
+            return;
+        std::vector<std::pair<std::uint8_t, game::SimVehicle*>> cars;
+        if (m_player)
+            cars.emplace_back(m_traceNet->localId(), m_player.get());
+        for (const auto& [id, rv] : m_remotes)
+            if (rv.sim && m_world->contains(&rv.sim->sim().body))
+                cars.emplace_back(id, rv.sim.get());
+        std::ranges::sort(cars, {}, &std::pair<std::uint8_t, game::SimVehicle*>::first);
+        for (const auto& [id, car] : cars) {
+            car->removeFrom(*m_world);
+            car->addTo(*m_world);
         }
     }
     bool predictedBody(const phys::Body* b) const {
@@ -4827,6 +4849,7 @@ private:
             sim.body.kinematic = true;
             sim.body.resetCollider();
             rv.sim->addTo(*m_world);
+            orderPlayerCars();
         }
         rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                               rv.sim->model(), rv.color);
@@ -4886,6 +4909,7 @@ private:
                 game::NetCarDriver::command(*rv.sim, *first);
                 rv.lastMoveSeq = first->seq;
                 rv.sim->addTo(*m_world);
+                orderPlayerCars();
                 rv.placed = true;
                 log::info("race: player {}'s car starts at ({:.1f}, {:.1f}, {:.1f})", p.id, first->position.x,
                           first->position.y, first->position.z);

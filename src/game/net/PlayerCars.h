@@ -153,6 +153,11 @@ public:
         float positionTolerance = 0.003f;  // m
         float velocityTolerance = 0.03f;   // m/s
         float rotationTolerance = 0.0015f; // matrix entries
+        // Other players' cars run with this one (Companion) farther than
+        // this from it, and than their speeds close in the samples run
+        // again, run again without it (m; two cars' half lengths and a
+        // margin).
+        float companionReach = 8.0f;
     };
     CarPrediction() = default;
     explicit CarPrediction(const Options& o) : m_options(o) {}
@@ -192,6 +197,10 @@ public:
         NetCarDriver* driver = nullptr;
         const net::OwnCarState* state = nullptr;
         net::CarInputFrame input;
+        // It comes before the car in the world's movers (a lower player
+        // number: every machine keeps the players' cars in that order), and
+        // collides first when they run again, as on the host.
+        bool first = false;
     };
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
