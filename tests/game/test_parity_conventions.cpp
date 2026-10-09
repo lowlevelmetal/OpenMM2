@@ -5,6 +5,8 @@
 #include "TestData.h"
 #include "city/CityData.h"
 #include "game/Profile.h"
+#include "game/bangers/BangerData.h"
+#include "game/bangers/PropPlacement.h"
 #include "game/Strings.h"
 #include "game/session/RaceSetup.h"
 #include "game/session/Session.h"
@@ -105,4 +107,27 @@ TEST(ConventionsParity, RaceCopDensityIsTheTablesCount) {
     RaceConfig played = cfg;
     played.copDensity = 1.0f;
     EXPECT_FALSE(Progress::recordable(played, cfg));
+}
+
+// lvlLevel::LoadInstances requests a PKG xref's banger with
+// RequestBanger(name, 0), a dgUnhitYBangerInstance: San Francisco's
+// sp_awning_4_f is exported Z up, and MM2 keeps only its turn about Y.
+TEST(ConventionsParity, XrefBangersKeepOnlyTheirYTurn) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& v = *test::gameData();
+    auto sf = city::loadCity(v, "sf");
+    ASSERT_TRUE(sf);
+    const city::Instance* record = nullptr;
+    for (const auto& inst : sf->instances)
+        if (inst.name == "nw_b4awn_ff01_8_f")
+            record = &inst;
+    ASSERT_TRUE(record);
+    bangers::BangerDataLibrary lib(v);
+    const auto placed = bangers::placeXrefs(*record, bangers::pkgXrefs(v, "nw_b4awn_ff01_8_f"), lib);
+    ASSERT_FALSE(placed.empty());
+    for (const auto& p : placed) {
+        EXPECT_EQ(p.model, "sp_awning_4_f");
+        EXPECT_FALSE(p.fullMatrix);
+        EXPECT_NEAR(p.transform.m1.y, 0.0f, 1e-3f); // exported Z up
+    }
 }

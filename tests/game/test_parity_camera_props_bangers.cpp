@@ -301,7 +301,8 @@ TEST(ParityBangersRetail, PkgXrefsBecomeBangers) {
     ASSERT_EQ(placed.size(), 2u);
     for (std::size_t i = 0; i < placed.size(); ++i) {
         EXPECT_EQ(placed[i].model, "sp_light_red_f");
-        EXPECT_TRUE(placed[i].fullMatrix);
+        // RequestBanger(name, 0): Y rotation only (round 3, conventions).
+        EXPECT_FALSE(placed[i].fullMatrix);
         EXPECT_EQ(placed[i].room, 0);
         EXPECT_EQ(placed[i].roomHint, parliament->room);
         const Vec3 expect = parliament->transform.transform(xrefs[i].transform.m3);

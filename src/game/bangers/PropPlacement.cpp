@@ -655,7 +655,11 @@ std::vector<PlacedProp> placeXrefs(const city::Instance& record, const std::vect
             log::debug("bangers: x-ref {} of {} has no banger data", x.name, record.name);
             continue;
         }
-        PlacedProp p{str::lower(x.name), m, 0, PlacedProp::Source::Instance, true, record.flags & 0xFF};
+        // RequestBanger(name, 0): a dgUnhitYBangerInstance, which keeps only
+        // the turn about Y of the matrix (and its CG offset turned by the
+        // whole matrix, dgUnhitBangerInstance::Init). 68 retail xrefs are
+        // exported Z up (m2 pointing down); MM2 stands them upright.
+        PlacedProp p{str::lower(x.name), m, 0, PlacedProp::Source::Instance, false, record.flags & 0xFF};
         p.roomHint = record.room;
         out.push_back(std::move(p));
     }
