@@ -8,9 +8,11 @@ generator and sets it back to 1 at fixed points, so much of what a race
 shows at its start is the same every time in MM2; OpenMM2 had given each
 subsystem its own stream, so none of it matched.
 
-Summary: 38 consumers checked; verified 5, fixed 14, deviation 12, open 1,
+Summary: 41 consumers checked; verified 7, fixed 16, deviation 12, open 0,
 not needed 6. Commits: bf32be5 (the AI's one stream), abed91c (the
-set-up order). Tests: `tests/ai/test_parity_random_streams.cpp`,
+set-up order), e50754a and the merge after it (integration's cruise spawn,
+frames and order audits on the one stream). Tests:
+`tests/ai/test_parity_random_streams.cpp`,
 `tests/game/test_parity_random_streams.cpp`.
 
 ## MM2's generators
@@ -140,6 +142,7 @@ this reason).
 | `aiCableCar::aiCableCar` (`aiRailSet`), `aiCableCar::Init` | 1 + 1 frand per car | `CableCars::create` | fixed | The constructors' draws were missing; now taken first, after the pedestrians'. |
 | `aiSubway::Init` | frand | — | not needed | No subways in retail data (`[Subway]` commented out in both cities' .aimap); OpenMM2 has no aiSubway. |
 | `aiPoliceOfficer::Init` -> `vehCar::Init` | 312 per officer | `RaceScreen::loadEffects` (state), `spawnPolice` (flares) | fixed | Their draws decide nothing but their own siren flares (R1 follows). |
+| `aiTrafficLightSet::SetFourWay`, `aiTrafficLightInstance::Init` (the poles, now props: frames audit, `RaceScreen::addTrafficLightProps`) | none | `addTrafficLightProps` (`BangerSet::addOne`) | verified | Nothing in the light sets' set-up reaches irand or frand (asm call graph); only `aiTrafficLightInstance::DrawGlow` does, through `dgBangerInstance::DrawGlow`, as the glows are drawn (play time). Their place among aiMap::Init's steps does not move the stream. |
 | `aiGoalRandomDrive::aiGoalRandomDrive`'s exceed counter | (not random) | `Traffic::init` | verified | A static that MM2 never resets, but it cycles with period 5 and the pool is 300 cars, so each race starts it at 0 as OpenMM2 does. |
 | `aiVehicleInstance::aiVehicleInstance`'s `irand(int)` | stateless | `Traffic::init` (blink phase) | deviation | Already recorded: of the instance's address in MM2, of a stand-in address in OpenMM2. |
 
@@ -150,7 +153,9 @@ this reason).
 | `aiMap::Reset` `ResetRandomSeed` | seed 1 | `World::reset` | fixed | One seeding of the shared stream (Traffic and Pedestrians seeded their own streams separately, the pedestrians' to 7920). |
 | `aiMap::AdjustAmbients` (+ `ChooseNext*Link` per car) at R1/R2 | from 1 | `Traffic::populate` | verified | Same draws from 1 (ai-vehicles record). OpenMM2 populates on the first step after a reset with the player's room then, which is the room of the reset position MM2 uses; now explicitly before any update. |
 | `aiMap::AdjustPedestrians` -> `aiPedestrian::Reset(path, side)` | 4 frand per pedestrian placed | `Pedestrians::populate` | fixed | Now continues the stream the traffic's population left, before the traffic or pedestrians update. |
-| `mmGame::RespawnXYZ` (single player) | irand per attempt | `RaceSetup` `randomIntersectionStart` | open | Owned by the cruise-start work (not changed here). What it needs: the stream after R1's population round the player's reset position before the start is known, which `ai::World::reset` + `Traffic::populate` / `Pedestrians::populate` on `RaceScreen::m_random` now provide. |
+| `mmGame::RespawnXYZ` (single player) | irand per attempt | `RaceSetup` `respawnXYZ` / `cruiseStart`, `RaceScreen::placeRespawnStart` | fixed | The cruise-spawn work ([cruise-spawn](cruise-spawn.md)) ported the pick; merged here it draws from the shared stream itself: `ai::World::resetAndPopulate` (R1: seed 1, the traffic then the pedestrians placed at once round the car's InitGameObjects place, mmGame's (0, 10, 0)), the pick from `m_random` as R1 left it, then `ai::World::reset` (R2). Its first version replayed R1 on a stream of its own (`World::globalSeedAfterReset`, `Traffic` / `Pedestrians::replayResetPopulation`); that replay is gone. Starts: London 19, San Francisco 121 (see below). |
+| `mmGameManager::mmGameManager` -> `mmGameManager::Reset` -> `mmGame::Reset` -> `aiMap::Reset` (R2) at the start | seed 1, population round the start | `placeRespawnStart`'s `ai::World::reset`, the first step | fixed | The constructor's last call is `mmGameManager::Reset` (asm), whose `asNode::Reset` reaches the mode's Reset and `mmGame::Reset`; mmGame +0x276, set by Init, makes it call `aiMap::Reset`. The cruise-spawn record had the first `aiMap::Update` moving the traffic to the start's room from the stream as RespawnXYZ left it; MM2 resets first, so the start's traffic and pedestrians come from seed 1, as OpenMM2's now do. |
+| A restart: `mmReplayManager::Update` -> `mmReplayManager::Reset` (`ResetRandomSeed`), the tree's Reset -> `aiMap::Reset` | seed 1 twice, then the population | `RaceScreen::applyRestart` (the next frame's start, order audit) -> the Restart event -> `ai::World::reset` | verified | Once per restart; nothing draws on `m_random` before the next AI step populates round the start. |
 | `mmReplayManager` (`ResetRandomSeed`, save/restore) | — | — | not needed | OpenMM2 has no replays. |
 | Network players' `mmNetObject::Init` -> `vehCar::Init` | 312 each | — | not needed | `mmGameMulti::InitOtherPlayers` runs after R1 and R2 reseeds: no effect on anything shown; their flares come from OpenMM2's own flare stream. |
 
@@ -193,9 +198,34 @@ The values are pinned by `ParityRandomStreamsRetail.LondonCruiseSetUp`
 pedestrians' types and clothing variants; a restart placing them all
 again identically).
 
+## The cruise start on the shared stream
+
+The draws before R1 (the street props, the player's 312, the gizmos,
+aiMap::Init's racers, pool, pedestrians, cable cars and police) cannot reach
+the cruise start: `aiMap::Reset`'s first act is `ResetRandomSeed` (its first
+piece, before any list is reset), and `mmSingleRoam::InitOtherPlayers`
+(vtable +0x40) runs after it in `mmGame::Init`. Between them R1 draws only
+for `AdjustAmbients` and `AdjustPedestrians`, whose number of draws depends
+on the room, the pool sizes and the road network, not on the cars' types or
+the pedestrians' clothes that the earlier draws decide (`placeCar` uses a
+car's bumper for the distance only; `aiPedestrian::Reset(path, side)` always
+draws four). So the shared stream gives the cruise-spawn record's starts
+unchanged: London intersection 19 (-542.529, 6.934, -676.292), San
+Francisco 121 (40.306, 1.918, 153.295), with the cruise menu's densities
+(traffic 0.5, pedestrians 0.25). `ParityCruiseSpawn.ResetDrawsBeforeTheStart`
+(173 draws in London, 21 in San Francisco) and `LondonAndSanFranciscoStarts`
+pin them on `ai::World::resetAndPopulate`, and
+`ParityRandomStreamsRetail.CruiseStartIgnoresTheDrawsBeforeTheReset` gets
+them after the whole set-up on the shared stream (and the same stream state
+from a world whose stream began elsewhere); the game's own load (smoke runs
+of both cities, log line "race: start at intersection") picks the same.
+
+## For the README (coordinator)
+
+The results table's ai-ambient-city row needs fixed 63 and deviation 11
+(was 61 and 13): its `Random::Random` and `World::create` (seeds) rows moved
+from deviation to fixed with this work.
+
 ## Open
 
-- `mmGame::RespawnXYZ`'s cruise start (above): for the cruise-start work.
-  MM2 draws it from the stream after R1, whose population is round the
-  player's reset position before the start is known (the position
-  `mmSingleRoam::InitGameObjects` gives the car from mmGame +0x70).
+None.

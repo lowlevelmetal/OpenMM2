@@ -118,6 +118,11 @@ public:
     // the centre of gravity): every rule of the original tests those.
     void update(float dt, const PlayerState& player, std::span<const OpponentState> opponents = {},
                 std::span<const OpponentState> police = {});
+    // A frame with the game paused (asRoot's pause: the menu, the full-screen
+    // map): the rules, the clocks and the AI stand still, but mmGame::Update
+    // still runs its fall and water checks and mmHUD::Update still counts
+    // the message down.
+    void updatePaused(float dt, const PlayerState& player);
     // The whole race starts over (mmGame::Reset, e.g. the pause menu's
     // Restart); emits Restart.
     void restart();

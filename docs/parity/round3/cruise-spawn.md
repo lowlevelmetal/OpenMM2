@@ -74,6 +74,19 @@ each `irand` / `frand` on the global stream.
    seeded case `EnableGlobalSeed` and the counter becomes (counter + 1) %
    100.
 
+Since the merge with [random-streams](random-streams.md) the stream
+RespawnXYZ draws from is OpenMM2's one model of MM2's global seed
+(`RaceScreen::m_random`), which the race's set-up advances in mmGame::Init's
+order before step 3. That does not move the start: step 3 begins with
+`ResetRandomSeed` (`aiMap::Reset`'s first piece), and the number of draws
+`AdjustAmbients` and `AdjustPedestrians` make depends on the room, the pool
+sizes and the roads, not on the types or clothes the earlier draws chose.
+After step 6, `mmGameManager::mmGameManager` ends with
+`mmGameManager::Reset`, which reaches `mmGame::Reset` and so `aiMap::Reset`
+again (mmGame +0x276 is set): the seed goes back to 1 and the traffic and
+pedestrians are placed round the start (OpenMM2: `ai::World::reset`, then
+the first step).
+
 The draws in step 3 depend on the city and the densities: London's room at
 the origin is 65 (28 ambient roads, 13 pedestrian roads), San Francisco's
 265 (3 ambient roads, none for pedestrians); room 0's lists are empty in

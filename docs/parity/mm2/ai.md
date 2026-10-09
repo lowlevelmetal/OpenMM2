@@ -197,7 +197,7 @@ The light sets and their poles (first audit: ai-ambient-city).
 | --- | --- | --- | --- |
 | `aiTrafficLightSet::aiTrafficLightSet`, `Reset`, `SetFourWay`, `Update` | ported | `TrafficLights` | First audit. |
 | `aiTrafficLightSet::~aiTrafficLightSet`, `scalar_deleting_destructor` | not needed |  |  |
-| `aiTrafficLightInstance::Init`, `Draw`, `DrawGlow` | fixed | `World::create`, `AiRenderer::drawSignal`, `Signal::frame` | Init places the instance at the pole's base + R * CG (the model's dgBangerData CG) and Draw draws the CG-centred body at that frame; DrawGlow takes R * CG off again for the glow and WALK meshes, which are modelled from the base. OpenMM2 drew the body at the base, sinking the pole by its CG (3.9 m) under glows at the right height; the body, visibility, room and NoDraw now use the CG frame. |
+| `aiTrafficLightInstance::Init`, `Draw`, `DrawGlow` | fixed | `World::create`, `AiRenderer::drawSignal`, `Signal::frame` | Init places the instance at the pole's base + R * CG (the model's dgBangerData CG) and Draw draws the CG-centred body at that frame; DrawGlow takes R * CG off again for the glow and WALK meshes, which are modelled from the base. OpenMM2 drew the body at the base, sinking the pole by its CG (3.9 m) under glows at the right height; the body, visibility, room and NoDraw now use the CG frame. Round 3 (frames): the instance is a dgUnhitYBangerInstance, a collidable prop in its CG's room that cars knock over into its BREAKnn parts; it now lives in the BangerSet and AiRenderer draws it from the prop's matrix while it stands (docs/parity/round3/frames.md). |
 | `aiTrafficLightInstance::SizeOf` | not needed |  | Instance pool bookkeeping. |
 
 ## aiVehicleAmbient / aiVehicleSpline / aiVehicle / aiObstacle
@@ -273,7 +273,7 @@ The ambient car's level instance (drawn, collided; no body until hit).
 | --- | --- | --- | --- |
 | `aiVehicleInstance::aiVehicleInstance` | ported | `Traffic::Traffic`, `AiRenderer::carModel` | Geometry parts; the arbitrary number (+0x18) for the blink phase (now `AmbientCar::blinkPhase`, a hash of the car index); SetColor; InitBreakable. |
 | `SetColor` | ported | `Traffic::Traffic`, `AiRenderer::draw` | trunc(frand x (paint jobs - 1)). |
-| `Draw`, `DrawPart`, `DrawShadow` | ported | `AiRenderer::draw`, `VehicleRenderer` | Body, wheels by the rail's tyre rotation, shadow (rendering areas). |
+| `Draw`, `DrawPart`, `DrawShadow` | ported (fixed) | `AiRenderer::draw`, `VehicleRenderer`, `TrafficBodies::wheelsOf`, `trafficShadowMatrix` | Body, wheels by the rail's tyre rotation, shadow (rendering areas). Round 3 (frames): a car with an aiVehicleActive draws WHL0-5 at its vehWheelCheaps' drawing matrices, and its shadow on the ground (DrawPhysics); a rail car's shadow goes to the ground when it is upside down (docs/parity/round3/frames.md). |
 | `DrawGlow` | ported | `AiRenderer::draw`, `VehicleRenderer::drawGlows` | Fixed: TLIGHT while the car decelerates or stands (acceleration below 0 or speed 0; was a 0.5 threshold on both); new: SLIGHT0 / SLIGHT1 for the indicators (bits 1 and 2) while bit 3 of the car's number plus aiVehicleManager's clock (time x 16) is set. Headlight glows as before. |
 | `DrawReflected`, `DrawShadowMap` | not needed |  | Empty in build 3393. |
 | `GetBound`, `GetMatrix`, `GetPosition`, `GetEntity`, `AttachEntity`, `Detach` | ported | `TrafficBodies::RailCar` | First audit. |

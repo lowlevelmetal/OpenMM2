@@ -12,6 +12,7 @@
 #include "render/Device.h"
 #include "vfs/Vfs.h"
 
+#include <array>
 #include <functional>
 #include <map>
 #include <memory>
@@ -28,14 +29,36 @@ class AiRenderer {
 public:
     AiRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs);
 
-    // `physicalTransform` returns the transform of cars that the physics
-    // simulation has taken over (null for cars on their rails). `lights` is
+    // A traffic car the physics simulation has taken over, or has just let
+    // go of (TrafficBodies): its matrix (model origin) and, while it has a
+    // body (aiVehicleActive), its wheels' matrices.
+    struct PhysicalCar {
+        Mat34 transform;
+        bool active = false;
+        std::array<Mat34, 6> wheels{};
+        std::array<bool, 6> wheelValid{};
+    };
+    using PhysicalCarQuery = std::function<std::optional<PhysicalCar>(int carId)>;
+
+    // `physicalCar` answers for the cars that the physics simulation has
+    // taken over (nullopt for cars on their rails). `lights` is
     // mmGame::InitWeather's light flag (evening, night or fog: the cars'
     // headlights and tail lights); the signals switch to their night glows
     // from the evening on (aiTrafficLightInstance::DrawGlow: time of day > 1).
     // `detail`: the Object Detail thresholds (lvlInstance::IsVisible).
     void draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time, bool lights,
-              const ObjectDetail& detail, const std::function<const Mat34*(int)>& physicalTransform = {});
+              const ObjectDetail& detail, const PhysicalCarQuery& physicalCar = {});
+
+    // The ground under the cars for their shadows (aiVehicleInstance::
+    // DrawShadow's lvlInstance::DrawPhysics).
+    void setGroundProbe(VehicleRenderer::GroundProbe probe) { m_probe = std::move(probe); }
+
+    // The traffic lights' aiTrafficLightInstances as props (BangerSet):
+    // signal i's GetMatrix while it stands, nullopt once it broke loose
+    // (then neither its body nor its glows are drawn). Without one each
+    // signal stands at Signal::frame.
+    using SignalFrameQuery = std::function<std::optional<Mat34>(int signalIndex)>;
+    void setSignalFrames(SignalFrameQuery query) { m_signalFrame = std::move(query); }
 
     // The rooms the city listed for the view (CityRenderer::rooms()): cars,
     // pedestrians and signals are then drawn from the rooms MM2 keeps them
@@ -59,7 +82,7 @@ private:
     const asset::PedType* pedType(const std::string& name);
     void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
     void drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
-    void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows,
+    void drawSignal(const ai::Signal& signal, const Mat34& frame, const Camera& camera, bool nightGlows,
                     const RoomVisibility::Passes* passes);
     // lvlLevel::MoveToRoom's room of an object, found from its last one
     // (cityLevel::FindRoomId).
@@ -76,10 +99,22 @@ private:
     ObjectDetail m_detail;
     Stats m_stats;
     const RoomVisibility* m_rooms = nullptr;
+    VehicleRenderer::GroundProbe m_probe;
+    SignalFrameQuery m_signalFrame;
     // The rooms of the traffic cars (aiVehicleAmbient's update after its
     // spline, aiVehicleActive::Update), the pedestrians (aiPedestrian::Update)
     // and the signals (aiTrafficLightSet::SetFourWay), by id or index.
     std::unordered_map<int, int> m_carRooms, m_pedRooms, m_signalRooms;
 };
+
+// aiTrafficLightInstance::DrawGlow's matrix for the glow and WALK meshes,
+// which are modelled from the pole's base: the instance's GetMatrix
+// (`frame`, at the CG) less R * CG.
+Mat34 signalGlowFrame(const Mat34& frame, const Vec3& cg);
+
+// The direction pedAnimation::DrawSkeleton widens a pedestrian's stick
+// figure along, in world space, for a pedestrian placed at `ped` seen from
+// a camera placed at `camera`.
+Vec3 skeletonWidthAxis(const Mat34& ped, const Mat34& camera);
 
 } // namespace mm2::game

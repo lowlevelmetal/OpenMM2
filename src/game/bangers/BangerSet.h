@@ -25,6 +25,7 @@
 #include <array>
 #include <deque>
 #include <memory>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -60,6 +61,9 @@ public:
 
     // Adds props that have banger data (others are ignored and counted).
     void add(const std::vector<PlacedProp>& props);
+    // Adds one prop and returns its instance index (nullopt without banger
+    // data). Call setWorld (again) afterwards for a prop without a room.
+    std::optional<std::size_t> addOne(const PlacedProp& prop);
     // The physics world whose movers the actives become and whose level
     // places props without a room. Must outlive this set (or call
     // setWorld(nullptr) first).
@@ -109,6 +113,7 @@ public:
         Mat34 matrix;    // current frame at the CG (meshes are centred on it)
         State state = State::Unhit;
         bool everHit = false; // one of the ring of hit instances rather than a placed prop
+        bool ownerDrawn = false; // PlacedProp::ownerDrawn: not drawn here while it stands
         int active = -1; // index into the active pool
         int room = 0;
         int roomHint = 0; // with room 0: where FindRoomId starts (an xref's parent room)

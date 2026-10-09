@@ -1657,6 +1657,19 @@ void Session::update(float dt, const PlayerState& player, std::span<const Oppone
     tickMessage(dt);
 }
 
+void Session::updatePaused(float dt, const PlayerState& player) {
+    if (!m_started)
+        return;
+    // mmGame::Update skips UpdateGame and aiMap::Update while asRoot is
+    // paused, not the fall and water checks after them (the water timer runs
+    // on with datTimeManager::Seconds); mmHUD::Update, a node of the game,
+    // still counts the message down. The rules run them in every phase but
+    // the last.
+    if (m_phase != Phase::Done)
+        updateHazards(dt, player);
+    tickMessage(dt);
+}
+
 void Session::tickMessage(float dt) {
     // mmHUD::Update: the time counts down while it is not 0; below 0 both
     // lines are cleared.

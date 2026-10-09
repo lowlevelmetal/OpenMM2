@@ -18,6 +18,9 @@
 #include "game/bangers/PropPlacement.h"
 #include "game/world/CableCars.h"
 #include "game/world/Gizmos.h"
+#include "game/PlayerVehicle.h"
+#include "city/RoomLocator.h"
+#include "game/session/RaceSetup.h"
 #include "phys/World.h"
 
 #include <gtest/gtest.h>
@@ -53,7 +56,7 @@ struct RaceSetUp {
                   afterCableCars = 0;
     std::size_t parkedCars = 0;
 
-    bool load(const vfs::Vfs& v, const char* cityName) {
+    bool load(const vfs::Vfs& v, const char* cityName, float traffic = 1.0f, float peds = 1.0f) {
         city = city::loadCity(v, cityName);
         if (!city)
             return false;
@@ -81,6 +84,8 @@ struct RaceSetUp {
         // aiMap::Init: no racers in cruise; the ambient pool and the
         // pedestrians at full density, then the cable cars.
         ai::Settings settings;
+        settings.trafficDensity = traffic;
+        settings.pedestrianDensity = peds;
         settings.random = &random;
         ai = ai::World::create(*city, v, settings);
         if (!ai)
@@ -239,4 +244,48 @@ TEST(ParityRandomStreamsRetail, SanFranciscoCableCarsDrawAfterThePedestrians) {
     const int cableCars = static_cast<int>(s.cableCars->size());
     ASSERT_GT(cableCars, 0);
     EXPECT_EQ(s.afterCableCars, advanced(s.afterAi, 2 * cableCars));
+}
+
+// mmGame::RespawnXYZ draws the cruise start from the stream as the first
+// aiMap::Reset left it, and that reset starts with ResetRandomSeed: the
+// set-up's draws before it (props, the player's car, gizmos, aiMap::Init) do
+// not reach the start. With the cruise menu's densities (traffic 0.5,
+// pedestrians 0.25) and the car at mmGame's (0, 10, 0), the shared stream
+// gives the cruise-spawn record's starts, and the same stream state as a
+// world whose stream began anywhere else.
+TEST(ParityRandomStreamsRetail, CruiseStartIgnoresTheDrawsBeforeTheReset) {
+    MM2_REQUIRE_GAME_DATA();
+    const int saved = session::respawnCounter();
+    session::respawnCounter() = 0;
+    struct Expected {
+        const char* city;
+        int intersection;
+    };
+    for (const auto& [name, intersection] : {Expected{"london", 19}, Expected{"sf", 121}}) {
+        RaceSetUp s;
+        ASSERT_TRUE(s.load(*test::gameData(), name, 0.5f, 0.25f)) << name;
+        std::string error;
+        auto car = SimVehicle::loadPlayer(*test::gameData(), "vpbug", &error, true);
+        ASSERT_TRUE(car) << error;
+        car->setResetPos({0.0f, 10.0f, 0.0f}, 0.0f);
+        car->reset();
+        s.ai->resetAndPopulate(car->sim().resetPos());
+        const std::uint32_t seed = s.random.state();
+        // The same world on a stream that began elsewhere.
+        ai::Random other(0xBADC0DEu);
+        ai::Settings settings;
+        settings.trafficDensity = 0.5f;
+        settings.pedestrianDensity = 0.25f;
+        settings.random = &other;
+        auto world = ai::World::create(*s.city, *test::gameData(), settings);
+        ASSERT_TRUE(world);
+        world->resetAndPopulate(car->sim().resetPos());
+        EXPECT_EQ(other.state(), seed) << name;
+        const city::RoomLocator rooms(s.city->psdl, s.city->info.mapName);
+        const auto pick = session::cruiseStart(
+            *s.city, [&](const Vec3& p) { return rooms.find(p); }, false, seed, 1);
+        ASSERT_TRUE(pick) << name;
+        EXPECT_EQ(pick->intersection, intersection) << name;
+    }
+    session::respawnCounter() = saved;
 }

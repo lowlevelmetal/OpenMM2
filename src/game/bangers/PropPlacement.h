@@ -30,6 +30,10 @@ struct PlacedProp {
     // With room 0: the room FindRoomId tries first (a PKG xref's parent
     // record's room, lvlLevel::LoadInstances); 0 for none.
     int roomHint = 0;
+    // Drawn by its owner while it stands, not by BangerSet::draw: a traffic
+    // light (aiTrafficLightInstance, drawn with its signal by AiRenderer).
+    // The parts it breaks into are ordinary hit bangers.
+    bool ownerDrawn = false;
 };
 
 // city/<map>/propdefs.csv: one street prop type (columns by name).

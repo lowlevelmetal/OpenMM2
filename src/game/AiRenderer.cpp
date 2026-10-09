@@ -13,6 +13,18 @@
 
 namespace mm2::game {
 
+Vec3 skeletonWidthAxis(const Mat34& ped, const Mat34& camera) {
+    // pedAnimation::DrawSkeleton offsets each quad's corners in the
+    // pedestrian's own space (the world matrix is the pedestrian's) by the
+    // first row of gfxRenderState's modelview matrix: the pedestrian's X axis
+    // in view space, the view matrix being the camera's inverse with z
+    // negated (sm_FullComposite). For a pedestrian and a camera turned only
+    // about Y that is the camera's right axis; a pitched camera tilts it.
+    const Vec3& x = ped.m0;
+    const Vec3 local{x.dot(camera.m0), x.dot(camera.m1), -x.dot(camera.m2)};
+    return ped.transformDir(local);
+}
+
 AiRenderer::AiRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs)
     : m_device(device), m_textures(textures), m_models(models), m_vfs(vfs) {}
 
@@ -110,9 +122,9 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
 void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera) {
     // pedAnimation::DrawSkeleton: for each bone with a width in the .rays
     // file, its position raised by the bone's offset (which its children then
-    // use), a quad to its parent's position across the camera's right axis
-    // (the start and end half widths), in the colour the variant's row
-    // picks from its shaders' diffuse colours; untextured, unlit, both sides.
+    // use), a quad to its parent's position across skeletonWidthAxis (the
+    // start and end half widths), in the colour the variant's row picks from
+    // its shaders' diffuse colours; untextured, unlit, both sides.
     if (!type.rays)
         return;
     const auto& rays = *type.rays;
@@ -121,7 +133,7 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
         ped.variant >= 0 && static_cast<std::size_t>(ped.variant) < rays.variants.size()
             ? &rays.variants[static_cast<std::size_t>(ped.variant)]
             : nullptr;
-    const Vec3 right = camera.transform.m0;
+    const Vec3 right = skeletonWidthAxis(ped.transform, camera.transform);
     std::vector<render::Vertex3D> vertices;
     std::vector<std::uint16_t> indices;
     for (std::size_t j = 0; j < n; ++j) {
@@ -173,14 +185,23 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
     m_device.draw(call);
 }
 
-void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows,
-                            const RoomVisibility::Passes* passes) {
+Mat34 signalGlowFrame(const Mat34& frame, const Vec3& cg) {
+    // aiTrafficLightInstance::DrawGlow: GetMatrix less R * CG (summed y, z,
+    // then x of the CG).
+    Mat34 m = frame;
+    m.m3 = {m.m3.x - ((frame.m1.x * cg.y + frame.m2.x * cg.z) + frame.m0.x * cg.x),
+            m.m3.y - ((frame.m1.y * cg.y + frame.m2.y * cg.z) + frame.m0.y * cg.x),
+            m.m3.z - ((frame.m1.z * cg.y + frame.m2.z * cg.z) + frame.m0.z * cg.x)};
+    return m;
+}
+
+void AiRenderer::drawSignal(const ai::Signal& signal, const Mat34& frame, const Camera& camera,
+                            bool nightGlows, const RoomVisibility::Passes* passes) {
     const GpuModel* model = m_models.get(signal.model);
     if (!model)
         return;
     // aiTrafficLightInstance::Draw: the body at GetMatrix, the instance's
     // frame at its CG (the body mesh is centred on it).
-    const Mat34 frame = signal.frame();
     // lvlInstance::IsVisible with the Object Detail thresholds, and
     // aiTrafficLightInstance::Draw's first shader set.
     const auto lod = objectLod(viewDepth(camera.transform, frame.m3), geomRadius(*model, ""), m_detail);
@@ -207,7 +228,7 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
     if (glow && walk) {
         // DrawGlow: GetMatrix less R * CG, the base the glow meshes are
         // modelled from.
-        const Mat44 world = Mat44::fromMat34(signal.transform);
+        const Mat44 world = Mat44::fromMat34(signalGlowFrame(frame, signal.cg));
         MeshDrawOptions opts;
         opts.lighting = false;
         opts.fog = false;
@@ -220,16 +241,15 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
 }
 
 void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustum& frustum, TimeOfDay time,
-                      bool lights, const ObjectDetail& detail,
-                      const std::function<const Mat34*(int)>& physicalTransform) {
+                      bool lights, const ObjectDetail& detail, const PhysicalCarQuery& physicalCar) {
     m_stats = {};
     m_detail = detail;
     const Vec3 eye = camera.position();
     const int blinkClock = world.blinkClock();
     const bool rooms = m_rooms && m_rooms->active();
     for (const auto& car : world.cars()) {
-        const Mat34* physical = physicalTransform ? physicalTransform(car.id) : nullptr;
-        const Mat34& transform = physical ? *physical : car.transform;
+        const std::optional<PhysicalCar> physical = physicalCar ? physicalCar(car.id) : std::nullopt;
+        const Mat34& transform = physical ? physical->transform : car.transform;
         // cityLevel::DrawRooms: from the car's room; the renderer's
         // lvlInstance::IsVisible ends the car itself at NoDraw.
         RoomVisibility::Passes passes;
@@ -255,12 +275,20 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
             r->setTraffic(true);
         }
         r->setDetail(detail);
+        r->setGroundProbe(m_probe);
         VehiclePose pose;
         pose.body = transform;
         // aiVehicleInstance::Draw: the rail's tyre rotation about each axle,
-        // no steering.
+        // no steering; with a body, the wheels where its vehWheelCheaps put
+        // them.
         for (std::size_t i = 0; i < 6; ++i)
             pose.wheelSpin[i] = -car.tireRotation; // rolling forward (-Z) spins about -X
+        if (physical && physical->active) {
+            pose.physical = true;
+            pose.hasWheelWorld = true;
+            pose.wheelWorld = physical->wheels;
+            pose.wheelValid = physical->wheelValid;
+        }
         pose.brakeLights = car.braking;
         pose.headlights = lights;
         // aiVehicleInstance::DrawGlow: the indicators the AI set (+0x1a),
@@ -289,15 +317,24 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     int index = 0;
     for (const auto& signal : world.signals()) {
         const int id = index++;
-        if (!frustum.intersectsSphere(signal.position(), 6.0f))
+        // The aiTrafficLightInstance's GetMatrix while it stands; once it
+        // broke loose it is neither drawn nor glows (its parts are props).
+        Mat34 frame = signal.frame();
+        if (m_signalFrame) {
+            const auto f = m_signalFrame(id);
+            if (!f)
+                continue;
+            frame = *f;
+        }
+        if (!frustum.intersectsSphere(frame.m3, 6.0f))
             continue;
         if (rooms) {
-            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, signal.position());
+            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, frame.m3);
             if (!passes.objects && !passes.shadowsAndGlows)
                 continue;
-            drawSignal(signal, camera, time >= TimeOfDay::Evening, &passes);
+            drawSignal(signal, frame, camera, time >= TimeOfDay::Evening, &passes);
         } else {
-            drawSignal(signal, camera, time >= TimeOfDay::Evening, nullptr);
+            drawSignal(signal, frame, camera, time >= TimeOfDay::Evening, nullptr);
         }
         ++m_stats.signals;
     }

@@ -229,7 +229,7 @@ park brake in vehCarSim, MetricFactor 2.2360249, WeatherFriction 0.8 / 0.75.
 | `SimVehicle::load` | `vehCar::Init`, `vehCarModel::InitBound`, `vehTrailer::Init` | deviation | tunes, bound and trailer verified. `tuneSuffix` is an OpenMM2 option no caller uses (MM2 never loads a variant); the trailer needs both tune files (MM2 builds it from the hitch alone, with defaults) |
 | `SimVehicle::addTo` / `removeFrom` | | openmm2 | |
 | `SimVehicle::reset` | `vehCar::Reset`, `vehTrailer::Reset` | inferred | also clears the pedal swap (see ArcadeControls::reset) |
-| `SimVehicle::trailerPose` | `vehTrailerInstance::Draw` | verified | tail lights above 0.1 brake; TWHL0-3 only |
+| `SimVehicle::trailerPose` | `vehTrailerInstance::Draw` | verified | tail lights above 0.1 brake; TWHL0-3 only (drawn by VehicleRenderer::drawTrailer since round 3, frames) |
 | `SimVehicle::hold` | `vehCar::SetDrivable(0, 1)`, `vehCar::PreUpdate` | fixed | brake on and neutral every frame, throttle (free revving), steering and handbrake the player's; OpenMM2 held the car in drive with throttle 0 and the handbrake. RaceScreen passes the pedals |
 | `SimVehicle::drive` | `vehCar::SetDrivable(1, ...)`, `mmGame::UpdateSteeringBrakes` | fixed | releasing the hold selects first gear (SetForward) |
 | `SimVehicle::reversing` | gear 0 (`vehCarModel::DrawGlow`'s reverse light) | verified | |

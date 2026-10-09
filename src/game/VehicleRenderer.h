@@ -28,6 +28,10 @@ struct VehiclePose {
     std::array<Mat34, 6> wheelWorld{};
     std::array<bool, 6> wheelValid{};
     bool hasWheelWorld = false;
+    // A traffic car the physics simulation has taken over (aiVehicleInstance
+    // with an aiVehicleActive): its wheels are wheelWorld and its shadow is
+    // laid on the ground first (aiVehicleInstance::Draw / DrawShadow).
+    bool physical = false;
     // mmGame::InitWeather's light flag (evening, night or fog): the tail
     // lights glow and the headlights shine.
     bool headlights = false;
@@ -53,7 +57,8 @@ public:
     using GroundProbe = std::function<bool(const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal)>;
 
     // `bodyPart`/`wheelPrefix` select the part names: "BODY"/"WHL" for cars,
-    // "TRAILER"/"TWHL" for semi trailers.
+    // "TRAILER"/"TWHL" for semi trailers, which are drawn like
+    // vehTrailerInstance (see drawTrailer).
     VehicleRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
                     const asset::VehicleModel& model, int paintjob, std::string bodyPart = "BODY",
                     std::string wheelPrefix = "WHL");
@@ -118,6 +123,10 @@ public:
     // Not for the traffic renderers AiRenderer shares between cars.
     void setRooms(const RoomVisibility* rooms) { m_rooms = rooms; }
 
+    // vehCarModel::DrawHeadlights' two ltLight directions as last drawn
+    // (world space).
+    const std::array<Vec3, 2>& headlightDirections() const { return m_beamDirection; }
+
     // The level of detail at that camera; nullopt beyond NoDraw.
     std::optional<asset::Lod> lodFor(const VehiclePose& pose, const Mat34& camera) const;
 
@@ -149,6 +158,7 @@ private:
                   bool live = true);
     void drawCar(const VehiclePose& pose, asset::Lod lod);
     void drawTraffic(const VehiclePose& pose, asset::Lod lod);
+    void drawTrailer(const VehiclePose& pose, asset::Lod lod);
     void drawReflection(const Mat34& body);
     // The world matrix wheel `i` (0-5) is drawn with, if the car has it.
     std::optional<Mat34> wheelMatrix(const VehiclePose& pose, std::size_t i) const;
@@ -176,12 +186,18 @@ private:
     std::optional<Vec3> m_fenderOffset; // fndr0 pivot relative to wheel 0
     fx::ParticleRenderer m_cards;
     std::optional<fx::LensFlare> m_flare; // vehSiren's ltLensFlare(20)
+    // The headlight ltLights' world-space directions (vehCarModel::
+    // DrawHeadlights; ltLight::Default points them down -Z) and the siren
+    // angle they were last turned to.
+    std::array<Vec3, 2> m_beamDirection{Vec3{0.0f, 0.0f, -1.0f}, Vec3{0.0f, 0.0f, -1.0f}};
+    float m_beamSirenAngle = 0.0f;
     std::unique_ptr<TexelDamage> m_texelDamage;
     std::set<std::string> m_detached;
     std::vector<std::size_t> m_ejectedBangers; // in ejection order
     std::function<void(std::size_t)> m_ejectedPartReset;
     bool m_wreckEjected = false;
     bool m_traffic = false;
+    bool m_trailer = false; // a vehTrailerInstance ("TRAILER" body)
     const RoomVisibility* m_rooms = nullptr;
     int m_room = 0; // lvlInstance's room (vehCar::Update)
 };
@@ -196,5 +212,12 @@ private:
 inline constexpr int kSirenFlares = 20;
 inline constexpr int kVehCarInitDraws = kSirenFlares * 6 + 64 * 3;
 std::uint32_t takeVehCarInitDraws(fx::Rand& random);
+
+// lvlInstance::DrawPhysics: a shadow's matrix on the ground under `body`
+// (nullopt without ground or on a steep slope).
+std::optional<Mat34> groundShadowMatrix(const Mat34& body, const VehicleRenderer::GroundProbe& probe);
+// aiVehicleInstance::DrawShadow's placement of a traffic car's shadow;
+// `physical`: the car has a body (aiVehicleActive).
+Mat34 trafficShadowMatrix(const Mat34& body, bool physical, const VehicleRenderer::GroundProbe& probe);
 
 } // namespace mm2::game
