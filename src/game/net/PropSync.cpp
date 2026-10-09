@@ -563,7 +563,17 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
         // left where it stopped until the host has pushed it too and it rests
         // there (or the prediction's time is up).
         const auto& mine = set.instances()[mirror];
-        if (mine.active >= 0) {
+        if (mine.active >= 0 && slot.local && now - slot.localSince >= m_options.handoverMs) {
+            // Still moving here after that long (creeping down a hill, which
+            // phSleep may never stop): back to the host's.
+            set.releaseMirror(index);
+            slot.local = false;
+            slot.blendFrom = mine.matrix;
+            slot.blendStart = now;
+            ++m_stats.handovers;
+        } else if (mine.active >= 0) {
+            if (!slot.local)
+                slot.localSince = now;
             slot.local = true;
             slot.holdUntil = now + m_options.predictTimeoutMs;
             slot.hostMoved = false;
@@ -606,7 +616,11 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
         if (inst.state == BangerSet::State::Gone || standIns.contains(i))
             continue;
         const LocalPiece& piece = m_pieces[k];
-        if (!piece.restedAt || now - piece.since < m_options.orphanMs)
+        // At rest that long after it was made; or, one that never rests
+        // (creeping), once a stand-in would have handed over.
+        const bool due = piece.restedAt ? now - piece.since >= m_options.orphanMs
+                                        : now - piece.since >= m_options.orphanMs + m_options.handoverMs;
+        if (!due)
             continue;
         if (inst.source >= 0 && m_predicted.contains(static_cast<std::size_t>(inst.source)) &&
             !m_predicted[static_cast<std::size_t>(inst.source)].confirmed)

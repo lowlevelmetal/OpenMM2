@@ -266,6 +266,9 @@ public:
                     const Vec3& velocity, const Vec3& spin);
     // Takes it out of the world (not drawn, not collidable, no body).
     void hideMirror(std::size_t slot);
+    // Ends this machine's simulation of it (its active detaches; it stays
+    // where it is).
+    void releaseMirror(std::size_t slot);
     std::size_t mirrorCount() const { return m_mirrors.size(); }
 
 private:
@@ -296,7 +299,7 @@ private:
     bool inWorld(const Active& a) const;
     void unhitImpact(std::size_t i, const phys::Instance* by);
     void syncActiveList();
-    bool acceptsFrom(const phys::Instance& other) const;
+    bool acceptsFrom(std::size_t i, const phys::Instance& other) const;
 
     const BangerDataLibrary& m_data;
     phys::World* m_world = nullptr;

@@ -208,6 +208,7 @@ private:
         std::deque<Generation> generations; // oldest first
         // Presentation.
         bool local = false;                 // the mirror was pushed by this machine's car
+        double localSince = 0.0;            // ... at that time
         double holdUntil = 0.0;             // ... and is left where it stopped until then
         bool hostMoved = false;             // ... or until the host's has moved and rests again
         std::optional<Mat34> blendFrom;     // hand-over from what was shown here

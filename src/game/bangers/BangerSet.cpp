@@ -231,7 +231,7 @@ public:
     }
     // OpenMM2: a network client's props take contacts from its own car and
     // its own props only.
-    bool acceptsContact(const phys::Instance& other) const override { return m_set.acceptsFrom(other); }
+    bool acceptsContact(const phys::Instance& other) const override { return m_set.acceptsFrom(m_index, other); }
     // OpenMM2: the active a car's hit would attach (World::replaySample).
     bool heldInertia(phys::InertialCS& out) const override { return m_set.heldInertia(m_index, out); }
 
@@ -1150,12 +1150,16 @@ void BangerSet::setReplica(std::function<bool(const phys::Instance&)> localTouch
     m_localToucher = std::move(localToucher);
 }
 
-bool BangerSet::acceptsFrom(const phys::Instance& other) const {
+bool BangerSet::acceptsFrom(std::size_t i, const phys::Instance& other) const {
     if (!m_replica)
         return true;
-    // The props this machine simulates (its predictions) go on hitting
-    // others as they would.
-    return isActiveBody(&other) || (m_localToucher && m_localToucher(other));
+    if (m_localToucher && m_localToucher(other))
+        return true;
+    // The props this machine simulates (its predictions) go on knocking
+    // the placed props as they would; the host's pieces move only for this
+    // machine's car (two of them lying together would otherwise keep each
+    // other moving here while the host's rest).
+    return !m_instances[i].mirror && isActiveBody(&other);
 }
 
 void BangerSet::breakPlaced(std::size_t i) {
@@ -1239,6 +1243,13 @@ void BangerSet::showMirror(std::size_t slot, const MirrorSpec& spec, const Mat34
     const int room = roomsTracked() ? findRoom(matrix.m3, inst.room) : inst.room;
     if (room != inst.room || (room > 0 && !prop.listed))
         moveToRoom(i, room);
+}
+
+void BangerSet::releaseMirror(std::size_t slot) {
+    if (slot >= m_mirrors.size() || m_mirrors[slot] == static_cast<std::size_t>(-1))
+        return;
+    if (Active* a = activeOf(m_mirrors[slot]))
+        detachMe(*a);
 }
 
 void BangerSet::hideMirror(std::size_t slot) {

@@ -654,6 +654,34 @@ Placement placeAsAMachine(const vfs::Vfs& v, const char* name, GameMode mode, in
 
 } // namespace
 
+// The host's pieces move on a client only for its own car: a piece the
+// client simulates (a prediction) passes through them, so two pieces lying
+// together cannot keep each other moving there while the host's rest.
+TEST(PropSync, OnlyTheClientsCarMovesTheHostsPieces) {
+    Race r;
+    Car car({0, 1, 3.0f}, {0, 0, -10});
+    r.host.world.add(&car.body);
+    r.run(1.0);
+    r.host.world.remove(&car.body);
+    r.run(4.0);
+    const auto shown = piecesOf(r.client.set, 0);
+    ASSERT_EQ(shown.size(), 1u);
+    std::size_t mirror = 0;
+    for (std::size_t i = 0; i < r.client.set.instances().size(); ++i)
+        if (r.client.set.instances()[i].mirror && r.client.set.instances()[i].source == 0)
+            mirror = i;
+    ASSERT_GT(mirror, 0u);
+    // A piece of the client's own dropped onto it.
+    const auto* data = r.lib.find("light");
+    Mat34 above = Mat34::translation(shown.begin()->second + Vec3{0, 1.5f, 0});
+    r.client.set.ejectPart(*data, "light", "", 0, above, 0.0f, 1);
+    for (int i = 0; i < 90; ++i) {
+        r.frame();
+        ASSERT_LT(r.client.set.instances()[mirror].active, 0) << i;
+    }
+    expectSamePieces(r, 0, 0.01f);
+}
+
 // A client takes knocks from the host only: another player's events reach it
 // through the host's relay, and a forged one knocks nothing.
 TEST(PropSync, KnocksCountFromTheHostOnly) {
