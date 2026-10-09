@@ -283,6 +283,10 @@ public:
     // car when its RaceReady or SendGameSet arrives: mmGameMulti::
     // GameMessageCB 0x1f6, 0x1fa).
     std::vector<NetRemoteCar> remoteCars(double stateAgeMs = 0.0) const;
+    // The same `leadMs` ahead of the frame's session time (less
+    // `stateAgeMs`), extrapolated from the newest snapshots rather than
+    // shown a playout delay in the past (an experiment: OPENMM2_NET_OTHERS).
+    std::vector<NetRemoteCar> remoteCarsAhead(double stateAgeMs, double leadMs) const;
     // The session time update() last saw (ms).
     double frameTime() const { return m_frameTime; }
     // How far in the past a player's car is shown (ms; net::Session::playoutDelay).
@@ -343,6 +347,8 @@ public:
 private:
     struct Impl;
     void handleEvents();
+    // remoteCars (leadMs < 0: a playout delay in the past) and remoteCarsAhead.
+    std::vector<NetRemoteCar> sampleRemoteCars(double stateAgeMs, double leadMs) const;
     void addSystemLine(std::string text);
     void addChatLine(NetChatLine line);
     std::string playerName(std::uint8_t id) const;

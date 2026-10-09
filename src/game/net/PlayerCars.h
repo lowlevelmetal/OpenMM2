@@ -176,10 +176,13 @@ public:
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
     // there and runs the later samples again on their inputs (alone:
-    // phys::World::replaySample), calling `beforeLast` before the last one
-    // (the drawing keeps the car's pose before its last sample).
+    // phys::World::replaySample), calling `beforeEach` with each sample's
+    // number before it (the other players' cars put back where they stood
+    // when it first ran) and `beforeLast` before the last one (the drawing
+    // keeps the car's pose before its last sample).
     Correction acknowledge(SimVehicle& car, NetCarDriver& driver, phys::World& world, std::uint32_t ack,
-                           const net::OwnCarState& host, const std::function<void()>& beforeLast = {});
+                           const net::OwnCarState& host, const std::function<void()>& beforeLast = {},
+                           const std::function<void(std::uint32_t)>& beforeEach = {});
 
     // Statistics since the start.
     struct Stats {

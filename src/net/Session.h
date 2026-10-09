@@ -229,8 +229,11 @@ public:
     // (`sessionTimeMs` - the playout delay).
     SnapshotBuffer::Result sampleRemote(std::uint8_t playerId, VehicleSnapshot& out) const;
     SnapshotBuffer::Result sampleRemoteDelayed(std::uint8_t playerId, double sessionTimeMs, VehicleSnapshot& out) const;
-    // Remote vehicle state at exactly `sessionTime`.
+    // Remote vehicle state at exactly `sessionTime` (extrapolated at most
+    // `maxExtrapolationMs` past the newest snapshot; default the config's).
     SnapshotBuffer::Result sampleRemoteAt(std::uint8_t playerId, double sessionTime, VehicleSnapshot& out) const;
+    SnapshotBuffer::Result sampleRemoteAt(std::uint8_t playerId, double sessionTime, VehicleSnapshot& out,
+                                          double maxExtrapolationMs) const;
     // The playout delay (ms) a remote vehicle is shown with.
     double playoutDelay(std::uint8_t playerId) const;
     // Called with every remote vehicle snapshot taken in (player, snapshot,

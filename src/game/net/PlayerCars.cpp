@@ -359,7 +359,8 @@ std::optional<net::PlayerInputMsg> CarPrediction::message() const {
 CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriver& driver,
                                                      phys::World& world, std::uint32_t ack,
                                                      const net::OwnCarState& host,
-                                                     const std::function<void()>& beforeLast) {
+                                                     const std::function<void()>& beforeLast,
+                                                     const std::function<void(std::uint32_t)>& beforeEach) {
     Correction out;
     if (ack <= m_acked)
         return out; // an older or repeated state
@@ -407,6 +408,8 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
             for (const auto& c : e.commands)
                 NetCarDriver::command(car, c);
             driver.apply(car, e.input);
+            if (beforeEach)
+                beforeEach(e.seq);
             if (k + 1 == m_history.size() && beforeLast)
                 beforeLast();
             world.replaySample(std::span<phys::Body* const>(bodies, count), phys::kFixedSampleStep);

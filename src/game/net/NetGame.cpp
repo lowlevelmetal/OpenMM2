@@ -689,6 +689,14 @@ void NetGame::submitLocalState(const Mat34& transform, const Vec3& velocity, con
 }
 
 std::vector<NetRemoteCar> NetGame::remoteCars(double stateAgeMs) const {
+    return sampleRemoteCars(stateAgeMs, -1.0);
+}
+
+std::vector<NetRemoteCar> NetGame::remoteCarsAhead(double stateAgeMs, double leadMs) const {
+    return sampleRemoteCars(stateAgeMs, std::max(0.0, leadMs));
+}
+
+std::vector<NetRemoteCar> NetGame::sampleRemoteCars(double stateAgeMs, double leadMs) const {
     std::vector<NetRemoteCar> out;
     if (!m_impl->session)
         return out;
@@ -706,8 +714,11 @@ std::vector<NetRemoteCar> NetGame::remoteCars(double stateAgeMs) const {
             continue;
         }
         net::VehicleSnapshot snap;
-        car.time = at - m_impl->session->playoutDelay(p.id);
-        const auto r = m_impl->session->sampleRemoteAt(p.id, car.time, snap);
+        const double delay = m_impl->session->playoutDelay(p.id);
+        car.time = leadMs < 0.0 ? at - delay : at + leadMs;
+        const auto r = leadMs < 0.0
+                           ? m_impl->session->sampleRemoteAt(p.id, car.time, snap)
+                           : m_impl->session->sampleRemoteAt(p.id, car.time, snap, delay + leadMs + 250.0);
         if (r != net::SnapshotBuffer::Result::Empty) {
             car.hasState = true;
             car.stale = r != net::SnapshotBuffer::Result::Interpolated;
