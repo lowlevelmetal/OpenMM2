@@ -248,6 +248,33 @@ TEST(NetGameLobby, CopsVsRobbersCarsAreTheSameOnEveryMachine) {
     EXPECT_EQ(l.host.playerCar(robber).color, 3);
 }
 
+// The chat keeps its last 64 lines. The lobby and the race used to remember
+// an index into them, which stopped moving once the list was full: after 64
+// lines in a session neither showed new lines any more. Serials keep going.
+TEST(NetGameLobby, ChatLinesAreFoundBySerialAfterTheListIsFull) {
+    NetGame host(options("Hosty"));
+    std::string err;
+    ASSERT_TRUE(host.host(cruise(), hostOptions(), {}, &err)) << err;
+    const std::uint64_t entered = host.chatSerial(); // e.g. the lobby opens
+    for (int i = 0; i < 70; ++i)
+        host.sendChat(std::format("line {}", i));
+    host.update();
+    EXPECT_EQ(host.chat().size(), 64u);
+    EXPECT_EQ(host.chatSerial(), entered + 70);
+    const std::uint64_t mark = host.chatSerial(); // e.g. a race starts
+    host.sendChat("after the mark");
+    host.update();
+    EXPECT_EQ(host.chat().size(), 64u);
+    std::vector<std::string> since;
+    for (const auto& c : host.chat())
+        if (c.serial >= mark)
+            since.push_back(c.text);
+    ASSERT_EQ(since.size(), 1u);
+    EXPECT_EQ(since[0], "after the mark");
+    EXPECT_EQ(host.chat().back().serial, mark);
+    EXPECT_EQ(host.chat().front().serial, mark - 63);
+}
+
 // The driver's transmission choice reaches the network race: MM2's session
 // data carries none, and mmGame::Init sets the car's from the player's own
 // state. It used to be automatic for everyone.

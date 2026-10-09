@@ -602,7 +602,7 @@ public:
         const auto& l = fe.layout;
         // NetArena::ResetGameChat: entering the lobby (after hosting,
         // joining or a race) starts an empty chat log.
-        m_chatStart = net.chat().size();
+        m_chatStart = net.chatSerial();
 
         menu.add<ChatEntry>(l.widget(id, 0, {274, 274, 355, 20}), [&fe](const std::string& text) {
             if (fe.ctx.netGame)
@@ -807,11 +807,14 @@ public:
         {
             const Vec4 clip{274, 300, 355, 66};
             f.overlay.setClip(&clip);
-            const auto& chat = net.chat();
-            const std::size_t from = std::min(chat.size(), std::max(m_chatStart, chat.size() > 3 ? chat.size() - 3 : 0));
+            std::vector<const game::NetChatLine*> lines;
+            for (const auto& c : net.chat())
+                if (c.serial >= m_chatStart)
+                    lines.push_back(&c);
+            const std::size_t from = lines.size() > 3 ? lines.size() - 3 : 0;
             float y = 300;
-            for (std::size_t i = from; i < chat.size(); ++i, y += step) {
-                const auto& c = chat[i];
+            for (std::size_t i = from; i < lines.size(); ++i, y += step) {
+                const auto& c = *lines[i];
                 const std::string text = c.system ? " " + c.text : std::format(" {}> {}", c.name, c.text);
                 f.text.draw(f.overlay, font, text, 274, y, ui::style::kValueText);
             }
@@ -939,7 +942,7 @@ private:
     ui::Picture* m_map = nullptr;
     std::string m_mapPath;
     std::string m_settingsKey;
-    std::size_t m_chatStart = 0;
+    std::uint64_t m_chatStart = 0; // NetGame::chatSerial() on entering
 };
 
 // --- Host settings (host_bk) -----------------------------------------------------------------

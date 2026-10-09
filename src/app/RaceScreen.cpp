@@ -104,8 +104,10 @@ public:
         m_result.config = config;
         // The network race this screen runs (FrontendScreen starts it when
         // the countdown arrives).
-        if (config.multiplayer && ctx.netGame)
+        if (config.multiplayer && ctx.netGame) {
             m_netRace = ctx.netGame->raceNumber();
+            m_chatSeen = ctx.netGame->chatSerial(); // the lobby's lines stay there
+        }
         // GetLoadScreenName: <city>_<mode><n>.jpg (cruise "roam" and Cops and
         // Robbers "multicop" without a number), else the generic one.
         const std::string prefix = modePrefix(config.mode);
@@ -1981,12 +1983,8 @@ private:
     void postIncomingChat(Context& ctx) {
         if (!multiplayer(ctx) || !m_hud)
             return;
-        const auto& lines = ctx.netGame->chat();
-        if (m_chatSeen > lines.size())
-            m_chatSeen = 0;
-        for (std::size_t i = m_chatSeen; i < lines.size(); ++i) {
-            const auto& line = lines[i];
-            if (line.system || line.text.starts_with("/wav"))
+        for (const auto& line : ctx.netGame->chat()) {
+            if (line.serial < m_chatSeen || line.system || line.text.starts_with("/wav"))
                 continue;
             const bool own = line.from == ctx.netGame->localId();
             m_hud->postChat(own ? line.text : std::format("{}: {}", line.name, line.text));
@@ -1995,7 +1993,7 @@ private:
             if (!own)
                 playGameSound(ctx, game::session::GameSound::NetAlert, 0.0f);
         }
-        m_chatSeen = lines.size();
+        m_chatSeen = ctx.netGame->chatSerial();
     }
 
     // mmMultiRoam / Race / Circuit / Blitz / CR::SystemMessage 0x2d: a
@@ -3917,7 +3915,7 @@ private:
     std::set<std::uint8_t> m_crPlayers;   // the players last frame (who left)
     bool m_regen = false;       // mmPlayer::EnableRegen
     float m_throttleCap = 1.0f; // mmGame +0x40c
-    std::size_t m_chatSeen = 0;              // chat lines already posted on the HUD
+    std::uint64_t m_chatSeen = 0;            // NetChatLine::serial of the next line to post
     bool m_textInput = false;                // SDL text input on for the chat line
     std::optional<game::Progress> m_progress; // the reward rules (loaded at the first finish)
     const vfs::Vfs* m_vfs = nullptr;

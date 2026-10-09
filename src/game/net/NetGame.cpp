@@ -292,7 +292,7 @@ void NetGame::handleEvents() {
                                               ev.reason == net::DisconnectReason::Kicked ? "has been ejected"
                                                                                          : "has left")); // string 69
                 } else if constexpr (std::is_same_v<T, net::ev::Chat>) {
-                    m_chat.push_back({ev.from, playerName(ev.from), ev.text, false});
+                    addChatLine({ev.from, playerName(ev.from), ev.text, false});
                 } else if constexpr (std::is_same_v<T, net::ev::CountdownStarted>) {
                     ++m_raceNumber;
                     log::info("netgame: race {} starts at session time {}", m_raceNumber, ev.startTime);
@@ -318,8 +318,6 @@ void NetGame::handleEvents() {
             },
             e);
     }
-    while (m_chat.size() > kMaxChatLines)
-        m_chat.pop_front();
 }
 
 NetGame::Phase NetGame::phase() const {
@@ -676,8 +674,11 @@ std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gam
 // --- Helpers -----------------------------------------------------------------------------
 
 // NetArena::AddGameChatLine.
-void NetGame::addSystemLine(std::string text) {
-    m_chat.push_back({net::kInvalidPlayerId, {}, std::move(text), true});
+void NetGame::addSystemLine(std::string text) { addChatLine({net::kInvalidPlayerId, {}, std::move(text), true}); }
+
+void NetGame::addChatLine(NetChatLine line) {
+    line.serial = m_chatSerial++;
+    m_chat.push_back(std::move(line));
     while (m_chat.size() > kMaxChatLines)
         m_chat.pop_front();
 }

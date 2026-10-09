@@ -73,6 +73,10 @@ struct NetChatLine {
     std::string name;
     std::string text;
     bool system = false; // "has joined", "has left", "You are now the Host" ...
+    // Counts every line this NetGame has had, from 0: a page remembers
+    // chatSerial() to show only the lines that came after it (chat() keeps
+    // the last lines only, so its indices move).
+    std::uint64_t serial = 0;
 };
 
 // Another player's car this frame, interpolated ~100 ms in the past.
@@ -180,6 +184,8 @@ public:
     bool hasPassword() const;
     int goldMass() const; // 0..kGoldMassChoices-1
     const std::deque<NetChatLine>& chat() const { return m_chat; }
+    // The serial the next chat line will get.
+    std::uint64_t chatSerial() const { return m_chatSerial; }
     std::uint16_t pingMs(std::uint8_t playerId) const;
 
     void setLocalCar(const NetCar& car);
@@ -244,6 +250,7 @@ private:
     struct Impl;
     void handleEvents();
     void addSystemLine(std::string text);
+    void addChatLine(NetChatLine line);
     std::string playerName(std::uint8_t id) const;
     void startPortMapping();
     void stopPortMapping();
@@ -252,6 +259,7 @@ private:
     NetCar m_car;
     std::unique_ptr<Impl> m_impl;
     std::deque<NetChatLine> m_chat;
+    std::uint64_t m_chatSerial = 0;
     std::deque<std::string> m_notices;
     std::vector<NetGameEvent> m_gameEvents;
     bool m_raceStartPending = false;
