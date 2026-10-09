@@ -24,6 +24,7 @@
 
 #include <array>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <unordered_map>
@@ -87,6 +88,10 @@ public:
         // props are then drawn from their rooms (cityLevel_drawObjects) and
         // their lamp glows by the room alone (cityLevel_drawLights).
         const RoomVisibility* rooms = nullptr;
+        // OpenMM2 presentation: where a prop an active simulates is drawn,
+        // from its index and current matrix (between the physics' last two
+        // samples, game::StepHistory); without it, at its matrix.
+        std::function<Mat34(std::size_t index, const Mat34& matrix)> drawnMatrix;
     };
     // Inside a scene pass after setFrameConstants().
     void draw(render::Device& device, ModelLibrary& models, TextureLibrary& textures, fx::ParticleRenderer& cards,

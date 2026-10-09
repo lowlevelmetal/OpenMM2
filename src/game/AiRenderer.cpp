@@ -60,7 +60,8 @@ const asset::PedType* AiRenderer::pedType(const std::string& name) {
     return it->second ? &*it->second : nullptr;
 }
 
-void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera) {
+void AiRenderer::drawPed(const ai::Pedestrian& ped, const Mat34& transform, const asset::PedType& type,
+                         const Camera& camera) {
     const asset::PedAnimation* anim = type.animation(ped.animFile);
     if (!anim)
         anim = type.animation(ped.state);
@@ -71,15 +72,15 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
     asset::posePed(type.skeleton, anim, ped.frame, m_bones);
     // aiPedestrianInstance::Draw: the posed model within 35 m of the camera,
     // the stick figure (pedAnimation::DrawSkeleton) beyond.
-    if (ped.transform.m3.dist2(camera.position()) >= 1225.0f) {
-        drawSkeleton(ped, type, camera);
+    if (transform.m3.dist2(camera.position()) >= 1225.0f) {
+        drawSkeleton(ped, transform, type, camera);
         return;
     }
     const auto& mesh = type.mesh;
     m_skinned.resize(mesh.vertices.size());
     for (std::size_t i = 0; i < mesh.vertices.size(); ++i) {
         const auto& v = mesh.vertices[i];
-        const Mat34 bone = v.bone < m_bones.size() ? m_bones[v.bone] * ped.transform : ped.transform;
+        const Mat34 bone = v.bone < m_bones.size() ? m_bones[v.bone] * transform : transform;
         const Vec3 p = bone.transform(v.position);
         const Vec3 n = bone.transformDir(v.normal).normalized();
         auto& out = m_skinned[i];
@@ -119,7 +120,8 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
     }
 }
 
-void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera) {
+void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const Mat34& transform, const asset::PedType& type,
+                              const Camera& camera) {
     // pedAnimation::DrawSkeleton: for each bone with a width in the .rays
     // file, its position raised by the bone's offset (which its children then
     // use), a quad to its parent's position across skeletonWidthAxis (the
@@ -133,7 +135,7 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
         ped.variant >= 0 && static_cast<std::size_t>(ped.variant) < rays.variants.size()
             ? &rays.variants[static_cast<std::size_t>(ped.variant)]
             : nullptr;
-    const Vec3 right = skeletonWidthAxis(ped.transform, camera.transform);
+    const Vec3 right = skeletonWidthAxis(transform, camera.transform);
     std::vector<render::Vertex3D> vertices;
     std::vector<std::uint16_t> indices;
     for (std::size_t j = 0; j < n; ++j) {
@@ -154,8 +156,8 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
                 argb = 0xFF000000u | byte(shader->diffuse.x) << 16 | byte(shader->diffuse.y) << 8 |
                        byte(shader->diffuse.z);
             }
-        const Vec3 a = ped.transform.transform(m_bones[j].m3);
-        const Vec3 b = ped.transform.transform(m_bones[parent].m3);
+        const Vec3 a = transform.transform(m_bones[j].m3);
+        const Vec3 b = transform.transform(m_bones[parent].m3);
         const Vec3 da = right * w0, db = right * w1;
         const auto base = static_cast<std::uint16_t>(vertices.size());
         for (const Vec3& p : {a - da, a + da, b - db, b + db}) {
@@ -247,9 +249,16 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     const Vec3 eye = camera.position();
     const int blinkClock = world.blinkClock();
     const bool rooms = m_rooms && m_rooms->active();
+    // The world's own cars on their rails between its last two steps (a
+    // shared-traffic client's cars come already placed).
+    const StepHistory* history = m_carsOverride ? nullptr : m_history;
     for (const auto& car : m_carsOverride ? *m_carsOverride : world.cars()) {
         const std::optional<PhysicalCar> physical = physicalCar ? physicalCar(car.id) : std::nullopt;
-        const Mat34& transform = physical ? physical->transform : car.transform;
+        const std::uint64_t key = drawnKey(Drawn::RailCar, static_cast<std::uint64_t>(car.id));
+        const auto generation = static_cast<std::uint32_t>(car.spawns);
+        const Mat34 transform = physical ? physical->transform
+                                : history ? history->transform(key, car.transform, generation)
+                                          : car.transform;
         // cityLevel::DrawRooms: from the car's room; the renderer's
         // lvlInstance::IsVisible ends the car itself at NoDraw.
         RoomVisibility::Passes passes;
@@ -281,8 +290,12 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
         // aiVehicleInstance::Draw: the rail's tyre rotation about each axle,
         // no steering; with a body, the wheels where its vehWheelCheaps put
         // them.
+        const float tireRotation =
+            history && !physical ? history->turn(key, car.transform, car.tireRotation, ai::kTireRotationWrap,
+                                                 generation)
+                                 : car.tireRotation;
         for (std::size_t i = 0; i < 6; ++i)
-            pose.wheelSpin[i] = -car.tireRotation; // rolling forward (-Z) spins about -X
+            pose.wheelSpin[i] = -tireRotation; // rolling forward (-Z) spins about -X
         if (physical && physical->active) {
             pose.physical = true;
             pose.hasWheelWorld = true;
@@ -304,13 +317,18 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     // Pedestrians are dynamic objects too: nothing beyond NoDraw (inferred:
     // MM2 draws them through lvlInstance::IsVisible like the cars).
     for (const auto& ped : world.peds()) {
-        if (rooms && !roomPasses(m_pedRooms, ped.id, ped.transform.m3).objects)
+        // Between the AI's last two steps; one put on a road in the last
+        // step (aiPedestrian::Reset) is drawn where it is.
+        const Mat34 transform =
+            m_history ? m_history->transform(drawnKey(Drawn::Pedestrian, static_cast<std::uint64_t>(ped.id)),
+                                             ped.transform, ped.placed ? 1u : 0u)
+                      : ped.transform;
+        if (rooms && !roomPasses(m_pedRooms, ped.id, transform.m3).objects)
             continue;
-        if (ped.transform.m3.dist2(eye) > sq(detail.noDraw) ||
-            !frustum.intersectsSphere(ped.transform.m3, 2.0f))
+        if (transform.m3.dist2(eye) > sq(detail.noDraw) || !frustum.intersectsSphere(transform.m3, 2.0f))
             continue;
         if (const asset::PedType* type = pedType(ped.typeName)) {
-            drawPed(ped, *type, camera);
+            drawPed(ped, transform, *type, camera);
             ++m_stats.peds;
         }
     }

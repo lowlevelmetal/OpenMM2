@@ -346,7 +346,7 @@ void TrafficClient::update(double renderTime) {
         c.fresh = !entry.shown;
         entry.shown = true;
         m_cars.push_back(c);
-        entry.buffer.prune(renderTime);
+        entry.buffer.prune(renderTime - kDrawBehindMs);
     }
 }
 
@@ -454,6 +454,16 @@ void trafficWheelMatrices(const Mat34& transform, const std::array<Vec3, 4>& off
         matrices[i] = Mat34::mul(Mat34::translation({p.x, (drawn - data.wheelRadius) + p.y, p.z}), transform);
         valid[i] = true;
     }
+}
+
+std::optional<Mat34> TrafficClient::transformAt(int id, double time) const {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end())
+        return std::nullopt;
+    net::VehicleSnapshot s;
+    if (it->second.buffer.sample(time, s, m_options.maxExtrapolationMs) == net::SnapshotBuffer::Result::Empty)
+        return std::nullopt;
+    return s.orientation.normalized().toMatrix(s.position);
 }
 
 std::optional<std::uint32_t> TrafficClient::lightSteps(double renderTime) const {

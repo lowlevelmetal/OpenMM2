@@ -116,10 +116,19 @@ void ParticleRenderer::flush(render::Device& device, const WorldTexture* texture
 }
 
 void ParticleRenderer::draw(render::Device& device, const Mat34& cameraBasis, const ParticleSystem& system,
-                            const WorldTexture* texture, const CardStyle& style) {
+                            const WorldTexture* texture, const CardStyle& style, float behind) {
     begin();
-    for (const auto& p : system.positions())
-        add(p, system.framesWide(), system.framesHigh(), cameraBasis);
+    const auto positions = system.positions();
+    const auto info = system.info();
+    for (std::size_t i = 0; i < positions.size(); ++i) {
+        if (behind > 0.0f) {
+            SparkPos p = positions[i];
+            p.position = p.position - info[i].velocity * behind;
+            add(p, system.framesWide(), system.framesHigh(), cameraBasis);
+        } else {
+            add(positions[i], system.framesWide(), system.framesHigh(), cameraBasis);
+        }
+    }
     flush(device, texture, style);
 }
 

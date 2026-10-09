@@ -4,6 +4,7 @@
 #include "asset/Ped.h"
 #include "asset/VehicleModel.h"
 #include "game/Camera.h"
+#include "game/Interpolation.h"
 #include "game/RaceConfig.h"
 #include "game/ModelLibrary.h"
 #include "game/RoomVisibility.h"
@@ -68,6 +69,10 @@ public:
     // OpenMM2 extra (a network client of the shared cruise traffic): draws
     // these cars instead of the world's traffic; null draws the world's.
     void setCars(const std::vector<ai::AmbientCar>* cars) { m_carsOverride = cars; }
+    // OpenMM2 presentation: the world's cars on their rails and its
+    // pedestrians are drawn between its last two steps (the history its step
+    // observer keeps, recordAiStep); null draws them where they are.
+    void setInterpolation(const StepHistory* history) { m_history = history; }
     // The paint jobs of a traffic model (its package's), 1 without any.
     int paintJobs(const std::string& model);
 
@@ -86,8 +91,11 @@ private:
     };
     CarModel* carModel(const std::string& name);
     const asset::PedType* pedType(const std::string& name);
-    void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
-    void drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
+    // `transform`: where the pedestrian is drawn.
+    void drawPed(const ai::Pedestrian& ped, const Mat34& transform, const asset::PedType& type,
+                 const Camera& camera);
+    void drawSkeleton(const ai::Pedestrian& ped, const Mat34& transform, const asset::PedType& type,
+                      const Camera& camera);
     void drawSignal(const ai::Signal& signal, const Mat34& frame, const Camera& camera, bool nightGlows,
                     const RoomVisibility::Passes* passes);
     // lvlLevel::MoveToRoom's room of an object, found from its last one
@@ -112,6 +120,7 @@ private:
     // and the signals (aiTrafficLightSet::SetFourWay), by id or index.
     std::unordered_map<int, int> m_carRooms, m_pedRooms, m_signalRooms;
     const std::vector<ai::AmbientCar>* m_carsOverride = nullptr;
+    const StepHistory* m_history = nullptr;
 };
 
 // aiTrafficLightInstance::DrawGlow's matrix for the glow and WALK meshes,

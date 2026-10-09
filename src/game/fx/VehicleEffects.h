@@ -44,6 +44,10 @@ struct VehicleFxContext {
     // tracks and no wheel particles, only vehCarDamage's smoke and the
     // replayed impacts' sparks and shards.
     bool wheels = true;
+    // OpenMM2: where such a car is drawn (its phInertialCS matrix, a
+    // physics step behind its kinematic body, game::StepHistory): its smoke
+    // comes from there. Without it, the car's own body.
+    std::optional<Mat34> body;
 };
 
 class VehicleEffects {

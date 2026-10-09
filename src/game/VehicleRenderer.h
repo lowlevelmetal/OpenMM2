@@ -28,6 +28,11 @@ struct VehiclePose {
     std::array<Mat34, 6> wheelWorld{};
     std::array<bool, 6> wheelValid{};
     bool hasWheelWorld = false;
+    // How far each wheelWorld wheel has turned about its axle in all
+    // (vehWheel's accumulated rotation), when known: what is drawn between
+    // two simulation steps spins the wheels by the difference (blendPose).
+    std::array<float, 6> wheelTurn{};
+    bool hasWheelTurn = false;
     // A traffic car the physics simulation has taken over (aiVehicleInstance
     // with an aiVehicleActive): its wheels are wheelWorld and its shadow is
     // laid on the ground first (aiVehicleInstance::Draw / DrawShadow).

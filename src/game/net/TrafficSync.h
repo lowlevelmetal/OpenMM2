@@ -178,6 +178,12 @@ public:
     const std::vector<Car>& cars() const { return m_cars; }
     // The host's traffic light steps at `renderTime`, once a message came.
     std::optional<std::uint32_t> lightSteps(double renderTime) const;
+    // OpenMM2 presentation: car `id` (one update() listed) as it was at
+    // `time`, up to kDrawBehindMs before update()'s render time: the drawing
+    // shows the shared cars a physics step further back, with everything
+    // else (game::StepHistory). Before the car's first state, that state.
+    std::optional<Mat34> transformAt(int id, double time) const;
+    static constexpr double kDrawBehindMs = 100.0;
     // The host's catalog differs from this client's.
     bool catalogMismatch() const { return m_mismatch; }
     std::size_t known() const { return m_entries.size(); }

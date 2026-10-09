@@ -182,7 +182,7 @@ void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxCont
 
     // vehCarDamage::Update: smoke above MedDamage, four steps to MaxDamage,
     // each with its own frame of fxpt8; one puff per update.
-    const Mat34& body = car.body.ics.matrix;
+    const Mat34& body = context.body ? *context.body : car.body.ics.matrix;
     const auto& d = car.damage.params;
     const float f = std::clamp((car.damage.currentDamage - d.medDamage) / (d.maxDamage - d.medDamage), 0.0f, 1.0f);
     const int level = static_cast<int>(std::ceil(static_cast<double>(f * 4.0f)));
@@ -219,10 +219,12 @@ void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxCont
 void VehicleEffects::draw(render::Device& device, TextureLibrary& textures, ParticleRenderer& cards,
                           SkidRenderer& skids, const Mat34& cameraBasis) {
     skids.draw(device, textures, {&m_tracks[0], &m_tracks[1], &m_tracks[2], &m_tracks[3]});
+    // OpenMM2: between their last two 60 Hz updates (FixedTicker::behind).
     if (m_wheelPtx.count())
-        cards.draw(device, cameraBasis, m_wheelPtx, textures.get(EffectLibrary::wheelSheet().texture));
+        cards.draw(device, cameraBasis, m_wheelPtx, textures.get(EffectLibrary::wheelSheet().texture), {},
+                   m_ticker.behind());
     if (m_smoke.count())
-        cards.draw(device, cameraBasis, m_smoke, textures.get("fxpt8"));
+        cards.draw(device, cameraBasis, m_smoke, textures.get("fxpt8"), {}, m_ticker.behind());
     m_sparks.draw(device);
     m_shards.draw(device, textures, m_setup.shardTextures);
 }

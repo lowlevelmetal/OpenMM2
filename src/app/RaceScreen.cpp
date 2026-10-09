@@ -1,5 +1,6 @@
 // A session in the city.
 #include "app/Controls.h"
+#include "app/DrawTrace.h"
 #include "app/ForceFeedback.h"
 #include "app/GameInput.h"
 #include "app/Screens.h"
@@ -48,6 +49,7 @@
 #include "game/CamPlayer.h"
 #include "game/CityRenderer.h"
 #include "game/CityLevel.h"
+#include "game/Interpolation.h"
 #include "game/PlayerVehicle.h"
 #include "game/VehicleRenderer.h"
 #include "game/world/CableCars.h"
@@ -192,6 +194,7 @@ public:
     void update(Context& ctx, double dt) override {
         m_time += dt;
         m_frameDt = static_cast<float>(dt);
+        m_frameSteps = 0;
         if (m_state == State::ShowLoading) {
             // BeginPhase: the loading picture with the bar at 10 %, drawn
             // once before the loading blocks.
@@ -365,7 +368,8 @@ public:
             if (!m_flyCamera && (in.keyDown(Key::LCtrl) || in.keyDown(Key::RCtrl)) && in.keyPressed(Key::B))
                 phys::Trailer::breakKeyPressed = true;
         }
-        if (m_world && m_world->advanceFixed(static_cast<float>(dt)) > 0)
+        m_frameSteps = m_world ? m_world->advanceFixed(static_cast<float>(dt)) : 0;
+        if (m_frameSteps > 0)
             phys::Trailer::breakKeyPressed = false;
         // The props and traffic cars the collisions set moving follow their
         // bodies; the ones that came to rest stop being simulated.
@@ -379,6 +383,7 @@ public:
             if (multiplayer(ctx))
                 sendLocalState(ctx);
         }
+        updateDrawnPoses(); // OpenMM2: between the last two simulation steps
         sendNetTraffic(ctx); // OpenMM2: the host's shared traffic
         if (m_flyCamera || !m_player)
             updateFlyCamera(ctx, static_cast<float>(dt));
@@ -408,17 +413,17 @@ public:
             if (what.starts_with("net:") && multiplayer(ctx)) {
                 const int id = str::parseInt(what.substr(4)).value_or(-1);
                 if (id == ctx.netGame->localId() && m_player)
-                    consider(m_pose.body);
+                    consider(m_drawPose.body);
                 for (const auto& rc : m_remoteCars)
                     if (rc.id == id && rc.hasState)
-                        consider(rc.transform);
+                        consider(netCarDrawn(rc.id).value_or(rc.transform));
             } else if (what.starts_with("police:")) {
                 const int id = str::parseInt(what.substr(7)).value_or(-1);
                 const auto i = static_cast<std::size_t>(id - kNetPoliceId);
                 if (id >= kNetPoliceId && i < m_cops.size())
-                    consider(m_cops[i].sim->sim().modelMatrix());
+                    consider(drawnPose(game::Drawn::Police, i, *m_cops[i].sim).body);
                 if (const auto it = m_netCops.find(id); it != m_netCops.end() && it->second.sim)
-                    consider(it->second.state.transform);
+                    consider(netCopDrawn(id).value_or(it->second.state.transform));
             } else if (what == "ped" && m_ai) {
                 for (const auto& p : m_ai->peds())
                     consider(p.transform);
@@ -458,12 +463,16 @@ public:
             clear.color = {0.0f, 0.0f, 0.0f, 1.0f};
         dev.beginScene(clear);
         std::vector<game::session::MapBlip> blips = hudBlips(ctx);
+        // OpenMM2: the map and the dashboard follow the car as drawn.
+        game::session::PlayerState shown = m_playerState;
+        if (m_player)
+            shown.transform = drawnIcs(m_drawPose.body, *m_player);
         // mmGameManager::Cull draws the full-screen map before the level.
         const bool hudShown = m_hud && m_session && m_player && !m_flyCamera;
         const bool mapShown = hudShown && (m_popup == Popup::None || m_popup == Popup::Chat);
         const bool fullMap = mapShown && m_cams.mapMode() == game::MapMode::FullScreen;
         if (fullMap)
-            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
+            m_hud->drawMap(*m_session, shown, blips, m_frameDt);
         if (letterbox) {
             dev.setViewport({static_cast<float>(band.x), static_cast<float>(band.y),
                              static_cast<float>(band.width), static_cast<float>(band.height)});
@@ -490,6 +499,9 @@ public:
         game::VehicleRenderer::setLensFlareTarget(&viewProj, proj.aspect, &flares);
         drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
         game::VehicleRenderer::setLensFlareTarget(nullptr, 1.0f, nullptr);
+        if (m_drawTrace && m_player)
+            m_drawTrace->frame(m_frameDt, m_frameSteps, m_drawnPhys.alpha(), m_camera.transform,
+                               m_drawPose.body, m_player->sim().speed(), nearestDrawnCar(ctx));
         if (!flares.empty()) {
             game::fx::drawLensFlares(dev, *m_textures, flares);
             dev.setFrameConstants(frame);
@@ -499,7 +511,7 @@ public:
             m_hud->setViewProjection(frame.view * frame.proj);
             m_hud->setDashFrame(frame, Mat44::perspective(proj.fovY, proj.aspect, 0.01f, m_camera.farPlane, true));
             // mmDashView turns the wheel by the recorded steering (mmPlayer +0x2264).
-            m_hud->drawWorld(*m_session, m_camera, m_playerState, m_steerApplied, blips);
+            m_hud->drawWorld(*m_session, m_camera, shown, m_steerApplied, blips);
         }
         if (letterbox) {
             dev.setScissor(nullptr);
@@ -508,7 +520,7 @@ public:
         }
         // mmPopup::ProcessEscape deactivates the map (the chat line does not).
         if (mapShown && !fullMap)
-            m_hud->drawMap(*m_session, m_playerState, blips, m_frameDt);
+            m_hud->drawMap(*m_session, shown, blips, m_frameDt);
         // mmGameManager::Update declares the mirror after the dashboard and
         // the HUD map.
         drawMirror(ctx, frame);
@@ -536,11 +548,12 @@ public:
     std::vector<game::session::MapBlip> hudBlips(Context& ctx) const {
         using game::session::MapBlip;
         std::vector<MapBlip> blips;
-        // mmHudMap and mmIcons follow the cars' phInertialCS matrices; the
-        // icons show the opponents' places (mmSingleRace / mmSingleCircuit
-        // ::UpdateScore).
+        // mmHudMap and mmIcons follow the cars' phInertialCS matrices (OpenMM2:
+        // as drawn); the icons show the opponents' places (mmSingleRace /
+        // mmSingleCircuit ::UpdateScore).
         for (std::size_t i = 0; i < m_opponents.size(); ++i) {
-            MapBlip b{m_opponents[i].sim->sim().body.ics.matrix, MapBlip::Kind::Opponent};
+            const auto& car = *m_opponents[i].sim;
+            MapBlip b{drawnIcs(drawnPose(game::Drawn::Opponent, i, car).body, car), MapBlip::Kind::Opponent};
             if (m_session)
                 b.place = m_session->opponentPlace(m_opponents[i].sessionIndex);
             blips.push_back(std::move(b));
@@ -565,7 +578,8 @@ public:
                     if (players[k].id != ctx.netGame->localId())
                         ++other;
                 }
-                MapBlip b{rc.transform, MapBlip::Kind::Remote};
+                const auto drawn = m_remoteDrawn.find(rc.id);
+                MapBlip b{drawn != m_remoteDrawn.end() ? drawn->second : rc.transform, MapBlip::Kind::Remote};
                 b.slot = slot;
                 b.name = rc.name;
                 b.iconColor = game::session::hud::netIconColor(slot);
@@ -585,14 +599,108 @@ public:
         }
         // mmHudMap::DrawCops: the police in pursuit (aiPoliceOfficer::InPersuit:
         // state 0x977a not 0, which also holds for a wrecked, out-of-action cop).
-        for (const auto& c : m_cops)
-            if (c.driver->mode() != ai::PoliceCar::Mode::Parked)
-                blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
+        for (std::size_t i = 0; i < m_cops.size(); ++i) {
+            const auto& car = *m_cops[i].sim;
+            if (m_cops[i].driver->mode() != ai::PoliceCar::Mode::Parked)
+                blips.push_back({drawnIcs(drawnPose(game::Drawn::Police, i, car).body, car),
+                                 game::session::MapBlip::Kind::Police});
+        }
         // OpenMM2's shared traffic: the host's police in pursuit, on a client.
         for (const auto& [id, c] : m_netCops)
             if (c.sim && (c.state.flags & net::kAmbientPursuit))
                 blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
         return blips;
+    }
+
+    // OPENMM2_DEBUG_DRAW_TRACE: the other car drawn nearest the player's.
+    std::optional<Mat34> nearestDrawnCar(Context& ctx) const {
+        std::optional<Mat34> best;
+        float bestDist = 1e30f;
+        auto consider = [&](const Mat34& m) {
+            const float d = m.m3.dist2(m_pose.body.m3);
+            if (d < bestDist) {
+                bestDist = d;
+                best = m;
+            }
+        };
+        for (std::size_t i = 0; i < m_opponents.size(); ++i)
+            consider(drawnPose(game::Drawn::Opponent, i, *m_opponents[i].sim).body);
+        for (std::size_t i = 0; i < m_cops.size(); ++i)
+            consider(drawnPose(game::Drawn::Police, i, *m_cops[i].sim).body);
+        if (multiplayer(ctx))
+            for (const auto& [id, transform] : m_remoteDrawn)
+                consider(transform);
+        return best;
+    }
+
+    // --- OpenMM2: drawing between simulation steps (game/Interpolation.h) ---
+    //
+    // The physics' step observer: the state of everything it moves, as it
+    // stands before the sample.
+    void recordStepPoses() {
+        using game::Drawn;
+        using game::drawnKey;
+        m_drawnPhys.beginStep();
+        if (m_player) {
+            const std::uint32_t resets = m_player->sim().resets;
+            m_drawnPhys.record(drawnKey(Drawn::Player, 0), m_player->pose(), resets);
+            if (m_player->trailer())
+                m_drawnPhys.record(drawnKey(Drawn::PlayerTrailer, 0), m_player->trailerPose(), resets);
+        }
+        for (std::size_t i = 0; i < m_opponents.size(); ++i)
+            m_drawnPhys.record(drawnKey(Drawn::Opponent, i), m_opponents[i].sim->pose(),
+                               m_opponents[i].sim->sim().resets);
+        for (std::size_t i = 0; i < m_cops.size(); ++i)
+            m_drawnPhys.record(drawnKey(Drawn::Police, i), m_cops[i].sim->pose(),
+                               m_cops[i].sim->sim().resets);
+        // A network car's body is placed once a frame (updateRemoteCars) and
+        // its wheels follow in the samples: they are kept with the body they
+        // were simulated on.
+        std::map<std::uint8_t, Mat34> stepBodies;
+        for (const auto& [id, rv] : m_remotes) {
+            if (!rv.sim)
+                continue;
+            game::VehiclePose pose = rv.sim->pose();
+            stepBodies[id] = pose.body;
+            if (const auto it = m_remoteStepBodies.find(id); it != m_remoteStepBodies.end())
+                pose.body = it->second;
+            const std::uint32_t resets = rv.sim->sim().resets;
+            m_drawnPhys.record(drawnKey(Drawn::RemoteCar, id), pose, resets);
+            if (rv.sim->trailer())
+                m_drawnPhys.record(drawnKey(Drawn::RemoteTrailer, id), rv.sim->trailerPose(), resets);
+        }
+        m_remoteStepBodies = std::move(stepBodies);
+        if (m_ai && m_trafficBodies)
+            game::recordTrafficBodies(m_drawnPhys, *m_ai, *m_trafficBodies);
+        if (m_bangers && m_world)
+            game::recordProps(m_drawnPhys, *m_bangers, *m_world);
+    }
+
+    // A car's phInertialCS matrix from its model matrix `model` (vehCarSim::
+    // SetWorldMatrix's offset taken off).
+    static Mat34 drawnIcs(const Mat34& model, const game::SimVehicle& car) {
+        Mat34 m = model;
+        m.m3 = model.m3 - model.transformDir(car.sim().centerOfGravity);
+        return m;
+    }
+
+    // A simulated car between the physics' last two samples.
+    game::VehiclePose drawnPose(game::Drawn kind, std::uint64_t id, const game::SimVehicle& car) const {
+        return m_drawnPhys.pose(game::drawnKey(kind, id), car.pose(), car.sim().resets);
+    }
+
+    // After the frame's steps: how far the simulations are into their next
+    // steps, and the player's car as drawn (the cameras follow it).
+    void updateDrawnPoses() {
+        if (m_world)
+            m_drawnPhys.setAlpha(m_world->interpolationAlpha());
+        if (m_ai)
+            m_drawnAi.setAlpha(m_ai->interpolationAlpha());
+        if (!m_player)
+            return;
+        m_drawPose = drawnPose(game::Drawn::Player, 0, *m_player);
+        m_drawTrailerPose = m_drawnPhys.pose(game::drawnKey(game::Drawn::PlayerTrailer, 0),
+                                             m_player->trailerPose(), m_player->sim().resets);
     }
 
     // The level as lvlLevel::Draw draws it for one view: the city, traffic,
@@ -612,7 +720,10 @@ public:
         const bool night = m_result.config.timeOfDay == game::TimeOfDay::Night;
         if (m_bangers)
             m_bangers->draw(dev, *m_models, *m_textures, m_cards, frustum, camera,
-                            {m_detail.objects, night, &m_cityRenderer->rooms()});
+                            {m_detail.objects, night, &m_cityRenderer->rooms(),
+                             [this](std::size_t i, const Mat34& m) {
+                                 return m_drawnPhys.transform(game::drawnKey(game::Drawn::Prop, i), m);
+                             }});
         // The gizmos: the managers' bridges and ferries, and the train cars
         // and sailboats from their rooms; the cable cars from theirs.
         if (m_gizmos)
@@ -623,20 +734,22 @@ public:
                               &m_cityRenderer->rooms());
         const bool lights = carLights();
         if (m_vehicle && playerBody) {
-            m_pose.headlights = lights;
-            m_vehicle->draw(m_pose, camera.transform);
+            m_drawPose.headlights = lights;
+            m_vehicle->draw(m_drawPose, camera.transform);
         }
         if (m_trailer && (m_flyCamera || m_cams.display() == game::CarDisplay::Body || !playerBody)) {
-            m_trailerPose.headlights = lights;
-            m_trailer->draw(m_trailerPose, camera.transform);
+            m_drawTrailerPose.headlights = lights;
+            m_trailer->draw(m_drawTrailerPose, camera.transform);
         }
-        for (const auto& o : m_opponents) {
-            game::VehiclePose pose = o.sim->pose();
+        for (std::size_t i = 0; i < m_opponents.size(); ++i) {
+            const auto& o = m_opponents[i];
+            game::VehiclePose pose = drawnPose(game::Drawn::Opponent, i, *o.sim);
             pose.headlights = lights;
             o.renderer->draw(pose, camera.transform);
         }
-        for (const auto& c : m_cops) {
-            game::VehiclePose pose = c.sim->pose();
+        for (std::size_t i = 0; i < m_cops.size(); ++i) {
+            const auto& c = m_cops[i];
+            game::VehiclePose pose = drawnPose(game::Drawn::Police, i, *c.sim);
             pose.headlights = lights;
             pose.siren = c.driver->siren();
             pose.sirenAngle = c.sirenAngle;
@@ -686,7 +799,8 @@ public:
     }
 
     // A traffic car TrafficBodies holds: where it is, and its wheels while
-    // it has a body (aiVehicleInstance::Draw).
+    // it has a body (aiVehicleInstance::Draw), between the physics' last two
+    // samples.
     std::optional<game::AiRenderer::PhysicalCar> physicalTrafficCar(int id) const {
         // OpenMM2: a shared-traffic client's knocked cars, as the host has them.
         if (m_trafficClient) {
@@ -698,10 +812,13 @@ public:
             return std::nullopt;
         game::AiRenderer::PhysicalCar car;
         car.transform = *m;
-        if (const auto wheels = m_trafficBodies->wheelsOf(id)) {
+        if (const auto pose = game::trafficBodyPose(*m_trafficBodies, id)) {
+            const auto key = game::drawnKey(game::Drawn::TrafficCar, static_cast<std::uint64_t>(id));
+            const game::VehiclePose drawn = m_drawnPhys.pose(key, *pose);
             car.active = true;
-            car.wheels = wheels->matrix;
-            car.wheelValid = wheels->valid;
+            car.transform = drawn.body;
+            car.wheels = drawn.wheelWorld;
+            car.wheelValid = drawn.wheelValid;
         }
         return car;
     }
@@ -720,7 +837,7 @@ public:
             return;
         const auto& params = m_mirror.params();
         game::Camera camera;
-        camera.transform = m_mirror.worldMatrix(m_pose.body);
+        camera.transform = m_mirror.worldMatrix(m_drawPose.body);
         camera.nearPlane = params.nearClip;
         camera.farPlane = params.farClip;
         render::FrameConstants frame = mainFrame;
@@ -962,6 +1079,7 @@ private:
         m_cityLevel = std::make_unique<game::CityLevel>(*m_city, ctx.game->vfs,
                                                         [this](std::string_view n) { return m_bangerData->has(n); });
         m_world = std::make_unique<phys::World>(m_cityLevel->takeMaterials());
+        m_world->setStepObserver([this] { recordStepPoses(); });
         m_world->setStatic(m_cityLevel->takeProbeSoup());
         m_world->setLevel(m_cityLevel.get());
 
@@ -1916,6 +2034,8 @@ private:
                 if (m_musicDirector)
                     m_musicDirector->restart();
                 m_musicFinished = m_musicResults = false;
+                m_drawnPhys.clear(); // OpenMM2: drawn where everything now is
+                m_drawnAi.clear();
                 m_cams.reset(cameraTarget());
                 // The race modes' Reset: mmPlayer::SetPreRaceCam again.
                 if (m_result.config.mode != game::GameMode::Cruise && !multiplayer(ctx))
@@ -3065,7 +3185,9 @@ private:
             return;
         }
         m_ai->setLightsDeferred(true); // updated after the racers and police
+        m_ai->setStepObserver([this] { game::recordAiStep(m_drawnAi, *m_ai); });
         m_aiRenderer = std::make_unique<game::AiRenderer>(ctx.device(), *m_textures, *m_models, ctx.game->vfs);
+        m_aiRenderer->setInterpolation(&m_drawnAi);
         if (m_cityRenderer)
             m_aiRenderer->setRooms(&m_cityRenderer->rooms()); // cityLevel::DrawRooms' room gates
         m_aiRenderer->setGroundProbe([this](const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal) {
@@ -3541,7 +3663,7 @@ private:
         } else {
             m_trafficClient.emplace(m_trafficCatalog.size(), m_trafficCatalog.checksum());
             if (m_aiRenderer)
-                m_aiRenderer->setCars(&m_netCars);
+                m_aiRenderer->setCars(&m_netCarsDrawn);
             if (m_cityLevel) {
                 m_trafficProxies = std::make_unique<game::TrafficProxies>(m_cityLevel.get());
                 m_cityLevel->addSource(m_trafficProxies.get());
@@ -3821,6 +3943,7 @@ private:
         m_netCars.clear();
         m_netPhysical.clear();
         std::unordered_set<int> seen;
+        std::vector<std::pair<std::size_t, std::array<Vec3, 4>>> wheeled; // knocked cars with their wheels
         for (const auto& c : m_trafficClient->cars()) {
             const std::string* model = m_trafficCatalog.name(c.model);
             if (c.kind != net::AmbientKind::Traffic || !model)
@@ -3835,19 +3958,30 @@ private:
             m_netCars.push_back(game::ambientCarOf(c, *model, netVehicleData(*model),
                                                    m_aiRenderer ? m_aiRenderer->paintJobs(*model) : 1, turn));
             seen.insert(c.id);
-            // A knocked car with a body on the host: drawn on the wheels its
-            // vehWheelCheaps put there (aiVehicleInstance::Draw).
-            if (const ai::VehicleData* data = m_netCars.back().data; c.wheels && data) {
-                game::AiRenderer::PhysicalCar p;
-                p.transform = c.transform;
-                p.active = true;
-                game::trafficWheelMatrices(c.transform, c.wheelOffsets, *data, p.wheels, p.wheelValid);
-                m_netPhysical[c.id] = p;
-            }
+            if (c.wheels && m_netCars.back().data)
+                wheeled.push_back({m_netCars.size() - 1, c.wheelOffsets});
         }
         std::erase_if(m_netTireRotation, [&](const auto& e) { return !seen.contains(e.first); });
         if (m_trafficProxies)
             m_trafficProxies->update(m_netCars);
+        // Drawn where the rest of the scene is, a physics sample further back
+        // (game::StepHistory).
+        m_netDrawTime = renderTime - static_cast<double>(phys::kFixedSampleStep) * 1000.0;
+        m_netCarsDrawn = m_netCars;
+        for (ai::AmbientCar& c : m_netCarsDrawn)
+            if (const auto m = m_trafficClient->transformAt(c.id, m_netDrawTime))
+                c.transform = *m;
+        // A knocked car with a body on the host: drawn on the wheels its
+        // vehWheelCheaps put there (aiVehicleInstance::Draw), carried by the
+        // car as drawn.
+        for (const auto& [index, offsets] : wheeled) {
+            const ai::AmbientCar& c = m_netCarsDrawn[index];
+            game::AiRenderer::PhysicalCar p;
+            p.transform = c.transform;
+            p.active = true;
+            game::trafficWheelMatrices(c.transform, offsets, *c.data, p.wheels, p.wheelValid);
+            m_netPhysical[c.id] = p;
+        }
         // The pedestrians' accidents: the components of the cars off their rails.
         m_netAccidentNodes.clear();
         m_netAccidentPaths.clear();
@@ -4012,8 +4146,8 @@ private:
             cop.state = c;
             // OpenMM2: its damage as the host shows it.
             updateNetCarDamage(ctx, game::DamageReplica::ambientKey(static_cast<std::uint16_t>(c.id)),
-                               *cop.renderer, cop.fx.get(), sim, cop.model, c.transform, c.velocity, c.damage,
-                               m_trafficRenderTime, cop.fresh, cop.impacts);
+                               *cop.renderer, cop.fx.get(), sim, cop.model, netCopDrawn(c.id).value_or(c.transform),
+                               c.velocity, c.damage, m_trafficRenderTime, cop.fresh, cop.impacts);
             // vehSiren::Update: the beams turn 2.5 pi a second while on.
             if (c.flags & net::kAmbientSiren)
                 cop.sirenAngle = std::fmod(cop.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
@@ -4035,6 +4169,8 @@ private:
                 continue;
             game::VehiclePose pose;
             pose.body = c.state.transform;
+            if (m_trafficClient)
+                pose.body = m_trafficClient->transformAt(id, m_netDrawTime).value_or(c.state.transform);
             // The wheels roll with the forward speed (as the network players').
             for (const auto& w : c.sim->model().wheels) {
                 const auto i = static_cast<std::size_t>(std::clamp(w.index, 0, 5));
@@ -4086,7 +4222,8 @@ private:
         controls.handbrake = m_lastPedals.handbrake;
         controls.gear = static_cast<std::int8_t>(sim.trans.getCurrentGear());
         std::uint8_t flags = 0;
-        if (m_pose.headlights)
+        // The simulated pose carries no lights (the drawn poses get them).
+        if (carLights())
             flags |= net::kVehicleHeadlights;
         if (m_pose.brakeLights)
             flags |= net::kVehicleBrakeLights;
@@ -4128,6 +4265,12 @@ private:
         // machine's cars take is stamped with it.
         const double lagMs = static_cast<double>(m_world->remainderAfter(dt)) * 1000.0;
         m_netStateTime = static_cast<std::uint32_t>(std::max(0.0, ctx.netGame->frameTime() - lagMs));
+        // Drawn where the rest of the scene is, a sample behind the frame
+        // (game::StepHistory): alpha x step = the remainder.
+        m_remoteDrawn.clear();
+        for (const auto& rc : ctx.netGame->remoteCars(static_cast<double>(phys::kFixedSampleStep) * 1000.0))
+            if (rc.hasState)
+                m_remoteDrawn[rc.id] = rc.transform;
         // A player who quit the race takes its car out of it.
         std::erase_if(m_remoteCars, [this](const game::NetRemoteCar& c) { return m_netLeft.contains(c.id); });
         const auto mode = m_result.config.mode;
@@ -4208,8 +4351,8 @@ private:
                     trailer->reset(); // respawned: hitched again behind it
             }
             updateNetCarDamage(ctx, game::DamageReplica::playerKey(rc.id), *rv.renderer, rv.fx.get(), sim,
-                               rv.sim->model().baseName, rc.transform, rc.velocity, rc.damage, rc.time,
-                               rv.fresh, rv.impacts);
+                               rv.sim->model().baseName, netCarDrawn(rc.id).value_or(rc.transform), rc.velocity,
+                               rc.damage, rc.time, rv.fresh, rv.impacts);
         }
         for (auto it = m_remotes.begin(); it != m_remotes.end();) {
             if (std::find(present.begin(), present.end(), it->first) == present.end()) {
@@ -4238,14 +4381,20 @@ private:
             // the ground under the placed body (suspension, roll, steering
             // from the snapshot's pedals), so they sit on the road instead of
             // hanging at their rest positions.
-            game::VehiclePose pose = rv.sim->pose();
-            pose.body = rc.transform;
+            // OpenMM2: the body at its sample a physics step back, the
+            // simulated wheels and trailer between their last two samples.
+            const auto drawn = m_remoteDrawn.find(rc.id);
+            game::VehiclePose pose =
+                game::placePose(drawnPose(game::Drawn::RemoteCar, rc.id, *rv.sim),
+                                drawn != m_remoteDrawn.end() ? drawn->second : rc.transform);
             pose.headlights = (rc.flags & net::kVehicleHeadlights) != 0;
             pose.brakeLights = (rc.flags & net::kVehicleBrakeLights) != 0;
             pose.reverseLights = rc.controls.gear < 0;
             rv.renderer->draw(pose, camera.transform);
             if (rv.trailer)
-                rv.trailer->draw(rv.sim->trailerPose(), camera.transform);
+                rv.trailer->draw(m_drawnPhys.pose(game::drawnKey(game::Drawn::RemoteTrailer, rc.id),
+                                                  rv.sim->trailerPose(), rv.sim->sim().resets),
+                                 camera.transform);
         }
     }
 
@@ -4304,7 +4453,13 @@ private:
             log::info("netdamage: own car damage {:.0f} of {:.0f} (med {:.0f}), level {:.3f}", d.currentDamage,
                       d.maxDamage(), d.medDamage(), d.damage);
         }
-        auto update = [&](const char* what, int id, game::fx::VehicleEffects& fx, const phys::CarSim& sim) {
+        // The smoke comes from the car as drawn, a step behind its body.
+        auto update = [&](const char* what, int id, game::fx::VehicleEffects& fx, const game::SimVehicle& car,
+                          const std::optional<Mat34>& drawn) {
+            context.body.reset();
+            if (drawn)
+                context.body = drawnIcs(*drawn, car);
+            const phys::CarSim& sim = car.sim();
             fx.update(dt, sim, context);
             if (log)
                 log::info("netdamage: {} {} damage {:.0f} of {:.0f} (med {:.0f}), smoke {}, sparks {}", what, id,
@@ -4313,10 +4468,20 @@ private:
         };
         for (auto& [id, rv] : m_remotes)
             if (rv.fx && rv.sim)
-                update("player", id, *rv.fx, rv.sim->sim());
+                update("player", id, *rv.fx, *rv.sim, netCarDrawn(id));
         for (auto& [id, cop] : m_netCops)
             if (cop.fx && cop.sim)
-                update("police", id, *cop.fx, cop.sim->sim());
+                update("police", id, *cop.fx, *cop.sim, netCopDrawn(id));
+    }
+
+    // Where a network player's car and a shared police car are drawn
+    // (model matrices), when known.
+    std::optional<Mat34> netCarDrawn(std::uint8_t id) const {
+        const auto it = m_remoteDrawn.find(id);
+        return it != m_remoteDrawn.end() ? std::optional(it->second) : std::nullopt;
+    }
+    std::optional<Mat34> netCopDrawn(int id) const {
+        return m_trafficClient ? m_trafficClient->transformAt(id, m_netDrawTime) : std::nullopt;
     }
     std::uint64_t m_netFxLoggedAt = 0;
 
@@ -4614,8 +4779,9 @@ private:
     game::CameraTarget cameraTarget() const {
         const auto& sim = m_player->sim();
         game::CameraTarget t;
-        // camCarCS tracks vehCarSim's world matrix (the model origin).
-        t.matrix = sim.modelMatrix();
+        // camCarCS tracks vehCarSim's world matrix (the model origin); OpenMM2
+        // follows it as drawn, between the last two physics samples.
+        t.matrix = drawnPose(game::Drawn::Player, 0, *m_player).body;
         t.angularMomentum = sim.body.ics.angularMomentum; // camTrackCS::UpdateCar's spin test
         t.speed = sim.speed(); // vehCarSim: |velocity . Z|
         t.steering = sim.steering;
@@ -4688,7 +4854,7 @@ private:
             const auto parts = str::split(orbit, ',');
             if (parts.size() == 3) {
                 auto f = [&](int i) { return static_cast<float>(str::parseDouble(parts[i]).value_or(0.0)); };
-                const Mat34 car = m_pose.body;
+                const Mat34 car = m_drawPose.body;
                 const Vec3 eye = car.m3 + Mat34::rotationY(f(2)).transformDir({0, f(1), f(0)});
                 m_camera.transform = game::Camera::lookAt(eye, car.m3 + Vec3{0, 1.0f, 0});
             }
@@ -4805,11 +4971,18 @@ private:
     game::Camera m_camera;
     std::unique_ptr<game::CityLevel> m_cityLevel;
     std::unique_ptr<phys::World> m_world;
+    int m_frameSteps = 0; // the physics samples this frame ran
+    std::unique_ptr<DrawTrace> m_drawTrace = DrawTrace::fromEnvironment(); // OPENMM2_DEBUG_DRAW_TRACE
     std::unique_ptr<game::SimVehicle> m_player;
     std::unique_ptr<game::VehicleRenderer> m_vehicle;
     std::unique_ptr<game::VehicleRenderer> m_trailer;
     game::VehiclePose m_pose;
     game::VehiclePose m_trailerPose;
+    // OpenMM2 presentation (game/Interpolation.h): the physics' and the AI's
+    // objects as their last steps began, and the player's car and trailer as
+    // drawn this frame.
+    game::StepHistory m_drawnPhys, m_drawnAi;
+    game::VehiclePose m_drawPose, m_drawTrailerPose;
     bool m_flyCamera = std::getenv("OPENMM2_DEBUG_FLY") != nullptr;
     bool m_showDebugOnly = std::getenv("OPENMM2_DEBUG_NOHUD") != nullptr;
     bool m_showDebug = std::getenv("OPENMM2_DEBUG_HUD") != nullptr;
@@ -4957,6 +5130,8 @@ private:
     game::NetDamage m_netDamage;
     std::uint32_t m_netStateTime = 0;
     std::vector<game::NetRemoteCar> m_remoteCars; // this frame's sample (updateRemoteCars)
+    std::map<std::uint8_t, Mat34> m_remoteDrawn;  // and where they are drawn
+    std::map<std::uint8_t, Mat34> m_remoteStepBodies; // their bodies in the last sample (recordStepPoses)
     std::vector<game::NetGameEvent> m_netEvents; // this frame's game events (takeNetEvents)
     std::set<std::uint8_t> m_netLeft;            // players who quit this race
     std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
@@ -4981,6 +5156,8 @@ private:
     };
     std::map<std::uint8_t, TrafficSent> m_trafficSent; // host: per client, since the last log
     std::vector<ai::AmbientCar> m_netCars;              // client: the received traffic this frame
+    std::vector<ai::AmbientCar> m_netCarsDrawn;         // client: and as drawn, at m_netDrawTime
+    double m_netDrawTime = 0.0;
     std::unordered_map<int, float> m_netTireRotation;   // client: their wheels' turn
     std::unique_ptr<game::TrafficProxies> m_trafficProxies; // client: their physics
     std::unordered_set<int> m_netAccidentNodes, m_netAccidentPaths; // client: off-rail cars' components
