@@ -23,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -132,6 +133,17 @@ public:
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 
+    // OpenMM2 (a network client running its car's samples again): the cars
+    // on their rails (no body) within `radius` of `at` and where they are;
+    // and cars on their rails put somewhere for a while (their rooms follow;
+    // the AI's list is not touched, the next beforeStep puts them back).
+    struct RailPose {
+        int id = -1;
+        Mat34 transform; // model origin
+    };
+    std::vector<RailPose> railPoses(const Vec3& at, float radius) const;
+    void placeRailCars(std::span<const RailPose> poses);
+
     // ?WeatherFriction@@3MA for the wheels' grip (mmGame::InitWeather: 0.8
     // in rain, 0.75 in rain at night, else 1).
     void setWeatherFriction(float friction) { m_weatherFriction = friction; }
@@ -151,6 +163,8 @@ private:
     RailCar& railCar(int id);
     const RailCar* findRailCar(int id) const;
     const BoundEntry& boundFor(const ai::VehicleData& data);
+    // The rail cars by room (instancesIn's list), after their rooms changed.
+    void listRooms();
     // aiVehicleManager::Attach / Detach.
     Active& attach(RailCar& car);
     void release(Active& active);

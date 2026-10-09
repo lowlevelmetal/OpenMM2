@@ -5090,6 +5090,16 @@ private:
         m_netCarLead = m_netCarLead ? *m_netCarLead + (lead - *m_netCarLead) * 0.1 : lead;
     }
 
+    // Client: the session time sample `seq` of this machine's car ended at
+    // (m_netSampleTimes keeps each frame's last).
+    std::optional<double> netSampleTime(std::uint32_t seq) const {
+        const auto e = std::ranges::find_if(m_netSampleTimes, [seq](const auto& x) { return x.first >= seq; });
+        if (e == m_netSampleTimes.end())
+            return std::nullopt;
+        const double step = static_cast<double>(phys::kFixedSampleStep) * 1000.0 / m_netDilation;
+        return e->second - static_cast<double>(e->first - seq) * step;
+    }
+
     // Client: the host's states of this machine's car since the last frame:
     // the newest corrects the prediction when they differ; how many of its
     // inputs the host had in hand sets how fast the samples run.
@@ -5144,6 +5154,18 @@ private:
         }
         std::vector<game::CarPrediction::Companion> companions;
         predictNearCars(newest->near, companions);
+        // The shared traffic's cars on their rails around this car: the
+        // samples run again meet each where it was at that sample's time on
+        // the host (TrafficClient::poseAt), as the frames placed them; after,
+        // where this frame put them. (OPENMM2_NET_TRAFFIC_REPLAY=frame keeps
+        // them where this frame put them, the comparison.)
+        static const bool railsHeld = [] {
+            const char* v = std::getenv("OPENMM2_NET_TRAFFIC_REPLAY");
+            return v && std::string_view(v) == "frame";
+        }();
+        std::vector<game::TrafficBodies::RailPose> railsNow;
+        if (m_trafficClient && m_trafficBodies && !railsHeld)
+            railsNow = m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
         // The bodies the samples run again may move, as they stand now.
         std::vector<BodyPose> now;
         for (const auto& h : m_bodyHistory)
@@ -5169,13 +5191,26 @@ private:
                         m_drawnPhys.record(game::drawnKey(game::Drawn::RemoteCar, id), rv.sim->pose(),
                                            rv.sim->sim().resets);
             },
-            [this](std::uint32_t seq) {
+            [&](std::uint32_t seq) {
                 for (const auto& h : m_bodyHistory)
                     if (h.seq == seq)
                         placeBodies(h.poses);
+                if (railsNow.empty())
+                    return;
+                const auto t = netSampleTime(seq);
+                if (!t)
+                    return;
+                const double at = *t + m_netCarLead.value_or(0.0);
+                std::vector<game::TrafficBodies::RailPose> then;
+                for (const auto& r : railsNow)
+                    if (const auto p = m_trafficClient->poseAt(r.id, at))
+                        then.push_back({r.id, p->transform});
+                m_trafficBodies->placeRailCars(then);
             },
             companions);
         placeBodies(now);
+        if (!railsNow.empty())
+            m_trafficBodies->placeRailCars(railsNow);
         m_netReplaying = false;
         // The other players' cars: what the host's states moved the ones
         // simulated here by, and a switch between simulating one and placing
