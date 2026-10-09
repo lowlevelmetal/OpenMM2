@@ -58,5 +58,7 @@ struct Address {
 
 // Monotonic milliseconds since the first call in this process.
 std::uint64_t monotonicMs();
+// The same clock with sub-millisecond precision (monotonicMs() is its floor).
+double monotonicMsPrecise();
 
 } // namespace mm2::net

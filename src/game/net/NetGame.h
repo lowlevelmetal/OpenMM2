@@ -63,11 +63,12 @@ struct NetChatLine {
     bool system = false; // "has joined", "has left", "You are now the Host" ...
 };
 
-// Another player's car this frame, interpolated ~100 ms in the past.
+// Another player's car this frame, interpolated a playout delay in the past.
 struct NetRemoteCar {
     std::uint8_t id = net::kInvalidPlayerId;
     std::string name;
     NetCar car;
+    double time = 0.0; // the session time (ms) it was sampled at
     Mat34 transform; // model space -> world (car model origin, Angel conventions)
     Vec3 velocity;
     Vec3 angularVelocity;
@@ -200,11 +201,26 @@ public:
     double secondsToStart() const;
     bool raceStarted() const;
 
-    // The local car's state; sent at the session's snapshot rate.
+    // The local car's state; sent at the session's snapshot rate. The state
+    // is the simulation's as it stood `stateAgeMs` before this frame's
+    // session time (the time update() saw): a fixed-step simulation is behind
+    // the frame by its unstepped remainder, and the snapshot must carry the
+    // time its position belongs to.
     void submitLocalState(const Mat34& transform, const Vec3& velocity, const Vec3& angularVelocity,
-                          const net::VehicleControls& controls, float damage, std::uint8_t flags);
-    // Every other player in the session, sampled for this frame.
-    std::vector<NetRemoteCar> remoteCars() const;
+                          const net::VehicleControls& controls, float damage, std::uint8_t flags,
+                          double stateAgeMs = 0.0);
+    // Every other player in the session, sampled at this frame's session
+    // time less `stateAgeMs` (so they move with a simulation that is behind
+    // the frame) and less each one's playout delay.
+    std::vector<NetRemoteCar> remoteCars(double stateAgeMs = 0.0) const;
+    // The session time update() last saw (ms).
+    double frameTime() const { return m_frameTime; }
+    // Development aid: with OPENMM2_NET_TRACE=<file> set, each session
+    // writes every remote snapshot it takes in and, through this call from
+    // the race once a frame, the local car and the remote cars as drawn (see
+    // docs/multiplayer.md, "Diagnosing replication").
+    void traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
+                    const std::vector<NetRemoteCar>& cars);
 
     // Game events (reliable, ordered). Race time is ms since the race start.
     void sendCheckpoint(int index, std::uint32_t raceTimeMs);
@@ -236,6 +252,7 @@ private:
     bool m_raceStarted = false;
     bool m_closed = false;
     net::DisconnectReason m_joinFailure = net::DisconnectReason::None;
+    double m_frameTime = 0.0;
 };
 
 } // namespace mm2::game

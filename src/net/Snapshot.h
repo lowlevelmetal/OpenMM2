@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <optional>
 
 namespace mm2::net {
 
@@ -70,10 +71,17 @@ bool serialize(S& s, VehicleSnapshot& v) {
 }
 
 // Time-ordered buffer of snapshots for one remote vehicle. The renderer
-// samples it at (session time - interpolation delay) so there is normally a
+// samples it at (session time - playout delay) so there is normally a
 // snapshot on each side of the sample time; when the newest snapshot is older
 // than the sample time the state is extrapolated for a bounded time and then
 // held.
+//
+// The buffer also measures how late its snapshots arrive, which gives the
+// playout delay the connection needs (requiredDelay()): to always have a
+// snapshot after the sample time, the delay must cover, for every new
+// snapshot, its lateness (arrival time minus its time stamp: the transit,
+// the sender's send interval and frame, the host's relay and any error of the
+// sender's clock) plus the gap since the previous snapshot.
 class SnapshotBuffer {
 public:
     enum class Result { Empty, Interpolated, Extrapolated, Held };
@@ -83,7 +91,14 @@ public:
     // Inserts in time order. Duplicates (same time) replace the old entry;
     // snapshots older than everything buffered once the buffer is full are dropped.
     void push(const VehicleSnapshot& s);
-    void clear() { m_snapshots.clear(); }
+    // The same, for a snapshot that arrived at session time `arrivalMs`
+    // (feeds requiredDelay()).
+    void push(const VehicleSnapshot& s, double arrivalMs);
+    void clear() {
+        m_snapshots.clear();
+        m_arrivals.clear();
+        m_newest.reset();
+    }
 
     // `time` is in session milliseconds (fractional allowed).
     Result sample(double time, VehicleSnapshot& out, double maxExtrapolationMs = 250.0) const;
@@ -94,8 +109,23 @@ public:
     // Drops snapshots that can no longer be used for interpolation at `time`.
     void prune(double time);
 
+    // The playout delay (ms) that would have let every new snapshot of the
+    // last kDelayWindowMs arrive before it was needed, or a negative value
+    // before any arrival was measured. A gap left by a lost snapshot counts
+    // as at most 1.5 times the usual gap, so a single loss is bridged by a
+    // short extrapolation rather than by a longer delay.
+    double requiredDelay() const;
+    static constexpr double kDelayWindowMs = 3000.0;
+
 private:
+    struct Arrival {
+        double at;       // session ms at which it arrived
+        double lateness; // arrival minus its time stamp
+        double gap;      // since the previous newest snapshot's time stamp
+    };
     std::deque<VehicleSnapshot> m_snapshots;
+    std::deque<Arrival> m_arrivals;
+    std::optional<std::uint32_t> m_newest; // time of the newest snapshot ever pushed
     std::size_t m_capacity;
 };
 

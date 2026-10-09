@@ -17,30 +17,51 @@ public:
 
     void reset() {
         m_samples.clear();
-        m_offset = 0;
-        m_rtt = 0;
+        m_offset = 0.0;
+        m_rtt = 0.0;
     }
 
     // All values in milliseconds: local send time of the request, the host's
     // session time in the reply, local receive time of the reply.
-    void addSample(std::uint64_t localSend, std::uint32_t hostTime, std::uint64_t localReceive);
+    void addSample(double localSend, double hostTime, double localReceive);
 
     bool synced() const { return !m_samples.empty(); }
     std::size_t sampleCount() const { return m_samples.size(); }
     // hostTime ~= localTime + offset()
-    std::int64_t offset() const { return m_offset; }
-    std::uint32_t rtt() const { return m_rtt; }
-    double toHostTime(double localMs) const { return localMs + static_cast<double>(m_offset); }
+    double offset() const { return m_offset; }
+    double rtt() const { return m_rtt; }
+    double toHostTime(double localMs) const { return localMs + m_offset; }
 
 private:
     struct Sample {
-        std::int64_t offset;
-        std::uint32_t rtt;
+        double offset;
+        double rtt;
     };
     std::deque<Sample> m_samples;
     std::size_t m_window;
-    std::int64_t m_offset = 0;
-    std::uint32_t m_rtt = 0;
+    double m_offset = 0.0;
+    double m_rtt = 0.0;
+};
+
+// The session clock a client shows: the local clock plus an offset that
+// follows ClockSync's estimate. A new estimate is not applied at once while a
+// race runs: the shown offset slews toward it at `slewRate` ms per ms (the
+// clock runs up to that much faster or slower), so the remote cars, which are
+// drawn at session times, never jump and the clock never runs backwards.
+// Differences above `stepMs`, and every change while `slewing` is off (the
+// lobby), are applied at once.
+class SlewedClock {
+public:
+    void reset() { m_valid = false; }
+    // Moves the shown offset toward `target` for the local time `localMs`.
+    void update(double localMs, double target, bool slewing, double slewRate = 0.05, double stepMs = 250.0);
+    bool valid() const { return m_valid; }
+    double offset() const { return m_offset; }
+
+private:
+    bool m_valid = false;
+    double m_offset = 0.0;
+    double m_lastLocal = 0.0;
 };
 
 } // namespace mm2::net

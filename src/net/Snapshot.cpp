@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace mm2::net {
 
@@ -18,6 +19,37 @@ void SnapshotBuffer::push(const VehicleSnapshot& s) {
         it = std::ranges::lower_bound(m_snapshots, s.time, {}, &VehicleSnapshot::time);
     }
     m_snapshots.insert(it, s);
+}
+
+void SnapshotBuffer::push(const VehicleSnapshot& s, double arrivalMs) {
+    // Only a snapshot newer than everything before it moves the newest time
+    // a sample can reach; an older one arrived out of order and is late for
+    // nothing.
+    if (!m_newest || s.time > *m_newest) {
+        if (m_newest)
+            m_arrivals.push_back({arrivalMs, arrivalMs - static_cast<double>(s.time),
+                                  static_cast<double>(s.time - *m_newest)});
+        m_newest = s.time;
+    }
+    while (!m_arrivals.empty() && m_arrivals.front().at < arrivalMs - kDelayWindowMs)
+        m_arrivals.pop_front();
+    push(s);
+}
+
+double SnapshotBuffer::requiredDelay() const {
+    if (m_arrivals.empty())
+        return -1.0;
+    std::vector<double> gaps;
+    gaps.reserve(m_arrivals.size());
+    for (const Arrival& a : m_arrivals)
+        gaps.push_back(a.gap);
+    const auto mid = gaps.begin() + static_cast<std::ptrdiff_t>(gaps.size() / 2);
+    std::ranges::nth_element(gaps, mid);
+    const double maxGap = *mid * 1.5;
+    double need = 0.0;
+    for (const Arrival& a : m_arrivals)
+        need = std::max(need, a.lateness + std::min(a.gap, maxGap));
+    return need;
 }
 
 void SnapshotBuffer::prune(double time) {

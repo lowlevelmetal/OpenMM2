@@ -56,7 +56,11 @@ struct JoinParams {
 struct SessionConfig {
     TransportConfig transport;
     std::uint32_t snapshotRateHz = 20;       // own vehicle -> host, and host -> clients
-    double interpolationDelayMs = 100.0;     // remote vehicles are shown this far in the past
+    // Remote vehicles are shown a playout delay in the past, which follows
+    // what each one's snapshots need to arrive in time
+    // (SnapshotBuffer::requiredDelay), within these bounds.
+    double interpolationDelayMs = 50.0;
+    double maxInterpolationDelayMs = 500.0;
     double maxExtrapolationMs = 250.0;       // then held still
     std::uint32_t joinTimeoutMs = 10000;     // handshake must finish within this
     std::uint32_t connectTimeoutMs = 8000;   // ENet connect attempt
@@ -141,8 +145,10 @@ public:
     const PlayerInfo* player(std::uint8_t id) const;
     std::uint16_t port() const { return m_transport ? m_transport->port() : 0; }
 
-    // Session clock in ms (host clock; estimated on clients).
+    // Session clock in ms (host clock; estimated on clients). On a client it
+    // follows the estimate smoothly while a race runs (SlewedClock).
     std::uint32_t time() const;
+    double timeMs() const; // the same with sub-millisecond precision
     bool clockSynced() const { return m_role == Role::Host || m_clock.synced(); }
     std::uint32_t countdownEnd() const { return m_countdownEnd; }
 
@@ -166,11 +172,24 @@ public:
     }
 
     // --- Replication ---
-    // Latest state of the local vehicle; sent at snapshotRateHz.
+    // Latest state of the local vehicle; sent at snapshotRateHz (only while
+    // a race is loading or running). It is stamped with the session time at
+    // which the state was simulated, `sessionTimeMs`, or now.
     void submitLocalState(const VehicleSnapshot& state);
-    // Remote vehicle state at (time() - interpolationDelay).
+    void submitLocalState(const VehicleSnapshot& state, double sessionTimeMs);
+    // Remote vehicle state at (now - the player's playout delay), or at
+    // (`sessionTimeMs` - the playout delay).
     SnapshotBuffer::Result sampleRemote(std::uint8_t playerId, VehicleSnapshot& out) const;
+    SnapshotBuffer::Result sampleRemoteDelayed(std::uint8_t playerId, double sessionTimeMs, VehicleSnapshot& out) const;
+    // Remote vehicle state at exactly `sessionTime`.
     SnapshotBuffer::Result sampleRemoteAt(std::uint8_t playerId, double sessionTime, VehicleSnapshot& out) const;
+    // The playout delay (ms) a remote vehicle is shown with.
+    double playoutDelay(std::uint8_t playerId) const;
+    // Called with every remote vehicle snapshot taken in (player, snapshot,
+    // session time of arrival); for diagnostics.
+    void setStateObserver(std::function<void(std::uint8_t, const VehicleSnapshot&, double)> observer) {
+        m_stateObserver = std::move(observer);
+    }
     // Sends a game event to everyone (or one player). Delivered reliably and
     // in order; the sender does not receive its own event back.
     void sendGameEvent(std::uint16_t type, std::vector<std::byte> payload,
@@ -198,6 +217,13 @@ private:
     void hostAdvertise();
     void close(DisconnectReason reason, std::string message, bool failedJoin);
     void tickCountdown();
+    void updateShownClock();
+    // A remote vehicle's snapshot (ignored in the lobby: late packets of the
+    // last race).
+    void receiveState(std::uint8_t id, const VehicleSnapshot& state);
+    // Moves each remote vehicle's playout delay toward what it needs.
+    void updatePlayout();
+    bool replicating() const { return m_phase != SessionPhase::Lobby; }
     PlayerInfo* findPlayer(std::uint8_t id);
     Remote* remoteForPlayer(std::uint8_t id);
     std::uint8_t allocatePlayerId() const;
@@ -233,6 +259,7 @@ private:
     PeerId m_hostPeer = kInvalidPeer;
     std::uint64_t m_connectStarted = 0;
     ClockSync m_clock;
+    SlewedClock m_shownClock; // the offset time() uses
     std::uint64_t m_nextTimeRequest = 0;
     int m_timeRequestsSent = 0;
     std::string m_joinPassword;
@@ -242,9 +269,17 @@ private:
     PlayerRequestMsg m_request;
 
     // Both
-    std::map<std::uint8_t, SnapshotBuffer> m_remoteStates;
+    struct RemoteVehicle {
+        SnapshotBuffer buffer;
+        double delay = -1.0; // playout delay (ms); negative until the first snapshot
+        bool measured = false; // delay set from a measurement
+    };
+    std::map<std::uint8_t, RemoteVehicle> m_remoteStates;
+    std::function<void(std::uint8_t, const VehicleSnapshot&, double)> m_stateObserver;
     std::optional<VehicleSnapshot> m_localState;
+    std::uint32_t m_lastSentStateTime = 0;
     std::uint64_t m_lastSnapshotSent = 0;
+    double m_lastPlayoutUpdate = -1.0;
 };
 
 // Proof sent in Hello: SHA-256(nonce || password); all zeros when empty.

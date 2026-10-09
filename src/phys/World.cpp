@@ -481,6 +481,19 @@ int World::advanceFixed(float frameDelta, float sampleStep, int maxSamples) {
     return n;
 }
 
+float World::remainderAfter(float frameDelta, float sampleStep, int maxSamples) const {
+    // advanceFixed's arithmetic, without stepping.
+    float accumulator = m_accumulator + frameDelta;
+    int n = 0;
+    while (accumulator >= sampleStep && n < maxSamples) {
+        accumulator -= sampleStep;
+        ++n;
+    }
+    if (n == maxSamples && accumulator > sampleStep)
+        accumulator = 0;
+    return accumulator;
+}
+
 int World::advanceOversampled(float frameDelta, float sampleStep, int maxSamples) {
     // dgPhysManager::Update: a frame under a millisecond runs no sample (its
     // time is lost, as in the original).

@@ -104,10 +104,24 @@ bool Address::isPrivate() const {
            (a == 169 && b == 254) || (a == 100 && b >= 64 && b <= 127) || ip == 0;
 }
 
-std::uint64_t monotonicMs() {
+namespace {
+
+std::chrono::steady_clock::time_point clockStart() {
     static const auto start = std::chrono::steady_clock::now();
+    return start;
+}
+
+} // namespace
+
+std::uint64_t monotonicMs() {
+    const auto start = clockStart();
     return static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count());
+}
+
+double monotonicMsPrecise() {
+    const auto start = clockStart();
+    return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
 } // namespace mm2::net

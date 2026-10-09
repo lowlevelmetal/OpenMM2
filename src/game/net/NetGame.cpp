@@ -7,6 +7,8 @@
 #include "net/Session.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <format>
 #include <thread>
 
@@ -160,6 +162,27 @@ struct NetGame::Impl {
     int maxPlayers = 8;
     int goldMass = 0; // HostRaceMenu's GOLD MASS index starts at 0, Weightless
     bool joining = false;
+    std::unique_ptr<std::FILE, int (*)(std::FILE*)> trace{nullptr, &std::fclose}; // OPENMM2_NET_TRACE
+
+    // A new session: the trace (when asked for) follows its snapshots.
+    void newSession() {
+        session = std::make_unique<net::Session>();
+        const char* path = std::getenv("OPENMM2_NET_TRACE");
+        if (!path || !*path)
+            return;
+        if (!trace)
+            trace.reset(std::fopen(path, "w"));
+        if (!trace) {
+            log::warn("netgame: cannot write the trace {}", path);
+            return;
+        }
+        session->setStateObserver([this](std::uint8_t id, const net::VehicleSnapshot& s, double arrival) {
+            // S wall id stamp arrival delay x y z vx vy vz
+            std::fprintf(trace.get(), "S %.3f %u %u %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
+                         net::monotonicMsPrecise(), id, s.time, arrival, session->playoutDelay(id), s.position.x,
+                         s.position.y, s.position.z, s.linearVelocity.x, s.linearVelocity.y, s.linearVelocity.z);
+        });
+    }
 };
 
 NetGame::NetGame(NetOptions options) : m_options(std::move(options)), m_impl(std::make_unique<Impl>()) {}
@@ -194,7 +217,7 @@ bool NetGame::host(const RaceConfig& config, const NetHostOptions& hostOptions, 
     params.advertiseOnLan = hostOptions.advertiseOnLan;
     params.discoveryPort = m_options.discoveryPort;
 
-    impl.session = std::make_unique<net::Session>();
+    impl.newSession();
     if (!impl.session->host(params, error)) {
         impl.session.reset();
         return false;
@@ -228,7 +251,7 @@ bool NetGame::join(const net::Address& address, const std::string& password, con
     params.password = password;
     params.player = {m_options.playerName, car.vehicle, static_cast<std::uint8_t>(car.color),
                      static_cast<std::uint8_t>(car.team)};
-    m_impl->session = std::make_unique<net::Session>();
+    m_impl->newSession();
     if (!m_impl->session->join(params, error)) {
         m_impl->session.reset();
         return false;
@@ -255,6 +278,7 @@ void NetGame::update() {
     auto& impl = *m_impl;
     if (impl.session) {
         impl.session->update();
+        m_frameTime = impl.session->timeMs();
         handleEvents();
     }
     if (impl.scanner) {
@@ -571,11 +595,11 @@ double NetGame::secondsToStart() const {
 bool NetGame::raceStarted() const { return m_raceStarted; }
 
 void NetGame::submitLocalState(const Mat34& transform, const Vec3& velocity, const Vec3& angularVelocity,
-                               const net::VehicleControls& controls, float damage, std::uint8_t flags) {
+                               const net::VehicleControls& controls, float damage, std::uint8_t flags,
+                               double stateAgeMs) {
     if (!m_impl->session)
         return;
     net::VehicleSnapshot s;
-    s.time = m_impl->session->time();
     s.position = transform.m3;
     s.orientation = Quat::fromMatrix(transform);
     s.linearVelocity = velocity;
@@ -583,13 +607,14 @@ void NetGame::submitLocalState(const Mat34& transform, const Vec3& velocity, con
     s.controls = controls;
     s.damage = std::clamp(damage, 0.0f, 1.0f);
     s.flags = flags;
-    m_impl->session->submitLocalState(s);
+    m_impl->session->submitLocalState(s, m_frameTime - stateAgeMs);
 }
 
-std::vector<NetRemoteCar> NetGame::remoteCars() const {
+std::vector<NetRemoteCar> NetGame::remoteCars(double stateAgeMs) const {
     std::vector<NetRemoteCar> out;
     if (!m_impl->session)
         return out;
+    const double at = m_frameTime - stateAgeMs;
     for (const auto& p : players()) {
         if (p.id == localId())
             continue;
@@ -598,7 +623,8 @@ std::vector<NetRemoteCar> NetGame::remoteCars() const {
         car.name = p.name;
         car.car = {p.car, p.color, p.team};
         net::VehicleSnapshot snap;
-        const auto r = m_impl->session->sampleRemote(p.id, snap);
+        car.time = at - m_impl->session->playoutDelay(p.id);
+        const auto r = m_impl->session->sampleRemoteAt(p.id, car.time, snap);
         if (r != net::SnapshotBuffer::Result::Empty) {
             car.hasState = true;
             car.stale = r != net::SnapshotBuffer::Result::Interpolated;
@@ -612,6 +638,23 @@ std::vector<NetRemoteCar> NetGame::remoteCars() const {
         out.push_back(std::move(car));
     }
     return out;
+}
+
+void NetGame::traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
+                         const std::vector<NetRemoteCar>& cars) {
+    std::FILE* f = m_impl->trace.get();
+    if (!f || !m_impl->session)
+        return;
+    // F wall frameTime stateAge x y z vx vy vz; R wall id stale x y z vx vy vz sampleTime
+    const double wall = net::monotonicMsPrecise();
+    const Vec3& p = transform.m3;
+    std::fprintf(f, "F %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n", wall, m_frameTime, stateAgeMs, p.x, p.y, p.z,
+                 velocity.x, velocity.y, velocity.z);
+    for (const auto& c : cars)
+        if (c.hasState)
+            std::fprintf(f, "R %.3f %u %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n", wall, c.id, c.stale ? 1 : 0,
+                         c.transform.m3.x, c.transform.m3.y, c.transform.m3.z, c.velocity.x, c.velocity.y,
+                         c.velocity.z, c.time);
 }
 
 void NetGame::sendEvent(std::uint16_t type, std::vector<std::byte> payload, std::uint8_t target) {

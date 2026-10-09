@@ -296,7 +296,7 @@ public:
                 trigger = m_player->sim().body.ics.matrix.m3;
             m_gizmos->update(static_cast<float>(dt), trigger);
         }
-        updateRemoteCars(ctx);
+        updateRemoteCars(ctx, static_cast<float>(dt));
         // aiVehicleManager::Update and the rail cars' rooms, before the
         // collision manager runs.
         if (m_trafficBodies)
@@ -486,7 +486,7 @@ public:
         // an icon turned off, place 0, once that player has finished).
         if (multiplayer(ctx)) {
             const auto& players = ctx.netGame->players();
-            for (const auto& rc : ctx.netGame->remoteCars()) {
+            for (const auto& rc : m_netCars) {
                 if (!rc.hasState)
                     continue;
                 int slot = 0, other = 0, racer = -1;
@@ -2145,7 +2145,7 @@ private:
         // fall out of the city), not when the car touches the water.
         cars.push_back({m_crSelf, m_crMyTeam, m_player->sim().body.ics.matrix.m3, m_playerState.wrecked,
                         std::exchange(m_crWaterHandled, false)});
-        for (const auto& rc : ctx.netGame->remoteCars())
+        for (const auto& rc : m_netCars)
             if (rc.hasState)
                 cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
                                 false});
@@ -3308,8 +3308,12 @@ private:
             flags |= net::kVehicleWrecked;
         if (hornDown(ctx))
             flags |= net::kVehicleHorn;
+        // The pose is the last simulation sample's, which is behind the
+        // frame by the time the fixed step left unstepped.
+        const double age = m_world ? static_cast<double>(m_world->remainder()) * 1000.0 : 0.0;
         ctx.netGame->submitLocalState(m_pose.body, sim.body.ics.frameVelocity, sim.body.ics.angularVelocity, controls,
-                                      sim.damage.damage, flags);
+                                      sim.damage.damage, flags, age);
+        ctx.netGame->traceFrame(m_pose.body, sim.body.ics.frameVelocity, age, m_netCars);
     }
 
     // mmNetObject: every other player's car is a vehCar of the level (built
@@ -3319,15 +3323,24 @@ private:
     // with its trailer. MM2 drives it with the player's inputs and pulls it
     // toward the received positions (mmNetObject::Predict, Update); OpenMM2
     // places it at its interpolated snapshot as a kinematic body, which the
-    // local car collides with as with a wall (deviation), and simulates only
-    // the trailer behind it.
-    void updateRemoteCars(Context& ctx) {
+    // local car collides with as with an immovable body moving at the
+    // snapshot's velocity (deviation: MM2's car had a mass and gave way),
+    // and simulates only the trailer behind it.
+    //
+    // The cars are sampled once a frame (the HUD, the rules and the drawing
+    // use the same sample) at the time the simulation will have reached
+    // after this frame's fixed steps: the local car, the camera and every
+    // simulated object move in whole simulation steps, and a remote car
+    // sampled at the frame's own time would shake against them by up to a
+    // step's travel.
+    void updateRemoteCars(Context& ctx, float dt) {
         if (!multiplayer(ctx) || !m_world)
             return;
+        m_netCars = ctx.netGame->remoteCars(static_cast<double>(m_world->remainderAfter(dt)) * 1000.0);
         const auto mode = m_result.config.mode;
         const bool towing = mode != game::GameMode::Cruise && mode != game::GameMode::CopsAndRobbers;
         std::vector<std::uint8_t> present;
-        for (const auto& rc : ctx.netGame->remoteCars()) {
+        for (const auto& rc : m_netCars) {
             if (!rc.hasState)
                 continue;
             present.push_back(rc.id);
@@ -3393,7 +3406,7 @@ private:
     void drawRemoteCars(Context& ctx, float dt, const game::Camera& camera) {
         if (!multiplayer(ctx))
             return;
-        for (const auto& rc : ctx.netGame->remoteCars()) {
+        for (const auto& rc : m_netCars) {
             const auto it = m_remotes.find(rc.id);
             if (!rc.hasState || it == m_remotes.end() || !it->second.renderer || !it->second.sim)
                 continue;
@@ -3987,6 +4000,7 @@ private:
         std::array<float, 6> spin{};
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
+    std::vector<game::NetRemoteCar> m_netCars; // this frame's sample (updateRemoteCars)
     std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
     std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)

@@ -5,6 +5,7 @@
 #include "net/Sha256.h"
 
 #include <algorithm>
+#include <cmath>
 #include <format>
 #include <random>
 
@@ -156,13 +157,16 @@ void Session::resetState() {
     m_hostPeer = kInvalidPeer;
     m_connectStarted = 0;
     m_clock.reset();
+    m_shownClock.reset();
     m_nextTimeRequest = 0;
     m_timeRequestsSent = 0;
     m_joinPassword.clear();
     m_joinPlayer = {};
     m_request = {};
     m_localState.reset();
+    m_lastSentStateTime = 0;
     m_lastSnapshotSent = 0;
+    m_lastPlayoutUpdate = -1.0;
 }
 
 void Session::leave() {
@@ -197,13 +201,21 @@ void Session::close(DisconnectReason reason, std::string message, bool failedJoi
 
 // --- Helpers ----------------------------------------------------------------------
 
-std::uint32_t Session::time() const {
+std::uint32_t Session::time() const { return static_cast<std::uint32_t>(timeMs()); }
+
+double Session::timeMs() const {
     if (m_role == Role::Host)
-        return static_cast<std::uint32_t>(monotonicMs() - m_hostEpoch);
-    if (!m_clock.synced())
-        return 0;
-    const double t = m_clock.toHostTime(static_cast<double>(monotonicMs()));
-    return t <= 0.0 ? 0u : static_cast<std::uint32_t>(t);
+        return std::max(0.0, monotonicMsPrecise() - static_cast<double>(m_hostEpoch));
+    if (!m_shownClock.valid())
+        return 0.0;
+    return std::max(0.0, monotonicMsPrecise() + m_shownClock.offset());
+}
+
+void Session::updateShownClock() {
+    // Corrections slew while a race is loading or running (the remote cars
+    // and the countdown are drawn on this clock); the lobby takes them at once.
+    if (m_clock.synced())
+        m_shownClock.update(monotonicMsPrecise(), m_clock.offset(), m_phase != SessionPhase::Lobby);
 }
 
 const PlayerInfo* Session::player(std::uint8_t id) const {
@@ -283,6 +295,15 @@ void Session::update() {
 
     const std::uint64_t now = monotonicMs();
     const std::uint64_t snapshotInterval = 1000 / m_config.snapshotRateHz;
+    // Snapshots go out on a steady cadence (the first frame at or after each
+    // tick; after a stall the cadence starts again from now).
+    auto snapshotDue = [&] {
+        if (now - m_lastSnapshotSent < snapshotInterval)
+            return false;
+        m_lastSnapshotSent = now - m_lastSnapshotSent < 2 * snapshotInterval ? m_lastSnapshotSent + snapshotInterval
+                                                                                 : now;
+        return true;
+    };
 
     if (m_role == Role::Host) {
         // Handshake timeouts.
@@ -310,10 +331,8 @@ void Session::update() {
                 sendToPlayers(Channel::Control, pings);
         }
 
-        if (now - m_lastSnapshotSent >= snapshotInterval) {
-            m_lastSnapshotSent = now;
+        if (snapshotDue() && replicating())
             hostSendWorldState();
-        }
 
         if (m_beacon) {
             hostAdvertise();
@@ -333,20 +352,65 @@ void Session::update() {
             ++m_timeRequestsSent;
             m_nextTimeRequest = now + (m_timeRequestsSent < 6 ? 150 : 2000);
         }
-        if (m_localState && now - m_lastSnapshotSent >= snapshotInterval) {
-            m_lastSnapshotSent = now;
+        updateShownClock();
+        // Only a state the game has simulated since the last one is sent.
+        if (snapshotDue() && replicating() && m_localState &&
+            (m_lastSentStateTime == 0 || m_localState->time != m_lastSentStateTime)) {
+            m_lastSentStateTime = m_localState->time;
             sendTo(m_hostPeer, Channel::State, VehicleStateMsg{*m_localState});
         }
     }
 
     tickCountdown();
-
-    const double renderTime = static_cast<double>(time()) - m_config.interpolationDelayMs;
-    for (auto& [id, buffer] : m_remoteStates)
-        buffer.prune(renderTime);
+    updatePlayout();
 
     if (m_transport)
         m_transport->flush();
+}
+
+void Session::updatePlayout() {
+    // The delay grows quickly when snapshots start arriving later (the
+    // remote car is shown up to a quarter slower for a moment rather than
+    // extrapolated) and shrinks slowly; it never makes the shown time run
+    // backwards.
+    constexpr double kGrowRate = 0.25;
+    constexpr double kShrinkRate = 0.02;
+    // A snapshot that arrives in a frame is usable from that frame on.
+    constexpr double kMarginMs = 4.0;
+    // Snapshots kept behind the sample time: callers sample up to a
+    // simulation step (and more after a stall) behind the frame's time.
+    constexpr double kPruneSlackMs = 100.0;
+    const double now = timeMs();
+    const double elapsed = m_lastPlayoutUpdate < 0.0 ? 0.0 : std::max(0.0, now - m_lastPlayoutUpdate);
+    m_lastPlayoutUpdate = now;
+    const double lo = m_config.interpolationDelayMs;
+    const double hi = std::max(lo, m_config.maxInterpolationDelayMs);
+    for (auto& [id, rv] : m_remoteStates) {
+        const double need = rv.buffer.requiredDelay();
+        if (need < 0.0) {
+            if (rv.delay < 0.0)
+                rv.delay = lo;
+        } else {
+            const double target = std::clamp(need + kMarginMs, lo, hi);
+            if (!rv.measured)
+                rv.delay = target;
+            else if (target > rv.delay)
+                rv.delay = std::min(target, rv.delay + elapsed * kGrowRate);
+            else
+                rv.delay = std::max(target, rv.delay - elapsed * kShrinkRate);
+            rv.measured = true;
+        }
+        rv.buffer.prune(now - rv.delay - kPruneSlackMs);
+    }
+}
+
+void Session::receiveState(std::uint8_t id, const VehicleSnapshot& state) {
+    if (!replicating())
+        return;
+    const double now = timeMs();
+    m_remoteStates[id].buffer.push(state, now);
+    if (m_stateObserver)
+        m_stateObserver(id, state, now);
 }
 
 void Session::tickCountdown() {
@@ -359,8 +423,10 @@ void Session::tickCountdown() {
 }
 
 void Session::hostSendWorldState() {
-    if (m_localState)
+    if (m_localState && m_localState->time != m_lastSentStateTime) {
+        m_lastSentStateTime = m_localState->time;
         m_pendingStates[kHostPlayerId] = *m_localState;
+    }
     if (m_pendingStates.empty())
         return;
     for (const auto& [peer, r] : m_remotes) {
@@ -533,10 +599,12 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
     }
     case MsgType::VehicleState: {
         VehicleStateMsg msg;
-        if (!decodeMessage(data, msg))
+        if (!decodeMessage(data, msg) || !replicating())
             return;
-        m_pendingStates[id] = msg.state;
-        m_remoteStates[id].push(msg.state);
+        // The newest state is relayed with the next WorldState.
+        if (const auto it = m_pendingStates.find(id); it == m_pendingStates.end() || it->second.time < msg.state.time)
+            m_pendingStates[id] = msg.state;
+        receiveState(id, msg.state);
         return;
     }
     case MsgType::GameEvent: {
@@ -649,8 +717,10 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         if (const PlayerInfo* self = player(m_localId))
             m_request = PlayerRequestMsg{self->car, self->color, self->team, self->ready};
         // Rough clock until the first TimeResponse: assume a symmetric trip.
-        const std::uint32_t rtt = m_transport->stats(m_hostPeer).rttMs;
-        m_clock.addSample(now - std::min<std::uint64_t>(rtt, now), w.hostTime, now);
+        const double receivedAt = monotonicMsPrecise();
+        const double rtt = std::min(static_cast<double>(m_transport->stats(m_hostPeer).rttMs), receivedAt);
+        m_clock.addSample(receivedAt - rtt, static_cast<double>(w.hostTime) + 0.5, receivedAt);
+        updateShownClock();
         m_nextTimeRequest = now;
         emit(ev::JoinAccepted{m_localId});
         if (m_phase == SessionPhase::Countdown)
@@ -739,6 +809,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
             p.ready = false;
         m_request.ready = false;
         m_remoteStates.clear();
+        // The last race's car must not be sent (or shown) in the next one.
+        m_localState.reset();
+        m_lastSentStateTime = 0;
         emit(ev::ReturnedToLobby{});
         return;
     }
@@ -754,21 +827,26 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         TimeResponseMsg m;
         if (!decodeMessage(data, m))
             return;
-        const std::uint64_t now = monotonicMs();
+        const double receivedAt = monotonicMsPrecise();
+        const auto now = static_cast<std::uint64_t>(receivedAt);
         // Rebuild the 64-bit send time from the truncated 32-bit echo.
         std::uint64_t sent = (now & ~std::uint64_t{0xFFFFFFFF}) | m.clientTime;
         if (sent > now)
             sent -= std::uint64_t{1} << 32;
-        m_clock.addSample(sent, m.hostTime, now);
+        // Both times were whole milliseconds cut down: half a millisecond
+        // puts them in the middle of their millisecond.
+        m_clock.addSample(static_cast<double>(sent) + 0.5, static_cast<double>(m.hostTime) + 0.5, receivedAt);
+        updateShownClock();
         return;
     }
     case MsgType::WorldState: {
         WorldStateMsg m;
         if (!decodeMessage(data, m))
             return;
-        for (const auto& [id, state] : m.vehicles)
+        for (const auto& [id, state] : m.vehicles) {
             if (id != m_localId)
-                m_remoteStates[id].push(state);
+                receiveState(id, state);
+        }
         return;
     }
     case MsgType::GameEvent: {
@@ -893,24 +971,39 @@ void Session::returnToLobby() {
     m_remoteStates.clear();
     m_pendingStates.clear();
     m_localState.reset();
+    m_lastSentStateTime = 0;
     sendToPlayers(Channel::Control, ReturnToLobbyMsg{});
     emit(ev::ReturnedToLobby{});
 }
 
-void Session::submitLocalState(const VehicleSnapshot& state) {
+void Session::submitLocalState(const VehicleSnapshot& state) { submitLocalState(state, timeMs()); }
+
+void Session::submitLocalState(const VehicleSnapshot& state, double sessionTimeMs) {
     m_localState = state;
-    m_localState->time = time();
+    m_localState->time = static_cast<std::uint32_t>(std::llround(std::max(0.0, sessionTimeMs)));
 }
 
 SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime, VehicleSnapshot& out) const {
     const auto it = m_remoteStates.find(playerId);
     if (it == m_remoteStates.end())
         return SnapshotBuffer::Result::Empty;
-    return it->second.sample(sessionTime, out, m_config.maxExtrapolationMs);
+    return it->second.buffer.sample(sessionTime, out, m_config.maxExtrapolationMs);
+}
+
+SnapshotBuffer::Result Session::sampleRemoteDelayed(std::uint8_t playerId, double sessionTimeMs,
+                                                    VehicleSnapshot& out) const {
+    return sampleRemoteAt(playerId, sessionTimeMs - playoutDelay(playerId), out);
 }
 
 SnapshotBuffer::Result Session::sampleRemote(std::uint8_t playerId, VehicleSnapshot& out) const {
-    return sampleRemoteAt(playerId, static_cast<double>(time()) - m_config.interpolationDelayMs, out);
+    return sampleRemoteDelayed(playerId, timeMs(), out);
+}
+
+double Session::playoutDelay(std::uint8_t playerId) const {
+    const auto it = m_remoteStates.find(playerId);
+    if (it == m_remoteStates.end() || it->second.delay < 0.0)
+        return m_config.interpolationDelayMs;
+    return it->second.delay;
 }
 
 void Session::sendGameEvent(std::uint16_t type, std::vector<std::byte> payload, std::uint8_t target) {

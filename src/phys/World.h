@@ -217,6 +217,10 @@ public:
     int advanceOversampled(float frameDelta, float sampleStep = kOversampleStep,
                            int maxSamples = kOversampleMaxSamples);
     float interpolationAlpha(float sampleStep = kFixedSampleStep) const { return m_accumulator / sampleStep; }
+    // The time (s) advanceFixed(frameDelta) will leave unstepped: how far the
+    // simulation will be behind the frame once it has run.
+    float remainderAfter(float frameDelta, float sampleStep = kFixedSampleStep, int maxSamples = 32) const;
+    float remainder() const { return m_accumulator; }
 
     double time() const { return m_time; }
 
