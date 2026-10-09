@@ -3,8 +3,11 @@
 #include "ai/Opponent.h"
 #include "ai/World.h"
 #include "city/Race.h"
+#include "core/Log.h"
 #include "core/StringUtil.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string_view>
 
 namespace mm2::game {
@@ -56,12 +59,65 @@ std::unique_ptr<NetAutopilot> NetAutopilot::create(const city::CityData& city, c
     return pilot;
 }
 
+std::unique_ptr<NetAutopilot> NetAutopilot::createFree(const city::CityData& city, const vfs::Vfs& vfs,
+                                                       const session::RaceSetup& setup, float speedLimit,
+                                                       std::string* error) {
+    ai::Settings settings;
+    settings.trafficDensity = 0.0f;
+    settings.pedestrianDensity = 0.0f;
+    settings.maxPeds = 0;
+    std::unique_ptr<NetAutopilot> pilot(new NetAutopilot);
+    pilot->m_ai = ai::World::create(city, vfs, settings, setup.aiMap ? &*setup.aiMap : nullptr, error);
+    if (!pilot->m_ai)
+        return nullptr;
+    pilot->m_vehicle = setup.config.vehicle;
+    pilot->m_speedLimit = speedLimit;
+    return pilot;
+}
+
+void NetAutopilot::setTarget(phys::CarSim& car, const Vec3& target, const phys::GroundQuery* ground) {
+    // A new destination: the racer AI drives the city's roads to it.
+    if (m_target && m_target->dist2(target) < 25.0f * 25.0f && m_driver)
+        return;
+    m_target = target;
+    log::info("autopilot: to ({:.0f}, {:.0f}, {:.0f}) from ({:.0f}, {:.0f}, {:.0f})", target.x, target.y, target.z,
+              car.body.ics.matrix.m3.x, car.body.ics.matrix.m3.y, car.body.ics.matrix.m3.z);
+    std::vector<city::OpponentPoint> path(2);
+    path[0].position = car.body.ics.matrix.m3;
+    path[1].position = target;
+    m_driver = ai::Opponent::create(m_ai->map(), car, path, {}, 1, 1, 0, nullptr, ground, m_vehicle);
+    if (!m_driver)
+        return;
+    if (m_speedLimit > 0.0f)
+        m_driver->setSpeedLimit(m_speedLimit);
+    m_driver->setResetCar([](const Mat34&) {});
+    m_driver->setHeld(false);
+    const auto saved = car.saveState();
+    m_driver->reset();
+    car.restoreState(saved);
+}
+
 NetAutopilot::Controls NetAutopilot::drive(float dt, phys::CarSim& car, bool held) {
+    if (!m_driver)
+        return {};
     const auto saved = car.saveState();
     m_driver->setHeld(held);
     m_driver->update(dt, {});
-    const Controls c{car.engine.throttle, car.brakes, car.steering};
+    Controls c{car.engine.throttle, car.brakes, car.steering,
+               car.trans.getCurrentGear() == phys::Transmission::kReverse};
     car.restoreState(saved);
+    // The last stretch to a free target (the gold off the road, a base): at
+    // it, past where the roads lead.
+    const Mat34& m = car.body.ics.matrix;
+    if (m_target && !held && m.m3.dist2(*m_target) < 80.0f * 80.0f) {
+        const float dx = m_target->x - m.m3.x, dz = m_target->z - m.m3.z;
+        const float angle = std::atan2(dx * m.m0.x + dz * m.m0.z, -(dx * m.m2.x + dz * m.m2.z));
+        c.steering = std::clamp(angle * 1.33f, -1.0f, 1.0f);
+        const bool behind = std::fabs(angle) > 2.0f;
+        c.reverse = behind;
+        c.throttle = behind ? 0.5f : 0.6f;
+        c.brake = 0.0f;
+    }
     return c;
 }
 

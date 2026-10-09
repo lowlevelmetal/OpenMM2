@@ -16,6 +16,7 @@
 #include "vfs/Vfs.h"
 
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace mm2::ai {
@@ -37,12 +38,21 @@ public:
                                                 const session::RaceSetup& setup, phys::CarSim& car, int line,
                                                 float speedLimit, const phys::GroundQuery* ground,
                                                 std::string* error = nullptr);
+    // Cops and Robbers: no line; setTarget() gives the place to drive to
+    // (the gold, then the base), routed over the city's roads.
+    static std::unique_ptr<NetAutopilot> createFree(const city::CityData& city, const vfs::Vfs& vfs,
+                                                    const session::RaceSetup& setup, float speedLimit,
+                                                    std::string* error = nullptr);
+    void setTarget(phys::CarSim& car, const Vec3& target, const phys::GroundQuery* ground);
     ~NetAutopilot();
     NetAutopilot(const NetAutopilot&) = delete;
     NetAutopilot& operator=(const NetAutopilot&) = delete;
 
     struct Controls {
         float throttle = 0.0f, brake = 0.0f, steering = 0.0f;
+        // The AI backs up (it puts the gearbox in reverse): with AUTO
+        // REVERSE the brake pedal drives the car backwards.
+        bool reverse = false;
     };
     // The AI's frame for the car (held: on the grid).
     Controls drive(float dt, phys::CarSim& car, bool held);
@@ -51,6 +61,9 @@ private:
     NetAutopilot() = default;
     std::unique_ptr<ai::World> m_ai;
     std::unique_ptr<ai::Opponent> m_driver;
+    std::string m_vehicle;
+    float m_speedLimit = 0.0f;
+    std::optional<Vec3> m_target;
 };
 
 } // namespace mm2::game

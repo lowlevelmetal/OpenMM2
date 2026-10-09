@@ -2653,6 +2653,11 @@ private:
             m_crWaterHandled = false;
         }
         m_crImpacts.clear();
+        if (m_autopilot) // OPENMM2_DEBUG_AUTOPILOT: to the gold, then to the base
+            m_autopilot->setTarget(m_player->sim(),
+                                   m_cr->goldCarrier() == m_crSelf ? m_cr->deliveryTarget(m_crMyTeam)
+                                                                   : m_cr->goldPosition(),
+                                   m_world.get());
         // What happened, on this machine's HUD and car.
         auto name = [&](int id) {
             const auto* p = ctx.netGame->player(static_cast<std::uint8_t>(id));
@@ -3056,18 +3061,41 @@ private:
         // Development aid: OPENMM2_DEBUG_AUTOPILOT=<line>[,<m/s>] drives this
         // machine's car along the race's opponent line through its inputs
         // (game/net/Autopilot.h), for automated runs.
-        if (const char* ap = std::getenv("OPENMM2_DEBUG_AUTOPILOT"); ap && m_player && m_world && s.session) {
+        // In Cops and Robbers it drives to the gold, then to its base.
+        if (const char* ap = std::getenv("OPENMM2_DEBUG_AUTOPILOT"); ap && m_player && m_world) {
             const auto parts = str::split(ap, ',');
             const int line = static_cast<int>(str::parseInt(parts.empty() ? "" : parts[0]).value_or(0));
             const float speed =
                 parts.size() > 1 ? static_cast<float>(str::parseDouble(parts[1]).value_or(0.0)) : 0.0f;
             std::string error;
-            m_autopilot = game::NetAutopilot::create(*m_city, ctx.game->vfs, m_session->setup(),
-                                                     m_player->sim(), line, speed, m_world.get(), &error);
+            m_autopilot = s.session ? game::NetAutopilot::create(*m_city, ctx.game->vfs, m_session->setup(),
+                                                                 m_player->sim(), line, speed, m_world.get(),
+                                                                 &error)
+                                    : game::NetAutopilot::createFree(*m_city, ctx.game->vfs, m_session->setup(),
+                                                                     speed, &error);
             if (m_autopilot)
                 log::info("race: the autopilot drives opponent line {}", line);
             else
                 log::warn("race: no autopilot: {}", error);
+        }
+        // Development aid: OPENMM2_DEBUG_START_GOLD=<metres> starts a Cops and
+        // Robbers car that far from the first gold, facing it, each player on
+        // its own side (every machine knows the first places when it loads).
+        if (const char* g = std::getenv("OPENMM2_DEBUG_START_GOLD"); g && m_cr && m_player && m_world) {
+            const float r = static_cast<float>(str::parseDouble(g).value_or(30.0));
+            const float around = 2.0943951f * static_cast<float>(ctx.netGame->localId());
+            const Vec3 gold = m_cr->set().gold;
+            Vec3 at = gold + Vec3{r * std::cos(around), 0.0f, r * std::sin(around)};
+            phys::RayHit hit;
+            if (m_world->wheelProbe(at + Vec3{0.0f, 30.0f, 0.0f}, at - Vec3{0.0f, 30.0f, 0.0f}, hit, nullptr,
+                                    nullptr))
+                at.y = hit.position.y + 1.0f;
+            const float angle = std::atan2(-(gold.x - at.x), -(gold.z - at.z));
+            log::info("race: starts {:.0f} m from the gold at ({:.1f}, {:.1f}, {:.1f})", r, at.x, at.y, at.z);
+            m_player->setResetPos(at, angle);
+            m_player->reset();
+            m_pose = m_player->pose();
+            m_cams.reset(cameraTarget());
         }
     }
 
@@ -5530,8 +5558,8 @@ private:
             const bool go = (!multiplayer(ctx) || ctx.netGame->raceStarted()) &&
                             !(m_session && m_session->playerHeld());
             const auto c = m_autopilot->drive(dt, m_player->sim(), !go);
-            pedals.accelerator = c.throttle;
-            pedals.brake = c.brake;
+            pedals.accelerator = c.reverse ? 0.0f : c.throttle;
+            pedals.brake = c.reverse ? c.throttle : c.brake;
             pedals.steering = c.steering;
             pedals.handbrake = 0.0f;
         }
