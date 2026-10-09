@@ -210,7 +210,7 @@ int cmdNettrace(std::span<char* const> args) {
         return 1;
     }
     constexpr int kOffRail = 0x10;
-    std::vector<double> rail, moving, offRail, police, near, local, shownMoving, afterHit;
+    std::vector<double> rail, moving, offRail, police, policeMoving, near, local, shownMoving, afterHit;
     std::size_t present = 0, extra = 0, missing = 0, copFrames = 0, copTargets = 0;
     for (std::size_t i = 0; i < client.frames.size(); ++i) {
         const Frame& fr = client.frames[i];
@@ -238,6 +238,8 @@ int cmdNettrace(std::span<char* const> args) {
                 afterHit.push_back(e);
             if (c.kind == 1) {
                 police.push_back(e);
+                if (std::abs(h->speed) > 2.0)
+                    policeMoving.push_back(e);
                 ++copFrames;
                 copTargets += h->target != c.target ? 1 : 0;
             } else if ((c.flags & kOffRail) != 0) {
@@ -273,6 +275,7 @@ int cmdNettrace(std::span<char* const> args) {
     row("rail cars moving > 2 m/s", moving);
     row("off-rail (knocked) cars", offRail);
     row("police", police);
+    row("police moving > 2 m/s", policeMoving);
     row("any car within 40 m", near);
     row("knocked by the client", local);
     row("hit by the client, 1 s", afterHit);
