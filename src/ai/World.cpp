@@ -269,6 +269,16 @@ void World::reset() {
     updateSignals();
 }
 
+std::uint32_t World::globalSeedAfterReset(const Vec3& playerResetPos) {
+    reset();
+    const int room = roomAt(playerResetPos, 0);
+    std::uint32_t seed = 1; // ResetRandomSeed
+    seed = m_traffic->replayResetPopulation(room, seed);
+    seed = m_peds->replayResetPopulation(room, seed);
+    reset();
+    return seed;
+}
+
 void World::updateLights() {
     if (m_pendingLightSteps == 0)
         return;

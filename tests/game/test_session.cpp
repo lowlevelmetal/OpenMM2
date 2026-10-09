@@ -1,5 +1,6 @@
 #include "TestData.h"
 #include "city/CityData.h"
+#include "city/RoomLocator.h"
 #include "core/StringUtil.h"
 #include "game/Strings.h"
 #include "game/session/Gate.h"
@@ -504,7 +505,10 @@ TEST(Session, CruiseWreckWaterAndFallingOut) {
     ASSERT_TRUE(retail());
     auto s = makeSession(GameMode::Cruise, -1);
     ASSERT_TRUE(s);
-    // mmGame::RespawnXYZ: 2 m above an AI intersection.
+    // mmSingleRoam::InitOtherPlayers -> mmGame::RespawnXYZ: 2 m above an AI
+    // intersection.
+    const city::RoomLocator rooms(retail()->london.psdl, "london");
+    ASSERT_TRUE(s->placeRespawnStart(retail()->london, 1, [&](const Vec3& p) { return rooms.find(p); }));
     bool atIntersection = false;
     for (const auto& x : retail()->london.aiMap->intersections)
         atIntersection |= s->playerSpawn().m3.dist(x.center + Vec3{0, 2, 0}) < 1e-3f;

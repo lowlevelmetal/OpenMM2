@@ -747,6 +747,22 @@ void Pedestrians::reset() {
     publish();
 }
 
+std::uint32_t Pedestrians::replayResetPopulation(int room, std::uint32_t seed) {
+    m_rng.seed(seed);
+    // aiMap::Reset: AdjustPedestrians(0, the player's room) when the map has
+    // pedestrians.
+    const city::AiMap* map = m_net.source();
+    static const std::vector<std::uint16_t> kNone;
+    auto list = [&](int r) -> const std::vector<std::uint16_t>& {
+        if (!map || r < 0 || static_cast<std::size_t>(r) >= map->roomPathsIn.size())
+            return kNone;
+        return map->roomPathsIn[static_cast<std::size_t>(r)];
+    };
+    if (!m_peds.empty())
+        adjust(list(0), list(room));
+    return m_rng.state();
+}
+
 // --- Props ----------------------------------------------------------------------
 
 void Pedestrians::setObstacles(std::vector<PedObstacle> props, ObstacleStanding standing) {

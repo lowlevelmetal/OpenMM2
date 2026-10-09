@@ -5,6 +5,7 @@
 #include "TestData.h"
 #include "ai/World.h"
 #include "city/CityData.h"
+#include "city/RoomLocator.h"
 #include "game/Profile.h"
 #include "game/Strings.h"
 #include "game/session/CopsAndRobbers.h"
@@ -499,24 +500,24 @@ TEST(ParitySession, DeferredLightsCatchUp) {
 
 // mmGame::RespawnXYZ never starts a cruise in a room whose level flags
 // (CityData::levelRoomFlags, lvlRoomInfo) are subterranean, covered, water of
-// death or a terrain instance's (0x2E).
+// death or a terrain instance's (0x2E); the room is FindRoomId's of the
+// intersection's centre.
 TEST(ParitySession, CruiseStartsAvoidFlaggedRooms) {
     MM2_REQUIRE_GAME_DATA();
     ASSERT_TRUE(parityRetail());
-    const auto& city = parityRetail()->london;
-    ASSERT_TRUE(city.aiMap);
-    ASSERT_EQ(city.levelRoomFlags.size(), city.psdl.rooms.size());
-    std::uint32_t rng = 1;
-    for (int i = 0; i < 200; ++i) {
-        const auto start = randomIntersectionStart(city, rng);
-        ASSERT_TRUE(start);
-        const city::AiIntersection* found = nullptr;
-        for (const auto& x : city.aiMap->intersections)
-            if (x.center.x == start->x && x.center.z == start->z && x.center.y + 2.0f == start->y)
-                found = &x;
-        ASSERT_NE(found, nullptr) << i;
-        ASSERT_LT(found->room, city.levelRoomFlags.size());
-        EXPECT_EQ(city.levelRoomFlags[found->room] & 0x2E, 0) << found->room;
+    for (const auto* city : {&parityRetail()->london, &parityRetail()->sf}) {
+        ASSERT_TRUE(city->aiMap);
+        ASSERT_EQ(city->levelRoomFlags.size(), city->psdl.rooms.size());
+        const city::RoomLocator rooms(city->psdl, city->info.mapName);
+        const RoomLookup findRoom = [&](const Vec3& p) { return rooms.find(p, 0); };
+        std::uint32_t stream = 1;
+        for (int i = 0; i < 200; ++i) {
+            const auto start = respawnXYZ(*city, findRoom, {true, true}, stream, 1);
+            ASSERT_TRUE(start);
+            const auto& x = city->aiMap->intersections[static_cast<std::size_t>(start->intersection)];
+            EXPECT_EQ(start->position, x.center + Vec3(0.0f, 2.0f, 0.0f));
+            EXPECT_EQ(city->levelRoomFlags[static_cast<std::size_t>(findRoom(x.center))] & 0x2E, 0) << x.id;
+        }
     }
 }
 

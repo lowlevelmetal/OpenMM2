@@ -54,7 +54,10 @@ enum class PlayerHold : std::uint8_t {
 struct SessionOptions {
     float scoringBias = 1.0f; // tune/<car>.info ScoringBias (race score multiplier)
     bool skipCountdown = false;
-    std::uint32_t seed = 0;   // random parts (the cruise start); 0 = random
+    // Multiplayer cruise and Cops and Robbers: the seed mmGame::RespawnXYZ
+    // draws the player's start from (MM2: the local player's DirectPlay id;
+    // OpenMM2: 1 + its network id).
+    std::uint32_t seed = 1;
     // Line of sight between two points for mmSingleStunt::CheckCopPursuit
     // (the original probes the level); unset = always clear.
     std::function<bool(const Vec3& from, const Vec3& to)> lineOfSight;
@@ -84,6 +87,16 @@ public:
 
     // Starting places.
     Mat34 playerSpawn() const { return m_setup.playerSpawn; }
+    // Cruise and Cops and Robbers (setup().respawnStart): the mode's
+    // InitOtherPlayers, which mmGame::Init runs after aiMap::Reset, moves
+    // the player's start to mmGame::RespawnXYZ's pick (cruiseStart; the
+    // multiplayer seed is SessionOptions::seed). `globalSeed` is MM2's
+    // random seed as aiMap::Reset left it (ai::World::globalSeedAfterReset);
+    // `findRoom` is the level's room lookup. Returns the pick (nothing when
+    // the mode has no such start); playerSpawn(), setup().playerPlace and the
+    // water respawn follow it.
+    std::optional<RespawnPick> placeRespawnStart(const city::CityData& city, std::uint32_t globalSeed,
+                                                 const RoomLookup& findRoom);
     const std::vector<OpponentSetup>& opponents() const { return m_setup.opponents; }
     const std::vector<PoliceSetup>& police() const { return m_setup.police; }
 

@@ -124,6 +124,11 @@ public:
     // pedestrian reset and back in the pool in index order. The next step
     // populates the roads round the player's room.
     void reset();
+    // aiMap::Reset's AdjustPedestrians for a player in `room` (from room 0),
+    // drawn from MM2's one random stream starting at `seed` instead of this
+    // subsystem's own; returns the seed it leaves. The pedestrians stay
+    // placed until the next reset() (World::globalSeedAfterReset).
+    std::uint32_t replayResetPopulation(int room, std::uint32_t seed);
 
     const std::vector<Pedestrian>& peds() const { return m_public; }
     // The props the roads and intersections list (aiPath / aiIntersection

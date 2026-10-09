@@ -3,7 +3,8 @@
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 205 entries (a row may group closely related functions); verified
-88, fixed 87, deviation 6, inferred 4, open 1, openmm2 19. Missing: 17 MM2
+87, fixed 89, deviation 5, inferred 4, open 1, openmm2 19 (with round 3's
+conventions and cruise-spawn changes). Missing: 17 MM2
 features (11 open, 6 deviation).
 
 A second pass (2026-10-08) wired the race-side items the first pass and
@@ -51,8 +52,8 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `loadCheckpoints` | `mmPositions::Load` | verified | x, y, z, heading, radius (atoi), hit flag |
 | `headingDirection` | `mmWaypoints::GetStartAngle` users | verified | (sin h, 0, −cos h) |
 | `spawnAt` | `mmWaypoints::GetStart`, `GetStartAngle` | verified | rotation by −heading with MM2's degree factor |
-| `randomIntersectionStart` | `mmGame::RespawnXYZ` | verified | random intersection other than the first, rejecting underground, road and building rooms and freeway/alley paths, 2 m up, facing −Z; the bounded retry and the scan fallback are OpenMM2's guard against a city with no valid intersection |
-| `nextRandom` | `irand` | deviation | an LCG of the same form; MM2's global random stream is shared with every subsystem, so exact draws cannot match |
+| `respawnXYZ` (was `randomIntersectionStart`) | `mmGame::RespawnXYZ` | fixed | round 3 ([cruise-spawn](round3/cruise-spawn.md)): (counter + 1) draws a pick, rooms by FindRoomId of the centre, no retry cap (OpenMM2 only checks that some intersection fits) |
+| `cruiseStart`, `respawnCounter` (was `nextRandom`) | `irand`, `mmSingleRoam` / `mmMultiRoam` / `mmMultiCR` start, mmGame's respawn counter | fixed | round 3: MM2's generator; single player from the global stream as aiMap::Reset left it, multiplayer two seeded picks |
 | `loadRaceSetup`: race lookup, settings by difficulty | `mmRaceData`, `mmGameSingle::Init` | verified | amateur / professional rows |
 | `loadRaceSetup`: finish stand | `mmWaypoints::LoadCSV` | fixed | `pt_finish` is waypoint 0 of a circuit and the last waypoint of a checkpoint race only; Blitz and lessons use `pt_check` everywhere (OpenMM2 marked the last waypoint in every mode) |
 | `loadRaceSetup`: time limit and laps | `mmSingleBlitz::InitHUD`, `mmSingleCircuit::Init` | verified | clock in single-player Blitz only; laps from the menu or the table, at least 1 |
@@ -61,7 +62,7 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `loadRaceSetup`: opponents | `aiMap::Init`, `CrashCourse::SetEnvironment` | fixed | min(table count, OpponentDensity) racers; the crash course sets OpponentDensity to 8, so lessons load at most eight cars (OpenMM2 loaded every row) |
 | `loadRaceSetup`: opponent grid place | `aiRouteRacer::Init` | verified | first `.opp` row, its fourth column in degrees × 0.017444445, not negated |
 | `loadRaceSetup`: police | `aiRaceData::aiRaceData`, `aiPoliceOfficer::Reset` | fixed | posts turned by heading x −0.017444445, MM2's own degree factor (round 3, conventions: OpenMM2 used pi / 180); how many are placed is RaceScreen's (cop density) |
-| `loadRaceSetup`: player start | `mmWaypoints::GetStart`, `mmSingleRoam::InitOtherPlayers` | verified | first waypoint; cruise at a random intersection; the first Blitz start without an AI map is an OpenMM2 fallback |
+| `loadRaceSetup`: player start | `mmWaypoints::GetStart`, the cruise modes' `InitGameObjects` | verified | first waypoint; cruise at the InitGameObjects place until `Session::placeRespawnStart` (round 3); the first Blitz start without an AI map is an OpenMM2 fallback |
 
 ## Types, race configuration and strings (`src/game/session/Types.h`, `src/game/RaceConfig.h`, `src/game/Strings.{h,cpp}`)
 
@@ -86,7 +87,7 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `modeText` | the modes' `UpdateGame` string ids | verified | every id compared per mode (single and multiplayer) |
 | `lessonText` | `mmSingleStunt::Update*` countdown strings | verified | |
 | `formatTime` | `GetLocTime` | verified | M:SS:HH, +0.005 then truncated, "  ---  " for none |
-| `Session::create` | `mmGameManager` / the mode's `Init` | openmm2 | wiring; seeds the cruise start |
+| `Session::create` | `mmGameManager` / the mode's `Init` | openmm2 | wiring |
 | `str`, `setMessage`, `setMessage2` | `AngelReadString`, `mmHUD::SetMessage`, `SetMessage2` | verified | SetMessage clears the second line |
 | `currentLesson`, `lessonOpponentOffset` | `mmSingleStunt` event index, `GetOpponentIndex` | verified | |
 | `wantsMap` | `mmSingleStunt::UpdateEvade` | fixed | new: the Evade event turns the map on during its first countdown line |

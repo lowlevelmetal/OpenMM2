@@ -123,6 +123,11 @@ public:
     // The next step populates the roads around the player's room. A car's
     // wreck flag (aiVehicleInstance flag 2) survives, as in MM2.
     void reset();
+    // aiMap::Reset's AdjustAmbients for a player in `room` (from room 0),
+    // drawn from MM2's one random stream starting at `seed` instead of this
+    // subsystem's own; returns the seed it leaves. The roads stay populated
+    // until the next reset() (World::globalSeedAfterReset).
+    std::uint32_t replayResetPopulation(int room, std::uint32_t seed);
     // Convenience for tools: a player of default size at `pos` moving at `vel`.
     void step(float dt, const Vec3& pos, const Vec3& vel, int playerRoom);
 

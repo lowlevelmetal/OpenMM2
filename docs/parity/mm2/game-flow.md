@@ -3,8 +3,9 @@
 Audited from MM2Recomp (midtown2.exe build 3393) on 2026-10-08.
 
 Summary: 608 reachable functions (overloads counted separately) in 38
-classes and the free functions; ported 382 (of which newly ported 62),
-replaced 66, not needed 151, open 9. Constructors, destructors and the
+classes and the free functions; ported 383 (of which newly ported 62),
+replaced 65, not needed 151, open 9 (mmMultiCR::Reset moved from replaced
+to ported in round 3's cruise-spawn audit). Constructors, destructors and the
 deleting destructors of a class share one row. Some behaviours inside
 ported or replaced functions are still open too; every open item is listed
 under Open items.
@@ -40,9 +41,9 @@ them.
 | What | MM2 | OpenMM2 |
 | --- | --- | --- |
 | Player, Blitz / circuit / checkpoint race / crash course | the modes' `InitGameObjects`: `SetResetPos(GetStart)`, angle `GetStartAngle` x -0.017453292, `vehCar::Reset`; then `mmGame::InitOtherPlayers` (via `mmGameSingle` for the circuit): probe 2 m above the body to 10 m below (`dgPhysManager::Collide`, mask 0x20), reset place 0.9 m above the hit | `RaceSetup::playerPlace` / `playerDrop` (`StartDrop::OnGround`), `SimVehicle::setResetPos`, `reset`, `settleOnGround` |
-| Player, cruise | `mmSingleRoam::InitOtherPlayers`: `RespawnXYZ(true, true, false)`, intersection centre + 2 m, angle 0, no probe | `randomIntersectionStart`, `StartDrop::None` |
+| Player, cruise | `mmSingleRoam::InitGameObjects` at mmGame's (0, 10, 0); after `aiMap::Reset`, `mmSingleRoam::InitOtherPlayers`: `RespawnXYZ(true, true, false)` from the global stream as aiMap::Reset left it, intersection centre + 2 m, angle 0, no probe | `RaceSetup::respawnStart`, `Session::placeRespawnStart`, `ai::World::globalSeedAfterReset`, `StartDrop::None` (round 3: [cruise-spawn](../round3/cruise-spawn.md)) |
 | Player, multiplayer races | `mmMulti*::InitNetworkPlayers`: `StartXYZ(slot)` from the start (wide grid when the model radius > 6 or a trailer), `FindGroundPos` (7.5 m up, 15 m down), `SetResetPos`, `Reset`; slot = `NetStartArray` (the host's enumeration order at START) | `multiplayerGridOffset(startSlot)`, `findGroundPos`, `StartDrop::FindGround` |
-| Player, multiplayer cruise / Cops and Robbers | `RespawnXYZ(true, true, true)`: seeded with the local player id, a counter of draws | `randomIntersectionStart`, seed 1 + player id (deviation: own random stream) |
+| Player, multiplayer cruise / Cops and Robbers | `mmGameMulti::InitOtherPlayers`: the mode's `Reset` and then `InitNetworkPlayers` each call `RespawnXYZ(true, true, true)`, seeded with the local player id, counting one more draw a pick each time; the second pick is the start | `cruiseStart`, seed 1 + player id (deviation: no DirectPlay ids; round 3: [cruise-spawn](../round3/cruise-spawn.md)) |
 | Racers | `aiRouteRacer::Init` (first `.opp` row, its 4th column x 0.017444445), then `mmGame::CollideAIOpponents`: the same probe from the model origin, 0.9 m up | `RaceScreen::spawnOpponents` (vehicle audit's settle) |
 | Police | `aiPoliceOfficer::Reset`: their post and angle, no probe; how many: trunc(posts x cop density) | `spawnPolice` |
 | Multiplayer | no racers or police; the race modes load no AI map at all; cruise and Cops and Robbers keep only pedestrians (`mmGameMulti::Init`) | `loadAi`, `loadRaceSetup` (new) |
@@ -114,7 +115,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmGame::InitOtherPlayers` | ported (new) | `RaceSetup::playerDrop`, `SimVehicle::settleOnGround` (vehicle audit) | from the body 2 m up to 10 m down, 0.9 m above the hit; OpenMM2 put the model origin on the ground (0.7 m lower) |
 | `mmGame::CollideAIOpponents` | ported (new) | `RaceScreen::spawnOpponents` | the same probe from each racer's model origin |
 | `mmGame::FindGroundPos` | ported (new) | `game::session::findGroundPos` | 7.5 m up to 15 m down, the hit itself or the point; only the multiplayer grids |
-| `mmGame::RespawnXYZ` | ported | `randomIntersectionStart` | intersection `irand % (n - 1) + 1`; rejects rooms 0x24, and with its second argument rooms 0x0A and alley paths (0x2), with the first freeway paths (0x4); 2 m up, angle 0; the seeded form (multiplayer): the player id as seed and a counter of draws (deviation: OpenMM2's own stream; MM2's single-player start depends on every earlier draw of the seed-1 stream) |
+| `mmGame::RespawnXYZ` | ported | `respawnXYZ`, `cruiseStart` | (counter + 1) draws `irand % (n - 1) + 1` a pick, the last kept, until one fits; rejects rooms (FindRoomId of the centre) 0x24, and with its second argument rooms 0x0A and alley paths (0x2), with the first freeway paths (0x4); 2 m up, angle 0; the seeded form (multiplayer): the player id as seed, the run-long counter advanced. Single player draws from the global stream as aiMap::Reset left it (round 3: [cruise-spawn](../round3/cruise-spawn.md)) |
 | `mmGame::Reset` | ported | `Session::restart`, RaceScreen `Restart` | props (props audit), cars to their reset places, water timer, race-over flag, pre-race speech, music restart (audio audit), elasticity cap; `aiMap::Reset` (ambient traffic, pedestrians, lights, seed 1) open: ai subsystem |
 | `mmGame::StartMusic`, `UpdateDMusic` | ported | `MusicDirector` | audio record |
 | `mmGame::Update` | ported | `RaceScreen::update`, `Session::update` | the water flag is the splash's latched active flag (new: was the depth each frame); water and fall checked after the ending too (new); one-step offset accepted |
@@ -357,7 +358,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmMultiRoam::InitNetworkPlayers`, `mmMultiRace::InitNetworkPlayers`, `mmMultiCircuit::InitNetworkPlayers`, `mmMultiBlitz::InitNetworkPlayers` | ported | `loadVehicle` (grid, ground), `updateRemoteCars` | the remote cars are replaced by snapshots |
 | `mmMultiRoam::InitGameObjects`, `mmMultiRace::InitGameObjects`, `mmMultiCircuit::InitGameObjects`, `mmMultiBlitz::InitGameObjects` | ported | `RaceSetup`, sounds | |
 | `mmMultiRoam::InitHUD`, `mmMultiRace::InitHUD`, `mmMultiCircuit::InitHUD`, `mmMultiBlitz::InitHUD` | ported | `Hud` | the place readout now counts the network players (new); Blitz's place readout and no checkpoint cards (HUD audit) |
-| `mmMultiRoam::Reset` | ported | `RaceSetup` start | runs only at the start (a second seeded draw in MM2) |
+| `mmMultiRoam::Reset` | ported | `cruiseStart` | at the start (from mmGameMulti::InitOtherPlayers) its RespawnXYZ is the first of the two seeded picks; no in-race restart in a network game (round 3: [cruise-spawn](../round3/cruise-spawn.md)) |
 | `mmMultiRace::Reset`, `mmMultiCircuit::Reset`, `mmMultiBlitz::Reset` | replaced | the lobby | no in-race restart |
 | `mmMultiRoam::UpdateGame`, `SwitchState` | ported | `Session::start` / `updateRace` | "Go!" and the car released at once (new: no shared start in cruise) |
 | `mmMultiRace::UpdateGame`, `SwitchState`, `mmMultiCircuit::UpdateGame`, `SwitchState`, `mmMultiBlitz::UpdateGame`, `SwitchState` | ported | `Session::updateRace`, `updateNetRace` | countdown, wreck penalty (no warning, finish or clock check during it, new), finish line, the wait for all finishers and the timeout (new); the ready gate and the end taper are replaced (session record) |
@@ -379,10 +380,10 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmMultiCR::InitHUD` | ported | `Hud` CR readouts | the per-player roster, the HUD gold indicator and the map's bank / hideout / gold markers are open (HUD) |
 | `mmMultiCR::InitGameObjects` | ported | `Hud::drawCrObjects` | |
 | `mmMultiCR::InitNetworkPlayers` | ported | `RaceSetup` start | team colours of the network players' icons (HUD audit) |
-| `mmMultiCR::Reset` | replaced | the lobby | |
+| `mmMultiCR::Reset` | ported | `cruiseStart` | at the start (from mmGameMulti::InitOtherPlayers) its RespawnXYZ is the first of the two seeded picks; the rest is the lobby's (round 3: [cruise-spawn](../round3/cruise-spawn.md)) |
 | `mmMultiCR::LoadCSV` | ported | `loadCrLocations` | fewer than three rows: every place an intersection (new; OpenMM2 turned the mode off) |
 | `mmMultiCR::LoadSets`, `GetRandomIndex`, `ResetPositions` | not needed | — | `multicopsets.csv` exists in no retail city (ResetPositions would give the bank the hideout's z) |
-| `mmMultiCR::GetNewSet`, `GetRandomPoints` | ported | `CopsAndRobbers::newSet`, `randomPoint` | intersections never in rooms 0x24 (new); MM2's picker seeds its own stream from the clock (deviation: the shared seed) |
+| `mmMultiCR::GetNewSet`, `GetRandomPoints` | ported | `CopsAndRobbers::newSet`, `randomPoint` | intersections from `respawnXYZ(false, false)`, never in rooms 0x24 by FindRoomId of the centre (round 3); MM2's coin seeds a second stream from the clock and its intersection draws come from the host's global stream (deviation: the shared seed, one draw a pick) |
 | `mmMultiCR::UpdateGame`, `SwitchState` | ported | `updateNetwork`, Session | |
 | `mmMultiCR::UpdateGold` | ported (new) | `updateNetwork` | the gold's room must be the car's, a host alone cannot take it, the carrier does not see its gold |
 | `mmMultiCR::UpdateBank`, `UpdateHideout` | ported (new) | `updateNetwork` | the base's room covered / underground or the car's |

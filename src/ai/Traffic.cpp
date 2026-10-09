@@ -746,6 +746,15 @@ void Traffic::reset() {
     publish();
 }
 
+std::uint32_t Traffic::replayResetPopulation(int room, std::uint32_t seed) {
+    m_rng.seed(seed);
+    // aiMap::Reset: AdjustAmbients(0, the player's room) when the map has
+    // ambient cars.
+    if (!m_cars.empty())
+        adjustAmbients(0, room);
+    return m_rng.state();
+}
+
 // --- aiGoalRandomDrive ------------------------------------------------------
 
 bool Traffic::chooseNext(Car& c) {
