@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <cstdio>
 #include <random>
 
 using namespace mm2;
@@ -475,6 +476,64 @@ TEST(PropSync, LossyLinkConverges) {
     EXPECT_GE(knocked, 1u);
     EXPECT_EQ(r.propClient->stats().knocks, knocked);
     EXPECT_EQ(r.propClient->stats().refused, 0u);
+}
+
+// A big crash: a car ploughs through a field of 60 props. Every message
+// stays one datagram; the ring (40, MM2's dgBangerManager) bounds it, the
+// oldest knocked-over props disappearing as it wraps, on every machine alike.
+TEST(PropSync, ABigCrashStaysWithinADatagram) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    Machine host(lib), client(lib);
+    std::vector<PlacedProp> field;
+    for (int i = 0; i < 60; ++i)
+        field.push_back({"light", Mat34::translation({-1.5f + static_cast<float>(i % 3) * 1.5f, 0.0f,
+                                                      -static_cast<float>(i / 3) * 2.0f}),
+                         1, PlacedProp::Source::Instance, true});
+    host.place(field);
+    client.place(field);
+    client.set.setReplica([](const phys::Instance&) { return false; });
+    PropHost propHost;
+    PropClient propClient(propCatalog(client.set));
+    Car car({0, 1, 4.0f}, {0, 0, -25});
+    host.world.add(&car.body);
+    std::size_t largest = 0, bytes = 0, events = 0, messages = 0;
+    double now = 10000.0;
+    for (int i = 0; i < 8 * 60; ++i) {
+        if (i == 5 * 60)
+            host.world.remove(&car.body);
+        now += kStepMs;
+        host.step();
+        const auto t = static_cast<std::uint32_t>(now);
+        propHost.knocked(host.set.takeKnocks(), t);
+        for (auto& e : propHost.takeKnockEvents()) {
+            EXPECT_LE(e.size(), net::kMaxEventPayload);
+            ++events;
+            net::PropKnocksEvent k;
+            ASSERT_TRUE(net::decodePayload(e, k));
+            propClient.receiveKnocks(k);
+        }
+        if (auto m = propHost.build(host.set, t, static_cast<std::uint64_t>(now), propCatalog(host.set))) {
+            const auto encoded = net::encodeMessage(*m);
+            largest = std::max(largest, encoded.size());
+            bytes += encoded.size();
+            ++messages;
+            propClient.receive(*m, now + 50.0);
+        }
+        propClient.update(client.set, now, nullptr);
+        client.step();
+    }
+    std::size_t knocked = 0;
+    for (std::size_t i = 0; i < 60; ++i) {
+        knocked += host.set.standing(i) ? 0 : 1;
+        EXPECT_EQ(client.set.standing(i), host.set.standing(i)) << i;
+    }
+    EXPECT_GT(knocked, 20u);
+    EXPECT_LT(largest, 1100u);
+    // About 20 messages a second while the props fly, far fewer once they rest.
+    EXPECT_LT(bytes / 8, 12000u); // bytes a second, on average over the crash
+    std::printf("big crash: %zu props knocked, %zu messages (largest %zu bytes, %zu bytes/s), %zu knock events\n",
+                knocked, messages, largest, bytes / 8, events);
 }
 
 // A machine that loads the race late (or a prop knocked far from it) gets
