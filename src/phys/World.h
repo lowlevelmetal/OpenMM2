@@ -258,9 +258,11 @@ public:
     // again with it once the host's state has corrected an earlier one.
     void replaySample(std::span<Body* const> bodies, float dt);
     // OpenMM2: the samples replaySample runs from here on are one replay
-    // (a light prop the replayed car has hit stays out of its way until the
+    // (the props the replayed car has pushed move on through it, until the
     // next replay or sample; see collideHeld).
     void beginReplay();
+    // Inside replaySample (the level's sources may show what a replay meets).
+    bool replaying() const { return m_replaying; }
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
     // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw
@@ -359,7 +361,13 @@ private:
     Collider m_levelCollider;
     Collider m_tempA, m_tempB;
     InertialCS m_heldIcs; // replaySample: what a held body or prop would have (taken by nothing)
-    std::vector<const Instance*> m_replayYielded; // replaySample: light props the replay has hit
+    std::vector<const Instance*> m_replayYielded; // replaySample: light bodies the replay has hit
+    struct ReplayBody {
+        const Instance* instance = nullptr;
+        InertialCS ics; // the body the prop takes in the replay, pushed by its hits
+    };
+    std::vector<ReplayBody> m_replayBodies;
+    bool m_replaying = false;
     Mat34 m_tempMatrixA, m_tempMatrixB;
     std::vector<Intersection> m_isectsA, m_isectsB;
     std::vector<Impact> m_impacts;

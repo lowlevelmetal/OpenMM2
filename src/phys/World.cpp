@@ -525,6 +525,7 @@ void World::step(float dt) {
     if (m_beforeSample)
         m_beforeSample();
     m_replayYielded.clear();
+    m_replayBodies.clear();
     const float invDt = 1.0f / dt;
     // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
     sampleTime() = {dt, invDt};
@@ -632,7 +633,11 @@ void World::replaySample(std::span<Body* const> bodies, float dt) {
     sampleTime() = {dt, invDt};
     const bool stepping = m_stepping;
     m_stepping = true;
+    m_replaying = true;
     const auto replayed = [&](const Body* b) { return std::ranges::find(bodies, b) != bodies.end(); };
+    // OpenMM2: the props the replay has pushed move on (collideHeld).
+    for (ReplayBody& r : m_replayBodies)
+        r.ics.update(dt, invDt);
     // The update, as step() runs it for these bodies.
     for (Body* b : bodies)
         if (b->updates && b->controller)
@@ -698,6 +703,7 @@ void World::replaySample(std::span<Body* const> bodies, float dt) {
         if (b->updates && b->controller)
             b->controller->afterCollisions(*b, dt, *this);
     m_stepping = stepping;
+    m_replaying = false;
 }
 
 bool World::collideHeld(Body& a, Instance& b) {
@@ -705,33 +711,45 @@ bool World::collideHeld(Body& a, Instance& b) {
     // temporary collider without a body, moving at B's own velocity, so
     // that only A takes the impulse and the push; nothing is attached, no
     // banger breaks loose and nothing is marked hit.
+    if (!b.acceptsContact(a))
+        return false; // OpenMM2: as collideInstances (a network client's props)
     const Bound* boundA = a.bound(0);
     const Bound* boundB = b.bound(0);
     if (!boundA || !boundB || boundB->type == BoundType::ForceSphere)
         return false;
-    m_tempMatrixB = b.matrix();
-    const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
     Collider* colA = &a.collider;
     // A body (moved by the simulation or from outside) as a kinematic one,
     // a static instance as itself. OpenMM2 (the props of a network race):
     // what gives way when a car really hits it meets the replayed car with
-    // its mass, though it still holds still and takes nothing: a simulated
-    // body (a knocked-over prop's active) with a copy of its ICS, an
-    // instance that takes a body when hit (a standing or resting prop) with
-    // the one it would take (Instance::heldInertia).
+    // its mass, though the world is not changed. A simulated body (a
+    // knocked-over prop's active) with a copy of its ICS; a light one (under
+    // a quarter of the car's mass) has given way once hit, as the real one
+    // flies off (inferred stand-in for its flight). An instance that takes a
+    // body when hit (a standing or resting prop, Instance::heldInertia) with
+    // the body it would take, which then moves for the rest of the replay
+    // as the hits push it (no gravity, no city: a replay is short).
     Body* entity = b.entity();
-    // Such a light one (under a quarter of the car's mass: the props, not a
-    // parked car) has given way once the replayed car has hit it: the real
-    // one flies off. Inferred stand-in for its motion.
     if (std::ranges::find(m_replayYielded, &b) != m_replayYielded.end())
         return false;
     InertialCS* held = nullptr;
+    bool replayBody = false;
     if (entity && !entity->kinematic && entity->ics.mass > 0.0f) {
         m_heldIcs = entity->ics;
         held = &m_heldIcs;
-    } else if (!entity && b.heldInertia(m_heldIcs)) {
-        held = &m_heldIcs;
+    } else if (!entity) {
+        const auto it = std::ranges::find(m_replayBodies, &b, &ReplayBody::instance);
+        if (it != m_replayBodies.end()) {
+            held = &it->ics;
+            replayBody = true;
+        } else if (b.heldInertia(m_heldIcs)) {
+            m_heldIcs.gravity = {};
+            m_replayBodies.push_back({&b, m_heldIcs});
+            held = &m_replayBodies.back().ics;
+            replayBody = true;
+        }
     }
+    m_tempMatrixB = replayBody ? held->matrix : b.matrix();
+    const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
     if (held)
         m_tempB.init(boundB, &m_tempMatrixB, held);
     else if (entity)
@@ -757,23 +775,31 @@ bool World::collideHeld(Body& a, Instance& b) {
         return false;
     std::span<Impact> impacts(m_impacts.data(), static_cast<std::size_t>(n));
     const float weight = 1.0f / static_cast<float>(n);
-    bool broke = false;
-    if (b.isBanger() && !entity) {
+    // A standing prop's break test, until it has broken loose in this replay.
+    const bool banger = b.isBanger() && !entity && !(replayBody && held->linearMomentum.mag2() > 0.0f);
+    if (banger) {
         const float limit2 = b.bangerImpulseLimit2();
+        bool broke = false;
         for (Impact& im : impacts)
             broke = calcBangerImpact(im, weight, limit2) || broke;
+        if (!broke && replayBody) {
+            // It held (dgBangerActive::DetachMe): it stays where it stands.
+            held->linearImpulse = {};
+            held->angularImpulse = {};
+        }
     } else {
         for (Impact& im : impacts)
             calcImpact(im, weight);
     }
-    const bool gives = held && (broke || !b.isBanger()) && colA->ics &&
-                       held->mass < colA->ics->mass * 0.25f;
-    if (gives)
+    if (held && !replayBody && colA->ics && held->mass < colA->ics->mass * 0.25f)
         m_replayYielded.push_back(&b);
     return true;
 }
 
-void World::beginReplay() { m_replayYielded.clear(); }
+void World::beginReplay() {
+    m_replayYielded.clear();
+    m_replayBodies.clear();
+}
 
 bool World::trivialCollide(const Instance& a, const Instance& b) const {
     // dgPhysManager::TrivialCollideInstances: bounding spheres. A banger

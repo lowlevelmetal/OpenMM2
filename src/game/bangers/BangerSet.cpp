@@ -133,6 +133,9 @@ struct BangerSet::DataBounds {
 struct BangerSet::ActiveBody final : phys::Body {
     Active* owner = nullptr;
     void detach() override;
+    // OpenMM2: a replayed car meets the prop this piece broke off as it
+    // stood (a replay ghost), not the piece.
+    bool acceptsContact(const phys::Instance& other) const override;
 };
 
 // Its body's phInertialCS is dgBangerActive::GetICS.
@@ -180,7 +183,7 @@ public:
     // the prop stops colliding this way instead.
     const phys::Bound* bound(int which) const override {
         const BangerSet::Instance& inst = m_set.m_instances[m_index];
-        if (inst.state == State::Gone || !inst.data)
+        if ((inst.state == State::Gone && !m_set.replayGhost(m_index)) || !inst.data)
             return nullptr;
         const DataBounds& b = m_set.boundsOf(*inst.data);
         if (which == 1 && b.box)
@@ -203,7 +206,7 @@ public:
     }
     phys::Body* attachEntity() override { return m_set.attachEntity(m_index); }
 
-    bool isBanger() const override { return banger; }
+    bool isBanger() const override { return banger || m_set.replayGhost(m_index); }
     float bangerImpulseLimit2() const override {
         const BangerSet::Instance& inst = m_set.m_instances[m_index];
         return inst.data ? inst.data->impulseLimit2 : 0.0f;
@@ -232,7 +235,7 @@ public:
     // OpenMM2: a network client's props take contacts from its own car and
     // its own props only.
     bool acceptsContact(const phys::Instance& other) const override {
-        return m_set.acceptsFrom(m_index, other);
+        return !m_set.replayGhostPiece(m_index) && m_set.acceptsFrom(m_index, other);
     }
     // OpenMM2: the active a car's hit would attach (World::replaySample).
     bool heldInertia(phys::InertialCS& out) const override { return m_set.heldInertia(m_index, out); }
@@ -420,6 +423,12 @@ void BangerSet::instancesIn(int room, std::vector<phys::Instance*>& out) const {
     for (Prop* p : m_rooms[static_cast<std::size_t>(room)])
         if (p->collidable)
             out.push_back(p);
+    // OpenMM2: in a network client's replay, the props its car broke loose
+    // lately, where they stood.
+    if (m_world && m_world->replaying())
+        for (const Ghost& g : m_ghosts)
+            if (m_instances[g.prop].room == room && m_instances[g.prop].state == State::Gone)
+                out.push_back(m_props[g.prop].get());
 }
 
 // --- Setup -----------------------------------------------------------------------------------
@@ -738,6 +747,10 @@ void BangerSet::detachMe(Active& a) {
 
 void BangerSet::ActiveBody::detach() { owner->set->worldDetach(*owner); }
 
+bool BangerSet::ActiveBody::acceptsContact(const phys::Instance&) const {
+    return owner->instance < 0 || !owner->set->replayGhostPiece(static_cast<std::size_t>(owner->instance));
+}
+
 void BangerSet::worldDetach(Active& a) {
     // dgPhysManager::Update detaches a type-1 mover outside the active rooms
     // through its instance (lvlInstance vtable +0x28).
@@ -802,6 +815,10 @@ void BangerSet::unhitImpact(std::size_t i, const phys::Instance* by) {
     Prop& unhitProp = *m_props[i];
     if (m_recordKnocks && !m_instances[i].everHit)
         m_knocks.push_back({i, by}); // OpenMM2: network games (game/net/PropSync)
+    // OpenMM2: a network client's own car broke it loose: its replays meet
+    // it where it stood for a while (replayGhost).
+    if (m_replica && m_world && !m_instances[i].everHit && by && m_localToucher && m_localToucher(*by))
+        m_ghosts.push_back({i, m_world->time()});
 
     if (d.numParts == 0) {
         // A hit instance from the ring takes the prop's place in its room
@@ -993,6 +1010,11 @@ void BangerSet::declare(Active& a, float dt) {
 }
 
 void BangerSet::update(float dt) {
+    // OpenMM2: a client's replays meet a prop its car broke loose for this
+    // long (as long as the host's correction of the car may reach back).
+    if (m_world)
+        std::erase_if(m_ghosts,
+                      [now = m_world->time()](const Ghost& g) { return now - g.time > kGhostSeconds; });
     // dgBangerActive::PostUpdate, which the physics manager calls on its
     // movers after the frame's samples: an active that fell asleep or below
     // the city detaches.
@@ -1124,7 +1146,7 @@ bool BangerSet::heldInertia(std::size_t i, phys::InertialCS& ics) const {
     if (i >= m_instances.size())
         return false;
     const Instance& inst = m_instances[i];
-    if (!inst.data || inst.state == State::Gone || inst.active >= 0)
+    if (!inst.data || (inst.state == State::Gone && !replayGhost(i)) || inst.active >= 0)
         return false;
     const BangerData& d = *inst.data;
     ics = phys::InertialCS{};
@@ -1138,6 +1160,21 @@ bool BangerSet::heldInertia(std::size_t i, phys::InertialCS& ics) const {
         ics.angularMomentum = rowTimes(inst.mirrorSpin, ics.worldInertia());
     }
     return true;
+}
+
+bool BangerSet::replayGhost(std::size_t i) const {
+    if (!m_world || !m_world->replaying() || m_ghosts.empty())
+        return false;
+    return std::ranges::any_of(m_ghosts, [i](const Ghost& g) { return g.prop == i; });
+}
+
+bool BangerSet::replayGhostPiece(std::size_t i) const {
+    if (!m_world || !m_world->replaying() || m_ghosts.empty() || i >= m_instances.size())
+        return false;
+    const int source = m_instances[i].source;
+    return m_instances[i].everHit && source >= 0 && std::ranges::any_of(m_ghosts, [source](const Ghost& g) {
+               return g.prop == static_cast<std::size_t>(source);
+           });
 }
 
 bool BangerSet::isActiveBody(const phys::Instance* i) const {
@@ -1190,6 +1227,7 @@ void BangerSet::restoreStanding(std::size_t i) {
     Prop& prop = *m_props[i];
     if (prop.banger)
         return;
+    std::erase_if(m_ghosts, [i](const Ghost& g) { return g.prop == i; });
     // dgUnhitBangerInstance::Reset: back in its room, standing.
     Instance& inst = m_instances[i];
     if (Active* a = activeOf(i))

@@ -376,6 +376,42 @@ TEST(PropSync, OtherCarsPassThroughAClientsProps) {
 // (World::replaySample): the props it meets there hold still, but with the
 // mass a real hit gives them, so the replayed car loses what the real one
 // does instead of stopping as against a wall.
+// A client that replays its car through the sample where its car knocked a
+// prop (the host's state came from before the knock) meets the prop where it
+// stood, not knocked and gone: the replay takes the same knock and ends where
+// the real samples did.
+TEST(PropSync, ReplayThroughAKnockTakesTheSameKnock) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    Machine client(lib);
+    client.place(layout());
+    Car car({0, 1, 4.5f}, {0, 0, -10});
+    client.set.setReplica([&car](const phys::Instance& other) { return &other == &car.body; });
+    client.world.add(&car.body);
+    // The state a correction would go back to: before the hit.
+    for (int i = 0; i < 5; ++i)
+        client.step();
+    ASSERT_TRUE(client.set.standing(0));
+    const Mat34 matrix = car.body.ics.matrix;
+    const Vec3 velocity = car.body.ics.linearVelocity;
+    for (int i = 0; i < 25; ++i)
+        client.step();
+    ASSERT_FALSE(client.set.standing(0)); // the real samples knocked it
+    const float real = car.body.ics.linearVelocity.z;
+    // Back to the earlier state, and the same samples again as a replay.
+    car.body.place(matrix);
+    car.body.ics.linearVelocity = velocity;
+    car.body.ics.linearMomentum = velocity * car.body.ics.mass;
+    phys::Body* bodies[] = {&car.body};
+    client.world.beginReplay();
+    for (int i = 0; i < 25; ++i)
+        client.world.replaySample(bodies, kDt);
+    EXPECT_FALSE(client.set.standing(0)); // a replay changes no prop
+    EXPECT_NEAR(car.body.ics.linearVelocity.z, real, 0.5f) << "real " << real;
+    EXPECT_GT(car.body.ics.linearVelocity.z, -9.9f); // it met the prop
+    client.world.remove(&car.body);
+}
+
 TEST(PropSync, ReplayedCarMeetsAPropAsARealSampleDoes) {
     TempBangers files;
     bangers::BangerDataLibrary lib(files.vfs);

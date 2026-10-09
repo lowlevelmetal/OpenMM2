@@ -224,6 +224,13 @@ public:
     // (phys::Instance::heldInertia, for World::replaySample); false for an
     // instance with an active or out of the world.
     bool heldInertia(std::size_t i, phys::InertialCS& ics) const;
+    // A client's replay of its car (phys::World::replaying) meets a placed
+    // prop its car broke loose in the last kGhostSeconds as it stood there
+    // (a "ghost", standing again for the replay only), and not the pieces it
+    // became: the replayed car takes the knock the real one took.
+    bool replayGhost(std::size_t i) const;
+    bool replayGhostPiece(std::size_t i) const;
+    static constexpr double kGhostSeconds = 1.0;
 
     // A network client: only this machine's own car (`localToucher`) and the
     // props this set simulates itself may touch a prop (phys::Instance::
@@ -324,6 +331,11 @@ private:
     bool m_replica = false;
     std::function<bool(const phys::Instance&)> m_localToucher;
     std::vector<std::size_t> m_mirrors; // a client's instance per host ring slot (npos: none yet)
+    struct Ghost {
+        std::size_t prop = 0;
+        double time = 0.0; // world time it broke loose
+    };
+    std::vector<Ghost> m_ghosts; // a client's own car's knocks, for its replays
     std::size_t m_skipped = 0;
     bool m_ageMode = false; // dgBangerDataManager +0x2a8a8 (cleared by mmGame::Init)
     fx::FixedTicker m_ticker;
