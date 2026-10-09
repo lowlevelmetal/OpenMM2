@@ -14,10 +14,12 @@ using game::NetGame;
 
 namespace {
 
-// Distinct ports per test process so parallel ctest runs do not collide.
+// Each test file has its own block of ports, all below 49152: Windows hands
+// out and reserves ports in its dynamic range (49152-65535), where a bind can
+// fail. Within a block, distinct ports per process for parallel ctest runs.
 std::uint16_t basePort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        33000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 4000 * 2);
+        33000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 2000 * 2);
     return port;
 }
 
