@@ -72,7 +72,7 @@ record's summary counts them:
 | phys-bounds | 159 | 101 | 36 | 13 | 1 | 0 | 8 |
 | vehicle | 141 | 76 | 42 | 6 | 2 | 1 | 14 |
 | ai-vehicles | 170 | 71 | 67 | 3 | 2 | 1 | 26 |
-| ai-ambient-city | 236 | 116 | 61 | 13 | 22 | 4 | 20 |
+| ai-ambient-city | 236 | 116 | 63 | 11 | 22 | 4 | 20 |
 | session | 205 | 87 | 89 | 5 | 4 | 1 | 19 |
 | camera-props | 195 | 107 | 57 | 11 | 2 | 0 | 18 |
 | rendering-fx | 197 | 67 | 95 | 8 | 3 | 4 | 20 |
@@ -80,7 +80,7 @@ record's summary counts them:
 | frontend-ui | 151 | 80 | 39 | 11 | 3 | 2 | 16 |
 | formats | 119 | 23 | 44 | 11 | 7 | 0 | 34 |
 | OpenMM2-only | 34 | 6 | 8 | 5 | 4 | 1 | 10 |
-| **Total** | **2078** | **878** | **789** | **106** | **70** | **15** | **220** |
+| **Total** | **2078** | **878** | **791** | **104** | **70** | **15** | **220** |
 
 The open rows and each record's "Missing" table list what still differs
 from MM2 and what porting it needs. The larger missing features are the
@@ -126,6 +126,36 @@ and the open behaviours inside ported functions, are listed in each
 record's Open section; the largest are late joins for network cruise and
 Cops and Robbers, the network tuning checksum, the water respawn sync and
 remote cars' sounds and damage.
+
+## Round 3: cross-cutting themes (2026-10-13)
+
+Two differences the maintainer saw after both audits (traffic lights out of
+line with their glows, and where cruise mode starts) were classes of bug
+that a function-by-function audit misses, because each function looked
+right on its own. Round 3 followed data across systems, one theme at a
+time, with records under [round3/](round3/):
+
+| Theme | Record | Cases | Verified | Fixed | Deviation | Inferred | Open | Other |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| frames: where models, parts, glows and shadows are drawn | [frames.md](round3/frames.md) | 68 | 56 | 6 | 2 | 1 | 0 | 3 no retail data |
+| the cruise start (`mmGame::RespawnXYZ`) | [cruise-spawn.md](round3/cruise-spawn.md) | 22 | 5 | 11 | 4 | 1 | 0 | 1 openmm2 |
+| MM2's global random stream and its consumers | [random-streams.md](round3/random-streams.md) | 41 | 7 | 16 | 12 | 0 | 0 | 6 not needed |
+| init, reset, update and draw order | [order.md](round3/order.md) | 51 | 35 | 10 | 5 | 0 | 1 | |
+| units, signs, axes and conventions in data | [conventions.md](round3/conventions.md) | 104 | 83 | 8 | 6 | 3 | 0 | 4 openmm2 |
+| **Total** | | **286** | **186** | **51** | **29** | **5** | **1** | **14** |
+
+The fixes that show most: traffic lights stand on their CG as
+`aiTrafficLightInstance` does (the poles were 3.9 m in the ground under
+correctly placed glows) and are props cars knock over; cruise starts where
+MM2 does, from the one global stream right after `aiMap::Reset` (London
+intersection 19 at Marble Arch, San Francisco intersection 121 on the
+Embarcadero, with the cruise menu's default densities); a race is set up
+from that stream in `mmGame::Init`'s order; semi trailers, knocked traffic
+cars' wheels and shadows, and police headlight beams are drawn as MM2 draws
+them; a restart happens at the start of the next frame; a paused game keeps
+its camera, sky, rain and HUD message going; 68 PKG xref props stand
+upright; the player's steering tune comes from `tune/<car>.asnode`. The one
+open case is F2's pause (OpenMM2's F2 is the fly camera).
 
 ## Manifest
 
