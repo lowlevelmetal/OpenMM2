@@ -44,6 +44,11 @@
     <display_length compare="ge">768</display_length>
   </requires>
   <releases>
+    <release version="0.2.0" date="2026-10-08" type="development">
+      <description>
+        <p>Multiplayer fixes: races after the first in a session no longer send everyone back to the lobby, and other players' cars no longer jitter. Multiplayer cruise gains shared traffic and police, run by the host.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-10-06" type="development">
       <description>
         <p>Initial development version.</p>
