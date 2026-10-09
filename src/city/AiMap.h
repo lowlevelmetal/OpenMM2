@@ -6,6 +6,7 @@
 // file parses to its last byte); several field meanings are inferred and named
 // after mm2hook's in-memory aiPath layout where it matches.
 
+#include "city/Psdl.h"
 #include "core/Math.h"
 
 #include <array>
@@ -110,11 +111,11 @@ std::optional<std::vector<AiPath>> parseShortcutBai(std::span<const std::byte> d
 // cars and pedestrians (road type 3), and joins its end intersections' path
 // lists (aiIntersection::AddRoad), which are then sorted by the direction of
 // each road from the intersection's centre and give every listed path its
-// index there again (aiIntersection::CreateRoadMap). MM2 first moves the
-// centre to the bound-sphere centre of the intersection's room; OpenMM2 keeps
-// the file's centre (inferred: the main files' lists are already sorted
-// round it).
-void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts);
+// index there again (aiIntersection::CreateRoadMap). CreateRoadMap first
+// moves the centre to the bound-sphere centre of the intersection's room
+// (cityLevel::GetBoundSphere: sdlRoomBoundSphere of `psdl`; the files' own
+// centres are within 0.21 m of it); without `psdl` the file's centre stays.
+void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts, const Psdl* psdl = nullptr);
 
 std::vector<std::string> validateAiMap(const AiMap& map, std::size_t roomCount);
 

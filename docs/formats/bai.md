@@ -125,10 +125,12 @@ for its end-1 and its end-0 intersection, in that order):
 * each end intersection lists it last, then sorts its list by
   `atan2(dx, dz)` from its centre to each road's far end (the road's last
   centre vertex when its end 0 is the intersection, else its first),
-  smallest first, and rewrites every listed road's index there. MM2 first
-  moves the centre to the bound-sphere centre of the intersection's room;
-  OpenMM2 keeps the file's centre (**inferred**: every main-file list is
-  already sorted round it);
+  smallest first, and rewrites every listed road's index there. First the
+  intersection's centre moves to the bound-sphere centre of its room
+  (`cityLevel::GetBoundSphere`: the room perimeter's area centroid at the
+  mean height of its corners); the file's centres of these intersections are
+  already within 0.21 m of it (66 in San Francisco), and `mmGame::RespawnXYZ`
+  starts a cruise at the moved centre;
 * `aiMap::MapRoadToRooms(road, 2)` lists it, as component type 2, for the
   rooms of its centre vertices 1 to n - 2 and for every room its two curbs
   cross, sampled trunc(section length) times per section (the second

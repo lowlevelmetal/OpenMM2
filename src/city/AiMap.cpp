@@ -1,6 +1,7 @@
 #include "city/AiMap.h"
 
 #include "city/Reader.h"
+#include "city/SdlDraw.h"
 
 #include <algorithm>
 #include <cmath>
@@ -175,16 +176,22 @@ std::optional<std::vector<AiPath>> parseShortcutBai(std::span<const std::byte> d
     return paths;
 }
 
-void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts) {
-    // aiIntersection::CreateRoadMap: the list sorted by atan2(dx, dz) of each
-    // road's far-from-centre end (its last centre vertex when the road's
-    // end 0 is here, else its first), smallest first (a selection sort,
-    // swapping on strictly smaller keys); then every listed road's index at
-    // that end (its first place in the list; end 0 when that is here).
+void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts, const Psdl* psdl) {
+    // aiIntersection::CreateRoadMap: the centre moved to the bound-sphere
+    // centre of the intersection's room, then the list sorted by atan2(dx,
+    // dz) of each road's far-from-centre end (its last centre vertex when the
+    // road's end 0 is here, else its first), smallest first (a selection
+    // sort, swapping on strictly smaller keys); then every listed road's
+    // index at that end (its first place in the list; end 0 when that is
+    // here).
     auto createRoadMap = [&](std::uint32_t node) {
         if (node >= map.intersections.size())
             return;
         AiIntersection& in = map.intersections[node];
+        if (psdl) {
+            float radius = 0.0f;
+            sdlRoomBoundSphere(*psdl, in.room, in.center, radius);
+        }
         const std::size_t n = in.paths.size();
         std::vector<float> key(n, 0.0f);
         for (std::size_t i = 0; i < n; ++i) {

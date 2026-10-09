@@ -166,7 +166,7 @@ std::optional<CityData> loadCity(const vfs::Vfs& v, std::string_view city, std::
     if (c.aiMap) {
         if (auto b = bytesOf(cityDir + "_sup.bai", false)) {
             if (auto shortcuts = parseShortcutBai(*b, &err))
-                addShortcuts(*c.aiMap, std::move(*shortcuts));
+                addShortcuts(*c.aiMap, std::move(*shortcuts), &c.psdl);
             else
                 warn(std::format("{}_sup.bai: {}", cityDir, err));
         }
