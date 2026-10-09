@@ -172,6 +172,11 @@ net::AmbientStateMsg TrafficHost::build(const TrafficViewer& viewer, std::span<c
         k.full = !k.canHold || (sequence + static_cast<std::uint32_t>(c.car->id)) % every == 0;
         const double cost = k.canHold ? static_cast<double>(k.fullBits + (every - 1) * heldBits) / every
                                       : static_cast<double>(k.fullBits);
+        // A car new to the client waits while the ones it has would leave
+        // less than a tenth of the budget: that tenth absorbs the changes in
+        // their cost from message to message, so that they all stay.
+        if (!set.contains(c.car->id) && expected + cost > static_cast<double>(budget) * 0.9)
+            continue;
         if (expected + cost > static_cast<double>(budget))
             break;
         expected += cost;
