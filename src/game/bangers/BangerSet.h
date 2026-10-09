@@ -231,6 +231,9 @@ public:
     bool replayGhost(std::size_t i) const;
     bool replayGhostPiece(std::size_t i) const;
     static constexpr double kGhostSeconds = 1.0;
+    // A client's own simulated prop knocks others for this long after it
+    // was set moving (a prediction of a prediction; inferred).
+    static constexpr float kPredictedChainSeconds = 0.5f;
 
     // A network client: only this machine's own car (`localToucher`) and the
     // props this set simulates itself may touch a prop (phys::Instance::

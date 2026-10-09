@@ -1195,10 +1195,17 @@ bool BangerSet::acceptsFrom(std::size_t i, const phys::Instance& other) const {
     if (m_localToucher && m_localToucher(other))
         return true;
     // The props this machine simulates (its predictions) go on knocking
-    // the placed props as they would; the host's pieces move only for this
-    // machine's car (two of them lying together would otherwise keep each
-    // other moving here while the host's rest).
-    return !m_instances[i].mirror && isActiveBody(&other);
+    // the placed props as they would while they are young (later the
+    // simulation here has drifted from the host's, and such a knock is
+    // mostly undone); the host's pieces move only for this machine's car
+    // (two of them lying together would otherwise keep each other moving
+    // here while the host's rest).
+    if (m_instances[i].mirror)
+        return false;
+    for (const auto& a : m_active)
+        if (&a->body == &other)
+            return a->age <= kPredictedChainSeconds;
+    return false;
 }
 
 void BangerSet::breakPlaced(std::size_t i) {
