@@ -202,6 +202,7 @@ bool NetGame::host(const RaceConfig& config, const NetHostOptions& hostOptions, 
     }
     log::info("netgame: hosting '{}' on port {}", impl.sessionName, impl.session->port());
     m_chat.clear();
+    m_notices.clear(); // a new session: nothing left over from the last
     addSystemLine("**You are now the host**"); // string 70
     startPortMapping();
     return true;
@@ -236,6 +237,7 @@ bool NetGame::join(const net::Address& address, const std::string& password, con
     }
     m_impl->joining = true;
     m_chat.clear();
+    m_notices.clear(); // a new session: nothing left over from the last
     log::info("netgame: joining {}", address.toString());
     return true;
 }
