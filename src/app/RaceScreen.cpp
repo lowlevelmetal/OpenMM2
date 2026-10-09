@@ -3350,14 +3350,17 @@ private:
             m_ff.update(controls::ffCarState(m_player->sim()), dt, paused);
     }
 
-    // The horn (mmGame::UpdateHorn: the slot's held bit), not in the free
-    // camera.
-    bool hornDown(Context&) const { return !m_flyCamera && m_gameInput.held(controls::Action::Horn); }
+    // The horn as mmGame::UpdateHorn last set it (+0x274, the slot's held
+    // bit), not in the free camera.
+    bool hornDown(Context&) const { return !m_flyCamera && m_hornHeld; }
 
     // mmGame::UpdateGameInput: the discrete in-race keys, handled while the
     // game is paused too.
     void updateGameInput(Context& ctx) {
         using controls::Action;
+        // mmGame::UpdateHorn opens UpdateGameInput: with the menu up neither
+        // runs and the horn stays as it was (playing on in a running game).
+        m_hornHeld = m_gameInput.held(Action::Horn);
         auto pressed = [&](Action a) { return m_gameInput.fired(a); };
         bool viewChanged = false;
         if (m_hud) {
@@ -3735,6 +3738,7 @@ private:
     ui::NavReader m_nav;
     bool m_popupPaused = false;
     float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
+    bool m_hornHeld = false; // mmGame +0x274: the horn as UpdateHorn last set it
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
     // The rear-view mirror's camera (camera-props); drawMirror draws it. Its
