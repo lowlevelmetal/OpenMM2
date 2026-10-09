@@ -315,6 +315,10 @@ void NetGame::handleEvents() {
                     m_raceStarted = false;
                     addSystemLine("**Session returning to Lobby**"); // string 73
                 } else if constexpr (std::is_same_v<T, net::ev::GameEvent>) {
+                    // A mode that reads no events (a cruise without shared
+                    // traffic) never takes them: keep the newest only.
+                    if (m_gameEvents.size() >= kMaxQueuedGameEvents)
+                        m_gameEvents.erase(m_gameEvents.begin());
                     m_gameEvents.push_back(
                         {ev.from, static_cast<net::GameEventType>(ev.type), ev.time, std::move(ev.payload)});
                 } else {

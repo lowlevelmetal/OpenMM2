@@ -131,6 +131,10 @@ RaceConfig fromSessionSettings(const net::SessionSettings& settings);
 // Quarter Ton, Half Ton (index 0..2).
 inline constexpr int kGoldMassChoices = 3;
 
+// Game events kept until the race takes them; older ones are dropped first.
+// The relay budget (30 a second per peer) bounds the rate, this the total.
+inline constexpr std::size_t kMaxQueuedGameEvents = 256;
+
 class NetGame {
 public:
     enum class Phase {
