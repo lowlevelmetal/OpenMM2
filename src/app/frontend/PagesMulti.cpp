@@ -933,6 +933,9 @@ private:
         // (427) and "%d Points" (424), "%d minutes" (425) or None (426).
         if (c.mode == GameMode::Circuit) {
             lines[4] = std::format("{}: {}", s.get(418, "Laps"), c.laps);
+        } else if (c.mode == GameMode::Cruise) {
+            // OpenMM2 extra: the host's shared traffic and police (or none).
+            lines[4] = c.netTraffic ? "Traffic: Shared" : "Traffic: None";
         } else if (c.mode == GameMode::CopsAndRobbers) {
             lines[4] = std::format("{}: {}", s.get(423, "Gold Weight"),
                                    s.get(420 + static_cast<std::uint32_t>(std::clamp(goldMass, 0, 2))));
