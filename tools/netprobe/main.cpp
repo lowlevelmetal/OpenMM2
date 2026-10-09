@@ -5,6 +5,8 @@
 //   netprobe join <host[:port]> [--name S] [--password P] [--chat TEXT] [--seconds N]
 //   netprobe scan [--port N] [--seconds N] [--passive]
 //   netprobe portmap [--port N] [--seconds N] [--discover-only] [--no-upnp] [--no-natpmp]
+//   netprobe relay <host[:port]> [--port N] [--delay MS] [--jitter MS] [--loss PERCENT] [--reorder]
+//                  [--seed N] [--seconds N]
 //
 // --seconds 0 runs until Ctrl-C. Port mappings are removed on exit.
 #include "core/Log.h"
@@ -18,6 +20,8 @@
 #include <csignal>
 #include <map>
 #include <print>
+#include <queue>
+#include <random>
 #include <thread>
 
 using namespace mm2;
@@ -43,7 +47,8 @@ struct Args {
 };
 
 Args parseArgs(int argc, char** argv, int first) {
-    static const char* kValueOptions[] = {"--port", "--name", "--password", "--seconds", "--chat", "--car"};
+    static const char* kValueOptions[] = {"--port", "--name",  "--password", "--seconds", "--chat",
+                                          "--car",  "--delay", "--jitter",   "--loss",    "--seed"};
     Args a;
     for (int i = first; i < argc; ++i) {
         std::string arg = argv[i];
@@ -266,13 +271,113 @@ int cmdPortmap(const Args& a) {
     return mapper.status().state == PortMappingStatus::State::Failed ? 1 : 0;
 }
 
+// A UDP relay that delays, jitters and drops datagrams between the players
+// connecting to it and a host, to test the game over a bad link on one
+// machine (development aid; nothing in the game uses it). Each direction of
+// each player's link gets `delay` +- `jitter` ms (uniform) and loses `loss`
+// percent; without --reorder a datagram never overtakes an earlier one.
+int cmdRelay(const Args& a) {
+    if (a.positional.empty()) {
+        std::println(stderr, "usage: netprobe relay <host[:port]> [--port N] [--delay MS] [--jitter MS] "
+                             "[--loss PERCENT] [--reorder] [--seed N] [--seconds N]");
+        return 2;
+    }
+    const auto target = Address::resolve(a.positional[0], kDefaultGamePort);
+    if (!target) {
+        std::println(stderr, "cannot resolve {}", a.positional[0]);
+        return 1;
+    }
+    const auto port = static_cast<std::uint16_t>(a.getInt("--port", kDefaultGamePort + 10));
+    const double delay = str::parseDouble(a.get("--delay")).value_or(50.0);
+    const double jitter = str::parseDouble(a.get("--jitter")).value_or(0.0);
+    const double loss = str::parseDouble(a.get("--loss")).value_or(0.0) / 100.0;
+    const bool reorder = a.flag("--reorder");
+    std::string error;
+    auto listen = UdpSocket::open(Address::any(port), false, false, &error);
+    if (!listen) {
+        std::println(stderr, "{}", error);
+        return 1;
+    }
+    std::mt19937 rng(static_cast<std::uint32_t>(a.getInt("--seed", 1)));
+    std::uniform_real_distribution<double> unit(0.0, 1.0);
+    using Clock = std::chrono::steady_clock;
+    const auto start = Clock::now();
+    auto nowMs = [&] { return std::chrono::duration<double, std::milli>(Clock::now() - start).count(); };
+
+    struct Link {
+        std::unique_ptr<UdpSocket> up; // to the host
+        Address player;
+        double lastDue[2] = {0.0, 0.0}; // per direction, to keep the order
+    };
+    struct Datagram {
+        double due;
+        std::uint64_t seq;
+        bool toHost;
+        std::size_t link;
+        std::vector<std::byte> data;
+        bool operator>(const Datagram& o) const { return due != o.due ? due > o.due : seq > o.seq; }
+    };
+    std::vector<Link> links;
+    std::priority_queue<Datagram, std::vector<Datagram>, std::greater<>> queue;
+    std::uint64_t seq = 0, relayed = 0, dropped = 0;
+    auto schedule = [&](std::size_t link, bool toHost, std::span<const std::byte> data) {
+        if (unit(rng) < loss) {
+            ++dropped;
+            return;
+        }
+        double due = nowMs() + std::max(0.0, delay + (unit(rng) * 2.0 - 1.0) * jitter);
+        double& last = links[link].lastDue[toHost ? 0 : 1];
+        if (!reorder)
+            due = std::max(due, last);
+        last = due;
+        queue.push({due, seq++, toHost, link, {data.begin(), data.end()}});
+    };
+
+    std::println("relaying UDP {} -> {}: {} +- {} ms each way, {}% lost{}", port, target->toString(), delay, jitter,
+                 loss * 100.0, reorder ? ", reordered" : "");
+    std::array<std::byte, 2048> buffer{};
+    while (keepRunning(start, a.getInt("--seconds", 0))) {
+        Address from;
+        for (int n; (n = listen->receiveFrom(from, buffer)) > 0;) {
+            auto it = std::ranges::find(links, from, &Link::player);
+            if (it == links.end()) {
+                auto up = UdpSocket::open(Address::any(0), false, false, &error);
+                if (!up)
+                    continue;
+                links.push_back({std::move(up), from});
+                it = links.end() - 1;
+                std::println("player {} via local port {}", from.toString(), it->up->localAddress().port);
+            }
+            schedule(static_cast<std::size_t>(it - links.begin()), true,
+                     std::span(buffer.data(), static_cast<std::size_t>(n)));
+        }
+        for (std::size_t i = 0; i < links.size(); ++i)
+            for (int n; (n = links[i].up->receiveFrom(from, buffer)) > 0;)
+                schedule(i, false, std::span(buffer.data(), static_cast<std::size_t>(n)));
+        while (!queue.empty() && queue.top().due <= nowMs()) {
+            const Datagram& d = queue.top();
+            if (d.toHost)
+                links[d.link].up->sendTo(*target, d.data);
+            else
+                listen->sendTo(links[d.link].player, d.data);
+            ++relayed;
+            queue.pop();
+        }
+        std::this_thread::sleep_for(std::chrono::microseconds(250));
+    }
+    std::println("relayed {} datagrams, dropped {}", relayed, dropped);
+    return 0;
+}
+
 int usage() {
-    std::println(stderr, "usage: netprobe <info|host|join|scan|portmap> [options]\n"
+    std::println(stderr, "usage: netprobe <info|host|join|scan|portmap|relay> [options]\n"
                          "  info\n"
                          "  host    [--port N] [--name S] [--car S] [--password P] [--upnp] [--seconds N]\n"
                          "  join    <host[:port]> [--name S] [--car S] [--password P] [--chat TEXT] [--seconds N]\n"
                          "  scan    [--port N] [--seconds N] [--passive]\n"
-                         "  portmap [--port N] [--seconds N] [--discover-only] [--no-upnp] [--no-natpmp]");
+                         "  portmap [--port N] [--seconds N] [--discover-only] [--no-upnp] [--no-natpmp]\n"
+                         "  relay   <host[:port]> [--port N] [--delay MS] [--jitter MS] [--loss PERCENT] [--reorder]\n"
+                         "          [--seed N] [--seconds N]");
     return 2;
 }
 
@@ -300,5 +405,7 @@ int main(int argc, char** argv) {
         return cmdScan(args);
     if (cmd == "portmap")
         return cmdPortmap(args);
+    if (cmd == "relay")
+        return cmdRelay(args);
     return usage();
 }

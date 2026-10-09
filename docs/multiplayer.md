@@ -396,8 +396,11 @@ if (session.phase() == net::SessionPhase::InGame) {
   with `-fsanitize=address,undefined` to run them under the sanitizers (ENet's
   range decoder shifts a byte into an `int`'s sign bit; suppress
   `shift-base:compress.c`).
-* `netprobe info | host | join | scan | portmap` for manual testing on real
-  networks. `netprobe portmap --discover-only` is read-only: it finds the
+* `netprobe info | host | join | scan | portmap | relay` for manual testing on
+  real networks. `netprobe relay <host> --port N --delay MS --jitter MS --loss
+  PERCENT [--reorder]` is a UDP relay that gives each player's link a bad
+  Internet connection on one machine: players join the relay's port instead
+  of the host's. `netprobe portmap --discover-only` is read-only: it finds the
   gateway and the external address without creating a mapping.
 
 ## Game integration (`game::NetGame`)
@@ -556,6 +559,5 @@ each:
 
 With one trace per machine, a remote car as drawn (`R`) can be compared with
 where the other machine's car really was at `sampleTime` (its `F` lines).
-Latency, jitter and loss can be added between machines on one computer with a
-UDP relay in front of the host (any proxy that delays datagrams; tc/netem
-needs root).
+Latency, jitter and loss can be added between machines on one computer with
+`netprobe relay` in front of the host (tc/netem needs root).
