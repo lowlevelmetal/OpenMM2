@@ -171,7 +171,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmPlayer::IsMaxDamaged`, `ResetDamage`, `EnableRegen`, `UpdateRegen` | ported | `CarDamage::maxDamaged`, DamageReset, `m_regen`, `CarSim::regenerate` | |
 | `mmPlayer::UpdateHOG` | not needed | — | never fires (vehicle record) |
 | `mmPlayer::FFImpactCallback`, `UpdateFF`, `ResetFF` | ported | input audit | force feedback |
-| `mmPlayer::FileIO` | ported | defaults | |
+| `mmPlayer::FileIO` | ported | `GameInput::setPlayerTune` | reads tune/<car>.asnode, which every retail car but vpcentury and vpdune ships (round 3, conventions: OpenMM2 kept the constructor values for every car) |
 | `mmPlayer::AfterLoad`, `BeforeSave` | not needed | — | empty |
 
 ## mmSingleRoam (cruise)

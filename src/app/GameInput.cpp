@@ -265,6 +265,51 @@ void GameInput::load(const IniFile& ini, const JoystickFrame& joy) {
     }
 }
 
+void GameInput::setPlayerTune(const data::DatNode& n) {
+    // mmPlayer::FileIO's fields; a field the file lacks keeps the
+    // constructor's value. The discrete rates go to mmInput for both the
+    // keyboard and the game pad filter (mmPlayer::Update).
+    for (phys::SteeringFilter* f : {&m_keyFilter, &m_padFilter}) {
+        phys::SteeringFilter::Params& p = f->params;
+        n.read("SpeedSensitive", p.speedSensitive);
+        n.read("SpeedBaseLow", p.speedBaseLow);
+        n.read("SpeedBaseHi", p.speedBaseHi);
+        n.read("DiscreteSteeringDeltaOutLo", p.deltaOutLo);
+        n.read("DiscreteSteeringDeltaInLo", p.deltaInLo);
+        n.read("DiscreteSteeringFilterLo", p.filterLo);
+        n.read("DiscreteSteeringDeltaOutHi", p.deltaOutHi);
+        n.read("DiscreteSteeringDeltaInHi", p.deltaInHi);
+        n.read("DiscreteSteeringFilterHi", p.filterHi);
+    }
+    AnalogSteering& a = m_analog;
+    n.read("SpeedSensitive", a.speedSensitive);
+    n.read("SpeedBaseLow", a.speedBaseLow);
+    n.read("SpeedBaseHi", a.speedBaseHi);
+    n.read("MouseSensitivityLow", a.mouseSensitivityLow);
+    n.read("MouseSteerFilterLow", a.mouseFilterLow);
+    n.read("MouseSensitivityHi", a.mouseSensitivityHi);
+    n.read("MouseSteerFilterHi", a.mouseFilterHi);
+    // JoyApp / WheelApp are shorts: the approach is on when not 0.
+    const auto device = [&n](std::string_view prefix, AnalogSteering::DeviceParams& d) {
+        const std::string k(prefix);
+        n.read(k + "SensitivityLow", d.sensitivityLow);
+        n.read(k + "SteerFilterLow", d.filterLow);
+        n.read(k + "SensitivityHi", d.sensitivityHi);
+        n.read(k + "SteerFilterHi", d.filterHi);
+        int app = d.approach ? 1 : 0;
+        if (n.read(k + "App", app))
+            d.approach = app != 0;
+        n.read(k + "SteerApproachOutLo", d.approachOutLow);
+        n.read(k + "SteerApproachInLo", d.approachInLow);
+        n.read(k + "SteerApproachOutHi", d.approachOutHi);
+        n.read(k + "SteerApproachInHi", d.approachInHi);
+        n.read(k + "SteerAppApp", d.approachGrowth);
+    };
+    device("Joy", a.joystick);
+    device("Wheel", a.wheel);
+    // ScoreWeight is read too, and nothing uses it.
+}
+
 void GameInput::reset() {
     // mmInput::Reset.
     m_throttle = m_brakes = m_handbrake = 0.0f;

@@ -895,6 +895,12 @@ private:
         m_cams.load(ctx.game->vfs, m_result.config.vehicle, &missing, aspect);
         // mmMirror::Init: the defaults, then tune/<car>.mmmirror.
         m_mirror.load(ctx.game->vfs, m_result.config.vehicle);
+        // mmPlayer::Init: the player node, named after the car, loads
+        // tune/<car>.asnode (its steering tuning, mmPlayer::FileIO).
+        if (auto bytes = ctx.game->vfs.readAll("tune/" + str::lower(m_result.config.vehicle) + ".asnode"))
+            if (auto f = data::parseDat(std::string_view(reinterpret_cast<const char*>(bytes->data()), bytes->size()));
+                f && f->top())
+                m_gameInput.setPlayerTune(*f->top());
         if (const auto* info = ctx.game->catalog.vehicle(m_result.config.vehicle))
             m_cams.setVehicleFlags(static_cast<int>(info->flags));
         for (const auto& m : missing)
