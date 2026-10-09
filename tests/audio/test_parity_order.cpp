@@ -89,8 +89,10 @@ TEST(AudioOrderParity, BothPausedStopsComeInTheFirstPausedFrame) {
 // queue counts three times a frame while the game runs: the pre-race line,
 // queued for 1.5 s, starts after 0.5 s.
 TEST(AudioOrderParity, AnnouncerQueueCountsThreeTimesAFrameWhileRunning) {
-    const char* blitz = "Name prefix/type header,end sufix value,sufix add value\nPRERACE header,,\nPRE,2,0\n";
-    OrderData data({{"aud/spchdata/london.csv", "Num announcers\n1\nprefix\nAL\n"}, {"aud/spchdata/al1/blitz.csv", blitz}},
+    const char* blitz =
+        "Name prefix/type header,end sufix value,sufix add value\nPRERACE header,,\nPRE,2,0\n";
+    OrderData data({{"aud/spchdata/london.csv", "Num announcers\n1\nprefix\nAL\n"},
+                    {"aud/spchdata/al1/blitz.csv", blitz}},
                    {"al1pre01", "al1pre02"});
     SoundBank bank(data.vfs);
     Mixer mixer(48000);

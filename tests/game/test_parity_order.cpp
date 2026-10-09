@@ -49,7 +49,8 @@ std::unique_ptr<Session> orderSession(GameMode mode, int index) {
     SessionOptions options;
     options.seed = 5;
     std::string error;
-    auto s = Session::create(cfg, orderRetail()->london, *test::gameData(), orderRetail()->strings, &error, options);
+    auto s = Session::create(cfg, orderRetail()->london, *test::gameData(), orderRetail()->strings, &error,
+                             options);
     EXPECT_TRUE(s) << error;
     return s;
 }

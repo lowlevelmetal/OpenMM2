@@ -208,7 +208,8 @@ public:
         // MenuManager::ScanGlobalKeys: F4 in the popup sets the menu's state
         // to 6, which mmPopup::Update acts on in PUMain only: the race
         // restarts as with Restart Race (OpenMM2: not in network games).
-        if (m_popup == Popup::Main && ctx.input.keyPressed(platform::Key::F4) && m_session && !multiplayer(ctx))
+        if (m_popup == Popup::Main && ctx.input.keyPressed(platform::Key::F4) && m_session &&
+            !multiplayer(ctx))
             restartFromMenu(ctx);
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
