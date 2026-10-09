@@ -699,6 +699,13 @@ void World::replaySample(std::span<Body* const> bodies, float dt) {
     m_stepping = stepping;
 }
 
+void World::bodiesNear(const Vec3& at, float radius, std::vector<Body*>& out) const {
+    const float r2 = radius * radius;
+    for (const Mover& m : m_movers)
+        if (m.body && live(m) && m.body->ics.matrix.m3.dist2(at) <= r2)
+            out.push_back(m.body);
+}
+
 bool World::collideHeld(Body& a, Instance& b) {
     // collideInstances with B as a static instance whatever it is: a
     // temporary collider without a body, moving at B's own velocity, so

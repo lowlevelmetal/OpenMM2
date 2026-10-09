@@ -257,6 +257,9 @@ public:
     // them at its own velocity. A network client runs its own car's samples
     // again with it once the host's state has corrected an earlier one.
     void replaySample(std::span<Body* const> bodies, float dt);
+    // OpenMM2 (network prediction): the bodies in the world (not removed)
+    // whose centre lies within `radius` of `at`, appended to `out`.
+    void bodiesNear(const Vec3& at, float radius, std::vector<Body*>& out) const;
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
     // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw

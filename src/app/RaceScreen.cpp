@@ -4891,11 +4891,12 @@ private:
             }
             return;
         }
-        // A client: what the other players' cars stood at for this sample
-        // (the samples run again meet them there).
-        m_proxyHistory.push_back({m_prediction.nextSeq(), proxyPoses()});
-        while (m_proxyHistory.size() > 240)
-            m_proxyHistory.pop_front();
+        // A client: where the bodies around its car (the other players'
+        // cars, the police, knocked traffic cars and props) stood for this
+        // sample: the samples run again meet them there.
+        m_bodyHistory.push_back({m_prediction.nextSeq(), bodyPoses()});
+        while (m_bodyHistory.size() > 240)
+            m_bodyHistory.pop_front();
         // Its car's first sample puts it where this machine started it, on
         // the host too.
         if (m_prediction.nextSeq() == 1)
@@ -4993,7 +4994,14 @@ private:
             m_netLead = m_netLead < 0.0 ? lead : m_netLead + (lead - m_netLead) * 0.1;
         }
         const game::VehiclePose before = drawnPose(game::Drawn::Player, 0, *m_player);
-        const auto now = proxyPoses();
+        // The bodies the samples run again may move, as they stand now.
+        std::vector<BodyPose> now;
+        for (const auto& h : m_bodyHistory)
+            if (h.seq > ack)
+                for (const auto& p : h.poses)
+                    if (std::ranges::none_of(now, [&](const BodyPose& q) { return q.body == p.body; }) &&
+                        m_world->contains(p.body))
+                        now.push_back(poseOf(*p.body));
         const auto replayStart = std::chrono::steady_clock::now();
         m_netReplaying = true;
         const auto c = m_prediction.acknowledge(
@@ -5007,11 +5015,11 @@ private:
                                        resets);
             },
             [this](std::uint32_t seq) {
-                for (const auto& h : m_proxyHistory)
+                for (const auto& h : m_bodyHistory)
                     if (h.seq == seq)
-                        placeProxies(h.poses);
+                        placeBodies(h.poses);
             });
-        placeProxies(now);
+        placeBodies(now);
         m_netReplaying = false;
         const double replayMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replayStart).count();
@@ -5033,33 +5041,42 @@ private:
                       c.damage ? ", damage" : "", c.held ? ", held" : "", c.gear ? ", gear" : "");
     }
 
-    // Client: the other players' cars' bodies as they stand, and put back
-    // there (the samples run again, reconcileNetCar).
-    struct ProxyPose {
-        std::uint8_t id = 0;
-        Mat34 ics;
-        Vec3 velocity, spin;
+    // Client: the bodies within reach of its car as they stand, and put
+    // back there (the samples run again, reconcileNetCar, hold them still).
+    // A body that has left the world since is skipped (compared by address
+    // against the world's, never read).
+    struct BodyPose {
+        phys::Body* body = nullptr;
+        Mat34 ics, bound;
+        Vec3 velocity, spin, kinematicVelocity, kinematicSpin;
     };
-    std::vector<ProxyPose> proxyPoses() const {
-        std::vector<ProxyPose> out;
-        for (const auto& [id, rv] : m_remotes)
-            if (rv.sim && !rv.simulated) {
-                const auto& body = rv.sim->sim().body;
-                out.push_back({id, body.ics.matrix, body.kinematicVelocity, body.kinematicSpin});
-            }
+    static BodyPose poseOf(const phys::Body& b) {
+        return {const_cast<phys::Body*>(&b), b.ics.matrix, b.boundMatrix, b.ics.linearVelocity,
+                b.ics.angularVelocity, b.kinematicVelocity, b.kinematicSpin};
+    }
+    std::vector<BodyPose> bodyPoses() const {
+        std::vector<BodyPose> out;
+        if (!m_world || !m_player)
+            return out;
+        std::vector<phys::Body*> near;
+        m_world->bodiesNear(m_player->sim().body.ics.matrix.m3, 40.0f, near);
+        const phys::Trailer* trailer = m_player->trailer();
+        for (phys::Body* b : near)
+            if (b != &m_player->sim().body && (!trailer || b != &trailer->body))
+                out.push_back(poseOf(*b));
         return out;
     }
-    void placeProxies(const std::vector<ProxyPose>& poses) {
+    void placeBodies(const std::vector<BodyPose>& poses) {
         for (const auto& p : poses) {
-            const auto it = m_remotes.find(p.id);
-            if (it == m_remotes.end() || !it->second.sim || it->second.simulated)
+            if (!m_world->contains(p.body))
                 continue;
-            auto& body = it->second.sim->sim().body;
-            body.place(p.ics);
-            body.ics.linearVelocity = p.velocity;
-            body.ics.angularVelocity = p.spin;
-            body.kinematicVelocity = p.velocity;
-            body.kinematicSpin = p.spin;
+            phys::Body& b = *p.body;
+            b.ics.matrix = p.ics;
+            b.boundMatrix = p.bound;
+            b.ics.linearVelocity = p.velocity;
+            b.ics.angularVelocity = p.spin;
+            b.kinematicVelocity = p.kinematicVelocity;
+            b.kinematicSpin = p.kinematicSpin;
         }
     }
 
@@ -6059,11 +6076,11 @@ private:
     float m_netDilation = 1.0f;         // client: the rate its samples run at
     double m_netLead = -1.0;            // client: how far (ms) its car runs ahead of the host
     double m_netReplayMs = 0.0, m_netReplayWorstMs = 0.0; // client: what its corrections cost
-    struct ProxyHistory {
+    struct BodyHistory {
         std::uint32_t seq = 0;
-        std::vector<ProxyPose> poses;
+        std::vector<BodyPose> poses;
     };
-    std::deque<ProxyHistory> m_proxyHistory; // client: the other cars at each recent sample
+    std::deque<BodyHistory> m_bodyHistory; // client: the bodies around its car at each recent sample
     std::deque<std::int32_t> m_netWaiting; // client: the host's latest counts of its inputs in hand
     std::uint64_t m_netCarsSentAt = 0;     // host: the last CarStates
     std::uint64_t m_netStatsAt = 0;        // the last log of the statistics
