@@ -2,7 +2,9 @@
 // frame MM2 draws it in (see docs/parity/round3/frames.md).
 #include "TestData.h"
 #include "ai/World.h"
+#include "asset/VehicleModel.h"
 #include "city/CityData.h"
+#include "game/AiRenderer.h"
 #include "game/ModelLibrary.h"
 #include "game/TextureLibrary.h"
 #include "game/TrafficBodies.h"
@@ -338,4 +340,25 @@ TEST(Round3Frames, TrailerDrawnAsVehTrailerInstance) {
         pose.wheelWorld[i].m3.z = pose.wheelWorld[i].m3.z - 65.0f;
     r.draw(pose, camera);
     EXPECT_EQ(drawnMeshes(device, *gpu).meshes, (std::set<std::string>{"TRAILER_M", "SHADOW_H"}));
+}
+
+// pedAnimation::DrawSkeleton widens the stick figures along the first row of
+// the modelview matrix taken in the pedestrian's own space: the camera's
+// right axis while both only turn about Y, tilted under a pitched camera.
+TEST(Round3Frames, StickFigureWidthAxis) {
+    Mat34 ped = Mat34::rotationY(1.1f);
+    ped.m3 = {10.0f, 0.0f, -30.0f};
+    Mat34 camera = Mat34::rotationY(0.4f);
+    camera.m3 = {0.0f, 2.0f, 5.0f};
+    const Vec3 flat = game::skeletonWidthAxis(ped, camera);
+    EXPECT_NEAR(flat.x, camera.m0.x, 1e-6f);
+    EXPECT_NEAR(flat.y, camera.m0.y, 1e-6f);
+    EXPECT_NEAR(flat.z, camera.m0.z, 1e-6f);
+
+    const float a = 0.7f, p = 0.3f;
+    const Vec3 tilted = game::skeletonWidthAxis(Mat34::rotationY(a), Mat34::rotationX(p));
+    const float ca = std::cos(a), sa = std::sin(a), cp = std::cos(p), sp = std::sin(p);
+    EXPECT_NEAR(tilted.x, ca * ca + sa * sa * cp, 1e-5f);
+    EXPECT_NEAR(tilted.y, -sa * sp, 1e-5f);
+    EXPECT_NEAR(tilted.z, sa * ca * (cp - 1.0f), 1e-5f);
 }

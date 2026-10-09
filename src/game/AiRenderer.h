@@ -99,4 +99,9 @@ private:
     std::unordered_map<int, int> m_carRooms, m_pedRooms, m_signalRooms;
 };
 
+// The direction pedAnimation::DrawSkeleton widens a pedestrian's stick
+// figure along, in world space, for a pedestrian placed at `ped` seen from
+// a camera placed at `camera`.
+Vec3 skeletonWidthAxis(const Mat34& ped, const Mat34& camera);
+
 } // namespace mm2::game

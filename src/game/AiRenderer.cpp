@@ -13,6 +13,18 @@
 
 namespace mm2::game {
 
+Vec3 skeletonWidthAxis(const Mat34& ped, const Mat34& camera) {
+    // pedAnimation::DrawSkeleton offsets each quad's corners in the
+    // pedestrian's own space (the world matrix is the pedestrian's) by the
+    // first row of gfxRenderState's modelview matrix: the pedestrian's X axis
+    // in view space, the view matrix being the camera's inverse with z
+    // negated (sm_FullComposite). For a pedestrian and a camera turned only
+    // about Y that is the camera's right axis; a pitched camera tilts it.
+    const Vec3& x = ped.m0;
+    const Vec3 local{x.dot(camera.m0), x.dot(camera.m1), -x.dot(camera.m2)};
+    return ped.transformDir(local);
+}
+
 AiRenderer::AiRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models, const vfs::Vfs& vfs)
     : m_device(device), m_textures(textures), m_models(models), m_vfs(vfs) {}
 
@@ -110,9 +122,9 @@ void AiRenderer::drawPed(const ai::Pedestrian& ped, const asset::PedType& type, 
 void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera) {
     // pedAnimation::DrawSkeleton: for each bone with a width in the .rays
     // file, its position raised by the bone's offset (which its children then
-    // use), a quad to its parent's position across the camera's right axis
-    // (the start and end half widths), in the colour the variant's row
-    // picks from its shaders' diffuse colours; untextured, unlit, both sides.
+    // use), a quad to its parent's position across skeletonWidthAxis (the
+    // start and end half widths), in the colour the variant's row picks from
+    // its shaders' diffuse colours; untextured, unlit, both sides.
     if (!type.rays)
         return;
     const auto& rays = *type.rays;
@@ -121,7 +133,7 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
         ped.variant >= 0 && static_cast<std::size_t>(ped.variant) < rays.variants.size()
             ? &rays.variants[static_cast<std::size_t>(ped.variant)]
             : nullptr;
-    const Vec3 right = camera.transform.m0;
+    const Vec3 right = skeletonWidthAxis(ped.transform, camera.transform);
     std::vector<render::Vertex3D> vertices;
     std::vector<std::uint16_t> indices;
     for (std::size_t j = 0; j < n; ++j) {
