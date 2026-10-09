@@ -4,6 +4,7 @@
 #include "net/Discovery.h"
 #include "net/PortMapper.h"
 #include "net/Session.h"
+#include "net/VehicleDamage.h"
 
 #include <gtest/gtest.h>
 
@@ -420,6 +421,52 @@ TEST(HostileInput, HostRateLimitsWhatItRelays) {
         const PlayerInfo* p = watcher.session->player(id);
         return p && p->color == 3;
     }));
+}
+
+// A car's damage events (net/VehicleDamage.h) have a relay budget of their
+// own: a flood of them is cut down, and the race events a player sends after
+// it still all reach the others.
+TEST(HostileInput, HostRateLimitsDamageEventsOnTheirOwn) {
+    Peer host;
+    ASSERT_TRUE(host.session->host(hostParams()));
+    Peer watcher;
+    JoinParams jp;
+    jp.host = Address::loopback(host.session->port());
+    jp.player.name = "Watcher";
+    ASSERT_TRUE(watcher.session->join(jp));
+    ASSERT_TRUE(waitFor([&] {
+        host.pump();
+        watcher.pump();
+        return watcher.find<ev::JoinAccepted>() != nullptr;
+    }));
+    RawEnd raw;
+    ASSERT_NE(rawJoin(host, raw), kInvalidPlayerId);
+
+    VehicleDamageEvent damage;
+    damage.patches = {{0, {0.1f, 0.2f, 0.3f}, 1}};
+    GameEventMsg flood;
+    flood.type = kVehicleDamageEvent;
+    flood.payload = encodePayload(damage);
+    for (int i = 0; i < 300; ++i)
+        raw.send(flood, Channel::Events);
+    GameEventMsg checkpoint;
+    checkpoint.type = static_cast<std::uint16_t>(GameEventType::CheckpointReached);
+    checkpoint.payload = encodePayload(CheckpointEvent{1, 1000});
+    for (int i = 0; i < 10; ++i)
+        raw.send(checkpoint, Channel::Events);
+    waitFor([&] {
+        host.pump();
+        raw.pump();
+        watcher.pump();
+        return false;
+    }, 600);
+    int damageEvents = 0, raceEvents = 0;
+    for (const auto& e : watcher.events)
+        if (const auto* g = std::get_if<ev::GameEvent>(&e))
+            ++(g->type == kVehicleDamageEvent ? damageEvents : raceEvents);
+    EXPECT_GT(damageEvents, 0);
+    EXPECT_LT(damageEvents, 60); // a burst of 30 and 15 a second
+    EXPECT_EQ(raceEvents, 10);
 }
 
 // A peer cannot make the host buffer a huge message (ENet's default limit

@@ -178,6 +178,8 @@ public:
     static constexpr double kMaxHoldMs = 2000.0;
     static constexpr double kFreshMs = 500.0;
     static constexpr std::size_t kMaxRecords = 96;
+    // Events waiting for their time, per car: beyond it the oldest go into
+    // the record at once (and the car replays its record when next drawn).
     static constexpr std::size_t kMaxPending = 64;
 
     struct Stats {
@@ -206,6 +208,7 @@ private:
         std::uint32_t parts = 0;
         std::deque<Pending> pending;
         bool touched = false; // advanced since the last settle()
+        bool replay = false;  // entries went in without actions: the next advance() replays all
     };
     void process(Record& record, double sampleTime, double now, Actions* out);
 

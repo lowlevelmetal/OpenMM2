@@ -259,12 +259,16 @@ bool DamageReplica::receive(std::uint8_t from, const net::VehicleDamageEvent& e,
         it = m_records.emplace(key, Record{}).first;
     }
     Record& r = it->second;
-    // A car that is not drawn while events pile up takes the oldest at once;
-    // beyond twice the limit the oldest is dropped (memory stays bounded).
-    if (r.pending.size() >= kMaxPending)
+    // Events piling up (a car not drawn, or a flood): the oldest go into the
+    // record at once, and the car shows its whole record when next drawn.
+    while (r.pending.size() >= kMaxPending) {
         r.pending.front().overdue = true;
-    if (r.pending.size() >= 2 * kMaxPending)
-        r.pending.pop_front();
+        const std::size_t before = r.pending.size();
+        process(r, -std::numeric_limits<double>::infinity(), arrival, nullptr);
+        if (r.pending.size() >= before)
+            r.pending.pop_front();
+        r.replay = true;
+    }
     Pending p;
     p.event = e;
     p.arrival = arrival;
@@ -336,15 +340,25 @@ DamageReplica::Actions DamageReplica::advance(std::uint32_t key, double sampleTi
     const auto it = m_records.find(key);
     if (it == m_records.end())
         return out;
-    it->second.touched = true;
-    process(it->second, sampleTime, now, &out);
+    Record& r = it->second;
+    r.touched = true;
+    if (r.replay) {
+        out = replay(key);
+        r.replay = false;
+    }
+    process(r, sampleTime, now, &out);
     return out;
 }
 
 void DamageReplica::settle(double now) {
     for (auto& [key, r] : m_records) {
-        if (!r.touched)
+        if (!r.touched) {
+            const std::size_t before = r.pending.size();
             process(r, -std::numeric_limits<double>::infinity(), now, nullptr);
+            // Should the car be drawn again without being shown afresh, it
+            // shows its whole record then.
+            r.replay = r.replay || r.pending.size() != before;
+        }
         r.touched = false;
     }
 }

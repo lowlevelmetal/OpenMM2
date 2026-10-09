@@ -7,6 +7,7 @@
 #include "net/Discovery.h"
 #include "net/NatPmp.h"
 #include "net/Session.h"
+#include "net/VehicleDamage.h"
 
 #include <gtest/gtest.h>
 
@@ -137,6 +138,11 @@ std::vector<Bytes> corpus() {
     car.velocity = {3.0f, -1.0f, 2.0f};
     car.angularVelocity = {0.5f, 1.0f, -0.5f};
     ambient.entities.push_back(car);
+    car.id = 14; // knocked, with its body's wheels
+    car.wheels = true;
+    car.wheelOffsets = {Vec3{0.01f, 0.1f, 0.0f}, Vec3{0.0f, -0.05f, 0.02f}, Vec3{}, Vec3{0.1f, 0.9f, -0.2f}};
+    ambient.entities.push_back(car);
+    car.wheels = false;
     car.id = 401;
     car.kind = AmbientKind::Police;
     car.flags = kAmbientSiren | kAmbientPursuit;
@@ -163,6 +169,30 @@ std::vector<Bytes> corpus() {
     c.push_back(encodePayload(FinishEvent{90000, 1}));
     c.push_back(encodePayload(CollisionEvent{2, {1, 2, 3}, 50.0f}));
     c.push_back(encodePayload(DamageEvent{0.5f, 3}));
+    // A car's damage, alone and as the game event that carries it.
+    VehicleDamageEvent damage;
+    damage.subject = 402;
+    damage.epoch = 2;
+    damage.time = 77777;
+    damage.first = 30;
+    for (std::uint32_t i = 0; i < 5; ++i)
+        damage.patches.push_back({static_cast<std::uint8_t>(i), {0.1f * i, 0.5f, -1.0f}, 0xDA6Au * i});
+    damage.parts = 0x0F0F1u;
+    damage.partsDelay = 9;
+    DamageImpact hit;
+    hit.point = {0.4f, 0.6f, 1.8f};
+    hit.normal = {0.0f, 0.0f, -1.0f};
+    hit.total = 800.0f;
+    hit.speed = 30.0f;
+    hit.sound = 9000.0f;
+    hit.audioId = 2;
+    damage.impacts = {hit, hit};
+    c.push_back(encodePayload(damage));
+    GameEventMsg damageEvent;
+    damageEvent.type = kVehicleDamageEvent;
+    damageEvent.time = 5000;
+    damageEvent.payload = encodePayload(damage);
+    c.push_back(encodeMessage(damageEvent));
 
     // A PCP MAP success (60 bytes) and NAT-PMP replies.
     Bytes pcp(60, std::byte{0});
@@ -263,6 +293,15 @@ void checkAmbient(const AmbientStateMsg& m) {
         ASSERT_LE(std::abs(e.position.y - origin.y), kAmbientHeightRange + 0.01f);
         ASSERT_LE(std::abs(e.velocity.x), kAmbientVelocityRange + 0.01f);
         ASSERT_TRUE(e.target == kAmbientNoTarget || e.target < kMaxPlayers);
+        ASSERT_TRUE(!e.wheels || (e.kind == AmbientKind::Traffic && (e.flags & kAmbientOffRail)));
+        for (const Vec3& w : e.wheelOffsets) {
+            ASSERT_TRUE(std::isfinite(w.x) && std::isfinite(w.y) && std::isfinite(w.z));
+            ASSERT_LE(std::abs(w.x), kAmbientWheelAcross + 0.001f);
+            ASSERT_LE(std::abs(w.y), kAmbientWheelTravel + 0.001f);
+            ASSERT_LE(std::abs(w.z), kAmbientWheelAcross + 0.001f);
+        }
+        ASSERT_GE(e.damage, 0.0f);
+        ASSERT_LE(e.damage, 1.0f);
         ASSERT_GE(e.gear, -1);
         ASSERT_LE(e.gear, 8);
         const float n = std::sqrt(e.orientation.x * e.orientation.x + e.orientation.y * e.orientation.y +
@@ -392,6 +431,29 @@ void decodeEverything(std::span<const std::byte> b) {
     }
     if (const auto e = payload<DamageEvent>(b)) {
         ASSERT_TRUE(std::isfinite(e->damage));
+    }
+    if (const auto e = payload<VehicleDamageEvent>(b)) {
+        ASSERT_LE(e->subject, kDamageOwnCar);
+        ASSERT_LE(e->patches.size(), kMaxDamagePatches);
+        ASSERT_LE(e->first + e->patches.size(), kMaxDamageRecord);
+        ASSERT_LE(e->impacts.size(), kMaxDamageImpacts);
+        ASSERT_EQ(e->parts >> kDamagePartCount, 0u);
+        for (const auto& p : e->patches)
+            for (float v : {p.point.x, p.point.y, p.point.z}) {
+                ASSERT_TRUE(std::isfinite(v));
+                ASSERT_LE(std::abs(v), kDamagePointRange);
+            }
+        for (const auto& m : e->impacts) {
+            for (float v :
+                 {m.point.x, m.point.y, m.point.z, m.normal.x, m.normal.y, m.normal.z, m.total, m.speed, m.sound})
+                ASSERT_TRUE(std::isfinite(v));
+            ASSERT_LE(std::abs(m.point.x), kDamagePointRange);
+            ASSERT_LE(std::abs(m.normal.y), 1.0f);
+            ASSERT_GE(m.total, 0.0f);
+            ASSERT_GE(m.sound, 0.0f);
+            ASSERT_LE(m.speed, kDamageMaxSpeed);
+            ASSERT_LE(m.audioId, 1000);
+        }
     }
 
     // Text cleanup on arbitrary bytes.

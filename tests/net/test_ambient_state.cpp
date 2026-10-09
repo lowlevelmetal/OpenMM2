@@ -232,8 +232,10 @@ TEST(AmbientState, SizesFitTheBudget) {
     offRail.flags |= kAmbientOffRail;
     const AmbientEntity cop = copCar(2, {});
     EXPECT_EQ(ambientEntityBits(rail), 119u);
-    EXPECT_EQ(ambientEntityBits(offRail), 177u);
-    EXPECT_EQ(ambientEntityBits(cop), 204u);
+    // Version 4: a knocked car says whether its wheels follow (80 bits more
+    // when they do), a police car's damage takes 10 bits.
+    EXPECT_EQ(ambientEntityBits(offRail), 178u);
+    EXPECT_EQ(ambientEntityBits(cop), 208u);
     AmbientEntity held = rail;
     held.hasState = false;
     EXPECT_EQ(ambientEntityBits(held), 13u);
