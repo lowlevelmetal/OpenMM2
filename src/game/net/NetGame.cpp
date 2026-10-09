@@ -724,6 +724,8 @@ void NetGame::sendDamage(float damage, std::uint8_t source) {
               net::encodePayload(net::DamageEvent{damage, source}));
 }
 
+void NetGame::sendLeftRace() { sendEvent(static_cast<std::uint16_t>(net::GameEventType::LeftRace), {}); }
+
 std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gameEvents, {}); }
 
 // --- Helpers -----------------------------------------------------------------------------

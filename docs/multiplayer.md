@@ -349,7 +349,7 @@ types, with payload structs in `Protocol.h`:
 `CheckpointReached{index, raceTime}`, `LapCompleted{lap, lapTime}`,
 `RaceFinished{raceTime, position}`, `GoldPickedUp/GoldDropped/GoldDelivered
 {position, team}`, `Collision{other, position, impulse}`,
-`Damage{damage, source}`, `Wrecked`. Ids from `GameEventType::Custom` (0x8000)
+`Damage{damage, source}`, `Wrecked`, `LeftRace` (a joiner quit the race it was driving and stays in the session: the others take its car out and stop waiting for its finish). Ids from `GameEventType::Custom` (0x8000)
 up are free for the game.
 
 ### Disconnect reasons

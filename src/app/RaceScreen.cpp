@@ -253,6 +253,7 @@ public:
                 leaveRace(ctx, netRaceResult(ctx));
                 return;
             }
+            takeNetEvents(ctx);
         }
         if (ctx.input.keyPressed(platform::Key::F2))
             m_flyCamera = !m_flyCamera;
@@ -2020,7 +2021,8 @@ private:
             return;
         std::map<std::uint8_t, std::string> now;
         for (const auto& p : ctx.netGame->players())
-            now[p.id] = p.name;
+            if (!m_netLeft.contains(p.id))
+                now[p.id] = p.name;
         if (m_netPlayersKnown && m_session->phase() == game::session::Phase::Racing) {
             for (const auto& [id, name] : m_netPlayers) {
                 if (now.contains(id))
@@ -2192,14 +2194,15 @@ private:
         {
             std::set<std::uint8_t> now;
             for (const auto& p : ctx.netGame->players())
-                now.insert(p.id);
+                if (!m_netLeft.contains(p.id))
+                    now.insert(p.id);
             for (const auto id : m_crPlayers)
                 if (!now.contains(id))
                     sendCr(ctx, m_cr->playerLeft(id, host));
             m_crPlayers = std::move(now);
         }
         // The others' messages (mmMultiCR::GameMessage).
-        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+        for (const auto& ev : m_netEvents) {
             CopsAndRobbers::Message m;
             const auto type = static_cast<std::uint16_t>(ev.type);
             if (type == kCrPickupRequest) {
@@ -2496,7 +2499,24 @@ private:
     void quitToMenu(Context& ctx) {
         game::RaceResult r = m_session ? m_session->result() : m_result;
         r.ended = false;
+        // A joiner who quits leaves the others driving (the host's quit ends
+        // the race for everyone, leaveRace): they take its car out and stop
+        // waiting for its finish, as MM2's players did when one left the
+        // session (mmGameMulti::QuitNetwork, SystemMessage 0x2d).
+        if (multiplayer(ctx) && !ctx.netGame->isHost())
+            ctx.netGame->sendLeftRace();
         leaveRace(ctx, r);
+    }
+
+    // This frame's game events from the others, for the race and Cops and
+    // Robbers rules; the players who quit the race are noted here.
+    void takeNetEvents(Context& ctx) {
+        m_netEvents = ctx.netGame->takeGameEvents();
+        for (const auto& ev : m_netEvents)
+            if (ev.type == net::GameEventType::LeftRace && ev.from != ctx.netGame->localId()) {
+                log::info("race: player {} quit the race", ev.from);
+                m_netLeft.insert(ev.from);
+            }
     }
 
     // What a network race leaves with when the host ends it (or the session
@@ -2540,7 +2560,7 @@ private:
         if (!multiplayer(ctx) || !m_session ||
             !(mode == game::GameMode::Blitz || mode == game::GameMode::Circuit || mode == game::GameMode::Checkpoint))
             return;
-        for (const auto& ev : ctx.netGame->takeGameEvents()) {
+        for (const auto& ev : m_netEvents) {
             if (ev.type == net::GameEventType::CheckpointReached) {
                 if (const auto e = ev.as<net::CheckpointEvent>())
                     m_netWaypoints[ev.from] = e->index;
@@ -2556,7 +2576,7 @@ private:
         }
         std::vector<game::session::Session::NetRacer> racers;
         for (const auto& p : ctx.netGame->players()) {
-            if (p.id == ctx.netGame->localId())
+            if (p.id == ctx.netGame->localId() || m_netLeft.contains(p.id))
                 continue;
             game::session::Session::NetRacer r;
             r.name = p.name;
@@ -3384,6 +3404,8 @@ private:
         if (!multiplayer(ctx) || !m_world)
             return;
         m_netCars = ctx.netGame->remoteCars(static_cast<double>(m_world->remainderAfter(dt)) * 1000.0);
+        // A player who quit the race takes its car out of it.
+        std::erase_if(m_netCars, [this](const game::NetRemoteCar& c) { return m_netLeft.contains(c.id); });
         const auto mode = m_result.config.mode;
         const bool towing = mode != game::GameMode::Cruise && mode != game::GameMode::CopsAndRobbers;
         std::vector<std::uint8_t> present;
@@ -4054,6 +4076,8 @@ private:
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
     std::vector<game::NetRemoteCar> m_netCars; // this frame's sample (updateRemoteCars)
+    std::vector<game::NetGameEvent> m_netEvents; // this frame's game events (takeNetEvents)
+    std::set<std::uint8_t> m_netLeft;            // players who quit this race
     std::map<std::uint8_t, int> m_netWaypoints; // the other players' waypoints passed
     std::set<std::uint8_t> m_netFinished;       // the other players that finished (or did not)
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)

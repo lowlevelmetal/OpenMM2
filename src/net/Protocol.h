@@ -516,6 +516,7 @@ enum class GameEventType : std::uint16_t {
     Collision = 7,
     Damage = 8,
     Wrecked = 9,
+    LeftRace = 10, // the sender quit the race it was driving (it stays in the session); no payload
     Custom = 0x8000, // first id for game-specific events
 };
 

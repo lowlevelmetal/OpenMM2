@@ -268,6 +268,9 @@ public:
     void sendGold(net::GameEventType type, const Vec3& position, int team); // GoldPickedUp/Dropped/Delivered
     void sendCollision(std::uint8_t otherPlayer, const Vec3& position, float impulse);
     void sendDamage(float damage, std::uint8_t source);
+    // The local player quits the race the others go on driving (MM2's
+    // player left the session: mmGameMulti::QuitNetwork).
+    void sendLeftRace();
     void sendEvent(std::uint16_t type, std::vector<std::byte> payload,
                    std::uint8_t target = net::kBroadcastTarget);
     std::vector<NetGameEvent> takeGameEvents();
