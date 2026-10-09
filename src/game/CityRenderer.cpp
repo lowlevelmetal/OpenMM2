@@ -323,9 +323,10 @@ void CityRenderer::setEnvironment(const Environment& env) {
     // room colour, half of it (curb faces and caps), or for facades and
     // slivers the light table entry of the room's last FacadeBound shaded by
     // it (GetShadedColor). The room colours come from city/<map>.lmap, but
-    // its count never matches the room count cityLevel::Load checks (London
-    // 1340 for 1341, SF 1125 for 1171), so MM2 drops it and every room is
-    // white: GetShadedColor of white is the light itself.
+    // its count never matches the room count cityLevel::Load checks it
+    // against (lvlSDL's, read by LoadBinary just before, dummy room 0
+    // included: London 1341 for 1342, SF 1125 for 1172), so MM2 drops it and
+    // every room is white: GetShadedColor of white is the light itself.
     constexpr std::uint32_t kRoomColor = 0xFFFFFFFFu;
     for (std::size_t i = 0; i < m_streetVertices.size(); ++i) {
         std::uint32_t argb = kRoomColor;
