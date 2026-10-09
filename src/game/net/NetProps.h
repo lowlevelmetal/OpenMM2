@@ -31,7 +31,8 @@ struct NetGameEvent;
 // of session time ("t <ms> <actual ms>") the props not standing ("b <ids>"),
 // the knocked-over props and thrown parts shown ("h <what> <x> <y> <z>
 // <moving> <local>"), the cars' damage ("d <car> <level> <dents>") and this
-// machine's car's damaging impacts ("i <ms> <cause> <value> <damage>").
+// machine's simulated cars' damaging impacts ("i <ms> <car> <cause> <value>
+// <damage>").
 class PropTrace {
 public:
     // Null unless the session traces (NetGame::tracing).
@@ -44,7 +45,10 @@ public:
     void placed(const bangers::BangerSet& set);
     void knock(double t, std::size_t prop, std::string_view model, std::string_view cause);
     void undo(double t, std::size_t prop);
-    void impact(double t, std::string_view cause, float value, float damage);
+    // A damaging impact on `car` in this machine's simulation (its own car,
+    // and on the host the other players' cars), its value and the damage
+    // after it.
+    void impact(double t, std::string_view car, std::string_view cause, float value, float damage);
     // Starts a tick when `t` passed the next 250 ms boundary.
     bool tick(double t);
     void broken(const bangers::BangerSet& set);

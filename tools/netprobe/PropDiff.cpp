@@ -11,7 +11,9 @@
 //              prop or thrown part rests (both at rest), and the ones only
 //              one machine shows
 //   damage     each car's damage level and dents at the common ticks
-//   impacts    the damaging impacts on each machine's own car, by cause
+//   impacts    each car's damaging impacts as each machine simulated it
+//              (its own player's machine and the host), by cause, and its
+//              damage after them
 
 #include "PropDiff.h"
 
@@ -53,8 +55,11 @@ struct Trace {
     std::map<long, Knock> knocks; // first knock of each prop
     std::map<long, double> undone;
     std::map<long, Tick> ticks;
-    std::map<std::string, int> impacts;
-    std::map<std::string, double> impactValue;
+    // By car, then cause: the damaging impacts, their values, and the
+    // car's damage after the last.
+    std::map<std::string, std::map<std::string, int>> impacts;
+    std::map<std::string, std::map<std::string, double>> impactValue;
+    std::map<std::string, double> damageAfter;
 };
 
 bool load(const std::string& path, Trace& t) {
@@ -104,10 +109,11 @@ bool load(const std::string& path, Trace& t) {
             tick->dents[car] = dents;
         } else if (kind == "i") {
             double time, value, damage;
-            std::string cause;
-            s >> time >> cause >> value >> damage;
-            ++t.impacts[cause];
-            t.impactValue[cause] += value;
+            std::string car, cause;
+            s >> time >> car >> cause >> value >> damage;
+            ++t.impacts[car][cause];
+            t.impactValue[car][cause] += value;
+            t.damageAfter[car] = damage;
         }
     }
     return true;
@@ -281,14 +287,26 @@ void comparePair(Trace& a, Trace& b) {
                      car, meanLevel, percentile(v, 1.0), meanDents, percentile(d, 1.0), l[0], l[2], l[1],
                      l[3]);
     }
-    auto impacts = [](const Trace& t) {
+    // Each car's damaging impacts as each machine simulated it: a client's
+    // car on its own machine (its prediction) and on the host.
+    std::set<std::string> cars;
+    for (const auto& [car, m] : a.impacts)
+        cars.insert(car);
+    for (const auto& [car, m] : b.impacts)
+        cars.insert(car);
+    auto impacts = [](const Trace& t, const std::string& car) {
         std::string s;
-        for (const auto& [c, n] : t.impacts)
-            s += std::format(" {}:{} ({:.0f})", c, n, t.impactValue.at(c));
-        return s.empty() ? std::string(" -") : s;
+        const auto it = t.impacts.find(car);
+        if (it == t.impacts.end())
+            return std::string(" -");
+        for (const auto& [c, n] : it->second)
+            s += std::format(" {}:{} ({:.0f})", c, n, t.impactValue.at(car).at(c));
+        return s + std::format(", damage {:.0f}", t.damageAfter.at(car));
     };
-    std::println("damaging impacts on A's own car:{}", impacts(a));
-    std::println("damaging impacts on B's own car:{}", impacts(b));
+    for (const auto& car : cars) {
+        std::println("damaging impacts on {} as A simulated it:{}", car, impacts(a, car));
+        std::println("{:>{}} as B simulated it:{}", "", 21 + car.size(), impacts(b, car));
+    }
 }
 
 } // namespace

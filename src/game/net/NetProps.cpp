@@ -45,8 +45,8 @@ void PropTrace::knock(double t, std::size_t prop, std::string_view model, std::s
 
 void PropTrace::undo(double t, std::size_t prop) { m_net.traceLine(std::format("x {:.0f} {}", t, prop)); }
 
-void PropTrace::impact(double t, std::string_view cause, float value, float damage) {
-    m_net.traceLine(std::format("i {:.0f} {} {:.1f} {:.1f}", t, cause, value, damage));
+void PropTrace::impact(double t, std::string_view car, std::string_view cause, float value, float damage) {
+    m_net.traceLine(std::format("i {:.0f} {} {} {:.1f} {:.1f}", t, car, cause, value, damage));
 }
 
 bool PropTrace::tick(double t) {

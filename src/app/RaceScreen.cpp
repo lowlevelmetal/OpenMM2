@@ -3799,10 +3799,10 @@ private:
         // OpenMM2: the others see it too (the host's: it decides every car's).
         if (m_result.config.multiplayer && impact.damaging && m_traceNet && m_traceNet->isHost())
             m_netDamage.own().impact(m_netStateTime, game::damageImpactOf(impact, m_player->sim()));
-        if (impact.damaging)
+        if (impact.damaging && !m_netReplaying)
             if (auto* trace = m_netProps.trace()) // OPENMM2_NET_TRACE
-                trace->impact(m_netStateTime, propToucher(impact.otherBody), impact.value,
-                              m_player->sim().damage.currentDamage);
+                trace->impact(m_netStateTime, std::format("player{}", m_netLocalId), impactCause(impact),
+                              impact.value, m_player->sim().damage.currentDamage);
         if (impact.damaging) {
             ++(impact.otherIsBody ? m_vehicleImpacts : m_objectImpacts);
             m_ff.impact(impact.total, m_player->sim().speedMph()); // mmPlayer::FFImpactCallback
@@ -4734,6 +4734,10 @@ private:
             rv.fx->impact(impact, rv.sim->sim());
         if (impact.damaging)
             m_netDamage.player(id).impact(m_netStateTime, game::damageImpactOf(impact, rv.sim->sim()));
+        if (impact.damaging)
+            if (auto* trace = m_netProps.trace()) // OPENMM2_NET_TRACE
+                trace->impact(m_netStateTime, std::format("player{}", id), impactCause(impact), impact.value,
+                              rv.sim->sim().damage.currentDamage);
         traceNetImpact(id, impact);
     }
 
@@ -5216,6 +5220,14 @@ private:
         if (m_bangers && m_bangers->isActiveBody(by))
             return "prop";
         return "traffic"; // the traffic's bodies and rail cars (or anything else)
+    }
+
+    // What a car's damaging impact was against, for OPENMM2_NET_TRACE: a
+    // player's car by its id, else as propToucher names it.
+    std::string impactCause(const phys::CarImpact& impact) const {
+        if (m_player && impact.otherBody == &m_player->sim().body)
+            return std::format("player{}", m_netLocalId);
+        return propToucher(impact.otherBody);
     }
 
     // The session time the simulation will have reached after this frame's
