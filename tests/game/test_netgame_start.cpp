@@ -334,3 +334,60 @@ TEST(NetGameStart, PlayerLeavingTheRaceReleasesTheStart) {
     ASSERT_TRUE(pump({&p.host, &p.client}, [&] { return p.host.raceStartKnown(); }));
     EXPECT_EQ(p.host.playersLoading(), 0);
 }
+
+// Either machine may report first; the start comes with the second report
+// and is the same on both, race after race.
+TEST(NetGameStart, EitherMachineMayReportFirst) {
+    Pair p(game::GameMode::Checkpoint);
+    for (int round = 0; round < 2; ++round) {
+        NetGame& first = round == 0 ? p.client : p.host;
+        NetGame& second = round == 0 ? p.host : p.client;
+        first.reportLoaded();
+        ASSERT_TRUE(pump({&p.host, &p.client}, [&] {
+            return p.host.playerLoaded(first.localId()) && p.client.playerLoaded(first.localId());
+        }));
+        pump({&p.host, &p.client}, [] { return false; }, 100);
+        EXPECT_FALSE(p.host.raceStartKnown());
+        EXPECT_FALSE(p.client.raceStartKnown());
+        EXPECT_EQ(second.playersLoading(), 0);
+        EXPECT_EQ(first.playersLoading(), 1);
+        second.reportLoaded();
+        ASSERT_TRUE(
+            pump({&p.host, &p.client}, [&] { return p.host.raceStarted() && p.client.raceStarted(); }));
+        EXPECT_EQ(p.host.raceStartTime(), p.client.raceStartTime());
+        EXPECT_EQ(p.host.raceNumber(), p.client.raceNumber());
+        // The countdown and a lead after the second report.
+        EXPECT_GE(p.host.raceStartTime(), p.host.raceOrderTime() + 2500u + 200u);
+        if (round == 0) {
+            p.host.returnToLobby();
+            ASSERT_TRUE(
+                pump({&p.host, &p.client}, [&] { return p.client.phase() == NetGame::Phase::Lobby; }));
+            p.host.startRace();
+            ASSERT_TRUE(pump({&p.host, &p.client}, [&] { return p.client.takeRaceStart(); }));
+            EXPECT_TRUE(p.host.takeRaceStart());
+        }
+    }
+}
+
+// The client reports the race it is loading just as the host has gone back
+// to the lobby and ordered the next one: that report does not count for the
+// next race, whose start waits for the client's report of it.
+TEST(NetGameStart, AReportForAnEarlierRaceDoesNotCount) {
+    Pair p(game::GameMode::Checkpoint);
+    const std::uint32_t first = p.client.raceNumber();
+    p.host.returnToLobby();
+    p.host.startRace();
+    p.client.reportLoaded(); // still race `first` here
+    ASSERT_TRUE(pump({&p.host, &p.client}, [&] { return p.client.raceNumber() == first + 1; }));
+    pump({&p.host, &p.client}, [] { return false; }, 150);
+    EXPECT_FALSE(p.host.playerLoaded(p.client.localId()));
+    EXPECT_TRUE(p.client.backToLobby(first));
+    EXPECT_TRUE(p.client.takeRaceStart());
+    p.host.reportLoaded();
+    pump({&p.host, &p.client}, [] { return false; }, 150);
+    EXPECT_FALSE(p.host.raceStartKnown());
+    EXPECT_EQ(p.client.playersLoading(), 0);
+    p.client.reportLoaded();
+    ASSERT_TRUE(pump({&p.host, &p.client}, [&] { return p.client.raceStartKnown(); }));
+    EXPECT_EQ(p.host.raceStartTime(), p.client.raceStartTime());
+}
