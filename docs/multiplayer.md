@@ -104,7 +104,11 @@ continue and the status recovers on success. `stop()` removes the mapping.
 `<user data dir>/portmap.ini`), the active mapping is recorded on disk. On the
 next start, a recorded mapping is removed before anything else, but only on the
 same gateway, and with UPnP only if the router still shows it pointing at this
-machine. Mappings also expire on their own once the lease runs out.
+machine. Mappings also expire on their own once the lease runs out. A record
+whose ports are not 1-65535 is ignored, and the PCP/NAT-PMP backend never
+sends a deletion for internal port 0: both RFCs define that as "every mapping
+of this machine". An external address a UPnP device reports is shown only if
+it parses as an address (any device on the LAN can answer SSDP as the router).
 
 **Status for the UI.** `PortMappingStatus::message` is a one-line summary such
 as:
@@ -138,6 +142,15 @@ advert and broadcast an unsolicited advert every 2 s. Scanners (`LanScanner`)
 send queries from an ephemeral port, both to every interface's directed
 broadcast address and to 255.255.255.255. The reply's nonce gives the ping.
 Entries expire after 6 s without an answer.
+
+An advert can be 16 times the size of a query, so the beacon must not answer
+anyone who asks: it answers only loopback, private addresses (RFC 1918,
+CGNAT 100.64/10, link-local) and addresses on one of this machine's interface
+subnets (so a VPN adapter on a public range, such as Hamachi's 25/8, still
+works) (`answersLanQueryFrom`). It never answers a broadcast, multicast or zero
+source address, and sends at most 20 replies a second with a burst of 40.
+A scanner lists at most `kMaxLanSessions` (64) sessions, skips adverts with
+game port 0, and cleans an advert's text as described under "Untrusted input".
 
 Passive listening for unsolicited adverts is optional and off by default. On
 Linux, a UDP unicast datagram to a port that several sockets share
@@ -185,7 +198,11 @@ client                                host
 
 The password never crosses the network. The proof is a SHA-256 over a fresh
 16-byte nonce and the password. This only protects the password from casual
-sniffing; traffic is not encrypted.
+sniffing; traffic is not encrypted, and someone who records a handshake can
+still try passwords offline against it. Online guessing is slowed down: after
+five wrong passwords from one address within a minute, the host disconnects
+that address's new connections with `BadPassword` before the challenge until
+the minute is over.
 
 A handshake must finish within `joinTimeoutMs` (10 s), and an ENet connect
 attempt within `connectTimeoutMs` (8 s).
@@ -218,6 +235,41 @@ weather, traffic and pedestrian density (percent), cops on/off, max players
 (protocol limit 16; the original allowed 8), a password flag, the
 join-in-progress policy, and up to 32 extra key/value pairs. The extra pairs let
 the game add options without a protocol bump.
+
+### Untrusted input
+
+Everything that arrives is untrusted: other players, anyone who can send a UDP
+packet to the game or discovery port, and whatever answers as the router.
+
+* **Sizes.** ENet accepts at most a 64 KiB packet and 1 MiB of a peer's
+  undelivered data (`TransportConfig::maxPacketSize`, `maxWaitingData`; ENet's
+  own defaults, 32 MiB each, let any connected peer make this machine allocate
+  a whole packet with its first fragment). The largest message, a 16-player
+  `Welcome` with 32 extra settings, is about 5 KiB. `Transport::send` refuses an
+  empty packet (ENet's range coder would read its null data).
+* **Text.** Names, chat, the session name, kick and reject reasons and an
+  advert's strings are cleaned on receipt by `sanitizeText`: well-formed UTF-8
+  only, no control characters (tab and line breaks become spaces), trimmed, cut
+  on a character boundary. The host does it for what joiners send, clients for
+  what the host sends.
+* **Names of files.** Car and city names must be plain base names
+  (`isValidAssetName`: 1-32 characters of `[A-Za-z0-9_-]`). The host gives a
+  joiner with any other car `kDefaultCar` and keeps the previous car on a
+  request; a client does the same with the host's player list and ignores
+  (empties) such a city, which then loads nothing. A valid name this machine
+  lacks, such as an add-on car, is shown as MM2's default vehicle `vpcoop`
+  (`game::netVehicle`, after `mmVehList::GetVehicleInfo`).
+* **Counts.** A client keeps at most `kMaxPlayers` players, never one with
+  `kInvalidPlayerId`, and refuses a `Welcome` that does not list it.
+* **Floods.** The host relays what one joiner sends to every other player, so
+  each joiner has a budget: chat 2 lines a second (burst 8), player updates 10
+  (burst 20), game events 30 (burst 60). Chat and events beyond it are dropped;
+  a `PlayerRequest` is always applied and its `PlayerUpdate` relayed once the
+  budget allows, so the latest car, colour, team and ready state still
+  arrives.
+* **Floats.** Snapshot fields are quantized to fixed ranges and event floats
+  must be finite (`ReadStream::f32`), so no NaN or infinity reaches physics or
+  rendering.
 
 ### Session clock
 
@@ -299,7 +351,13 @@ if (session.phase() == net::SessionPhase::InGame) {
   filtering, kick, host shutdown, join-in-progress). It also covers
   `PortMapper` against fake backends: failure reporting, fallback, port
   conflicts, renewal and loss, crash cleanup, other-gateway records, double NAT
-  and restart. None of it needs a router.
+  and restart. None of it needs a router. `test_hostile_input.cpp` drives a
+  real session from a hand-built host or client that sends what an honest one
+  never would, and `test_fuzz.cpp` feeds fixed-seed random and mutated
+  messages to every decoder and to a live host and client. Build `test_net`
+  with `-fsanitize=address,undefined` to run them under the sanitizers (ENet's
+  range decoder shifts a byte into an `int`'s sign bit; suppress
+  `shift-base:compress.c`).
 * `netprobe info | host | join | scan | portmap` for manual testing on real
   networks. `netprobe portmap --discover-only` is read-only: it finds the
   gateway and the external address without creating a mapping.
