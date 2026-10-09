@@ -292,6 +292,15 @@ public:
     // docs/multiplayer.md, "Diagnosing replication").
     void traceFrame(const Mat34& transform, const Vec3& velocity, double stateAgeMs,
                     const std::vector<NetRemoteCar>& cars);
+    // The same trace's divergence lines (docs/review/multiplayer-desync-cars.md;
+    // `netprobe syncreport` reads them): every player's car as this frame
+    // draws it (`own`: this machine's player), a collision between two
+    // players' cars in this machine's simulation, and a correction of this
+    // player's car by the host's state (`dx`: how far the car moved).
+    bool tracing() const;
+    void traceDrawn(std::uint8_t id, bool own, const Mat34& transform, const Vec3& velocity);
+    void traceImpact(std::uint8_t a, std::uint8_t b, const Vec3& position, float strength, double stateAgeMs);
+    void traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, float dv, bool snapped);
 
     // --- Shared ambient traffic (multiplayer cruise, OpenMM2 extra) ----------------
     // Whether this session's cruise shares the host's traffic and police

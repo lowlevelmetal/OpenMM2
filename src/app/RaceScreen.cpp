@@ -121,6 +121,7 @@ public:
         // The network race this screen runs (FrontendScreen starts it when
         // the countdown arrives).
         if (config.multiplayer && ctx.netGame) {
+            m_traceNet = ctx.netGame.get();
             m_netRace = ctx.netGame->raceNumber();
             m_chatSeen = ctx.netGame->chatSerial(); // the lobby's lines stay there
         }
@@ -409,6 +410,7 @@ public:
                 sendLocalState(ctx);
         }
         updateDrawnPoses(); // OpenMM2: between the last two simulation steps
+        traceNetDrawn(ctx); // OPENMM2_NET_TRACE: every player's car as drawn
         sendNetTraffic(ctx); // OpenMM2: the host's shared traffic
         if (m_flyCamera || !m_player)
             updateFlyCamera(ctx, static_cast<float>(dt));
@@ -3681,7 +3683,27 @@ private:
     // vehCarDamage::ApplyImpact for the player's car: AudImpact (the impact
     // sounds), the damage effects, and the game's impact callback
     // (mmPlayer::ImpactCallback), which counts the hits.
+    // OPENMM2_NET_TRACE: every player's car as this frame draws it, for the
+    // divergence between machines (netprobe syncreport).
+    void traceNetDrawn(Context& ctx) {
+        if (!multiplayer(ctx) || !ctx.netGame->tracing())
+            return;
+        if (m_player)
+            ctx.netGame->traceDrawn(ctx.netGame->localId(), true, m_drawPose.body,
+                                    m_player->sim().body.ics.frameVelocity);
+        for (const auto& rc : m_remoteCars)
+            if (const auto drawn = netCarDrawn(rc.id))
+                ctx.netGame->traceDrawn(rc.id, false, *drawn, rc.velocity);
+    }
+
     void playerImpact(const phys::CarImpact& impact) {
+        // OPENMM2_NET_TRACE: a collision with another player's car.
+        if (impact.otherBody && m_traceNet && m_traceNet->tracing())
+            for (const auto& [id, rv] : m_remotes)
+                if (rv.sim && &rv.sim->sim().body == impact.otherBody)
+                    m_traceNet->traceImpact(
+                        m_traceNet->localId(), id, impact.position, impact.total,
+                        m_world ? static_cast<double>(m_world->remainder()) * 1000.0 : 0.0);
         // mmMultiCR::ImpactCallback (from vehCarDamage::ApplyImpact's damaging
         // branch): a hit from another player's car, its summed total.
         if (m_cr && impact.otherBody && impact.damaging)
@@ -5326,6 +5348,7 @@ private:
     std::map<std::uint8_t, std::string> m_netPlayers; // the players last frame (who left)
     bool m_netPlayersKnown = false;
     std::uint32_t m_netRace = 0; // NetGame::raceNumber() of this race
+    game::NetGame* m_traceNet = nullptr; // the race's session, for OPENMM2_NET_TRACE's impacts
     std::optional<game::NetRaceStart> m_netStart; // from the end of the loading (updateNetStart)
     bool m_netHeld = true;                        // its car hold
     std::optional<float> m_netToGo;               // its countdown (Session::setNetStart)

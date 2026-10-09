@@ -743,6 +743,37 @@ void NetGame::traceFrame(const Mat34& transform, const Vec3& velocity, double st
                          c.velocity.z, c.time);
 }
 
+bool NetGame::tracing() const { return m_impl->trace && m_impl->session; }
+
+void NetGame::traceDrawn(std::uint8_t id, bool own, const Mat34& transform, const Vec3& velocity) {
+    std::FILE* f = m_impl->trace.get();
+    if (!f || !m_impl->session)
+        return;
+    // D wall frameTime id own x y z vx vy vz
+    const Vec3& p = transform.m3;
+    std::fprintf(f, "D %.3f %.3f %u %d %.3f %.3f %.3f %.3f %.3f %.3f\n", net::monotonicMsPrecise(),
+                 m_frameTime, id, own ? 1 : 0, p.x, p.y, p.z, velocity.x, velocity.y, velocity.z);
+}
+
+void NetGame::traceImpact(std::uint8_t a, std::uint8_t b, const Vec3& position, float strength,
+                          double stateAgeMs) {
+    std::FILE* f = m_impl->trace.get();
+    if (!f || !m_impl->session)
+        return;
+    // K wall sessionTime a b x y z strength
+    std::fprintf(f, "K %.3f %.3f %u %u %.3f %.3f %.3f %.1f\n", net::monotonicMsPrecise(),
+                 m_frameTime - stateAgeMs, a, b, position.x, position.y, position.z, strength);
+}
+
+void NetGame::traceCorrection(std::uint32_t seq, int replayed, const Vec3& dx, float dv, bool snapped) {
+    std::FILE* f = m_impl->trace.get();
+    if (!f || !m_impl->session)
+        return;
+    // C wall frameTime seq replayed dx dy dz dv snapped
+    std::fprintf(f, "C %.3f %.3f %u %d %.4f %.4f %.4f %.4f %d\n", net::monotonicMsPrecise(), m_frameTime, seq,
+                 replayed, dx.x, dx.y, dx.z, dv, snapped ? 1 : 0);
+}
+
 void NetGame::sendEvent(std::uint16_t type, std::vector<std::byte> payload, std::uint8_t target) {
     if (m_impl->session)
         m_impl->session->sendGameEvent(type, std::move(payload), target);
