@@ -87,7 +87,9 @@ PlayerCar PlayerCar::at(const Vec3& pos, const Vec3& vel) {
     PlayerCar p;
     Vec3 f{vel.x, 0.0f, vel.z};
     const float yaw = f.mag2() > 0.01f ? std::atan2(-f.x, -f.z) : 0.0f;
-    p.transform = Mat34::rotationY(yaw + kPi); // forward (-Z) along the velocity
+    // Mat34::rotationY(a) faces (-sin a, 0, -cos a): forward (-Z) along the
+    // velocity (still, it faces -Z).
+    p.transform = Mat34::rotationY(yaw);
     p.transform.m3 = pos;
     p.velocity = vel;
     return p;
