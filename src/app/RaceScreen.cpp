@@ -177,11 +177,12 @@ public:
             loadStep(ctx);
             return;
         }
-        // GameLoop: AudManager::Update before the game's update, with the
-        // pause state the frame starts with (every sound stops while paused).
+        // GameLoop: AudManager::Update before the game's update, then again
+        // as asRoot's first node, with the pause state the frame starts with
+        // (every sound stops while paused).
         if (ctx.mixer)
-            m_audioManager.update(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
-                                  static_cast<float>(dt));
+            m_audioManager.updateFrame(m_paused, *ctx.mixer, m_announcerOk ? &m_announcer : nullptr,
+                                       static_cast<float>(dt));
         // mmInput::Update: the controller's bindings against the devices.
         {
             const auto size = ctx.window().size();
@@ -189,6 +190,12 @@ public:
                                                    static_cast<float>(size.width), static_cast<float>(size.height)),
                                static_cast<float>(dt));
         }
+        // mmReplayManager::Update, the next node of asRoot: a restart asked
+        // for last frame resets the whole game before anything of this frame
+        // updates (mmReplayManager::Reset -> mmGameManager -> the mode's
+        // Reset).
+        if (m_restartPending)
+            applyRestart(ctx);
         // mmPopup: Escape opens the main menu (pausing a single-player game,
         // mmPopup::ProcessEscape(1)); while it is up the game's keys are off.
         stepPopupScript(ctx); // OPENMM2_POPUP_SCRIPT automation (its keys reach the popup this frame)
@@ -201,11 +208,9 @@ public:
         // MenuManager::ScanGlobalKeys: F4 in the popup sets the menu's state
         // to 6, which mmPopup::Update acts on in PUMain only: the race
         // restarts as with Restart Race (OpenMM2: not in network games).
-        if (m_popup == Popup::Main && ctx.input.keyPressed(platform::Key::F4) && m_session && !multiplayer(ctx)) {
-            closePopup(ctx, false);
-            m_resultsShown = false;
-            m_session->restart();
-        }
+        if (m_popup == Popup::Main && ctx.input.keyPressed(platform::Key::F4) && m_session &&
+            !multiplayer(ctx))
+            restartFromMenu(ctx);
         if (m_popup != Popup::None) {
             updatePopup(ctx, dt);
             if (ctx.nextScreen)
@@ -239,15 +244,35 @@ public:
             m_flyCamera = !m_flyCamera;
         if (!m_flyCamera && m_popup == Popup::None)
             updateGameInput(ctx);
-        if (m_paused) {
-            // asRoot paused (the full-screen map in single player): the
-            // game, the physics and the clocks stand still. mmGame::Update
-            // still updates the announcer's queue (mmSpeechContainer::Update).
+        // A restart asked for this frame: nothing of the old race moves on
+        // before the reset (the menu's Restart leaves the game paused until
+        // mmReplayManager has reset it).
+        if (m_paused || m_restartPending) {
+            // asRoot paused (the menu or the full-screen map in single
+            // player): the rules, the AI, the physics and the clocks stand
+            // still. mmGame::Update still updates the announcer's queue
+            // (mmSpeechContainer::Update) and runs its fall and water checks,
+            // and mmHUD::Update counts the message down.
             if (m_announcerOk)
                 m_announcer.update(static_cast<float>(dt));
+            if (m_session && m_player && !m_restartPending) {
+                m_playerState = playerState();
+                m_session->updatePaused(static_cast<float>(dt), m_playerState);
+                handleSessionEvents(ctx);
+            }
+            // mmGameManager::Update runs cityLevel::Update (the sky turns,
+            // lvlSky::Update), cityLevel::PreDraw (the rain and snow,
+            // asParticles::Update, and the texture movies) and the camera
+            // (camViewCS::Update) whether or not the game is paused.
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
+            else
+                updateCarCamera(ctx, static_cast<float>(dt));
+            if (m_weather)
+                m_weather->update(static_cast<float>(dt), m_camera.transform);
             m_textures->update(m_time);
+            if (m_cityRenderer)
+                m_cityRenderer->update(m_frameDt);
             updateForceFeedback(ctx, static_cast<float>(dt), true);
             return;
         }
@@ -1600,6 +1625,58 @@ private:
         if (phaseBefore != game::session::Phase::PostRace && m_session->phase() == game::session::Phase::PostRace &&
             m_result.config.mode != game::GameMode::Cruise && m_session->postRaceCamera())
             startFinishCamera(ctx);
+        handleSessionEvents(ctx);
+        if (auto* music = ctx.music(); music && m_musicDirector) {
+            using game::session::Phase;
+            auto& director = *m_musicDirector;
+            const Phase phase = m_session->phase();
+            if (phase != Phase::Countdown)
+                director.raceStarted();
+            if (phase == Phase::PostRace && !m_musicFinished) {
+                // The single-player race modes stop the music at the finish
+                // (StopSegment(0)), a wreck with an ending on the next beat
+                // (StopSegment(1)); the water, a late Blitz, the crash course
+                // and the multiplayer modes leave it playing.
+                if (m_session->damagedOut())
+                    director.damagedOut();
+                else if (m_session->musicStopped())
+                    director.finish();
+                m_musicFinished = true;
+            }
+            // mmPopup::ShowResults (a finish); a loss opens the main menu,
+            // whose pause music openPopup starts.
+            if (phase == Phase::Done && !m_musicResults && m_session->raceOver()) {
+                director.results();
+                m_musicResults = true;
+            }
+            director.update(dt, m_player->sim().speed(), audio::game::SirenPlayer::copsPursuingPlayer(),
+                            m_carAudio.airborne());
+            for (const auto& c : director.takeCommands())
+                music->setState(c.state, c.timing);
+            if (director.takeBigAir())
+                music->triggerBigAir();
+        }
+        if (m_session->finished() && !m_resultsShown) {
+            m_resultsShown = true;
+            m_result = m_session->result();
+            // A lost race or lesson (state 4) opens the main menu without
+            // pausing (mmPopup::ProcessEscape(0)); a finished one shows the
+            // results (mmPopup::ShowResults), which OpenMM2 shows as the
+            // first page of the menus.
+            if (!m_result.finished && !multiplayer(ctx))
+                openPopup(ctx, false);
+            else
+                leaveRace(ctx, m_result);
+        }
+    }
+
+    // The session's events: what the rules ask of the race (the cameras, the
+    // cars, sounds and speech, the network). updateSession hands them over
+    // after the rules, applyRestart after a restart, the paused frame after
+    // its checks.
+    void handleSessionEvents(Context& ctx) {
+        if (!m_session || !m_player)
+            return;
         for (const auto& e : m_session->takeEvents()) {
             using game::session::EventType;
             if (e.type == EventType::HitWater)
@@ -1728,48 +1805,6 @@ private:
             // OpponentFinished needs nothing: the game only asks
             // aiRouteRacer::Finished (OpponentState::finished), and the car
             // drives on to its destination.
-        }
-        if (auto* music = ctx.music(); music && m_musicDirector) {
-            using game::session::Phase;
-            auto& director = *m_musicDirector;
-            const Phase phase = m_session->phase();
-            if (phase != Phase::Countdown)
-                director.raceStarted();
-            if (phase == Phase::PostRace && !m_musicFinished) {
-                // The single-player race modes stop the music at the finish
-                // (StopSegment(0)), a wreck with an ending on the next beat
-                // (StopSegment(1)); the water, a late Blitz, the crash course
-                // and the multiplayer modes leave it playing.
-                if (m_session->damagedOut())
-                    director.damagedOut();
-                else if (m_session->musicStopped())
-                    director.finish();
-                m_musicFinished = true;
-            }
-            // mmPopup::ShowResults (a finish); a loss opens the main menu,
-            // whose pause music openPopup starts.
-            if (phase == Phase::Done && !m_musicResults && m_session->raceOver()) {
-                director.results();
-                m_musicResults = true;
-            }
-            director.update(dt, m_player->sim().speed(), audio::game::SirenPlayer::copsPursuingPlayer(),
-                            m_carAudio.airborne());
-            for (const auto& c : director.takeCommands())
-                music->setState(c.state, c.timing);
-            if (director.takeBigAir())
-                music->triggerBigAir();
-        }
-        if (m_session->finished() && !m_resultsShown) {
-            m_resultsShown = true;
-            m_result = m_session->result();
-            // A lost race or lesson (state 4) opens the main menu without
-            // pausing (mmPopup::ProcessEscape(0)); a finished one shows the
-            // results (mmPopup::ShowResults), which OpenMM2 shows as the
-            // first page of the menus.
-            if (!m_result.finished && !multiplayer(ctx))
-                openPopup(ctx, false);
-            else
-                leaveRace(ctx, m_result);
         }
     }
 
@@ -2291,8 +2326,10 @@ private:
         using platform::Key;
         const auto& in = ctx.input;
         if (in.keyPressed(Key::F4) && m_session && !multiplayer(ctx)) {
-            m_resultsShown = false;
-            m_session->restart();
+            // asRoot::Reset ends a pause at once (the full-screen map's; the
+            // map stays up), then the reset waits for the next frame.
+            m_paused = false;
+            requestRestart();
             return;
         }
         if (in.keyPressed(Key::F6) && multiplayer(ctx)) {
@@ -2306,6 +2343,35 @@ private:
         const bool shift = in.keyDown(Key::LShift) || in.keyDown(Key::RShift);
         if (in.keyPressed(Key::F7) && ctrl && alt && shift && !multiplayer(ctx))
             openChat(ctx);
+    }
+
+    // mmReplayManager's reset flag (+0x19), which Restart Race, F4 in the
+    // menu and F4 in the game set: mmReplayManager::Update acts on it at the
+    // start of the next frame.
+    void requestRestart() {
+        m_restartPending = true;
+        m_resultsShown = false;
+    }
+
+    // PUMain's Restart (and F4 over it, mmPopup::Update): the reset flag and
+    // DisablePU(0), the menu closed without the return music (mmGame::Reset
+    // starts the music again).
+    void restartFromMenu(Context& ctx) {
+        closePopup(ctx, false);
+        requestRestart();
+    }
+
+    // mmReplayManager::Update with the reset flag: mmReplayManager::Reset
+    // (the seed back to 1, OpenMM2's per-subsystem streams reseed in their
+    // own resets) and the tree's Reset, which reaches the mode's Reset: the
+    // session and every object of the race back to the start before
+    // anything of this frame updates.
+    void applyRestart(Context& ctx) {
+        m_restartPending = false;
+        if (!m_session)
+            return;
+        m_session->restart();
+        handleSessionEvents(ctx);
     }
 
     // MenuManager::Switch from one page of the open popup to another.
@@ -2489,14 +2555,8 @@ private:
             // PUMenuBase::DisableExit while locked.
             resume.enabled = !locked;
             auto& restart = button(0.0f, 0.125f, 1.0f, 0.1f,
-                                   crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"), 2, [this, &ctx] {
-                                       // mmReplayManager's reset flag: the race starts over
-                                       // (DisablePU(0); mmGame::Reset starts the music again).
-                                       closePopup(ctx, false);
-                                       m_resultsShown = false;
-                                       if (m_session)
-                                           m_session->restart();
-                                   });
+                                   crash ? s.get(655, "Restart Lesson") : s.get(464, "Restart Race"), 2,
+                                   [this, &ctx] { restartFromMenu(ctx); });
             // PUMain::RestartRO: no restart in a network game.
             restart.enabled = !net;
             // mmPopup::Update, PUMain id 0xb: the OPTIONS pages (menu 5).
@@ -3158,7 +3218,7 @@ private:
         updateAmbientAudio(ctx, dt);
         updatePedestrianAudio(dt);
         // mmGame::Update's mmSpeechContainer::Update (AudSpeech::Update); the
-        // frame's first one was AudManager::Update's (m_audioManager).
+        // frame's first two were AudManager::Update's (m_audioManager).
         if (m_announcerOk)
             m_announcer.update(dt);
         m_ambience.update(m_camera.transform, dt, m_tunnel);
@@ -3306,8 +3366,9 @@ private:
         // mmReplayManager::Update reads mmInput::GetThrottle / GetBrakes /
         // GetSteering(playerFilterSteering) / GetHandBrake (the pedal swap
         // is ArcadeControls'); the steering filters use the parameters
-        // mmPlayer::Update set from the last frame's speed.
-        if (!m_flyCamera && m_popup == Popup::None) {
+        // mmPlayer::Update set from the last frame's speed. It records them
+        // in every frame the game runs, the menu up or not.
+        if (!m_flyCamera) {
             pedals.accelerator = m_gameInput.throttle();
             pedals.brake = m_gameInput.brakes();
             pedals.handbrake = m_gameInput.handBrake();
@@ -3328,6 +3389,14 @@ private:
         // ... and records them, and the car is driven with the recorded
         // values (bytes).
         pedals = controls::replayQuantize(pedals);
+        // mmGame::Update with the menu up (mmPopup enabled, the game not
+        // paused: a network game, a lost race, the chat line): the game's
+        // keys are off, but mmGame::UpdateSteeringBrakes still gives the car
+        // the recorded inputs for every controller but the mouse (inputDevice
+        // 0), whose car keeps the inputs it had.
+        if (m_popup != Popup::None && m_gameInput.controller() == controls::Controller::Mouse)
+            pedals = m_carPedals;
+        m_carPedals = pedals;
         m_steerApplied = pedals.steering; // mmPlayer::SetSteering: +0x2264
         m_gameInput.setSpeed(m_player->sim().speed());
         // Countdown: the car is held until "Go!" (and during wreck
@@ -3373,15 +3442,17 @@ private:
             m_ff.update(controls::ffCarState(m_player->sim()), dt, paused);
     }
 
-    // The horn (mmGame::UpdateHorn: the slot's held bit), not in the free
-    // camera.
-    bool hornDown(Context&) const { return !m_flyCamera && m_gameInput.held(controls::Action::Horn); }
+    // The horn as mmGame::UpdateHorn last set it (+0x274, the slot's held
+    // bit), not in the free camera.
+    bool hornDown(Context&) const { return !m_flyCamera && m_hornHeld; }
 
     // mmGame::UpdateGameInput: the discrete in-race keys, handled while the
     // game is paused too.
     void updateGameInput(Context& ctx) {
         using controls::Action;
-        const auto& in = ctx.input;
+        // mmGame::UpdateHorn opens UpdateGameInput: with the menu up neither
+        // runs and the horn stays as it was (playing on in a running game).
+        m_hornHeld = m_gameInput.held(Action::Horn);
         auto pressed = [&](Action a) { return m_gameInput.fired(a); };
         bool viewChanged = false;
         if (m_hud) {
@@ -3416,17 +3487,15 @@ private:
                 viewChanged = true;
             }
         }
-        // While paused, mmGame::UpdatePaused also takes the C and V keys
-        // themselves (key events 0x2E and 0x2F), whatever the two camera
-        // actions are bound to.
-        auto pausedKey = [&](Action a, platform::Key k) {
-            return m_paused && m_gameInput.binding(a) != controls::Binding::key(k) && in.keyPressed(k);
-        };
-        if (pressed(Action::ChangeCamera) || pausedKey(Action::ChangeCamera, platform::Key::C))
+        // A paused game takes these keys too: mmGame::Update runs while
+        // asRoot is paused. (mmGame::UpdatePaused, which would take the C and
+        // V keys themselves, is never called: nothing reaches the game's
+        // UpdatePaused slot in build 3393.)
+        if (pressed(Action::ChangeCamera))
             m_cams.toggleCamera();
         // mmViewMgr::SetViewSetting(2), input event 0x0C (Thrill Cam): the
         // XCam, orbiting the car under the keyboard (CameraInput::orbit).
-        if (pressed(Action::ThrillCam) || pausedKey(Action::ThrillCam, platform::Key::V))
+        if (pressed(Action::ThrillCam))
             m_cams.toggleXCam();
         if (pressed(Action::WideAngle))
             m_cams.toggleWideAngle();
@@ -3743,6 +3812,12 @@ private:
     // The game is paused (asRoot): the full-screen map or the popup in
     // single player.
     bool m_paused = false;
+    // mmReplayManager's reset flag (+0x19): the race starts over at the
+    // start of the next frame (applyRestart).
+    bool m_restartPending = false;
+    // What mmGame::UpdateSteeringBrakes last gave the car (the recorded
+    // inputs); with the menu up and the mouse controller the car keeps them.
+    phys::PedalInput m_carPedals;
     // The in-race popup (mmPopup). Options: one of the pages
     // frontend::PopupOptions builds (m_popupPage).
     Popup m_popup = Popup::None;
@@ -3755,6 +3830,7 @@ private:
     ui::NavReader m_nav;
     bool m_popupPaused = false;
     float m_camPan = 0.0f; // mmInput::GetCamPan, kept at mmPlayer +0x1D6C
+    bool m_hornHeld = false; // mmGame +0x274: the horn as UpdateHorn last set it
     game::session::MapMode m_hudMapBeforeFull = game::session::MapMode::Off;
     game::PlayerCameras m_cams;
     // The rear-view mirror's camera (camera-props); drawMirror draws it. Its
