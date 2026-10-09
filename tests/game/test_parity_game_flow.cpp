@@ -11,7 +11,6 @@
 #include "game/session/CopsAndRobbers.h"
 #include "game/session/RaceSetup.h"
 #include "game/session/Session.h"
-#include "phys/World.h"
 #include "vfs/GameSource.h"
 
 #include <gtest/gtest.h>
@@ -27,14 +26,14 @@ using namespace mm2::game::session;
 namespace {
 
 // A probe of the plane y = `height` (the level as dgPhysManager::Collide sees
-// it, for the tests).
+// it, for the tests), worked out as phys::FlatGround::probe does. MSVC 14.51's
+// optimiser crashes (C1001) on a FlatGround made inside this lambda.
 GroundProbe planeProbe(float height) {
     return [height](const Vec3& from, const Vec3& to) -> std::optional<Vec3> {
-        phys::FlatGround ground(height);
-        phys::RayHit hit;
-        if (!ground.probe(from, to, hit))
+        const float da = from.y - height, db = to.y - height;
+        if ((da > 0 && db > 0) || (da < 0 && db < 0) || da == db)
             return std::nullopt;
-        return hit.position;
+        return from + (to - from) * (da / (da - db));
     };
 }
 
