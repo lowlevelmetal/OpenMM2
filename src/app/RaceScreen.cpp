@@ -2188,7 +2188,16 @@ private:
             if (rc.hasState)
                 cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3, (rc.flags & net::kVehicleWrecked) != 0,
                                 false});
-        sendCr(ctx, m_cr->updateNetwork(dt, m_crSelf, host, cars, m_crImpacts));
+        // mmMultiCR::UpdateGame state 2 starts the clock (mmTimer::Start) when
+        // it enables the racers. OpenMM2's cars go at the shared start time,
+        // and every machine runs its rules on the session clock from there,
+        // so the time limit runs out on all of them together (each counting
+        // frames from its own load did not agree by the loads' difference).
+        const double raceClock =
+            std::max(0.0, (ctx.netGame->frameTime() - static_cast<double>(ctx.netGame->raceStartTime())) / 1000.0);
+        const float ruleDt = static_cast<float>(std::max(0.0, raceClock - m_crClock));
+        m_crClock = std::max(m_crClock, raceClock);
+        sendCr(ctx, m_cr->updateNetwork(ruleDt, m_crSelf, host, cars, m_crImpacts));
         m_crImpacts.clear();
         // mmMultiCR::SystemMessage 0x2d: a player left.
         {
@@ -3990,6 +3999,7 @@ private:
     game::session::CrTeam m_crMyTeam = game::session::CrTeam::Robber;
     std::uint32_t m_crRng = 1;  // the places' intersection draws
     float m_crEnd = -1.0f;      // UpdateLimit's wait before the results
+    double m_crClock = 0.0;     // seconds of the game since the shared start
     bool m_crFinished = false;
     bool m_crWaterHandled = false;        // the water / fall handler fired this frame
     std::set<std::uint8_t> m_crPlayers;   // the players last frame (who left)
