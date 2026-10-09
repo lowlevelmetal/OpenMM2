@@ -40,8 +40,13 @@ namespace mm2::net {
 inline constexpr std::uint16_t kVehicleDamageEvent = static_cast<std::uint16_t>(GameEventType::Custom) + 32;
 
 // Whose car: the sender's own, or (from the host only) a shared police car
-// by its ambient id.
+// by its ambient id, or (from the host only, protocol 5) a player's car,
+// kDamagePlayerCar + the player's id: the host simulates every player's car
+// and decides its damage (docs/multiplayer.md, "Players' cars").
 inline constexpr std::uint16_t kDamageOwnCar = static_cast<std::uint16_t>(kMaxAmbientIds);
+inline constexpr std::uint16_t kDamagePlayerCar = kDamageOwnCar + 1;
+inline constexpr std::uint16_t kDamageLastSubject =
+    static_cast<std::uint16_t>(kDamagePlayerCar + kMaxPlayers - 1);
 
 inline constexpr std::size_t kMaxDamagePatches = 16; // per event
 inline constexpr std::size_t kMaxDamageImpacts = 8;  // per event
@@ -93,7 +98,7 @@ inline float damageExp(float v) { return std::exp2(v) - 1.0f; }
 template <class S>
 bool serialize(S& s, VehicleDamageEvent& e) {
     std::int32_t subject = e.subject, first = e.first;
-    s.ranged(subject, 0, static_cast<std::int32_t>(kDamageOwnCar));
+    s.ranged(subject, 0, static_cast<std::int32_t>(kDamageLastSubject));
     e.subject = static_cast<std::uint16_t>(subject);
     s.u8(e.epoch);
     s.u32(e.time);

@@ -66,6 +66,8 @@ public:
     // back through SetResetPos, which adds CenterOfGravity again, so every
     // such respawn moves the start a later reset() uses by CenterOfGravity.
     void respawnAt(const Mat34& at);
+    // The same at `position` turned by `rotation` (as setResetPos takes them).
+    void respawnAt(const Vec3& position, float rotation);
 
     // Applies pedal input through the original's automatic-reverse logic
     // (mmGame::UpdateSteeringBrakes). After hold() it first makes the car
@@ -78,6 +80,11 @@ public:
     // The pedal handling's state (the AUTO REVERSE option, the swapped
     // pedals that the transmission keys reset).
     phys::ArcadeControls& controls() { return m_controls; }
+    const phys::ArcadeControls& controls() const { return m_controls; }
+    // Whether the car is held (hold() until drive()). OpenMM2's network
+    // prediction saves and restores it with the car's state.
+    bool held() const { return m_held; }
+    void setHeld(bool held) { m_held = held; }
     bool reversing() const;
 
     // Pose for rendering (body and wheel matrices from the simulation).

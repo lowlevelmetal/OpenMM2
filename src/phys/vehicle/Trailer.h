@@ -49,6 +49,23 @@ struct TrailerOptions {
     bool mm2ForceRotation = true;
 };
 
+// OpenMM2 (network prediction): what a trailer's simulation changes from one
+// sample to the next (see CarSimState).
+struct TrailerState {
+    InertialCS ics;
+    Mat34 boundMatrix;
+    Collider collider;
+    int room = 0;
+    std::array<Drivetrain, 4> drivetrains;
+    std::array<Wheel, 4> wheels;
+    // The hitch (dgTrailerJoint): broken or not, its angles and rates, its
+    // force and gap, the joint point and the last inverse mass matrix.
+    int status = 0;
+    float lean = 0.0f, leanRate = 0.0f, roll = 0.0f, rollRate = 0.0f;
+    Vec3 jointForce, gap, position;
+    Mat34 invMassMatrix;
+};
+
 // vehTrailer (Midtown Madness 2, verified against the build 3393 code): the
 // semi trailers of vpsemi and vpcentury. Its own rigid body, four wheels
 // each in a free drivetrain, the back wheels taking the tractor's inputs,
@@ -96,6 +113,11 @@ public:
 
     void beforeIntegrate(Body& body, float dt, const World& world) override;
     void afterIntegrate(Body& body, float dt, const World& world) override;
+
+    // OpenMM2 (network prediction): the state after the last sample, and
+    // that state put back.
+    TrailerState saveState() const;
+    void restoreState(const TrailerState& state);
 
     // dgTrailerJoint::Update's debug key: in the frame Ctrl+B goes down
     // (ioKeyboard's state, global like it), every hitch still holding

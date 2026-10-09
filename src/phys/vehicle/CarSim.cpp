@@ -331,6 +331,70 @@ void CarSim::preUpdate() {
     }
 }
 
+CarSimState CarSim::saveState() const {
+    CarSimState s;
+    s.ics = body.ics;
+    s.boundMatrix = body.boundMatrix;
+    s.collider = body.collider;
+    s.room = body.room;
+    s.wheels = wheels;
+    s.engine = engine;
+    s.trans = trans;
+    s.drivetrains = drivetrains;
+    s.axles = axles;
+    s.aero = aero;
+    s.gyro = gyro;
+    s.stuck = stuck;
+    s.splash = splash;
+    s.damage = damage;
+    s.brakes = brakes;
+    s.handBrake = handBrake;
+    s.steering = steering;
+    s.raceFinished = raceFinished;
+    s.drivable = drivable;
+    s.undrivableMode = undrivableMode;
+    s.speed = m_speed;
+    s.speedMph = m_speedMph;
+    s.resets = resets;
+    s.random = randomState;
+    s.resetPos = m_resetPos;
+    s.resetRotation = resetRotation;
+    s.waterLevel = m_waterLevel;
+    return s;
+}
+
+void CarSim::restoreState(const CarSimState& s) {
+    body.ics = s.ics;
+    body.boundMatrix = s.boundMatrix;
+    body.collider = s.collider;
+    body.room = s.room;
+    wheels = s.wheels;
+    engine = s.engine;
+    trans = s.trans;
+    drivetrains = s.drivetrains;
+    axles = s.axles;
+    aero = s.aero;
+    gyro = s.gyro;
+    stuck = s.stuck;
+    splash = s.splash;
+    const CarDamageParams limits = damage.params;
+    damage = s.damage;
+    damage.params = limits;
+    brakes = s.brakes;
+    handBrake = s.handBrake;
+    steering = s.steering;
+    raceFinished = s.raceFinished;
+    drivable = s.drivable;
+    undrivableMode = s.undrivableMode;
+    m_speed = s.speed;
+    m_speedMph = s.speedMph;
+    resets = s.resets;
+    randomState = s.random;
+    m_resetPos = s.resetPos;
+    resetRotation = s.resetRotation;
+    m_waterLevel = s.waterLevel;
+}
+
 Mat34 CarSim::modelMatrix() const {
     // vehCarSim::SetWorldMatrix: the body matrix moved by R * CenterOfGravity
     // (summed in its order).
@@ -403,7 +467,7 @@ WheelEnv CarSim::makeEnv(float dt, const World& world) {
     env.weatherFriction = options.weatherFriction;
     env.hasCar = true;
     env.carFrictionHandling = params.carFrictionHandling;
-    env.randomSeed = world.randomSeed();
+    env.randomSeed = ownRandom ? &randomState : world.randomSeed();
     env.self = &body;
     return env;
 }

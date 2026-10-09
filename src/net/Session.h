@@ -15,9 +15,10 @@
 // install an event filter to validate or rewrite events before relaying.
 
 #include "net/AmbientState.h"
-#include "net/PropState.h"
 #include "net/ClockSync.h"
 #include "net/Discovery.h"
+#include "net/PlayerCars.h"
+#include "net/PropState.h"
 #include "net/Protocol.h"
 #include "net/Snapshot.h"
 #include "net/Transport.h"
@@ -246,6 +247,35 @@ public:
     // Connection quality to the host (clients) or to a player (host).
     PeerStats peerStats(std::uint8_t playerId) const;
 
+    // --- The players' cars, simulated by the host (net/PlayerCars.h) ---
+    // Client: this machine's inputs to the host (during a race only).
+    void sendPlayerInput(const PlayerInputMsg& msg);
+    // Host: the clients' inputs received since the last call, oldest first
+    // (at most kMaxQueuedPlayerInputs; a joiner beyond its budget of
+    // kInputRate messages a second loses the excess, which the next ones
+    // repeat).
+    struct ReceivedInput {
+        std::uint8_t player = kInvalidPlayerId;
+        PlayerInputMsg msg;
+    };
+    std::vector<ReceivedInput> takePlayerInputs() { return std::exchange(m_playerInputs, {}); }
+    static constexpr std::size_t kMaxQueuedPlayerInputs = 256;
+    // Host: one client's states (its own car and the others'); returns the
+    // bytes sent.
+    std::size_t sendCarStates(std::uint8_t playerId, const CarStatesMsg& msg);
+    // Client: what the host said about this machine's car since the last
+    // call, oldest first (the other cars go into their snapshot buffers).
+    struct OwnCarUpdate {
+        std::uint32_t time = 0;
+        std::uint32_t ack = 0;
+        std::int32_t waiting = 0;
+        bool hasOwn = false;
+        OwnCarState own;
+        double arrival = 0.0; // session ms
+    };
+    std::vector<OwnCarUpdate> takeOwnCarStates() { return std::exchange(m_ownCarStates, {}); }
+    static constexpr std::size_t kMaxQueuedOwnCarStates = 16;
+
     // --- Shared ambient traffic (multiplayer cruise) ---
     // Host: sends one player its cars on the unreliable Ambient channel.
     // Returns the encoded size in bytes (0 when nothing was sent).
@@ -277,7 +307,7 @@ private:
         std::uint8_t playerId = kInvalidPlayerId; // assigned after Hello
         std::array<std::byte, 16> nonce{};
         std::uint64_t connectedAt = 0;
-        RateLimit chat, updates, events, damage;
+        RateLimit chat, updates, events, damage, inputs;
         bool updatePending = false; // a PlayerRequest applied but not yet relayed
     };
 
@@ -370,6 +400,8 @@ private:
     std::uint64_t m_lastSnapshotSent = 0;
     double m_lastPlayoutUpdate = -1.0;
     std::vector<AmbientStateMsg> m_ambientStates; // client: received, not yet taken
+    std::vector<ReceivedInput> m_playerInputs;    // host: the clients' inputs, not yet taken
+    std::vector<OwnCarUpdate> m_ownCarStates;     // client: the host's word on its car, not yet taken
     std::vector<PropStateMsg> m_propStates;       // client: received, not yet taken
 };
 

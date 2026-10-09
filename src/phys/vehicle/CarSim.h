@@ -128,6 +128,42 @@ struct CarSimOptions {
     bool polygonalBound = false;
 };
 
+// OpenMM2 (network prediction, docs/multiplayer.md "Players' cars"):
+// everything a car's simulation changes from one sample to the next, so
+// that a machine can put its car back where an earlier sample left it and
+// run the samples after it again (CarSim::saveState / restoreState). It
+// restores into the car it was saved from only: the parts keep their
+// pointers to that car's wheels, engine and gearbox.
+struct CarSimState {
+    InertialCS ics;
+    Mat34 boundMatrix;
+    Collider collider;
+    int room = 0;
+    std::array<Wheel, 4> wheels;
+    Engine engine;
+    Transmission trans;
+    std::array<Drivetrain, 3> drivetrains;
+    std::array<Axle, 2> axles;
+    Aero aero;
+    Gyro gyro;
+    Stuck stuck;
+    Splash splash;
+    CarDamage damage; // its params are not restored
+    float brakes = 0.0f;
+    float handBrake = 0.0f;
+    float steering = 0.0f;
+    bool raceFinished = false;
+    bool drivable = true;
+    int undrivableMode = 0;
+    float speed = 0.0f;
+    float speedMph = 0.0f;
+    std::uint32_t resets = 0;
+    std::uint32_t random = 1;
+    Vec3 resetPos;
+    float resetRotation = 0.0f;
+    std::optional<float> waterLevel;
+};
+
 // The turn about Y of a spawn transform built by Mat34::rotationY (the
 // session's starts, posts and checkpoints keep MM2's angle only in this
 // form): the reset rotation (vehCarSim +0x250) that faces the car the same
@@ -262,6 +298,22 @@ public:
     // blended across a reset (game::StepHistory); the simulation never
     // reads it.
     std::uint32_t resets = 0;
+    // OpenMM2 (network prediction): the state after the last sample, and
+    // that state put back (CarSimState).
+    CarSimState saveState() const;
+    void restoreState(const CarSimState& state);
+    // OpenMM2 (network races): the wheels draw their bump numbers from the
+    // car's own stream (`randomState`) instead of the world's, which every
+    // simulated object shares (MM2: one rand() for the whole game). The
+    // host and the car's own machine then simulate the car alike whatever
+    // else each one simulates.
+    bool ownRandom = false;
+    std::uint32_t randomState = 1;
+    // The reset position as vehCarSim +0x210 holds it (CenterOfGravity
+    // added), set as it is (another machine's car, placed where that machine
+    // put it).
+    void setResetPosRaw(const Vec3& position) { m_resetPos = position; }
+
     // vehCar's drivable flag (vehCar +0xe8 bit 2, vehCar::SetDrivable): the
     // game clears it while a car is held before the start. vehCar::Update
     // then runs neither vehStuck nor vehSplash.

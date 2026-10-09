@@ -522,6 +522,8 @@ void World::step(float dt) {
         return;
     if (m_stepObserver)
         m_stepObserver();
+    if (m_beforeSample)
+        m_beforeSample();
     const float invDt = 1.0f / dt;
     // datTimeManager::SetTempOverSampling: Seconds is the sample's length.
     sampleTime() = {dt, invDt};
@@ -618,6 +620,130 @@ void World::step(float dt) {
     m_stepping = false;
     std::erase_if(m_movers, [](const Mover& m) { return m.removed; });
     m_time += dt;
+    if (m_afterSample)
+        m_afterSample();
+}
+
+void World::replaySample(std::span<Body* const> bodies, float dt) {
+    if (dt <= 0)
+        return;
+    const float invDt = 1.0f / dt;
+    sampleTime() = {dt, invDt};
+    const bool stepping = m_stepping;
+    m_stepping = true;
+    const auto replayed = [&](const Body* b) { return std::ranges::find(bodies, b) != bodies.end(); };
+    // The update, as step() runs it for these bodies.
+    for (Body* b : bodies)
+        if (b->updates && b->controller)
+            b->controller->beforeIntegrate(*b, dt, *this);
+    for (Body* b : bodies) {
+        if (!b->updates || b->kinematic)
+            continue;
+        b->ics.update(dt, invDt);
+        b->syncBoundMatrix();
+    }
+    for (Body* b : bodies) {
+        if (!b->updates)
+            continue;
+        if (b->controller)
+            b->controller->afterIntegrate(*b, dt, *this);
+        if (m_level)
+            b->room = m_level->findRoom(b->position(), b->room);
+        b->collider.joint = b->joint;
+        b->collider.id = b->audioId;
+    }
+    // The collisions: the city, the replayed bodies among themselves, the
+    // other movers and the gathered instances, all held still.
+    for (std::size_t i = 0; i < bodies.size(); ++i) {
+        Body* a = bodies[i];
+        if (!a->collisionBound)
+            continue;
+        if (a->collideTerrain)
+            collideTerrain(*a);
+        if (a->collideMovers) {
+            for (std::size_t j = i + 1; j < bodies.size(); ++j) {
+                Body* b = bodies[j];
+                if (!b->collideMovers || !b->collisionBound)
+                    continue;
+                if (a->joint && !a->joint->isBroken() && a->joint == b->joint)
+                    continue;
+                if (trivialCollide(*a, *b))
+                    collideInstances(*a, *b);
+            }
+            for (const Mover& m : m_movers) {
+                Body* b = m.body;
+                if (!running(m) || m.fresh || !b || replayed(b) || !b->collideMovers || !b->collisionBound)
+                    continue;
+                if (a->joint && !a->joint->isBroken() && a->joint == b->joint)
+                    continue;
+                if (trivialCollide(*a, *b))
+                    collideHeld(*a, *b);
+            }
+        }
+        if (a->collideTerrain || a->collideInstances) {
+            Mover self;
+            self.body = a;
+            self.instance = a;
+            gatherCollidables(self);
+            for (Instance* c : self.collidables)
+                if (Body* e = c->entity(); !e || !replayed(e))
+                    collideHeld(*a, *c);
+        }
+    }
+    for (Body* b : bodies)
+        if (b->updates)
+            b->collider.updateMtx();
+    for (Body* b : bodies)
+        if (b->updates && b->controller)
+            b->controller->afterCollisions(*b, dt, *this);
+    m_stepping = stepping;
+}
+
+bool World::collideHeld(Body& a, Instance& b) {
+    // collideInstances with B as a static instance whatever it is: a
+    // temporary collider without a body, moving at B's own velocity, so
+    // that only A takes the impulse and the push; nothing is attached, no
+    // banger breaks loose and nothing is marked hit.
+    const Bound* boundA = a.bound(0);
+    const Bound* boundB = b.bound(0);
+    if (!boundA || !boundB || boundB->type == BoundType::ForceSphere)
+        return false;
+    m_tempMatrixB = b.matrix();
+    const Vec3 relPos = m_tempMatrixB.m3 - a.matrix().m3;
+    Collider* colA = &a.collider;
+    // A body (moved by the simulation or from outside) as a kinematic one,
+    // a static instance as itself.
+    Body* entity = b.entity();
+    if (entity)
+        m_tempB.init(boundB, &m_tempMatrixB, nullptr);
+    else
+        m_tempB.initStatic(boundB, &m_tempMatrixB);
+    m_tempB.id = b.audioId;
+    if (entity && !entity->kinematic) {
+        m_tempB.moving = true;
+        m_tempB.motionVelocity = entity->ics.linearVelocity;
+        m_tempB.motionSpin = entity->ics.angularVelocity;
+        m_tempB.motionCentre = entity->ics.matrix.m3;
+    } else {
+        m_tempB.moving = b.kinematicMotion(m_tempB.motionVelocity, m_tempB.motionSpin, m_tempB.motionCentre);
+    }
+    if (!colA->ics)
+        colA->moving = a.kinematicMotion(colA->motionVelocity, colA->motionSpin, colA->motionCentre);
+    const int n = testBoundGeneric(*boundA, *colA, *boundB, m_tempB, m_isectsA.data(), m_isectsB.data(),
+                                   m_impacts.data(), kMaxIntersections, kMaxImpacts, relPos);
+    if (n == 0)
+        return false;
+    std::span<Impact> impacts(m_impacts.data(), static_cast<std::size_t>(n));
+    const float weight = 1.0f / static_cast<float>(n);
+    if (b.isBanger() && !entity) {
+        const float limit2 = b.bangerImpulseLimit2();
+        for (Impact& im : impacts)
+            calcBangerImpact(im, weight, limit2);
+    } else {
+        for (Impact& im : impacts)
+            calcImpact(im, weight);
+    }
+    return true;
 }
 
 bool World::trivialCollide(const Instance& a, const Instance& b) const {

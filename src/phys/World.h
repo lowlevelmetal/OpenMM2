@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace mm2::phys {
@@ -141,10 +142,6 @@ public:
     // no momentum of its own (infinite mass).
     bool kinematicMoves = false;
     Vec3 kinematicVelocity, kinematicSpin;
-    // OpenMM2: a moving kinematic body that breaks the bangers it hits as a
-    // body of its mass (ics) would (a network race's host: its copies of the
-    // other players' cars). Otherwise a banger holds against it.
-    bool kinematicBreaksBangers = false;
     bool kinematicMotion(Vec3& velocity, Vec3& spin, Vec3& centre) const override;
 
     // Places the body's centre of mass frame and resets its motion and
@@ -242,6 +239,24 @@ public:
     // anything moves, so that the drawing can keep each body's state from
     // before the sample (game::StepHistory). It must not change the world.
     void setStepObserver(std::function<void()> observer) { m_stepObserver = std::move(observer); }
+    // OpenMM2 (network races): `before` runs at the start of every sample,
+    // after the step observer and before anything moves (the players' cars
+    // take their inputs for that sample), `after` at its end (a client keeps
+    // its car's state). Unlike the observer they may change the bodies.
+    void setSampleHooks(std::function<void()> before, std::function<void()> after) {
+        m_beforeSample = std::move(before);
+        m_afterSample = std::move(after);
+    }
+
+    // OpenMM2 (network prediction): one sample of `bodies` alone (a car and
+    // its trailer): their controllers, their integration and their
+    // collisions with the city, with the instances around them and with the
+    // world's other movers as they stand now. Nothing else moves or changes:
+    // what they hit holds still for them (it takes no impulse or push, is
+    // not knocked loose and is not marked as hit by the player) and meets
+    // them at its own velocity. A network client runs its own car's samples
+    // again with it once the host's state has corrected an earlier one.
+    void replaySample(std::span<Body* const> bodies, float dt);
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
     // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw
@@ -316,6 +331,8 @@ private:
     bool collideProbe(const Segment& seg, Instance& inst, Intersection& hit, const Material*& material) const;
     void collideTerrain(Body& body);
     bool collideInstances(Instance& a, Instance& b);
+    // replaySample's collision of a body with something that holds still.
+    bool collideHeld(Body& a, Instance& b);
 
     mutable std::uint32_t m_randomSeed = 1;
     MaterialTable m_materials;
@@ -327,6 +344,7 @@ private:
     float m_accumulator = 0;
     double m_time = 0;
     std::function<void()> m_stepObserver;
+    std::function<void()> m_beforeSample, m_afterSample;
     Stats m_stats;
 
     // dgPhysManager's static buffers and helper colliders: the level's

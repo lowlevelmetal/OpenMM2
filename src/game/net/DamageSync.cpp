@@ -226,11 +226,19 @@ bool DamageReplica::receive(std::uint8_t from, const net::VehicleDamageEvent& e,
     ++m_stats.events;
     std::uint32_t key = 0;
     if (e.subject == net::kDamageOwnCar) {
-        if (from >= net::kMaxPlayers) {
+        // The host decides every car's damage (protocol 5): a player's word
+        // on its own car is refused.
+        if (from != net::kHostPlayerId) {
             ++m_stats.refused;
             return false;
         }
         key = playerKey(from);
+    } else if (e.subject >= net::kDamagePlayerCar) {
+        if (from != net::kHostPlayerId || e.subject > net::kDamageLastSubject) {
+            ++m_stats.refused;
+            return false;
+        }
+        key = playerKey(static_cast<std::uint8_t>(e.subject - net::kDamagePlayerCar));
     } else {
         // Only the host runs the shared police.
         if (from != net::kHostPlayerId || e.subject >= net::kMaxAmbientIds) {
@@ -438,8 +446,14 @@ void NetDamage::send(NetGame& net, std::uint64_t nowMs) {
         }
     };
     send(m_own);
+    for (auto& [id, recorder] : m_players)
+        send(recorder);
     for (auto& [id, recorder] : m_police)
         send(recorder);
+}
+
+DamageRecorder& NetDamage::player(std::uint8_t id) {
+    return m_players.try_emplace(id, static_cast<std::uint16_t>(net::kDamagePlayerCar + id)).first->second;
 }
 
 void NetDamage::receive(std::span<const NetGameEvent> events, double now) {

@@ -122,42 +122,6 @@ struct Machine {
     }
 };
 
-std::vector<PlacedProp> layout();
-
-// The speed of the piece prop 1 becomes when a car of 1000 kg at 10 m/s hits
-// it, simulated or kinematic (the host's copy of a network car). A function,
-// not a lambda: MSVC's optimiser has crashed on polymorphic objects built
-// inside lambdas.
-float pieceSpeed(const bangers::BangerDataLibrary& lib, bool kinematic) {
-    Machine m(lib);
-    m.place(layout());
-    Car car({6, 1, 3.0f}, {0, 0, -10});
-    if (kinematic) {
-        car.body.kinematic = true;
-        car.body.kinematicMoves = true;
-        car.body.kinematicVelocity = {0, 0, -10};
-        car.body.kinematicBreaksBangers = true;
-        car.body.resetCollider();
-    }
-    m.world.add(&car.body);
-    float speed = 0.0f;
-    for (int i = 0; i < 40 && m.set.standing(1); ++i) {
-        if (kinematic) {
-            Mat34 at = car.body.ics.matrix;
-            at.m3 = at.m3 + car.body.kinematicVelocity * kDt;
-            car.body.place(at);
-        }
-        m.step();
-    }
-    m.step(); // the impulses move the piece
-    for (std::size_t i = 0; i < m.set.instances().size(); ++i)
-        if (m.set.instances()[i].source == 1)
-            if (const phys::Body* b = m.set.body(i))
-                speed = b->ics.linearVelocity.mag();
-    m.world.remove(&car.body);
-    return speed;
-}
-
 std::vector<PlacedProp> layout() {
     auto at = [](const char* model, const Vec3& p) {
         return PlacedProp{model, Mat34::translation(p), 1, PlacedProp::Source::Instance, true};
@@ -401,63 +365,6 @@ TEST(PropSync, OtherCarsPassThroughAClientsProps) {
     EXPECT_NEAR(other.body.ics.linearVelocity.z, -10.0f, 1e-3f); // not slowed
     EXPECT_EQ(r.propClient->stats().predicted, 0u);
     r.client.world.remove(&other.body);
-}
-
-// The host's copy of another player's car is a moving kinematic body: it
-// breaks a prop as a car of its mass would and keeps going; a still one
-// does not, nor one that would not break an unbreakable prop, nor a
-// kinematic body not allowed to (OpenMM2 0.3's network cars).
-TEST(PropSync, MovingKinematicBodiesBreakProps) {
-    TempBangers files;
-    bangers::BangerDataLibrary lib(files.vfs);
-    Machine m(lib);
-    m.place(layout());
-    auto kinematic = [](Car& c, const Vec3& v, bool breaks = true) {
-        c.body.kinematic = true;
-        c.body.kinematicMoves = true;
-        c.body.kinematicVelocity = v;
-        c.body.kinematicBreaksBangers = breaks; // the host's copy of a network car
-        c.body.resetCollider();
-    };
-    Car moving({0, 1, 3.0f}, {0, 0, -10});
-    kinematic(moving, {0, 0, -10});
-    Car still({6, 1, 2.0f}, {0, 0, 0});
-    kinematic(still, {0, 0, 0});
-    Car against({18, 1, 3.0f}, {0, 0, -10});
-    kinematic(against, {0, 0, -10});
-    Car old({200, 1, 3.0f}, {0, 0, -10});
-    kinematic(old, {0, 0, -10}, false);
-    for (Car* c : {&moving, &still, &against, &old})
-        m.world.add(&c->body);
-    for (int i = 0; i < 40; ++i) {
-        // Placed each frame as a network car is (RaceScreen::updateRemoteCars).
-        for (Car* c : {&moving, &against, &old}) {
-            Mat34 at = c->body.ics.matrix;
-            at.m3 = at.m3 + c->body.kinematicVelocity * kDt;
-            c->body.place(at);
-        }
-        m.step();
-    }
-    EXPECT_FALSE(m.set.standing(0));
-    const auto pieces = piecesOf(m.set, 0);
-    ASSERT_EQ(pieces.size(), 1u);
-    EXPECT_LT(pieces.begin()->second.z, -3.0f); // thrown ahead of the car
-    EXPECT_TRUE(m.set.standing(1));
-    EXPECT_TRUE(m.set.standing(3)); // ImpulseLimit2 1e15: a car does not break it
-    EXPECT_TRUE(m.set.standing(4));
-    for (Car* c : {&moving, &still, &against, &old})
-        m.world.remove(&c->body);
-}
-
-// It gives the prop what a simulated car of its mass gives it (dgImpact's
-// share of the motion), not all of it: a parked car flies as far on the host
-// as from the owner's own car.
-TEST(PropSync, KinematicBodiesShareTheMotionAsTheirMass) {
-    TempBangers files;
-    bangers::BangerDataLibrary lib(files.vfs);
-    const float simulated = pieceSpeed(lib, false), kinematic = pieceSpeed(lib, true);
-    ASSERT_GT(simulated, 2.0f);
-    EXPECT_NEAR(kinematic, simulated, simulated * 0.05f);
 }
 
 // Lost, late and reordered messages: the client still ends with the host's
