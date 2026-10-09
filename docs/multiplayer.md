@@ -473,7 +473,10 @@ Measured on loopback with a joiner loading 4 s more slowly
 cars changed in between: race 1 countdown from session time 20209 (host) and
 20213 (joiner), Go at 22712 and 22710 for a start at 22709; race 2 countdown
 from 47474 and 47477, Go at 49979 and 49976 for 49974 (a frame is about 6
-ms). Through `netprobe relay` (60 ms each way, 20 ms jitter, 5 % loss) the
+ms). Version 0.2.0's fixed start (6 s after GO DRIVE), measured the same way:
+the joiner's countdown began 0.5 s late and it went 560 ms after the host
+(17512 against 16952); 6 s slower, it went 2.55 s after the host (19523
+against 16969). Through `netprobe relay` (60 ms each way, 20 ms jitter, 5 % loss) the
 lead was 358 ms, the start reached the joiner 145 ms after it left the host,
 and both went at 22993 for 22988. A joiner that never finished loading was
 waited for 60 s, the host raced alone from then, and when the host returned
