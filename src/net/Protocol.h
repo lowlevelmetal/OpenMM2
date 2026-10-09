@@ -183,7 +183,7 @@ struct WelcomeMsg {
     std::vector<PlayerInfo> players;
     SessionPhase phase = SessionPhase::Lobby;
     std::uint32_t hostTime = 0;
-    // The race (RaceLoad's number and time), when phase != Lobby.
+    // The current race (RaceLoad's number and time; in the lobby the last).
     std::uint32_t race = 0;
     std::uint32_t raceOrderTime = 0;
     bool startKnown = false;      // the host has sent the race's start (RaceStart)

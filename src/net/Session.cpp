@@ -810,9 +810,9 @@ void Session::hostAcceptHello(Remote& r, HelloMsg& hello) {
     welcome.players = m_players;
     welcome.phase = m_phase;
     welcome.hostTime = time();
+    welcome.race = m_race; // the last race in the lobby: the numbers go on from it
+    welcome.raceOrderTime = m_raceOrderTime;
     if (m_phase != SessionPhase::Lobby) {
-        welcome.race = m_race;
-        welcome.raceOrderTime = m_raceOrderTime;
         welcome.startKnown = m_startKnown;
         welcome.startTime = m_startTime;
         welcome.loaded = m_loaded;
@@ -905,9 +905,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         m_players = std::move(w.players);
         m_phase = w.phase;
         clearRace();
+        m_race = w.race;
+        m_raceOrderTime = w.raceOrderTime;
         if (m_phase != SessionPhase::Lobby) {
-            m_race = w.race;
-            m_raceOrderTime = w.raceOrderTime;
             m_startKnown = w.startKnown;
             m_startTime = w.startTime;
             // The others who have loaded (this machine reports itself).

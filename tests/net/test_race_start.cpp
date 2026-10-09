@@ -324,3 +324,30 @@ TEST(RaceStart, HostAloneStartsAtOnce) {
     ASSERT_NE(set, nullptr);
     EXPECT_EQ(set->race, 1u);
 }
+
+// The host numbers the races: a player who joins after some have been run
+// has the same number for the next one.
+TEST(RaceStart, ALaterJoinerNumbersTheRacesAsTheHost) {
+    Table t(1);
+    for (int race = 0; race < 2; ++race) {
+        t.order();
+        for (Peer* p : t.all())
+            p->session->reportLoaded();
+        ASSERT_TRUE(pumpUntil(t.all(), [&] { return t.everyStartKnown(); }));
+        t.backToLobby();
+    }
+    Peer late("Late");
+    JoinParams j;
+    j.host = Address::loopback(t.host.session->port());
+    j.player.name = "Late";
+    ASSERT_TRUE(late.session->join(j));
+    std::vector<Peer*> peers = t.all();
+    peers.push_back(&late);
+    ASSERT_TRUE(pumpUntil(peers, [&] { return late.session->clockSynced(); }));
+    EXPECT_EQ(late.session->raceNumber(), 2u);
+    t.host.session->startRace(0);
+    ASSERT_TRUE(pumpUntil(peers, [&] { return late.session->phase() == SessionPhase::Countdown; }));
+    EXPECT_EQ(late.session->raceNumber(), 3u);
+    EXPECT_EQ(t.client(0).session->raceNumber(), 3u);
+    EXPECT_EQ(late.session->raceOrderTime(), t.host.session->raceOrderTime());
+}

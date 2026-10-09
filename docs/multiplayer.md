@@ -227,7 +227,7 @@ attempt within `connectTimeoutMs` (8 s).
 | --- | --- | --- |
 | Challenge | H→C | nonce, password required |
 | Hello | C→H | protocol version, build, name, car, colour, team, password proof |
-| Welcome | H→C | your id, settings, player list, phase, host time; during a race its number, order time, start (if set) and the players who have loaded it |
+| Welcome | H→C | your id, settings, player list, phase, host time, the race's number and order time (in the lobby the last race's); during a race its start (if set) and the players who have loaded it |
 | Reject | H→C | reason, text |
 | PlayerJoined / PlayerUpdate | H→C | `PlayerInfo` |
 | PlayerLeft | H→C | id, reason |
