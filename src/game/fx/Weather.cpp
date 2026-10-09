@@ -32,7 +32,9 @@ void Weather::draw(render::Device& device, TextureLibrary& textures, ParticleRen
     if (!m_ok || !m_system.count())
         return;
     // asParticles::SetTexture by name asks gfxGetTexture for no mipmaps.
-    cards.draw(device, camera, m_system, textures.get(EffectLibrary::rainSheet().texture, false));
+    // OpenMM2: between the last two 60 Hz updates (FixedTicker::behind).
+    cards.draw(device, camera, m_system, textures.get(EffectLibrary::rainSheet().texture, false), {},
+               m_ticker.behind());
 }
 
 } // namespace mm2::game::fx

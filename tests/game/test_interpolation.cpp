@@ -6,6 +6,7 @@
 #include "city/CityData.h"
 #include "game/Interpolation.h"
 #include "game/PlayerVehicle.h"
+#include "game/fx/Particles.h"
 #include "game/net/TrafficSync.h"
 #include "net/Protocol.h"
 #include "phys/AgeMath.h"
@@ -425,4 +426,34 @@ TEST(StepHistory, SharedTrafficIsSampledWhereTheSceneIsDrawn) {
     ASSERT_TRUE(first);
     EXPECT_NEAR(first->m3.z - now, 1.0f, 1e-3f);
     EXPECT_FALSE(client.transformAt(6, drawn));
+}
+
+// The particles the effects update at a fixed 60 Hz are drawn back along
+// their velocities by FixedTicker::behind: where they were between their last
+// two updates, as the rest of the scene is drawn.
+TEST(StepHistory, ParticlesAreDrawnBetweenTheirLastTwoUpdates) {
+    using game::fx::FixedTicker;
+    FixedTicker ticker;
+    EXPECT_EQ(ticker.advance(0.01f), 0);
+    EXPECT_NEAR(ticker.behind(), FixedTicker::kStep - 0.01f, 1e-6f);
+    EXPECT_EQ(ticker.advance(0.01f), 1);
+    EXPECT_NEAR(ticker.behind(), 2.0f * FixedTicker::kStep - 0.02f, 1e-6f);
+
+    game::fx::BirthRule rule;
+    rule.velocity = {3.0f, 8.0f, -2.0f};
+    rule.life = 5.0f;
+    rule.drag = 0.1f;
+    rule.gravity = -9.8f;
+    game::fx::ParticleSystem system;
+    system.init(4, 1, 1);
+    system.setBirthRule(&rule);
+    system.blast(1);
+    system.update(FixedTicker::kStep);
+    ASSERT_EQ(system.count(), 1);
+    const Vec3 before = system.positions()[0].position;
+    system.update(FixedTicker::kStep);
+    const Vec3 now = system.positions()[0].position;
+    EXPECT_GT((now - before).mag(), 0.1f);
+    // A whole step behind: where it was at the update before.
+    EXPECT_LT((now - system.info()[0].velocity * FixedTicker::kStep - before).mag(), 1e-5f);
 }

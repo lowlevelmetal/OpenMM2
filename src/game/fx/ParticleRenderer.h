@@ -39,9 +39,11 @@ public:
     // texture is a sheet of system.framesWide() x framesHigh() frames, frame
     // 0 at the start of the texture's first stored row. Particles flagged
     // BirthRule::kShadow also get their flat shadow, drawn first
-    // (asParticles::Cull).
+    // (asParticles::Cull). `behind` (s): each particle is drawn that far back
+    // along its velocity (its update moves it by its new velocity, so this is
+    // where it was between its last two updates; FixedTicker::behind).
     void draw(render::Device& device, const Mat34& cameraBasis, const ParticleSystem& system,
-              const WorldTexture* texture, const CardStyle& style = {});
+              const WorldTexture* texture, const CardStyle& style = {}, float behind = 0.0f);
 
     // Lower-level: append cards for arbitrary particles and flush once.
     void begin();

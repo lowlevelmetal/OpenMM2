@@ -214,10 +214,12 @@ void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxCont
 void VehicleEffects::draw(render::Device& device, TextureLibrary& textures, ParticleRenderer& cards,
                           SkidRenderer& skids, const Mat34& cameraBasis) {
     skids.draw(device, textures, {&m_tracks[0], &m_tracks[1], &m_tracks[2], &m_tracks[3]});
+    // OpenMM2: between their last two 60 Hz updates (FixedTicker::behind).
     if (m_wheelPtx.count())
-        cards.draw(device, cameraBasis, m_wheelPtx, textures.get(EffectLibrary::wheelSheet().texture));
+        cards.draw(device, cameraBasis, m_wheelPtx, textures.get(EffectLibrary::wheelSheet().texture), {},
+                   m_ticker.behind());
     if (m_smoke.count())
-        cards.draw(device, cameraBasis, m_smoke, textures.get("fxpt8"));
+        cards.draw(device, cameraBasis, m_smoke, textures.get("fxpt8"), {}, m_ticker.behind());
     m_sparks.draw(device);
     m_shards.draw(device, textures, m_setup.shardTextures);
 }

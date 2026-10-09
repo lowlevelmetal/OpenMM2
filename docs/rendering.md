@@ -160,16 +160,25 @@ car put back, a network car's first state), a recycled traffic slot (the
 slot's spawn count), a pedestrian put on a road in the last step; a race
 restart clears both histories. Any move longer than 5 m or a turn of more
 than 1.6 rad in one step counts as a jump too (300 m/s at 60 Hz). A traffic
-car that takes a body or gives it back switches between the AI's history
-and the physics' with one unblended frame. Camera cuts are instant since the
-camera itself is not blended.
+car that takes a body (it is hit) changes from the AI's history to the
+physics' unblended, so it moves on by up to an AI step's travel at that
+moment (half a metre at 15 m/s, while the hit throws it); one that gives its
+body back is at rest. Camera cuts are instant since the camera itself is not
+blended.
 
-**Not blended.** The particles, tyre tracks, sparks, shards, engine smoke,
-debris and rain (game/fx) keep their own fixed 60 Hz updates (the sparks
-30 Hz) and are born where the simulation is, up to a step ahead of the drawn
-car: smoke and dust drift slowly, sparks and shards are brief, and a track's
-newest end is under the car; the gizmos, cable cars and sky already move once
-per frame with its time.
+**Effects.** The effects run MM2's per-frame updates at a fixed 60 Hz of
+their own (`fx::FixedTicker`). The particle systems (the wheels' dust and
+smoke, the engine and exhaust smoke, the props' debris, the rain and snow)
+are drawn back along each particle's velocity by the time since their last
+update would have been due (`FixedTicker::behind`): an update moves a
+particle by its new velocity, so that is where it was between its last two
+updates, as the rest of the scene is drawn (the rain falls at 35 m/s: 58 cm
+an update). The tyre tracks, the shards and the sparks
+stay as updated: a track's newest end is under the car, shards are brief,
+and the sparks move in steps of at least 1/30 s in MM2 too
+(`asLineSparks::Update`). What the effects are born from is the simulation's
+state, up to a step ahead of the drawn car. The gizmos, cable cars and sky
+already move once per frame with its time.
 
 **Latency.** The drawn state reaches the newest simulated one only just
 before the next step, and right after a step it is the one before: on average

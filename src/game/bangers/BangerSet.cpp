@@ -1184,7 +1184,8 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
         if (!a.particles.count() || a.texNumber <= 0)
             continue;
         const auto sheet = fx::EffectLibrary::bangerSheet(a.texNumber);
-        cards.draw(device, cam, a.particles, textures.get(sheet.texture));
+        // OpenMM2: between the last two 60 Hz updates (FixedTicker::behind).
+        cards.draw(device, cam, a.particles, textures.get(sheet.texture), {}, m_ticker.behind());
     }
 }
 
