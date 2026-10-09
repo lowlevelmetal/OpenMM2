@@ -775,8 +775,13 @@ public:
                     ui::drawImage(f.overlay, dot, rowX + 2 + static_cast<float>(ready.width) + 2.0f, y);
                 }
                 std::string name = p.name;
-                if (f.text.measure(f.overlay, small, name) > 0.09f * 640.0f)
-                    name = name.substr(0, 6) + "...";
+                if (f.text.measure(f.overlay, small, name) > 0.09f * 640.0f) {
+                    // "%.6s...": six whole UTF-8 characters, never part of one.
+                    std::size_t end = 0;
+                    for (int i = 0; i < 6 && end < name.size(); ++i)
+                        ui::nextCodepoint(name, end);
+                    name = name.substr(0, end) + "...";
+                }
                 f.text.draw(f.overlay, small, name, rowX + 26, y, color);
                 // Cops vs. Robbers fixes the cars by team (see NetGame::raceConfig).
                 const bool cvr = cfg.mode == GameMode::CopsAndRobbers &&

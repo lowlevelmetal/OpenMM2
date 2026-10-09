@@ -1,6 +1,5 @@
 // PCP / NAT-PMP port mapping backend and default-gateway lookup.
 #include "core/Log.h"
-#include "core/StringUtil.h"
 #include "net/Discovery.h"
 #include "net/NatPmp.h"
 #include "net/PortMapper.h"
@@ -79,11 +78,20 @@ std::string toHex(std::span<const std::byte> bytes) {
 bool fromHex(std::string_view hex, std::span<std::byte> out) {
     if (hex.size() != out.size() * 2)
         return false;
+    auto digit = [](char c) -> int {
+        if (c >= '0' && c <= '9')
+            return c - '0';
+        if (c >= 'a' && c <= 'f')
+            return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F')
+            return c - 'A' + 10;
+        return -1;
+    };
     for (std::size_t i = 0; i < out.size(); ++i) {
-        const auto v = str::parseInt(std::string("0x") + std::string(hex.substr(i * 2, 2)));
-        if (!v)
+        const int hi = digit(hex[i * 2]), lo = digit(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0)
             return false;
-        out[i] = static_cast<std::byte>(*v);
+        out[i] = static_cast<std::byte>(hi * 16 + lo);
     }
     return true;
 }
@@ -192,6 +200,12 @@ public:
     }
 
     bool unmap(const MappingRecord& record, std::string& error) override {
+        // RFC 6886 3.4 / RFC 6887 11.1: a deletion for internal port 0 removes
+        // every mapping of this machine, including other programs'.
+        if (record.internalPort == 0) {
+            error = "no internal port";
+            return false;
+        }
         if (record.method == MappingMethod::Pcp) {
             natpmp::Nonce nonce{};
             if (!fromHex(record.token, nonce)) {

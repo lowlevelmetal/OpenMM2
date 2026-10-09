@@ -48,6 +48,13 @@ struct TransportConfig {
     std::uint32_t timeoutMinMs = 5000;
     std::uint32_t timeoutMaxMs = 15000;
     bool compress = true; // ENet range coder
+    // Largest message a peer may send, and how much of a peer's received but
+    // not yet serviced data may wait. ENet's defaults (32 MiB each) let any
+    // connected peer make this machine allocate a whole packet's size with its
+    // first fragment. OpenMM2's largest message (a Welcome with 16 players and
+    // 32 extra settings) is about 5 KiB.
+    std::size_t maxPacketSize = 64 * 1024;
+    std::size_t maxWaitingData = 1024 * 1024;
 };
 
 class Transport {
@@ -94,6 +101,7 @@ public:
 private:
     _ENetPeer* find(PeerId id) const;
     PeerId registerPeer(_ENetPeer* peer);
+    void configureHost();
     void configurePeer(_ENetPeer* peer);
     void accountTraffic();
 

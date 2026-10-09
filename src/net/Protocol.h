@@ -17,6 +17,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -49,6 +50,21 @@ inline constexpr std::size_t kMaxReasonLength = 200;
 inline constexpr std::size_t kMaxExtraSettings = 32;
 inline constexpr std::size_t kMaxExtraValueLength = 64;
 inline constexpr std::size_t kMaxEventPayload = 1024;
+inline constexpr const char* kDefaultCar = "vpbug"; // a player's car when none (or no valid one) was given
+
+// --- Received text -----------------------------------------------------------------
+//
+// Everything below arrives from other machines and is shown in the UI, logged,
+// or (the city) stored in the profile, so it is cleaned up on receipt.
+
+// Valid UTF-8 without control characters (C0, DEL, C1), trimmed, at most
+// `maxBytes` bytes cut on a character boundary. Invalid bytes are dropped.
+std::string sanitizeText(std::string_view text, std::size_t maxBytes);
+
+// Car and city names are base names of game files (tune/<car>.info,
+// city/<city>.psdl): 1 to kMaxShortStringLength characters from [A-Za-z0-9_-],
+// so a name from the network can never name a path.
+bool isValidAssetName(std::string_view name);
 
 enum class MsgType : std::uint8_t {
     Challenge = 1,

@@ -19,21 +19,72 @@ DisconnectReason reasonFromData(std::uint32_t data) {
 
 std::uint32_t toData(DisconnectReason r) { return static_cast<std::uint32_t>(r); }
 
-std::string sanitize(std::string_view text, std::size_t maxLength) {
-    std::string out;
-    for (char c : str::trim(text)) {
-        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F)
-            continue;
-        out.push_back(c);
+std::string sanitize(std::string_view text, std::size_t maxLength) { return sanitizeText(text, maxLength); }
+
+// A car name from the network, or `fallback` when it is not a plain base name.
+std::string carName(std::string_view car, std::string_view fallback) {
+    return isValidAssetName(car) ? std::string(car) : std::string(fallback);
+}
+
+// What the host says about a player, made safe to show and to load.
+void cleanPlayer(PlayerInfo& p) {
+    p.name = sanitize(p.name, kMaxNameLength);
+    p.car = carName(p.car, kDefaultCar);
+}
+
+// The host's settings. A city that is not a plain base name becomes empty,
+// which no city loads: the name would otherwise reach file names and, as the
+// last race, the profile file.
+void cleanSettings(SessionSettings& s) {
+    s.name = sanitize(s.name, kMaxNameLength * 2);
+    if (!s.city.empty() && !isValidAssetName(s.city)) {
+        log::warn("net: ignoring the host's city: not a valid name");
+        s.city.clear();
     }
-    if (out.size() > maxLength)
-        out.resize(maxLength);
-    // Don't leave a truncated UTF-8 sequence at the end.
-    while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80)
-        out.pop_back();
-    if (!out.empty() && (static_cast<unsigned char>(out.back()) & 0x80))
-        out.pop_back();
-    return out;
+}
+
+// Adds or replaces a player the host told about. False (and nothing changes)
+// for the id no player has, or a new player beyond the protocol's limit:
+// every listed player gets a car in the race.
+bool upsertPlayer(std::vector<PlayerInfo>& players, const PlayerInfo& p) {
+    if (p.id == kInvalidPlayerId)
+        return false;
+    if (const auto it = std::ranges::find(players, p.id, &PlayerInfo::id); it != players.end()) {
+        *it = p;
+        return true;
+    }
+    if (players.size() >= kMaxPlayers)
+        return false;
+    players.push_back(p);
+    return true;
+}
+
+// What a joiner may make the host relay to everyone else, in messages per
+// second and burst. Far above what the game sends (chat typed by hand, a car,
+// colour, team or ready change, a few race events); a flood beyond it would
+// otherwise go out once per player on reliable channels.
+constexpr double kChatRate = 2.0, kChatBurst = 8.0;
+constexpr double kUpdateRate = 10.0, kUpdateBurst = 20.0;
+constexpr double kEventRate = 30.0, kEventBurst = 60.0;
+
+// An address that sent this many wrong passwords within the window is turned
+// away until the window ends, so guessing a lobby password online costs
+// minutes per handful of guesses instead of one round trip each.
+constexpr int kPasswordAttempts = 5;
+constexpr std::uint64_t kPasswordWindowMs = 60000;
+using PasswordFailures = std::map<std::uint32_t, std::pair<int, std::uint64_t>>;
+
+bool passwordLockedOut(PasswordFailures& failures, std::uint32_t ip, std::uint64_t now) {
+    std::erase_if(failures, [&](const auto& f) { return now - f.second.second > kPasswordWindowMs; });
+    const auto it = failures.find(ip);
+    return it != failures.end() && it->second.first >= kPasswordAttempts;
+}
+
+void notePasswordFailure(PasswordFailures& failures, std::uint32_t ip, std::uint64_t now) {
+    const auto it = failures.try_emplace(ip, 0, now).first;
+    if (now - it->second.second > kPasswordWindowMs)
+        it->second = {0, now};
+    ++it->second.first;
 }
 
 std::array<std::byte, 16> randomNonce() {
@@ -56,6 +107,16 @@ std::array<std::byte, 32> passwordProof(const std::array<std::byte, 16>& nonce, 
     h.update(nonce);
     h.update(password);
     return h.finish();
+}
+
+bool Session::RateLimit::take(std::uint64_t now, double perSecond, double burst) {
+    const double refill = static_cast<double>(now - last) * perSecond / 1000.0;
+    tokens = tokens < 0.0 ? burst : std::min(burst, tokens + refill);
+    last = now;
+    if (tokens < 1.0)
+        return false;
+    tokens -= 1.0;
+    return true;
 }
 
 Session::Session(SessionConfig config) : m_config(std::move(config)) {
@@ -93,9 +154,7 @@ bool Session::host(const HostParams& params, std::string* error) {
     self.name = sanitize(params.player.name, kMaxNameLength);
     if (self.name.empty())
         self.name = "Host";
-    self.car = sanitize(params.player.car, kMaxShortStringLength);
-    if (self.car.empty())
-        self.car = "vpbug";
+    self.car = carName(params.player.car, kDefaultCar);
     self.color = params.player.color;
     self.team = params.player.team;
     self.host = true;
@@ -153,6 +212,7 @@ void Session::resetState() {
     m_countdownEnd = 0;
     m_hostEpoch = 0;
     m_lastPingBroadcast = 0;
+    m_passwordFailures.clear();
     m_hostPeer = kInvalidPeer;
     m_connectStarted = 0;
     m_clock.reset();
@@ -245,7 +305,7 @@ std::string Session::uniqueName(std::string name) const {
         return name;
     for (int i = 2;; ++i) {
         std::string suffix = std::format(" ({})", i);
-        std::string base = name.substr(0, kMaxNameLength - suffix.size());
+        std::string base = sanitize(name, kMaxNameLength - suffix.size()); // cut on a character boundary
         if (!taken(base + suffix))
             return base + suffix;
     }
@@ -295,6 +355,7 @@ void Session::update() {
             m_transport->disconnect(p, toData(DisconnectReason::JoinTimeout));
             m_remotes.erase(p);
         }
+        hostRelayUpdates();
 
         if (now - m_lastPingBroadcast >= m_config.pingBroadcastIntervalMs) {
             m_lastPingBroadcast = now;
@@ -409,6 +470,11 @@ void Session::handleTransportEvent(TransportEvent& e) {
                 m_transport->disconnect(e.peer, toData(DisconnectReason::ServerFull));
                 return;
             }
+            if (!m_password.empty() &&
+                passwordLockedOut(m_passwordFailures, m_transport->stats(e.peer).address.ip, monotonicMs())) {
+                m_transport->disconnect(e.peer, toData(DisconnectReason::BadPassword));
+                return;
+            }
             Remote r;
             r.peer = e.peer;
             r.nonce = randomNonce();
@@ -487,8 +553,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         };
         if (hello.protocolVersion != kProtocolVersion)
             return reject(DisconnectReason::VersionMismatch);
-        if (!m_password.empty() && hello.passwordProof != passwordProof(r.nonce, m_password))
+        if (!m_password.empty() && hello.passwordProof != passwordProof(r.nonce, m_password)) {
+            notePasswordFailure(m_passwordFailures, m_transport->stats(peer).address.ip, monotonicMs());
             return reject(DisconnectReason::BadPassword);
+        }
         if (m_players.size() >= m_settings.maxPlayers)
             return reject(DisconnectReason::ServerFull);
         if (m_phase != SessionPhase::Lobby && !m_settings.allowJoinInProgress)
@@ -504,14 +572,14 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         PlayerInfo* p = findPlayer(id);
         if (!decodeMessage(data, req) || !p)
             return;
-        const std::string car = sanitize(req.car, kMaxShortStringLength);
-        if (!car.empty())
-            p->car = car;
+        p->car = carName(req.car, p->car); // a name that is not a base name keeps the car
         p->color = req.color;
         p->team = req.team;
         p->ready = req.ready;
-        sendToPlayers(Channel::Control, PlayerUpdateMsg{*p});
-        emit(ev::PlayerUpdated{*p});
+        // Every request carries the player's whole state, so one relayed
+        // later (hostRelayUpdates) still ends at the latest one.
+        r.updatePending = true;
+        hostRelayUpdates();
         return;
     }
     case MsgType::Chat: {
@@ -522,6 +590,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         chat.text = sanitize(chat.text, kMaxChatLength);
         if (chat.text.empty())
             return;
+        if (!r.chat.take(monotonicMs(), kChatRate, kChatBurst)) {
+            log::debug("net: dropped chat from player {}: too many lines", id);
+            return;
+        }
         sendToPlayers(Channel::Control, chat);
         emit(ev::Chat{id, chat.text});
         return;
@@ -544,6 +616,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         GameEventMsg msg;
         if (!decodeMessage(data, msg))
             return;
+        if (!r.events.take(monotonicMs(), kEventRate, kEventBurst)) {
+            log::debug("net: dropped game event {} from player {}: too many events", msg.type, id);
+            return;
+        }
         msg.from = id;
         hostRelayEvent(id, std::move(msg));
         return;
@@ -563,9 +639,7 @@ void Session::hostAcceptHello(Remote& r, HelloMsg& hello) {
     PlayerInfo p;
     p.id = id;
     p.name = uniqueName(sanitize(hello.name, kMaxNameLength));
-    p.car = sanitize(hello.car, kMaxShortStringLength);
-    if (p.car.empty())
-        p.car = "vpbug";
+    p.car = carName(hello.car, kDefaultCar);
     p.color = hello.color;
     p.team = hello.team;
     p.ping = static_cast<std::uint16_t>(std::min<std::uint32_t>(m_transport->stats(r.peer).rttMs, 65535));
@@ -583,6 +657,21 @@ void Session::hostAcceptHello(Remote& r, HelloMsg& hello) {
     sendTo(r.peer, Channel::Control, std::move(welcome));
     sendToPlayers(Channel::Control, PlayerJoinedMsg{p}, id);
     emit(ev::PlayerJoined{p});
+}
+
+// Relays the joiners' applied PlayerRequests while their budget allows; a
+// joiner over it is relayed later, with whatever its latest state is then.
+void Session::hostRelayUpdates() {
+    const std::uint64_t now = monotonicMs();
+    for (auto& [peer, r] : m_remotes) {
+        if (!r.updatePending || !r.updates.take(now, kUpdateRate, kUpdateBurst))
+            continue;
+        r.updatePending = false;
+        if (const PlayerInfo* p = findPlayer(r.playerId)) {
+            sendToPlayers(Channel::Control, PlayerUpdateMsg{*p});
+            emit(ev::PlayerUpdated{*p});
+        }
+    }
 }
 
 void Session::hostRemovePlayer(std::uint8_t id, DisconnectReason reason) {
@@ -640,6 +729,13 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         WelcomeMsg w;
         if (!decodeMessage(data, w) || m_state != State::Joining)
             return;
+        cleanSettings(w.settings);
+        std::erase_if(w.players, [](const PlayerInfo& p) { return p.id == kInvalidPlayerId; });
+        for (auto& p : w.players)
+            cleanPlayer(p);
+        // The host always lists the joiner (hostAcceptHello).
+        if (std::ranges::find(w.players, w.yourId, &PlayerInfo::id) == w.players.end())
+            return close(DisconnectReason::ProtocolError, "the host sent an invalid welcome", true);
         const std::uint64_t now = monotonicMs();
         m_localId = w.yourId;
         m_settings = std::move(w.settings);
@@ -663,7 +759,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::Reject: {
         RejectMsg rej;
         if (decodeMessage(data, rej))
-            close(rej.reason, rej.message, true);
+            close(rej.reason, sanitize(rej.message, kMaxReasonLength), true);
         return;
     }
     default: break;
@@ -677,11 +773,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         PlayerJoinedMsg m;
         if (!decodeMessage(data, m))
             return;
-        if (PlayerInfo* p = findPlayer(m.player.id))
-            *p = m.player;
-        else
-            m_players.push_back(m.player);
-        emit(ev::PlayerJoined{m.player});
+        cleanPlayer(m.player);
+        if (upsertPlayer(m_players, m.player))
+            emit(ev::PlayerJoined{m.player});
         return;
     }
     case MsgType::PlayerLeft: {
@@ -701,16 +795,17 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         PlayerUpdateMsg m;
         if (!decodeMessage(data, m))
             return;
-        if (PlayerInfo* p = findPlayer(m.player.id))
-            *p = m.player;
-        else
-            m_players.push_back(m.player);
-        emit(ev::PlayerUpdated{m.player});
+        cleanPlayer(m.player);
+        if (upsertPlayer(m_players, m.player))
+            emit(ev::PlayerUpdated{m.player});
         return;
     }
     case MsgType::Chat: {
         ChatMsg m;
-        if (decodeMessage(data, m))
+        if (!decodeMessage(data, m))
+            return;
+        m.text = sanitize(m.text, kMaxChatLength);
+        if (!m.text.empty())
             emit(ev::Chat{m.from, std::move(m.text)});
         return;
     }
@@ -718,6 +813,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         SettingsMsg m;
         if (!decodeMessage(data, m))
             return;
+        cleanSettings(m.settings);
         m_settings = m.settings;
         emit(ev::SettingsChanged{std::move(m.settings)});
         return;
@@ -747,9 +843,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::Kick: {
         KickMsg m;
         decodeMessage(data, m);
-        close(DisconnectReason::Kicked, m.reason.empty() ? describe(DisconnectReason::Kicked)
-                                                         : std::string("kicked: ") + m.reason,
-              false);
+        const std::string reason = sanitize(m.reason, kMaxReasonLength);
+        close(DisconnectReason::Kicked,
+              reason.empty() ? std::string(describe(DisconnectReason::Kicked)) : "kicked: " + reason, false);
         return;
     }
     case MsgType::TimeResponse: {
@@ -808,9 +904,7 @@ void Session::setLocalPlayer(const std::string& car, std::uint8_t color, std::ui
     if (!self || m_state != State::Active)
         return;
     if (m_role == Role::Host) {
-        const std::string c = sanitize(car, kMaxShortStringLength);
-        if (!c.empty())
-            self->car = c;
+        self->car = carName(car, self->car);
         self->color = color;
         self->team = team;
         sendToPlayers(Channel::Control, PlayerUpdateMsg{*self});

@@ -97,8 +97,11 @@ public:
             m_externalIp = ext;
         else if (wan[0])
             m_externalIp = wan;
-        out.externalIp = m_externalIp;
+        // Any device on the LAN can answer as the router: show only an address.
         const auto extAddr = Address::parse(m_externalIp);
+        if (!extAddr)
+            m_externalIp.clear();
+        out.externalIp = m_externalIp;
         out.doubleNat = r == UPNP_PRIVATEIP_IGD || (extAddr && extAddr->isPrivate());
         return true;
     }
