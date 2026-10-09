@@ -24,6 +24,7 @@
 
 #include "net/Protocol.h"
 
+#include <array>
 #include <cstdint>
 #include <vector>
 
@@ -41,6 +42,10 @@ inline constexpr float kAmbientSpeedRange = 64.0f;     // rail cars, m/s
 inline constexpr float kAmbientVelocityRange = 96.0f;  // off-rail cars and police, m/s
 inline constexpr float kAmbientSpinRange = 32.0f;      // rad/s
 inline constexpr float kAmbientMaxRpm = 10000.0f;
+// A knocked car's wheels: each drawing position's offset from its pivot,
+// +-0.25 m across and along (the tyre's deflection), +-1 m up (the spring).
+inline constexpr float kAmbientWheelAcross = 0.25f;
+inline constexpr float kAmbientWheelTravel = 1.0f;
 // Police target: a player id, or none.
 inline constexpr std::uint8_t kAmbientNoTarget = kInvalidPlayerId;
 
@@ -72,6 +77,12 @@ struct AmbientEntity {
     Vec3 velocity;          // off-rail cars and police
     Vec3 angularVelocity;   // off-rail cars and police
     std::uint8_t flags = 0; // AmbientFlags
+    // Traffic off its rail with a physics body (aiVehicleActive): WHL0-3 as
+    // aiVehicleInstance::Draw draws them, each its drawing position's offset
+    // from its pivot in the car's model space (vehWheelCheap: the spring's
+    // travel up, the tyre's deflection across and along).
+    bool wheels = false;
+    std::array<Vec3, 4> wheelOffsets{};
     // Police only.
     std::uint8_t target = kAmbientNoTarget; // the player it chases
     float damage = 0.0f;                    // 0..1
@@ -134,13 +145,29 @@ bool serializeAmbientEntity(S& s, AmbientEntity& e, const Vec3& origin) {
             e.angularVelocity = {};
         }
     }
+    if (e.kind == AmbientKind::Traffic && (e.flags & kAmbientOffRail) != 0) {
+        s.boolean(e.wheels);
+        if (e.wheels)
+            for (Vec3& w : e.wheelOffsets) {
+                s.quantized(w.x, -kAmbientWheelAcross, kAmbientWheelAcross, 6);
+                s.quantized(w.y, -kAmbientWheelTravel, kAmbientWheelTravel, 8);
+                s.quantized(w.z, -kAmbientWheelAcross, kAmbientWheelAcross, 6);
+            }
+    } else if constexpr (S::kReading) {
+        e.wheels = false;
+    }
+    if constexpr (S::kReading)
+        if (!e.wheels)
+            e.wheelOffsets = {};
     if (e.kind == AmbientKind::Police) {
         std::int32_t target = e.target == kAmbientNoTarget ? static_cast<std::int32_t>(kMaxPlayers)
                                                            : std::min<std::int32_t>(e.target, kMaxPlayers);
         s.ranged(target, 0, static_cast<std::int32_t>(kMaxPlayers));
         e.target = target == static_cast<std::int32_t>(kMaxPlayers) ? kAmbientNoTarget
                                                                      : static_cast<std::uint8_t>(target);
-        s.quantized(e.damage, 0.0f, 1.0f, 6);
+        // As a player's car (VehicleSnapshot): the smoke's four levels and
+        // the tyre wobble come from it (vehCarDamage::Update).
+        s.quantized(e.damage, 0.0f, 1.0f, 10);
         s.quantized(e.rpm, 0.0f, kAmbientMaxRpm, 8);
         s.quantized(e.throttle, 0.0f, 1.0f, 4);
         std::int32_t gear = e.gear;

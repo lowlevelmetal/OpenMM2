@@ -33,6 +33,9 @@ net::AmbientEntity toEntity(const SharedCar& c) {
     e.velocity = c.velocity;
     e.angularVelocity = c.angularVelocity;
     e.flags = c.flags;
+    e.wheels = c.wheels && c.kind == net::AmbientKind::Traffic && (c.flags & net::kAmbientOffRail) != 0;
+    if (e.wheels)
+        e.wheelOffsets = c.wheelOffsets;
     e.target = c.target;
     e.damage = c.damage;
     e.rpm = c.rpm;
@@ -168,6 +171,7 @@ void TrafficClient::restart(Entry& entry, const net::AmbientEntity& e, std::uint
     entry.model = e.model;
     entry.paint = e.paint;
     entry.buffer.clear();
+    entry.wheels.clear();
     entry.firstTime = time;
     entry.lastTime = time;
     entry.goneAt.reset();
@@ -242,6 +246,19 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
         s.damage = e.damage;
         s.flags = e.flags;
         entry.buffer.push(s);
+        // A knocked car's wheels, kept in time order (an older message's
+        // are not inserted: the newer ones say more).
+        if (entry.wheels.empty() || later(msg.time, entry.wheels.back().time) > 0) {
+            WheelSample w;
+            w.time = msg.time;
+            w.wheels = e.wheels &&
+                       std::ranges::all_of(e.wheelOffsets, [](const Vec3& v) { return finite(v); });
+            if (w.wheels)
+                w.offsets = e.wheelOffsets;
+            entry.wheels.push_back(w);
+            if (entry.wheels.size() > 16)
+                entry.wheels.pop_front();
+        }
         if (later(msg.time, entry.lastTime) >= 0) {
             entry.lastTime = msg.time;
             entry.target = e.target;
@@ -299,6 +316,29 @@ void TrafficClient::update(double renderTime) {
         c.rpm = entry.rpm;
         c.throttle = s.controls.throttle;
         c.gear = s.controls.gear;
+        // The wheels at renderTime: from the newest message at or before it,
+        // blended toward the next one when that has them too.
+        if (!entry.wheels.empty()) {
+            std::size_t i = 0;
+            while (i + 1 < entry.wheels.size() && static_cast<double>(entry.wheels[i + 1].time) <= renderTime)
+                ++i;
+            const WheelSample& a = entry.wheels[i];
+            if (a.wheels) {
+                c.wheels = true;
+                c.wheelOffsets = a.offsets;
+                if (i + 1 < entry.wheels.size() && entry.wheels[i + 1].wheels &&
+                    static_cast<double>(a.time) <= renderTime) {
+                    const WheelSample& b = entry.wheels[i + 1];
+                    const auto span = static_cast<double>(later(b.time, a.time));
+                    const double into = renderTime - static_cast<double>(a.time);
+                    const float t = span > 0.0 ? static_cast<float>(std::clamp(into / span, 0.0, 1.0)) : 0.0f;
+                    for (std::size_t k = 0; k < c.wheelOffsets.size(); ++k)
+                        c.wheelOffsets[k] = a.offsets[k] + (b.offsets[k] - a.offsets[k]) * t;
+                }
+            }
+            for (; i > 0; --i)
+                entry.wheels.pop_front(); // older than the one in use
+        }
         c.extrapolated = result != net::SnapshotBuffer::Result::Interpolated;
         const bool horn = (s.flags & net::kAmbientHorn) != 0;
         c.hornStarted = horn && !entry.horn;
@@ -332,6 +372,10 @@ SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const
     s.speed = car.speed;
     s.velocity = body ? body->velocity : car.velocity;
     s.angularVelocity = body ? body->angularVelocity : Vec3{};
+    if (body && body->wheels) {
+        s.wheels = true;
+        s.wheelOffsets = *body->wheels;
+    }
     std::uint8_t f = 0;
     if (car.braking)
         f |= net::kAmbientBrake;
@@ -384,6 +428,32 @@ ai::AmbientCar ambientCarOf(const TrafficClient::Car& car, const std::string& mo
     a.wreck = (car.flags & net::kAmbientWrecked) != 0;
     a.spawns = car.generation;
     return a;
+}
+
+std::array<Vec3, 4> trafficWheelOffsets(const Mat34& transform, const std::array<Mat34, 6>& wheels,
+                                        const ai::VehicleData& data) {
+    std::array<Vec3, 4> out{};
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = transform.untransform(wheels[i].m3) - data.wheels[i];
+    return out;
+}
+
+void trafficWheelMatrices(const Mat34& transform, const std::array<Vec3, 4>& offsets,
+                          const ai::VehicleData& data, std::array<Mat34, 6>& matrices,
+                          std::array<bool, 6>& valid) {
+    valid = {};
+    for (std::size_t i = 0; i < offsets.size(); ++i) {
+        matrices[i] = Mat34::mul(Mat34::translation(data.wheels[i] + offsets[i]), transform);
+        valid[i] = true;
+    }
+    for (std::size_t i = 4; i < 6; ++i) {
+        if (data.wheelCount <= static_cast<int>(i))
+            continue;
+        const Vec3& p = data.wheels[i];
+        const float drawn = data.wheels[i - 2].y + offsets[i - 2].y;
+        matrices[i] = Mat34::mul(Mat34::translation({p.x, (drawn - data.wheelRadius) + p.y, p.z}), transform);
+        valid[i] = true;
+    }
 }
 
 std::optional<std::uint32_t> TrafficClient::lightSteps(double renderTime) const {

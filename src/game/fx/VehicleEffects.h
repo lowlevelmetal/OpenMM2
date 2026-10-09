@@ -39,6 +39,11 @@ struct VehicleFxContext {
     // vehCar::UpdateTrack lays no tracks while the car's room has the
     // runtime flag 0x10, which gizBridge sets on the opening bridges.
     bool tracksAllowed = true;
+    // OpenMM2: false for a car drawn from the network (another player's, a
+    // shared police car on a client), whose wheels are not simulated: no
+    // tracks and no wheel particles, only vehCarDamage's smoke and the
+    // replayed impacts' sparks and shards.
+    bool wheels = true;
 };
 
 class VehicleEffects {
@@ -59,6 +64,12 @@ public:
     // shards, and texel damage at the first such point since the last
     // takeDamagePoint().
     void impact(const phys::CarImpact& impact, const phys::CarSim& car);
+    // The sparks and shards of a damaging impact (as impact() makes them):
+    // world `position` and `normal`, the impact's running total, the car's
+    // speed (m/s and mph) and matrix. OpenMM2: a network car's replayed
+    // impacts.
+    void impactEffects(const Vec3& position, const Vec3& normal, float total, float speed, float mph,
+                       const Mat34& body);
     // The model-space point texel damage should be painted at, once.
     std::optional<Vec3> takeDamagePoint();
     // The impacts that counted since the last call (model-space point and

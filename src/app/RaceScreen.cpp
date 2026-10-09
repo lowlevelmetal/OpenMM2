@@ -40,6 +40,7 @@
 #include "game/fx/SkidMarks.h"
 #include "game/fx/VehicleEffects.h"
 #include "game/fx/Weather.h"
+#include "game/net/DamageSync.h"
 #include "game/net/NetGame.h"
 #include "game/net/TrafficProxies.h"
 #include "game/net/TrafficSync.h"
@@ -338,6 +339,8 @@ public:
         }
         updateRemoteCars(ctx, static_cast<float>(dt));
         updateNetTraffic(ctx, static_cast<float>(dt)); // OpenMM2: a client's shared traffic
+        if (multiplayer(ctx))
+            m_netDamage.settle(ctx.netGame->frameTime()); // OpenMM2: the damage of cars not drawn
         if (netTrafficHost(ctx) && m_ai)
             applyNetTrafficHits(); // OpenMM2: the clients' hits on the host's traffic
         // aiVehicleManager::Update and the rail cars' rooms, before the
@@ -382,6 +385,7 @@ public:
             updateCarCamera(ctx, static_cast<float>(dt));
         updateAudio(ctx, static_cast<float>(dt));
         updateEffects(static_cast<float>(dt));
+        sendNetDamage(ctx); // OpenMM2: what this machine's cars painted and broke
         updateSession(ctx, static_cast<float>(dt));
         updateCopsAndRobbers(ctx, static_cast<float>(dt));
         // Development aid: OPENMM2_DEBUG_FOCUS=ped|car frames the nearest
@@ -627,6 +631,7 @@ public:
         for (const auto& c : m_cops)
             if (c.fx)
                 c.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
+        drawNetFx(dev, camera); // OpenMM2: the network cars' damage effects
         if (m_weather && rainVisible(camera.position()))
             m_weather->draw(dev, *m_textures, m_cards, camera.transform);
     }
@@ -664,6 +669,11 @@ public:
     // A traffic car TrafficBodies holds: where it is, and its wheels while
     // it has a body (aiVehicleInstance::Draw).
     std::optional<game::AiRenderer::PhysicalCar> physicalTrafficCar(int id) const {
+        // OpenMM2: a shared-traffic client's knocked cars, as the host has them.
+        if (m_trafficClient) {
+            const auto it = m_netPhysical.find(id);
+            return it != m_netPhysical.end() ? std::optional(it->second) : std::nullopt;
+        }
         const Mat34* m = m_trafficBodies ? m_trafficBodies->transformOf(id) : nullptr;
         if (!m)
             return std::nullopt;
@@ -1327,11 +1337,19 @@ private:
             setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
             cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model(), *cop.renderer);
-            cop.sim->sim().onImpactCallback = [fx = cop.fx.get(), sim = &cop.sim->sim(),
-                                                sounds = cop.impacts](const phys::CarImpact& impact) {
+            // OpenMM2: a shared-traffic host shows its police's damage on the
+            // clients (the car's ambient id, as sendNetTraffic shares it).
+            const int netId = kNetPoliceId + static_cast<int>(m_cops.size());
+            if (netTrafficHost(ctx) && netId < static_cast<int>(net::kMaxAmbientIds))
+                cop.damage = &m_netDamage.police(static_cast<std::uint16_t>(netId));
+            cop.sim->sim().onImpactCallback = [fx = cop.fx.get(), sim = &cop.sim->sim(), sounds = cop.impacts,
+                                                damage = cop.damage,
+                                                time = &m_netStateTime](const phys::CarImpact& impact) {
                 if (impact.sound)
                     sounds->push_back({impact.soundStrength, impact.audioId, impact.position});
                 fx->impact(impact, *sim);
+                if (damage && impact.damaging)
+                    damage->impact(*time, game::damageImpactOf(impact, *sim));
             };
             m_cops.push_back(std::move(cop));
         }
@@ -1539,6 +1557,7 @@ private:
             in.wrecked = (rc.flags & net::kVehicleWrecked) != 0;
             in.transform = rc.transform;
             in.velocity = rc.velocity;
+            in.impacts = std::exchange(it->second.impacts, {}); // OpenMM2: its owner's, replayed
             it->second.audio->update(in, dt, listener);
         }
     }
@@ -1825,8 +1844,7 @@ private:
                 m_crWaterHandled = m_cr != nullptr; // mmMultiCR::HitWaterHandler drops the gold
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
-                if (m_vehicle)
-                    m_vehicle->resetDamage();
+                clearVehicleDamage();
                 m_cams.reset(cameraTarget());
             } else if (e.type == EventType::Restart) {
                 // The race starts over (mmGame::Reset): every prop back in its
@@ -1846,8 +1864,7 @@ private:
                 m_player->reset();
                 if (m_vehicleFx)
                     m_vehicleFx->reset();
-                if (m_vehicle)
-                    m_vehicle->resetDamage();
+                clearVehicleDamage();
                 for (auto& o : m_opponents) {
                     o.sim->reset();
                     if (o.fx)
@@ -1870,6 +1887,9 @@ private:
                     if (c.fx)
                         c.fx->reset(); // vehCar::Reset (aiVehiclePhysics::Reset)
                     c.renderer->resetDamage();
+                    ++c.resets; // a new car for the shared traffic's clients
+                    if (c.damage)
+                        c.damage->reset(m_netStateTime);
                     if (c.audio)
                         c.audio->reset(); // aiPoliceOfficer::Reset -> vehPoliceCarAudio::Reset
                 }
@@ -1885,8 +1905,7 @@ private:
                 m_ff.reset(); // mmPlayer::Reset: ResetFF, mmCarRoadFF::Reset
             } else if (e.type == EventType::DamageReset) {
                 m_player->sim().damage.reset();
-                if (m_vehicle)
-                    m_vehicle->resetDamage(); // vehCar::ClearDamage
+                clearVehicleDamage(); // vehCar::ClearDamage
             } else if (e.type == EventType::PlayerDamageLimits) {
                 auto& d = m_player->sim().damage.params;
                 d.maxDamage = e.value;
@@ -2252,8 +2271,8 @@ private:
         using Type = CopsAndRobbers::Message::Type;
         const bool host = ctx.netGame->isHost();
         // mmPlayer::UpdateRegen while regeneration is on.
-        if (m_regen && m_player->sim().regenerate() && m_vehicle)
-            m_vehicle->resetDamage();
+        if (m_regen && m_player->sim().regenerate())
+            clearVehicleDamage();
         // mmMultiCR::UpdateGame for the local car, with the others' places.
         std::vector<CopsAndRobbers::Car> cars;
         // mmMultiCR::HitWaterHandler / DropThruCityHandler drop the gold back
@@ -2354,8 +2373,7 @@ private:
                     fondleMass(-m_cr->carrierExtraMassKg());
                     m_regen = true;
                     m_player->sim().damage.reset();
-                    if (m_vehicle)
-                        m_vehicle->resetDamage();
+                    clearVehicleDamage();
                     m_session->showMessage(s.get(117, "Gold delivered!"), 5.0f, false);
                 } else {
                     // GameMessage 600: with mmHUD::PlayNetAlert.
@@ -2598,6 +2616,9 @@ private:
     // Robbers rules; the players who quit the race are noted here.
     void takeNetEvents(Context& ctx) {
         m_netEvents = ctx.netGame->takeGameEvents();
+        // OpenMM2: the network cars' damage (game/net/DamageSync).
+        m_netDamage.setVerbose(m_debugNetDamage);
+        m_netDamage.receive(m_netEvents, ctx.netGame->frameTime());
         for (const auto& ev : m_netEvents)
             if (ev.type == net::GameEventType::LeftRace && ev.from != ctx.netGame->localId()) {
                 log::info("race: player {} quit the race", ev.from);
@@ -3225,24 +3246,18 @@ private:
     // 10000 or more; a wrecked car loses wheels, hubs and fenders by speed
     // (vehCarModel::EjectOneshot), thrown at 1.3 times its speed. Parts
     // without banger data stay on.
+    // `recorder` (OpenMM2): the parts the others' machines take off too.
     void breakParts(game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim,
-                    const std::string& vehicle) {
+                    const std::string& vehicle, game::DamageRecorder* recorder = nullptr) {
         const auto impacts = fx.takeImpacts();
         if (!m_bangers || !m_bangerData)
             return;
         const Mat34 body = sim.modelMatrix(); // vehBreakableMgr::Init: the car's matrix
         auto eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
-            const auto* data = m_bangerData->find(vehicle + "_" + str::lower(b.part));
-            if (!data)
+            if (!ejectCarPart(r, vehicle, b, body, speed, sim.body.room))
                 return false;
-            // vehBreakableMgr::Reset (the car's damage cleared) takes the
-            // ejected part out of the world again (dgHitBangerInstance::Detach).
-            r.setEjectedPartReset([this](std::size_t i) {
-                if (m_bangers)
-                    m_bangers->detachHit(i);
-            });
-            r.detach(b.part, m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(),
-                                                  Mat34::translation(b.pivot) * body, speed, sim.body.room));
+            if (recorder)
+                recorder->part(m_netStateTime, b.part);
             return true;
         };
         for (const auto& impact : impacts)
@@ -3252,6 +3267,26 @@ private:
         if (sim.damage.enabled && sim.damage.params.maxDamage <= sim.damage.currentDamage)
             for (const auto& b : r.wreckParts(sim.speedMph(), m_ejectRand))
                 eject(b, sim.speed() * 1.3f);
+    }
+
+    // vehBreakableMgr::Eject: part `b` of a car (its model matrix `body`)
+    // thrown off at `speed` as a banger of its tune/banger data
+    // (<car>_<part>); false (the part stays on) without data.
+    bool ejectCarPart(game::VehicleRenderer& r, const std::string& vehicle,
+                      const game::VehicleRenderer::Breakable& b, const Mat34& body, float speed, int room) {
+        const auto* data = m_bangers && m_bangerData ? m_bangerData->find(vehicle + "_" + str::lower(b.part))
+                                                     : nullptr;
+        if (!data)
+            return false;
+        // vehBreakableMgr::Reset (the car's damage cleared) takes the
+        // ejected part out of the world again (dgHitBangerInstance::Detach).
+        r.setEjectedPartReset([this](std::size_t i) {
+            if (m_bangers)
+                m_bangers->detachHit(i);
+        });
+        r.detach(b.part, m_bangers->ejectPart(*data, vehicle, b.part, r.paintjob(),
+                                              Mat34::translation(b.pivot) * body, speed, room));
+        return true;
     }
 
     // vehCar::UpdateTrack lays no tracks in the rooms gizBridge::Init flags
@@ -3265,16 +3300,21 @@ private:
     void updateEffects(float dt) {
         // vehCarDamage::Update paints the first impact since the last frame
         // into the body (fxTexelDamage::ApplyDamage, TextelDamageRadius).
+        // OpenMM2: with a `recorder` the other machines paint the same patch
+        // (at the point as it travels, from the same random state).
         auto paint = [this](game::fx::VehicleEffects& fx, game::VehicleRenderer& r, const phys::CarSim& sim,
-                            const std::string& vehicle) {
-            if (auto p = fx.takeDamagePoint())
-                r.applyDamage(*p, sim.damage.params.textelDamageRadius);
-            breakParts(fx, r, sim, vehicle);
+                            const std::string& vehicle, game::DamageRecorder* recorder = nullptr) {
+            if (auto p = fx.takeDamagePoint()) {
+                const Vec3 point = recorder ? recorder->patch(m_netStateTime, *p, r.texelDamageState()) : *p;
+                r.applyDamage(point, sim.damage.params.textelDamageRadius);
+            }
+            breakParts(fx, r, sim, vehicle, recorder);
         };
         if (m_player && m_vehicleFx) {
             m_vehicleFx->update(dt, m_player->sim(), vehicleFxContext(m_player->sim()));
             if (m_vehicle)
-                paint(*m_vehicleFx, *m_vehicle, m_player->sim(), m_player->model().baseName);
+                paint(*m_vehicleFx, *m_vehicle, m_player->sim(), m_player->model().baseName,
+                      m_result.config.multiplayer ? &m_netDamage.own() : nullptr);
         }
         for (auto& o : m_opponents)
             if (o.fx) {
@@ -3284,11 +3324,12 @@ private:
         for (auto& c : m_cops) {
             if (c.fx) {
                 c.fx->update(dt, c.sim->sim(), vehicleFxContext(c.sim->sim()));
-                paint(*c.fx, *c.renderer, c.sim->sim(), c.sim->model().baseName);
+                paint(*c.fx, *c.renderer, c.sim->sim(), c.sim->model().baseName, c.damage);
             }
             if (c.driver->siren())
                 c.sirenAngle = std::fmod(c.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
         }
+        updateNetFx(dt); // OpenMM2: the network cars' damage smoke
         if (m_weather)
             m_weather->update(dt, m_camera.transform);
     }
@@ -3353,6 +3394,8 @@ private:
             m_impacts.push_back({impact.soundStrength, impact.audioId, impact.position});
         if (m_vehicleFx)
             m_vehicleFx->impact(impact, m_player->sim());
+        if (m_result.config.multiplayer && impact.damaging) // OpenMM2: the others see it too
+            m_netDamage.own().impact(m_netStateTime, game::damageImpactOf(impact, m_player->sim()));
         if (impact.damaging) {
             ++(impact.otherIsBody ? m_vehicleImpacts : m_objectImpacts);
             m_ff.impact(impact.total, m_player->sim().speedMph()); // mmPlayer::FFImpactCallback
@@ -3599,6 +3642,9 @@ private:
                 body.emplace();
                 body->transform = *m;
                 m_trafficBodies->motionOf(c.id, body->velocity, body->angularVelocity);
+                // Its wheels while the body is simulated (aiVehicleInstance::Draw).
+                if (const auto wheels = m_trafficBodies->wheelsOf(c.id); wheels && c.data)
+                    body->wheels = game::trafficWheelOffsets(*m, wheels->matrix, *c.data);
             }
             const bool horn = m_hornLatch.contains(c.id);
             cars.push_back(game::shareTrafficCar(c, model, paint, body ? &*body : nullptr, horn));
@@ -3750,9 +3796,11 @@ private:
                                       ctx.netGame->playoutDelay(net::kHostPlayerId));
         const double renderTime = ctx.netGame->frameTime() - delay;
         m_trafficClient->update(renderTime);
+        m_trafficRenderTime = renderTime;
         if (const auto steps = m_trafficClient->lightSteps(renderTime))
             m_ai->advanceLightsTo(*steps);
         m_netCars.clear();
+        m_netPhysical.clear();
         std::unordered_set<int> seen;
         for (const auto& c : m_trafficClient->cars()) {
             const std::string* model = m_trafficCatalog.name(c.model);
@@ -3768,6 +3816,15 @@ private:
             m_netCars.push_back(game::ambientCarOf(c, *model, netVehicleData(*model),
                                                    m_aiRenderer ? m_aiRenderer->paintJobs(*model) : 1, turn));
             seen.insert(c.id);
+            // A knocked car with a body on the host: drawn on the wheels its
+            // vehWheelCheaps put there (aiVehicleInstance::Draw).
+            if (const ai::VehicleData* data = m_netCars.back().data; c.wheels && data) {
+                game::AiRenderer::PhysicalCar p;
+                p.transform = c.transform;
+                p.active = true;
+                game::trafficWheelMatrices(c.transform, c.wheelOffsets, *data, p.wheels, p.wheelValid);
+                m_netPhysical[c.id] = p;
+            }
         }
         std::erase_if(m_netTireRotation, [&](const auto& e) { return !seen.contains(e.first); });
         if (m_trafficProxies)
@@ -3839,6 +3896,10 @@ private:
         game::TrafficClient::Car state;
         std::array<float, 6> spin{};
         float sirenAngle = 0.0f;
+        // Its damage (as the network players' cars, RemoteVehicle).
+        std::unique_ptr<game::fx::VehicleEffects> fx;
+        std::vector<audio::game::ImpactInput> impacts;
+        bool fresh = true;
     };
 
     // A police car's parts out of the world, kept for another one of its
@@ -3850,6 +3911,8 @@ private:
             cop.audio->stop();
         if (cop.sim) {
             const std::string model = cop.model;
+            cop.fresh = true; // another car's damage when it is used again
+            cop.impacts.clear();
             m_spareNetCops.emplace(model, std::move(cop));
         }
         cop = {};
@@ -3890,6 +3953,7 @@ private:
                     setupVehicleRenderer(ctx, *cop.renderer);
                     cop.paint = c.paint;
                     cop.audio = loadAiCarAudio(ctx, *model, true);
+                    cop.fx = loadVehicleFx(ctx, *model, cop.sim->model(), *cop.renderer);
                 }
                 if (!cop.sim)
                     continue;
@@ -3901,6 +3965,7 @@ private:
             if (cop.paint != c.paint) {
                 cop.renderer->setPaintjob(c.paint);
                 cop.paint = c.paint;
+                cop.fresh = true;
             }
             if (cop.generation != c.generation) {
                 // A new car in the slot (or the host's cop put back): it
@@ -3909,8 +3974,11 @@ private:
                 cop.sim->reset(c.transform);
                 if (cop.audio)
                     cop.audio->reset();
+                if (cop.fx)
+                    cop.fx->reset();
                 cop.spin = {};
                 cop.sirenAngle = 0.0f;
+                cop.fresh = true; // its damage drawn from its record again
             }
             auto& sim = cop.sim->sim();
             Mat34 ics = c.transform;
@@ -3923,6 +3991,10 @@ private:
             sim.body.kinematicSpin = c.angularVelocity;
             sim.body.declare(2, 0x1b);
             cop.state = c;
+            // OpenMM2: its damage as the host shows it.
+            updateNetCarDamage(ctx, game::DamageReplica::ambientKey(static_cast<std::uint16_t>(c.id)),
+                               *cop.renderer, cop.fx.get(), sim, cop.model, c.transform, c.velocity, c.damage,
+                               m_trafficRenderTime, cop.fresh, cop.impacts);
             // vehSiren::Update: the beams turn 2.5 pi a second while on.
             if (c.flags & net::kAmbientSiren)
                 cop.sirenAngle = std::fmod(cop.sirenAngle + dt * 2.5f * 3.1415927f, 6.2831855f);
@@ -3981,6 +4053,7 @@ private:
             in.siren = (c.state.flags & net::kAmbientSiren) != 0;
             in.sirenPursuingPlayer = c.state.target == ctx.netGame->localId();
             in.wrecked = (c.state.flags & net::kAmbientWrecked) != 0;
+            in.impacts = std::exchange(c.impacts, {}); // the host's, replayed
             c.audio->update(in, dt, m_camera.transform);
         }
     }
@@ -4031,6 +4104,11 @@ private:
         if (!multiplayer(ctx) || !m_world)
             return;
         m_remoteCars = ctx.netGame->remoteCars(static_cast<double>(m_world->remainderAfter(dt)) * 1000.0);
+        // The session time the simulation's state will belong to after this
+        // frame's steps (as sendLocalState stamps the car): the damage this
+        // machine's cars take is stamped with it.
+        const double lagMs = static_cast<double>(m_world->remainderAfter(dt)) * 1000.0;
+        m_netStateTime = static_cast<std::uint32_t>(std::max(0.0, ctx.netGame->frameTime() - lagMs));
         // A player who quit the race takes its car out of it.
         std::erase_if(m_remoteCars, [this](const game::NetRemoteCar& c) { return m_netLeft.contains(c.id); });
         const auto mode = m_result.config.mode;
@@ -4079,6 +4157,9 @@ private:
                 // mmNetObject::PositionUpdate drives from the packets.
                 const auto* info = ctx.game->catalog.vehicle(vehicle);
                 rv.audio = loadAiCarAudio(ctx, vehicle, info && (info->flags & game::VehicleInfo::kFlagCop));
+                // ... and its vehCarDamage (vehCar::Init): OpenMM2 replays the
+                // owner's damage on it (updateNetCarDamage).
+                rv.fx = loadVehicleFx(ctx, vehicle, rv.sim->model(), *rv.renderer);
             }
             if (!rv.sim)
                 continue;
@@ -4107,6 +4188,9 @@ private:
                 if (jumped)
                     trailer->reset(); // respawned: hitched again behind it
             }
+            updateNetCarDamage(ctx, game::DamageReplica::playerKey(rc.id), *rv.renderer, rv.fx.get(), sim,
+                               rv.sim->model().baseName, rc.transform, rc.velocity, rc.damage, rc.time,
+                               rv.fresh, rv.impacts);
         }
         for (auto it = m_remotes.begin(); it != m_remotes.end();) {
             if (std::find(present.begin(), present.end(), it->first) == present.end()) {
@@ -4114,6 +4198,7 @@ private:
                     it->second.sim->removeFrom(*m_world);
                 if (it->second.audio)
                     it->second.audio->stop();
+                m_netDamage.replica().forget(game::DamageReplica::playerKey(it->first));
                 it = m_remotes.erase(it);
             } else {
                 ++it;
@@ -4143,6 +4228,80 @@ private:
             if (rv.trailer)
                 rv.trailer->draw(rv.sim->trailerPose(), camera.transform);
         }
+    }
+
+    // --- OpenMM2: the network cars' damage (game/net/DamageSync) ----------------------------
+
+    // vehCar::ClearDamage on the player's car's model; in a network race the
+    // other machines clear their copy of it too.
+    void clearVehicleDamage() {
+        if (m_vehicle)
+            m_vehicle->resetDamage();
+        if (m_result.config.multiplayer)
+            m_netDamage.own().reset(m_netStateTime);
+    }
+
+    // A car drawn from the network (another player's; the host's police car
+    // on a shared-traffic client) at session time `sampleTime`: its damage
+    // level as CurrentDamage (vehCarDamage::Update's smoke and the tyre
+    // wobble follow it, mmNetObject::PositionUpdate), and its owner's
+    // patches, parts and impacts as they become due (its whole record first
+    // when `fresh`). The car takes no damage of its own here (its vehCarDamage
+    // is off; MM2's simulated network car took its own collisions too).
+    void updateNetCarDamage(Context& ctx, std::uint32_t key, game::VehicleRenderer& renderer,
+                            game::fx::VehicleEffects* fx, phys::CarSim& sim, const std::string& vehicle,
+                            const Mat34& body, const Vec3& velocity, float level, double sampleTime,
+                            bool& fresh, std::vector<audio::game::ImpactInput>& sounds) {
+        sim.damage.enabled = false;
+        sim.damage.currentDamage = game::damageFromFraction(sim.damage.params, level);
+        game::DamageTarget t;
+        t.renderer = &renderer;
+        t.effects = fx;
+        t.body = body;
+        t.speed = std::abs(velocity.dot(body.m2));
+        t.texelRadius = sim.damage.params.textelDamageRadius;
+        t.eject = [&](const game::VehicleRenderer::Breakable& b, float speed) {
+            return ejectCarPart(renderer, vehicle, b, body, speed, sim.body.room);
+        };
+        t.sound = [&](const Vec3& position, float strength, int audioId) {
+            if (sounds.size() < 16) // taken by the car's audio each frame
+                sounds.push_back({strength, audioId, position});
+        };
+        m_netDamage.update(key, t, sampleTime, ctx.netGame->frameTime(), fresh);
+        fresh = false;
+    }
+
+    // The network cars' vehCarDamage::Update (smoke, fire, exhaust) and the
+    // replayed impacts' sparks and shards; their wheels are not simulated
+    // (no tracks or wheel particles).
+    void updateNetFx(float dt) {
+        game::fx::VehicleFxContext context;
+        context.wheels = false;
+        for (auto& [id, rv] : m_remotes)
+            if (rv.fx && rv.sim)
+                rv.fx->update(dt, rv.sim->sim(), context);
+        for (auto& [id, cop] : m_netCops)
+            if (cop.fx && cop.sim)
+                cop.fx->update(dt, cop.sim->sim(), context);
+    }
+
+    void drawNetFx(render::Device& dev, const game::Camera& camera) {
+        for (auto& [id, rv] : m_remotes)
+            if (rv.fx)
+                rv.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
+        for (auto& [id, cop] : m_netCops)
+            if (cop.fx)
+                cop.fx->draw(dev, *m_textures, m_cards, m_skids, camera.transform);
+    }
+
+    // What this machine's cars painted and broke goes to the others, after
+    // this frame's effects (this player's car; a shared-traffic host's police).
+    void sendNetDamage(Context& ctx) {
+        if (!multiplayer(ctx))
+            return;
+        const std::uint64_t now = net::monotonicMs();
+        m_netDamage.send(*ctx.netGame, now);
+        m_netDamage.logStats(now);
     }
 
     void updatePlayer(Context& ctx, float dt) {
@@ -4680,6 +4839,8 @@ private:
         std::shared_ptr<std::vector<audio::game::ImpactInput>> impacts =
             std::make_shared<std::vector<audio::game::ImpactInput>>();
         float sirenAngle = 0.0f; // vehSiren::Update: 2.5 pi rad/s while on
+        // A shared-traffic host: its damage for the clients (m_netDamage).
+        game::DamageRecorder* damage = nullptr;
     };
     std::unique_ptr<ai::PoliceSquad> m_police;
     std::vector<Cop> m_cops;
@@ -4717,8 +4878,19 @@ private:
         std::unique_ptr<game::SimVehicle> sim; // kinematic body (and its trailer)
         std::unique_ptr<game::VehicleRenderer> renderer, trailer;
         std::unique_ptr<audio::game::OpponentCarAudio> audio;
+        // OpenMM2: its damage as its owner's machine shows it (smoke from
+        // the snapshots' level, sparks and shards of the replayed impacts).
+        std::unique_ptr<game::fx::VehicleEffects> fx;
+        std::vector<audio::game::ImpactInput> impacts; // replayed impact sounds this frame
+        bool fresh = true; // its damage record not shown yet
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
+    // OpenMM2: the network cars' damage (game/net/DamageSync): this player's
+    // car's and, on a shared-traffic host, the police's, sent; the other
+    // players' and the host's police, received. m_netStateTime is the
+    // session time the simulation's state belongs to this frame.
+    game::NetDamage m_netDamage;
+    std::uint32_t m_netStateTime = 0;
     std::vector<game::NetRemoteCar> m_remoteCars; // this frame's sample (updateRemoteCars)
     std::vector<game::NetGameEvent> m_netEvents; // this frame's game events (takeNetEvents)
     std::set<std::uint8_t> m_netLeft;            // players who quit this race
@@ -4751,6 +4923,8 @@ private:
     std::unordered_map<int, std::uint32_t> m_netHitReported; // client: hits reported, by car (session ms)
     Vec3 m_netPreStepVelocity;                                // client: the car's velocity before the step
     std::map<int, NetCop> m_netCops; // client: the host's police
+    double m_trafficRenderTime = 0.0; // client: the session time the shared cars are drawn at
+    std::unordered_map<int, game::AiRenderer::PhysicalCar> m_netPhysical; // client: knocked cars with bodies
     std::multimap<std::string, NetCop> m_spareNetCops; // client: police cars no longer shown, by model
     std::set<std::string> m_badNetCopModels;           // client: police models that failed to load
     static constexpr std::size_t kMaxNetCops = 32;
@@ -4758,6 +4932,8 @@ private:
     // Development aid: OPENMM2_DEBUG_NETTRAFFIC logs the shared cars near
     // each client twice a second, on the host and on the client.
     bool m_debugNetTraffic = std::getenv("OPENMM2_DEBUG_NETTRAFFIC") != nullptr;
+    // OPENMM2_DEBUG_NETDAMAGE logs every damage event sent and received.
+    bool m_debugNetDamage = std::getenv("OPENMM2_DEBUG_NETDAMAGE") != nullptr;
     std::unordered_set<int> m_debugKnocked;
 
     // Sound: the player's car, city ambience and rain (src/audio/game).

@@ -22,8 +22,10 @@
 #include "net/AmbientState.h"
 #include "net/Snapshot.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <optional>
 #include <span>
@@ -65,6 +67,10 @@ struct SharedCar {
     Vec3 velocity;
     Vec3 angularVelocity;
     std::uint8_t flags = 0; // net::AmbientFlags
+    // Traffic with a physics body: WHL0-3's drawing offsets from their
+    // pivots (trafficWheelOffsets).
+    bool wheels = false;
+    std::array<Vec3, 4> wheelOffsets{};
     // Police.
     std::uint8_t target = net::kAmbientNoTarget;
     float damage = 0.0f;
@@ -156,6 +162,10 @@ public:
         Vec3 angularVelocity;
         float speed = 0.0f;     // along -m2
         std::uint8_t flags = 0; // net::AmbientFlags
+        // A knocked car with a body on the host: its wheels' drawing offsets
+        // (interpolated between the messages, trafficWheelMatrices).
+        bool wheels = false;
+        std::array<Vec3, 4> wheelOffsets{};
         std::uint8_t target = net::kAmbientNoTarget;
         float damage = 0.0f;
         float rpm = 0.0f;
@@ -184,12 +194,19 @@ public:
     const Options& options() const { return m_options; }
 
 private:
+    // A knocked car's wheels as one message gave them.
+    struct WheelSample {
+        std::uint32_t time = 0;
+        bool wheels = false;
+        std::array<Vec3, 4> offsets{};
+    };
     struct Entry {
         int generation = 0;
         net::AmbientKind kind = net::AmbientKind::Traffic;
         int model = 0;
         int paint = 0;
         net::SnapshotBuffer buffer{32};
+        std::deque<WheelSample> wheels; // time order, newest last
         std::uint32_t firstTime = 0; // its first snapshot (hidden before it)
         std::uint32_t lastTime = 0;  // its newest snapshot
         std::optional<std::uint32_t> goneAt; // missing from a newer message: gone from this time on
@@ -225,7 +242,24 @@ struct TrafficBodyState {
     Mat34 transform;
     Vec3 velocity;
     Vec3 angularVelocity;
+    // While the body is simulated (aiVehicleActive): WHL0-3's drawing
+    // offsets (trafficWheelOffsets).
+    std::optional<std::array<Vec3, 4>> wheels;
 };
+
+// Host: a knocked car's wheels as aiVehicleInstance::Draw draws them while it
+// has a body (TrafficBodies::wheelsOf, world matrices), as offsets of WHL0-3
+// from their pivots (`data`'s) in the model space of `transform`, the matrix
+// the car is shared with.
+std::array<Vec3, 4> trafficWheelOffsets(const Mat34& transform, const std::array<Mat34, 6>& wheels,
+                                        const ai::VehicleData& data);
+// Client: the wheels' world matrices from the offsets, for AiRenderer's
+// physical cars: WHL0-3 unturned at their pivots plus the offsets, WHL4 and
+// WHL5 at their pivots raised by WHL2's and WHL3's drawn height less the
+// wheel radius (as TrafficBodies::wheelsOf places them).
+void trafficWheelMatrices(const Mat34& transform, const std::array<Vec3, 4>& offsets,
+                          const ai::VehicleData& data, std::array<Mat34, 6>& matrices,
+                          std::array<bool, 6>& valid);
 SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const TrafficBodyState* body,
                           bool horn);
 

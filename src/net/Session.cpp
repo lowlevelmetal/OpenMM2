@@ -3,6 +3,7 @@
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "net/Sha256.h"
+#include "net/VehicleDamage.h"
 
 #include <algorithm>
 #include <cmath>
@@ -67,6 +68,10 @@ bool upsertPlayer(std::vector<PlayerInfo>& players, const PlayerInfo& p) {
 constexpr double kChatRate = 2.0, kChatBurst = 8.0;
 constexpr double kUpdateRate = 10.0, kUpdateBurst = 20.0;
 constexpr double kEventRate = 30.0, kEventBurst = 60.0;
+// A car's damage events (net/VehicleDamage.h) have a budget of their own, so
+// a crash's events never use up the race events' or the other way round. The
+// game sends at most ten a second.
+constexpr double kDamageEventRate = 15.0, kDamageEventBurst = 30.0;
 
 // An address that sent this many wrong passwords within the window is turned
 // away until the window ends, so guessing a lobby password online costs
@@ -692,7 +697,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         GameEventMsg msg;
         if (!decodeMessage(data, msg))
             return;
-        if (!r.events.take(monotonicMs(), kEventRate, kEventBurst)) {
+        const bool damage = msg.type == kVehicleDamageEvent;
+        RateLimit& budget = damage ? r.damage : r.events;
+        if (!budget.take(monotonicMs(), damage ? kDamageEventRate : kEventRate,
+                         damage ? kDamageEventBurst : kEventBurst)) {
             log::debug("net: dropped game event {} from player {}: too many events", msg.type, id);
             return;
         }

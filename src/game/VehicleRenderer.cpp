@@ -131,9 +131,17 @@ void VehicleRenderer::setPaintjob(int paintjob) {
         }
 }
 
-void VehicleRenderer::applyDamage(const Vec3& modelPoint, float radius) {
+void VehicleRenderer::applyDamage(const Vec3& modelPoint, float radius, std::optional<std::uint32_t> seed) {
     if (m_texelDamage)
-        m_texelDamage->apply(modelPoint, radius);
+        m_texelDamage->apply(modelPoint, radius, seed);
+}
+
+std::optional<VehicleRenderer::Breakable> VehicleRenderer::attachedPart(const std::string& part) const {
+    const std::string name = str::upper(part);
+    const auto* pivot = m_model.pivot(str::lower(part));
+    if (!pivot || !m_gpu || !findFilledLod(*m_gpu, name, asset::Lod::High) || m_detached.contains(name))
+        return std::nullopt;
+    return Breakable{name, pivot->origin};
 }
 
 void VehicleRenderer::resetDamage() {

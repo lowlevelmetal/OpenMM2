@@ -222,7 +222,7 @@ private:
         std::uint8_t playerId = kInvalidPlayerId; // assigned after Hello
         std::array<std::byte, 16> nonce{};
         std::uint64_t connectedAt = 0;
-        RateLimit chat, updates, events;
+        RateLimit chat, updates, events, damage;
         bool updatePending = false; // a PlayerRequest applied but not yet relayed
     };
 

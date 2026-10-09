@@ -132,9 +132,11 @@ void TexelDamage::upload(Layer& layer) {
     m_device.updateTexture(layer.handle, 0, {0, 0, layer.width, layer.height}, layer.live.data());
 }
 
-void TexelDamage::apply(const Vec3& point, float radius) {
+void TexelDamage::apply(const Vec3& point, float radius, std::optional<std::uint32_t> seed) {
     if (!m_active)
         return;
+    if (seed)
+        m_rand.seed(*seed);
     const float r2 = radius * radius;
     std::vector<bool> dirty(m_layers.size(), false);
     for (const auto& t : m_triangles) {

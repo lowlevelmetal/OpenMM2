@@ -76,9 +76,12 @@ public:
 
     // fxTexelDamage::ApplyDamage at a point in the car's model space with
     // TextelDamageRadius; resetDamage() repaints the car clean.
-    void applyDamage(const Vec3& modelPoint, float radius);
+    // With `seed`, the patches start from that random state (a network
+    // car's, as its owner painted them; texelDamageState() is the owner's).
+    void applyDamage(const Vec3& modelPoint, float radius, std::optional<std::uint32_t> seed = {});
     void resetDamage();
     bool hasTexelDamage() const { return m_texelDamage && m_texelDamage->active(); }
+    std::uint32_t texelDamageState() const { return m_texelDamage ? m_texelDamage->randomState() : 0u; }
     // The paint job's material textures in order (fxShardManager's shards).
     std::vector<std::string> materialTextures() const;
     int paintjob() const { return m_paintjob; }
@@ -100,6 +103,11 @@ public:
     // (vehBreakableMgr::Get by id bit, vehBreakableMgr::EjectAll above
     // 100 mph).
     std::vector<Breakable> wreckParts(float mph, fx::Rand& rng);
+    // A part either manager can eject (a BREAK part, the paint job's
+    // VARIANT, a wheel, hub, fender or the engine) that the car has and that
+    // is still on, with its pivot (OpenMM2: a network car loses the parts its
+    // owner's car lost).
+    std::optional<Breakable> attachedPart(const std::string& part) const;
     // vehBreakableMgr::Eject: the part stops being drawn; `banger` is the
     // hit banger instance it became (vehBreakable +0x44), if any.
     void detach(const std::string& part, std::optional<std::size_t> banger = {});

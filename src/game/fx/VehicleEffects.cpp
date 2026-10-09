@@ -72,18 +72,23 @@ void VehicleEffects::impact(const phys::CarImpact& impact, const phys::CarSim& c
     // body).
     if (!impact.damaging)
         return;
-    const float mph = car.speedMph();
-    // Sparks: 16 x the impact's running total x frame seconds of them (at
-    // most the pool's 64). The frame time is the fixed 1/60 s step.
-    if (15.0f < mph)
-        m_sparks.radialBlast(static_cast<int>(16.0f * impact.total * FixedTicker::kStep), impact.position,
-                             impact.normal);
-    // fxShardManager::EmitShards gets the impact's running total.
-    m_shards.emit(impact.position, impact.total, car.speed(), car.body.ics.matrix);
+    impactEffects(impact.position, impact.normal, impact.total, car.speed(), car.speedMph(),
+                  car.body.ics.matrix);
     if (!m_damagePoint)
         m_damagePoint = impact.localPosition;
     if (m_impacts.size() < 64)
         m_impacts.push_back({impact.localPosition, impact.value});
+}
+
+void VehicleEffects::impactEffects(const Vec3& position, const Vec3& normal, float total, float speed,
+                                   float mph, const Mat34& body) {
+    // Sparks: 16 x the impact's running total x frame seconds of them (at
+    // most the pool's 64), above 15 mph. The frame time is the fixed 1/60 s
+    // step.
+    if (15.0f < mph)
+        m_sparks.radialBlast(static_cast<int>(16.0f * total * FixedTicker::kStep), position, normal);
+    // fxShardManager::EmitShards gets the impact's running total.
+    m_shards.emit(position, total, speed, body);
 }
 
 std::vector<VehicleEffects::CountedImpact> VehicleEffects::takeImpacts() {
@@ -157,7 +162,7 @@ void VehicleEffects::spewSmoke(const Mat34& car, const Vec3& offset, float amoun
 
 void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxContext& context) {
     // vehCar::Update: the four tracks (vehCar::UpdateTrack), then vehWheelPtx.
-    for (std::size_t i = 0; i < 4; ++i) {
+    for (std::size_t i = 0; i < 4 && context.wheels; ++i) {
         const phys::Wheel& w = car.wheels[i];
         auto& track = m_tracks[i];
         const bool water = w.material && w.material->name == "water";
@@ -165,7 +170,7 @@ void VehicleEffects::step(float dt, const phys::CarSim& car, const VehicleFxCont
             track.setWidth(w.width);
         track.update(w.intersection.position, w.matrix.m0, w.skidding && !water && context.tracksAllowed);    }
     for (const phys::Wheel& w : car.wheels) {
-        if (!w.material)
+        if (!w.material || !context.wheels)
             continue;
         for (int slot = 0; slot < 2; ++slot) {
             const int index = w.material->ptxIndex[slot];

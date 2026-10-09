@@ -26,7 +26,9 @@ namespace mm2::net {
 inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 2: the shared ambient traffic of multiplayer cruise (AmbientState, the
 // Ambient channel, SessionSettings::sharedTraffic).
-inline constexpr std::uint16_t kProtocolVersion = 2;
+// 4: the cars' damage (net/VehicleDamage.h events; in AmbientState the
+// police's damage at 10 bits and the knocked traffic cars' wheels).
+inline constexpr std::uint16_t kProtocolVersion = 4;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.

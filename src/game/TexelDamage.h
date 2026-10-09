@@ -5,6 +5,8 @@
 #include "game/fx/Random.h"
 #include "render/Device.h"
 
+#include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -32,8 +34,12 @@ public:
     TexelDamage& operator=(const TexelDamage&) = delete;
 
     bool active() const { return m_active; }
-    // fxTexelDamage::ApplyDamage: `point` in the body's model space.
-    void apply(const Vec3& point, float radius);
+    // fxTexelDamage::ApplyDamage: `point` in the body's model space. With
+    // `seed` the patches' random numbers start from that state (OpenMM2: a
+    // network car's patches come out as its owner's did).
+    void apply(const Vec3& point, float radius, std::optional<std::uint32_t> seed = {});
+    // The state the next apply() draws its random numbers from.
+    std::uint32_t randomState() const { return m_rand.state(); }
     // fxTexelDamage::Reset: the copies back to clean.
     void reset();
 
