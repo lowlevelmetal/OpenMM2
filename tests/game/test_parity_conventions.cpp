@@ -131,3 +131,38 @@ TEST(ConventionsParity, XrefBangersKeepOnlyTheirYTurn) {
         EXPECT_NEAR(p.transform.m1.y, 0.0f, 1e-3f); // exported Z up
     }
 }
+
+// asBirthRule::Load skips the block's name before it reads the rule by
+// position: sp_tree1_s_break06 calls its block "asBirthRule" and throws
+// leaves all the same.
+TEST(ConventionsParity, BangerBirthRuleBlockOfAnyName) {
+    constexpr std::string_view text = R"(type: a
+dgBangerData {
+  AudioId 0
+  Size 0.2 0.5 0.2
+  CG 0 0 0
+  Mass 1
+  NumParts 0
+  asBirthRule {
+  SpewRate 1.24
+  InitialBlast 25
+  }
+  TexNumber 5
+}
+)";
+    std::string error;
+    const auto d = bangers::parseBangerData("sp_tree1_s_break06", text, &error);
+    ASSERT_TRUE(d) << error;
+    ASSERT_TRUE(d->birthRule);
+    EXPECT_EQ(d->birthRule->initialBlast, 25);
+    EXPECT_FLOAT_EQ(d->birthRule->spewRate, 1.24f);
+}
+
+TEST(ConventionsParity, RetailTreePartThrowsLeaves) {
+    MM2_REQUIRE_GAME_DATA();
+    bangers::BangerDataLibrary lib(*test::gameData());
+    const bangers::BangerData* d = lib.find("sp_tree1_s_break06");
+    ASSERT_TRUE(d);
+    ASSERT_TRUE(d->birthRule);
+    EXPECT_EQ(d->birthRule->initialBlast, 25);
+}
