@@ -60,6 +60,10 @@ public:
     Vec3 position;        // the joint point (world)
     Vec3 initialPosition; // where Init put it (phJoint::Reset returns there)
 
+    // OpenMM2 (network prediction): the inverse mass matrix as the last
+    // update left it, saved and put back with the joint's other state.
+    void setInvMassMatrix(const Mat34& m) { m_invMassMatrix = m; }
+
 protected:
     Mat34 m_invMassMatrix;
 };
