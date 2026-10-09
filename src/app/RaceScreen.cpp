@@ -639,6 +639,7 @@ private:
             m_loadPercent = 100;
             return;
         case 3:
+            loadWorldObjects(ctx);
             loadAi(ctx);
             m_loadPercent = 50;
             return;
@@ -1033,8 +1034,12 @@ private:
         if (!m_session || !m_world)
             return;
         const auto& setups = m_session->opponents();
+        // Each racer's vehCar::Init drew on MM2's global stream in turn
+        // (loadAi): its siren flares come from there.
+        game::fx::Rand initDraws(m_racerInitState);
         for (std::size_t i = 0; i < setups.size(); ++i) {
             const auto& s = setups[i];
+            const std::uint32_t flares = game::takeVehCarInitDraws(initDraws);
             Opponent opp;
             opp.sessionIndex = i;
             // aiRouteRacer::Init places the racer on its first .opp row.
@@ -1053,6 +1058,7 @@ private:
             // id (its index) & 3.
             opp.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     opp.sim->model(), static_cast<int>(i) & 3);
+            opp.renderer->setSirenFlares(flares);
             setupVehicleRenderer(ctx, *opp.renderer);
             opp.audio = loadAiCarAudio(ctx, s.vehicle, false);
             opp.fx = loadVehicleFx(ctx, s.vehicle, opp.sim->model(), *opp.renderer);
@@ -1107,8 +1113,13 @@ private:
         // The game's room flags (lvlRoomInfo): a cop in a "water of death"
         // room drops out (aiPoliceOfficer::Update).
         m_police->setRoomFlags(m_city->levelRoomFlags);
+        // Each police car's vehCar::Init drew on MM2's global stream in turn
+        // at the end of aiMap::Init (loadEffects): its siren flares come
+        // from there.
+        game::fx::Rand initDraws(m_policeInitState);
         for (std::size_t i = 0; i < count; ++i) {
             const auto& p = posts[i];
+            const std::uint32_t flares = game::takeVehCarInitDraws(initDraws);
             Cop cop;
             Mat34 post = p.spawn;
             // aiVehiclePhysics::Init: vehCar::Init(<car>), the car's own tune
@@ -1130,6 +1141,7 @@ private:
                 livery = str::iequals(m_result.config.city, "sf") ? 0 : 1;
             cop.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                                     cop.sim->model(), livery);
+            cop.renderer->setSirenFlares(flares);
             setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
             cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model(), *cop.renderer);
@@ -2623,6 +2635,37 @@ private:
         ov.end();
     }
 
+    // The street props and the gizmos, with the start of MM2's global random
+    // stream in mmGame::Init's order: cityLevel::Load places the street
+    // props, setting the seed to 1 before every road, so the stream is left
+    // as the last road's walk leaves it; mmPlayer::Init's vehCar::Init then
+    // draws for the car's siren flares and splash; mmGame::InitGizmos for the
+    // sailboats, ferries and parked cars. aiMap::Init draws next (loadAi).
+    void loadWorldObjects(Context& ctx) {
+        // Inferred: without the propulator's files the stream would be
+        // whatever the menus left it at; OpenMM2 takes 1.
+        std::uint32_t state = 1;
+        if (m_world) {
+            m_bangers = std::make_unique<game::bangers::BangerSet>(*m_bangerData);
+            // With the race's own props (race/<city>/<mode><N>.pathset).
+            m_bangers->add(game::bangers::placeCityProps(
+                *m_city, ctx.game->vfs, *m_bangerData,
+                game::bangers::racePropsName(m_result.config.mode, m_result.config.raceIndex), &state));
+        }
+        m_random.seed(state);
+        // mmPlayer::Init -> vehCar::Init (the trailer, a vehTrailer, draws
+        // nothing).
+        const std::uint32_t playerFlares = game::takeVehCarInitDraws(m_random);
+        if (m_vehicle)
+            m_vehicle->setSirenFlares(playerFlares);
+        if (m_world) {
+            // mmGame::InitGizmos: sailboats, drawbridges, tube trains,
+            // ferries, and the parked cars (props) along the streets.
+            m_gizmos = game::world::initGizmos(ctx.game->vfs, *m_city, m_result.config, multiplayer(ctx),
+                                               *m_bangers, *m_bangerData, m_cityLevel.get(), m_random);
+        }
+    }
+
     void loadAi(Context& ctx) {
         const auto mode = m_result.config.mode;
         // mmMultiBlitz / mmMultiCircuit / mmMultiRace::Init clear mmGame +0x277
@@ -2656,6 +2699,13 @@ private:
         if (m_result.config.mode == game::GameMode::Circuit)
             settings.pedestrianDensity = 0.0f;
         settings.winterPeds = m_result.config.weather == game::Weather::Snow;
+        // aiMap::Init draws on MM2's global stream: the racers' cars first
+        // (aiRouteRacer::Init -> vehCar::Init; spawnOpponents makes them),
+        // then the ambient pool and the pedestrians (ai::World::create).
+        m_racerInitState = m_random.state();
+        if (m_session)
+            m_random.discard(static_cast<int>(m_session->opponents().size()) * game::kVehCarInitDraws);
+        settings.random = &m_random;
         std::string error;
         const city::AiMapConfig* raceMap =
             m_session && m_session->setup().aiMap ? &*m_session->setup().aiMap : nullptr;
@@ -2755,25 +2805,17 @@ private:
         if (auto bytes = ctx.game->vfs.readAll("city/" + str::lower(m_city->info.mapName) + "/decals.pathset"))
             if (auto set = city::parsePathSet(*bytes))
                 m_roadDecals.load(*set);
-        if (m_world) {
-            m_bangers = std::make_unique<game::bangers::BangerSet>(*m_bangerData);
-            // With the race's own props (race/<city>/<mode><N>.pathset).
-            m_bangers->add(game::bangers::placeCityProps(
-                *m_city, ctx.game->vfs, *m_bangerData,
-                game::bangers::racePropsName(m_result.config.mode, m_result.config.raceIndex)));
-            // mmGame::InitGizmos: sailboats, drawbridges, tube trains,
-            // ferries, and the parked cars (props) along the streets.
-            m_gizmos = game::world::initGizmos(ctx.game->vfs, *m_city, m_result.config, multiplayer(ctx),
-                                               *m_bangers, *m_bangerData, m_cityLevel.get(), m_gizmoRand);
+        if (m_world && m_bangers && m_gizmos) {
             if (m_cityLevel)
                 m_cityLevel->addSource(m_gizmos.get());
             if (m_bank && ctx.mixer)
                 m_gizmos->loadAudio(ctx.game->vfs, *m_bank, *ctx.mixer, &m_audioSlots);
             // aiMap::Init: the cable cars, unless the network game cleared
-            // the state pack's EnableCableCars (mmGameMulti::Init).
+            // the state pack's EnableCableCars (mmGameMulti::Init); their
+            // draws follow the pedestrians'.
             if (m_ai && !multiplayer(ctx)) {
                 m_cableCars = std::make_unique<game::world::CableCars>(*m_ai, *m_bangerData, *m_bangers);
-                m_cableCars->create(m_gizmoRand);
+                m_cableCars->create(m_random);
                 m_cableCars->reset(*m_world);
                 if (m_cityLevel)
                     m_cityLevel->addSource(m_cableCars.get());
@@ -2785,6 +2827,10 @@ private:
                 m_cityLevel->addSource(m_bangers.get());
             m_bangers->setWorld(m_world.get());
         }
+        // aiMap::Init ends with the police cars (aiPoliceOfficer::Init ->
+        // vehCar::Init; spawnPolice), after the subways (none in retail
+        // data: both cities' [Subway] is commented out).
+        m_policeInitState = m_random.state();
         if (m_player && m_vehicle) {
             m_vehicleFx = loadVehicleFx(ctx, m_result.config.vehicle, m_player->model(), *m_vehicle);
             m_player->sim().onImpactCallback = [this](const phys::CarImpact& impact) { playerImpact(impact); };
@@ -3735,11 +3781,16 @@ private:
     game::bangers::RoadDecals m_roadDecals;
     std::optional<game::fx::SparkLut> m_sparkColors;
     game::fx::Rand m_ejectRand{0xB4EAu};
-    // The gizmos (src/game/world) and the irand / frand of their loading
-    // (MM2's global rand(); its seed here is OpenMM2's).
+    // The gizmos (src/game/world).
     std::unique_ptr<game::world::Gizmos> m_gizmos;
     std::unique_ptr<game::world::CableCars> m_cableCars;
-    game::fx::Rand m_gizmoRand{1u};
+    // MM2's global irand / frand stream (gRandSeed) through the race's
+    // set-up, in mmGame::Init's order (loadWorldObjects, loadAi,
+    // loadEffects; docs/parity/round3/random-streams.md), then the AI
+    // world's (ai::Settings::random), which aiMap::Reset sets back to 1.
+    ai::Random m_random{1u};
+    std::uint32_t m_racerInitState = 1;  // the stream at the racers' vehCar::Init
+    std::uint32_t m_policeInitState = 1; // the stream at the police cars' vehCar::Init
     game::fx::EffectLibrary m_effects;
     std::unique_ptr<game::fx::VehicleEffects> m_vehicleFx;
     std::unique_ptr<game::fx::Weather> m_weather;

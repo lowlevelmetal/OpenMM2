@@ -283,10 +283,19 @@ bool CableCars::nextLink(int path, int dir, int& next, int& nextDir) const {
 void CableCars::create(fx::Rand& random) {
     // aiMap::Init: the starts, in the intersections' order, then the cars.
     const auto& net = m_ai.map().net();
-    for (int i = 0; i < static_cast<int>(net.intersections().size()); ++i) {
+    struct Start {
         int path = -1, dir = 1;
-        if (!isCableCarStart(i, path, dir))
-            continue;
+    };
+    std::vector<Start> starts;
+    for (int i = 0; i < static_cast<int>(net.intersections().size()); ++i) {
+        Start s;
+        if (isCableCarStart(i, s.path, s.dir))
+            starts.push_back(s);
+    }
+    // The array's constructors: each aiCableCar's aiRailSet member draws its
+    // lane offset (frand; a cable car never reads it).
+    random.discard(static_cast<int>(starts.size()));
+    for (const auto& [path, dir] : starts) {
         auto c = std::make_unique<Car>();
         c->index = static_cast<int>(m_cars.size());
         // aiCableCar::Init: its start, its instance (BeginGeom of the model

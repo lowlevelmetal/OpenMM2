@@ -96,7 +96,7 @@ private:
     const Mat34* m_matrix = nullptr;
     float m_elapsed = 0.0f;
     float m_spewFraction = 0.0f;
-    Rand m_rand;
+    Rand m_rand{0x2Au};
 };
 
 // Runs per-update effect rules at a fixed rate whatever the frame rate:

@@ -30,8 +30,8 @@ float s_glowColor = 0.95f;
 const Mat44* s_flareViewProj = nullptr;
 float s_flareAspect = 4.0f / 3.0f;
 std::vector<fx::LensFlareQuad>* s_flareOut = nullptr;
-// ltFlare::Random draws on MM2's global generator; OpenMM2 gives the flares
-// their own.
+// ltFlare::Random draws on MM2's global generator; a car whose set-up does
+// not reproduce MM2's order (setSirenFlares) draws its flares from this one.
 fx::Rand s_flareRand{0x5A1E};
 // vehSiren::Draw: ltLight::ComputeIntensity's threshold for the flares.
 constexpr float kFlareThreshold = 0.05f;
@@ -101,7 +101,7 @@ VehicleRenderer::VehicleRenderer(render::Device& device, TextureLibrary& texture
     }
     // vehSiren::Init: twenty lens flares for the siren lights.
     if (!m_sirens.empty())
-        m_flare.emplace(20, s_flareRand);
+        m_flare.emplace(kSirenFlares, s_flareRand);
     // Fenders follow the front wheels at their pivot's offset from wheel 0
     // (lifted 2.5 cm; FNDR1 mirrors it).
     if (findFilledLod(*m_gpu, "FNDR0", asset::Lod::High) && model.pivot("fndr0") && model.wheel(0))
@@ -239,6 +239,19 @@ void VehicleRenderer::setLensFlareTarget(const Mat44* viewProj, float aspect,
     s_flareViewProj = viewProj;
     s_flareAspect = aspect;
     s_flareOut = out;
+}
+
+void VehicleRenderer::setSirenFlares(std::uint32_t randomState) {
+    if (m_sirens.empty())
+        return;
+    fx::Rand random(randomState);
+    m_flare.emplace(kSirenFlares, random);
+}
+
+std::uint32_t takeVehCarInitDraws(fx::Rand& random) {
+    const std::uint32_t flares = random.state();
+    random.discard(kVehCarInitDraws);
+    return flares;
 }
 
 void VehicleRenderer::setLightGlowScales(float size, float color) {

@@ -84,7 +84,9 @@ public:
 
     // aiMap::Init "Create the cable cars": a car at every cable-car start,
     // in intersection order, then each one's sister (DetermineSister).
-    // `random` gives aiCableCar::Init's frand.
+    // `random` is MM2's global stream after the pedestrians' draws: one
+    // frand per car for the array's constructors (aiRailSet), then one per
+    // car for aiCableCar::Init's acceleration.
     void create(fx::Rand& random);
     // aiMap::Reset: every car back to its start (aiCableCar::Reset); the
     // world probes the ground and finds the rooms.

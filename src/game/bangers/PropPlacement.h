@@ -92,9 +92,14 @@ std::vector<PlacedProp> placePathSet(const city::PathSet& set, PlacedProp::Sourc
 // and road, picking a random variant. The sidewalk polylines are
 // lvlAiMap::GetSidewalkVertex's: each room's sections after the first room's
 // continue the road without their first section, interior corners are cut
-// by up to 0.1 m.
+// by up to 0.1 m. `randomState` receives MM2's global seed as the loop
+// leaves it (the last road's draws from 1, or 1 when the last road has no
+// props): the state the rest of the race's set-up draws from
+// (docs/parity/round3/random-streams.md). It is left alone when there are no
+// roads.
 std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vector<PropDef>& defs,
-                                         const std::vector<PropRule>& rules);
+                                         const std::vector<PropRule>& rules,
+                                         std::uint32_t* randomState = nullptr);
 
 // The name of a race's prop path set in race/<city>/ (cityLevel::Load:
 // dgGameModeNames[mode] formatted with the race index): "roam" for cruise,
@@ -119,7 +124,10 @@ std::vector<PlacedProp> placeXrefs(const city::Instance& record, const std::vect
 // banger instances of city/<map>.inst and <map>_ai.inst (e.g. stop signs),
 // city/<map>/props.pathset, then race/<map>/<raceProps>.pathset when
 // `raceProps` names one (racePropsName()).
+// `randomState` as placeStreetProps' (left alone without the propulator's
+// files; the rest of cityLevel::Load draws nothing).
 std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vfs& vfs,
-                                       const BangerDataLibrary& data, std::string_view raceProps = {});
+                                       const BangerDataLibrary& data, std::string_view raceProps = {},
+                                       std::uint32_t* randomState = nullptr);
 
 } // namespace mm2::game::bangers

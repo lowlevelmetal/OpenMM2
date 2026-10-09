@@ -134,6 +134,11 @@ public:
     // set, the siren lights' flares for that view go into `out`, to be drawn
     // after the scene (fx::drawLensFlares). Null turns them off.
     static void setLensFlareTarget(const Mat44* viewProj, float aspect, std::vector<fx::LensFlareQuad>* out);
+    // vehSiren::Init's lens flare (ltLensFlare(20)) for a car with siren
+    // lights, drawn by ltFlare::Random from MM2's global stream as it stood
+    // at the car's vehCar::Init (takeVehCarInitDraws). Until this is called
+    // the flares come from a stream of OpenMM2's own.
+    void setSirenFlares(std::uint32_t randomState);
 
 private:
     struct Light {
@@ -180,5 +185,16 @@ private:
     const RoomVisibility* m_rooms = nullptr;
     int m_room = 0; // lvlInstance's room (vehCar::Update)
 };
+
+// vehCar::Init's draws on MM2's global stream, which every car makes
+// whatever its model: vehCarModel::Init -> vehSiren::Init builds the siren's
+// lens flare (ltLensFlare(20), ltFlare::Random: six frand per flare), then
+// vehSplash::Init fills its 64 points with random directions (three frand
+// each) that it overwrites at once. Returns the state the flares are drawn
+// from (VehicleRenderer::setSirenFlares) and advances `random` past all of
+// them.
+inline constexpr int kSirenFlares = 20;
+inline constexpr int kVehCarInitDraws = kSirenFlares * 6 + 64 * 3;
+std::uint32_t takeVehCarInitDraws(fx::Rand& random);
 
 } // namespace mm2::game

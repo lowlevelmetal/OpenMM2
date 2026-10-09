@@ -108,7 +108,7 @@ private:
     float m_bumpHeight = 0.0f, m_bumpWidth = 0.0f, m_speedSeen = 0.0f;
     float m_lastFriction = 0.0f, m_lastSpring = 0.0f, m_lastImpact = 0.0f;
     float m_elapsed = 0.0f; // datTimeManager::ElapsedTime
-    game::fx::Rand m_rand;  // frand (MM2 shares one stream; inferred own)
+    game::fx::Rand m_rand{0x2Au}; // frand (MM2 shares one stream; inferred own)
 };
 
 } // namespace mm2::app::controls

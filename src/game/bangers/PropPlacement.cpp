@@ -472,7 +472,7 @@ std::vector<PlacedProp> placePathSet(const city::PathSet& set, PlacedProp::Sourc
 }
 
 std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vector<PropDef>& defs,
-                                         const std::vector<PropRule>& rules) {
+                                         const std::vector<PropRule>& rules, std::uint32_t* randomState) {
     std::vector<PlacedProp> out;
     std::map<std::string, const PropDef*, std::less<>> defByName;
     for (const auto& d : defs)
@@ -481,10 +481,14 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
     for (const auto& r : rules)
         ruleByName.try_emplace(r.name, &r);
 
+    // MM2's global seed as each road leaves it.
+    std::uint32_t state = 1;
     for (const auto& road : psdl.roads) {
-        // Without sidewalks (flag 0x40) the curb and the outer edge are the
-        // same point and nothing can stand: skipping the road changes nothing.
-        if (road.rooms.empty() || !(road.flags & kRoadSidewalks))
+        state = 1; // ResetRandomSeed, before every road
+        // A road without sidewalks (flag 0x40) is walked too: its curb and
+        // outer edge are the same point, so nothing stands (the X row is
+        // zero), but the walk draws as MM2's does.
+        if (road.rooms.empty())
             continue;
         const auto firstRoom = city::PsdlRoad::roomId(road.rooms.front());
         if (firstRoom >= psdl.rooms.size())
@@ -561,7 +565,10 @@ std::vector<PlacedProp> placeStreetProps(const city::Psdl& psdl, const std::vect
                 }
             }
         }
+        state = rng.state();
     }
+    if (randomState && !psdl.roads.empty())
+        *randomState = state;
     return out;
 }
 
@@ -663,7 +670,8 @@ std::vector<PlacedProp> placeXrefs(const city::Instance& record, const std::vect
 }
 
 std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vfs& vfs,
-                                       const BangerDataLibrary& data, std::string_view raceProps) {
+                                       const BangerDataLibrary& data, std::string_view raceProps,
+                                       std::uint32_t* randomState) {
     std::vector<PlacedProp> out;
     const std::string map = str::lower(city.info.mapName);
     const std::string dir = "city/" + map + "/";
@@ -684,7 +692,8 @@ std::vector<PlacedProp> placeCityProps(const city::CityData& city, const vfs::Vf
     const auto defs = vfs.readAll(dir + "propdefs.csv");
     const auto rules = vfs.readAll(dir + "proprules.csv");
     if (defs && rules) {
-        auto props = placeStreetProps(city.psdl, parsePropDefs(text(*defs)), parsePropRules(text(*rules)));
+        auto props = placeStreetProps(city.psdl, parsePropDefs(text(*defs)), parsePropRules(text(*rules)),
+                                      randomState);
         out.insert(out.end(), props.begin(), props.end());
     }
     // lvlLevel::LoadInstances of <map>.inst and <map>_ai.inst: banger records

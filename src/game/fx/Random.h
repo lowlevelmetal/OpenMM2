@@ -5,31 +5,15 @@
 */
 #pragma once
 
-#include <cstdint>
+#include "ai/Random.h"
 
 namespace mm2::game::fx {
 
 // irand()/frand() of the Angel engine: the MSVC linear congruential
-// generator (seed * 214013 + 2531011), returning 15 bits. The original used
-// one global seed (gRandSeed) for everything; OpenMM2 gives each subsystem
-// its own instance so simulations stay deterministic independently.
-class Rand {
-public:
-    explicit Rand(std::uint32_t seed = 0x2A) : m_seed(seed) {}
-
-    void seed(std::uint32_t s) { m_seed = s; }
-    std::uint32_t state() const { return m_seed; }
-
-    // 0 .. 32767
-    int irand() {
-        m_seed = m_seed * 214013u + 2531011u;
-        return static_cast<int>((m_seed >> 16) & 0x7FFF);
-    }
-    // [0, 1): irand() * 2^-15 (frand)
-    float frand() { return static_cast<float>(irand()) * 3.0517578125e-05f; }
-
-private:
-    std::uint32_t m_seed;
-};
+// generator (seed * 214013 + 2531011), returning 15 bits. One class for the
+// whole game (ai::Random), so the systems MM2 sets up from its one global
+// seed can share a stream (ai/Random.h); the effects, which MM2 draws from
+// its secondary seed (DisableGlobalSeed / EnableGlobalSeed), keep their own.
+using Rand = ai::Random;
 
 } // namespace mm2::game::fx
