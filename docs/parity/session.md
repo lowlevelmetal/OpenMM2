@@ -3,7 +3,7 @@
 Audited against MM2Recomp (midtown2.exe build 3393) on 2026-10-07.
 
 Summary: 205 entries (a row may group closely related functions); verified
-89, fixed 86, deviation 6, inferred 4, open 1, openmm2 19. Missing: 17 MM2
+88, fixed 87, deviation 6, inferred 4, open 1, openmm2 19. Missing: 17 MM2
 features (11 open, 6 deviation).
 
 A second pass (2026-10-08) wired the race-side items the first pass and
@@ -60,7 +60,7 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `loadRaceSetup`: lesson events | `mmSingleStunt::LoadEventFile`, `InitHUD`, `InitNewEvent` | fixed | chkflags now counts when not 0 (MM2 passes chkflags != 0 to `mmWaypoints::ReInit`; OpenMM2 tested bit 0); cornerspeed below 1 → 50 verified |
 | `loadRaceSetup`: opponents | `aiMap::Init`, `CrashCourse::SetEnvironment` | fixed | min(table count, OpponentDensity) racers; the crash course sets OpponentDensity to 8, so lessons load at most eight cars (OpenMM2 loaded every row) |
 | `loadRaceSetup`: opponent grid place | `aiRouteRacer::Init` | verified | first `.opp` row, its fourth column in degrees × 0.017444445, not negated |
-| `loadRaceSetup`: police | `aiPoliceOfficer::Init` via `aiMap::Init` | verified | posts with −heading; how many are placed is RaceScreen's (cop density) |
+| `loadRaceSetup`: police | `aiRaceData::aiRaceData`, `aiPoliceOfficer::Reset` | fixed | posts turned by heading x −0.017444445, MM2's own degree factor (round 3, conventions: OpenMM2 used pi / 180); how many are placed is RaceScreen's (cop density) |
 | `loadRaceSetup`: player start | `mmWaypoints::GetStart`, `mmSingleRoam::InitOtherPlayers` | verified | first waypoint; cruise at a random intersection; the first Blitz start without an AI map is an OpenMM2 fallback |
 
 ## Types, race configuration and strings (`src/game/session/Types.h`, `src/game/RaceConfig.h`, `src/game/Strings.{h,cpp}`)

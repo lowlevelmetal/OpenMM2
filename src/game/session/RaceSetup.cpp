@@ -338,7 +338,11 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
         for (const auto& p : s.aiMap->police) {
             PoliceSetup ps;
             ps.vehicle = str::lower(p.car);
-            ps.spawn = Mat34::rotationY(-p.heading * kDegToRad);
+            // aiRaceData::aiRaceData stores the [Police] heading (degrees) as
+            // heading x -0.017444445, MM2's own degree factor rather than
+            // pi / 180 (as aiRouteRacer::Init's for the racers), and
+            // aiPoliceOfficer::Reset copies it to the reset rotation.
+            ps.spawn = Mat34::rotationY(p.heading * -0.017444445f);
             ps.spawn.m3 = p.position;
             ps.params = p.params;
             s.police.push_back(std::move(ps));
