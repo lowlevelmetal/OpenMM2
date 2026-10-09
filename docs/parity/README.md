@@ -105,7 +105,7 @@ placement.
 | Subsystem | Record | Reachable | Ported (new) | Replaced | Not needed | Open |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | world objects | [world-objects.md](mm2/world-objects.md) | 297 | 187 (124) | 30 | 75 | 5 |
-| game flow and spawns | [game-flow.md](mm2/game-flow.md) | 608 | 383 (62) | 65 | 151 | 9 |
+| game flow and spawns | [game-flow.md](mm2/game-flow.md) | 608 | 382 (62) | 65 | 152 | 9 |
 | AI | [ai.md](mm2/ai.md) | 507 | 409 (17) | 6 | 92 | 0 |
 | vehicle and physics | [vehicle-physics.md](mm2/vehicle-physics.md) | 736 | 574 (0) | 13 | 146 | 3 |
 | props and effects | [props-fx.md](mm2/props-fx.md) | 169 | 126 (1) | 0 | 43 | 0 |

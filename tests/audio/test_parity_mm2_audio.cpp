@@ -151,8 +151,9 @@ TEST(AudioParityMm2, AnnouncerQueueCountsTwiceAFrameWhileRunning) {
         ASSERT_EQ(line, "al1pre"); // queued for 1.5 s
     };
     {
-        // Running: GameLoop's AudManager::Update and mmGame::Update both
-        // update the queue, so 1.5 s pass in 0.75 s.
+        // Running: one AudManager::Update and mmGame::Update both update the
+        // queue, so 1.5 s pass in 0.75 s. A whole frame runs AudManager::Update
+        // twice (AudioOrderParity.AnnouncerQueueCountsThreeTimesAFrameWhileRunning).
         Announcer a;
         queuePreRace(a);
         AudioManager manager;
