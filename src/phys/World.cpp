@@ -78,6 +78,15 @@ void Body::place(const Mat34& icsMatrix) {
     resetCollider();
 }
 
+bool Body::kinematicMotion(Vec3& velocity, Vec3& spin, Vec3& centre) const {
+    if (!kinematic || !kinematicMoves)
+        return false;
+    velocity = kinematicVelocity;
+    spin = kinematicSpin;
+    centre = ics.matrix.m3;
+    return true;
+}
+
 void Body::syncBoundMatrix() {
     // vehCarSim::SetWorldMatrix (and the plain bodies' equivalent): the
     // bound's origin at boundOrigin in the ICS frame.
@@ -728,6 +737,11 @@ bool World::collideInstances(Instance& a, Instance& b) {
     }
     if (boundB->type == BoundType::ForceSphere)
         return true; // phCollision::TestBoundForce: no force spheres in a race (not ported)
+    // OpenMM2: the motion of an instance moved from outside (network cars).
+    if (!colA->ics)
+        colA->moving = a.kinematicMotion(colA->motionVelocity, colA->motionSpin, colA->motionCentre);
+    if (!colB->ics)
+        colB->moving = b.kinematicMotion(colB->motionVelocity, colB->motionSpin, colB->motionCentre);
 
     const int n = testBoundGeneric(*boundA, *colA, *boundB, *colB, m_isectsA.data(), m_isectsB.data(),
                                    m_impacts.data(), kMaxIntersections, kMaxImpacts, relPos);

@@ -61,6 +61,14 @@ public:
     // dgPhysEntity vtable 0x1c on a banger's entity that did not break.
     virtual void bangerHeld() {}
 
+    // OpenMM2 (no MM2 counterpart): an instance moved from outside the
+    // simulation (a network car's kinematic body, a shared traffic car on a
+    // network client) reports its velocity and its spin about `centre`; the
+    // collider that stands for it in an impact carries them, so what hits it
+    // or is hit by it sees it move. False: it does not move (MM2's static
+    // instances).
+    virtual bool kinematicMotion(Vec3& /*velocity*/, Vec3& /*spin*/, Vec3& /*centre*/) const { return false; }
+
     // The ids AudImpact plays for impacts against the instance
     // (the instance data's collider id): 0 for the world, cars and traffic, the banger's
     // AudioId for bangers.

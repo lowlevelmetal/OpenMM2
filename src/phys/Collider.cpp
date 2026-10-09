@@ -21,6 +21,7 @@ void Collider::init(const Bound* b, const Mat34* m, InertialCS* inertia) {
     handler = nullptr;
     joint = nullptr;
     body = nullptr;
+    moving = false;
     reset();
 }
 
@@ -87,8 +88,12 @@ Mat34 Collider::copyLastMatrix(const void* pusher) const {
 
 Vec3 Collider::localVelocity(const Vec3& position) const {
     // phColliderBase::GetLocalVelocity.
-    if (!ics)
-        return {};
+    if (!ics) {
+        if (!moving)
+            return {};
+        // OpenMM2: a kinematic instance's own motion.
+        return motionVelocity + motionSpin.cross(position - motionCentre);
+    }
     return ics->getVelocity(&position);
 }
 

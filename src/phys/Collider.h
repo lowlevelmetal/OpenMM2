@@ -87,6 +87,10 @@ public:
     const Joint* joint = nullptr;     // phColliderJointed's joint (phColliderJointed::Attach)
     Body* body = nullptr;             // the simulated body owning the collider (dgPhysEntity), if any
     bool active = true;               // ColliderIsActive without an ICS
+    // OpenMM2: a collider without an ICS that moves all the same (see
+    // Instance::kinematicMotion); localVelocity reads it. init() clears it.
+    bool moving = false;
+    Vec3 motionVelocity, motionSpin, motionCentre;
 
 private:
     const void* m_key = nullptr;
