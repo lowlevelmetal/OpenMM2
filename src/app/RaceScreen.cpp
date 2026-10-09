@@ -1,5 +1,6 @@
 // A session in the city.
 #include "app/Controls.h"
+#include "app/DrawTrace.h"
 #include "app/ForceFeedback.h"
 #include "app/GameInput.h"
 #include "app/Screens.h"
@@ -191,6 +192,7 @@ public:
     void update(Context& ctx, double dt) override {
         m_time += dt;
         m_frameDt = static_cast<float>(dt);
+        m_frameSteps = 0;
         if (m_state == State::ShowLoading) {
             // BeginPhase: the loading picture with the bar at 10 %, drawn
             // once before the loading blocks.
@@ -361,7 +363,8 @@ public:
             if (!m_flyCamera && (in.keyDown(Key::LCtrl) || in.keyDown(Key::RCtrl)) && in.keyPressed(Key::B))
                 phys::Trailer::breakKeyPressed = true;
         }
-        if (m_world && m_world->advanceFixed(static_cast<float>(dt)) > 0)
+        m_frameSteps = m_world ? m_world->advanceFixed(static_cast<float>(dt)) : 0;
+        if (m_frameSteps > 0)
             phys::Trailer::breakKeyPressed = false;
         // The props and traffic cars the collisions set moving follow their
         // bodies; the ones that came to rest stop being simulated.
@@ -467,6 +470,9 @@ public:
         game::VehicleRenderer::setLensFlareTarget(&viewProj, proj.aspect, &flares);
         drawLevel(ctx, m_camera, frustum, playerBody, m_frameDt);
         game::VehicleRenderer::setLensFlareTarget(nullptr, 1.0f, nullptr);
+        if (m_drawTrace && m_player)
+            m_drawTrace->frame(m_frameDt, m_frameSteps, 0.0f, m_camera.transform, m_pose.body,
+                               m_player->sim().speed(), nearestDrawnCar(ctx));
         if (!flares.empty()) {
             game::fx::drawLensFlares(dev, *m_textures, flares);
             dev.setFrameConstants(frame);
@@ -570,6 +576,28 @@ public:
             if (c.sim && (c.state.flags & net::kAmbientPursuit))
                 blips.push_back({c.sim->sim().body.ics.matrix, game::session::MapBlip::Kind::Police});
         return blips;
+    }
+
+    // OPENMM2_DEBUG_DRAW_TRACE: the other car drawn nearest the player's.
+    std::optional<Mat34> nearestDrawnCar(Context& ctx) const {
+        std::optional<Mat34> best;
+        float bestDist = 1e30f;
+        auto consider = [&](const Mat34& m) {
+            const float d = m.m3.dist2(m_pose.body.m3);
+            if (d < bestDist) {
+                bestDist = d;
+                best = m;
+            }
+        };
+        for (const auto& o : m_opponents)
+            consider(o.sim->pose().body);
+        for (const auto& c : m_cops)
+            consider(c.sim->pose().body);
+        if (multiplayer(ctx))
+            for (const auto& rc : m_remoteCars)
+                if (rc.hasState)
+                    consider(rc.transform);
+        return best;
     }
 
     // The level as lvlLevel::Draw draws it for one view: the city, traffic,
@@ -4581,6 +4609,8 @@ private:
     game::Camera m_camera;
     std::unique_ptr<game::CityLevel> m_cityLevel;
     std::unique_ptr<phys::World> m_world;
+    int m_frameSteps = 0; // the physics samples this frame ran
+    std::unique_ptr<DrawTrace> m_drawTrace = DrawTrace::fromEnvironment(); // OPENMM2_DEBUG_DRAW_TRACE
     std::unique_ptr<game::SimVehicle> m_player;
     std::unique_ptr<game::VehicleRenderer> m_vehicle;
     std::unique_ptr<game::VehicleRenderer> m_trailer;
