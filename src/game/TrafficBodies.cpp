@@ -691,6 +691,22 @@ void TrafficBodies::instancesIn(int room, std::vector<phys::Instance*>& out) con
             out.push_back(car);
 }
 
+bool TrafficBodies::knock(int carId, const Vec3& impulse, const Vec3& point) {
+    const auto index = static_cast<std::size_t>(carId);
+    RailCar* r = carId >= 0 && index < m_railCars.size() ? m_railCars[index].get() : nullptr;
+    if (!r || r->active || !r->data || !r->box || !r->collidable || !r->present || r->held)
+        return false;
+    phys::Body* body = r->attachEntity();
+    m_world.addNewMover(body);
+    body->ics.applyImpulse(impulse, point);
+    return true;
+}
+
+float TrafficBodies::massOf(int carId) const {
+    const RailCar* r = findRailCar(carId);
+    return r && r->data ? r->data->mass : 0.0f;
+}
+
 bool TrafficBodies::motionOf(int carId, Vec3& velocity, Vec3& spin) const {
     const RailCar* r = findRailCar(carId);
     if (!r || !r->active)
