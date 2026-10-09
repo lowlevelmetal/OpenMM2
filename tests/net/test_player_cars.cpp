@@ -83,6 +83,15 @@ OwnCarState sampleOwn() {
     o.swapThrottle = true;
     o.held = false;
     o.resets = 7;
+    o.force = {-13.98f, 22884.0f, -51.13f};
+    o.torque = {-461.3f, -16.6f, 419.6f};
+    o.tireResistance = {4.77f, -0.42f, -2320.78f, 0.0f};
+    o.contact = true;
+    o.linearImpulse = {1500.0f, 0.0f, -20.0f};
+    o.angularImpulse = {0.0f, 300.0f, 0.0f};
+    o.linearPush = {0.001f, 0.0f, 0.002f};
+    o.turnForce = {0.0f, 0.0001f, 0.0f};
+    o.framePush = {0.003f, 0.0f, 0.0f};
     return o;
 }
 
@@ -140,6 +149,13 @@ void expectSameOwn(const OwnCarState& a, const OwnCarState& b) {
     EXPECT_EQ(a.swapThrottle, b.swapThrottle);
     EXPECT_EQ(a.held, b.held);
     EXPECT_EQ(a.resets, b.resets);
+    EXPECT_TRUE(vec(a.force, b.force) && vec(a.torque, b.torque));
+    for (std::size_t i = 0; i < 4; ++i)
+        EXPECT_TRUE(sameBits(a.tireResistance[i], b.tireResistance[i]));
+    EXPECT_EQ(a.contact, b.contact);
+    EXPECT_TRUE(vec(a.linearImpulse, b.linearImpulse) && vec(a.angularImpulse, b.angularImpulse));
+    EXPECT_TRUE(vec(a.linearPush, b.linearPush) && vec(a.turnForce, b.turnForce) &&
+                vec(a.framePush, b.framePush));
 }
 
 // What a decoded message may hold, whatever arrived.
@@ -323,7 +339,7 @@ TEST(PlayerCars, StatesRoundTripTheOwnCarBitForBit) {
     const CarStatesMsg m = sampleStates(kMaxPlayers - 1);
     const auto bytes = encodeMessage(m);
     // Fits a packet below the ENet MTU with 15 other cars.
-    EXPECT_LT(bytes.size(), 1200u);
+    EXPECT_LT(bytes.size(), 1250u);
     CarStatesMsg out;
     ASSERT_TRUE(decodeMessage(bytes, out));
     EXPECT_EQ(out.time, m.time);
@@ -336,12 +352,14 @@ TEST(PlayerCars, StatesRoundTripTheOwnCarBitForBit) {
 }
 
 TEST(PlayerCars, NearCarsTravelInFullWithoutTheirKeys) {
-    // Eight players: seven other cars, three of them near, in full.
+    // Eight players: seven other cars, two of them near, in full, in a
+    // contact.
     CarStatesMsg m = sampleStates(kMaxPlayers / 2 - 1, kMaxNearCars);
     m.near[1].input.events = kInputShiftUp; // a key: applied once on the host, never sent on
     const auto bytes = encodeMessage(m);
-    // Within ENet's packet (1400 bytes) without fragments.
-    EXPECT_LT(bytes.size(), 1350u);
+    // In one ENet packet: its default MTU (1400 bytes) less its header and
+    // a fragment's (ENet splits anything longer).
+    EXPECT_LE(bytes.size(), 1372u);
     CarStatesMsg out;
     ASSERT_TRUE(decodeMessage(bytes, out));
     ASSERT_EQ(out.near.size(), kMaxNearCars);
@@ -376,6 +394,15 @@ TEST(PlayerCars, StatesOutOfRangeAreRefused) {
     bad = sampleStates(2);
     bad.own.wheels[2].rotationSpeed = 1.0e20f;
     EXPECT_FALSE(decodeMessage(encodeMessage(bad), out));
+    bad = sampleStates(2);
+    bad.own.framePush.x = std::numeric_limits<float>::quiet_NaN();
+    EXPECT_FALSE(decodeMessage(encodeMessage(bad), out));
+    // Out of a contact the impulses and pushes do not travel.
+    auto calm = sampleStates(2);
+    calm.own.contact = false;
+    ASSERT_TRUE(decodeMessage(encodeMessage(calm), out));
+    EXPECT_EQ(out.own.linearImpulse, Vec3{});
+    EXPECT_LT(encodeMessage(calm).size(), encodeMessage(sampleStates(2)).size());
     bad = sampleStates(2);
     bad.waiting = 1000; // clamped to the range, not refused
     ASSERT_TRUE(decodeMessage(encodeMessage(bad), out));
@@ -446,11 +473,10 @@ TEST(PlayerCars, InputsAndStatesTravelDuringARaceOnly) {
 TEST(PlayerCars, AClientTakesNoNearStateOfItsOwnCarOrOfACarTwice) {
     Pair p(3);
     p.race();
-    CarStatesMsg states = sampleStates(0, 3);
+    CarStatesMsg states = sampleStates(0, 2);
     states.time = p.host.time();
-    states.near[0].id = p.client.localId(); // its own car: refused
-    states.near[1].id = kHostPlayerId;
-    states.near[2].id = kHostPlayerId; // twice: both refused
+    states.near[0].id = kHostPlayerId;
+    states.near[1].id = kHostPlayerId; // twice: both refused
     p.host.sendCarStates(p.client.localId(), states);
     std::vector<Session::OwnCarUpdate> own;
     ASSERT_TRUE(pumpUntil({&p.host, &p.client}, [&] {
@@ -459,7 +485,7 @@ TEST(PlayerCars, AClientTakesNoNearStateOfItsOwnCarOrOfACarTwice) {
         return !own.empty();
     }));
     EXPECT_TRUE(own[0].near.empty());
-    states.near.pop_back(); // the host's car once: taken
+    states.near[0].id = p.client.localId(); // its own car: refused; the host's once: taken
     p.host.sendCarStates(p.client.localId(), states);
     own.clear();
     ASSERT_TRUE(pumpUntil({&p.host, &p.client}, [&] {

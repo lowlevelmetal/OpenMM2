@@ -228,6 +228,18 @@ net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets) {
     s.swapThrottle = car.controls().swapThrottle;
     s.held = car.held();
     s.resets = resets;
+    s.force = ics.linearForce;
+    s.torque = ics.angularTorque;
+    for (std::size_t i = 0; i < 4; ++i)
+        s.tireResistance[i] = sim.wheels[i].tireResistance;
+    s.linearImpulse = ics.linearImpulse;
+    s.angularImpulse = ics.angularImpulse;
+    s.linearPush = ics.linearPush;
+    s.turnForce = ics.turnForce;
+    s.framePush = ics.framePush;
+    const Vec3 zero{};
+    s.contact = !(s.linearImpulse == zero && s.angularImpulse == zero && s.linearPush == zero &&
+                  s.turnForce == zero && s.framePush == zero);
     return s;
 }
 
@@ -240,6 +252,15 @@ void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
     ics.linearVelocity = s.linearVelocity;
     ics.angularVelocity = s.angularVelocity;
     ics.lastPush = s.lastPush;
+    ics.linearForce = s.force;
+    ics.angularTorque = s.torque;
+    ics.linearImpulse = s.linearImpulse;
+    ics.angularImpulse = s.angularImpulse;
+    ics.linearPush = s.linearPush;
+    ics.turnForce = s.turnForce;
+    ics.framePush = s.framePush;
+    for (std::size_t i = 0; i < 4; ++i)
+        sim.wheels[i].tireResistance = s.tireResistance[i];
     for (std::size_t i = 0; i < 4; ++i) {
         phys::Wheel& w = sim.wheels[i];
         const auto& o = s.wheels[i];
