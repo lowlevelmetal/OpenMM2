@@ -442,6 +442,61 @@ TEST(PropSync, ReplayJustAfterAKnockEndsAsTheRealSamples) {
     client.world.remove(&car.body);
 }
 
+// A replay knocks and moves no prop for real: the standing props stand, the
+// pieces and the host's mirrors stay where they are, with their motion.
+TEST(PropSync, AReplayMovesNoPropForReal) {
+    Race r;
+    Car host({0, 1, 3.0f}, {0, 0, -10}); // the host knocks prop 0
+    r.host.world.add(&host.body);
+    Car mine({6, 1, 4.5f}, {0, 0, -10}); // the client's own car knocks prop 1
+    r.clientCar = &mine.body;
+    r.client.world.add(&mine.body);
+    r.run(0.6);
+    r.host.world.remove(&host.body);
+    ASSERT_FALSE(r.client.set.standing(1));
+    struct Seen {
+        BangerSet::State state;
+        Vec3 at;
+        int active;
+    };
+    auto seen = [&] {
+        std::vector<Seen> out;
+        for (std::size_t i = 0; i < r.client.set.instances().size(); ++i) {
+            const auto& inst = r.client.set.instances()[i];
+            out.push_back({inst.state, inst.matrix.m3, inst.active});
+        }
+        return out;
+    };
+    const auto before = seen();
+    std::vector<Vec3> bodies;
+    for (std::size_t i = 0; i < r.client.set.instances().size(); ++i)
+        if (const phys::Body* b = r.client.set.body(i))
+            bodies.push_back(b->ics.linearVelocity);
+    // The car run back through the props, as a correction would.
+    Car again({0, 1, 4.5f}, {3, 0, -12});
+    r.client.world.add(&again.body);
+    phys::Body* replayed[] = {&again.body};
+    r.client.world.beginReplay();
+    for (int i = 0; i < 40; ++i)
+        r.client.world.replaySample(replayed, kDt);
+    r.client.world.remove(&again.body);
+    const auto after = seen();
+    ASSERT_EQ(before.size(), after.size());
+    for (std::size_t i = 0; i < before.size(); ++i) {
+        EXPECT_EQ(before[i].state, after[i].state) << i;
+        EXPECT_EQ(before[i].active, after[i].active) << i;
+        EXPECT_LT(before[i].at.dist(after[i].at), 1e-6f) << i;
+    }
+    std::size_t k = 0;
+    for (std::size_t i = 0; i < r.client.set.instances().size(); ++i) {
+        if (const phys::Body* b = r.client.set.body(i)) {
+            EXPECT_LT(b->ics.linearVelocity.dist(bodies[k++]), 1e-6f) << i;
+        }
+    }
+    EXPECT_TRUE(r.client.set.standing(2));
+    EXPECT_TRUE(r.client.set.standing(3));
+}
+
 TEST(PropSync, ReplayedCarMeetsAPropAsARealSampleDoes) {
     TempBangers files;
     bangers::BangerDataLibrary lib(files.vfs);
