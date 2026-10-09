@@ -210,6 +210,7 @@ void CarSim::resetAt(const Vec3& position, float rotation) {
 }
 
 void CarSim::resetBody(const Mat34& bodyMatrix) {
+    ++resets;
     InertialCS& ics = body.ics;
     ics.zero();
     ics.matrix = bodyMatrix;

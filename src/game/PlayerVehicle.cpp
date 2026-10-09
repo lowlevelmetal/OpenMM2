@@ -264,8 +264,10 @@ VehiclePose SimVehicle::trailerPose() const {
     for (std::size_t i = 0; i < 4; ++i) {
         pose.wheelWorld[i] = m_trailer->wheels[i].matrix;
         pose.wheelValid[i] = true;
+        pose.wheelTurn[i] = m_trailer->wheels[i].rotation;
     }
     pose.hasWheelWorld = true;
+    pose.hasWheelTurn = true;
     // vehTrailerInstance::Draw: TLIGHT while the tow car brakes over 0.1.
     pose.brakeLights = m_sim.brakes > 0.1f;
     return pose;
@@ -302,6 +304,7 @@ VehiclePose SimVehicle::pose() const {
     for (int i = 0; i < 4; ++i) {
         pose.wheelWorld[static_cast<std::size_t>(i)] = m_sim.wheelMatrix(i);
         pose.wheelValid[static_cast<std::size_t>(i)] = m_model.wheel(i) != nullptr;
+        pose.wheelTurn[static_cast<std::size_t>(i)] = m_sim.wheels[static_cast<std::size_t>(i)].rotation;
     }
     // vehCarModel::Draw: a WHL4 / WHL5 mesh (a second back axle) is drawn
     // with the WHL2 / WHL3 matrix moved back along the car's Z axis by
@@ -317,8 +320,10 @@ VehiclePose SimVehicle::pose() const {
         m.m3 = {m.m3.x + back.x * k, m.m3.y + back.y * k, m.m3.z + back.z * k};
         pose.wheelWorld[static_cast<std::size_t>(i)] = m;
         pose.wheelValid[static_cast<std::size_t>(i)] = true;
+        pose.wheelTurn[static_cast<std::size_t>(i)] = m_sim.wheels[static_cast<std::size_t>(follow)].rotation;
     }
     pose.hasWheelWorld = true;
+    pose.hasWheelTurn = true;
     // vehCarModel::DrawGlow: brake input not zero; reverse gear.
     pose.brakeLights = m_sim.brakes != 0.0f;
     pose.reverseLights = reversing();

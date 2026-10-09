@@ -16,6 +16,7 @@
 #include "phys/PolygonSoup.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -222,6 +223,9 @@ public:
     // samples of delta / n each (frame-rate dependent).
     int advanceOversampled(float frameDelta, float sampleStep = kOversampleStep,
                            int maxSamples = kOversampleMaxSamples);
+    // The share of a sample advanceFixed has not run yet: what is drawn
+    // between two samples blends the last two states by it
+    // (game::StepHistory).
     float interpolationAlpha(float sampleStep = kFixedSampleStep) const { return m_accumulator / sampleStep; }
     // The time (s) advanceFixed(frameDelta) will leave unstepped: how far the
     // simulation will be behind the frame once it has run.
@@ -229,6 +233,11 @@ public:
     float remainder() const { return m_accumulator; }
 
     double time() const { return m_time; }
+
+    // OpenMM2 presentation: called at the start of every sample, before
+    // anything moves, so that the drawing can keep each body's state from
+    // before the sample (game::StepHistory). It must not change the world.
+    void setStepObserver(std::function<void()> observer) { m_stepObserver = std::move(observer); }
 
     bool probe(const Vec3& a, const Vec3& b, RayHit& hit) const override;
     // dgPhysManager::Collide(segment, mask 0x20) as vehWheel::ComputeDwtdw
@@ -313,6 +322,7 @@ private:
     bool m_stepping = false;
     float m_accumulator = 0;
     double m_time = 0;
+    std::function<void()> m_stepObserver;
     Stats m_stats;
 
     // dgPhysManager's static buffers and helper colliders: the level's

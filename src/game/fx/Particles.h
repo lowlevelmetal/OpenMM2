@@ -107,6 +107,11 @@ public:
     // At most `maxSteps` per call (a long stall does not replay seconds of effects).
     int advance(float dt, int maxSteps = 8);
     void reset() { m_accumulator = 0.0f; }
+    // OpenMM2 presentation: how long ago the last update would have been
+    // due, kStep less the time not run yet. The particles are drawn that far
+    // back along their velocities (ParticleRenderer::draw), between their
+    // last two updates as the rest of the scene is (game::StepHistory).
+    float behind() const { return kStep - m_accumulator; }
 
 private:
     float m_accumulator = 0.0f;

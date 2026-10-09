@@ -245,6 +245,8 @@ std::unique_ptr<World> World::create(const city::CityData& city, const vfs::Vfs&
 }
 
 void World::step(const PlayerCar& player) {
+    if (m_stepObserver)
+        m_stepObserver();
     // aiMap::Update: the player's room from the room it was last in (MM2
     // keeps that in aiVehiclePlayer; inferred equivalent: the last room
     // found); 0 off every room leaves the populations alone.

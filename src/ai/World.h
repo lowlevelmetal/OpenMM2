@@ -21,6 +21,7 @@
 #include "vfs/Vfs.h"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <span>
 #include <string>
@@ -81,6 +82,13 @@ public:
 
     // Advances by `dt` seconds in fixed steps (at most 8 per call).
     void update(float dt, const PlayerCar& player);
+    // The share of a step update() has not run yet: what is drawn between
+    // two steps blends the last two states by it (game::StepHistory).
+    float interpolationAlpha() const { return m_accumulator / kAiStepSeconds; }
+    // OpenMM2 presentation: called at the start of every step, before
+    // anything moves, so that the drawing can keep the cars' and the
+    // pedestrians' places from before the step. It must not change the AI.
+    void setStepObserver(std::function<void()> observer) { m_stepObserver = std::move(observer); }
     void update(float dt, const Vec3& playerPos, const Vec3& playerVel) {
         update(dt, PlayerCar::at(playerPos, playerVel));
     }
@@ -186,6 +194,7 @@ private:
     std::unique_ptr<Pedestrians> m_peds;
     std::vector<Signal> m_signals;
     float m_accumulator = 0.0f;
+    std::function<void()> m_stepObserver;
     float m_vehicleClock = 0.0f; // aiVehicleManager's summed time (never reset)
     bool m_lightsDeferred = false;
     int m_pendingLightSteps = 0;
