@@ -190,8 +190,11 @@ TEST(NetGame, HostJoinChatReadyCountdownAndState) {
     EXPECT_EQ(got[1].from, client.localId());
 
     // Back to the lobby.
+    const std::uint32_t race = client.raceNumber();
+    EXPECT_EQ(race, 1u);
+    EXPECT_FALSE(client.backToLobby(race));
     host.returnToLobby();
-    ASSERT_TRUE(pump({&host, &client}, [&] { return client.takeReturnToLobby(); }));
+    ASSERT_TRUE(pump({&host, &client}, [&] { return client.backToLobby(race); }));
     EXPECT_EQ(client.phase(), NetGame::Phase::Lobby);
 
     // Host quits: the client is told.

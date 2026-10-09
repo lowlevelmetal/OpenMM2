@@ -288,6 +288,12 @@ TEST(AmbientState, HostSendsEachClientItsOwnState) {
     }));
     EXPECT_TRUE(host.settings().sharedTraffic); // on by default
     EXPECT_TRUE(a.settings().sharedTraffic);
+    // Not in the lobby: the cars are replicated during a race only.
+    EXPECT_EQ(host.sendAmbientState(a.localId(), sampleMessage()), 0u);
+    host.startCountdown(100);
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
+        return a.phase() == SessionPhase::InGame && b.phase() == SessionPhase::InGame;
+    }));
 
     AmbientStateMsg forA = sampleMessage();
     forA.time = 1;

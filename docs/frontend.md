@@ -580,8 +580,11 @@ vehicle|showcase|options|graphics|audio|control|customize|about|crashintro|
 crashlondon|crashsf|sessions|quit|message|delete>`,
 `mode:<cruise|blitz|circuit|race|crash>` and `city:<map>` (both apply the race
 defaults), `vehicle:<name>`, `go` (start the race), `result:<position>`,
-`nav:<up|down|left|right|accept|back|tab>`, `wait:<frames>`. Consecutive
-`nav:` commands need a `wait:1` between them.
+`nav:<up|down|left|right|accept|back|tab>`, `wait:<frames>`, `wait:race`
+(until a race has been driven). Consecutive `nav:` commands need a `wait:1`
+between them. The script runs once per process: after a race the menus carry
+on with the commands that followed the one that started it. The multiplayer
+commands are in docs/multiplayer.md.
 
 ## Not yet done
 

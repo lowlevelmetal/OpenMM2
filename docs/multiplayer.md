@@ -46,7 +46,10 @@ In game, each machine simulates its own car and sends its state about 20 times
 a second. The host bundles the latest state of every car into one packet per
 tick for each client. Remote cars are drawn from an interpolation buffer about
 100 ms in the past. When packets stop coming, a remote car is extrapolated for
-up to 250 ms and then held still.
+up to 250 ms and then held still. Cars are replicated during a race only (its
+countdown and the game): a state submitted in the lobby is ignored, a late one
+arriving there is dropped, and the countdown and the return to the lobby both
+clear every car's buffer, so nothing of one race reaches the next.
 
 There is no host migration. If the host leaves, every client gets
 `Disconnected{HostShutdown}`.
@@ -380,11 +383,17 @@ mapping on a background thread).
 Robbers, Robber Teams), `timeLimit`, `pointLimit`, `goldMass`. `raceId` is the
 race index (0xFFFF for cruise and Cops & Robbers). In Cops vs. Robbers the
 cars are fixed by team, as the original's help text says ("The Cop Team in
-Mustang Cruisers ... the Robber Team in Mustang GTs"): `NetGame::raceConfig()`
-returns `vpcop` for team 0 and `vpmustang99` for team 1. Robber Teams lets
-everyone choose. Free-For-All has no team lamps: the lobby sets the team
+Mustang Cruisers ... the Robber Team in Mustang GTs"): `game::raceCar` gives
+`vpcop` to team 0 and `vpmustang99` to team 1 (paint job 0), as MM2's lobby
+sets the player's car to it and sends it to the session. Every machine
+applies it to every player (`raceConfig()` for its own car, `playerCar()` and
+`remoteCars()` for the others), so all of them draw the same cars and count
+the same teams. Robber Teams lets everyone choose. Free-For-All has no team lamps: the lobby sets the team
 from the car, 0 for a police car (flag 0x08) and 1 for any other
-(`game::freeForAllTeam`, MM2's `mmMultiCR::InitMyPlayer`).
+(`game::freeForAllTeam`, MM2's `mmMultiCR::InitMyPlayer`). The transmission
+is each driver's own (`NetCar::automatic`, the garage's TRANSMISSION) and
+never travels: MM2's session data has none, and `mmGame::Init` sets the car's
+from the player's own state.
 
 ### Menus
 
@@ -395,7 +404,7 @@ from the car, 0 for a police car (flag 0x08) and 1 for any other
 | Enter an address | `tcp_dlg` | IP, `ip:port` or host name; blank = search the LAN again; Enter is DONE (`Dialog_TCPIP`); it starts with the driver's last address, which is saved with the driver when a race starts (`Dialog_TCPIP::SetIPAddress`, `mmInterface::BeDone`) |
 | Password | `pass_dlg` | asked before joining a listed session that has one, and when a session joined by address wants one; a wrong password shows `badp_dlg` and asks again (`Dialog_Password`, `mmInterface::Update`) |
 | Lobby | `lobbh_bk` / `lobbj_bk` | `NetArena`: host settings (mode, race, weather, time, laps or gold weight, limit), the race map and the city's name, players (`mmCompRoster` rows: the `ready` icon, which the host always shows, the team dot `blue_dot` / `red_dot` in team games, the name cut to six characters and "..." when wider than 0.09 of the screen, the car), YOU, team lamps for team games, chat line ("Type message here. Press ENTER to send."), the last three chat lines (" Name> text") of this visit, port forwarding status (host, where a race without a map would show it); host: EJECT PLAYER, HOST SETTINGS, SELECT VEHICLE in the row above GO DRIVE (which starts once everyone else is ready); joiner: SELECT VEHICLE, READY. A joiner's READY is cleared when the host changes the settings and when the joiner opens SELECT VEHICLE. BACK and Escape leave the session at once. When the race starts, the lobby's car and the session's event become the driver's last car and event, as for a single-player race (`MultiStartGame` calls `BeDone`). |
-| Host settings | `host_bk` | game type lamps, race name + laps panels (`host_rnm`, `host_lap`) or the Cops & Robbers panel (`host_cr`: game types, limits, gold mass), location, time of day, weather (adds Snowing), pedestrian density |
+| Host settings | `host_bk` | game type lamps, race name + laps panels (`host_rnm`, `host_lap`) or the Cops & Robbers panel (`host_cr`: game types, limits, gold mass), location, time of day, weather (Clear, Cloudy, Foggy, Raining: `RaceMenuBase::IncWeather` stops at Raining; a snowing session shows "Weather: Snowing" in the lobby), pedestrian density |
 | Eject | `ejct_dlg` | pick a player to remove |
 
 Positions of the provider/race/Cops & Robbers/team lamps, the HOST/JOIN and
@@ -412,6 +421,13 @@ every machine and switches to `makeRaceScreen(ctx, netGame->raceConfig())`
 (with `config.multiplayer = true`); the race itself starts at
 `raceStartTime()`. A `RaceResult` with `config.multiplayer` brings the player
 back to the lobby instead of the results screen.
+
+Every countdown counts a race (`NetGame::raceNumber()`, from 1); the race
+screen keeps the number of its race. A return to the lobby ends the race it
+arrives in (`backToLobby(number)`), even when the player is in the menus by
+then (the host's own return, which reaches the menus as an event after the
+race screen has gone, or a joiner who quit the race early). Game events still
+queued when a countdown starts are from an earlier race and are dropped.
 
 ### Per-frame contract for RaceScreen
 
@@ -442,7 +458,7 @@ When `config.multiplayer && ctx.netGame`:
    (`event.as<net::FinishEvent>()` etc.) to rank players and show messages.
 6. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
    over (everyone finished, or the time/point limit); every machine sees
-   `takeReturnToLobby()` and returns with `makeFrontendScreen(ctx, result)`.
+   `backToLobby(<its race number>)` and returns with `makeFrontendScreen(ctx, result)`.
    A player who quits early just returns to the frontend (it shows the lobby;
    the others keep racing). If `ctx.netGame->inSession()` turns false (host
    quit), return to the frontend; `takeNotice()` has the message.
@@ -461,10 +477,18 @@ off the lobby says which UDP port must be opened by hand.
 `OPENMM2_FRONTEND_SCRIPT` has multiplayer commands: `mp:host[:<password>]`,
 `mp:join:<address>[|<password>]`,
 `mp:chat:<text>`, `mp:ready`, `mp:start`, `mp:team:<0|1>`,
-`mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>`, and the pages
-`hostoptions`, `address`, `hostsettings`, `eject`. Example: one process hosts
+`mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>`,
+`mp:car:<vehicle>[:<paint>]` (what SELECT VEHICLE, a pick in the garage and
+its PREV do), and the pages `hostoptions`, `address`, `hostsettings`,
+`eject`. The script survives a race: after it the menus carry on with the
+commands after the one that started it, and `wait:race` waits until a race
+has been driven. Example: one process hosts
 (`profile:A;page:sessions;mp:host;wait:900`), another joins
-(`profile:B;page:sessions;mp:join:127.0.0.1;wait:100;mp:ready`).
+(`profile:B;page:sessions;mp:join:127.0.0.1;wait:100;mp:ready`); a second
+race after changing cars in the lobby:
+`profile:A;mp:host;wait:1500;mp:start;wait:race;wait:300;mp:car:vpcop;wait:300;mp:start`
+with `OPENMM2_POPUP_SCRIPT="wait:500;open:quit;wait:5;nav:accept"` (Quit to
+Lobby) and `profile:B;mp:join:127.0.0.1;wait:100;mp:ready;wait:race;wait:100;mp:car:vpmustang99;wait:50;mp:ready`.
 
 `test_game` (`tests/game/test_netgame.cpp`) runs a host and a client
 `NetGame` in one process: settings round trip, join by address, LAN

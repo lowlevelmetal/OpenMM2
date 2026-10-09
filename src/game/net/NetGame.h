@@ -41,7 +41,19 @@ struct NetCar {
     std::string vehicle = "vpbug"; // VehicleInfo::baseName
     int color = 0;                 // paint job
     int team = 0;                  // Cops & Robbers: 0 cops / blue, 1 robbers / red
+    // The driver's transmission choice. It stays on this machine: MM2's
+    // network session data carries no transmission, and mmGame::Init sets
+    // the car's from the player's own state.
+    bool automatic = true;
 };
+
+// The car a player drives in the race `race` describes, given the car the
+// player chose in the lobby. Cops vs. Robbers gives every cop (team 0) vpcop
+// and every robber vpmustang99, paint job 0: MM2's lobby sets the player's
+// car to it, locks every other car and sends it to the session
+// (mmInterface, under the cnr_team test, then ChangePlayerData). Every other
+// game keeps the lobby's car.
+NetCar raceCar(const RaceConfig& race, NetCar lobby);
 
 // Cops & Robbers Free-For-All has no team buttons: the team follows the car,
 // 0 for a police car (VehicleInfo::kFlagCop) and 1 for any other
@@ -70,13 +82,17 @@ struct NetChatLine {
     std::string name;
     std::string text;
     bool system = false; // "has joined", "has left", "You are now the Host" ...
+    // Counts every line this NetGame has had, from 0: a page remembers
+    // chatSerial() to show only the lines that came after it (chat() keeps
+    // the last lines only, so its indices move).
+    std::uint64_t serial = 0;
 };
 
 // Another player's car this frame, interpolated ~100 ms in the past.
 struct NetRemoteCar {
     std::uint8_t id = net::kInvalidPlayerId;
     std::string name;
-    NetCar car;
+    NetCar car;      // the car it drives (raceCar)
     Mat34 transform; // model space -> world (car model origin, Angel conventions)
     Vec3 velocity;
     Vec3 angularVelocity;
@@ -148,6 +164,9 @@ public:
     bool isHost() const;
     // Notices for the user ("The Host has quit", "has been ejected", join errors).
     std::optional<std::string> takeNotice();
+    // A notice of the game's own (a race that could not load): the lobby
+    // shows it.
+    void addNotice(std::string text) { m_notices.push_back(std::move(text)); }
     // Why the last join failed (None while joining or after a successful
     // join): the lobby asks for a password on BadPassword.
     net::DisconnectReason joinFailure() const { return m_joinFailure; }
@@ -167,11 +186,18 @@ public:
     const net::SessionSettings& settings() const;
     // The race everyone will drive, with the local player's car filled in.
     RaceConfig raceConfig() const;
+    // The car the local player chose in the lobby.
     NetCar localCar() const { return m_car; }
+    // The car a player (this one or another) drives in the race the current
+    // settings describe (raceCar); the transmission is known for the local
+    // player only.
+    NetCar playerCar(std::uint8_t playerId) const;
     int maxPlayers() const;
     bool hasPassword() const;
     int goldMass() const; // 0..kGoldMassChoices-1
     const std::deque<NetChatLine>& chat() const { return m_chat; }
+    // The serial the next chat line will get.
+    std::uint64_t chatSerial() const { return m_chatSerial; }
     std::uint16_t pingMs(std::uint8_t playerId) const;
 
     void setLocalCar(const NetCar& car);
@@ -200,8 +226,14 @@ public:
     // --- Race -------------------------------------------------------------------------
     // True once when a countdown starts (the frontend switches to the race).
     bool takeRaceStart();
-    // True once when the host returned everyone to the lobby.
-    bool takeReturnToLobby();
+    // The races this NetGame has seen start, counted from 1 (0 before the
+    // first). The race screen keeps the number of the race it runs.
+    std::uint32_t raceNumber() const { return m_raceNumber; }
+    // Whether the host has taken everyone back to the lobby since race
+    // `number` started. A return that arrives while the player is in the
+    // menus (the host's own return, or one after the player quit the race
+    // early) belongs to that race only, never to the next one.
+    bool backToLobby(std::uint32_t number) const { return number != 0 && m_lobbyAfterRace >= number; }
     // Session clock (ms; the host's clock, estimated on clients).
     std::uint32_t sessionTime() const;
     std::uint32_t raceStartTime() const;
@@ -241,6 +273,7 @@ private:
     struct Impl;
     void handleEvents();
     void addSystemLine(std::string text);
+    void addChatLine(NetChatLine line);
     std::string playerName(std::uint8_t id) const;
     void startPortMapping();
     void stopPortMapping();
@@ -249,10 +282,12 @@ private:
     NetCar m_car;
     std::unique_ptr<Impl> m_impl;
     std::deque<NetChatLine> m_chat;
+    std::uint64_t m_chatSerial = 0;
     std::deque<std::string> m_notices;
     std::vector<NetGameEvent> m_gameEvents;
     bool m_raceStartPending = false;
-    bool m_returnPending = false;
+    std::uint32_t m_raceNumber = 0;     // countdowns seen
+    std::uint32_t m_lobbyAfterRace = 0; // the race the last return to the lobby ended
     bool m_raceStarted = false;
     bool m_closed = false;
     net::DisconnectReason m_joinFailure = net::DisconnectReason::None;
