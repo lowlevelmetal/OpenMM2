@@ -96,7 +96,7 @@ struct MappingRecord {
     std::string token; // backend-specific (PCP mapping nonce, hex)
     std::string description;
 
-    bool valid() const { return method != MappingMethod::None && externalPort != 0; }
+    bool valid() const { return method != MappingMethod::None && internalPort != 0 && externalPort != 0; }
 };
 
 class PortMappingBackend {

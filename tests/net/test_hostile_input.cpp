@@ -2,13 +2,16 @@
 // Transport sends what an honest OpenMM2 never would, and the real Session,
 // LAN scanner and beacon must stay consistent (docs/review/multiplayer-input.md).
 #include "net/Discovery.h"
+#include "net/PortMapper.h"
 #include "net/Session.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <chrono>
+#include <filesystem>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <thread>
 
@@ -528,4 +531,37 @@ TEST(HostileInput, ScannerBoundsAndCleansAdverts) {
         EXPECT_FALSE(hasControl(s.advert.hostName));
         EXPECT_EQ(s.advert.city.find('/'), std::string::npos);
     }
+}
+
+// --- Port forwarding state file ----------------------------------------------------------
+
+// The crash-safe record is read back with its ports checked: a damaged file
+// neither wraps a port around nor names internal port 0, for which a PCP or
+// NAT-PMP deletion would remove every mapping of this machine.
+TEST(HostileInput, DamagedPortMappingRecordIsIgnored) {
+    const auto file = std::filesystem::temp_directory_path() /
+                      std::format("openmm2-hostile-portmap-{}.ini",
+                                  std::chrono::steady_clock::now().time_since_epoch().count());
+    auto write = [&](std::string_view internalPort, std::string_view externalPort) {
+        std::ofstream out(file, std::ios::trunc);
+        out << "[PortMapping]\nMethod=natpmp\nGateway=192.168.1.1\nInternalIp=192.168.1.20\n"
+            << "InternalPort=" << internalPort << "\nExternalPort=" << externalPort << "\nToken=\n";
+    };
+    write("2300", "2300");
+    ASSERT_TRUE(loadMappingRecord(file));
+    const std::vector<std::pair<std::string, std::string>> damaged = {
+        {"0", "2300"}, {"-1", "2300"}, {"70000", "2300"}, {"2300", "65536"}, {"2300", "0"}, {"x", "2300"}};
+    for (const auto& [in, ext] : damaged) {
+        write(in, ext);
+        EXPECT_FALSE(loadMappingRecord(file)) << in << " " << ext;
+    }
+    std::filesystem::remove(file);
+
+    // The backend refuses such a deletion itself as well.
+    MappingRecord all;
+    all.method = MappingMethod::NatPmp;
+    all.externalPort = 2300;
+    std::string error;
+    EXPECT_FALSE(makeNatPmpBackend()->unmap(all, error));
+    EXPECT_EQ(error, "no internal port");
 }
