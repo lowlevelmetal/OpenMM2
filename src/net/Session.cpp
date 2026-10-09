@@ -19,21 +19,44 @@ DisconnectReason reasonFromData(std::uint32_t data) {
 
 std::uint32_t toData(DisconnectReason r) { return static_cast<std::uint32_t>(r); }
 
-std::string sanitize(std::string_view text, std::size_t maxLength) {
-    std::string out;
-    for (char c : str::trim(text)) {
-        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F)
-            continue;
-        out.push_back(c);
+std::string sanitize(std::string_view text, std::size_t maxLength) { return sanitizeText(text, maxLength); }
+
+// A car name from the network, or `fallback` when it is not a plain base name.
+std::string carName(std::string_view car, std::string_view fallback) {
+    return isValidAssetName(car) ? std::string(car) : std::string(fallback);
+}
+
+// What the host says about a player, made safe to show and to load.
+void cleanPlayer(PlayerInfo& p) {
+    p.name = sanitize(p.name, kMaxNameLength);
+    p.car = carName(p.car, kDefaultCar);
+}
+
+// The host's settings. A city that is not a plain base name becomes empty,
+// which no city loads: the name would otherwise reach file names and, as the
+// last race, the profile file.
+void cleanSettings(SessionSettings& s) {
+    s.name = sanitize(s.name, kMaxNameLength * 2);
+    if (!s.city.empty() && !isValidAssetName(s.city)) {
+        log::warn("net: ignoring the host's city: not a valid name");
+        s.city.clear();
     }
-    if (out.size() > maxLength)
-        out.resize(maxLength);
-    // Don't leave a truncated UTF-8 sequence at the end.
-    while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80)
-        out.pop_back();
-    if (!out.empty() && (static_cast<unsigned char>(out.back()) & 0x80))
-        out.pop_back();
-    return out;
+}
+
+// Adds or replaces a player the host told about. False (and nothing changes)
+// for the id no player has, or a new player beyond the protocol's limit:
+// every listed player gets a car in the race.
+bool upsertPlayer(std::vector<PlayerInfo>& players, const PlayerInfo& p) {
+    if (p.id == kInvalidPlayerId)
+        return false;
+    if (const auto it = std::ranges::find(players, p.id, &PlayerInfo::id); it != players.end()) {
+        *it = p;
+        return true;
+    }
+    if (players.size() >= kMaxPlayers)
+        return false;
+    players.push_back(p);
+    return true;
 }
 
 std::array<std::byte, 16> randomNonce() {
@@ -93,9 +116,7 @@ bool Session::host(const HostParams& params, std::string* error) {
     self.name = sanitize(params.player.name, kMaxNameLength);
     if (self.name.empty())
         self.name = "Host";
-    self.car = sanitize(params.player.car, kMaxShortStringLength);
-    if (self.car.empty())
-        self.car = "vpbug";
+    self.car = carName(params.player.car, kDefaultCar);
     self.color = params.player.color;
     self.team = params.player.team;
     self.host = true;
@@ -244,7 +265,7 @@ std::string Session::uniqueName(std::string name) const {
         return name;
     for (int i = 2;; ++i) {
         std::string suffix = std::format(" ({})", i);
-        std::string base = name.substr(0, kMaxNameLength - suffix.size());
+        std::string base = sanitize(name, kMaxNameLength - suffix.size()); // cut on a character boundary
         if (!taken(base + suffix))
             return base + suffix;
     }
@@ -503,9 +524,7 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         PlayerInfo* p = findPlayer(id);
         if (!decodeMessage(data, req) || !p)
             return;
-        const std::string car = sanitize(req.car, kMaxShortStringLength);
-        if (!car.empty())
-            p->car = car;
+        p->car = carName(req.car, p->car); // a name that is not a base name keeps the car
         p->color = req.color;
         p->team = req.team;
         p->ready = req.ready;
@@ -562,9 +581,7 @@ void Session::hostAcceptHello(Remote& r, HelloMsg& hello) {
     PlayerInfo p;
     p.id = id;
     p.name = uniqueName(sanitize(hello.name, kMaxNameLength));
-    p.car = sanitize(hello.car, kMaxShortStringLength);
-    if (p.car.empty())
-        p.car = "vpbug";
+    p.car = carName(hello.car, kDefaultCar);
     p.color = hello.color;
     p.team = hello.team;
     p.ping = static_cast<std::uint16_t>(std::min<std::uint32_t>(m_transport->stats(r.peer).rttMs, 65535));
@@ -639,6 +656,13 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         WelcomeMsg w;
         if (!decodeMessage(data, w) || m_state != State::Joining)
             return;
+        cleanSettings(w.settings);
+        std::erase_if(w.players, [](const PlayerInfo& p) { return p.id == kInvalidPlayerId; });
+        for (auto& p : w.players)
+            cleanPlayer(p);
+        // The host always lists the joiner (hostAcceptHello).
+        if (std::ranges::find(w.players, w.yourId, &PlayerInfo::id) == w.players.end())
+            return close(DisconnectReason::ProtocolError, "the host sent an invalid welcome", true);
         const std::uint64_t now = monotonicMs();
         m_localId = w.yourId;
         m_settings = std::move(w.settings);
@@ -662,7 +686,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::Reject: {
         RejectMsg rej;
         if (decodeMessage(data, rej))
-            close(rej.reason, rej.message, true);
+            close(rej.reason, sanitize(rej.message, kMaxReasonLength), true);
         return;
     }
     default: break;
@@ -676,11 +700,9 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         PlayerJoinedMsg m;
         if (!decodeMessage(data, m))
             return;
-        if (PlayerInfo* p = findPlayer(m.player.id))
-            *p = m.player;
-        else
-            m_players.push_back(m.player);
-        emit(ev::PlayerJoined{m.player});
+        cleanPlayer(m.player);
+        if (upsertPlayer(m_players, m.player))
+            emit(ev::PlayerJoined{m.player});
         return;
     }
     case MsgType::PlayerLeft: {
@@ -700,16 +722,17 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         PlayerUpdateMsg m;
         if (!decodeMessage(data, m))
             return;
-        if (PlayerInfo* p = findPlayer(m.player.id))
-            *p = m.player;
-        else
-            m_players.push_back(m.player);
-        emit(ev::PlayerUpdated{m.player});
+        cleanPlayer(m.player);
+        if (upsertPlayer(m_players, m.player))
+            emit(ev::PlayerUpdated{m.player});
         return;
     }
     case MsgType::Chat: {
         ChatMsg m;
-        if (decodeMessage(data, m))
+        if (!decodeMessage(data, m))
+            return;
+        m.text = sanitize(m.text, kMaxChatLength);
+        if (!m.text.empty())
             emit(ev::Chat{m.from, std::move(m.text)});
         return;
     }
@@ -717,6 +740,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         SettingsMsg m;
         if (!decodeMessage(data, m))
             return;
+        cleanSettings(m.settings);
         m_settings = m.settings;
         emit(ev::SettingsChanged{std::move(m.settings)});
         return;
@@ -745,8 +769,8 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::Kick: {
         KickMsg m;
         decodeMessage(data, m);
-        close(DisconnectReason::Kicked, m.reason.empty() ? describe(DisconnectReason::Kicked)
-                                                         : std::string("kicked: ") + m.reason,
+        const std::string reason = sanitize(m.reason, kMaxReasonLength);
+        close(DisconnectReason::Kicked, reason.empty() ? describe(DisconnectReason::Kicked) : "kicked: " + reason,
               false);
         return;
     }
@@ -797,9 +821,7 @@ void Session::setLocalPlayer(const std::string& car, std::uint8_t color, std::ui
     if (!self || m_state != State::Active)
         return;
     if (m_role == Role::Host) {
-        const std::string c = sanitize(car, kMaxShortStringLength);
-        if (!c.empty())
-            self->car = c;
+        self->car = carName(car, self->car);
         self->color = color;
         self->team = team;
         sendToPlayers(Channel::Control, PlayerUpdateMsg{*self});
