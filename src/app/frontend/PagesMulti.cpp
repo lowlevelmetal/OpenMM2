@@ -458,7 +458,8 @@ public:
             menu.add<ui::TextEntry>(fe.layout.widget(kPasswordDialog, 0, {72, 91, 203, 22}, origin), &m_password, 24);
         auto join = [this, &fe] {
             const auto target = m_address;
-            const auto password = m_password;
+            // Trimmed as the host's is (HostOptionsDialog::host).
+            const auto password = std::string(str::trim(m_password));
             fe.pop();
             joinSession(fe, target, false, password);
         };
