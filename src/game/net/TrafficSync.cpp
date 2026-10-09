@@ -38,6 +38,10 @@ net::AmbientEntity toEntity(const SharedCar& c) {
     constexpr float kMaxCurvature = net::kAmbientCurvatureRange;
     if (std::abs(c.motion.curvature) >= 0.001f && (c.speed != 0.0f || e.accel > 0.0f))
         e.curvature = std::clamp(c.motion.curvature, -kMaxCurvature, kMaxCurvature);
+    if (c.motion.slips) {
+        e.slips = true;
+        e.groundSpeed = std::clamp(c.motion.groundSpeed, -net::kAmbientSpeedRange, net::kAmbientSpeedRange);
+    }
     e.velocity = c.velocity;
     e.angularVelocity = c.angularVelocity;
     e.flags = c.flags;
@@ -219,7 +223,8 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
         if (id >= static_cast<int>(net::kMaxAmbientIds) || e.model >= m_catalogSize ||
             e.paint > net::kMaxAmbientPaint || e.kind > net::AmbientKind::Last || !finite(e.position) ||
             !finite(e.velocity) || !finite(e.angularVelocity) || !std::isfinite(e.speed) ||
-            !std::isfinite(e.accel) || !std::isfinite(e.curvature) || !listed.insert(id).second) {
+            !std::isfinite(e.accel) || !std::isfinite(e.curvature) || !std::isfinite(e.groundSpeed) ||
+            !listed.insert(id).second) {
             ++m_stats.refused;
             continue;
         }
@@ -276,7 +281,9 @@ void TrafficClient::receive(const net::AmbientStateMsg& msg) {
             entry.target = e.target;
             entry.rpm = e.rpm;
             // A rail car's (the others move on at their velocities).
-            entry.motion = e.fullMotion() ? RailMotion{} : RailMotion{e.accel, e.curvature};
+            entry.motion = RailMotion{};
+            if (!e.fullMotion())
+                entry.motion = {e.accel, e.curvature, e.slips, e.groundSpeed};
         }
         if (later(msg.time, entry.firstTime) < 0)
             entry.firstTime = msg.time;
@@ -403,6 +410,7 @@ void TrafficClient::update(double renderTime) {
         c.hornStarted = horn && !entry.horn;
         entry.horn = horn;
         c.fresh = !entry.shown;
+        c.stateTime = newest.time;
         entry.shown = true;
         m_cars.push_back(c);
         entry.buffer.prune(renderTime - kDrawBehindMs);
@@ -533,6 +541,52 @@ bool TrafficClient::predict(const Entry& entry, const net::VehicleSnapshot& stat
         out = predictBody(m, state.linearVelocity, state.angularVelocity, dt);
     }
     return true;
+}
+
+std::optional<PredictedPose> TrafficClient::poseAt(int id, double time) const {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end())
+        return std::nullopt;
+    const Entry& entry = it->second;
+    const net::VehicleSnapshot* newest = entry.buffer.latest();
+    if (!newest)
+        return std::nullopt;
+    PredictedPose p;
+    if (predict(entry, *newest, entry.motion, time, p))
+        return p;
+    net::VehicleSnapshot s;
+    if (entry.buffer.sample(time, s, 0.0) == net::SnapshotBuffer::Result::Empty)
+        return std::nullopt;
+    p.transform = s.orientation.normalized().toMatrix(s.position);
+    p.velocity = s.linearVelocity;
+    p.speed = -p.transform.m2.dot(p.velocity);
+    return p;
+}
+
+float TrafficClient::setDrawn(int id, const Mat34& pose) {
+    const auto it = m_entries.find(id);
+    if (it == m_entries.end())
+        return 0.0f;
+    Entry& entry = it->second;
+    const net::VehicleSnapshot* newest = entry.buffer.latest();
+    PredictedPose p;
+    if (!newest || !predict(entry, *newest, entry.motion, entry.updatedAt, p))
+        return 0.0f;
+    const Vec3 offset = pose.m3 - p.transform.m3;
+    const float turn =
+        std::remainder(groundHeading(-pose.m2) - groundHeading(-p.transform.m2), kTwoPi);
+    entry.basis = *newest;
+    entry.basisMotion = entry.motion;
+    entry.shown = true;
+    if (offset.mag() > m_options.snapDistance || std::abs(turn) > m_options.snapTurn) {
+        ++m_stats.snaps;
+        entry.offset = {};
+        entry.offsetTurn = 0.0f;
+    } else {
+        entry.offset = offset;
+        entry.offsetTurn = turn;
+    }
+    return offset.mag();
 }
 
 std::optional<Mat34> TrafficClient::transformAt(int id, double time) const {

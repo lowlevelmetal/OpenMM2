@@ -59,6 +59,8 @@ AmbientStateMsg sampleMessage() {
     m.entities.push_back(railCar(7, {-1480.31f, 33.02f, 620.77f}, 0.7f, 12.5f));
     m.entities.back().accel = -3.5f;
     m.entities.back().curvature = 0.08f;
+    m.entities.back().slips = true;
+    m.entities.back().groundSpeed = 15.0f;
     m.entities.push_back(copCar(301, {-1600.0f, 40.0f, 500.0f}));
     AmbientEntity knocked = railCar(299, {-1450.0f, 35.0f, 540.0f}, -1.0f, 0.0f);
     knocked.flags = kAmbientOffRail | kAmbientWrecked;
@@ -107,6 +109,10 @@ TEST(AmbientState, RoundTripKeepsEveryField) {
     EXPECT_EQ(rail.target, kAmbientNoTarget);
     EXPECT_NEAR(rail.accel, -3.5f, 0.13f);
     EXPECT_NEAR(rail.curvature, 0.08f, 0.001f);
+    EXPECT_TRUE(rail.slips);
+    EXPECT_NEAR(rail.groundSpeed, 15.0f, 0.07f);
+    // A car that does not slip moves over the ground at its speed.
+    EXPECT_FALSE(out.entities[2].slips);
 
     const AmbientEntity& cop = out.entities[1];
     EXPECT_EQ(cop.id, 301);
@@ -244,7 +250,11 @@ TEST(AmbientState, SizesFitTheBudget) {
     AmbientEntity turning = rail;
     turning.accel = -2.0f;
     turning.curvature = 0.05f;
-    EXPECT_EQ(ambientEntityBits(turning), 136u);
+    EXPECT_EQ(ambientEntityBits(turning), 137u);
+    // ... and its speed over the ground when it is not its speed (12 bits).
+    turning.slips = true;
+    turning.groundSpeed = 12.0f;
+    EXPECT_EQ(ambientEntityBits(turning), 148u);
     // Version 4: a knocked car says whether its wheels follow (80 bits more
     // when they do), a police car's damage takes 10 bits.
     EXPECT_EQ(ambientEntityBits(offRail), 178u);

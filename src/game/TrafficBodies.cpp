@@ -354,8 +354,12 @@ phys::Body* TrafficBodies::RailCar::attachEntity() {
     // body has already taken its speed).
     if (active)
         return &active->body;
+    // OpenMM2: a shared-traffic client's received cars leave their rails for
+    // its own car only (the world marks the player's hit before it asks).
+    if (!m_owner.m_source.attachable(id, hitByPlayer))
+        return nullptr;
     Active& a = m_owner.attach(*this);
-    m_owner.m_ai.traffic().impact(id, {});
+    m_owner.m_source.impact(id);
     return &a.body;
 }
 
@@ -425,7 +429,37 @@ void TrafficBodies::Active::onImpact(phys::Collider& self, const phys::Impact& i
 
 // --- TrafficBodies (aiVehicleManager) ----------------------------------------------------------
 
-TrafficBodies::TrafficBodies(ai::World& ai, phys::World& world) : m_ai(ai), m_world(world) {
+namespace {
+
+// The AI's traffic: aiVehicleAmbient's side of the hand-over.
+class AiSource final : public TrafficBodies::Source {
+public:
+    explicit AiSource(ai::World& ai) : m_ai(ai) {}
+    const std::vector<ai::AmbientCar>& cars() const override { return m_ai.cars(); }
+    void impact(int carId) override { m_ai.traffic().impact(carId, {}); }
+    void detach(int carId, const Mat34& pose, bool upright) override {
+        m_ai.traffic().detach(carId, pose, upright);
+    }
+    void setPhysicalTransform(int carId, const Mat34& transform) override {
+        m_ai.traffic().setPhysicalTransform(carId, transform);
+    }
+
+private:
+    ai::World& m_ai;
+};
+
+} // namespace
+
+TrafficBodies::TrafficBodies(ai::World& ai, phys::World& world)
+    : m_ownSource(std::make_unique<AiSource>(ai)), m_source(*m_ownSource), m_world(world) {
+    m_actives.reserve(m_order.size());
+    for (std::size_t i = 0; i < m_order.size(); ++i) {
+        m_actives.push_back(std::make_unique<Active>(*this));
+        m_order[i] = m_actives.back().get();
+    }
+}
+
+TrafficBodies::TrafficBodies(Source& source, phys::World& world) : m_source(source), m_world(world) {
     m_actives.reserve(m_order.size());
     for (std::size_t i = 0; i < m_order.size(); ++i) {
         m_actives.push_back(std::make_unique<Active>(*this));
@@ -523,7 +557,7 @@ void TrafficBodies::detach(Active& active) {
     // when it already is one, a wreck (flag 2); the AI decides. Its matrix
     // is where the body last left it.
     const Mat34 pose = active.body.boundMatrix;
-    m_ai.traffic().detach(car->id, pose, upright);
+    m_source.detach(car->id, pose, upright);
     // The car is an instance again (flag 0x10) without an active.
     car->railMatrix = pose;
     car->speed = 0.0f;
@@ -564,7 +598,7 @@ void TrafficBodies::reset() {
 }
 
 void TrafficBodies::beforeStep() {
-    const auto& cars = m_ai.cars();
+    const auto& cars = m_source.cars();
     const auto find = [&](int id) -> const ai::AmbientCar* {
         for (const ai::AmbientCar& c : cars)
             if (c.id == id)
@@ -676,7 +710,7 @@ void TrafficBodies::afterStep() {
             continue;
         const float y = a.body.ics.matrix.m3.y;
         if (a.sleep.state != phys::Sleep::Asleep && kFallOutY <= y) {
-            m_ai.traffic().setPhysicalTransform(a.rail->id, a.body.boundMatrix);
+            m_source.setPhysicalTransform(a.rail->id, a.body.boundMatrix);
             continue;
         }
         detach(a);

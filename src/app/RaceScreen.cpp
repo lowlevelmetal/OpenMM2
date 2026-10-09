@@ -43,6 +43,7 @@
 #include "game/fx/Weather.h"
 #include "game/net/DamageSync.h"
 #include "game/net/NetGame.h"
+#include "game/net/NetTrafficCars.h"
 #include "game/net/RaceStart.h"
 #include "game/net/TrafficProxies.h"
 #include "game/net/TrafficSync.h"
@@ -100,6 +101,11 @@ bool serialize(S& s, CrSetEvent& e) {
 constexpr int kNetPlayerTrackedId = 30000;
 constexpr int kNetPoliceId = 400;
 constexpr std::uint64_t kNetTrafficIntervalMs = 50;
+// A shared-traffic client: how long after half a round trip past its car's
+// hit a host state may still show the car on its rail before the client's
+// knock is withdrawn (the hit report's way to the host, a message interval,
+// two AI steps and the jitter).
+constexpr double kNetKnockConfirmMs = 150.0;
 
 const char* modePrefix(game::GameMode m) {
     switch (m) {
@@ -727,7 +733,9 @@ public:
                 m_drawnPhys.record(drawnKey(Drawn::RemoteTrailer, id), rv.sim->trailerPose(), resets);
         }
         m_remoteStepBodies = std::move(stepBodies);
-        if (m_ai && m_trafficBodies)
+        if (m_netTrafficCars && m_trafficBodies)
+            game::recordTrafficBodies(m_drawnPhys, *m_trafficBodies); // a shared-traffic client's
+        else if (m_ai && m_trafficBodies)
             game::recordTrafficBodies(m_drawnPhys, *m_ai, *m_trafficBodies);
         if (m_bangers && m_world)
             game::recordProps(m_drawnPhys, *m_bangers, *m_world);
@@ -859,8 +867,9 @@ public:
     // it has a body (aiVehicleInstance::Draw), between the physics' last two
     // samples.
     std::optional<game::AiRenderer::PhysicalCar> physicalTrafficCar(int id) const {
-        // OpenMM2: a shared-traffic client's knocked cars, as the host has them.
-        if (m_trafficClient) {
+        // OpenMM2: a shared-traffic client's knocked cars, as the host has them
+        // (or, until the host's messages lead, as this machine knocked them).
+        if (m_trafficClient && !(m_netTrafficCars && m_netTrafficCars->knocked(id))) {
             const auto it = m_netPhysical.find(id);
             return it != m_netPhysical.end() ? std::optional(it->second) : std::nullopt;
         }
@@ -3357,7 +3366,14 @@ private:
             return true;
         });
         if (m_world) {
-            m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
+            // OpenMM2: a shared-traffic client's are the received cars,
+            // which its own car may knock loose ahead of the host.
+            if (netTrafficClient(ctx)) {
+                m_netTrafficCars = std::make_unique<game::NetTrafficCars>();
+                m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_netTrafficCars, *m_world);
+            } else {
+                m_trafficBodies = std::make_unique<game::TrafficBodies>(*m_ai, *m_world);
+            }
             m_trafficBodies->setWeatherFriction(weatherFriction());
             // aiVehicleActive's impacts, for the ambient cars' sounds.
             m_trafficBodies->setImpactCallback(
@@ -4152,7 +4168,12 @@ private:
         // a second per car), with the car's velocity before that step.
         if (m_trafficProxies) {
             const std::uint32_t now = ctx.netGame->sessionTime();
-            for (int id : m_trafficProxies->takeHits()) {
+            // The cars on their rails this machine's car knocked loose
+            // (NetTrafficCars), and the ones off them it hit.
+            std::vector<int> hits = m_trafficProxies->takeHits();
+            if (m_netTrafficCars)
+                std::ranges::copy(m_netTrafficCars->takeKnocks(), std::back_inserter(hits));
+            for (int id : hits) {
                 const auto it =
                     std::ranges::find_if(m_netCars, [id](const ai::AmbientCar& c) { return c.id == id; });
                 if (it == m_netCars.end())
@@ -4194,9 +4215,18 @@ private:
             // steps, and the session time that car reaches in them.
             const Vec3 me = m_player->sim().modelMatrix().m3;
             game::traceClientView(trace, frame, own, me);
-            for (const auto& c : m_trafficClient->cars())
-                if (c.transform.m3.dist2(me) < 9e4f)
-                    game::traceClientCar(trace, frame, renderTime, c, c.extrapolated ? 2 : 0);
+            for (const auto& c : m_trafficClient->cars()) {
+                if (c.transform.m3.dist2(me) >= 9e4f)
+                    continue;
+                // A car this machine knocked loose: where its body is (mode 3).
+                const Mat34* local = m_netTrafficCars && m_netTrafficCars->knocked(c.id) && m_trafficBodies
+                                         ? m_trafficBodies->transformOf(c.id)
+                                         : nullptr;
+                game::TrafficClient::Car shown = c;
+                if (local)
+                    shown.transform = *local;
+                game::traceClientCar(trace, frame, renderTime, shown, local ? 3 : c.extrapolated ? 2 : 0);
+            }
         }
         if (const auto steps = m_trafficClient->lightSteps(renderTime))
             m_ai->advanceLightsTo(*steps);
@@ -4204,6 +4234,7 @@ private:
         m_netPhysical.clear();
         std::unordered_set<int> seen;
         std::vector<std::pair<std::size_t, std::array<Vec3, 4>>> wheeled; // knocked cars with their wheels
+        std::vector<game::NetTrafficCars::Received> received;
         for (const auto& c : m_trafficClient->cars()) {
             const std::string* model = m_trafficCatalog.name(c.model);
             if (c.kind != net::AmbientKind::Traffic || !model)
@@ -4220,10 +4251,32 @@ private:
             seen.insert(c.id);
             if (c.wheels && m_netCars.back().data)
                 wheeled.push_back({m_netCars.size() - 1, c.wheelOffsets});
+            received.push_back({m_netCars.back(), c.stateTime});
         }
         std::erase_if(m_netTireRotation, [&](const auto& e) { return !seen.contains(e.first); });
-        if (m_trafficProxies)
-            m_trafficProxies->update(m_netCars);
+        // The cars on their rails are the level's instances in TrafficBodies,
+        // which this machine's car may knock loose (NetTrafficCars); the ones
+        // off them on the host move as it says (TrafficProxies). A knocked
+        // car goes back to the host's messages once they show it knocked too,
+        // or still on its rail a trip after the hit.
+        if (m_netTrafficCars) {
+            const double rtt = static_cast<double>(ctx.netGame->peerStats(net::kHostPlayerId).rttMs);
+            m_netTrafficCars->update(received, own, rtt * 0.5 + kNetKnockConfirmMs);
+            for (const auto& h : m_netTrafficCars->takeHandovers()) {
+                const float off = m_trafficClient->setDrawn(h.id, h.pose);
+                game::traceHandover(ctx.netGame->traceFile(), own, h.id, h.confirmed, off);
+                if (m_debugNetTraffic)
+                    log::info("nettraffic: client's knock of traffic car {} {} the host ({:.2f} m off)", h.id,
+                              h.confirmed ? "confirmed by" : "withdrawn: not knocked on", off);
+            }
+        }
+        if (m_trafficProxies) {
+            std::vector<ai::AmbientCar> moving;
+            for (const ai::AmbientCar& c : m_netCars)
+                if (!m_netTrafficCars || c.goal != ai::AmbientGoal::RandomDrive)
+                    moving.push_back(c);
+            m_trafficProxies->update(moving);
+        }
         // Drawn where the rest of the scene is, a physics sample behind the
         // frame (game::StepHistory), as far from the cars' time as the scene
         // is from this machine's car's.
@@ -5438,6 +5491,9 @@ private:
     std::optional<float> m_netToGo;               // its countdown (Session::setNetStart)
     bool multiplayer(Context& ctx) const { return m_result.config.multiplayer && ctx.netGame; }
     std::unique_ptr<game::AiRenderer> m_aiRenderer;
+    // A shared-traffic client's received cars as the bodies' traffic
+    // (outlives m_trafficBodies, which holds it).
+    std::unique_ptr<game::NetTrafficCars> m_netTrafficCars;
     std::unique_ptr<game::TrafficBodies> m_trafficBodies;
 
     // OpenMM2's shared traffic of a network cruise (see netTraffic()).

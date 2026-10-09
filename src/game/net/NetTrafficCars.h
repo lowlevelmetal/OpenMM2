@@ -1,0 +1,92 @@
+#pragma once
+
+// A shared-traffic client's received cars as game::TrafficBodies' traffic
+// (OpenMM2 extra; docs/multiplayer.md "Shared traffic", docs/review/
+// multiplayer-desync-traffic.md).
+//
+// The received cars on their rails are instances of this machine's level as
+// the host's rail cars are of its own (aiVehicleInstance), at their
+// predicted places. When this machine's car hits one, the car takes a body
+// at once (aiVehicleInstance::AttachEntity, aiVehicleActive) and the
+// collision runs as it does on the host: the client's car pushes a car of
+// its mass instead of meeting a wall that never gives way, and the car
+// flies off when it is hit rather than a round trip later. Only this
+// machine's car knocks a car loose here; the host's police, the other
+// players and the cars it knocked itself reach the client in its messages.
+//
+// The knocked car is this machine's until the host's messages either show it
+// off its rail too (it then follows them, the drawing blending from where
+// the local body left it) or show it still on its rail at a time well after
+// the hit, when the host would have knocked it (the host did not: it goes
+// back to its rail, blended the same way).
+
+#include "ai/Traffic.h"
+#include "game/TrafficBodies.h"
+
+#include <cstdint>
+#include <map>
+#include <span>
+#include <vector>
+
+namespace mm2::game {
+
+class NetTrafficCars final : public TrafficBodies::Source {
+public:
+    // A received car: as an ambient car (game::ambientCarOf), and the session
+    // time of its newest state from the host.
+    struct Received {
+        ai::AmbientCar car;
+        std::uint32_t stateTime = 0;
+    };
+    // Each frame before TrafficBodies::beforeStep: the received traffic cars
+    // at session time `now` (this machine's car's). A car this machine
+    // knocked loose goes back to the host's once a state of it stamped later
+    // than `confirmMs` after the hit still has it on its rail, or after
+    // kMaxLocalMs whatever the host says.
+    void update(std::span<const Received> received, double now, double confirmMs);
+    static constexpr double kMaxLocalMs = 3000.0;
+
+    // A car this machine knocked loose and handed back to the host's
+    // messages this frame, and where it was then.
+    struct Handover {
+        int id = 0;
+        Mat34 pose;
+        bool confirmed = false; // the host had knocked it too
+    };
+    std::vector<Handover> takeHandovers() { return std::exchange(m_handovers, {}); }
+    // The cars this machine's car knocked loose since the last call.
+    std::vector<int> takeKnocks() { return std::exchange(m_new, {}); }
+    bool knocked(int id) const { return m_knocks.contains(id); }
+
+    struct Stats {
+        std::uint64_t knocks = 0;    // knocked loose by this machine's car
+        std::uint64_t confirmed = 0; // the host knocked them too
+        std::uint64_t withdrawn = 0; // the host kept them on their rails
+    };
+    const Stats& stats() const { return m_stats; }
+
+    // TrafficBodies::Source: the received cars on their rails, and the ones
+    // this machine knocked loose (physical, where their bodies are).
+    const std::vector<ai::AmbientCar>& cars() const override { return m_cars; }
+    void impact(int carId) override;
+    void detach(int carId, const Mat34& pose, bool upright) override;
+    void setPhysicalTransform(int carId, const Mat34& transform) override;
+    bool attachable(int carId, bool byPlayer) const override;
+
+private:
+    struct Knock {
+        int generation = 0;
+        double time = 0.0; // session ms of the hit
+        Mat34 pose;
+    };
+    void handOver(int id, const Knock& knock, bool confirmed);
+
+    std::map<int, Knock> m_knocks;
+    std::vector<ai::AmbientCar> m_cars;
+    std::vector<Handover> m_handovers;
+    std::vector<int> m_new;
+    double m_now = 0.0;
+    Stats m_stats;
+};
+
+} // namespace mm2::game

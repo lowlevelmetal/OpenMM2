@@ -52,4 +52,9 @@ void traceRefusedHit(std::FILE* f, double time, int from, int id, int generation
         std::fprintf(f, "TR %.3f %d %d %d %s\n", time, from, id, generation, std::string(why).c_str());
 }
 
+void traceHandover(std::FILE* f, double time, int id, bool confirmed, float off) {
+    if (f)
+        std::fprintf(f, "TL %.3f %d %d %.3f\n", time, id, confirmed ? 1 : 0, off);
+}
+
 } // namespace mm2::game

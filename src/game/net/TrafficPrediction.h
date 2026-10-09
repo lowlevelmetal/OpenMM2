@@ -31,15 +31,22 @@
 
 namespace mm2::game {
 
-// How a car on its rail is moving: its speed's change and its heading's turn
-// per metre (the sign of a spin about +y: from +z toward +x).
+// How a car on its rail is moving: its speed's change, its heading's turn
+// per metre (the sign of a spin about +y: from +z toward +x) and, where it
+// is not its speed, its speed over the ground: ai::Traffic moves a car along
+// its curves by their parameter, so in a turn it covers 20-30 % more or less
+// ground than its speed says, and a car held at the end of its lane covers
+// none.
 struct RailMotion {
     float accel = 0.0f;     // m/s^2
     float curvature = 0.0f; // rad/m
+    bool slips = false;     // groundSpeed is not the speed
+    float groundSpeed = 0.0f;
 };
 
-// Host: each AI car's acceleration and curvature from its last two AI steps
-// (a backward difference: the AI changes both smoothly from step to step).
+// Host: each AI car's acceleration, curvature and speed over the ground from
+// its last two AI steps (a backward difference: the AI changes them smoothly
+// from step to step).
 class RailMotionTracker {
 public:
     // After an AI update; `time` is the session time of its last step (ms).
@@ -54,6 +61,7 @@ private:
         Vec3 position;
         float heading = 0.0f;
         float speed = 0.0f;
+        float ground = 0.0f;
         double time = 0.0;
         RailMotion motion;
         bool seen = false;
@@ -71,9 +79,12 @@ struct PredictedPose {
 };
 
 // A car on its rail `dt` seconds after a state (`transform`, `speed`):
-// along its heading (-m2, with its slope) for the distance its speed and
-// acceleration give (stopping at 0: a rail car never reverses), its heading
-// and its whole frame turned about the vertical by curvature x distance.
+// along its heading (-m2, with its slope) for the distance its speed over the
+// ground and its acceleration give (stopping at 0: a rail car never
+// reverses), its heading and its whole frame turned about the vertical by
+// curvature x distance. Its velocity is along its heading at its speed
+// changed by the acceleration (what its body takes when it is hit,
+// aiVehicleActive::Attach).
 PredictedPose predictRailCar(const Mat34& transform, float speed, const RailMotion& motion, float dt);
 // A physics body `dt` seconds after a state: along its velocity turned by
 // its yaw rate (an arc), its frame turned by its spin.

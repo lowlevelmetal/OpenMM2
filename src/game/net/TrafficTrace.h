@@ -19,6 +19,10 @@
 //   TK time id gen player   host: knocked car id off its rail (player 255:
 //                           its own simulation's collision)
 //   TR time from id gen why host: a client's hit report it did not apply
+//   TL time id confirmed off
+//                           client: a car it knocked loose went back to the
+//                           host's messages (confirmed 1: the host knocked it
+//                           too), its drawing `off` metres from them then
 //
 // (fx, fz) is the car's forward direction (-m2) on the ground plane.
 
@@ -36,5 +40,6 @@ void traceClientView(std::FILE* f, double frame, double time, const Vec3& positi
 void traceHit(std::FILE* f, double time, int id, int generation);
 void traceKnock(std::FILE* f, double time, int id, int generation, int player);
 void traceRefusedHit(std::FILE* f, double time, int from, int id, int generation, std::string_view why);
+void traceHandover(std::FILE* f, double time, int id, bool confirmed, float off);
 
 } // namespace mm2::game

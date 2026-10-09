@@ -190,6 +190,7 @@ public:
         bool extrapolated = false; // beyond the newest message (predicted)
         bool hornStarted = false;  // the horn sounded since the previous update
         bool fresh = false;        // shown for the first time (or put somewhere new) this update
+        std::uint32_t stateTime = 0; // the session time of its newest state from the host
     };
     const std::vector<Car>& cars() const { return m_cars; }
     // The host's traffic light steps at `renderTime`, once a message came.
@@ -200,6 +201,18 @@ public:
     // else (game::StepHistory). Before the car's first state, that state. A
     // predicted car is drawn with the correction still being blended away.
     std::optional<Mat34> transformAt(int id, double time) const;
+    // Car `id` where the collisions meet it at `time` (predicted from its
+    // newest state, or between the messages), without the drawing's
+    // correction: for placing the received cars at another time than
+    // update()'s, as a client replaying its own car's steps from a host
+    // state would.
+    std::optional<PredictedPose> poseAt(int id, double time) const;
+    // OpenMM2 presentation: car `id` is drawn at `pose` now (a car this
+    // machine knocked loose, handed back to the host's messages: game::
+    // NetTrafficCars), the difference blended away as a correction is.
+    // Returns how far the drawing is from the newest prediction there (0 when
+    // unknown).
+    float setDrawn(int id, const Mat34& pose);
     static constexpr double kDrawBehindMs = 100.0;
     // The host's catalog differs from this client's.
     bool catalogMismatch() const { return m_mismatch; }

@@ -71,12 +71,14 @@ struct Path {
     }
 };
 
-ai::AmbientCar aiCar(int id, const Path::State& s) {
+// As ai::Traffic publishes it; `nominal`: its speed over its true speed (in
+// a turn the AI's speed is not the ground it covers).
+ai::AmbientCar aiCar(int id, const Path::State& s, float nominal = 1.0f) {
     ai::AmbientCar c;
     c.id = id;
     c.transform = facing(s.heading, s.position);
-    c.speed = s.speed;
-    c.velocity = -c.transform.m2 * s.speed;
+    c.speed = s.speed * nominal;
+    c.velocity = -c.transform.m2 * c.speed;
     return c;
 }
 
@@ -120,6 +122,19 @@ TEST(TrafficPrediction, ABrakingRailCarStopsAndNeverReverses) {
     EXPECT_NEAR(q.speed, 2.0f, 1e-5f);
 }
 
+// The ground it covers is its speed over the ground's; its velocity (what a
+// body it takes when hit moves at) stays its own speed's.
+TEST(TrafficPrediction, ARailCarCoversTheGroundItReallyCovers) {
+    const Mat34 start = facing(0.0f, {0, 0, 0});
+    const PredictedPose p = game::predictRailCar(start, 10.0f, {0.0f, 0.0f, true, 12.0f}, 0.5f);
+    EXPECT_NEAR(p.transform.m3.z, 6.0f, 1e-4f);
+    EXPECT_NEAR(p.speed, 10.0f, 1e-5f);
+    // Held at the end of its lane: going nowhere at its speed.
+    const PredictedPose held = game::predictRailCar(start, 14.0f, {0.0f, 0.0f, true, 0.0f}, 0.5f);
+    EXPECT_NEAR(held.transform.m3.z, 0.0f, 1e-5f);
+    EXPECT_NEAR(held.velocity.z, 14.0f, 1e-4f);
+}
+
 TEST(TrafficPrediction, ABodyTurnsWithItsYawRate) {
     // A police car at 20 m/s turning at 0.5 rad/s: a 40 m radius.
     const Mat34 start = facing(0.0f, {0, 0, 0});
@@ -138,13 +153,18 @@ TEST(TrafficPrediction, TheHostMeasuresTheRailMotionFromItsSteps) {
     game::RailMotionTracker tracker;
     for (int step = 0; step < 60; ++step) {
         const double t = step * kAiStepMs;
-        const std::vector<ai::AmbientCar> cars{aiCar(3, path.at(t))};
+        // Car 5 covers more ground than its speed says (a turn's curve).
+        const std::vector<ai::AmbientCar> cars{aiCar(3, path.at(t)), aiCar(5, path.at(t), 0.8f)};
         tracker.update(cars, t);
         tracker.update(cars, t); // a frame without an AI step changes nothing
     }
     const RailMotion m = tracker.motion(3);
     EXPECT_NEAR(m.accel, 2.0f, 0.01f);
     EXPECT_NEAR(m.curvature, 0.05f, 0.001f);
+    EXPECT_FALSE(m.slips);
+    const RailMotion slipping = tracker.motion(5);
+    EXPECT_TRUE(slipping.slips);
+    EXPECT_NEAR(slipping.groundSpeed, speed(58.5 * kAiStepMs), 0.02f); // over the last step
     EXPECT_EQ(tracker.motion(4).accel, 0.0f);
     // A recycled slot starts again.
     ai::AmbientCar again = aiCar(3, path.at(0.0));
@@ -180,6 +200,9 @@ TEST(TrafficPrediction, CorrectionsAreBlendedInTheDrawingOnly) {
     send(1050, 0.0f);
     client.update(1110.0);
     EXPECT_NEAR(client.cars()[0].transform.m3.z, -0.6f, 0.03f); // the physics: at once
+    const auto raw = client.poseAt(5, 1110.0);
+    ASSERT_TRUE(raw);
+    EXPECT_NEAR(raw->transform.m3.z, client.cars()[0].transform.m3.z, 1e-4f);
     const auto drawn = client.transformAt(5, 1110.0);
     ASSERT_TRUE(drawn);
     EXPECT_NEAR(drawn->m3.z, -1.1f, 0.05f); // the drawing: where it was going
@@ -241,7 +264,7 @@ TEST(TrafficPrediction, OverALossyLinkTheClientSeesTheHostsPresent) {
         if (aiTime != lastAi) {
             std::vector<ai::AmbientCar> cars;
             for (std::size_t i = 0; i < paths.size(); ++i)
-                cars.push_back(aiCar(static_cast<int>(i), paths[i].at(aiTime)));
+                cars.push_back(aiCar(static_cast<int>(i), paths[i].at(aiTime), i == 2 ? 0.8f : 1.0f));
             tracker.update(cars, aiTime);
             if (std::floor(aiTime / 50.0) != std::floor(lastAi / 50.0)) {
                 std::vector<SharedCar> shared;

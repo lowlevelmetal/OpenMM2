@@ -82,6 +82,12 @@ struct AmbientEntity {
     // driven (rad/m, positive turning from +z toward +x: a spin about +y).
     float accel = 0.0f;
     float curvature = 0.0f;
+    // Rail cars: how fast it really moves over the ground when that is not
+    // its speed (ai::Traffic moves a car along its curves by their parameter,
+    // so in a turn it covers more or less ground than its speed; a car held
+    // at the end of its lane covers none). Unset: its speed.
+    bool slips = false;
+    float groundSpeed = 0.0f;
     Vec3 velocity;          // off-rail cars and police
     Vec3 angularVelocity;   // off-rail cars and police
     std::uint8_t flags = 0; // AmbientFlags
@@ -147,17 +153,24 @@ bool serializeAmbientEntity(S& s, AmbientEntity& e, const Vec3& origin) {
             e.speed = -(e.orientation.toMatrix().m2.dot(e.velocity));
     } else {
         s.quantized(e.speed, -kAmbientSpeedRange, kAmbientSpeedRange, 11);
-        // Its acceleration and curvature, unless both are 0 (most cars stand
-        // or drive straight on at their speed: 1 bit).
-        bool changing = e.accel != 0.0f || e.curvature != 0.0f;
+        // Its acceleration and curvature and its speed over the ground,
+        // unless they are 0, 0 and its speed (most cars stand or drive
+        // straight on at their speed: 1 bit).
+        bool changing = e.accel != 0.0f || e.curvature != 0.0f || e.slips;
         s.boolean(changing);
         if (changing) {
             s.quantized(e.accel, -kAmbientAccelRange, kAmbientAccelRange, 7);
             s.quantized(e.curvature, -kAmbientCurvatureRange, kAmbientCurvatureRange, 9);
+            s.boolean(e.slips);
+            if (e.slips)
+                s.quantized(e.groundSpeed, -kAmbientSpeedRange, kAmbientSpeedRange, 11);
         } else if constexpr (S::kReading) {
             e.accel = e.curvature = 0.0f;
+            e.slips = false;
         }
         if constexpr (S::kReading) {
+            if (!e.slips)
+                e.groundSpeed = e.speed;
             // ai::Traffic's published velocity of a rail car.
             e.velocity = -e.orientation.toMatrix().m2 * e.speed;
             e.angularVelocity = {};

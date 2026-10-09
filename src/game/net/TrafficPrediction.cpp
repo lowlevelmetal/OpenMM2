@@ -50,7 +50,7 @@ void RailMotionTracker::update(std::span<const ai::AmbientCar> cars, double time
         const float heading = groundHeading(forward);
         const Vec3& p = c.transform.m3;
         if (last.spawns != c.spawns) {
-            last = {c.spawns, p, heading, c.speed, time, {}, true};
+            last = {c.spawns, p, heading, c.speed, c.speed, time, {}, true};
             continue;
         }
         const double dtMs = time - last.time;
@@ -63,6 +63,12 @@ void RailMotionTracker::update(std::span<const ai::AmbientCar> cars, double time
         // curvature stays as it was.
         if (ds > 0.05f)
             last.motion.curvature = std::clamp(wrapAngle(heading - last.heading) / ds, -2.0f, 2.0f);
+        // Its speed over the ground in the step (a move of more than 40 m/s
+        // put it somewhere else: the AI's speed stands).
+        const float ground = p.dist(last.position) / dt;
+        last.ground = ground > 40.0f ? c.speed : ground;
+        last.motion.groundSpeed = last.ground;
+        last.motion.slips = std::abs(last.ground - c.speed) > 0.25f;
         last.position = p;
         last.heading = heading;
         last.speed = c.speed;
@@ -81,17 +87,26 @@ RailMotion RailMotionTracker::motion(int id) const {
 PredictedPose predictRailCar(const Mat34& transform, float speed, const RailMotion& motion, float dt) {
     PredictedPose out;
     dt = std::max(dt, 0.0f);
-    // The distance its speed and acceleration give, stopping at 0 (or at
-    // the speed it had, for a car reversing).
-    float v = speed + motion.accel * dt;
+    // The distance its speed over the ground and acceleration give (the
+    // acceleration scaled as the ground speed is), stopping at 0 (or at the
+    // speed it had, for a car reversing).
+    const float ground = motion.slips ? motion.groundSpeed : speed;
+    const bool scaled = motion.slips && std::abs(speed) > 0.5f;
+    const float scale = scaled ? std::clamp(ground / speed, 0.0f, 2.0f) : 1.0f;
+    const float a = motion.accel * scale;
+    float g = ground + a * dt;
     float s = 0.0f;
-    if ((speed >= 0.0f && v < 0.0f) || (speed < 0.0f && v > 0.0f)) {
-        const float stop = motion.accel != 0.0f ? -speed / motion.accel : 0.0f;
-        s = speed * stop * 0.5f;
-        v = 0.0f;
+    if ((ground >= 0.0f && g < 0.0f) || (ground < 0.0f && g > 0.0f)) {
+        const float stop = a != 0.0f ? -ground / a : 0.0f;
+        s = ground * stop * 0.5f;
+        g = 0.0f;
     } else {
-        s = (speed + v) * 0.5f * dt;
+        s = (ground + g) * 0.5f * dt;
     }
+    // Its own speed, which a body it takes when hit moves at.
+    float v = speed + motion.accel * dt;
+    if ((speed >= 0.0f && v < 0.0f) || (speed < 0.0f && v > 0.0f))
+        v = 0.0f;
     const float turn = motion.curvature * s;
     const Vec3 forward = -transform.m2;
     out.transform.m0 = yawed(transform.m0, turn);

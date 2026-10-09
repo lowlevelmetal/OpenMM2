@@ -56,9 +56,36 @@ class TrafficBodies final : public InstanceSource {
 public:
     using ImpactCallback = std::function<void(const TrafficImpact&)>;
 
+    // The traffic the cars belong to, aiVehicleAmbient's side of the
+    // hand-over: the AI's (ai::World), or on a network client of a
+    // shared-traffic cruise the cars received from the host (OpenMM2 extra,
+    // game::NetTrafficCars), which the client's car may knock loose ahead of
+    // the host.
+    class Source {
+    public:
+        virtual ~Source() = default;
+        virtual const std::vector<ai::AmbientCar>& cars() const = 0;
+        // aiVehicleAmbient::Impact(1): the car left its rail for a body.
+        virtual void impact(int carId) = 0;
+        // aiVehicleActive::Detach: back from its body at `pose`, upright or
+        // not (aiVehicleAmbient::Impact(0) or a wreck).
+        virtual void detach(int carId, const Mat34& pose, bool upright) = 0;
+        // aiGoalCollision::Update: the car's matrix follows its body.
+        virtual void setPhysicalTransform(int carId, const Mat34& transform) = 0;
+        // Whether a collision may give the car a body; `byPlayer`: the
+        // local player's car is in it. The AI's cars always may.
+        virtual bool attachable(int carId, bool byPlayer) const {
+            (void)carId;
+            (void)byPlayer;
+            return true;
+        }
+    };
+
     // The world's level (phys::World::setLevel) gives the rail cars their
     // rooms; the level must list instancesIn() (CityLevel::addSource).
     TrafficBodies(ai::World& ai, phys::World& world);
+    TrafficBodies(Source& source, phys::World& world);
+    const Source& source() const { return m_source; }
     ~TrafficBodies() override;
     TrafficBodies(const TrafficBodies&) = delete;
     TrafficBodies& operator=(const TrafficBodies&) = delete;
@@ -137,7 +164,8 @@ private:
     // The body stops being simulated without going back to the AI.
     void drop(Active& active);
 
-    ai::World& m_ai;
+    std::unique_ptr<Source> m_ownSource; // the AI's, for the ai::World constructor
+    Source& m_source;
     phys::World& m_world;
     // One per AI car id, created when the car first appears (stable
     // addresses: the level holds pointers during the step).
