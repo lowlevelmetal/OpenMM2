@@ -425,3 +425,107 @@ TEST(HostileInput, OversizedPacketsAreNotDelivered) {
     EXPECT_TRUE(gotSmall);
     EXPECT_LT(largest, huge.size());
 }
+
+// --- LAN discovery ---------------------------------------------------------------------
+
+// Who a beacon answers: this machine and the LAN (private ranges, or a subnet
+// of one of its interfaces such as a VPN's), never a public source, nor a
+// broadcast, multicast or zero address.
+TEST(HostileInput, BeaconAnswersOnlyLanSources) {
+    const std::vector<Subnet> subnets = {{0xC0A8010Au, 0xFFFFFF00u},  // 192.168.1.10/24
+                                         {0x19010203u, 0xFF000000u}}; // 25.1.2.3/8 (a VPN on a public range)
+    auto allowed = [&](std::uint32_t ip, std::uint16_t port = 50000) {
+        return answersLanQueryFrom(Address{ip, port}, subnets);
+    };
+    EXPECT_TRUE(allowed(0x7F000001u));  // 127.0.0.1
+    EXPECT_TRUE(allowed(0xC0A80114u));  // 192.168.1.20
+    EXPECT_TRUE(allowed(0x0A000005u));  // 10.0.0.5, private elsewhere
+    EXPECT_TRUE(allowed(0x64400001u));  // 100.64.0.1 (CGNAT, e.g. Tailscale)
+    EXPECT_TRUE(allowed(0x19FFFF01u));  // 25.255.255.1 on the VPN subnet
+    EXPECT_FALSE(allowed(0x08080808u)); // 8.8.8.8
+    EXPECT_FALSE(allowed(0x1A000001u)); // 26.0.0.1
+    EXPECT_FALSE(allowed(0xC0A801FFu)); // 192.168.1.255: the subnet's broadcast
+    EXPECT_FALSE(allowed(0xC0A80100u)); // 192.168.1.0
+    EXPECT_FALSE(allowed(0x19FFFFFFu)); // the VPN's broadcast
+    EXPECT_FALSE(allowed(0xFFFFFFFFu));
+    EXPECT_FALSE(allowed(0xE0000001u)); // 224.0.0.1
+    EXPECT_FALSE(allowed(0));
+    EXPECT_FALSE(allowed(0xC0A80114u, 0)); // no source port to answer
+    // This machine's own interfaces count as a LAN.
+    const auto local = localSubnets();
+    for (const Subnet& s : local) {
+        if (~s.mask > 1) {
+            EXPECT_TRUE(answersLanQueryFrom(Address{s.ip, 2301}, local));
+        }
+    }
+}
+
+// The beacon answers a query at a bounded rate (it would otherwise reflect
+// ~17 times the traffic it receives to whatever source a query claims).
+TEST(HostileInput, BeaconRepliesAreRateLimited) {
+    LanBeacon beacon;
+    ASSERT_TRUE(beacon.start(0));
+    beacon.setAnnounceTargets({});
+    beacon.setAnnounceInterval(0);
+    LanAdvert advert;
+    advert.sessionName = std::string(48, 'x');
+    beacon.setAdvert(advert);
+    auto sock = UdpSocket::open(Address::loopback(0), false, false);
+    ASSERT_TRUE(sock);
+    const auto query = encodeLanQuery(1);
+    int replies = 0;
+    std::array<std::byte, 1500> buf{};
+    for (int i = 0; i < 400; ++i) {
+        sock->sendTo(Address::loopback(beacon.port()), query);
+        if (i % 50 == 49) {
+            beacon.update();
+            Address from;
+            while (sock->receiveFrom(from, buf) > 0)
+                ++replies;
+        }
+    }
+    waitFor([&] {
+        beacon.update();
+        Address from;
+        while (sock->receiveFrom(from, buf) > 0)
+            ++replies;
+        return false;
+    }, 200);
+    EXPECT_GT(replies, 0);
+    EXPECT_LT(replies, 100);
+}
+
+// A flood of adverts (spoofed sources and ports) cannot grow the session
+// list without bound, and their text is cleaned up.
+TEST(HostileInput, ScannerBoundsAndCleansAdverts) {
+    LanScanner scanner;
+    // Listening on the discovery port lets the test deliver "announcements".
+    auto probe = UdpSocket::open(Address::loopback(0), false, false);
+    ASSERT_TRUE(probe);
+    const std::uint16_t port = probe->localAddress().port;
+    probe.reset();
+    ASSERT_TRUE(scanner.start(port, /*listenForAnnouncements=*/true));
+    scanner.setBroadcast(false);
+    auto sock = UdpSocket::open(Address::loopback(0), false, false);
+    ASSERT_TRUE(sock);
+    for (int i = 0; i < 2000; ++i) {
+        LanAdvert a;
+        a.sessionName = std::format("Fake\n{}\x1b", i);
+        a.hostName = "h\r";
+        a.city = "../x";
+        a.gamePort = static_cast<std::uint16_t>(1000 + i);
+        sock->sendTo(Address::loopback(port), encodeLanAdvert(0, a));
+        if (i % 100 == 99)
+            scanner.update();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    scanner.update();
+    const auto sessions = scanner.sessions();
+    EXPECT_GT(sessions.size(), 0u);
+    EXPECT_LE(sessions.size(), 64u);
+    for (const auto& s : sessions) {
+        EXPECT_FALSE(hasControl(s.advert.sessionName));
+        EXPECT_FALSE(hasControl(s.advert.hostName));
+        EXPECT_EQ(s.advert.city.find('/'), std::string::npos);
+    }
+}

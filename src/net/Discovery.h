@@ -11,6 +11,7 @@
 #include "net/Net.h"
 #include "net/Protocol.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -55,6 +56,24 @@ bool decodeLanAdvert(std::span<const std::byte> packet, std::uint32_t& nonce, La
 // 255.255.255.255.
 std::vector<std::uint32_t> broadcastAddresses();
 
+// An IPv4 interface address and its netmask, host byte order.
+struct Subnet {
+    std::uint32_t ip = 0;
+    std::uint32_t mask = 0;
+};
+// The subnets of all up, non-loopback IPv4 interfaces (VPN adapters included).
+std::vector<Subnet> localSubnets();
+
+// Whether a beacon answers a query that claims to come from `from`: loopback,
+// a private address (Address::isPrivate) or one on `subnets`, so a spoofed
+// query from the Internet cannot make it send adverts elsewhere, and never a
+// broadcast, multicast or zero address, where one reply would reach many
+// machines or none.
+bool answersLanQueryFrom(const Address& from, std::span<const Subnet> subnets);
+
+// Most sessions a LanScanner lists; adverts for further sessions are ignored.
+inline constexpr std::size_t kMaxLanSessions = 64;
+
 // The LAN address this machine uses for Internet traffic (no packets are
 // sent), or 0 if there is no route.
 std::uint32_t primaryLocalAddress();
@@ -87,6 +106,10 @@ private:
     std::uint32_t m_announceIntervalMs = 2000;
     std::uint64_t m_nextAnnounce = 0;
     std::vector<Address> m_targets;
+    std::vector<Subnet> m_subnets;
+    // Replies left in the budget (see kBeaconReplyRate) and when it was filled.
+    double m_replyTokens = 0.0;
+    std::uint64_t m_replyRefill = 0;
 };
 
 class LanScanner {
