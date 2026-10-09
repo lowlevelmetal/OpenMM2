@@ -317,7 +317,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | --- | --- | --- | --- |
 | `mmGameMulti::mmGameMulti`, `~mmGameMulti`, `` `scalar_deleting_destructor' `` | not needed | — | |
 | `mmGameMulti::Init` | ported (new) | `RaceScreen::loadAi`, `loadRaceSetup` | traffic, cop and opponent densities 0 and no rail cars; the race modes clear mmGame's AI flag (no AI map at all) |
-| `mmGameMulti::InitGameStrings` | ported (new) | `RaceScreen::updateNetPlayers` | "has left the game" (38); the "Waiting for N players" lines belong to the ready gate (replaced) |
+| `mmGameMulti::InitGameStrings` | ported (new) | `RaceScreen::updateNetPlayers`, `NetRaceStart::waitingText` | "has left the game" (38); "Waiting for 1 player" ... "Waiting for 7 players" (31-37) while others load |
 | `mmGameMulti::InitOtherPlayers` | replaced | `RaceScreen::updateRemoteCars` | |
 | `mmGameMulti::InitRoster` | ported (new) | `Popup::Roster` | |
 | `mmGameMulti::StartXYZ` | ported | `multiplayerGridOffset`, `RaceScreen::startSlot` | slot = the place in the host's player list (new; was the player id); slots 8-15 have no place (OpenMM2 allows 16) |
@@ -339,7 +339,7 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmGameMulti::BootPlayerCB` | ported (new) | `Popup::Roster` -> `NetGame::kick` | |
 | `mmGameMulti::RegisterMapNetObjects`, `ActivateMapNetObject`, `DeactivateMapNetObject` | ported (new) | `RaceScreen` blips (HUD audit), places 0 / 10 | the other players on the map and their cards, by start slot |
 | `mmGameMulti::GetInactiveNetObjectIndex`, `GetNetObject`, `GetNetObjectIndex`, `ClearNetObjects` | replaced | `m_remotes` | |
-| `mmGameMulti::PlayerFinishedLoading`, `PlayerClearLoaded`, `SendRaceReady`, `SendGameSet`, `SendTimeMsg` | replaced | the shared start time, ClockSync | no ready gate (deviation, session record) |
+| `mmGameMulti::PlayerFinishedLoading`, `PlayerClearLoaded`, `SendRaceReady`, `SendGameSet`, `SendTimeMsg` | ported (new) | `NetGame::reportLoaded` (`RaceLoaded`), `net::Session` (the loaded flags, cleared at each race and return), `NetRaceStart`, ClockSync | the ready gate (docs/multiplayer.md, "Race start"); the start is a shared session time and the host stops waiting after 60 s (deviations); no car CRC; `SendTimeMsg` replaced by ClockSync |
 | `mmGameMulti::SendPosition`, `SendMsg` | replaced | snapshots, `sendEvent` | |
 | `mmGameMulti::GetCarCRC`, `SendCheater` | open | — | the tuning CRC check (low) |
 | `mmGameMulti::BroadCastCarTuning`, `SendCarTuning` | not needed | — | `SendCarTuning` is empty |
@@ -361,8 +361,8 @@ movers, `aiMap::Update`), `Reset` (a restart).
 | `mmMultiRoam::InitHUD`, `mmMultiRace::InitHUD`, `mmMultiCircuit::InitHUD`, `mmMultiBlitz::InitHUD` | ported | `Hud` | the place readout now counts the network players (new); Blitz's place readout and no checkpoint cards (HUD audit) |
 | `mmMultiRoam::Reset` | ported | `cruiseStart` | at the start (from mmGameMulti::InitOtherPlayers) its RespawnXYZ is the first of the two seeded picks; no in-race restart in a network game (round 3: [cruise-spawn](../round3/cruise-spawn.md)) |
 | `mmMultiRace::Reset`, `mmMultiCircuit::Reset`, `mmMultiBlitz::Reset` | replaced | the lobby | no in-race restart |
-| `mmMultiRoam::UpdateGame`, `SwitchState` | ported | `Session::start` / `updateRace` | "Go!" and the car released at once (new: no shared start in cruise) |
-| `mmMultiRace::UpdateGame`, `SwitchState`, `mmMultiCircuit::UpdateGame`, `SwitchState`, `mmMultiBlitz::UpdateGame`, `SwitchState` | ported | `Session::updateRace`, `updateNetRace` | countdown, wreck penalty (no warning, finish or clock check during it, new), finish line, the wait for all finishers and the timeout (new); the ready gate and the end taper are replaced (session record) |
+| `mmMultiRoam::UpdateGame`, `SwitchState` | ported | `Session::start` / `updateRace`, `NetRaceStart` | "Go!" and the car released at once (new: no shared start in cruise); "<name>" / "has joined" as each other machine reports (`GameMessageCB` 0x1fa) |
+| `mmMultiRace::UpdateGame`, `SwitchState`, `mmMultiCircuit::UpdateGame`, `SwitchState`, `mmMultiBlitz::UpdateGame`, `SwitchState` | ported | `Session::updateRace`, `updateNetRace` | countdown, wreck penalty (no warning, finish or clock check during it, new), finish line, the wait for all finishers and the timeout (new); the ready gate (state 0: 5 s, RaceReady, "Waiting for N players", the start; `NetRaceStart`, on a shared start time); the end taper is replaced (session record) |
 | `mmMultiRace::SetTimeoutOn`, `SetTimeoutOff` | ported (new) | `Session::addNetResult`, `updateNetRace` | 60 s from the first finish ("Race over", DNF) |
 | `mmMultiBlitz::PlayTimerWarning` | ported | `Session::timerWarning` | |
 | `mmMultiRoam::GameMessage`, `mmMultiRace::GameMessage`, `mmMultiCircuit::GameMessage`, `mmMultiBlitz::GameMessage` | ported (new) | `updateNetRace`, `Session::remoteFinished` | the finish lines (host 152 / 110 / 99, client 150 / 107 / 96) with Messagenote; the time-up / restart / host-quit messages are replaced |

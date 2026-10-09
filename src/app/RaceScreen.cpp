@@ -274,10 +274,15 @@ public:
             m_hud->updateChat(static_cast<float>(dt));
         // Development aid: OPENMM2_DEBUG_NET_SHOT_MS=<session ms> ends a
         // network race at that session time (with --screenshot: every
-        // machine's picture of the same moment).
-        if (const char* shot = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shot && multiplayer(ctx) &&
-            ctx.netGame->raceStarted() && ctx.netGame->sessionTime() >= str::parseInt(shot).value_or(0))
-            ctx.lastFrameRequested = true;
+        // machine's picture of the same moment); "+<ms>" counts from the
+        // race's order (GO DRIVE), and also before the race has started.
+        if (const char* shot = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shot && multiplayer(ctx)) {
+            const bool fromOrder = *shot == '+';
+            const long long at = str::parseInt(fromOrder ? shot + 1 : shot).value_or(0) +
+                                 (fromOrder ? ctx.netGame->raceOrderTime() : 0);
+            if ((fromOrder || ctx.netGame->raceStarted()) && ctx.netGame->sessionTime() >= at)
+                ctx.lastFrameRequested = true;
+        }
         if (multiplayer(ctx)) {
             ctx.netGame->update();
             if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
