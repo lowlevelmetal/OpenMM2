@@ -16,6 +16,7 @@ decides what they mean.
 | `net/Session.h` | Lobby + in-game session (host or client), event queue |
 | `net/Protocol.h` | Wire messages, settings/player structs, game event payloads |
 | `net/Snapshot.h` | `VehicleSnapshot` and the receive-side `SnapshotBuffer` |
+| `net/AmbientState.h` | The shared cruise traffic: `AmbientStateMsg`, `TrafficHitEvent` |
 | `net/ClockSync.h` | Session clock estimation on clients |
 | `net/Discovery.h` | LAN beacon/scanner, broadcast addresses, small UDP socket |
 | `net/PortMapper.h` | Automatic port forwarding (UPnP, PCP, NAT-PMP) |
@@ -165,13 +166,14 @@ Adverts whose protocol version differs are still listed, but flagged
 
 ## Wire protocol
 
-Transport is ENet 1.3 with range-coder compression and three channels:
+Transport is ENet 1.3 with range-coder compression and four channels:
 
 | Channel | Delivery | Traffic |
 | --- | --- | --- |
 | 0 Control | reliable, ordered | handshake, lobby, chat, clock sync, pings |
 | 1 State | unreliable, sequenced | `VehicleState` (client→host), `WorldState` (host→clients) |
 | 2 Events | reliable, ordered | `GameEvent` |
+| 3 Ambient | unreliable, sequenced | `AmbientState` (host→clients): the shared cruise traffic |
 
 Every packet is one message: a `MsgType` byte, then the body, bit-packed with
 `BitStream`. Readers check every length, count and enum range. A malformed
@@ -231,12 +233,15 @@ attempt within `connectTimeoutMs` (8 s).
 | WorldState | H→C | `(id, VehicleSnapshot)` for every other car |
 | GameEvent | both | from, target, type, session time, payload ≤ 1 KiB |
 | PlayerPings | H→C | measured RTT per player, every 2 s |
+| AmbientState | H→C | the shared traffic and police near the client (see "Shared traffic") |
 
 `SessionSettings` holds the session name, city, mode (Cruise, Checkpoint,
 Circuit, Blitz, Cops & Robbers, Crash Course), race id, laps, time of day,
 weather, traffic and pedestrian density (percent), cops on/off, max players
 (protocol limit 16; the original allowed 8), a password flag, the
-join-in-progress policy, and up to 32 extra key/value pairs. The extra pairs let
+join-in-progress policy, whether a cruise shares the host's traffic and police
+(`sharedTraffic`, on by default; protocol version 2), and up to 32 extra
+key/value pairs. The extra pairs let
 the game add options without a protocol bump.
 
 ### Untrusted input
@@ -273,6 +278,16 @@ packet to the game or discovery port, and whatever answers as the router.
 * **Floats.** Snapshot fields are quantized to fixed ranges and event floats
   must be finite (`ReadStream::f32`), so no NaN or infinity reaches physics or
   rendering.
+* **Shared traffic.** An `AmbientState` holds at most 96 cars, ids 0-511,
+  generations 0-7, catalog indices 0-63 and paint jobs 0-15 (ranged fields:
+  nothing else can be read), quantized positions, velocities and spin, and a
+  police target that is a player id or none. A client takes it only during a
+  race, keeps at most 16 unread, and the race refuses a car whose model is not
+  in its own catalog, a repeated id, or a non-finite value, holds a paint job
+  to the jobs the model can show, shows at most 32 police cars and loads each
+  model once per car shown (a model that fails is not tried again). The host
+  takes a client's `TrafficHit` only for a car still on its rail near that
+  client's car, with its velocity quantized to 96 m/s.
 
 ### Session clock
 
@@ -315,7 +330,69 @@ types, with payload structs in `Protocol.h`:
 `RaceFinished{raceTime, position}`, `GoldPickedUp/GoldDropped/GoldDelivered
 {position, team}`, `Collision{other, position, impulse}`,
 `Damage{damage, source}`, `Wrecked`. Ids from `GameEventType::Custom` (0x8000)
-up are free for the game.
+up are free for the game: Cops and Robbers uses 0x8001 and 0x8002, the shared
+cruise traffic's hit report (`TrafficHitEvent`, client to host) 0x8010.
+
+### Shared traffic
+
+An OpenMM2 extra (MM2's network cruise has no traffic and no police,
+`mmGameMulti::Init`; docs/parity/openmm2-only.md): in a multiplayer cruise
+with the host's `sharedTraffic` on, the host runs the ambient traffic and the
+police and sends each client, every 50 ms, an `AmbientState` with the cars near
+it (`game::TrafficHost`, `src/game/net/TrafficSync.h`):
+
+| Field | Encoding |
+| --- | --- |
+| header | u32 session time, u32 the host's light-set steps (1/30 s) since its AI reset, u16 catalog checksum, 3 × i16 origin (whole metres at the client's car), count |
+| id, generation | 9 + 3 bits: the traffic pool slot (0-299) or 400 + the police car's place; the generation changes when the slot is reused |
+| has state | 1 bit; without it only the id and generation travel (13 bits) |
+| kind, model, paint | 1 + 6 + 4 bits: traffic or police, the catalog index (the traffic's vehicle types in the AI map's order, then the police posts' cars: both machines build it from their data), the paint job |
+| position | 15 + 14 + 15 bits: ±512 m across, ±256 m up from the origin (3 cm) |
+| orientation | smallest-three quaternion, 32 bits |
+| flags | brake, horn, indicators left / right (both: hazards), off its rail, wreck (police: out of action), siren, pursuit |
+| motion | a car on its rail: its speed along its heading (11 bits, ±64 m/s; the AI's velocity is exactly that); off its rail and police: velocity 3 × 12 bits (±96 m/s) and spin 3 × 11 bits (±32 rad/s) |
+| police | target player (5 bits, 16 = none), damage, rpm, throttle, gear (27 bits) |
+
+A car on its rail takes 119 bits, a police car 204. Each client gets the
+police chasing it, then the cars within 200 m of its car (kept until 230 m,
+so a car on the edge does not come and go), nearest first, as many as fit in
+1100 bytes. Cars within 80 m, off their rails, police and cars new to the
+client carry their state in every message; the others in every other one
+(alternating by id), and say only "still there" in between.
+
+Each message is complete for its client: a car the client knows that a newer
+message leaves out has gone (out of range, or back in the pool) from that
+message's time; an older message (reordered) adds its states to the cars
+still known but never brings back or replaces one; a new generation is a new
+car, shown where it is rather than blended from its old place, and so is a
+car that moved 25 m (plus 30 m/s of velocity change) further than its
+velocity explains; a car not heard of for 1.5 s is dropped. The client
+(`game::TrafficClient`) interpolates the cars with the remote players'
+`SnapshotBuffer` (Hermite on the velocities, 100 ms behind, extrapolated at
+most 250 ms) and runs its light sets to the host's steps at that time (they
+are deterministic from a reset).
+
+A client's car meets the received cars as kinematic instances moving at their
+interpolated velocities (`game::TrafficProxies` for the traffic, kinematic
+bodies for the police). The host's view of the client's car lags the client's
+own, so a client that hits a moving traffic car often misses it on the host;
+it therefore reports the hit (`TrafficHitEvent`: the car's id and generation
+and its own velocity before the step, reliable, at most once a second per
+car). If the car is still on its rail on the host and the client's car is near
+it there (8 m plus half a second of the relative speed, at most 25 m), the
+host knocks it off as the hit would have, with the impulse of a car of the
+client's mass meeting it at that velocity (elasticity 0.25); the next messages
+bring the result back. A hit the host saw itself has already taken the car off
+its rail, and the report is dropped.
+
+Bandwidth, two players in San Francisco at traffic density 0.5 (the
+single-player cruise default) and cop density 1, measured by the host's
+`nettraffic` log: 18.5 messages a second to the client, 63 cars a message,
+11.0 KB/s (17.5 KB/s before the far cars' alternation). The 1100-byte budget
+bounds it at about 20 KB/s per client, 140 KB/s for seven clients. The
+client's cars within 120 m were 2 cm from the host's at the same session time
+(median; 90 % within 10 cm, 27 cm at worst for far cars between their
+messages).
 
 ### Disconnect reasons
 
@@ -393,7 +470,12 @@ from the car, 0 for a police car (flag 0x08) and 1 for any other
 (`game::freeForAllTeam`, MM2's `mmMultiCR::InitMyPlayer`). The transmission
 is each driver's own (`NetCar::automatic`, the garage's TRANSMISSION) and
 never travels: MM2's session data has none, and `mmGame::Init` sets the car's
-from the player's own state.
+from the player's own state. `RaceConfig::netTraffic` travels as
+`sharedTraffic`, its traffic density as `trafficDensity` and its cop density
+in the extras (both held to 0-100 %); they matter only in a multiplayer
+cruise. A new session starts a cruise with the option on and the
+single-player cruise's densities (`frontend::applyNetTrafficDefaults`), the
+other modes with neither.
 
 ### Menus
 
@@ -404,7 +486,7 @@ from the player's own state.
 | Enter an address | `tcp_dlg` | IP, `ip:port` or host name; blank = search the LAN again; Enter is DONE (`Dialog_TCPIP`); it starts with the driver's last address, which is saved with the driver when a race starts (`Dialog_TCPIP::SetIPAddress`, `mmInterface::BeDone`) |
 | Password | `pass_dlg` | asked before joining a listed session that has one, and when a session joined by address wants one; a wrong password shows `badp_dlg` and asks again (`Dialog_Password`, `mmInterface::Update`) |
 | Lobby | `lobbh_bk` / `lobbj_bk` | `NetArena`: host settings (mode, race, weather, time, laps or gold weight, limit), the race map and the city's name, players (`mmCompRoster` rows: the `ready` icon, which the host always shows, the team dot `blue_dot` / `red_dot` in team games, the name cut to six characters and "..." when wider than 0.09 of the screen, the car), YOU, team lamps for team games, chat line ("Type message here. Press ENTER to send."), the last three chat lines (" Name> text") of this visit, port forwarding status (host, where a race without a map would show it); host: EJECT PLAYER, HOST SETTINGS, SELECT VEHICLE in the row above GO DRIVE (which starts once everyone else is ready); joiner: SELECT VEHICLE, READY. A joiner's READY is cleared when the host changes the settings and when the joiner opens SELECT VEHICLE. BACK and Escape leave the session at once. When the race starts, the lobby's car and the session's event become the driver's last car and event, as for a single-player race (`MultiStartGame` calls `BeDone`). |
-| Host settings | `host_bk` | game type lamps, race name + laps panels (`host_rnm`, `host_lap`) or the Cops & Robbers panel (`host_cr`: game types, limits, gold mass), location, time of day, weather (Clear, Cloudy, Foggy, Raining: `RaceMenuBase::IncWeather` stops at Raining; a snowing session shows "Weather: Snowing" in the lobby), pedestrian density |
+| Host settings | `host_bk` | game type lamps, race name + laps panels (`host_rnm`, `host_lap`) or the Cops & Robbers panel (`host_cr`: game types, limits, gold mass) or, in cruise, OpenMM2's SHARED TRAFFIC panel (on / off, traffic density and cop density sliders with the single-player cruise's defaults 0.5 and 1; drawn by OpenMM2 in the space cruise leaves empty), location, time of day, weather (Clear, Cloudy, Foggy, Raining: `RaceMenuBase::IncWeather` stops at Raining; a snowing session shows "Weather: Snowing" in the lobby), pedestrian density |
 | Eject | `ejct_dlg` | pick a player to remove |
 
 Positions of the provider/race/Cops & Robbers/team lamps, the HOST/JOIN and
@@ -456,7 +538,15 @@ When `config.multiplayer && ctx.netGame`:
    Cops & Robbers `sendGold(GoldPickedUp|GoldDropped|GoldDelivered, position,
    team)`, `sendCollision`, `sendDamage`. Read others' with `takeGameEvents()`
    (`event.as<net::FinishEvent>()` etc.) to rank players and show messages.
-6. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
+6. **Shared traffic** (cruise with `sharedTraffic`): the host runs
+   `ai::World` with the other players (`World::setOtherPlayers`: the traffic
+   populates the roads round them and avoids them; the police chase them as
+   players), applies the clients' `TrafficHitEvent`s before the physics step
+   and after it sends each client its cars (`sendAmbientState`, every 50 ms).
+   A client runs no traffic or police: before its physics step it takes
+   `takeAmbientStates()` and places the received cars, and its light sets
+   follow the host's (`World::advanceLightsTo`).
+7. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
    over (everyone finished, or the time/point limit); every machine sees
    `backToLobby(<its race number>)` and returns with `makeFrontendScreen(ctx, result)`.
    A player who quits early just returns to the frontend (it shows the lobby;
@@ -479,8 +569,13 @@ off the lobby says which UDP port must be opened by hand.
 `mp:chat:<text>`, `mp:ready`, `mp:start`, `mp:team:<0|1>`,
 `mp:mode:<cruise|blitz|circuit|race|cr|crteams|crffa>`,
 `mp:car:<vehicle>[:<paint>]` (what SELECT VEHICLE, a pick in the garage and
-its PREV do), and the pages `hostoptions`, `address`, `hostsettings`,
-`eject`. The script survives a race: after it the menus carry on with the
+its PREV do), `mp:traffic:<on|off>[:<traffic density>:<cop density>]` (the
+shared cruise traffic), and the pages `hostoptions`, `address`, `hostsettings`,
+`eject`. `OPENMM2_DEBUG_NETTRAFFIC` logs the shared cars near each client on
+the host (every message) and on the client (twice a second), with the hits
+and knocks, for comparison; `OPENMM2_DEBUG_NET_SHOT_MS=<session ms>` ends a
+network race at that session time, so each machine's `--screenshot` shows the
+same moment. The script survives a race: after it the menus carry on with the
 commands after the one that started it, and `wait:race` waits until a race
 has been driven. Example: one process hosts
 (`profile:A;page:sessions;mp:host;wait:900`), another joins
@@ -495,3 +590,8 @@ Lobby) and `profile:B;mp:join:127.0.0.1;wait:100;mp:ready;wait:race;wait:100;mp:
 discovery, password refusal, chat, car and ready changes, settings
 propagation, countdown, vehicle state replication, game events, return to
 lobby, host shutdown and eject. Port forwarding is disabled in these tests.
+The shared traffic is tested by `tests/net/test_ambient_state.cpp` (the
+message, malformed input, delivery per client), `tests/game/test_traffic_sync.cpp`
+(interest, budget, spawn, update, despawn, loss, reordering, recycled slots,
+hostile messages), `tests/ai/test_shared_traffic.cpp` (several players'
+roads, avoidance, the light steps) and `tests/phys/test_kinematic_motion.cpp`.

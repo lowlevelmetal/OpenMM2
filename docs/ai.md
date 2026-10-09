@@ -346,7 +346,19 @@ MM2's pedestrians (build 3393, **MM2** unless marked):
 * Pedestrians are not collidable: cars drive through them (no ragdoll in
   MM2). They ignore each other and other cars.
 
-**Deviations** (marked in the code): a single player; the ground and wall
+**Players.** MM2's traffic is written for a list of players (aiMap +0x170,
+`aiMap::AddPlayer` / `RemovePlayer`, at most four): each player's room
+populates its roads with that player's bit in each road's mask
+(`aiPath::AddAmbPlayer` / `RemAmbPlayer`), a road no player keeps is emptied,
+and the goals walk the list for the first player in a car's way, keeping its
+index for `aiGoalAvoidPlayer` (aiVehicleSpline +0xe6). A single-player game
+has one; `ai::Traffic` keeps 16 slots for the shared traffic of a network
+cruise (an OpenMM2 extra), whose other players `World::setOtherPlayers`
+adds. The pedestrians stay the local player's (each machine its own, as in
+MM2's network games).
+
+**Deviations** (marked in the code): a single player (but the traffic's
+list, above); the ground and wall
 probes need the game's collision (`World::setProbe`), otherwise heights come
 from the sidewalk lines and there are no walls; the props come from the
 game (`Pedestrians::setObstacles`; inferred: the race's own props are placed
