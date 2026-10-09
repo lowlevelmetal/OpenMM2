@@ -63,6 +63,7 @@ VehicleRenderer::VehicleRenderer(render::Device& device, TextureLibrary& texture
                                  std::string wheelPrefix)
     : m_device(device), m_textures(textures), m_model(model), m_paintjob(paintjob), m_bodyPart(std::move(bodyPart)),
       m_wheelPrefix(std::move(wheelPrefix)) {
+    m_trailer = str::iequals(m_bodyPart, "TRAILER");
     m_gpu = models.add(model.baseName, model.pkg);
     setPaintjob(paintjob);
     if (!m_gpu)
@@ -118,7 +119,8 @@ void VehicleRenderer::setPaintjob(int paintjob) {
     // draw the paint job's materials as stored.
     m_live = m_paint;
     m_texelDamage.reset();
-    if (m_traffic)
+    // aiVehicleInstance and vehTrailerInstance have no fxTexelDamage.
+    if (m_traffic || m_trailer)
         return;
     for (const auto& mesh : m_model.pkg.meshes)
         if (str::iequals(mesh.part, m_bodyPart) && mesh.lod == asset::Lod::High) {
@@ -320,10 +322,13 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
         return;
     if (m_traffic)
         drawTraffic(pose, *visible);
+    else if (m_trailer)
+        drawTrailer(pose, *visible);
     else
         drawCar(pose, *visible);
     drawShadow(pose);
-    drawGlows(pose, camera);
+    if (!m_trailer) // vehTrailerInstance keeps lvlInstance's empty DrawGlow
+        drawGlows(pose, camera);
 }
 
 void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera, const RoomVisibility::Passes& passes) {
@@ -334,13 +339,16 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera, const R
         if (const auto visible = lodFor(pose, camera)) {
             if (m_traffic)
                 drawTraffic(pose, *visible);
+            else if (m_trailer)
+                drawTrailer(pose, *visible);
             else
                 drawCar(pose, *visible);
         }
     // cityLevel_drawShadows, cityLevel_drawLights: by the room alone.
     if (passes.shadowsAndGlows) {
         drawShadow(pose);
-        drawGlows(pose, camera);
+        if (!m_trailer) // vehTrailerInstance keeps lvlInstance's empty DrawGlow
+            drawGlows(pose, camera);
     }
 }
 
@@ -452,6 +460,25 @@ void VehicleRenderer::drawTraffic(const VehiclePose& pose, asset::Lod lod) {
         if (m)
             drawPart(std::format("{}{}", m_wheelPrefix, i), asset::Lod::High, *m, {}, false);
     }
+}
+
+void VehicleRenderer::drawTrailer(const VehiclePose& pose, asset::Lod lod) {
+    // vehTrailerInstance::Draw: the body at its LOD with the paint job's
+    // shaders as stored; at the high LOD only, TLIGHT while the tow car
+    // brakes harder than 0.1 (an ordinary lit draw in the object pass, not
+    // a glow: its black, fully transparent fxltglowred material leaves it
+    // invisible under the pass's alpha test) and TWHL0-3 at the trailer's
+    // wheel matrices. None of vehCarModel's other parts: no reflection,
+    // decal, breakables, fenders, hubs or TWHL4/5, so TWHL0/1's medium and
+    // low meshes (modelled away from their pivots) are never drawn.
+    drawPart(m_bodyPart, lod, pose.body, {}, false);
+    if (lod != asset::Lod::High)
+        return;
+    if (pose.brakeLights)
+        drawPart("TLIGHT", asset::Lod::High, pose.body, {}, false);
+    for (std::size_t i = 0; i < 4; ++i)
+        if (pose.hasWheelWorld && pose.wheelValid[i])
+            drawPart(std::format("{}{}", m_wheelPrefix, i), asset::Lod::High, pose.wheelWorld[i], {}, false);
 }
 
 std::optional<Mat34> groundShadowMatrix(const Mat34& body, const VehicleRenderer::GroundProbe& probe) {

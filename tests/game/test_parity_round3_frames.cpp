@@ -3,6 +3,8 @@
 #include "TestData.h"
 #include "ai/World.h"
 #include "city/CityData.h"
+#include "game/ModelLibrary.h"
+#include "game/TextureLibrary.h"
 #include "game/TrafficBodies.h"
 #include "game/VehicleRenderer.h"
 #include "phys/World.h"
@@ -12,6 +14,9 @@
 #include <array>
 #include <cmath>
 #include <memory>
+#include <set>
+#include <string>
+#include <utility>
 #include <vector>
 
 using namespace mm2;
@@ -56,6 +61,81 @@ public:
 private:
     std::array<Vec3, 4> m_corners;
 };
+
+// A device that keeps the draw calls (and draws nothing).
+class RecordingDevice final : public render::Device {
+public:
+    const render::DeviceInfo& info() const override { return m_info; }
+    render::TextureHandle createTexture(const render::TextureDesc&,
+                                        std::span<const render::TextureData>) override {
+        return {++m_next};
+    }
+    void updateTexture(render::TextureHandle, std::uint32_t, const render::Rect&, const void*,
+                       std::uint32_t) override {}
+    void destroyTexture(render::TextureHandle) override {}
+    render::BufferHandle createBuffer(render::BufferKind, std::size_t, const void*) override {
+        return {++m_next};
+    }
+    void updateBuffer(render::BufferHandle, std::size_t, std::span<const std::byte>) override {}
+    void destroyBuffer(render::BufferHandle) override {}
+    render::BufferSlice uploadTransient(render::BufferKind, std::span<const std::byte>) override {
+        return {{++m_next}, 0};
+    }
+    void applySettings(const render::DisplaySettings&) override {}
+    void notifyResized() override {}
+    bool beginFrame() override { return true; }
+    render::Extent2D outputExtent() const override { return {640, 480}; }
+    render::Extent2D sceneExtent() const override { return {640, 480}; }
+    void beginScene(const render::ClearValues&) override {}
+    void endScene() override {}
+    void beginOverlay(const Vec4&) override {}
+    void endOverlay() override {}
+    void endFrame() override {}
+    void setViewport(const render::Viewport&) override {}
+    void setScissor(const render::Rect*) override {}
+    void clear(const render::ClearValues&) override {}
+    void setFrameConstants(const render::FrameConstants&) override {}
+    void draw(const render::DrawCall& call) override { calls.push_back(call); }
+    void requestCapture() override {}
+    bool readCapture(render::Image&) override { return false; }
+    void waitIdle() override {}
+    const render::FrameStats& stats() const override { return m_stats; }
+
+    std::vector<render::DrawCall> calls;
+
+private:
+    render::DeviceInfo m_info;
+    render::FrameStats m_stats;
+    std::uint32_t m_next = 0;
+};
+
+// The meshes ("<PART>_<LOD>") of `model` the recorded calls drew, and the
+// world matrix of each call that drew one.
+struct Drawn {
+    std::set<std::string> meshes;
+    std::vector<std::pair<std::string, Mat44>> worlds;
+};
+
+Drawn drawnMeshes(const RecordingDevice& device, const game::GpuModel& model) {
+    auto lodName = [](asset::Lod lod) {
+        switch (lod) {
+        case asset::Lod::High: return "H";
+        case asset::Lod::Medium: return "M";
+        case asset::Lod::Low: return "L";
+        case asset::Lod::VeryLow: return "VL";
+        default: return "?";
+        }
+    };
+    Drawn out;
+    for (const auto& call : device.calls)
+        for (const auto& mesh : model.meshes)
+            if (call.vertices.buffer == mesh.vertices) {
+                const std::string name = mesh.part + "_" + lodName(mesh.lod);
+                out.meshes.insert(name);
+                out.worlds.emplace_back(name, call.constants.world);
+            }
+    return out;
+}
 
 void expectSameMatrix(const Mat34& a, const Mat34& b, const char* what) {
     for (int r = 0; r < 4; ++r) {
@@ -194,4 +274,68 @@ TEST(Round3Frames, TrafficShadowPlacement) {
     EXPECT_NEAR(under.m1.y, 1.0f, 1e-6f);
     EXPECT_NEAR(under.m2.x, flipped.m2.x, 1e-6f);
     expectSameMatrix(game::trafficShadowMatrix(flipped, false, none), flipped, "upside down, no ground");
+}
+
+// vehTrailerInstance::Draw: a semi trailer draws its body alone below the
+// high LOD; at H the body, TLIGHT while the tow car brakes (in the object
+// pass) and TWHL0-3 at its wheel matrices, nothing else of vehCarModel's
+// (in particular no TWHL0/1 medium meshes, which are modelled away from
+// their pivots), and no glows (vehTrailerInstance keeps lvlInstance's
+// empty DrawGlow).
+TEST(Round3Frames, TrailerDrawnAsVehTrailerInstance) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& vfs = *test::gameData();
+    auto read = [&](std::string_view path) { return vfs.readAll(path); };
+    auto model = asset::loadVehicleModel("vpsemi_trailer", read);
+    ASSERT_TRUE(model);
+    RecordingDevice device;
+    game::TextureLibrary textures(device, vfs);
+    game::ModelLibrary models(device, vfs);
+    game::VehicleRenderer r(device, textures, models, *model, 0, "TRAILER", "TWHL");
+    const game::GpuModel* gpu = models.get("vpsemi_trailer");
+    ASSERT_TRUE(gpu);
+    ASSERT_TRUE(gpu->find("TWHL0", asset::Lod::Medium)) << "the trailer has a TWHL0 medium mesh";
+
+    // Side on to a camera at the origin looking down -Z, 15 m away.
+    game::VehiclePose pose;
+    pose.body = Mat34::rotationY(1.5707964f);
+    pose.body.m3 = {0.0f, 0.0f, -15.0f};
+    for (std::size_t i = 0; i < 4; ++i) {
+        const auto* pivot = model->pivot("twhl" + std::to_string(i));
+        ASSERT_TRUE(pivot);
+        pose.wheelWorld[i] = Mat34::translation(pivot->origin) * pose.body;
+        pose.wheelValid[i] = true;
+    }
+    pose.hasWheelWorld = true;
+    pose.brakeLights = true;
+    pose.headlights = true;
+    const Mat34 camera;
+
+    r.draw(pose, camera);
+    const Drawn near = drawnMeshes(device, *gpu);
+    EXPECT_EQ(near.meshes, (std::set<std::string>{"TRAILER_H", "TLIGHT_L", "TWHL0_H", "TWHL1_H", "TWHL2_H",
+                                                  "TWHL3_H", "SHADOW_H"}));
+    for (const auto& [name, world] : near.worlds)
+        for (std::size_t i = 0; i < 4; ++i)
+            if (name == "TWHL" + std::to_string(i) + "_H") {
+                const Mat44 expect = Mat44::fromMat34(pose.wheelWorld[i]);
+                for (int a = 0; a < 4; ++a)
+                    for (int b = 0; b < 4; ++b)
+                        EXPECT_FLOAT_EQ(world.m[a][b], expect.m[a][b]) << name;
+            }
+    EXPECT_EQ(near.worlds.size(), device.calls.size()) << "no glow cards";
+
+    // Not braking: no TLIGHT.
+    device.calls.clear();
+    pose.brakeLights = false;
+    r.draw(pose, camera);
+    EXPECT_FALSE(drawnMeshes(device, *gpu).meshes.contains("TLIGHT_L"));
+
+    // 80 m away: the medium LOD body and no wheels.
+    device.calls.clear();
+    pose.body.m3.z = -80.0f;
+    for (std::size_t i = 0; i < 4; ++i)
+        pose.wheelWorld[i].m3.z = pose.wheelWorld[i].m3.z - 65.0f;
+    r.draw(pose, camera);
+    EXPECT_EQ(drawnMeshes(device, *gpu).meshes, (std::set<std::string>{"TRAILER_M", "SHADOW_H"}));
 }

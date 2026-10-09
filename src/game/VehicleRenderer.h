@@ -57,7 +57,8 @@ public:
     using GroundProbe = std::function<bool(const Vec3& from, const Vec3& to, Vec3& point, Vec3& normal)>;
 
     // `bodyPart`/`wheelPrefix` select the part names: "BODY"/"WHL" for cars,
-    // "TRAILER"/"TWHL" for semi trailers.
+    // "TRAILER"/"TWHL" for semi trailers, which are drawn like
+    // vehTrailerInstance (see drawTrailer).
     VehicleRenderer(render::Device& device, TextureLibrary& textures, ModelLibrary& models,
                     const asset::VehicleModel& model, int paintjob, std::string bodyPart = "BODY",
                     std::string wheelPrefix = "WHL");
@@ -148,6 +149,7 @@ private:
                   bool live = true);
     void drawCar(const VehiclePose& pose, asset::Lod lod);
     void drawTraffic(const VehiclePose& pose, asset::Lod lod);
+    void drawTrailer(const VehiclePose& pose, asset::Lod lod);
     void drawReflection(const Mat34& body);
     // The world matrix wheel `i` (0-5) is drawn with, if the car has it.
     std::optional<Mat34> wheelMatrix(const VehiclePose& pose, std::size_t i) const;
@@ -181,6 +183,7 @@ private:
     std::function<void(std::size_t)> m_ejectedPartReset;
     bool m_wreckEjected = false;
     bool m_traffic = false;
+    bool m_trailer = false; // a vehTrailerInstance ("TRAILER" body)
     const RoomVisibility* m_rooms = nullptr;
     int m_room = 0; // lvlInstance's room (vehCar::Update)
 };

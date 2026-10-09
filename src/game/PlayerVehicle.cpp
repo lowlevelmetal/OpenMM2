@@ -266,7 +266,7 @@ VehiclePose SimVehicle::trailerPose() const {
         pose.wheelValid[i] = true;
     }
     pose.hasWheelWorld = true;
-    // vehTrailerInstance::Draw: the tail lights while the tow car brakes over 0.1.
+    // vehTrailerInstance::Draw: TLIGHT while the tow car brakes over 0.1.
     pose.brakeLights = m_sim.brakes > 0.1f;
     return pose;
 }
