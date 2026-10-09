@@ -238,6 +238,8 @@ private:
     std::map<std::uint8_t, VehicleSnapshot> m_pendingStates; // newest unsent state per player
     std::function<bool(std::uint8_t, GameEventMsg&)> m_eventFilter;
     std::unique_ptr<LanBeacon> m_beacon;
+    // Wrong passwords per address: count and the time of the first one.
+    std::map<std::uint32_t, std::pair<int, std::uint64_t>> m_passwordFailures;
 
     // Client
     PeerId m_hostPeer = kInvalidPeer;

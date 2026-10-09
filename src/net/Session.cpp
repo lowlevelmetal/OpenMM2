@@ -67,6 +67,26 @@ constexpr double kChatRate = 2.0, kChatBurst = 8.0;
 constexpr double kUpdateRate = 10.0, kUpdateBurst = 20.0;
 constexpr double kEventRate = 30.0, kEventBurst = 60.0;
 
+// An address that sent this many wrong passwords within the window is turned
+// away until the window ends, so guessing a lobby password online costs
+// minutes per handful of guesses instead of one round trip each.
+constexpr int kPasswordAttempts = 5;
+constexpr std::uint64_t kPasswordWindowMs = 60000;
+using PasswordFailures = std::map<std::uint32_t, std::pair<int, std::uint64_t>>;
+
+bool passwordLockedOut(PasswordFailures& failures, std::uint32_t ip, std::uint64_t now) {
+    std::erase_if(failures, [&](const auto& f) { return now - f.second.second > kPasswordWindowMs; });
+    const auto it = failures.find(ip);
+    return it != failures.end() && it->second.first >= kPasswordAttempts;
+}
+
+void notePasswordFailure(PasswordFailures& failures, std::uint32_t ip, std::uint64_t now) {
+    const auto it = failures.try_emplace(ip, 0, now).first;
+    if (now - it->second.second > kPasswordWindowMs)
+        it->second = {0, now};
+    ++it->second.first;
+}
+
 std::array<std::byte, 16> randomNonce() {
     std::random_device rd;
     std::array<std::byte, 16> n{};
@@ -191,6 +211,7 @@ void Session::resetState() {
     m_countdownEnd = 0;
     m_hostEpoch = 0;
     m_lastPingBroadcast = 0;
+    m_passwordFailures.clear();
     m_hostPeer = kInvalidPeer;
     m_connectStarted = 0;
     m_clock.reset();
@@ -447,6 +468,11 @@ void Session::handleTransportEvent(TransportEvent& e) {
                 m_transport->disconnect(e.peer, toData(DisconnectReason::ServerFull));
                 return;
             }
+            if (!m_password.empty() &&
+                passwordLockedOut(m_passwordFailures, m_transport->stats(e.peer).address.ip, monotonicMs())) {
+                m_transport->disconnect(e.peer, toData(DisconnectReason::BadPassword));
+                return;
+            }
             Remote r;
             r.peer = e.peer;
             r.nonce = randomNonce();
@@ -525,8 +551,10 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         };
         if (hello.protocolVersion != kProtocolVersion)
             return reject(DisconnectReason::VersionMismatch);
-        if (!m_password.empty() && hello.passwordProof != passwordProof(r.nonce, m_password))
+        if (!m_password.empty() && hello.passwordProof != passwordProof(r.nonce, m_password)) {
+            notePasswordFailure(m_passwordFailures, m_transport->stats(peer).address.ip, monotonicMs());
             return reject(DisconnectReason::BadPassword);
+        }
         if (m_players.size() >= m_settings.maxPlayers)
             return reject(DisconnectReason::ServerFull);
         if (m_phase != SessionPhase::Lobby && !m_settings.allowJoinInProgress)

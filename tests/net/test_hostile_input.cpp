@@ -339,6 +339,36 @@ TEST(HostileInput, HostRejectsCarNamesThatAreNotBaseNames) {
     EXPECT_EQ(host.session->player(id)->color, 2);
 }
 
+// --- Password ---------------------------------------------------------------------------
+
+// Guessing a lobby password online: after five wrong ones an address is
+// turned away when it connects, for a minute, the right password included.
+TEST(HostileInput, WrongPasswordsLockTheAddressOut) {
+    HostParams hp = hostParams();
+    hp.password = "hunter2";
+    Peer host;
+    ASSERT_TRUE(host.session->host(hp));
+    auto attempt = [&](const std::string& password) {
+        Peer guesser;
+        JoinParams jp;
+        jp.host = Address::loopback(host.session->port());
+        jp.player.name = "Guesser";
+        jp.password = password;
+        EXPECT_TRUE(guesser.session->join(jp));
+        EXPECT_TRUE(waitFor([&] {
+            host.pump();
+            guesser.pump();
+            return guesser.find<ev::JoinFailed>() || guesser.find<ev::JoinAccepted>();
+        }));
+        const auto* failed = guesser.find<ev::JoinFailed>();
+        return failed ? failed->reason : DisconnectReason::None;
+    };
+    for (int i = 0; i < 5; ++i)
+        EXPECT_EQ(attempt(std::format("guess{}", i)), DisconnectReason::BadPassword);
+    EXPECT_EQ(attempt("hunter2"), DisconnectReason::BadPassword);
+    EXPECT_EQ(host.session->players().size(), 1u);
+}
+
 // --- Floods -----------------------------------------------------------------------------
 
 // A client cannot make the host relay an unbounded stream of chat lines,
