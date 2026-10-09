@@ -388,8 +388,10 @@ its rail, and the report is dropped.
 Bandwidth, two players in San Francisco at traffic density 0.5 (the
 single-player cruise default) and cop density 1, measured by the host's
 `nettraffic` log: 18.5 messages a second to the client, 63 cars a message,
-11.0 KB/s (17.5 KB/s before the far cars' alternation). The 1100-byte budget
-bounds it at about 20 KB/s per client, 140 KB/s for seven clients. The
+11.0 KB/s (17.5 KB/s before the far cars' alternation); with a second client
+600 m away, 10.6 and 10.0 KB/s (60 and 54 cars), each client its own cars and
+the roads round each populated. The 1100-byte budget bounds it at about
+20 KB/s per client, 140 KB/s for seven clients. The
 client's cars within 120 m were 2 cm from the host's at the same session time
 (median; 90 % within 10 cm, 27 cm at worst for far cars between their
 messages).
