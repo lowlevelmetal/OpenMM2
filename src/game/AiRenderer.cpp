@@ -185,14 +185,23 @@ void AiRenderer::drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& t
     m_device.draw(call);
 }
 
-void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows,
-                            const RoomVisibility::Passes* passes) {
+Mat34 signalGlowFrame(const Mat34& frame, const Vec3& cg) {
+    // aiTrafficLightInstance::DrawGlow: GetMatrix less R * CG (summed y, z,
+    // then x of the CG).
+    Mat34 m = frame;
+    m.m3 = {m.m3.x - ((frame.m1.x * cg.y + frame.m2.x * cg.z) + frame.m0.x * cg.x),
+            m.m3.y - ((frame.m1.y * cg.y + frame.m2.y * cg.z) + frame.m0.y * cg.x),
+            m.m3.z - ((frame.m1.z * cg.y + frame.m2.z * cg.z) + frame.m0.z * cg.x)};
+    return m;
+}
+
+void AiRenderer::drawSignal(const ai::Signal& signal, const Mat34& frame, const Camera& camera,
+                            bool nightGlows, const RoomVisibility::Passes* passes) {
     const GpuModel* model = m_models.get(signal.model);
     if (!model)
         return;
     // aiTrafficLightInstance::Draw: the body at GetMatrix, the instance's
     // frame at its CG (the body mesh is centred on it).
-    const Mat34 frame = signal.frame();
     // lvlInstance::IsVisible with the Object Detail thresholds, and
     // aiTrafficLightInstance::Draw's first shader set.
     const auto lod = objectLod(viewDepth(camera.transform, frame.m3), geomRadius(*model, ""), m_detail);
@@ -219,7 +228,7 @@ void AiRenderer::drawSignal(const ai::Signal& signal, const Camera& camera, bool
     if (glow && walk) {
         // DrawGlow: GetMatrix less R * CG, the base the glow meshes are
         // modelled from.
-        const Mat44 world = Mat44::fromMat34(signal.transform);
+        const Mat44 world = Mat44::fromMat34(signalGlowFrame(frame, signal.cg));
         MeshDrawOptions opts;
         opts.lighting = false;
         opts.fog = false;
@@ -308,15 +317,24 @@ void AiRenderer::draw(const ai::World& world, const Camera& camera, const Frustu
     int index = 0;
     for (const auto& signal : world.signals()) {
         const int id = index++;
-        if (!frustum.intersectsSphere(signal.position(), 6.0f))
+        // The aiTrafficLightInstance's GetMatrix while it stands; once it
+        // broke loose it is neither drawn nor glows (its parts are props).
+        Mat34 frame = signal.frame();
+        if (m_signalFrame) {
+            const auto f = m_signalFrame(id);
+            if (!f)
+                continue;
+            frame = *f;
+        }
+        if (!frustum.intersectsSphere(frame.m3, 6.0f))
             continue;
         if (rooms) {
-            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, signal.position());
+            const RoomVisibility::Passes passes = roomPasses(m_signalRooms, id, frame.m3);
             if (!passes.objects && !passes.shadowsAndGlows)
                 continue;
-            drawSignal(signal, camera, time >= TimeOfDay::Evening, &passes);
+            drawSignal(signal, frame, camera, time >= TimeOfDay::Evening, &passes);
         } else {
-            drawSignal(signal, camera, time >= TimeOfDay::Evening, nullptr);
+            drawSignal(signal, frame, camera, time >= TimeOfDay::Evening, nullptr);
         }
         ++m_stats.signals;
     }

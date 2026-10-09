@@ -557,6 +557,36 @@ public:
             m_weather->draw(dev, *m_textures, m_cards, camera.transform);
     }
 
+    // aiTrafficLightInstance is an unhit Y banger of its model's banger data
+    // (Init: the pole's base + R * CG, SetMatrix keeping the Y rotation;
+    // SetFourWay moves it to the room of its CG, GetPosition): a prop the
+    // cars collide with and knock over into its BREAKnn parts. AiRenderer
+    // draws it with its signal while it stands (BangerSet leaves it out).
+    void addTrafficLightProps() {
+        m_signalProps.clear();
+        if (!m_ai || !m_bangers)
+            return;
+        for (const ai::Signal& s : m_ai->signals()) {
+            game::bangers::PlacedProp p;
+            p.model = s.model;
+            p.transform = s.transform;
+            p.room = m_cityLevel ? m_cityLevel->findRoom(s.position(), 0) : 0;
+            p.ownerDrawn = true;
+            m_signalProps.push_back(m_bangers->addOne(p));
+        }
+        if (m_aiRenderer)
+            m_aiRenderer->setSignalFrames([this](int i) -> std::optional<Mat34> {
+                const auto& signals = m_ai->signals();
+                const auto k = static_cast<std::size_t>(i);
+                if (k >= m_signalProps.size() || !m_signalProps[k] || !m_bangers)
+                    return k < signals.size() ? std::optional<Mat34>(signals[k].frame()) : std::nullopt;
+                const std::size_t prop = *m_signalProps[k];
+                if (!m_bangers->standing(prop))
+                    return std::nullopt;
+                return m_bangers->instances()[prop].matrix;
+            });
+    }
+
     // A traffic car TrafficBodies holds: where it is, and its wheels while
     // it has a body (aiVehicleInstance::Draw).
     std::optional<game::AiRenderer::PhysicalCar> physicalTrafficCar(int id) const {
@@ -2793,6 +2823,8 @@ private:
                 m_cityLevel->addSource(m_gizmos.get());
             if (m_bank && ctx.mixer)
                 m_gizmos->loadAudio(ctx.game->vfs, *m_bank, *ctx.mixer, &m_audioSlots);
+            // aiMap::Init: the traffic lights (aiTrafficLightSet::SetFourWay).
+            addTrafficLightProps();
             // aiMap::Init: the cable cars, unless the network game cleared
             // the state pack's EnableCableCars (mmGameMulti::Init).
             if (m_ai && !multiplayer(ctx)) {
@@ -3723,6 +3755,8 @@ private:
     std::string m_voiceCategory;
     int m_voiceFileNum = -1;
     std::vector<game::TrafficImpact> m_trafficImpacts;
+    // The BangerSet instance of each traffic light (ai::World::signals()).
+    std::vector<std::optional<std::size_t>> m_signalProps;
     struct Opponent {
         std::size_t sessionIndex = 0; // in Session::opponents() (cars that fail to load are skipped)
         Mat34 spawn;                  // its start (the car's reset place keeps the settled one)

@@ -8,6 +8,8 @@
 #include "game/ModelLibrary.h"
 #include "game/TextureLibrary.h"
 #include "game/TrafficBodies.h"
+#include "game/bangers/BangerSet.h"
+#include "game/fx/ParticleRenderer.h"
 #include "game/VehicleRenderer.h"
 #include "phys/World.h"
 
@@ -404,4 +406,114 @@ TEST(Round3Frames, HeadlightSweepIsInWorldSpace) {
     pose.siren = false;
     r.draw(pose, camera);
     EXPECT_FLOAT_EQ(r.headlightDirections()[0].x, -pose.body.m2.x);
+}
+
+namespace {
+
+// One room with a floor at height `y`, listing a source's instances.
+class FloorRoom final : public phys::Level {
+public:
+    FloorRoom(const game::InstanceSource& source, float y) : m_source(source), m_y(y) {}
+    int findRoom(const Vec3&, int) const override { return 1; }
+    int touchedNeighbors(int*, int, int, const Vec3&, float) const override { return 0; }
+    void collect(const int*, int, const Vec3& c, float, phys::LevelBound& out) const override {
+        out.clear();
+        const Vec3 floor[4] = {{c.x - 500, m_y, c.z - 500}, {c.x - 500, m_y, c.z + 500},
+                               {c.x + 500, m_y, c.z + 500}, {c.x + 500, m_y, c.z - 500}};
+        out.addPolygon(floor, 4, {0, 1, 0}, 0);
+    }
+    void instances(int room, std::vector<phys::Instance*>& out) const override {
+        m_source.instancesIn(room, out);
+    }
+
+private:
+    const game::InstanceSource& m_source;
+    float m_y;
+};
+
+} // namespace
+
+// aiTrafficLightInstance is an unhit Y banger of its model's data: it stands
+// at the pole's base + R * CG (the body's frame), collides as a prop and
+// breaks loose into its BREAKnn parts, which are then drawn as ordinary hit
+// bangers; while it stands, BangerSet leaves its drawing to the signal
+// (AiRenderer).
+TEST(Round3Frames, TrafficLightsAreProps) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& vfs = *test::gameData();
+    auto city = city::loadCity(vfs, "sf");
+    ASSERT_TRUE(city);
+    auto world = ai::World::create(*city, vfs, {});
+    ASSERT_TRUE(world);
+    ASSERT_FALSE(world->signals().empty());
+    const ai::Signal& signal = world->signals().front();
+
+    game::bangers::BangerDataLibrary lib(vfs);
+    game::bangers::BangerSet set(lib);
+    FloorRoom level(set, signal.transform.m3.y);
+    phys::MaterialTable materials;
+    phys::World physics(materials);
+    physics.setLevel(&level);
+    set.setWorld(&physics);
+
+    game::bangers::PlacedProp p;
+    p.model = signal.model;
+    p.transform = signal.transform;
+    p.room = 1;
+    p.ownerDrawn = true;
+    const auto index = set.addOne(p);
+    ASSERT_TRUE(index);
+    expectSameMatrix(set.instances()[*index].matrix, signal.frame(), "the light's frame");
+    EXPECT_TRUE(set.standing(*index));
+    std::vector<phys::Instance*> listed;
+    set.instancesIn(1, listed);
+    ASSERT_EQ(listed.size(), 1u) << "collidable in its room";
+    ASSERT_TRUE(listed[0]->bound(0));
+
+    // Standing: BangerSet draws nothing of it.
+    RecordingDevice device;
+    game::TextureLibrary textures(device, vfs);
+    game::ModelLibrary models(device, vfs);
+    game::fx::ParticleRenderer cards;
+    game::Camera camera;
+    camera.transform = game::Camera::lookAt(signal.frame().m3 + Vec3{12.0f, 2.0f, 12.0f}, signal.frame().m3);
+    const Mat44 proj = Mat44::perspective(1.0f, 4.0f / 3.0f, camera.nearPlane, camera.farPlane, true);
+    const game::Frustum frustum(camera.view() * proj);
+    set.draw(device, models, textures, cards, frustum, camera, {});
+    const game::GpuModel* gpu = models.get(signal.model);
+    ASSERT_TRUE(gpu);
+    EXPECT_TRUE(drawnMeshes(device, *gpu).meshes.empty());
+
+    // A heavy box at 20 m/s into the pole's middle knocks it over.
+    phys::BoundBox box({1.8f, 1.2f, 4.0f});
+    box.makeOwnMaterial();
+    phys::Body car;
+    car.ics.setMass(1.8f, 1.2f, 4.0f, 1500.0f);
+    car.collisionBound = &box;
+    car.place(Mat34::translation(signal.frame().m3 + Vec3{0.0f, 0.0f, 3.0f}));
+    car.ics.gravity = {0, 0, 0};
+    car.ics.linearVelocity = {0.0f, 0.0f, -20.0f};
+    car.ics.linearMomentum = {0.0f, 0.0f, -20.0f * 1500.0f};
+    physics.add(&car);
+    for (int i = 0; i < 60 && set.standing(*index); ++i) {
+        physics.step(kFrame);
+        set.update(kFrame);
+    }
+    ASSERT_FALSE(set.standing(*index)) << "the light broke loose";
+    EXPECT_EQ(set.instances()[*index].state, game::bangers::BangerSet::State::Gone);
+    std::size_t parts = 0;
+    for (const auto& inst : set.instances())
+        if (inst.everHit && inst.model == signal.model && inst.part >= 0) {
+            ++parts;
+            EXPECT_FALSE(inst.ownerDrawn);
+        }
+    EXPECT_EQ(static_cast<int>(parts), set.instances()[*index].data->numParts);
+    device.calls.clear();
+    set.draw(device, models, textures, cards, frustum, camera, {});
+    const Drawn drawn = drawnMeshes(device, *gpu);
+    EXPECT_FALSE(drawn.meshes.empty()) << "its parts are drawn";
+    for (const auto& name : drawn.meshes)
+        EXPECT_TRUE(name.starts_with("BREAK")) << name;
+    physics.remove(&car);
+    set.setWorld(nullptr);
 }

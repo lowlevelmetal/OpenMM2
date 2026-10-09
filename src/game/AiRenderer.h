@@ -53,6 +53,13 @@ public:
     // DrawShadow's lvlInstance::DrawPhysics).
     void setGroundProbe(VehicleRenderer::GroundProbe probe) { m_probe = std::move(probe); }
 
+    // The traffic lights' aiTrafficLightInstances as props (BangerSet):
+    // signal i's GetMatrix while it stands, nullopt once it broke loose
+    // (then neither its body nor its glows are drawn). Without one each
+    // signal stands at Signal::frame.
+    using SignalFrameQuery = std::function<std::optional<Mat34>(int signalIndex)>;
+    void setSignalFrames(SignalFrameQuery query) { m_signalFrame = std::move(query); }
+
     // The rooms the city listed for the view (CityRenderer::rooms()): cars,
     // pedestrians and signals are then drawn from the rooms MM2 keeps them
     // in (RoomVisibility).
@@ -75,7 +82,7 @@ private:
     const asset::PedType* pedType(const std::string& name);
     void drawPed(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
     void drawSkeleton(const ai::Pedestrian& ped, const asset::PedType& type, const Camera& camera);
-    void drawSignal(const ai::Signal& signal, const Camera& camera, bool nightGlows,
+    void drawSignal(const ai::Signal& signal, const Mat34& frame, const Camera& camera, bool nightGlows,
                     const RoomVisibility::Passes* passes);
     // lvlLevel::MoveToRoom's room of an object, found from its last one
     // (cityLevel::FindRoomId).
@@ -93,11 +100,17 @@ private:
     Stats m_stats;
     const RoomVisibility* m_rooms = nullptr;
     VehicleRenderer::GroundProbe m_probe;
+    SignalFrameQuery m_signalFrame;
     // The rooms of the traffic cars (aiVehicleAmbient's update after its
     // spline, aiVehicleActive::Update), the pedestrians (aiPedestrian::Update)
     // and the signals (aiTrafficLightSet::SetFourWay), by id or index.
     std::unordered_map<int, int> m_carRooms, m_pedRooms, m_signalRooms;
 };
+
+// aiTrafficLightInstance::DrawGlow's matrix for the glow and WALK meshes,
+// which are modelled from the pole's base: the instance's GetMatrix
+// (`frame`, at the CG) less R * CG.
+Mat34 signalGlowFrame(const Mat34& frame, const Vec3& cg);
 
 // The direction pedAnimation::DrawSkeleton widens a pedestrian's stick
 // figure along, in world space, for a pedestrian placed at `ped` seen from
