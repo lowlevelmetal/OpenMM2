@@ -341,7 +341,8 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     // race. Crash courses load all of theirs; each event's "numopp" says
     // which take part. Multiplayer has neither racers nor police:
     // mmGameMulti::Init sets the opponent and cop densities to 0 (and the race
-    // modes load no AI map at all).
+    // modes load no AI map at all); OpenMM2's shared cruise traffic brings
+    // the police back (below).
     const bool racing = config.mode == GameMode::Circuit || config.mode == GameMode::Checkpoint;
     if (s.aiMap && s.race && !config.multiplayer && (racing || config.mode == GameMode::CrashCourse)) {
         const std::string& any = !s.race->aiMap.empty() ? s.race->aiMap : s.race->waypoints;
@@ -372,7 +373,10 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
             s.opponents.push_back(std::move(op));
         }
     }
-    if (s.aiMap && !config.multiplayer) {
+    // OpenMM2 extra: a network cruise with the host's shared traffic has
+    // the cruise's police too (the host drives them, the clients show them).
+    const bool netPolice = config.multiplayer && config.mode == GameMode::Cruise && config.netTraffic;
+    if (s.aiMap && (!config.multiplayer || netPolice)) {
         for (const auto& p : s.aiMap->police) {
             PoliceSetup ps;
             ps.vehicle = str::lower(p.car);

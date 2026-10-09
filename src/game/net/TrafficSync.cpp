@@ -286,6 +286,77 @@ void TrafficClient::update(double renderTime) {
     }
 }
 
+TrafficCatalog buildTrafficCatalog(std::span<const ai::VehicleData> types, std::span<const std::string> police) {
+    TrafficCatalog c;
+    for (const ai::VehicleData& t : types)
+        c.add(t.model);
+    for (const std::string& p : police)
+        c.add(p);
+    return c;
+}
+
+SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const TrafficBodyState* body, bool horn) {
+    SharedCar s;
+    s.id = car.id;
+    s.kind = net::AmbientKind::Traffic;
+    s.generation = car.spawns;
+    s.model = model;
+    s.paint = paint;
+    s.transform = body ? body->transform : car.transform;
+    s.speed = car.speed;
+    s.velocity = body ? body->velocity : car.velocity;
+    s.angularVelocity = body ? body->angularVelocity : Vec3{};
+    std::uint8_t f = 0;
+    if (car.braking)
+        f |= net::kAmbientBrake;
+    if (horn)
+        f |= net::kAmbientHorn;
+    if (car.signal == ai::TurnSignal::Left || car.signal == ai::TurnSignal::Hazard)
+        f |= net::kAmbientSignalLeft;
+    if (car.signal == ai::TurnSignal::Right || car.signal == ai::TurnSignal::Hazard)
+        f |= net::kAmbientSignalRight;
+    // Out of normal driving (aiObstacle::InAccident: any goal but driving
+    // its rail), or simulated.
+    if (body || car.physical || car.goal != ai::AmbientGoal::RandomDrive)
+        f |= net::kAmbientOffRail;
+    if (car.wreck)
+        f |= net::kAmbientWrecked;
+    s.flags = f;
+    return s;
+}
+
+ai::AmbientCar ambientCarOf(const TrafficClient::Car& car, const std::string& model, const ai::VehicleData* data,
+                            int paintJobs, float tireRotation) {
+    ai::AmbientCar a;
+    a.id = car.id;
+    a.data = data;
+    a.model = model;
+    // AiRenderer's paint job is trunc(paint x (jobs - 1)): the middle of the
+    // job's range gives it back exactly.
+    a.paint = paintJobs > 1 ? (static_cast<float>(car.paint) + 0.5f) / static_cast<float>(paintJobs - 1) : 0.0f;
+    a.transform = car.transform;
+    a.velocity = car.velocity;
+    a.speed = car.speed;
+    a.tireRotation = tireRotation;
+    a.braking = (car.flags & net::kAmbientBrake) != 0;
+    const bool left = (car.flags & net::kAmbientSignalLeft) != 0;
+    const bool right = (car.flags & net::kAmbientSignalRight) != 0;
+    a.signal = left && right ? ai::TurnSignal::Hazard
+               : left        ? ai::TurnSignal::Left
+               : right       ? ai::TurnSignal::Right
+                             : ai::TurnSignal::None;
+    // The blink phase is the host's slot's own random number; the client
+    // keeps one per id (inferred: the blinking need not match).
+    a.blinkPhase = (car.id * 37) & 0xFF;
+    a.horn = car.hornStarted;
+    const bool offRail = (car.flags & net::kAmbientOffRail) != 0;
+    a.goal = offRail ? ai::AmbientGoal::Collision : ai::AmbientGoal::RandomDrive;
+    a.physical = offRail;
+    a.wreck = (car.flags & net::kAmbientWrecked) != 0;
+    a.spawns = car.generation;
+    return a;
+}
+
 std::optional<std::uint32_t> TrafficClient::lightSteps(double renderTime) const {
     if (!m_any)
         return std::nullopt;

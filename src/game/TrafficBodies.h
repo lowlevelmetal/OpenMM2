@@ -94,6 +94,10 @@ public:
         std::array<bool, 6> valid{};
     };
     std::optional<Wheels> wheelsOf(int carId) const;
+    // The velocity and spin of a car that has a body (its ICS's); false
+    // without one (OpenMM2: the shared traffic of a network cruise sends
+    // them).
+    bool motionOf(int carId, Vec3& velocity, Vec3& spin) const;
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 

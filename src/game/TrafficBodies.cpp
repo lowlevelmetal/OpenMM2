@@ -691,6 +691,15 @@ void TrafficBodies::instancesIn(int room, std::vector<phys::Instance*>& out) con
             out.push_back(car);
 }
 
+bool TrafficBodies::motionOf(int carId, Vec3& velocity, Vec3& spin) const {
+    const RailCar* r = findRailCar(carId);
+    if (!r || !r->active)
+        return false;
+    velocity = r->active->body.ics.linearVelocity;
+    spin = r->active->body.ics.angularVelocity;
+    return true;
+}
+
 std::optional<TrafficBodies::Wheels> TrafficBodies::wheelsOf(int carId) const {
     // aiVehicleInstance::Draw with the car's active: WHL0-3 at the four
     // vehWheelCheaps' drawing matrices; WHL4 / WHL5 unturned at their pivots

@@ -17,6 +17,7 @@
 // the host's cars in and sends the messages (game::NetGame), and feeds the
 // client's messages in and draws, hears and collides with what comes out.
 
+#include "ai/Traffic.h"
 #include "core/Math.h"
 #include "net/AmbientState.h"
 #include "net/Snapshot.h"
@@ -201,5 +202,27 @@ private:
     std::vector<Car> m_cars;
     Stats m_stats;
 };
+
+// The catalog both machines build: the ambient traffic's vehicle types in
+// the AI map's order (ai::Traffic::types()), then the police posts' cars.
+TrafficCatalog buildTrafficCatalog(std::span<const ai::VehicleData> types, std::span<const std::string> police);
+
+// Host: an ambient car as shared. `model` and `paint` are its catalog index
+// and paint job; `body` is its physics body's pose and motion while it has
+// one (game::TrafficBodies), else null; `horn`: it honked since the last
+// message.
+struct TrafficBodyState {
+    Mat34 transform;
+    Vec3 velocity;
+    Vec3 angularVelocity;
+};
+SharedCar shareTrafficCar(const ai::AmbientCar& car, int model, int paint, const TrafficBodyState* body, bool horn);
+
+// Client: a received traffic car as the renderer, the audio and the
+// physics take an ambient car. `data` is the client's vehicle data of its
+// model (null when it has none), `paintJobs` the model's paint jobs and
+// `tireRotation` the wheels' turn the client keeps for it.
+ai::AmbientCar ambientCarOf(const TrafficClient::Car& car, const std::string& model, const ai::VehicleData* data,
+                            int paintJobs, float tireRotation);
 
 } // namespace mm2::game

@@ -200,6 +200,10 @@ std::unique_ptr<Page> makeEjectDialog(Frontend& fe);
 void drawMenuPointer(Frontend& fe, ui::UiFrame& f);
 // Automation helpers: host with the current config / join an address.
 bool frontendHostSession(Frontend& fe, const std::string& password = {});
+// A network session's traffic and cop densities and the shared traffic
+// option (OpenMM2 extra) for its mode: a cruise takes the single-player
+// cruise's defaults with the option on, the other modes none.
+void applyNetTrafficDefaults(game::RaceConfig& cfg);
 void frontendJoinSession(Frontend& fe, const std::string& address, const std::string& password);
 
 // MM2's menu ids: the first column of tune/menu.csv and the second of
