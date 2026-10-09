@@ -387,3 +387,41 @@ TEST(HostileInput, HostRateLimitsWhatItRelays) {
     }));
 }
 
+// A peer cannot make the host buffer a huge message (ENet's default limit
+// is 32 MiB per packet, allocated when the first fragment arrives).
+TEST(HostileInput, OversizedPacketsAreNotDelivered) {
+    Transport host;
+    ASSERT_TRUE(host.listen(Address::loopback(0)));
+    TransportConfig big;
+    big.maxPacketSize = 4 * 1024 * 1024;
+    Transport client(big);
+    ASSERT_TRUE(client.startClient());
+    const PeerId toHost = client.connect(Address::loopback(host.port()));
+    std::vector<TransportEvent> hostEvents, clientEvents;
+    ASSERT_TRUE(waitFor([&] {
+        host.service(hostEvents);
+        client.service(clientEvents);
+        return std::ranges::any_of(clientEvents,
+                                   [](const auto& e) { return e.type == TransportEvent::Type::Connected; });
+    }));
+    const std::vector<std::byte> small(16, std::byte{1});
+    const std::vector<std::byte> huge(256 * 1024, std::byte{2});
+    ASSERT_TRUE(client.send(toHost, Channel::Control, small));
+    ASSERT_TRUE(client.send(toHost, Channel::Events, huge));
+    std::size_t largest = 0;
+    bool gotSmall = false;
+    waitFor([&] {
+        host.service(hostEvents);
+        client.service(clientEvents);
+        for (const auto& e : hostEvents) {
+            if (e.type != TransportEvent::Type::Received)
+                continue;
+            largest = std::max(largest, e.payload.size());
+            gotSmall = gotSmall || e.payload.size() == small.size();
+        }
+        hostEvents.clear();
+        return false;
+    }, 800);
+    EXPECT_TRUE(gotSmall);
+    EXPECT_LT(largest, huge.size());
+}
