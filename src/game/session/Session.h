@@ -25,6 +25,7 @@
 #include "game/session/Gate.h"
 #include "game/session/RaceSetup.h"
 #include "game/session/Types.h"
+#include "game/session/Waypoints.h"
 #include "vfs/Vfs.h"
 
 #include <cstdint>
@@ -259,25 +260,6 @@ public:
     Mat34 respawnTransform() const { return m_respawn; }
 
 private:
-    // How the player's checkpoints work (mmWaypoints types).
-    enum class WaypointRule : std::uint8_t {
-        None,
-        Circuit,       // 1: in order, waypoint 0 completes a lap
-        CheckpointRace,// 2: any order, then the finish
-        Blitz,         // 3: any order, done when all are cleared
-        AnyOrderEnd,   // 4: crash course: any order, the last one must come last
-        InOrder,       // 5: crash course: strictly in order
-    };
-    struct Waypoints {
-        std::vector<char> cleared, visible;
-        int current = 1;     // target
-        int count = 1;       // waypoints passed, including the start
-        int lastCleared = 0; // respawn point
-        int lap = 0;
-        bool finished = false;
-        bool stopped = false; // no more hits (race over)
-        bool singleVisible = false;
-    };
     struct Racer {
         int count = 1;           // waypoints passed (the start counts)
         std::uint32_t mask = 1;  // checkpoint race: waypoints passed
@@ -302,7 +284,6 @@ private:
 
     void resetRace();
     void beginEvent(int index);
-    void resetWaypoints();
     void updateCountdown(float dt);
     void enableLessonOpponents();
     void go();
@@ -311,10 +292,11 @@ private:
                      std::span<const OpponentState> police);
     void tickMessage(float dt);
     void updateWaypoints(const PlayerState& player);
-    void displayCleared(int index);
-    void closestTarget(const Vec3& pos);
-    void cycleCurrent(bool forward);
-    void setTarget(int index);
+    // What the waypoints' rules did, on the HUD (mmWaypoints::Update's
+    // DisplayHUDMessage, mmHUD::ShowSplitTime and PostLapTime, the sounds).
+    void showWaypointSteps(const std::vector<WaypointStep>& steps);
+    void displayCleared(int index, int count);
+    void lapCompleted(int lap);
     void updateOpponents(std::span<const OpponentState> opponents);
     void updateRank(const PlayerState& player, std::span<const OpponentState> opponents);
     bool updateHazards(float dt, const PlayerState& player);
@@ -348,7 +330,7 @@ private:
     SessionOptions m_options;
 
     std::vector<Checkpoint> m_checkpoints;
-    Waypoints m_wp;
+    WaypointTracker m_wp;
     std::vector<Racer> m_opponents;
     std::vector<char> m_oppEnabled;
     int m_finishers = 0;

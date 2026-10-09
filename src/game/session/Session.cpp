@@ -209,7 +209,7 @@ bool Session::opponentActive(std::size_t index) const {
     return index < m_oppEnabled.size() && m_oppEnabled[index] != 0;
 }
 
-Session::WaypointRule Session::rule() const {
+WaypointRule Session::rule() const {
     switch (mode()) {
     case GameMode::Blitz: return WaypointRule::Blitz;
     case GameMode::Circuit: return WaypointRule::Circuit;
@@ -275,8 +275,7 @@ void Session::beginEvent(int index) {
     m_lessonEvent = index;
     const LessonEvent* lesson = currentLesson();
     m_checkpoints = lesson ? lesson->checkpoints : m_setup.checkpoints;
-    m_wp.singleVisible = lesson && lesson->singleCheckpoint;
-    resetWaypoints();
+    m_wp.reset(m_checkpoints, rule(), m_setup.laps, lesson && lesson->singleCheckpoint);
 
     // A network Cops and Robbers game waits for its start (copsAndRobbersGo).
     const bool noCountdown =
@@ -307,32 +306,6 @@ void Session::beginEvent(int index) {
     resetTimerWarning();
     if (lesson)
         push(EventType::LessonEventStarted, index);
-}
-
-void Session::resetWaypoints() {
-    // mmWaypoints::Reset.
-    const int n = static_cast<int>(m_checkpoints.size());
-    m_wp.cleared.assign(m_checkpoints.size(), 0);
-    m_wp.visible.assign(m_checkpoints.size(), m_wp.singleVisible ? 0 : 1);
-    m_wp.current = std::min(1, std::max(0, n - 1));
-    m_wp.count = 1;
-    m_wp.lastCleared = 0;
-    m_wp.lap = 0;
-    m_wp.finished = false;
-    m_wp.stopped = false;
-    const WaypointRule r = rule();
-    if (n == 0 || r == WaypointRule::None)
-        return;
-    if (r != WaypointRule::Circuit) {
-        m_wp.visible[0] = 0;
-        if (r == WaypointRule::CheckpointRace && n >= 3)
-            m_wp.visible[static_cast<std::size_t>(n - 1)] = 0; // the finish opens later
-        m_wp.cleared[0] = 1;
-    }
-    if (m_wp.singleVisible) {
-        std::fill(m_wp.visible.begin(), m_wp.visible.end(), 0);
-        m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
-    }
 }
 
 void Session::start() {
@@ -535,86 +508,30 @@ void Session::go() {
 
 // --- Checkpoints (mmWaypoints::Update) ---------------------------------------------
 
-void Session::setTarget(int index) {
-    // mmWaypoints::SetCurrentGoals.
-    const int n = static_cast<int>(m_checkpoints.size());
-    m_wp.current = index < 0 ? 0 : std::min(index, n - 1);
-}
-
-void Session::closestTarget(const Vec3& pos) {
-    // mmWaypoints::GetClosestWaypoint: the nearest shown, uncleared one.
-    const int n = static_cast<int>(m_checkpoints.size());
-    int best = m_wp.current, found = 0;
-    float bestD = 1e9f;
-    for (int i = 1; i < n; ++i) {
-        const auto k = static_cast<std::size_t>(i);
-        if (m_wp.cleared[k] || !m_wp.visible[k])
-            continue;
-        ++found;
-        const float d = dist2(m_checkpoints[k].position, pos);
-        if (d < bestD && best != 0) {
-            bestD = d;
-            best = i;
-        }
-    }
-    setTarget(found ? best : m_wp.current);
-}
-
 void Session::cycleTarget(bool forward) {
     // mmSingleRace / mmMultiRace::UpdateGameInput: "Next Checkpoint" and
     // "Prev. Checkpoint" only for waypoint type 2 (Blitz and the crash
     // course ignore them).
     if (rule() == WaypointRule::CheckpointRace)
-        cycleCurrent(forward);
+        m_wp.cycleCurrent(forward);
 }
 
-void Session::cycleCurrent(bool forward) {
-    // mmWaypoints::CycleCurrentWaypoint (GetNextWaypoint / GetLastWaypoint).
-    // OpenMM2 also stops for fewer than three waypoints, where the original
-    // could index past the list.
-    const int n = static_cast<int>(m_checkpoints.size());
-    if (n < 3 || m_wp.finished)
-        return;
-    if (m_wp.count == n - 1) {
-        setTarget(n - 1);
-        return;
-    }
-    const int step = forward ? 1 : -1;
-    int i = m_wp.current;
-    for (int guard = 0;; ++guard) {
-        i = (i + step) % n;
-        if (i == 0 || i == n - 1)
-            i = forward ? 1 : n - 2;
-        if (!m_wp.cleared[static_cast<std::size_t>(i)])
-            break;
-        if (i == m_wp.current || guard > n)
-            return;
-    }
-    setTarget(i);
-}
-
-void Session::displayCleared(int index) {
-    // mmWaypoints::DisplayHUDMessage.
-    const auto k = static_cast<std::size_t>(index);
-    m_wp.lastCleared = index;
-    m_wp.cleared[k] = 1;
-    m_wp.visible[k] = 0;
-    ++m_wp.count;
+void Session::displayCleared(int index, int count) {
+    // mmWaypoints::DisplayHUDMessage (the waypoint was marked cleared).
     push(EventType::CheckpointCleared, index);
-    // mmWaypoints::DisplayHUDMessage's sound: "Waypoint" in the crash
-    // course; for any-order and in-order waypoints, except for the one that
-    // leaves only the finish; "Lastwaypoint" when a circuit lap is
-    // completed.
+    // Its sound: "Waypoint" in the crash course; for any-order and in-order
+    // waypoints, except for the one that leaves only the finish;
+    // "Lastwaypoint" when a circuit lap is completed.
     const int n = static_cast<int>(m_checkpoints.size());
     switch (rule()) {
     case WaypointRule::Circuit:
-        sound((m_wp.count - 1) % std::max(1, n) == 0 ? GameSound::LastWaypoint : GameSound::Waypoint);
+        sound((count - 1) % std::max(1, n) == 0 ? GameSound::LastWaypoint : GameSound::Waypoint);
         break;
     case WaypointRule::Blitz: sound(GameSound::Waypoint); break;
     case WaypointRule::CheckpointRace:
     case WaypointRule::AnyOrderEnd:
     case WaypointRule::InOrder:
-        if (mode() == GameMode::CrashCourse || m_wp.count != n - 1)
+        if (mode() == GameMode::CrashCourse || count != n - 1)
             sound(GameSound::Waypoint);
         break;
     case WaypointRule::None: break;
@@ -627,119 +544,41 @@ void Session::displayCleared(int index) {
     }
 }
 
-void Session::updateWaypoints(const PlayerState& player) {
-    const int n = static_cast<int>(m_checkpoints.size());
-    const WaypointRule r = rule();
-    if (n < 2 || r == WaypointRule::None || m_wp.stopped)
-        return;
-    const Mat34& car = player.transform;
-    auto hit = [&](int i) {
-        const Checkpoint& cp = m_checkpoints[static_cast<std::size_t>(i)];
-        if (r == WaypointRule::AnyOrderEnd && cp.hitByRadius)
-            return radiusHit(cp, car.m3);
-        return playerGateHit(cp, car, player.inertiaBox);
-    };
-    // mmWaypoints::ClearWaypoint: the first uncleared waypoint hit.
-    auto firstHit = [&]() {
-        for (int i = 0; i < n; ++i)
-            if (!m_wp.cleared[static_cast<std::size_t>(i)] && hit(i))
-                return i;
-        return -1;
-    };
+void Session::lapCompleted(int lap) {
+    // mmWaypoints::Update when waypoint 0 completes a circuit lap.
+    const float lapTime = m_raceTime - m_lapStart;
+    m_lastLap = lapTime;
+    m_bestLap = m_bestLap > 0.0f ? std::min(m_bestLap, lapTime) : lapTime;
+    m_lapTimes.push_back(lapTime);
+    m_lapStart = m_raceTime;
+    push(EventType::LapCompleted, lap, lapTime);
+    if (lap != m_setup.laps) {
+        // mmHUD::PostLapTime: "Final lap!" or "Lap time" for 1 s with the
+        // time under it.
+        const bool final = lap == m_setup.laps - 1;
+        setMessage(final ? 62 : 63, final ? "Final lap!" : "Lap time", 1.0f, false);
+        setMessage2(formatTime(lapTime));
+        if (final)
+            push(EventType::FinalLap);
+    }
+}
 
-    switch (r) {
-    case WaypointRule::Blitz: {
-        const int idx = firstHit();
-        if (idx >= 0 && !m_wp.finished) {
-            displayCleared(idx);
-            if (std::any_of(m_wp.cleared.begin(), m_wp.cleared.end(), [](char c) { return c == 0; })) {
-                closestTarget(car.m3);
-                if (m_wp.singleVisible)
-                    m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
-            } else {
-                m_wp.finished = true; // the last checkpoint ends a Blitz
-            }
+void Session::showWaypointSteps(const std::vector<WaypointStep>& steps) {
+    for (const WaypointStep& s : steps) {
+        switch (s.kind) {
+        case WaypointStep::Kind::Cleared: displayCleared(s.index, s.count); break;
+        case WaypointStep::Kind::FinishActivated: push(EventType::FinishActivated); break;
+        case WaypointStep::Kind::LapCompleted: lapCompleted(s.index); break;
+        case WaypointStep::Kind::FinalCheckpoint: push(EventType::FinalCheckpoint); break;
+        case WaypointStep::Kind::Finished: break; // the modes' UpdateGame reads it
         }
-        break;
     }
-    case WaypointRule::CheckpointRace:
-    case WaypointRule::AnyOrderEnd: {
-        const int idx = firstHit();
-        if (idx < 0 || m_wp.finished)
-            break;
-        if (idx == n - 1 && m_wp.count == n - 1) {
-            m_wp.finished = true;
-        } else if (idx > 0 && idx < n - 1) {
-            displayCleared(idx);
-            if (r == WaypointRule::CheckpointRace) {
-                if (m_wp.count == n - 1) {
-                    m_wp.visible[static_cast<std::size_t>(n - 1)] = 1;
-                    push(EventType::FinishActivated);
-                }
-                closestTarget(car.m3);
-            } else if (idx == m_wp.current) {
-                cycleCurrent(true);
-            }
-            if (m_wp.singleVisible)
-                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
-            if (m_wp.count == n - 1) {
-                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
-                push(EventType::FinalCheckpoint);
-            }
-        }
-        break;
-    }
-    case WaypointRule::InOrder:
-        if (!m_wp.finished && hit(m_wp.current)) {
-            const int passed = m_wp.current;
-            m_wp.visible[static_cast<std::size_t>(passed)] = 0;
-            ++m_wp.current;
-            displayCleared(passed);
-            if (m_wp.count == n)
-                m_wp.finished = true;
-            else if (m_wp.singleVisible)
-                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
-            if (m_wp.current >= n)
-                m_wp.current = n - 1;
-        }
-        break;
-    case WaypointRule::Circuit:
-        if (!m_wp.finished && hit(m_wp.current)) {
-            const int passed = m_wp.current;
-            m_wp.visible[static_cast<std::size_t>(passed)] = 0;
-            displayCleared(passed);
-            if (passed == 0) {
-                ++m_wp.lap;
-                const float lapTime = m_raceTime - m_lapStart;
-                m_lastLap = lapTime;
-                m_bestLap = m_bestLap > 0.0f ? std::min(m_bestLap, lapTime) : lapTime;
-                m_lapTimes.push_back(lapTime);
-                m_lapStart = m_raceTime;
-                push(EventType::LapCompleted, m_wp.lap, lapTime);
-                if (m_wp.lap == m_setup.laps) {
-                    m_wp.finished = true;
-                } else {
-                    // mmHUD::PostLapTime: "Final lap!" or "Lap time" for 1 s
-                    // with the time under it.
-                    const bool final = m_wp.lap == m_setup.laps - 1;
-                    setMessage(final ? 62 : 63, final ? "Final lap!" : "Lap time", 1.0f, false);
-                    setMessage2(formatTime(lapTime));
-                    if (final)
-                        push(EventType::FinalLap);
-                    // mmWaypoints::ResetAllTags: every gate shows again.
-                    std::fill(m_wp.cleared.begin(), m_wp.cleared.end(), 0);
-                    std::fill(m_wp.visible.begin(), m_wp.visible.end(), m_wp.singleVisible ? 0 : 1);
-                }
-            } else if (passed == n - 1 && m_wp.lap == m_setup.laps - 1) {
-                push(EventType::FinalCheckpoint);
-            }
-            m_wp.current = passed + 1 == n ? 0 : passed + 1;
-            if (m_wp.singleVisible && !m_wp.finished)
-                m_wp.visible[static_cast<std::size_t>(m_wp.current)] = 1;
-        }
-        break;
-    case WaypointRule::None: break;
-    }
+}
+
+void Session::updateWaypoints(const PlayerState& player) {
+    std::vector<WaypointStep> steps;
+    m_wp.update(m_checkpoints, player.transform, player.inertiaBox, steps);
+    showWaypointSteps(steps);
 }
 
 // --- Opponents ---------------------------------------------------------------------
