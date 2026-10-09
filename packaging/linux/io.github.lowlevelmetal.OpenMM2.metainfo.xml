@@ -44,6 +44,11 @@
     <display_length compare="ge">768</display_length>
   </requires>
   <releases>
+    <release version="0.3.1" date="2026-10-09" type="development">
+      <description>
+        <p>Fixes a crash when an opponent or police car drove onto a road narrower than its lane offset; such cars now steer as in the original game.</p>
+      </description>
+    </release>
     <release version="0.3.0" date="2026-10-09" type="development">
       <description>
         <p>Smooth motion at any frame rate (drawn between the simulation steps), network races that start together once every player has loaded, and other players' and the police's damage shown in multiplayer.</p>
