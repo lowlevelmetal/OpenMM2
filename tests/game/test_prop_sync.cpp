@@ -122,6 +122,42 @@ struct Machine {
     }
 };
 
+std::vector<PlacedProp> layout();
+
+// The speed of the piece prop 1 becomes when a car of 1000 kg at 10 m/s hits
+// it, simulated or kinematic (the host's copy of a network car). A function,
+// not a lambda: MSVC's optimiser has crashed on polymorphic objects built
+// inside lambdas.
+float pieceSpeed(const bangers::BangerDataLibrary& lib, bool kinematic) {
+    Machine m(lib);
+    m.place(layout());
+    Car car({6, 1, 3.0f}, {0, 0, -10});
+    if (kinematic) {
+        car.body.kinematic = true;
+        car.body.kinematicMoves = true;
+        car.body.kinematicVelocity = {0, 0, -10};
+        car.body.kinematicBreaksBangers = true;
+        car.body.resetCollider();
+    }
+    m.world.add(&car.body);
+    float speed = 0.0f;
+    for (int i = 0; i < 40 && m.set.standing(1); ++i) {
+        if (kinematic) {
+            Mat34 at = car.body.ics.matrix;
+            at.m3 = at.m3 + car.body.kinematicVelocity * kDt;
+            car.body.place(at);
+        }
+        m.step();
+    }
+    m.step(); // the impulses move the piece
+    for (std::size_t i = 0; i < m.set.instances().size(); ++i)
+        if (m.set.instances()[i].source == 1)
+            if (const phys::Body* b = m.set.body(i))
+                speed = b->ics.linearVelocity.mag();
+    m.world.remove(&car.body);
+    return speed;
+}
+
 std::vector<PlacedProp> layout() {
     auto at = [](const char* model, const Vec3& p) {
         return PlacedProp{model, Mat34::translation(p), 1, PlacedProp::Source::Instance, true};
@@ -419,36 +455,7 @@ TEST(PropSync, MovingKinematicBodiesBreakProps) {
 TEST(PropSync, KinematicBodiesShareTheMotionAsTheirMass) {
     TempBangers files;
     bangers::BangerDataLibrary lib(files.vfs);
-    auto pieceSpeed = [&](bool kinematic) {
-        Machine m(lib);
-        m.place(layout());
-        Car car({6, 1, 3.0f}, {0, 0, -10});
-        if (kinematic) {
-            car.body.kinematic = true;
-            car.body.kinematicMoves = true;
-            car.body.kinematicVelocity = {0, 0, -10};
-            car.body.kinematicBreaksBangers = true;
-            car.body.resetCollider();
-        }
-        m.world.add(&car.body);
-        float speed = 0.0f;
-        for (int i = 0; i < 40 && m.set.standing(1); ++i) {
-            if (kinematic) {
-                Mat34 at = car.body.ics.matrix;
-                at.m3 = at.m3 + car.body.kinematicVelocity * kDt;
-                car.body.place(at);
-            }
-            m.step();
-        }
-        m.step(); // the impulses move the piece
-        for (std::size_t i = 0; i < m.set.instances().size(); ++i)
-            if (m.set.instances()[i].source == 1)
-                if (const phys::Body* b = m.set.body(i))
-                    speed = b->ics.linearVelocity.mag();
-        m.world.remove(&car.body);
-        return speed;
-    };
-    const float simulated = pieceSpeed(false), kinematic = pieceSpeed(true);
+    const float simulated = pieceSpeed(lib, false), kinematic = pieceSpeed(lib, true);
     ASSERT_GT(simulated, 2.0f);
     EXPECT_NEAR(kinematic, simulated, simulated * 0.05f);
 }
@@ -532,7 +539,8 @@ TEST(PropSync, ABigCrashStaysWithinADatagram) {
     EXPECT_LT(largest, 1100u);
     // About 20 messages a second while the props fly, far fewer once they rest.
     EXPECT_LT(bytes / 8, 12000u); // bytes a second, on average over the crash
-    std::printf("big crash: %zu props knocked, %zu messages (largest %zu bytes, %zu bytes/s), %zu knock events\n",
+    std::printf("big crash: %zu props knocked, %zu messages (largest %zu bytes, %zu bytes/s), %zu knock "
+                "events\n",
                 knocked, messages, largest, bytes / 8, events);
 }
 
@@ -651,6 +659,59 @@ TEST(PropSync, RefusesWhatItCannotFollow) {
     EXPECT_TRUE(r.client.set.standing(1));
 }
 
+namespace {
+
+struct Placement {
+    std::uint32_t catalog = 0;
+    std::size_t placed = 0;
+};
+
+// One machine's props in a network race, in RaceScreen's order: the city's
+// (loadWorldObjects), the gizmos' parked cars (initGizmos, multiplayer), the
+// traffic lights (addTrafficLightProps, where aiMap::Init runs).
+Placement placeAsAMachine(const vfs::Vfs& v, const char* name, GameMode mode, int raceIndex, float traffic) {
+    auto city = city::loadCity(v, name);
+    if (!city)
+        return {};
+    bangers::BangerDataLibrary data(v);
+    CityLevel level(*city, v, [&](std::string_view n) { return data.has(n); });
+    phys::World physics(level.takeMaterials());
+    physics.setLevel(&level);
+    BangerSet set(data);
+    std::uint32_t state = 1;
+    set.add(bangers::placeCityProps(*city, v, data, bangers::racePropsName(mode, raceIndex), &state));
+    ai::Random random(state);
+    takeVehCarInitDraws(random);
+    RaceConfig config;
+    config.city = name;
+    config.mode = mode;
+    config.raceIndex = raceIndex;
+    auto gizmos = world::initGizmos(v, *city, config, true, set, data, &level, random);
+    if (mode == GameMode::Cruise) {
+        ai::Settings settings;
+        settings.trafficDensity = traffic;
+        settings.pedestrianDensity = 0.0f;
+        settings.random = &random;
+        const auto ai = ai::World::create(*city, v, settings);
+        if (!ai)
+            return {};
+        for (const ai::Signal& s : ai->signals()) {
+            PlacedProp p;
+            p.model = s.model;
+            p.transform = s.transform;
+            p.room = level.findRoom(s.position(), 0);
+            p.ownerDrawn = true;
+            set.addOne(p);
+        }
+    }
+    set.setWorld(&physics);
+    Placement out{propCatalog(set), placedProps(set)};
+    set.setWorld(nullptr);
+    return out;
+}
+
+} // namespace
+
 // Retail data: every machine of a network race places the same props with
 // the same indices. The street props restart the random generator per road,
 // the parked cars (network races only) draw from the stream they leave, and
@@ -659,49 +720,8 @@ TEST(PropSync, RefusesWhatItCannotFollow) {
 TEST(PropSyncRetail, EveryMachinePlacesTheSameProps) {
     MM2_REQUIRE_GAME_DATA();
     const auto& v = *test::gameData();
-    struct Placement {
-        std::uint32_t catalog = 0;
-        std::size_t placed = 0;
-    };
-    auto place = [&](const char* name, GameMode mode, int raceIndex, float traffic) -> Placement {
-        auto city = city::loadCity(v, name);
-        if (!city)
-            return {};
-        bangers::BangerDataLibrary data(v);
-        CityLevel level(*city, v, [&](std::string_view n) { return data.has(n); });
-        phys::World physics(level.takeMaterials());
-        physics.setLevel(&level);
-        BangerSet set(data);
-        std::uint32_t state = 1;
-        set.add(bangers::placeCityProps(*city, v, data, bangers::racePropsName(mode, raceIndex), &state));
-        ai::Random random(state);
-        takeVehCarInitDraws(random);
-        RaceConfig config;
-        config.city = name;
-        config.mode = mode;
-        config.raceIndex = raceIndex;
-        auto gizmos = world::initGizmos(v, *city, config, true, set, data, &level, random);
-        if (mode == GameMode::Cruise) {
-            ai::Settings settings;
-            settings.trafficDensity = traffic;
-            settings.pedestrianDensity = 0.0f;
-            settings.random = &random;
-            const auto ai = ai::World::create(*city, v, settings);
-            if (!ai)
-                return {};
-            for (const ai::Signal& s : ai->signals()) {
-                PlacedProp p;
-                p.model = s.model;
-                p.transform = s.transform;
-                p.room = level.findRoom(s.position(), 0);
-                p.ownerDrawn = true;
-                set.addOne(p);
-            }
-        }
-        set.setWorld(&physics);
-        Placement out{propCatalog(set), placedProps(set)};
-        set.setWorld(nullptr);
-        return out;
+    auto place = [&](const char* name, GameMode mode, int raceIndex, float traffic) {
+        return placeAsAMachine(v, name, mode, raceIndex, traffic);
     };
     for (const char* name : {"sf", "london"}) {
         // Cruise: the host at the cruise menu's traffic, a client at none.

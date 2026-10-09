@@ -42,6 +42,13 @@ Mat34 blendMatrix(const Mat34& from, const Mat34& to, float t) {
 
 constexpr std::uint32_t kTagMarker = 0x80000000u;
 
+// What a slot of the host's ring holds this frame (PropHost::build).
+struct RingSlot {
+    std::optional<net::PropDescriptor> what;
+    bool moving = false;
+    bool slow = false;
+};
+
 } // namespace
 
 std::size_t placedProps(const BangerSet& set) {
@@ -175,15 +182,10 @@ std::optional<net::PropStateMsg> PropHost::build(const BangerSet& set, std::uint
     if (m_seen.size() < slots)
         m_seen.resize(slots);
     bool busy = !m_sentAny, creeping = false;
-    struct Current {
-        std::optional<net::PropDescriptor> what;
-        bool moving = false;
-        bool slow = false;
-    };
-    std::vector<Current> current(slots);
+    std::vector<RingSlot> current(slots);
     for (std::size_t k = 0; k < slots; ++k) {
         const auto& inst = set.instances()[ring[k]];
-        Current& c = current[k];
+        RingSlot& c = current[k];
         if (inst.state != BangerSet::State::Gone)
             c.what = describeHit(inst);
         c.moving = c.what && set.moving(ring[k]);
@@ -215,7 +217,7 @@ std::optional<net::PropStateMsg> PropHost::build(const BangerSet& set, std::uint
     msg.catalog = catalog;
     const int rotation = std::max(1, m_options.restRotation);
     for (std::size_t k = 0; k < slots; ++k) {
-        const Current& c = current[k];
+        const RingSlot& c = current[k];
         if (!c.what)
             continue;
         SlotSeen& seen = m_seen[k];
