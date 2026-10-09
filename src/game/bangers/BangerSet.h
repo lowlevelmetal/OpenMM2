@@ -129,9 +129,11 @@ public:
         int source = -1;
         std::uint32_t tag = 0;
         // One of the host's ring slots shown on a network client
-        // (showMirror), and where it is drawn while the host drives it.
+        // (showMirror), where it is drawn while the host drives it and its
+        // motion there (an active attached to it here starts with it).
         bool mirror = false;
         std::optional<Mat34> drawn;
+        Vec3 mirrorVelocity, mirrorSpin;
     };
     // The placed props (in add() order) and the hit instances (created as
     // the ring first hands them out).
@@ -252,11 +254,12 @@ public:
     // The instance showing host ring slot `slot` (made on first use, hidden).
     std::size_t mirror(std::size_t slot);
     // Shows host ring slot `slot` at `matrix` (the frame at the CG), drawn at
-    // `drawn`; `collidable` while the host has it at rest (this machine's car
-    // may then push it, simulating it here until it rests again). Not while
-    // the instance has an active: the local simulation drives it then.
+    // `drawn`, moving at `velocity` and `spin` there. This machine's car may
+    // touch it: an active then simulates it here from that motion until it
+    // rests again. Not while the instance has an active: the local
+    // simulation drives it then.
     void showMirror(std::size_t slot, const MirrorSpec& spec, const Mat34& matrix, const Mat34& drawn,
-                    bool collidable);
+                    const Vec3& velocity, const Vec3& spin);
     // Takes it out of the world (not drawn, not collidable, no body).
     void hideMirror(std::size_t slot);
     std::size_t mirrorCount() const { return m_mirrors.size(); }

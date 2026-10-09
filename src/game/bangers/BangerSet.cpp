@@ -574,11 +574,24 @@ bool BangerSet::inWorld(const Active& a) const { return m_world && m_world->cont
 phys::Body* BangerSet::attachEntity(std::size_t i) {
     // dgBangerInstance::AttachEntity.
     Active* a = activeOf(i);
+    const bool attached = a == nullptr;
     if (!a)
         a = managerAttach(i);
     if (!a) {
         log::error("bangers: AttachEntity failed for {}", m_instances[i].model);
         return nullptr;
+    }
+    // OpenMM2: a network client's mirror of a host's piece that its car
+    // touched goes on from the host's motion (dgBangerActive::Attach starts a
+    // prop at rest: a placed or resting prop is).
+    if (const Instance& inst = m_instances[i]; attached && inst.mirror) {
+        phys::InertialCS& ics = a->body.ics;
+        ics.linearVelocity = inst.mirrorVelocity;
+        const float m = ics.mass;
+        const Vec3& v = inst.mirrorVelocity;
+        ics.linearMomentum = {m * v.x, m * v.y, m * v.z};
+        ics.angularVelocity = inst.mirrorSpin;
+        ics.angularMomentum = rowTimes(inst.mirrorSpin, ics.worldInertia());
     }
     return &a->body;
 }
@@ -1176,7 +1189,7 @@ std::size_t BangerSet::mirror(std::size_t slot) {
 }
 
 void BangerSet::showMirror(std::size_t slot, const MirrorSpec& spec, const Mat34& matrix, const Mat34& drawn,
-                           bool collidable) {
+                           const Vec3& velocity, const Vec3& spin) {
     const std::size_t i = mirror(slot);
     Instance& inst = m_instances[i];
     if (inst.active >= 0 || !spec.data)
@@ -1192,10 +1205,12 @@ void BangerSet::showMirror(std::size_t slot, const MirrorSpec& spec, const Mat34
     inst.matrix = matrix;
     inst.ground = matrix;
     inst.drawn = drawn;
+    inst.mirrorVelocity = velocity;
+    inst.mirrorSpin = spin;
     inst.state = State::Hit;
     Prop& prop = *m_props[i];
     prop.audioId = spec.data->colliderId;
-    prop.collidable = collidable;
+    prop.collidable = true;
     // Its room, as an active's body finds its own after each sample.
     const int room = roomsTracked() ? findRoom(matrix.m3, inst.room) : inst.room;
     if (room != inst.room || (room > 0 && !prop.listed))

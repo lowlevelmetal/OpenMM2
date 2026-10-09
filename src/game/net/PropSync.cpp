@@ -592,7 +592,7 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
                 draw = blendMatrix(*slot.blendFrom, draw, w);
             }
         }
-        set.showMirror(index, *spec, matrix, draw, hostResting);
+        set.showMirror(index, *spec, matrix, draw, s.linearVelocity, s.angularVelocity);
         g->buffer.prune(std::min(render, drawn));
     }
 

@@ -426,7 +426,8 @@ public:
         // pedestrian or traffic car (for screenshots); net:<player id> a
         // network player's car (this machine's own, or another's as drawn),
         // police:<ambient id> a shared-traffic police car (400 + its place),
-        // knocked:<player id> the knocked traffic car nearest that player.
+        // knocked:<player id> the knocked traffic car nearest that player,
+        // prop:<index> a placed prop or its first piece.
         if (const char* focus = std::getenv("OPENMM2_DEBUG_FOCUS"); focus && (m_ai || multiplayer(ctx))) {
             const Vec3 ref = m_player ? m_pose.body.m3 : m_camera.position();
             std::optional<Mat34> target;
@@ -483,6 +484,21 @@ public:
                         const auto physical = physicalTrafficCar(c.id);
                         target = physical ? physical->transform : c.transform;
                     }
+            } else if (what.starts_with("prop:") && m_bangers) {
+                // A placed prop by index (the same on every machine), or
+                // once knocked over its first piece shown.
+                const auto id = static_cast<std::size_t>(str::parseInt(what.substr(5)).value_or(-1));
+                const auto& instances = m_bangers->instances();
+                if (id < instances.size()) {
+                    Vec3 at = instances[id].ground.m3;
+                    for (const auto& inst : instances)
+                        if (!m_bangers->standing(id) && inst.source == static_cast<int>(id) &&
+                            inst.state != game::bangers::BangerSet::State::Gone) {
+                            at = inst.drawn.value_or(inst.matrix).m3;
+                            break;
+                        }
+                    target = Mat34::translation(at); // seen from the same side on every machine
+                }
             } else if (what == "ped" && m_ai) {
                 for (const auto& p : m_ai->peds())
                     consider(p.transform);
