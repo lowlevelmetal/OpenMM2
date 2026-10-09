@@ -282,13 +282,21 @@ packet to the game or discovery port, and whatever answers as the router.
   `kInvalidPlayerId`, and refuses a `Welcome` that does not list it.
 * **Floods.** The host relays what one joiner sends to every other player, so
   each joiner has a budget: chat 2 lines a second (burst 8), player updates 10
-  (burst 20), game events 30 (burst 60). Chat and events beyond it are dropped;
+  (burst 20), game events 30 (burst 60), and apart from those a car's damage
+  events 15 (burst 30, see "Damage"). Chat and events beyond it are dropped;
   a `PlayerRequest` is always applied and its `PlayerUpdate` relayed once the
   budget allows, so the latest car, colour, team and ready state still
   arrives.
 * **Floats.** Snapshot fields are quantized to fixed ranges and event floats
   must be finite (`ReadStream::f32`), so no NaN or infinity reaches physics or
   rendering.
+* **Damage.** A `VehicleDamage` event has at most 16 patches and 8 impacts,
+  record indices below 1024, 20 part bits, and every value quantized to its
+  range (points ±8 m, normals ±1, speeds 0-128 m/s, strengths 0-10^6 on a log
+  scale, sound ids 0-1000). A receiver takes a police car's damage from the
+  host only, keeps at most 96 cars' records with at most 1024 patches each,
+  lets at most 64 events wait for their time per car (older ones go into the
+  record at once) and waits at most 2 s for an entry's time.
 * **Shared traffic.** An `AmbientState` holds at most 96 cars, ids 0-511,
   generations 0-7, catalog indices 0-63 and paint jobs 0-15 (ranged fields:
   nothing else can be read), quantized positions, velocities and spin, and a
@@ -373,7 +381,8 @@ types, with payload structs in `Protocol.h`:
 was driving and stays in the session: the others take its car out and stop
 waiting for its finish). Ids from `GameEventType::Custom` (0x8000)
 up are free for the game: Cops and Robbers uses 0x8001 and 0x8002, the shared
-cruise traffic's hit report (`TrafficHitEvent`, client to host) 0x8010.
+cruise traffic's hit report (`TrafficHitEvent`, client to host) 0x8010, a
+car's damage (`VehicleDamageEvent`, see "Damage") 0x8020.
 
 ### Race start
 
@@ -500,9 +509,11 @@ it (`game::TrafficHost`, `src/game/net/TrafficSync.h`):
 | orientation | smallest-three quaternion, 32 bits |
 | flags | brake, horn, indicators left / right (both: hazards), off its rail, wreck (police: out of action), siren, pursuit |
 | motion | a car on its rail: its speed along its heading (11 bits, ±64 m/s; the AI's velocity is exactly that); off its rail and police: velocity 3 × 12 bits (±96 m/s) and spin 3 × 11 bits (±32 rad/s) |
-| police | target player (5 bits, 16 = none), damage, rpm, throttle, gear (27 bits) |
+| wheels | a car off its rail: 1 bit, whether it has a physics body; then its four wheels' drawing offsets from their pivots (80 bits, see "Damage") |
+| police | target player (5 bits, 16 = none), damage (10 bits), rpm, throttle, gear (31 bits) |
 
-A car on its rail takes 119 bits, a police car 204. Each client gets the
+A car on its rail takes 119 bits, a police car 208, a knocked car 178 (258
+with a body). Each client gets the
 police chasing it, then the cars within 200 m of its car (kept until 230 m,
 so a car on the edge does not come and go), nearest first, as many as fit in
 1100 bytes. Cars within 80 m, off their rails, police and cars new to the
@@ -546,6 +557,116 @@ the roads round each populated. The 1100-byte budget bounds it at about
 client's cars within 120 m were 2 cm from the host's at the same session time
 (median; 90 % within 10 cm, 27 cm at worst for far cars between their
 messages).
+
+### Damage
+
+**MM2.** `mmNetObject::SetPositionData` puts the car's
+`vehCarDamage::CurrentDamage` in every position packet, and
+`mmNetObject::PositionUpdate` sets the network car's to it, calling
+`vehCar::ClearDamage` when it drops from above 1 to below 0.0001 (the owner's
+reset). Nothing else about damage travels: every machine simulates the other
+players' cars as `vehCar`s with their damage on (`mmGameMulti::EnableRacers`),
+so that machine's own collisions of the car paint its dents
+(`vehCarDamage::ApplyImpact`, `fxTexelDamage::ApplyDamage`), break its parts
+(`vehBreakableMgr::Impact`) and make its sparks and shards, and the level
+drives the rest: `vehCarDamage::Update`'s smoke above MedDamage in four
+levels, each with its own frame of `fxpt8` (the last two the black smoke of a
+car about to die; MM2 draws no flames), the tyre wobble
+(`vehSurfaceAudio::UpdateTireWobble`), and at MaxDamage the wheels, hubs and
+fenders thrown off by speed (`vehCarModel::EjectOneshot`). The dents are
+texel damage only: `mmDamage::Apply` is empty (no vertex damage), and no
+light ever breaks (`vehCarModel::BreakElectrics` has no caller).
+
+**OpenMM2** (`game/net/DamageSync`, `net/VehicleDamage.h`) draws the network
+cars kinematically, so they collide with nothing of their own, and replays
+their owner's damage instead:
+
+* **The level** is the snapshot's 10-bit fraction between MedDamage and
+  MaxDamage (as before; the police's in `AmbientState`, now also 10 bits).
+  The receiving machine sets the car's CurrentDamage to MedDamage + fraction
+  × (MaxDamage − MedDamage) and runs `vehCarDamage::Update` on it: the same
+  smoke level, frame and exhaust smoke, the same tyre wobble. Nothing shows
+  below MedDamage, which is why the fraction is enough. `kVehicleWrecked` is
+  the wreck (engine and police explosion sounds as before).
+* **What the owner's `vehCarDamage::ApplyImpact` painted and broke** travels
+  as a reliable game event, `VehicleDamage` (0x8020):
+
+  | Field | Encoding |
+  | --- | --- |
+  | subject | 0-512: 512 the sender's own car, below it a shared police car's id (from the host only) |
+  | epoch | u8: the car's damage resets so far |
+  | time | u32: session ms the entries' delays count from |
+  | first, patches | the record index of the first patch (0-1023), then up to 16: delay (u8 ms), the impact point in model space (3 × 16 bits over ±8 m, 0.24 mm), the texel damage's random state (u32) |
+  | parts | 20 bits: every part broken off since the reset (BREAK0-3, BREAK01/12/23/03, the paint job's VARIANT, WHL0-3, HUB0-3, FNDR0-1, ENGINE), and the delay of the newest |
+  | impacts | up to 8 damaging impacts: delay, point (3 × 12 bits), normal (3 × 8 bits), the impact's running total and AudImpact's strength (10 bits each, log scale), the car's speed (9 bits, 0-128 m/s), the sound's id (0-1000) |
+
+* **The same dents.** The owner paints each patch at the point as it
+  travels (`net::quantizeDamagePoint`) and sends the random state its
+  `fxTexelDamage` starts from; the receiver's paints the same patches from
+  the same numbers (`VehicleRenderer::applyDamage(point, radius, seed)`),
+  texel for texel (test `DamageSync.ReplayedDentsMatchTheOwnersTexelForTexel`).
+  A patch copies the damaged texture's texels, so patches can land in any
+  order. The parts are the owner's: the ones it broke off
+  (`vehBreakableMgr::Impact`'s nearest, `EjectOneshot`'s by speed and its own
+  random numbers) come off on every machine, thrown as bangers when the event
+  is fresh (4 m/s, wheels at 1.3 times the car's speed), just taken off
+  otherwise. The sparks, shards and impact sound of each damaging impact are
+  replayed at the car as drawn.
+* **Timing.** Every entry happens when the receiving machine draws the car at
+  the session time it happened on its owner's machine (the police: at the
+  shared traffic's drawing time), so a dent appears when the car hits the
+  wall, not a playout delay before; an entry waits at most 2 s, and its
+  sparks, shards, sound and flying parts show only within 0.5 s of its time.
+* **Convergence.** Each car has one record since its last reset: its patches
+  in order and the parts it lost. Events are reliable and ordered; each
+  carries every part broken since the reset, so the parts converge with any
+  later event; an event's patches fill the record from `first` (a gap, an
+  event the host's budget dropped, is counted and the rest kept). A car shown
+  afresh (created when its player's first snapshot arrives, a police car that
+  comes into view or into a reused slot) replays its whole record, so damage
+  that came before its first snapshot or while it was out of view shows. A
+  player cannot join a race that has started (`allowJoinInProgress` is never
+  set), so every machine in a race has had every event of it.
+* **Resets.** Every `vehCar::ClearDamage` of the owner's car (a respawn,
+  `mmPlayer::Reset` at the water, the damage-out penalty's reset, Cops and
+  Robbers' repair at the bank or hideout and the end of a regeneration,
+  `DamageReset`) starts a new epoch: the others clear the car (dents and
+  parts) when they draw it at the reset's time. A police car's reset (the
+  race's restart) does the same.
+* **Rate.** The owner sends what happened every 100 ms at most, keeping to
+  its own budget of 10 events a second (burst 20; what does not fit waits).
+  The host relays a joiner's damage events with a budget of their own, 15 a
+  second (burst 30), apart from the race events' 30.
+
+**Knocked traffic cars' wheels.** While a traffic car has a physics body on
+the host (aiVehicleActive), `aiVehicleInstance::Draw` draws its wheels where
+its `vehWheelCheap`s put them: each wheel's pivot moved up by the spring's
+travel and back by 0.2 and 0.3 of the tyre's sideways and forward
+deflection. `AmbientState` now carries, for every car off its rail, one bit
+for whether it has a body and then the four wheels' offsets from their
+pivots (x and z 6 bits over ±0.25 m, y 8 bits over ±1 m: 80 bits); WHL4 and
+WHL5 follow WHL2 and WHL3 as on the host. A client draws such a car on them
+(and lays its shadow as the host's physical cars', `trafficShadowMatrix`),
+blending them between messages.
+
+**Deviations.** A receiving machine does not paint its own collisions of a
+network car, as MM2's did: MM2's machines each showed the dents of their own
+collisions with their own random numbers, OpenMM2 shows the owner's
+everywhere. A network car's wheels are not simulated, so it lays no tyre
+tracks and throws no wheel particles (MM2's simulated network car did; open).
+
+**Bandwidth**, measured with `OPENMM2_DEBUG_NETDAMAGE`: a heavily crashing
+car (a cab ramming walls every 4 s for 5 minutes, two wrecks) sent 53 events,
+2-4 every 10 s, 4-15 bytes a second of payload (about 90 bytes on the wire
+each with the event header, ENet and UDP, relayed by the host to each other
+player). The sender's budget bounds a car at 10 events a second (16 patches
+and 8 impacts each: about 3 KB/s at worst). The shared traffic grows by 4
+bits a police car and 1 bit a knocked car per message, and 80 more bits for
+each knocked car with a body. Measured (the host's `nettraffic` log, a bus
+ramming the downtown San Francisco traffic with the client 40 m behind, 75
+cars knocked in 2 minutes): 10 bytes a second without a car on its body's
+wheels, 80-770 bytes a second while one to four were (about 1 to 4 cars a
+message), of 11-19 KB/s; the 1100-byte message budget still bounds it.
 
 ### Disconnect reasons
 
@@ -726,7 +847,14 @@ When `config.multiplayer && ctx.netGame`:
    A client runs no traffic or police: before its physics step it takes
    `takeAmbientStates()` and places the received cars, and its light sets
    follow the host's (`World::advanceLightsTo`).
-7. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
+7. **Damage** (`game::NetDamage`, see "Damage"): the frame's game events go
+   to `NetDamage::receive`; each network car (and a client's police car) is
+   brought up to date with `NetDamage::update` after it is placed (`fresh`
+   when shown afresh), the others with `settle`; this machine's car (and a
+   shared-traffic host's police) record their patches, parts, impacts and
+   resets (`DamageRecorder`), sent with `NetDamage::send` after the frame's
+   effects.
+8. **End:** the host calls `ctx.netGame->returnToLobby()` when the race is
    over (everyone finished, or the time/point limit); every machine sees
    `backToLobby(<its race number>)` and returns with `makeFrontendScreen(ctx, result)`.
    A player who quits early just returns to the frontend (it shows the lobby;
@@ -757,7 +885,26 @@ and knocks, for comparison; `OPENMM2_DEBUG_NET_SHOT_MS=<session ms>` ends a
 network race at that session time, so each machine's `--screenshot` shows the
 same moment, and `OPENMM2_DEBUG_NET_SHOT_MS=+<ms>` that long after the race
 was ordered, also before it has started (each machine's race of the same
-order). `OPENMM2_DEBUG_LOAD_DELAY_MS=<ms>` keeps a race's loading screen up
+order); a comma-separated list of times saves a numbered picture at each but
+the last (`<screenshot>-1.png`, ...) and ends at the last. For the damage:
+`OPENMM2_DEBUG_NETDAMAGE` logs every damage event sent and received, and every
+2 s the network cars' and this machine's damage levels;
+`OPENMM2_DEBUG_FOCUS=net:<player id>` frames a player's car (this machine's
+own, or another's as drawn), `police:<400 + post>` a shared police car,
+`knocked:<player id>` the knocked traffic car with a body within 60 m of a
+player's car with the lowest id, `traffic:<id>` a shared traffic car, so both
+machines take the same view; `OPENMM2_DEBUG_INPUT` takes several inputs
+separated by `/` in turn, each for `OPENMM2_DEBUG_INPUT_MS` (2000) of race
+time (`1,0,0.2,0/0,1,-0.2,0` rams a wall again and again);
+`OPENMM2_DEBUG_RESPAWN_MS=<ms>[,...]` (or `+<ms>`) puts the car back at its
+reset position as the water does; `OPENMM2_DEBUG_START_NEAR_POLICE=<post>:<m>`
+starts a cruise's car that far in front of a police post's car, facing it,
+and `OPENMM2_DEBUG_START=<x>,<y>,<z>,<angle>` at that place (the race logs
+its start and angle); `OPENMM2_DEBUG_POLICE_TOUGHNESS=<factor>` scales the
+police cars' MedDamage and MaxDamage on the host. The host's `nettraffic`
+statistics give the share of the police damage bits and the knocked cars'
+wheels, the client's how many cars it draws on their bodies' wheels, and the
+per-car lines say which cars carry wheels. `OPENMM2_DEBUG_LOAD_DELAY_MS=<ms>` keeps a race's loading screen up
 until that long after its loading began (the frames go on and the session is
 serviced): a slow loader for trying the race start; the race logs each
 machine's report, countdown and Go in session time ("race N: countdown from
@@ -789,6 +936,15 @@ message, malformed input, delivery per client), `tests/game/test_traffic_sync.cp
 (interest, budget, spawn, update, despawn, loss, reordering, recycled slots,
 hostile messages), `tests/ai/test_shared_traffic.cpp` (several players'
 roads, avoidance, the light steps) and `tests/phys/test_kinematic_motion.cpp`.
+The damage by `tests/net/test_vehicle_damage.cpp` (the event's encoding, the
+point arriving bit for bit, non-finite values, malformed events, the police
+damage and wheels in `AmbientState`), `tests/game/test_damage_sync.cpp` (the
+recorder's batches, splits, resets and budget; each entry at its time, the
+hold, a reset clearing the car, convergence after a lost event, cars not
+drawn, hostile events; the same texels on two renderers from retail data;
+two `NetGame`s; the knocked cars' wheels through a message and the client's
+interpolation), the damage relay budget in `test_hostile_input.cpp` and the
+event in `test_fuzz.cpp`.
 
 ### Diagnosing replication
 

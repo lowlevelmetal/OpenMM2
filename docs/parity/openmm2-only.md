@@ -130,6 +130,8 @@ counted in the summary above.
 | `phys::Instance::kinematicMotion`, `Body::kinematicMoves` | | openmm2 | A kinematic instance (network car) that reports its motion strikes as a car moving at it (MM2 has no kinematic instances); off by default, on for the network cars of a shared-traffic cruise and the received traffic and police. |
 | The host settings' SHARED TRAFFIC panel (`HostSettingsPage`) | `HostRaceMenu` (no traffic or cop settings) | deviation | On / off and the single-player cruise's traffic and cop density sliders (defaults 0.5 and 1, `RaceMenuBase::SetStateRace`), drawn by OpenMM2 in the upper right panel cruise leaves empty. |
 | A client's pedestrians and the received cars | `aiPedestrian::UpcomingAccident` / `Accident` (`aiObstacle::InAccident` in the road's section lists) | inferred | The host's section lists do not travel: a received car off its rail counts for its whole road or intersection (`MapView::mapComponent` of its place). |
+| A client's police cars' damage (`game::DamageReplica`, `VehicleEffects`, `AmbientEntity::damage`) | `vehCarDamage::Update`, `ApplyImpact`, `fxTexelDamage::ApplyDamage`, `vehBreakableMgr::Eject`, `vehCarModel::EjectOneshot` on the host's cars | openmm2 | Added 2026-10-09 (protocol 4): the host's police damage level (10 bits) drives the received car's smoke as `vehCarDamage::Update` does, and its dents, broken parts, sparks, shards and impact sounds are replayed from the host's records (docs/multiplayer.md, "Damage"); the wreck (out of action) as before, with its black smoke and the explosion sound. Before, a client saw the wreck flag and the explosion only. |
+| A client's knocked traffic cars' wheels (`AmbientEntity::wheels`, `game::trafficWheelMatrices`) | `aiVehicleInstance::Draw` with an `aiVehicleActive` (`vehWheelCheap`'s drawing matrices) | openmm2 | Added 2026-10-09 (protocol 4): a car with a body on the host sends its four wheels' drawing offsets; the client draws it on them and lays its shadow as a physical car's. Before, it was drawn on its rail wheels. |
 
 ## Files
 
@@ -160,6 +162,7 @@ counted in the summary above.
 | `src/core/StringUtil.h` | reclassified M | |
 | `src/net/AmbientState.cpp` | O | The shared cruise traffic's message (added 2026-10-09). |
 | `src/net/AmbientState.h` | O | |
+| `src/net/VehicleDamage.h` | O | A car's damage on the wire (added 2026-10-09); the rules it replays are MM2's (docs/multiplayer.md, "Damage"). |
 | `src/net/BitStream.cpp` | confirmed O | Wire encoding. |
 | `src/net/BitStream.h` | confirmed O | |
 | `src/net/ClockSync.cpp` | confirmed O | Host clock estimate. |

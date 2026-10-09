@@ -193,6 +193,12 @@ unless the other party is a vehicle. Then:
   engine), above 75 mph two random wheel/hub pairs and a fender, above
   50 mph one pair, thrown at 1.3 times the car's speed.
 
+In a network race the other players' cars and a client's shared police show
+their owner's damage: the smoke from the replicated level, and the texel
+damage, broken parts, sparks and shards replayed from the owner's events
+(multiplayer.md, "Damage"); they lay no tyre tracks and throw no wheel
+particles.
+
 Ejected parts take their physics from `tune/banger/<car>_<part>.dgBangerData`
 (`vehBreakableMgr::Create`). Retail data has these for every car's wheels and
 for some cars' BREAK parts, sirens and fenders, but none for hubs. MM2 still
