@@ -108,7 +108,7 @@ renderer and audio objects.
 | `vehWheel::AddNormalLoad`, `vehWheel::SetNormalLoad`, `vehWheel::SetInputs`, `vehWheel::ComputeFriction`, `vehWheel::CalcSuspensionForce`, `vehWheel::GetBumpDisplacement`, `vehWheel::ComputeDwtdw`, `vehWheel::Update`, `vehWheel::GetVisualDispVert` | ported | `phys/vehicle/Wheel.cpp` | As vehicle.md records. |
 | `vehWheel::GetSurfaceSound` | ported | `audio/game/CarAudio` | The material's sound index (audio). |
 | `vehWheel::~vehWheel`, `` vehWheel::`scalar_deleting_destructor' ``, `vehWheel::GetClassName` | not needed | | Plumbing. |
-| `vehWheelCheap::vehWheelCheap`, `vehWheelCheap::Init`, `vehWheelCheap::Reset`, `vehWheelCheap::Update` | ported | `game/TrafficBodies.cpp` | The traffic bodies' wheels (aiVehicleActive); constructor defaults as `TrafficBodies`' wheel constants. |
+| `vehWheelCheap::vehWheelCheap`, `vehWheelCheap::Init`, `vehWheelCheap::Reset`, `vehWheelCheap::Update` | ported | `game/TrafficBodies.cpp` | The traffic bodies' wheels (aiVehicleActive); constructor defaults as `TrafficBodies`' wheel constants. Round 3 (frames): the drawing matrix Init and Update leave (+0x128) is kept for aiVehicleInstance::Draw. |
 | `vehWheelCheap::~vehWheelCheap`, `` vehWheelCheap::`scalar_deleting_destructor' `` | not needed | | Plumbing. |
 
 ## vehDrivetrain, vehEngine, vehTransmission, vehAero, vehAxle
@@ -179,7 +179,7 @@ siren, shadow, and the collision bound (`InitBound`). Drawing is
 | `vehCarModel::GetTrailerHitch` | ported | `SimVehicle::load` (the `trailer_hitch` pivot) | |
 | `vehCarModel::Reset`, `vehCarModel::ClearDamage` | ported | `VehicleRenderer::reattachAll`, `resetDamage` | Breakables back on, texel damage cleared, the one-shot eject armed again, the wheels shown. |
 | `vehCarModel::EjectOneshot` | ported | `VehicleRenderer::wreckParts`, RaceScreen | |
-| `vehCarModel::Draw`, `vehCarModel::DrawPart`, `vehCarModel::DrawShadow`, `vehCarModel::DrawGlow`, `vehCarModel::DrawHeadlights` | ported | `VehicleRenderer::drawCar`, `drawPart`, `drawShadow`, `drawGlows` | |
+| `vehCarModel::Draw`, `vehCarModel::DrawPart`, `vehCarModel::DrawShadow`, `vehCarModel::DrawGlow`, `vehCarModel::DrawHeadlights` | ported | `VehicleRenderer::drawCar`, `drawPart`, `drawShadow`, `drawGlows` | Round 3 (frames): DrawHeadlights' sweep directions are kept in world space (fixed). |
 | `vehCarModel::DrawShadowMap`, `vehCarModel::DrawReflected` | not needed | | lvlInstance vtable slots 0x34 and 0x3c: no code of build 3393 calls through them (cityLevel draws shadows through slot 0x30). |
 | `vehCarModel::SetVisible`, `vehCarModel::GetVisible` | ported | RaceScreen `drawLevel` (`playerBody`) | `mmPlayer::Update` hides the car in the point-of-view cameras; `mmMirror::Cull` shows it for the mirror. |
 | `vehCarModel::GetPosition`, `vehCarModel::GetMatrix`, `vehCarModel::SetMatrix`, `vehCarModel::GetVelocity`, `vehCarModel::GetEntity`, `vehCarModel::AttachEntity` | ported | `VehicleBody::position`, `Body::bound` matrix, `Body::ics`, `Body::entity` | lvlInstance's virtuals for the car: the vehCarSim's world matrix and velocity, the vehCar as entity, no attach. |
@@ -205,7 +205,7 @@ siren, shadow, and the collision bound (`InitBound`). Drawing is
 | `vehTrailer::Load`, `vehTrailer::Save` | not needed | | File loading and saving through the node interface; the tune is read by `loadTrailerParams`. |
 | `vehTrailer::~vehTrailer`, `` vehTrailer::`vector_deleting_destructor' ``, `` vehTrailer::`vector_deleting_destructor'`adjustor{180}' ``, `vehTrailer::GetClassName`, `vehTrailer::GetDirName` | not needed | | Plumbing. |
 | `vehTrailerInstance::Init` | ported | `SimVehicle::load` (the `<car>_trailer` model), `VehicleRenderer` ("TRAILER" / "TWHL") | |
-| `vehTrailerInstance::Draw`, `vehTrailerInstance::DrawShadow` | ported | `VehicleRenderer::drawCar`, `drawShadow`, `SimVehicle::trailerPose` | The trailer's "shadow" part on the ground; tail lights above 0.1 brake. |
+| `vehTrailerInstance::Draw`, `vehTrailerInstance::DrawShadow` | ported (fixed) | `VehicleRenderer::drawTrailer`, `drawShadow`, `SimVehicle::trailerPose` | The trailer's "shadow" part on the ground; tail lights above 0.1 brake. Round 3 (frames): drawn as vehTrailerInstance does (body alone below H; TLIGHT in the object pass and TWHL0-3 only at H; none of vehCarModel's other parts; no glows), no longer as a car. |
 | `vehTrailerInstance::DrawShadowMap` | not needed | | No caller of the slot (as vehCarModel's). |
 | `vehTrailerInstance::GetMatrix`, `vehTrailerInstance::SetMatrix`, `vehTrailerInstance::GetPosition`, `vehTrailerInstance::GetVelocity`, `vehTrailerInstance::GetEntity`, `vehTrailerInstance::AttachEntity`, `vehTrailerInstance::GetTrailerHitch` | ported | `Trailer::modelMatrix`, `VehicleBody::position`, `Body`, `Trailer::init` | |
 | `vehTrailerInstance::SizeOf` | not needed | | Plumbing. |

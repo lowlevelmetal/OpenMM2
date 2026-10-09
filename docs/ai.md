@@ -58,10 +58,18 @@ Poles (`aiTrafficLightInstance::Init`, `World::signals()`): at
 `trafficLightAxis` (which points away from the road on retail data), Z =
 (-x.z, 0, x.x), so the glows on +Z face the arriving traffic and the SF
 models' arms (-X) reach over the road. The dual model for approaches with
-two or more lanes. `DrawGlow` draws the light's glow together with the
-pedestrian signal (WALK in state 4, NOWALK otherwise) and only when the
-model has both; NIGHT glows from the evening on (time of day > 1). Stop
-signs are static instances in `city/<map>_ai.inst`, drawn with the city.
+two or more lanes. Each pole is an unhit Y banger of its model's banger
+data (`aiTrafficLightInstance` derives from `dgUnhitYBangerInstance`): its
+frame (GetMatrix) is the base + R * CG, at which the CG-centred body is
+drawn; `SetFourWay` puts it in the room of its CG (GetPosition). Cars
+collide with it as with any prop and knock it over into its BREAKnn parts
+(`BangerSet`; the parts are ordinary hit bangers), after which neither its
+body nor its glows are drawn; the lights keep cycling. `DrawGlow` draws
+the light's glow together with the pedestrian signal (WALK in state 4,
+NOWALK otherwise), modelled from the base (GetMatrix less R * CG), and
+only when the model has both; NIGHT glows from the evening on (time of
+day > 1). Stop signs are static instances in `city/<map>_ai.inst`, drawn
+with the city.
 
 ## Ambient traffic (`Traffic`, `AmbientRoute`)
 

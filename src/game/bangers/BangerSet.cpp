@@ -418,47 +418,52 @@ void BangerSet::instancesIn(int room, std::vector<phys::Instance*>& out) const {
 // --- Setup -----------------------------------------------------------------------------------
 
 void BangerSet::add(const std::vector<PlacedProp>& props) {
-    for (const auto& p : props) {
-        const BangerData* d = m_data.find(p.model);
-        if (!d) {
-            ++m_skipped;
-            continue;
-        }
-        // dgBangerDataManager::AddBangerDataEntry: the data's bound, and its
-        // parts' (dgUnhitBangerInstance::InitBreakables).
-        boundsOf(*d);
-        for (int k = 0; k < d->numParts; ++k)
-            if (const BangerData* part = m_data.part(p.model, k))
-                boundsOf(*part);
-        const std::size_t i = newInstance();
-        Instance& inst = m_instances[i];
-        inst.data = d;
-        inst.model = p.model;
-        inst.ground = p.transform;
-        if (!p.fullMatrix) {
-            // dgUnhitYBangerInstance keeps only the X row's x and z: rows
-            // (c, 0, s), (0, 1, 0), (-s, 0, c), not renormalised.
-            const float c = p.transform.m0.x, s = p.transform.m0.z;
-            inst.ground.m0 = {c, 0.0f, s};
-            inst.ground.m1 = {0.0f, 1.0f, 0.0f};
-            inst.ground.m2 = {-s, 0.0f, c};
-        }
-        // The banger's frame sits at its CG (dgUnhitBangerInstance::Init: the
-        // CG offset turned by the matrix as placed, before SetMatrix keeps
-        // only the Y rotation), with the instance data's variant
-        // (SetVariant).
-        inst.matrix = inst.ground;
-        inst.matrix.m3 = p.transform.transform(d->cg);
-        inst.paint = p.variant;
-        inst.roomHint = p.roomHint;
-        inst.state = State::Unhit;
-        Prop& prop = *m_props[i];
-        prop.banger = true;
-        prop.collidable = true;
-        prop.audioId = d->colliderId;
-        moveToRoom(i, p.room);
-    }
+    for (const auto& p : props)
+        addOne(p);
     placeUnroomed();
+}
+
+std::optional<std::size_t> BangerSet::addOne(const PlacedProp& p) {
+    const BangerData* d = m_data.find(p.model);
+    if (!d) {
+        ++m_skipped;
+        return std::nullopt;
+    }
+    // dgBangerDataManager::AddBangerDataEntry: the data's bound, and its
+    // parts' (dgUnhitBangerInstance::InitBreakables).
+    boundsOf(*d);
+    for (int k = 0; k < d->numParts; ++k)
+        if (const BangerData* part = m_data.part(p.model, k))
+            boundsOf(*part);
+    const std::size_t i = newInstance();
+    Instance& inst = m_instances[i];
+    inst.data = d;
+    inst.model = p.model;
+    inst.ground = p.transform;
+    if (!p.fullMatrix) {
+        // dgUnhitYBangerInstance keeps only the X row's x and z: rows
+        // (c, 0, s), (0, 1, 0), (-s, 0, c), not renormalised.
+        const float c = p.transform.m0.x, s = p.transform.m0.z;
+        inst.ground.m0 = {c, 0.0f, s};
+        inst.ground.m1 = {0.0f, 1.0f, 0.0f};
+        inst.ground.m2 = {-s, 0.0f, c};
+    }
+    // The banger's frame sits at its CG (dgUnhitBangerInstance::Init: the
+    // CG offset turned by the matrix as placed, before SetMatrix keeps
+    // only the Y rotation), with the instance data's variant
+    // (SetVariant).
+    inst.matrix = inst.ground;
+    inst.matrix.m3 = p.transform.transform(d->cg);
+    inst.paint = p.variant;
+    inst.roomHint = p.roomHint;
+    inst.ownerDrawn = p.ownerDrawn;
+    inst.state = State::Unhit;
+    Prop& prop = *m_props[i];
+    prop.banger = true;
+    prop.collidable = true;
+    prop.audioId = d->colliderId;
+    moveToRoom(i, p.room);
+    return i;
 }
 
 void BangerSet::setWorld(phys::World* world) {
@@ -1087,6 +1092,11 @@ void BangerSet::draw(render::Device& device, ModelLibrary& models, TextureLibrar
     for (std::size_t i = 0; i < m_instances.size(); ++i) {
         const Instance& inst = m_instances[i];
         if (inst.state == State::Gone)
+            continue;
+        // A traffic light standing is drawn with its signal (AiRenderer:
+        // aiTrafficLightInstance::Draw / DrawGlow); once it breaks loose it
+        // leaves the rooms (Gone) and its parts are ordinary hit bangers.
+        if (inst.ownerDrawn && standing(i))
             continue;
         RoomVisibility::Passes passes;
         if (rooms) {

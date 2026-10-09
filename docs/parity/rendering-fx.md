@@ -123,7 +123,7 @@ GREATER 100, and that every retail room colour is white because
 | `AiRenderer::draw`: signals | `aiTrafficLightInstance::Draw` | fixed | `lvlInstance::IsVisible` with the Object Detail thresholds |
 | `AiRenderer::draw`: room visibility | `cityLevel::DrawRooms` | fixed | MM2 draws traffic, pedestrians and signals from the visible rooms' lists; ported in the MM2-side audit (`RoomVisibility`, see mm2/city-render.md) |
 | `AiRenderer::drawPed` | `pedAnimationInstance::Draw`, `modModel::Draw` | fixed | posed with the root drift taken out; the default culling (was none; the retail meshes face out counter-clockwise, tested) |
-| `AiRenderer::drawSkeleton` | `aiPedestrianInstance::Draw`, `pedAnimation::DrawSkeleton`, the pedestrian type loader's .rays reading | fixed | second pass: beyond 35 m, for each bone with a start width its position raised by the offset, a quad to its parent across the camera's right axis, coloured trunc(255 x diffuse) of the variant's shader its row names; untextured, unlit, both sides |
+| `AiRenderer::drawSkeleton` | `aiPedestrianInstance::Draw`, `pedAnimation::DrawSkeleton`, the pedestrian type loader's .rays reading | fixed | second pass: beyond 35 m, for each bone with a start width its position raised by the offset, a quad to its parent across the modelview's first row taken in the pedestrian's space (round 3, frames: was the camera's right axis), coloured trunc(255 x diffuse) of the variant's shader its row names; untextured, unlit, both sides |
 | `AiRenderer::drawSignal` | `aiTrafficLightInstance::Draw`, `DrawGlow` | fixed | the first shader set; the light's glow and the walk signal both or neither, added, unfogged, default alpha test, only within NoDraw |
 
 ## src/game/VehicleRenderer.h, VehicleRenderer.cpp
@@ -145,10 +145,10 @@ GREATER 100, and that every retail room colour is white because
 | `VehicleRenderer::draw` | `vehCarModel::Draw`, `DrawShadow`, `DrawGlow` | verified | |
 | `VehicleRenderer::drawCar` | `vehCarModel::Draw`, `vehBreakableMgr::Draw` | fixed | VL body only with the stored shaders; panoz gt paint 4 alpha reference 0; the extra `_dmg` loop removed |
 | `VehicleRenderer::wheelMatrix` | `vehCarModel::Draw` | fixed | WHL4/WHL5 at WHL2/WHL3's matrix moved 2.2 wheel radii back along the body |
-| `VehicleRenderer::drawTraffic` | `aiVehicleInstance::Draw` | fixed | the colour's shaders, BREAK0–3 at H, reflection and wheels only at H (LAME_WHEELS off), no steering |
+| `VehicleRenderer::drawTraffic` | `aiVehicleInstance::Draw` | fixed | the colour's shaders, BREAK0–3 at H, reflection and wheels only at H (LAME_WHEELS off), no steering; with an aiVehicleActive the vehWheelCheaps' matrices (round 3, frames) |
 | `VehicleRenderer::shadowMatrix`, `drawShadow` | `vehCarModel::DrawShadow`, `lvlInstance::DrawPhysics` | fixed | default alpha test (was GREATER 100) |
 | `VehicleRenderer::addLightGlow`, `drawGlows` | `vehCarModel::DrawGlow`, `DrawHeadlights`, `ltLight::DrawGlow`, `aiVehicleInstance::DrawGlow` | fixed | default alpha test; traffic: TLIGHT while braking and with the light flag, one white headlight pair pulled 0.2 m to the camera |
-| headlight sweep with the siren | `vehCarModel::DrawHeadlights` | deviation | ±42.4 rad/s sweep; the sweep's base direction is OpenMM2's |
+| headlight sweep with the siren | `vehCarModel::DrawHeadlights` | fixed | ±42.4 rad/s sweep of the two world-space directions from wherever they point (round 3, frames); MM2 also turns them for the mirror's view (deviation: once a frame) |
 | suspension and engine parts | `vehSuspension::Update`, `vehCarModel::Init` (shock0–3, arm0–3, shaft2/3, axle0/1, engine) | deviation | not drawn; no retail vehicle model has any of these parts (scanned every geometry/v*.pkg) |
 | traffic turn signals | `aiVehicleInstance::DrawGlow` (SLIGHT0/1) | open | see Missing (ai-vehicles) |
 | `VehicleRenderer::setLensFlareTarget`, siren flares in `drawGlows` | `vehSiren::Init`, `vehSiren::Draw` | fixed | second pass: one ltLensFlare(20) per car with sirens; each siren light's flares queued with ltLight::ComputeIntensity(eye, 0.05) |

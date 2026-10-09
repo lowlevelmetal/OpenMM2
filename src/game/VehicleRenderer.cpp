@@ -63,6 +63,7 @@ VehicleRenderer::VehicleRenderer(render::Device& device, TextureLibrary& texture
                                  std::string wheelPrefix)
     : m_device(device), m_textures(textures), m_model(model), m_paintjob(paintjob), m_bodyPart(std::move(bodyPart)),
       m_wheelPrefix(std::move(wheelPrefix)) {
+    m_trailer = str::iequals(m_bodyPart, "TRAILER");
     m_gpu = models.add(model.baseName, model.pkg);
     setPaintjob(paintjob);
     if (!m_gpu)
@@ -118,7 +119,8 @@ void VehicleRenderer::setPaintjob(int paintjob) {
     // draw the paint job's materials as stored.
     m_live = m_paint;
     m_texelDamage.reset();
-    if (m_traffic)
+    // aiVehicleInstance and vehTrailerInstance have no fxTexelDamage.
+    if (m_traffic || m_trailer)
         return;
     for (const auto& mesh : m_model.pkg.meshes)
         if (str::iequals(mesh.part, m_bodyPart) && mesh.lod == asset::Lod::High) {
@@ -320,10 +322,13 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera) {
         return;
     if (m_traffic)
         drawTraffic(pose, *visible);
+    else if (m_trailer)
+        drawTrailer(pose, *visible);
     else
         drawCar(pose, *visible);
     drawShadow(pose);
-    drawGlows(pose, camera);
+    if (!m_trailer) // vehTrailerInstance keeps lvlInstance's empty DrawGlow
+        drawGlows(pose, camera);
 }
 
 void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera, const RoomVisibility::Passes& passes) {
@@ -334,13 +339,16 @@ void VehicleRenderer::draw(const VehiclePose& pose, const Mat34& camera, const R
         if (const auto visible = lodFor(pose, camera)) {
             if (m_traffic)
                 drawTraffic(pose, *visible);
+            else if (m_trailer)
+                drawTrailer(pose, *visible);
             else
                 drawCar(pose, *visible);
         }
     // cityLevel_drawShadows, cityLevel_drawLights: by the room alone.
     if (passes.shadowsAndGlows) {
         drawShadow(pose);
-        drawGlows(pose, camera);
+        if (!m_trailer) // vehTrailerInstance keeps lvlInstance's empty DrawGlow
+            drawGlows(pose, camera);
     }
 }
 
@@ -437,10 +445,14 @@ void VehicleRenderer::drawTraffic(const VehiclePose& pose, asset::Lod lod) {
         return;
     drawReflection(pose.body);
     // The wheels on the rails turn about their axles at their pivots (no
-    // steering); WHL4 and WHL5 likewise at their own pivots.
+    // steering); WHL4 and WHL5 likewise at their own pivots. A car with a
+    // body has its wheels where its vehWheelCheaps put them (pose.wheelWorld).
     for (std::size_t i = 0; i < 6; ++i) {
         std::optional<Mat34> m;
-        if (i < 4) {
+        if (pose.hasWheelWorld) {
+            if (pose.wheelValid[i])
+                m = pose.wheelWorld[i];
+        } else if (i < 4) {
             m = wheelMatrix(pose, i);
         } else if (const auto* w = m_model.wheel(static_cast<int>(i))) {
             m = Mat34::rotationX(pose.wheelSpin[i]) * Mat34::translation(w->position) * pose.body;
@@ -450,16 +462,36 @@ void VehicleRenderer::drawTraffic(const VehiclePose& pose, asset::Lod lod) {
     }
 }
 
-std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
+void VehicleRenderer::drawTrailer(const VehiclePose& pose, asset::Lod lod) {
+    // vehTrailerInstance::Draw: the body at its LOD with the paint job's
+    // shaders as stored; at the high LOD only, TLIGHT while the tow car
+    // brakes harder than 0.1 (an ordinary lit draw in the object pass, not
+    // a glow: its black, fully transparent fxltglowred material leaves it
+    // invisible under the pass's alpha test, inferred from the material)
+    // and TWHL0-3 at the trailer's
+    // wheel matrices. None of vehCarModel's other parts: no reflection,
+    // decal, breakables, fenders, hubs or TWHL4/5, so TWHL0/1's medium and
+    // low meshes (modelled away from their pivots) are never drawn.
+    drawPart(m_bodyPart, lod, pose.body, {}, false);
+    if (lod != asset::Lod::High)
+        return;
+    if (pose.brakeLights)
+        drawPart("TLIGHT", asset::Lod::High, pose.body, {}, false);
+    for (std::size_t i = 0; i < 4; ++i)
+        if (pose.hasWheelWorld && pose.wheelValid[i])
+            drawPart(std::format("{}{}", m_wheelPrefix, i), asset::Lod::High, pose.wheelWorld[i], {}, false);
+}
+
+std::optional<Mat34> groundShadowMatrix(const Mat34& body, const VehicleRenderer::GroundProbe& probe) {
     // lvlInstance::DrawPhysics: the ground 1 m above to 1 m below the car,
     // else to 5 m below; no shadow on slopes steeper than normal.y 0.7. The
     // car's frame is turned onto the ground (upside down: its flipped up axis).
-    if (!m_probe)
+    if (!probe)
         return std::nullopt;
     Vec3 point, normal;
     const Vec3 p = body.m3;
-    if (!m_probe(p + Vec3{0, 1, 0}, p - Vec3{0, 1, 0}, point, normal) &&
-        !m_probe(p + Vec3{0, 1, 0}, p - Vec3{0, 5, 0}, point, normal))
+    if (!probe(p + Vec3{0, 1, 0}, p - Vec3{0, 1, 0}, point, normal) &&
+        !probe(p + Vec3{0, 1, 0}, p - Vec3{0, 5, 0}, point, normal))
         return std::nullopt;
     if (normal.y < 0.7f)
         return std::nullopt;
@@ -474,13 +506,36 @@ std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
     return m;
 }
 
+Mat34 trafficShadowMatrix(const Mat34& body, bool physical, const VehicleRenderer::GroundProbe& probe) {
+    // aiVehicleInstance::DrawShadow: a car with a body (an aiVehicleActive)
+    // lays its shadow on the ground under the active's matrix
+    // (lvlInstance::DrawPhysics); otherwise, or with no ground there, the
+    // shadow sits at GetMatrix while the car is upright (m1.y >= 0) and on
+    // the ground under it when upside down and there is ground.
+    if (physical)
+        if (auto m = groundShadowMatrix(body, probe))
+            return *m;
+    if (!(body.m1.y >= 0.0f))
+        if (auto m = groundShadowMatrix(body, probe))
+            return *m;
+    return body;
+}
+
+std::optional<Mat34> VehicleRenderer::shadowMatrix(const Mat34& body) const {
+    return groundShadowMatrix(body, m_probe);
+}
+
 void VehicleRenderer::drawShadow(const VehiclePose& pose) {
     // vehCarModel::DrawShadow: the high LOD shadow mesh on the ground,
     // alpha blended, depth tested without writes and pulled forward (MM2
     // narrows the depth range to 0.001-0.999).
-    // Without a ground probe (traffic on its rails, aiVehicleInstance::
-    // DrawShadow while upright) the shadow sits at the body.
-    const auto m = m_probe ? shadowMatrix(pose.body) : std::optional<Mat34>(pose.body);
+    std::optional<Mat34> m;
+    if (m_traffic)
+        m = trafficShadowMatrix(pose.body, pose.physical, m_probe);
+    else if (m_probe)
+        m = shadowMatrix(pose.body);
+    else
+        m = pose.body; // OpenMM2: without a ground probe the shadow sits at the body
     if (!m)
         return;
     MeshDrawOptions shadow;
@@ -564,20 +619,31 @@ void VehicleRenderer::drawGlows(const VehiclePose& pose, const Mat34& camera) {
         }
     } else {
         // Headlight beams (vehCarModel::DrawHeadlights) with the light flag,
-        // or sweeping in opposite directions while the siren is on.
-        if ((pose.headlights || (pose.siren && !m_sirens.empty())) && (m_headlights[0] || m_headlights[1])) {
-            for (std::size_t i = 0; i < 2; ++i) {
-                if (!m_headlights[i])
-                    continue;
-                Vec3 direction = -pose.body.m2;
-                if (pose.siren && !m_sirens.empty()) {
-                    const float sweep = pose.sirenAngle / (2.5f * 3.1415927f) * kHeadlightSweep;
-                    direction = Mat34::rotationY(i == 0 ? sweep : -sweep).transformDir(direction);
-                }
-                addLightGlow(m_cards, pose.body.transform(m_headlights[i]->position), direction,
-                             m_headlights[i]->color, camera);
+        // or sweeping while the siren is on: the two ltLights keep their
+        // world-space directions, set to the car's forward axis without the
+        // siren and turned about Y by +-42.411503 rad/s of frame time from
+        // wherever they point while it is on (Vector3::RotateY), so the
+        // sweep does not follow the car's turning.
+        const bool sweeping = pose.siren && !m_sirens.empty();
+        if ((pose.headlights || sweeping) && (m_headlights[0] || m_headlights[1])) {
+            if (sweeping) {
+                // The frame's time from the siren's angle (2.5 pi rad/s,
+                // kept within a turn).
+                float turned = pose.sirenAngle - m_beamSirenAngle;
+                if (turned < 0.0f)
+                    turned = turned + 6.2831855f;
+                const float sweep = turned / (2.5f * 3.1415927f) * kHeadlightSweep;
+                m_beamDirection[0] = Mat34::rotationY(sweep).transformDir(m_beamDirection[0]);
+                m_beamDirection[1] = Mat34::rotationY(-sweep).transformDir(m_beamDirection[1]);
+            } else {
+                m_beamDirection[0] = m_beamDirection[1] = -pose.body.m2;
             }
+            for (std::size_t i = 0; i < 2; ++i)
+                if (m_headlights[i])
+                    addLightGlow(m_cards, pose.body.transform(m_headlights[i]->position), m_beamDirection[i],
+                                 m_headlights[i]->color, camera);
         }
+        m_beamSirenAngle = pose.sirenAngle;
         // Siren beams (vehSiren::Draw): world-space directions turning about
         // Y, a quarter turn apart.
         if (pose.siren)
