@@ -206,7 +206,6 @@ needs, all of it inert in a single-player race:
   of their own, drawn where the host has them. An active attached to a
   mirror starts from the host's motion (`dgBangerActive::Attach` starts a
   placed or resting prop at rest).
-* A moving kinematic body allowed to (`phys::Body::kinematicBreaksBangers`,
-  the host's copies of the other players' cars) breaks a banger as a body of
-  its mass would (`calcBangerImpact`); every other kinematic body leaves it
-  standing, as before.
+* A client replaying its car (`phys::World::replaySample`) meets a prop with
+  the body an active would give it (`heldInertia`: `dgBangerActive::Attach`'s
+  mass and inertia, a mirror's host motion), holding it still.

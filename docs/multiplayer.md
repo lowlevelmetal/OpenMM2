@@ -196,8 +196,9 @@ layouts must bump `kProtocolVersion`.** `Hello` carries the version again,
 along with a free-form build string. Version 2 added the shared cruise
 traffic, version 3 the race start handshake (`RaceLoad` in place of
 `Countdown`, `RaceLoaded`, `RaceStart`, the race in `Welcome`), version 4 the
-cars' damage, version 5 the host's props (`PropState`, the `PropKnocks`
-event).
+cars' damage, version 5 the host's simulation of every player's car, version
+7 the host's props (`PropState`, the `PropKnocks` event; 6 is the shared
+traffic's).
 
 ### Handshake
 
@@ -622,10 +623,8 @@ their owner's damage instead:
   order. The parts are the owner's: the ones it broke off
   (`vehBreakableMgr::Impact`'s nearest, `EjectOneshot`'s by speed and its own
   random numbers) come off on every machine. The host throws them as bangers
-  when the event is fresh (4 m/s, wheels at 1.3 times the car's speed) and
-  every machine shows the host's (see "Props"); a client takes them off
-  without throwing, and throws its own car's at once, which hand over to the
-  host's when they rest. The sparks, shards and impact sound of each
+  (4 m/s, wheels at 1.3 times the car's speed) and every machine shows the
+  host's (see "Props"); a client takes them off without throwing. The sparks, shards and impact sound of each
   damaging impact are replayed at the car as drawn.
 * **Timing.** Every entry happens when the receiving machine draws the car at
   the session time it happened on its owner's machine (the police: at the
@@ -703,11 +702,9 @@ shared traffic knocked props on the host only.
 **OpenMM2** (the maintainer's decision: the host is the authority for
 everything; `game/net/PropSync`, `game/net/NetProps`, `net/PropState.h`): the
 host simulates the props for everyone, as a single-player race does, with
-every car: its own, its copies of the other players' cars, the shared traffic
-and police. Its copies of the others' cars are kinematic until they are
-simulated on the host; they meet a banger as a car of their mass would
-(`phys::Body::kinematicBreaksBangers`: dgImpact's break test and share of the
-motion with the car's phInertialCS, only the car's own response left out).
+every car it simulates: its own, the other players' (simulated from their
+inputs, protocol 5), the shared traffic and police; the props meet
+them, and dent them, through single player's code.
 
 * **Names.** Every machine places the same props in the same order (the street
   props restart the random generator per road, the instances and path sets
@@ -760,9 +757,18 @@ motion with the car's phInertialCS, only the car's own response left out).
   (so a flying cone hits its car as on the host) and stays where it stopped
   until the host's has moved and rests again, or 2 s. A piece simulated here
   that the host's ring does not hold disappears 2 s after it was made once at
-  rest. The parts its replay of another car's damage would throw are taken
-  off without a throw (the host's ring shows them); its own car's are thrown
-  at once and hand over like a knock.
+  rest. The parts the host's damage records take off a car (its own
+  included) come off without a throw: the host's ring shows the parts it
+  threw.
+* **Replays.** When the host's state corrects its car, a client runs the
+  car's later samples again (`World::replaySample`) with everything else
+  held still. The props meet the replayed car with the mass a real hit gives
+  them (`Instance::heldInertia`: the active the prop would take; a copy of a
+  flying piece's), and a light one (under a quarter of the car's mass) gives
+  way after the replay's first hit, as the real one flies off; nothing is
+  knocked in a replay. A prop a client's car hits in its own samples is the
+  same knock on the host, sample for sample: a client driving alone through
+  props had no correction.
 * **A different placement** (an altered city, a mismatched build): the
   client follows only the cars' parts and simulates its props itself, as
   0.3 did, and logs it.
@@ -1021,10 +1027,10 @@ own, or another's as drawn), `police:<400 + post>` a shared police car,
 `knocked:<player id>` the knocked traffic car with a body within 60 m of a
 player's car with the lowest id, `traffic:<id>` a shared traffic car,
 `prop:<index>` a placed prop or, once knocked, its first piece, so both
-machines take the same view. For the props: `OPENMM2_DEBUG_NETPROPS=<file>`
-traces each machine's props (`netprobe propdiff <trace> <trace>` compares
-two), `OPENMM2_NETPROPS=local` leaves every machine with its own props, as
-0.3 did (for comparison); `OPENMM2_DEBUG_INPUT` takes several inputs
+machines take the same view. For the props: `OPENMM2_NET_TRACE` traces
+each machine's props too (see "Diagnosing replication"),
+`OPENMM2_NETPROPS=local` leaves every machine with its own props, as 0.3 did
+(for comparison); `OPENMM2_DEBUG_INPUT` takes several inputs
 separated by `/` in turn, each for `OPENMM2_DEBUG_INPUT_MS` (2000) of race
 time (`1,0,0.2,0/0,1,-0.2,0` rams a wall again and again);
 `OPENMM2_DEBUG_RESPAWN_MS=<ms>[,...]` (or `+<ms>`) puts the car back at its
@@ -1080,9 +1086,9 @@ messages, their sizes and limits), `test_fuzz.cpp` (both messages, decoded
 and sent to a client) and `tests/game/test_prop_sync.cpp` (a host and a
 client in one process through a lossy link: the host's knocks and pieces,
 a predicted knock handed over and one undone, other cars passing through a
-client's props, moving kinematic cars breaking props as a car of their mass
-would, loss and reordering, a big crash, the catch-up, thrown car parts,
-refused input, and on retail data the same placement on every machine).
+client's props, a replayed car meeting a prop as a real sample does, loss
+and reordering, a big crash, the catch-up, thrown car parts, refused input,
+and on retail data the same placement on every machine).
 
 ### Diagnosing replication
 
@@ -1098,7 +1104,19 @@ each:
 * `R wall id stale x y z vx vy vz sampleTime`: each remote car as sampled for
   the frame.
 
+* the props' lines (lowercase tags, `game::PropTrace`): every placed prop
+  once (`p`), every prop that broke loose here and what broke it (`k`), a
+  prediction undone (`x`), every 250 ms of session time (`t`) the props down
+  (`b`), the knocked-over props and parts shown (`h`) and each car's damage
+  level and dents (`d`), and each simulated car's damaging impacts with their
+  cause (`i`).
+
 With one trace per machine, a remote car as drawn (`R`) can be compared with
 where the other machine's car really was at `sampleTime` (its `F` lines).
+`netprobe syncreport <trace>...` compares the machines' props pair by pair
+at the same session times: the props knocked on one machine only, how far
+apart in time both knocked them, where the knocked-over props and parts
+rest, each car's damage, and each car's damaging impacts as its own machine
+predicted them and as the host simulated them.
 Latency, jitter and loss can be added between machines on one computer with
 `netprobe relay` in front of the host (tc/netem needs root).

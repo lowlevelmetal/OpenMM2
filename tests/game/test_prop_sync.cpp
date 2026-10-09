@@ -12,6 +12,8 @@
 #include "game/bangers/BangerData.h"
 #include "game/bangers/BangerSet.h"
 #include "game/bangers/PropPlacement.h"
+#include "game/net/NetGame.h"
+#include "game/net/NetProps.h"
 #include "game/net/PropSync.h"
 #include "game/world/Gizmos.h"
 #include "net/PropState.h"
@@ -21,12 +23,13 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <deque>
 #include <filesystem>
 #include <fstream>
 #include <map>
-#include <cstdio>
 #include <random>
+#include <span>
 
 using namespace mm2;
 using namespace mm2::game;
@@ -650,6 +653,32 @@ Placement placeAsAMachine(const vfs::Vfs& v, const char* name, GameMode mode, in
 }
 
 } // namespace
+
+// A client takes knocks from the host only: another player's events reach it
+// through the host's relay, and a forged one knocks nothing.
+TEST(PropSync, KnocksCountFromTheHostOnly) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    Machine client(lib);
+    client.place(layout());
+    NetGame net(NetOptions{}); // in no session: a client's side
+    NetProps props;
+    props.setup(net, client.set, [](const phys::Instance&) { return false; });
+    ASSERT_TRUE(props.client());
+    net::PropKnocksEvent knocks;
+    knocks.catchUp = true;
+    knocks.knocks = {{1, 0}};
+    NetGameEvent forged;
+    forged.from = 2;
+    forged.type = static_cast<net::GameEventType>(net::kPropKnocksEvent);
+    forged.payload = net::encodePayload(knocks);
+    props.beforeStep(net, std::span(&forged, 1), 1000.0, nullptr);
+    EXPECT_TRUE(client.set.standing(1));
+    NetGameEvent honest = forged;
+    honest.from = net::kHostPlayerId;
+    props.beforeStep(net, std::span(&honest, 1), 1100.0, nullptr);
+    EXPECT_FALSE(client.set.standing(1));
+}
 
 // Retail data: every machine of a network race places the same props with
 // the same indices. The street props restart the random generator per road,
