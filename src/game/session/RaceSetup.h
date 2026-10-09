@@ -103,15 +103,20 @@ struct RaceSetup {
     // InitOtherPlayers) and whether it is then settled on the ground.
     ResetPlace playerPlace;
     StartDrop playerDrop = StartDrop::OnGround;
+    // Cruise and Cops and Robbers: playerPlace is the InitGameObjects place
+    // (mmSingleRoam: mmGame's (0, 10, 0); mmMultiRoam / mmMultiCR: the
+    // origin) and the mode's InitOtherPlayers moves the car to
+    // mmGame::RespawnXYZ's start once aiMap::Reset has run
+    // (Session::placeRespawnStart).
+    bool respawnStart = false;
 };
 
 // Loads the event described by `config`. Fails (returns std::nullopt and
 // sets `error`) when the race does not exist or its waypoints are missing.
 //
 // (See also applyRaceTableDefaults below.)
-// `seed` drives the random parts (the cruise start).
 std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
-                                       std::string* error = nullptr, std::uint32_t seed = 1);
+                                       std::string* error = nullptr);
 
 // Waypoint list as mmWaypoints::LoadCSV / ReInit build it: the radius is
 // read as an integer (0 means 15 m) and a zero heading is replaced by the
@@ -134,10 +139,52 @@ Vec3 findGroundPos(const Vec3& p, const GroundProbe& probe);
 // Driving direction of an Angel heading (degrees): (sin h, 0, -cos h).
 Vec3 headingDirection(float headingDeg);
 
-// mmGame::RespawnXYZ: a random AI intersection (not the first), skipping
-// those in underground, road or building rooms and those on freeways or
-// alleys; 2 m above its centre. Nothing when the city has no AI map.
-std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uint32_t& rng);
+// The room of a position as cityLevel::FindRoomId(position, 0) finds it
+// (city::RoomLocator::find, ai::World::roomAt).
+using RoomLookup = std::function<int(const Vec3& position)>;
+
+// mmGame::RespawnXYZ's two rules (its third and fourth arguments).
+struct RespawnRules {
+    bool noFreeways = false; // no intersection on a freeway road (aiPath +0xc flag 0x4)
+    bool noCovered = false;  // no subterranean or covered room (lvlRoomInfo 0x0A), no alley road (aiPath 0x2)
+};
+
+struct RespawnPick {
+    Vec3 position;          // the intersection's centre, 2 m up
+    float angle = 0.0f;     // always 0 (facing -Z)
+    int intersection = -1;  // the AI intersection's index
+};
+
+// mmGame's count of the RespawnXYZ calls that draw from the player's own
+// seed (multiplayer), a global that starts at 0 and is kept for the whole
+// run (mod 100). Every pick draws one more number than it, multiplayer or
+// not, so playing a network game changes the single-player cruise start.
+int& respawnCounter();
+
+// mmGame::RespawnXYZ with an AI map: draws `draws` numbers irand() %
+// (intersections - 1) + 1 from `stream` (irand's seed, advanced in place)
+// and takes the last, again until the intersection fits: its room
+// (`findRoom` of its centre; levelRoomFlags) is neither water of death nor
+// a terrain instance's (0x24), nor (noCovered) subterranean or covered
+// (0x0A), and none of its roads is (noFreeways) a freeway or (noCovered) an
+// alley. The start is the centre 2 m up, angle 0. Nothing when the city has
+// no AI map (MM2: (0, 20, 0)), fewer than two intersections (MM2 divides
+// by zero) or none that fits (MM2 never returns).
+std::optional<RespawnPick> respawnXYZ(const city::CityData& city, const RoomLookup& findRoom,
+                                      RespawnRules rules, std::uint32_t& stream, int draws);
+
+// The cruise / Cops and Robbers start the mode's InitOtherPlayers picks
+// (RaceSetup::respawnStart):
+// - single player (mmSingleRoam::InitOtherPlayers): RespawnXYZ(true, true,
+//   false) from the one global stream, `globalSeed` being what aiMap::Reset
+//   left it at (ai::World::globalSeedAfterReset);
+// - multiplayer (mmGameMulti::InitOtherPlayers): mmMultiRoam / mmMultiCR::
+//   Reset and then InitNetworkPlayers each call RespawnXYZ(true, true,
+//   true), which draws from a second stream seeded with the local player's
+//   id (`playerSeed`) and advances respawnCounter(); the second pick is
+//   the start.
+std::optional<RespawnPick> cruiseStart(const city::CityData& city, const RoomLookup& findRoom,
+                                       bool multiplayer, std::uint32_t globalSeed, std::uint32_t playerSeed);
 
 // The settings a race runs with by default (RaceMenuBase::SetStateRace,
 // the Crash Course page's GO): the race table's time of day, weather and

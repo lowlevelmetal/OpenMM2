@@ -1,5 +1,6 @@
 #include "game/session/RaceSetup.h"
 
+#include "ai/Random.h"
 #include "city/RoomInfo.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
@@ -49,11 +50,6 @@ std::optional<city::RaceMode> raceMode(GameMode m) {
 // for waypoints stored with heading 0.
 float headingTowards(const Vec3& from, const Vec3& to) {
     return std::atan2(from.x - to.x, from.z - to.z) * -57.295776f;
-}
-
-std::uint32_t nextRandom(std::uint32_t& rng) {
-    rng = rng * 1103515245u + 12345u;
-    return (rng >> 16) & 0x7fffu;
 }
 
 } // namespace
@@ -118,39 +114,77 @@ Vec3 findGroundPos(const Vec3& p, const GroundProbe& probe) {
     return p;
 }
 
-std::optional<Vec3> randomIntersectionStart(const city::CityData& city, std::uint32_t& rng) {
+int& respawnCounter() {
+    static int counter = 0;
+    return counter;
+}
+
+std::optional<RespawnPick> respawnXYZ(const city::CityData& city, const RoomLookup& findRoom,
+                                      RespawnRules rules, std::uint32_t& stream, int draws) {
     if (!city.aiMap || city.aiMap->intersections.size() < 2)
         return std::nullopt;
     const auto& xs = city.aiMap->intersections;
-    // The level's room flags (lvlRoomInfo, not the PSDL's): mmSingleRoam asks
-    // for no subterranean or covered rooms (0x0A), and RespawnXYZ never takes
-    // water-of-death or terrain-instance rooms (0x24).
-    const auto& levelFlags = city.levelRoomFlags;
-    constexpr std::uint16_t kRejected = city::LevelRoomFlag::Subterranean | city::LevelRoomFlag::Covered |
-                                        city::LevelRoomFlag::WaterOfDeath | city::LevelRoomFlag::TerrainInstance;
-    auto acceptable = [&](const city::AiIntersection& x) {
-        if (x.room < levelFlags.size() && (levelFlags[x.room] & kRejected))
+    const auto& paths = city.aiMap->paths;
+    // The level's room flags (lvlRoomInfo): water of death and terrain
+    // instances always (0x24), subterranean and covered rooms (0x0A) with the
+    // second rule.
+    using namespace city::LevelRoomFlag;
+    const std::uint16_t rejectedRooms = static_cast<std::uint16_t>(
+        WaterOfDeath | TerrainInstance | (rules.noCovered ? Subterranean | Covered : 0));
+    // aiPath +0xc: 0x4 a freeway, 0x2 an alley (mm2hook's names).
+    const std::uint16_t rejectedRoads =
+        static_cast<std::uint16_t>((rules.noFreeways ? 0x4 : 0) | (rules.noCovered ? 0x2 : 0));
+    auto fits = [&](const city::AiIntersection& x) {
+        const int room = findRoom ? findRoom(x.center) : x.room;
+        if (room >= 0 && static_cast<std::size_t>(room) < city.levelRoomFlags.size() &&
+            (city.levelRoomFlags[static_cast<std::size_t>(room)] & rejectedRooms))
             return false;
-        for (const auto pathId : x.paths) {
-            if (pathId >= city.aiMap->paths.size())
-                continue;
-            // aiPath flags 0x4 (freeway) and 0x2 (alley), mm2hook's naming.
-            if (city.aiMap->paths[pathId].flags & 0x6)
+        for (const auto id : x.paths)
+            if (id < paths.size() && (paths[id].flags & rejectedRoads))
                 return false;
-        }
         return true;
     };
-    // The original retries random picks until one fits; bound the search
-    // and fall back to a scan so a city without a valid one cannot hang.
-    for (int attempt = 0; attempt < 1000; ++attempt) {
-        const auto& x = xs[1 + nextRandom(rng) % (xs.size() - 1)];
-        if (acceptable(x))
-            return x.center + Vec3{0.0f, 2.0f, 0.0f};
+    // MM2 retries until one fits and would never return from a city where
+    // none does: OpenMM2 checks that one exists first (the same pick whenever
+    // MM2 returns at all).
+    bool any = false;
+    for (std::size_t i = 1; i < xs.size() && !any; ++i)
+        any = fits(xs[i]);
+    if (!any)
+        return std::nullopt;
+    ai::Random rng;
+    rng.seed(stream);
+    const int count = static_cast<int>(xs.size());
+    int index = 0;
+    for (;;) {
+        for (int k = 0; k < draws; ++k)
+            index = rng.irand() % (count - 1) + 1;
+        if (fits(xs[static_cast<std::size_t>(index)]))
+            break;
     }
-    for (std::size_t i = 1; i < xs.size(); ++i)
-        if (acceptable(xs[i]))
-            return xs[i].center + Vec3{0.0f, 2.0f, 0.0f};
-    return std::nullopt;
+    stream = rng.state();
+    const Vec3& c = xs[static_cast<std::size_t>(index)].center;
+    return RespawnPick{{c.x, c.y + 2.0f, c.z}, 0.0f, index};
+}
+
+std::optional<RespawnPick> cruiseStart(const city::CityData& city, const RoomLookup& findRoom,
+                                       bool multiplayer, std::uint32_t globalSeed, std::uint32_t playerSeed) {
+    const RespawnRules rules{true, true};
+    int& counter = respawnCounter();
+    if (!multiplayer) {
+        std::uint32_t stream = globalSeed;
+        return respawnXYZ(city, findRoom, rules, stream, counter + 1);
+    }
+    // mmMultiRoam / mmMultiCR::Reset, then InitNetworkPlayers: each seeds
+    // the second stream with the player's id (DisableGlobalSeed, the
+    // global stream itself untouched) and counts one more call.
+    std::optional<RespawnPick> pick;
+    for (int call = 0; call < 2 && city.aiMap; ++call) {
+        std::uint32_t stream = playerSeed;
+        pick = respawnXYZ(city, findRoom, rules, stream, counter + 1);
+        counter = (counter + 1) % 100;
+    }
+    return pick;
 }
 
 Vec3 multiplayerGridOffset(int slot, bool longVehicle) {
@@ -202,7 +236,7 @@ void applyRaceTableDefaults(RaceConfig& cfg, const city::RaceDefinition* race) {
 }
 
 std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::CityData& city, const vfs::Vfs& vfs,
-                                       std::string* error, std::uint32_t seed) {
+                                       std::string* error) {
     RaceSetup s;
     s.config = config;
     const bool pro = config.difficulty == Difficulty::Professional;
@@ -346,15 +380,16 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
     }
 
     // Player start: the first waypoint (mmWaypoints::GetStart /
-    // GetStartAngle). Cruise starts at a random AI intersection facing -Z
-    // (mmSingleRoam::InitOtherPlayers -> mmGame::RespawnXYZ); without an AI
-    // map, the city's first Blitz start.
+    // GetStartAngle). Cruise and Cops and Robbers start where the mode's
+    // InitGameObjects puts the car, and InitOtherPlayers then moves it to a
+    // random AI intersection facing -Z (mmGame::RespawnXYZ, once the AI map
+    // has been reset: Session::placeRespawnStart); without an AI map, the
+    // city's first Blitz start.
     //
     // The car is placed there (the modes' InitGameObjects: SetResetPos and
     // vehCar::Reset); then the race modes' InitOtherPlayers settle it on the
-    // ground (SimVehicle::settleOnGround), while mmSingleRoam::InitOtherPlayers leaves
-    // it at RespawnXYZ's point, 2 m above the intersection.
-    std::uint32_t rng = seed;
+    // ground (SimVehicle::settleOnGround), while the cruise modes leave it at
+    // RespawnXYZ's point, 2 m above the intersection.
     s.playerDrop = StartDrop::OnGround;
     if (!s.checkpoints.empty()) {
         s.playerSpawn = spawnAt(s.checkpoints.front());
@@ -364,11 +399,16 @@ std::optional<RaceSetup> loadRaceSetup(const RaceConfig& config, const city::Cit
         // mmGame::FindGroundPos before the one reset.
         if (config.multiplayer)
             s.playerDrop = StartDrop::FindGround;
-    } else if (auto p = randomIntersectionStart(city, rng)) {
+    } else if (city.aiMap && city.aiMap->intersections.size() >= 2) {
+        // mmSingleRoam::InitGameObjects: mmGame's start position, (0, 10, 0)
+        // (mmGame::mmGame), and mmGameSingle's angle 0; mmMultiRoam /
+        // mmMultiCR::InitGameObjects: the origin.
+        const Vec3 place = config.multiplayer ? Vec3{} : Vec3{0.0f, 10.0f, 0.0f};
         s.playerSpawn = Mat34::identity();
-        s.playerSpawn.m3 = *p;
-        s.playerPlace = {*p, 0.0f};
+        s.playerSpawn.m3 = place;
+        s.playerPlace = {place, 0.0f};
         s.playerDrop = StartDrop::None;
+        s.respawnStart = true;
     } else {
         // OpenMM2's fallback for a city without an AI map (RespawnXYZ would
         // use (0, 20, 0)): the city's first Blitz start.

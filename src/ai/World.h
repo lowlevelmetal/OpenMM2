@@ -83,6 +83,16 @@ public:
     // police force and officers and the racers, which the race owns here,
     // and aiVehicleManager, game::TrafficBodies::reset.)
     void reset();
+    // MM2 has one random stream (irand's seed) for every subsystem; OpenMM2
+    // gives each its own (Random.h). This replays the draws aiMap::Reset
+    // makes on that one stream in mmGame::Init: ResetRandomSeed (1), then
+    // AdjustAmbients and AdjustPedestrians from room 0 to the room of
+    // `playerResetPos` (cityLevel::FindRoomId with no hint of the player
+    // car's reset position, vehCarSim +0x210), and returns the seed they
+    // leave, which mmGame::RespawnXYZ then draws the cruise start from. The
+    // world is reset() afterwards, so its own streams and populations are as
+    // if this had not been called.
+    std::uint32_t globalSeedAfterReset(const Vec3& playerResetPos);
     // aiMap::Update runs the light sets after the racers and the police. A
     // race loop that drives those between update() and the lights sets this
     // and calls updateLights() after them: update() then leaves the lights'
