@@ -134,6 +134,43 @@ private:
     std::uint64_t m_missed = 0, m_skipped = 0;
 };
 
+// Whether the host carries out a client's reset of its car (OpenMM2: the
+// game resets a network player's car only where its rules do, and the host
+// checks them on its own simulation of the car; a hostile client would
+// teleport, or repair its car at will):
+// * ResetTo puts the car at its start: only the first command, which
+//   places it, in the city;
+// * Reset and RespawnAt (mmPlayer::Reset from mmGameMulti::HitWaterHandler,
+//   and DropThruCityHandler, which multiplayer treats as the water): the car
+//   has been in the water (its vehSplash latched) for nearly
+//   HitWaterHandler's 5 s, or fell below mmGame::Update's -50 m (the client's
+//   rules see its own car a little ahead of the host's: a second's and 10 m's
+//   slack); RespawnAt (a race with checkpoints) only at one of the race's
+//   checkpoints, facing its heading (Session's respawn there); not more than
+//   four times a second;
+// * ClearDamage (vehCar::ClearDamage): the wreck penalty's repair (the car is
+//   past its maximum damage), or Cops and Robbers' repair at a delivery of the
+//   gold (mmMultiCR's UpdateBank / UpdateHideout: allowed in that mode until
+//   its rules run on the host).
+// `debug` (OPENMM2_DEBUG_RESPAWN_MS on the host, a development aid) lets any
+// reset in the city pass.
+struct ResetRules {
+    bool placed = false;           // the car is in the race (its first command carried out)
+    std::uint32_t lastMoveSeq = 0; // the sample of the last command that moved it
+    int waterSamples = 0;          // the samples it has been in the water
+    float height = 0.0f;           // its centre of mass's y
+    bool wrecked = false;          // past its maximum damage (mmPlayer::IsMaxDamaged)
+    bool copsAndRobbers = false;
+    bool debug = false;
+    Aabb city;                          // the city's bounds (200 m round them allowed)
+    std::span<const Mat34> respawnPoints; // the race's checkpoints' spawns (game::session::spawnAt)
+
+    static constexpr std::uint32_t kMoveInterval = 15; // samples
+    static constexpr int kWaterSamples = 4 * 60;      // HitWaterHandler's 5 s less a second
+    static constexpr float kDropHeight = -50.0f + 10.0f;
+    bool allows(const net::CarCommand& c) const;
+};
+
 // The car's state as the host sends it to its player, and the car put there
 // (the rest of its state stays as it was).
 net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets);

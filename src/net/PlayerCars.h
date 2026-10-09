@@ -79,6 +79,15 @@ enum class CarCommandKind : std::uint8_t {
     ClearDamage, // vehCar::ClearDamage (Cops and Robbers' repairs, a damage reset)
     Last = ClearDamage,
 };
+constexpr const char* carCommandName(CarCommandKind k) {
+    switch (k) {
+    case CarCommandKind::Reset: return "Reset";
+    case CarCommandKind::ResetTo: return "ResetTo";
+    case CarCommandKind::RespawnAt: return "RespawnAt";
+    case CarCommandKind::ClearDamage: return "ClearDamage";
+    }
+    return "?";
+}
 struct CarCommand {
     std::uint32_t seq = 0;
     CarCommandKind kind = CarCommandKind::Reset;

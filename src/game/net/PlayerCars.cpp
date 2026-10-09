@@ -275,6 +275,33 @@ void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
     sim.body.collider.lastMatrix = sim.body.boundMatrix;
 }
 
+bool ResetRules::allows(const net::CarCommand& c) const {
+    const auto inCity = [this](const Vec3& at) {
+        constexpr float kMargin = 200.0f;
+        return at.x >= city.min.x - kMargin && at.x <= city.max.x + kMargin && at.y >= city.min.y - kMargin &&
+               at.y <= city.max.y + kMargin && at.z >= city.min.z - kMargin && at.z <= city.max.z + kMargin;
+    };
+    switch (c.kind) {
+    case net::CarCommandKind::ResetTo: return !placed && inCity(c.position);
+    case net::CarCommandKind::ClearDamage: return placed && (debug || wrecked || copsAndRobbers);
+    case net::CarCommandKind::Reset:
+    case net::CarCommandKind::RespawnAt: break;
+    }
+    if (!placed || c.seq < lastMoveSeq + kMoveInterval)
+        return false;
+    if (c.kind == net::CarCommandKind::RespawnAt) {
+        if (!inCity(c.position))
+            return false;
+        const bool atCheckpoint = std::ranges::any_of(respawnPoints, [&](const Mat34& at) {
+            return at.m3.dist2(c.position) < 0.25f &&
+                   std::abs(std::remainder(phys::resetRotationOf(at) - c.rotation, 6.2831853f)) < 0.05f;
+        });
+        if (!atCheckpoint && !debug)
+            return false;
+    }
+    return debug || waterSamples >= kWaterSamples || height < kDropHeight;
+}
+
 net::VehicleSnapshot carSnapshot(const SimVehicle& car, const net::CarInputFrame& input) {
     const phys::CarSim& sim = car.sim();
     const Mat34 model = sim.modelMatrix();

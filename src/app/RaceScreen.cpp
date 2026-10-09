@@ -4924,19 +4924,28 @@ private:
         dropRemoteCars(present);
     }
 
-    // Host: whether a client's command may move its car: in the city, and
-    // not more than four times a second (a hostile client would teleport).
-    bool netCommandAllowed(const RemoteVehicle& rv, const net::CarCommand& c) const {
-        if (c.kind != net::CarCommandKind::ResetTo && c.kind != net::CarCommandKind::RespawnAt)
-            return true;
-        if (rv.placed && c.seq < rv.lastMoveSeq + 15)
-            return false;
-        const Aabb& city = m_city->psdl.bounds;
-        constexpr float kMargin = 200.0f;
-        const Vec3& at = c.position;
-        return at.x >= city.min.x - kMargin && at.x <= city.max.x + kMargin && at.y >= city.min.y - kMargin &&
-               at.y <= city.max.y + kMargin && at.z >= city.min.z - kMargin && at.z <= city.max.z + kMargin;
+    // Host: whether a client's command may reset its car (game::ResetRules,
+    // on this machine's simulation of it).
+    bool netCommandAllowed(const RemoteVehicle& rv, const net::CarCommand& c) {
+        static const bool debug = std::getenv("OPENMM2_DEBUG_RESPAWN_MS") != nullptr;
+        if (m_netRespawnPoints.empty() && m_session)
+            for (const auto& cp : m_session->setup().checkpoints)
+                m_netRespawnPoints.push_back(game::session::spawnAt(cp));
+        game::ResetRules r;
+        r.placed = rv.placed && rv.sim;
+        r.lastMoveSeq = rv.lastMoveSeq;
+        r.waterSamples = rv.waterSamples;
+        if (rv.sim) {
+            r.height = rv.sim->sim().body.ics.matrix.m3.y;
+            r.wrecked = rv.sim->sim().damage.maxDamaged();
+        }
+        r.copsAndRobbers = m_result.config.mode == game::GameMode::CopsAndRobbers;
+        r.debug = debug;
+        r.city = m_city->psdl.bounds;
+        r.respawnPoints = m_netRespawnPoints;
+        return r.allows(c);
     }
+    std::vector<Mat34> m_netRespawnPoints; // host: the race's checkpoints' spawns
 
     // Host: a simulated player's car's impact (vehCarDamage::ApplyImpact):
     // its sound, sparks and damage, which everyone is sent.
@@ -4982,14 +4991,24 @@ private:
             for (auto& [id, rv] : m_remotes) {
                 if (!rv.simulated || !rv.placed || !rv.sim)
                     continue;
+                // The samples it has been in the water (netCommandAllowed).
+                rv.waterSamples = rv.sim->sim().splash.active() ? rv.waterSamples + 1 : 0;
                 auto next = rv.inputs.next();
                 if (!next)
                     continue;
                 for (const auto& c : next->commands) {
-                    if (!netCommandAllowed(rv, c))
+                    if (c.kind == net::CarCommandKind::ResetTo && c.seq == rv.lastMoveSeq)
+                        continue; // the placement, carried out already
+                    if (!netCommandAllowed(rv, c)) {
+                        static const bool verbose = std::getenv("OPENMM2_DEBUG_NETCARS") != nullptr;
+                        if (verbose)
+                            log::info("netcars: refused player {}'s {} at sample {}", id,
+                                      net::carCommandName(c.kind), c.seq);
+                        ++rv.refused;
                         continue;
+                    }
                     game::NetCarDriver::command(*rv.sim, c);
-                    if (c.kind == net::CarCommandKind::ResetTo || c.kind == net::CarCommandKind::RespawnAt)
+                    if (c.kind != net::CarCommandKind::ClearDamage)
                         rv.lastMoveSeq = c.seq;
                     ++rv.resets;
                     hostCarReset(id, rv);
@@ -5369,8 +5388,9 @@ private:
             std::string queues;
             for (const auto& [id, rv] : m_remotes)
                 if (rv.simulated)
-                    queues += std::format(" player {}: {} inputs missed, {} dropped to catch up;", id,
-                                          rv.inputs.missed(), rv.inputs.skipped());
+                    queues += std::format(" player {}: {} inputs missed, {} dropped to catch up, {} resets "
+                                          "refused;",
+                                          id, rv.inputs.missed(), rv.inputs.skipped(), rv.refused);
             log::info("netcars: host sent {} states ({:.0f} B/s);{}", m_netStatesSent,
                       static_cast<double>(m_netStatesBytes) / seconds, queues);
         } else if (verbose) {
@@ -6240,6 +6260,8 @@ private:
         std::uint32_t resets = 0;       // the commands carried out
         std::uint32_t lastMoveSeq = 0;  // the sample of the last command that moved it
         std::set<std::uint8_t> nearIds; // the other cars sent to its player in full
+        int waterSamples = 0;           // the samples it has been in the water (netCommandAllowed)
+        std::uint64_t refused = 0;      // its commands the host refused
         // Client (OpenMM2): a car near this machine's that the host sends in
         // full (net::NearCarState) is simulated here along with this
         // machine's car instead of placed at its interpolated states
