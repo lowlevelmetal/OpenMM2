@@ -250,7 +250,7 @@ public:
             if (ctx.netGame->backToLobby(m_netRace) || !ctx.netGame->inSession()) {
                 log::info("race: the network race is over ({})",
                           ctx.netGame->inSession() ? "back to the lobby" : "the session ended");
-                leaveRace(ctx, m_result);
+                leaveRace(ctx, netRaceResult(ctx));
                 return;
             }
         }
@@ -2130,6 +2130,21 @@ private:
         m_throttleCap = kg > 0.0f ? m_cr->carrierThrottleCap() : 1.0f;
     }
 
+    // mmMultiCR::FillResults: the game's scores for the results page.
+    game::RaceResult crResult(Context& ctx) const {
+        game::RaceResult r = m_session->result();
+        r.ended = true;
+        std::vector<frontend::CrResultPlayer> players;
+        for (const auto& p : ctx.netGame->players())
+            players.push_back({p.name, m_cr->playerScore(p.id), p.id == m_crSelf});
+        const auto& strings = ctx.game->strings;
+        r.standings = frontend::crResultRows(
+            m_result.config.copsAndRobbers, m_cr->score(game::session::CrTeam::Cop),
+            m_cr->score(game::session::CrTeam::Robber), players,
+            [&strings](std::uint32_t id, const char* fallback) { return strings.get(id, fallback); });
+        return r;
+    }
+
     void sendCr(Context& ctx, const std::vector<game::session::CopsAndRobbers::Message>& messages) {
         using Type = game::session::CopsAndRobbers::Message::Type;
         for (const auto& m : messages) {
@@ -2284,17 +2299,7 @@ private:
             if (m_crEnd < 0.0f) {
                 // FillResults; mmPlayer +0x2258; ShowResults.
                 m_crFinished = true;
-                game::RaceResult r = m_session->result();
-                r.ended = true;
-                std::vector<frontend::CrResultPlayer> players;
-                for (const auto& p : ctx.netGame->players())
-                    players.push_back({p.name, m_cr->playerScore(p.id), p.id == m_crSelf});
-                const auto& strings = ctx.game->strings;
-                r.standings = frontend::crResultRows(
-                    m_result.config.copsAndRobbers, m_cr->score(game::session::CrTeam::Cop),
-                    m_cr->score(game::session::CrTeam::Robber), players,
-                    [&strings](std::uint32_t id, const char* fallback) { return strings.get(id, fallback); });
-                leaveRace(ctx, r);
+                leaveRace(ctx, crResult(ctx));
                 return;
             }
         }
@@ -2492,6 +2497,24 @@ private:
         game::RaceResult r = m_session ? m_session->result() : m_result;
         r.ended = false;
         leaveRace(ctx, r);
+    }
+
+    // What a network race leaves with when the host ends it (or the session
+    // ends): a race this machine has already finished or lost, or a Cops and
+    // Robbers game whose limit it has announced, shows its results as at its
+    // own ending. The host ends the race once every player is counted
+    // (mmMultiRace / mmMultiCircuit 0x211, which takes every machine to its
+    // results); the last finisher, still in its post-race wait, used to go
+    // back without them.
+    game::RaceResult netRaceResult(Context& ctx) const {
+        if (m_resultsShown || !m_session)
+            return m_result;
+        if (m_cr && m_crEnd >= 0.0f)
+            return crResult(ctx);
+        const auto phase = m_session->phase();
+        if (phase == game::session::Phase::PostRace || phase == game::session::Phase::Done)
+            return m_session->result();
+        return m_result;
     }
 
     // Back to the menus, the view settings stored before the frontend reads
