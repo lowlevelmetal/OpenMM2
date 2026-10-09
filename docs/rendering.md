@@ -219,5 +219,6 @@ bounces on the road's bumps, which the camera follows with a lag. At 144 fps
 the nearest opponent in the San Francisco checkpoint race moved by 186 / 226
 mm before and 1.2 / 11 mm after; in a network cruise with shared traffic
 (host and client on UDP, both flat out) the host's car as the client draws
-it by 112 / 118 mm before and 1.5 / 5.6 mm after, the client's roadside
-point by 367 / 359 and 1.3 / 2.5 mm.
+it by 112 / 118 mm before and 1.5 / 5.6 mm after (114 / 118 and 1.3 / 5.8
+mm through `netprobe relay` at 50 +- 15 ms each way, 1% loss and
+reordering), the client's roadside point by 367 / 359 and 1.3 / 2.5 mm.
