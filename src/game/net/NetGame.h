@@ -162,6 +162,9 @@ public:
     bool isHost() const;
     // Notices for the user ("The Host has quit", "has been ejected", join errors).
     std::optional<std::string> takeNotice();
+    // A notice of the game's own (a race that could not load): the lobby
+    // shows it.
+    void addNotice(std::string text) { m_notices.push_back(std::move(text)); }
     // Why the last join failed (None while joining or after a successful
     // join): the lobby asks for a password on BadPassword.
     net::DisconnectReason joinFailure() const { return m_joinFailure; }

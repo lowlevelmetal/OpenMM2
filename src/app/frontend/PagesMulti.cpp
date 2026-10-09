@@ -718,6 +718,9 @@ public:
             m_go->sheet.path = net.localReady() ? "texture/lobb_rdy.tga" : "texture/lobb_nr.tga";
         m_mapPath = mapPicture(fe, cfg);
         m_map->visible = !m_mapPath.empty();
+        // A notice while the session goes on: the race could not load.
+        if (auto notice = net.takeNotice())
+            fe.message(std::move(*notice));
     }
 
     void drawAbove(Frontend& fe, ui::UiFrame& f) override {

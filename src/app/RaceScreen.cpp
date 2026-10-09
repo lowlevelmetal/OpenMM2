@@ -754,6 +754,8 @@ private:
             log::error("race: cannot load city '{}': {}", m_result.config.city, error);
             // Back to the menus; the host of a network race takes everyone
             // back to the lobby, which could otherwise never start another.
+            if (multiplayer(ctx))
+                ctx.netGame->addNotice(std::format("Cannot load the city '{}': {}", m_result.config.city, error));
             leaveRace(ctx, m_result);
             return;
         }
@@ -909,8 +911,10 @@ private:
             log::error("race: vehicle '{}': {}", m_result.config.vehicle, error);
             // A network race without the player's car cannot be driven or
             // seen by the others: back to the lobby (the host takes everyone).
-            if (multiplayer(ctx))
+            if (multiplayer(ctx)) {
+                ctx.netGame->addNotice(std::format("Cannot load the car '{}': {}", m_result.config.vehicle, error));
                 leaveRace(ctx, m_result);
+            }
             return;
         }
         m_player->sim().options.player = true; // mmPlayer::Update's input overrides
