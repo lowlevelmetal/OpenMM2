@@ -2619,6 +2619,7 @@ private:
         else if (m_popup != Popup::Chat)
             frontend::popup::drawCard(ov, card);
         m_popupMenu->drawContent(f);
+        frontend::drawMenuPointer(ctx, f); // sfPointer, last
         ov.end();
     }
 

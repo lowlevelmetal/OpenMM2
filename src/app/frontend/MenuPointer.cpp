@@ -1,6 +1,7 @@
 // The menus' own mouse pointer (MM2's sfPointer).
 
 #include "app/frontend/Frontend.h"
+#include "app/frontend/PopupOptions.h"
 
 #include <imgui.h>
 
@@ -22,19 +23,23 @@ namespace mm2::app::frontend {
 // the whole menu; MM2 drew it at its pixel size whatever the resolution.
 // MM2 also hides it while an IME composition is open; OpenMM2 does not track
 // that.
-void drawMenuPointer(Frontend& fe, ui::UiFrame& f) {
-    if (fe.ctx.display.windowMode == platform::WindowMode::Windowed)
+// The race's popups (mmPopup) are menus of the same MenuManager, so they show
+// the pointer too.
+void drawMenuPointer(Context& ctx, ui::UiFrame& f) {
+    if (ctx.display.windowMode == platform::WindowMode::Windowed)
         return;
     ImGui::SetMouseCursor(ImGuiMouseCursor_None); // hides the system cursor next frame
-    const ui::UiTexture& t = fe.textures.getColorKeyed("texture/midcursor.tga");
+    const ui::UiTexture& t = f.textures.getColorKeyed("texture/midcursor.tga");
     if (!t)
         return;
-    const auto extent = fe.ctx.device().outputExtent();
-    Vec2 p = fe.ctx.input.mousePosition();
+    const auto extent = ctx.device().outputExtent();
+    Vec2 p = ctx.input.mousePosition();
     p.x = std::clamp(p.x, 0.0f, std::max(0.0f, static_cast<float>(extent.width) - 4.0f));
     p.y = std::clamp(p.y, 0.0f, std::max(0.0f, static_cast<float>(extent.height) - 4.0f));
     const Vec2 v = f.overlay.layout().toVirtual(p);
     ui::drawImage(f.overlay, t, v.x, v.y);
 }
+
+void drawMenuPointer(Frontend& fe, ui::UiFrame& f) { drawMenuPointer(fe.ctx, f); }
 
 } // namespace mm2::app::frontend
