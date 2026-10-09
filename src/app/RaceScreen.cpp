@@ -246,14 +246,31 @@ public:
         // before the reset (the menu's Restart leaves the game paused until
         // mmReplayManager has reset it).
         if (m_paused || m_restartPending) {
-            // asRoot paused (the full-screen map in single player): the
-            // game, the physics and the clocks stand still. mmGame::Update
-            // still updates the announcer's queue (mmSpeechContainer::Update).
+            // asRoot paused (the menu or the full-screen map in single
+            // player): the rules, the AI, the physics and the clocks stand
+            // still. mmGame::Update still updates the announcer's queue
+            // (mmSpeechContainer::Update) and runs its fall and water checks,
+            // and mmHUD::Update counts the message down.
             if (m_announcerOk)
                 m_announcer.update(static_cast<float>(dt));
+            if (m_session && m_player && !m_restartPending) {
+                m_playerState = playerState();
+                m_session->updatePaused(static_cast<float>(dt), m_playerState);
+                handleSessionEvents(ctx);
+            }
+            // mmGameManager::Update runs cityLevel::Update (the sky turns,
+            // lvlSky::Update), cityLevel::PreDraw (the rain and snow,
+            // asParticles::Update, and the texture movies) and the camera
+            // (camViewCS::Update) whether or not the game is paused.
             if (m_flyCamera || !m_player)
                 updateFlyCamera(ctx, static_cast<float>(dt));
+            else
+                updateCarCamera(ctx, static_cast<float>(dt));
+            if (m_weather)
+                m_weather->update(static_cast<float>(dt), m_camera.transform);
             m_textures->update(m_time);
+            if (m_cityRenderer)
+                m_cityRenderer->update(m_frameDt);
             updateForceFeedback(ctx, static_cast<float>(dt), true);
             return;
         }
