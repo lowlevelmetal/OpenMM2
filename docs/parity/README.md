@@ -143,8 +143,14 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/ai/Course.h` | 190 | P | ai-vehicles |
 | `src/ai/Driving.cpp` | 1081 | P | ai-vehicles |
 | `src/ai/Driving.h` | 297 | P | ai-vehicles |
+| `src/ai/DrivingRoute.cpp` | 1117 | P | ai-vehicles |
+| `src/ai/DrivingTargets.cpp` | 1135 | P | ai-vehicles |
+| `src/ai/MapView.cpp` | 317 | P | ai-vehicles |
+| `src/ai/MapView.h` | 128 | P | ai-vehicles |
 | `src/ai/Opponent.cpp` | 280 | P | ai-vehicles |
 | `src/ai/Opponent.h` | 164 | P | ai-vehicles |
+| `src/ai/PathGeometry.cpp` | 328 | P | ai-vehicles |
+| `src/ai/PathGeometry.h` | 92 | P | ai-vehicles |
 | `src/ai/Pedestrians.cpp` | 1095 | P | ai-ambient-city |
 | `src/ai/Pedestrians.h` | 206 | P | ai-ambient-city |
 | `src/ai/PlayerCar.h` | 26 | P | vehicle |
