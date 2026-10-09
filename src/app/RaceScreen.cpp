@@ -84,6 +84,21 @@ namespace {
 // ChangeSet) as OpenMM2 game events.
 constexpr auto kCrPickupRequest = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 1);
 constexpr auto kCrNewSet = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 2);
+// mmMultiCR::SendLimitReached: the host's word that the time ran out or a
+// point limit was reached (OpenMM2: with the winner and its points).
+constexpr auto kCrLimit = static_cast<std::uint16_t>(static_cast<int>(net::GameEventType::Custom) + 3);
+struct CrLimitEvent {
+    std::uint8_t pointLimit = 0; // 0: the time ran out
+    std::int32_t car = -1;
+    std::int32_t value = 0;
+};
+template <class S>
+bool serialize(S& s, CrLimitEvent& e) {
+    s.u8(e.pointLimit);
+    s.ranged(e.car, -1, static_cast<std::int32_t>(net::kMaxPlayers) - 1);
+    s.ranged(e.value, 0, 1 << 20);
+    return s.ok();
+}
 struct CrSetEvent {
     Vec3 gold, bank, hideout;
 };
@@ -2493,6 +2508,9 @@ private:
         st.goldMass = ctx.netGame->goldMass();
         st.timeLimitSeconds = m_result.config.timeLimitMinutes * 60.0f;
         st.pointLimit = m_result.config.pointLimit;
+        // mmMultiCR::UpdateLimit: the host decides the limits and tells the
+        // others (sync review S6).
+        st.limitsFromHost = !ctx.netGame->isHost();
         // Every machine starts with the same places (OpenMM2: the time the
         // host ordered the race seeds them, which every machine knows when it
         // loads; the host's sets follow by message).
@@ -2651,6 +2669,14 @@ private:
                     continue;
                 m.type = Type::NewSet;
                 m.set = {set->bank, set->gold, set->hideout};
+            } else if (type == kCrLimit) {
+                // GameMessage: the host's limit (taken from the host only).
+                const auto limit = ev.as<CrLimitEvent>();
+                if (limit && ev.from == net::kHostPlayerId && !host)
+                    m_cr->limitReached(limit->pointLimit ? CopsAndRobbers::EventType::PointLimit
+                                                         : CopsAndRobbers::EventType::TimeUp,
+                                       limit->car, limit->value);
+                continue;
             } else if (const auto g = ev.as<net::GoldEvent>(); g && (ev.type == net::GameEventType::GoldPickedUp ||
                                                                      ev.type == net::GameEventType::GoldDropped ||
                                                                      ev.type == net::GameEventType::GoldDelivered)) {
@@ -2725,6 +2751,11 @@ private:
             }
             case E::TimeUp:
             case E::PointLimit:
+                // SendLimitReached: the host tells the others.
+                if (host)
+                    ctx.netGame->sendEvent(kCrLimit, net::encodePayload(CrLimitEvent{
+                                                         static_cast<std::uint8_t>(e.type == E::PointLimit),
+                                                         e.car, e.value}));
                 // UpdateLimit: the message for 3 s, then 3 s to the results
                 // (state 9).
                 m_session->showMessage(s.get(e.type == E::TimeUp ? 118 : 119, ""), 3.0f, false);

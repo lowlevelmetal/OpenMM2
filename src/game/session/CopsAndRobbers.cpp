@@ -154,16 +154,18 @@ void CopsAndRobbers::deliver(int carId) {
 }
 
 void CopsAndRobbers::tickLimits(float dt) {
-    // UpdateLimit (the time and point limits) and UpdateTimeWarning.
+    // UpdateLimit (the time and point limits) and UpdateTimeWarning. A
+    // machine the host tells (limitsFromHost) only counts down and warns.
     if (m_settings.timeLimitSeconds > 0.0f) {
         m_timeLeft = std::max(0.0f, m_timeLeft - dt);
-        if (m_timeLeft < 0.1f) {
+        if (m_timeLeft < 0.1f && !m_settings.limitsFromHost) {
             m_over = true;
             m_events.push_back({EventType::TimeUp});
             return;
         }
     }
-    checkLimits();
+    if (!m_settings.limitsFromHost)
+        checkLimits();
     if (m_over)
         return;
     if (m_settings.timeLimitSeconds > 0.0f) {
@@ -175,6 +177,13 @@ void CopsAndRobbers::tickLimits(float dt) {
             }
         }
     }
+}
+
+void CopsAndRobbers::limitReached(EventType type, int car, int value) {
+    if (m_over || (type != EventType::TimeUp && type != EventType::PointLimit))
+        return;
+    m_over = true;
+    m_events.push_back({type, car, value});
 }
 
 std::vector<CopsAndRobbers::Message> CopsAndRobbers::updateNetwork(float dt, int self, bool host,
