@@ -442,7 +442,7 @@ void decodeEverything(std::span<const std::byte> b) {
         ASSERT_TRUE(std::isfinite(e->damage));
     }
     if (const auto e = payload<VehicleDamageEvent>(b)) {
-        ASSERT_LE(e->subject, kDamageOwnCar);
+        ASSERT_LE(e->subject, kDamageLastSubject);
         ASSERT_LE(e->patches.size(), kMaxDamagePatches);
         ASSERT_LE(e->first + e->patches.size(), kMaxDamageRecord);
         ASSERT_LE(e->impacts.size(), kMaxDamageImpacts);

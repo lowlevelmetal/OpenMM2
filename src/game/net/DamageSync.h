@@ -244,6 +244,10 @@ public:
     DamageRecorder& own() { return m_own; }
     // A shared police car on the host, by its ambient id (created on first use).
     DamageRecorder& police(std::uint16_t id);
+    // Another player's car on the host, which simulates it (created on first
+    // use; protocol 5).
+    DamageRecorder& player(std::uint8_t id);
+    void forgetPlayer(std::uint8_t id) { m_players.erase(id); }
     DamageReplica& replica() { return m_replica; }
 
     // Sends what the recorders have (reliable game events to everyone).
@@ -269,6 +273,7 @@ public:
 private:
     DamageRecorder m_own;
     std::map<std::uint16_t, DamageRecorder> m_police;
+    std::map<std::uint8_t, DamageRecorder> m_players;
     DamageReplica m_replica;
     Stats m_stats;
     std::uint64_t m_statsAt = 0;

@@ -7,8 +7,11 @@
 //   netprobe portmap [--port N] [--seconds N] [--discover-only] [--no-upnp] [--no-natpmp]
 //   netprobe relay <host[:port]> [--port N] [--delay MS] [--jitter MS] [--loss PERCENT] [--reorder]
 //                  [--seed N] [--seconds N]
+//   netprobe syncreport <trace>... [--skip S] [--teleport M]
+//                                          divergence between machines (OPENMM2_NET_TRACE files)
 //
 // --seconds 0 runs until Ctrl-C. Port mappings are removed on exit.
+#include "SyncReport.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "net/Discovery.h"
@@ -48,7 +51,8 @@ struct Args {
 
 Args parseArgs(int argc, char** argv, int first) {
     static const char* kValueOptions[] = {"--port", "--name",  "--password", "--seconds", "--chat",
-                                          "--car",  "--delay", "--jitter",   "--loss",    "--seed"};
+                                          "--car",  "--delay", "--jitter",   "--loss",    "--seed",
+                                          "--skip", "--teleport"};
     Args a;
     for (int i = first; i < argc; ++i) {
         std::string arg = argv[i];
@@ -378,14 +382,15 @@ int cmdRelay(const Args& a) {
 }
 
 int usage() {
-    std::println(stderr, "usage: netprobe <info|host|join|scan|portmap|relay> [options]\n"
+    std::println(stderr, "usage: netprobe <info|host|join|scan|portmap|relay|syncreport> [options]\n"
                          "  info\n"
                          "  host    [--port N] [--name S] [--car S] [--password P] [--upnp] [--seconds N]\n"
                          "  join    <host[:port]> [--name S] [--car S] [--password P] [--chat TEXT] [--seconds N]\n"
                          "  scan    [--port N] [--seconds N] [--passive]\n"
                          "  portmap [--port N] [--seconds N] [--discover-only] [--no-upnp] [--no-natpmp]\n"
                          "  relay   <host[:port]> [--port N] [--delay MS] [--jitter MS] [--loss PERCENT] [--reorder]\n"
-                         "          [--seed N] [--seconds N]");
+                         "          [--seed N] [--seconds N]\n"
+                         "  syncreport <trace>... [--skip S] [--teleport M]");
     return 2;
 }
 
@@ -415,5 +420,12 @@ int main(int argc, char** argv) {
         return cmdPortmap(args);
     if (cmd == "relay")
         return cmdRelay(args);
+    if (cmd == "syncreport") {
+        netprobe::SyncReportOptions o;
+        o.traces = args.positional;
+        o.skipSeconds = str::parseDouble(args.get("--skip")).value_or(o.skipSeconds);
+        o.teleportMetres = str::parseDouble(args.get("--teleport")).value_or(o.teleportMetres);
+        return netprobe::syncReport(o);
+    }
     return usage();
 }

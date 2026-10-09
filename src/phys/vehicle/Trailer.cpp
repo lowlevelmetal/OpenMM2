@@ -179,6 +179,44 @@ void Trailer::reset() {
     body.collider.reset();
 }
 
+TrailerState Trailer::saveState() const {
+    TrailerState s;
+    s.ics = body.ics;
+    s.boundMatrix = body.boundMatrix;
+    s.collider = body.collider;
+    s.room = body.room;
+    s.drivetrains = drivetrains;
+    s.wheels = wheels;
+    s.status = joint.status;
+    s.lean = joint.lean;
+    s.leanRate = joint.leanRate;
+    s.roll = joint.roll;
+    s.rollRate = joint.rollRate;
+    s.jointForce = joint.jointForce;
+    s.gap = joint.gap;
+    s.position = joint.position;
+    s.invMassMatrix = joint.invMassMatrix();
+    return s;
+}
+
+void Trailer::restoreState(const TrailerState& s) {
+    body.ics = s.ics;
+    body.boundMatrix = s.boundMatrix;
+    body.collider = s.collider;
+    body.room = s.room;
+    drivetrains = s.drivetrains;
+    wheels = s.wheels;
+    joint.status = s.status;
+    joint.lean = s.lean;
+    joint.leanRate = s.leanRate;
+    joint.roll = s.roll;
+    joint.rollRate = s.rollRate;
+    joint.jointForce = s.jointForce;
+    joint.gap = s.gap;
+    joint.position = s.position;
+    joint.setInvMassMatrix(s.invMassMatrix);
+}
+
 void Trailer::addTo(World& world) {
     world.add(&body);
 }
@@ -247,7 +285,8 @@ void Trailer::afterIntegrate(Body& b, float dt, const World& world) {
     env.invDt = 1.0f / dt;
     env.weatherFriction = m_tractor->options.weatherFriction;
     env.hasCar = false;
-    env.randomSeed = world.randomSeed();
+    // (OpenMM2: a network player's car's own stream, see CarSim::ownRandom.)
+    env.randomSeed = m_tractor->ownRandom ? &m_tractor->randomState : world.randomSeed();
     for (Drivetrain& d : drivetrains)
         d.update(env, m_tractor->params.mass);
     // dgTrailerJoint::Update first breaks a holding hitch on Ctrl+B (and
