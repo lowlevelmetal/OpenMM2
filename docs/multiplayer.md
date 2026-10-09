@@ -578,7 +578,7 @@ holds everything else still). While the knocked car moves, the local body
 leads, being the better guess (it runs the host's physics from the same
 hit; the host's knocked car arrives a trip old and is predicted along its
 velocity while it tumbles); once the host's messages show it off its rail
-too and the local body has come to rest, or the host's car is 5 m from it,
+too and the local body has come to rest, or the host's car is 3 m from it,
 or a host state stamped 150 ms after the hit still shows it on its rail (the
 host did not knock it), the host's messages lead and the drawing blends
 from where the local body left it. The cars off their rails on the host meet

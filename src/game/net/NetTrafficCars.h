@@ -17,7 +17,7 @@
 //
 // The knocked car is this machine's until either the host's messages show it
 // off its rail too and its body here has come to rest (or the host's car is
-// 5 m from it): it then follows them, the drawing blending from where the
+// 3 m from it): it then follows them, the drawing blending from where the
 // local body left it; or they show it still on its rail at a time well after
 // the hit, when the host would have knocked it (the host did not: it goes
 // back to its rail, blended the same way). With the host simulating the
@@ -52,7 +52,7 @@ public:
     static constexpr double kMaxLocalMs = 3000.0;
     // A car the host has knocked too stays this machine's until its body
     // comes to rest, unless the host's car is this far from it.
-    static constexpr float kDivergeMetres = 5.0f;
+    static constexpr float kDivergeMetres = 3.0f;
 
     // A car this machine knocked loose and handed back to the host's
     // messages this frame, and where it was then.
