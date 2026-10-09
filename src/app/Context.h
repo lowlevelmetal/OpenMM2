@@ -69,6 +69,9 @@ struct Context {
     // Automation: this frame is the last (as --frames' last, with its
     // --screenshot); set by OPENMM2_DEBUG_NET_SHOT_MS in a network race.
     bool lastFrameRequested = false;
+    // Automation: --screenshot's picture of this frame as well, saved as
+    // "<name>-<tag>.<ext>" (OPENMM2_DEBUG_NET_SHOT_MS's earlier times).
+    int captureTag = -1;
 
     // Writes settings (including [Display]) to disk.
     void saveSettings();

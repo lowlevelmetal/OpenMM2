@@ -220,11 +220,23 @@ int run(const CommandLine& cl) {
         dev.endOverlay();
 
         const bool lastFrame = (cl.frames && frame + 1 >= *cl.frames) || ctx.lastFrameRequested;
-        if (lastFrame && cl.screenshot)
+        const int tag = std::exchange(ctx.captureTag, -1);
+        if ((lastFrame || tag >= 0) && cl.screenshot)
             dev.requestCapture();
         limiter.wait();
         dev.endFrame();
         ++frame;
+
+        if (tag >= 0 && !lastFrame && cl.screenshot) {
+            auto path = str::toPath(*cl.screenshot);
+            path.replace_filename(
+                std::format("{}-{}{}", path.stem().string(), tag, path.extension().string()));
+            render::Image image;
+            if (dev.readCapture(image) && render::writePng(path, image))
+                log::info("screenshot: {}", path.string());
+            else
+                log::error("screenshot: capture failed");
+        }
 
         if (lastFrame) {
             if (cl.screenshot) {

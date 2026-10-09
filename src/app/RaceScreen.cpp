@@ -67,6 +67,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <map>
 #include <optional>
 #include <set>
@@ -280,13 +281,22 @@ public:
         // network race at that session time (with --screenshot: every
         // machine's picture of the same moment); "+<ms>" counts from the
         // race's order (GO DRIVE), and also before the race has started.
-        if (const char* shot = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shot && multiplayer(ctx)) {
-            const bool fromOrder = *shot == '+';
-            const long long at = str::parseInt(fromOrder ? shot + 1 : shot).value_or(0) +
+        // Several times, comma-separated: the earlier ones save numbered
+        // pictures (<screenshot>-1.png, ...) and the race goes on.
+        if (const char* shots = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shots && multiplayer(ctx)) {
+            const auto list = str::split(shots, ',');
+            const auto k = static_cast<std::size_t>(m_netShotsTaken);
+            const std::string_view shot = k < list.size() ? list[k] : std::string_view{};
+            const bool fromOrder = shot.starts_with('+');
+            const long long at = str::parseInt(fromOrder ? shot.substr(1) : shot).value_or(0) +
                                  (fromOrder ? static_cast<long long>(ctx.netGame->raceOrderTime()) : 0LL);
             const auto now = static_cast<long long>(ctx.netGame->sessionTime());
-            if ((fromOrder || ctx.netGame->raceStarted()) && now >= at)
-                ctx.lastFrameRequested = true;
+            if (!shot.empty() && (fromOrder || ctx.netGame->raceStarted()) && now >= at) {
+                if (++m_netShotsTaken == static_cast<int>(list.size()))
+                    ctx.lastFrameRequested = true;
+                else
+                    ctx.captureTag = m_netShotsTaken;
+            }
         }
         debugRespawn(ctx);
         if (multiplayer(ctx)) {
@@ -412,7 +422,8 @@ public:
         // Development aid: OPENMM2_DEBUG_FOCUS=ped|car frames the nearest
         // pedestrian or traffic car (for screenshots); net:<player id> a
         // network player's car (this machine's own, or another's as drawn),
-        // police:<ambient id> a shared-traffic police car (400 + its place).
+        // police:<ambient id> a shared-traffic police car (400 + its place),
+        // knocked:<player id> the knocked traffic car nearest that player.
         if (const char* focus = std::getenv("OPENMM2_DEBUG_FOCUS"); focus && (m_ai || multiplayer(ctx))) {
             const Vec3 ref = m_player ? m_pose.body.m3 : m_camera.position();
             std::optional<Mat34> target;
@@ -439,6 +450,36 @@ public:
                     consider(drawnPose(game::Drawn::Police, i, *m_cops[i].sim).body);
                 if (const auto it = m_netCops.find(id); it != m_netCops.end() && it->second.sim)
                     consider(netCopDrawn(id).value_or(it->second.state.transform));
+            } else if (what.starts_with("knocked:") && multiplayer(ctx)) {
+                // The knocked traffic car with a body within 60 m of a
+                // player's car with the lowest id (shared traffic: the host's
+                // simulated, a client's received: the same car on both).
+                const int id = str::parseInt(what.substr(8)).value_or(-1);
+                std::optional<Mat34> player;
+                if (id == ctx.netGame->localId() && m_player)
+                    player = m_drawPose.body;
+                else if (id >= 0 && id < 256)
+                    player = netCarDrawn(static_cast<std::uint8_t>(id));
+                if (player && (m_trafficClient || m_ai)) {
+                    const Vec3 at = player->m3;
+                    int lowest = std::numeric_limits<int>::max();
+                    for (const auto& c : m_trafficClient ? m_netCarsDrawn : m_ai->cars()) {
+                        const auto physical = physicalTrafficCar(c.id);
+                        const bool near = c.transform.m3.dist(at) < 60.0f;
+                        if (physical && physical->active && c.id < lowest && near) {
+                            lowest = c.id;
+                            target = physical->transform;
+                        }
+                    }
+                }
+            } else if (what.starts_with("traffic:") && (m_trafficClient || m_ai)) {
+                // A traffic car by id (shared traffic: the same car on every machine).
+                const int id = str::parseInt(what.substr(8)).value_or(-1);
+                for (const auto& c : m_trafficClient ? m_netCarsDrawn : m_ai->cars())
+                    if (c.id == id) {
+                        const auto physical = physicalTrafficCar(c.id);
+                        target = physical ? physical->transform : c.transform;
+                    }
             } else if (what == "ped" && m_ai) {
                 for (const auto& p : m_ai->peds())
                     consider(p.transform);
@@ -1272,12 +1313,38 @@ private:
             return;
         log::info("race: start at intersection {} ({:.3f}, {:.3f}, {:.3f})", pick->intersection,
                   pick->position.x, pick->position.y, pick->position.z);
-        m_player->setResetPos(pick->position, pick->angle);
+        Vec3 position = pick->position;
+        float angle = pick->angle;
+        // Development aid: OPENMM2_DEBUG_START_NEAR_POLICE=<post>:<metres>
+        // starts the car that far in front of a police post's car, facing it
+        // (every machine knows the posts; a network cruise's damage tests).
+        if (const char* near = std::getenv("OPENMM2_DEBUG_START_NEAR_POLICE")) {
+            const auto parts = str::split(near, ':');
+            const auto post = static_cast<std::size_t>(str::parseInt(parts[0]).value_or(0));
+            const float metres =
+                parts.size() > 1 ? static_cast<float>(str::parseDouble(parts[1]).value_or(20.0)) : 20.0f;
+            if (post < m_session->police().size()) {
+                const Mat34& spawn = m_session->police()[post].spawn;
+                position = spawn.m3 - spawn.m2 * metres;
+                angle = phys::resetRotationOf(spawn) + 3.1415927f;
+            }
+        }
+        // ... and OPENMM2_DEBUG_START=<x>,<y>,<z>,<angle> at that place.
+        if (const char* at = std::getenv("OPENMM2_DEBUG_START")) {
+            const auto v = str::split(at, ',');
+            auto f = [&](std::size_t i) {
+                return i < v.size() ? static_cast<float>(str::parseDouble(v[i]).value_or(0.0)) : 0.0f;
+            };
+            position = {f(0), f(1), f(2)};
+            angle = f(3);
+        }
+        log::info("race: start angle {:.4f}", angle);
+        m_player->setResetPos(position, angle);
         m_player->reset();
         m_pose = m_player->pose();
         m_cams.reset(cameraTarget());
-        m_position = pick->position + Mat34::rotationY(pick->angle).transformDir({0, 2.2f, 7.0f});
-        m_yaw = pick->angle;
+        m_position = position + Mat34::rotationY(angle).transformDir({0, 2.2f, 7.0f});
+        m_yaw = angle;
     }
 
     void createSession(Context& ctx) {
@@ -1518,6 +1585,15 @@ private:
             setupVehicleRenderer(ctx, *cop.renderer);
             cop.audio = loadAiCarAudio(ctx, p.vehicle, true);
             cop.fx = loadVehicleFx(ctx, p.vehicle, cop.sim->model(), *cop.renderer);
+            // Development aid: OPENMM2_DEBUG_POLICE_TOUGHNESS=<factor> scales
+            // the police cars' MedDamage and MaxDamage (a wreck sooner, for
+            // the shared traffic's damage tests).
+            if (const char* tough = std::getenv("OPENMM2_DEBUG_POLICE_TOUGHNESS")) {
+                const auto f = static_cast<float>(str::parseDouble(tough).value_or(1.0));
+                auto& d = cop.sim->sim().damage.params;
+                d.medDamage *= f;
+                d.maxDamage *= f;
+            }
             // OpenMM2: a shared-traffic host shows its police's damage on the
             // clients (the car's ambient id, as sendNetTraffic shares it).
             const int netId = kNetPoliceId + static_cast<int>(m_cops.size());
@@ -3932,11 +4008,24 @@ private:
             st.bytes += bytes;
             st.messages += bytes > 0 ? 1 : 0;
             st.cars += msg.entities.size();
+            // What protocol 4 added: a knocked car's wheel bit and wheels,
+            // a police car's 4 more bits of damage.
+            if (bytes > 0)
+                for (const auto& e : msg.entities) {
+                    if (!e.hasState)
+                        continue;
+                    if (e.kind == net::AmbientKind::Police)
+                        st.damageBits += 4;
+                    else if (e.flags & net::kAmbientOffRail)
+                        st.damageBits += e.wheels ? 81 : 1;
+                    st.wheels += e.wheels ? 1 : 0;
+                }
             if (m_debugNetTraffic) // every message: the clients' logs are compared with these
                 for (const auto& e : msg.entities)
                     if (e.position.dist(rc.transform.m3) < 120.0f)
-                        log::info("nettraffic: host t {} to {} id {} gen {} at {:.2f} {:.2f} {:.2f}", time,
-                                  rc.id, e.id, e.generation, e.position.x, e.position.y, e.position.z);
+                        log::info("nettraffic: host t {} to {} id {} gen {} at {:.2f} {:.2f} {:.2f}{}", time,
+                                  rc.id, e.id, e.generation, e.position.x, e.position.y, e.position.z,
+                                  e.wheels ? " wheels" : "");
         }
         for (auto it = m_trafficSent.begin(); it != m_trafficSent.end();) {
             if (viewers.contains(it->first)) {
@@ -3954,9 +4043,11 @@ private:
             for (auto& [id, st] : m_trafficSent) {
                 const double perMessage =
                     st.messages ? static_cast<double>(st.cars) / static_cast<double>(st.messages) : 0.0;
-                log::info("nettraffic: to player {}: {:.1f} msg/s, {:.0f} B/s, {:.1f} cars a message", id,
-                          static_cast<double>(st.messages) / seconds, static_cast<double>(st.bytes) / seconds,
-                          perMessage);
+                log::info("nettraffic: to player {}: {:.1f} msg/s, {:.0f} B/s, {:.1f} cars a message; police "
+                          "damage and knocked cars' wheels {:.0f} B/s ({} cars with wheels sent)",
+                          id, static_cast<double>(st.messages) / seconds,
+                          static_cast<double>(st.bytes) / seconds, perMessage,
+                          static_cast<double>(st.damageBits) / 8.0 / seconds, st.wheels);
                 st = {};
             }
             m_trafficStatsAt = now;
@@ -4087,9 +4178,9 @@ private:
                     if (c.transform.m3.dist(me) < 120.0f)
                         log::info(
                             "nettraffic: client t {:.0f} id {} gen {} at {:.2f} {:.2f} {:.2f} flags {:#x}"
-                            "{}{}",
+                            "{}{}{}",
                             renderTime, c.id, c.generation, c.transform.m3.x, c.transform.m3.y, c.transform.m3.z,
-                            c.flags, c.extrapolated ? " (extrapolated)" : "",
+                            c.flags, c.wheels ? " wheels" : "", c.extrapolated ? " (extrapolated)" : "",
                             c.kind == net::AmbientKind::Police ? std::format(" police target {}", c.target)
                                                                : std::string());
                 log::info("nettraffic: client cops pursuing this player: {}",
@@ -4102,9 +4193,9 @@ private:
         if (now - m_trafficStatsAt >= 10000) {
             const auto& st = m_trafficClient->stats();
             log::info("nettraffic: received {} messages ({} cars), {} refused, {} late, {} moved; showing {} "
-                      "cars, {} police",
+                      "cars ({} on their bodies' wheels), {} police",
                       st.messages, st.entities, st.refused, st.outdated, st.teleports, m_netCars.size(),
-                      m_netCops.size());
+                      m_netPhysical.size(), m_netCops.size());
             m_trafficStatsAt = now;
         }
     }
@@ -4533,6 +4624,14 @@ private:
             const auto& d = m_player->sim().damage;
             log::info("netdamage: own car damage {:.0f} of {:.0f} (med {:.0f}), level {:.3f}", d.currentDamage,
                       d.maxDamage(), d.medDamage(), d.damage);
+            for (std::size_t i = 0; i < m_cops.size(); ++i) {
+                const auto& c = m_cops[i].sim->sim().damage;
+                const bool out = m_cops[i].driver->mode() == ai::PoliceCar::Mode::Disabled;
+                if (c.currentDamage > 0.0f)
+                    log::info("netdamage: own police {} damage {:.0f} of {:.0f} (med {:.0f}){}",
+                              kNetPoliceId + static_cast<int>(i), c.currentDamage, c.maxDamage(),
+                              c.medDamage(), out ? ", out of action" : "");
+            }
         }
         // The smoke comes from the car as drawn, a step behind its body.
         auto update = [&](const char* what, int id, game::fx::VehicleEffects& fx, const game::SimVehicle& car,
@@ -4602,6 +4701,7 @@ private:
         m_cams.reset(cameraTarget());
     }
     int m_debugRespawns = 0;
+    int m_netShotsTaken = 0; // OPENMM2_DEBUG_NET_SHOT_MS's times passed
 
     // What this machine's cars painted and broke goes to the others, after
     // this frame's effects (this player's car; a shared-traffic host's police).
@@ -4637,7 +4737,8 @@ private:
             const auto phases = str::split(dbg, '/');
             const char* ms = std::getenv("OPENMM2_DEBUG_INPUT_MS");
             const auto phaseMs = static_cast<double>(std::max(1LL, str::parseInt(ms ? ms : "").value_or(2000)));
-            m_debugInputTime += dt;
+            if (!multiplayer(ctx) || ctx.netGame->raceStarted()) // a network race's from its start
+                m_debugInputTime += dt;
             const auto phase = static_cast<std::size_t>(m_debugInputTime * 1000.0 / phaseMs);
             const auto parts = str::split(phases[phase % phases.size()], ',');
             auto f = [&](std::size_t i) {
@@ -5242,6 +5343,7 @@ private:
     std::uint64_t m_trafficSentAt = 0, m_trafficStatsAt = 0, m_trafficLoggedAt = 0;
     struct TrafficSent {
         std::uint64_t bytes = 0, messages = 0, cars = 0;
+        std::uint64_t damageBits = 0, wheels = 0; // protocol 4's share (see sendNetTraffic)
     };
     std::map<std::uint8_t, TrafficSent> m_trafficSent; // host: per client, since the last log
     std::vector<ai::AmbientCar> m_netCars;              // client: the received traffic this frame

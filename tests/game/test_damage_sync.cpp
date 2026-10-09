@@ -778,11 +778,19 @@ TEST(DamageSync, KnockedCarsWheelsAreDrawnWhereTheHostHasThem) {
     const auto& c = client.cars()[0];
     ASSERT_TRUE(c.wheels);
     EXPECT_NEAR(c.wheelOffsets[0].y, offsets[0].y + 0.05f, 0.01f); // halfway between the two
+    // Kept as long as the messages carry them, drawn 100 ms behind.
+    for (std::uint32_t t = 1100; t < 3000; t += 50) {
+        car.transform.m3.x += 0.05f;
+        client.receive(hostSide.build({1, body.m3}, std::span(&car, 1), t, 0, 0x1234));
+        client.update(static_cast<double>(t) - 100.0);
+        ASSERT_EQ(client.cars().size(), 1u) << t;
+        EXPECT_TRUE(client.cars()[0].wheels) << t;
+    }
     // Back on its rail (no body): no wheels.
     car.flags = 0;
     car.wheels = false;
-    client.receive(hostSide.build({1, body.m3}, std::span(&car, 1), 1100, 0, 0x1234));
-    client.update(1100.0);
+    client.receive(hostSide.build({1, body.m3}, std::span(&car, 1), 3000, 0, 0x1234));
+    client.update(3000.0);
     ASSERT_EQ(client.cars().size(), 1u);
     EXPECT_FALSE(client.cars()[0].wheels);
 }
