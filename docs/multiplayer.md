@@ -594,9 +594,11 @@ every player's car on the host:
   matrix, or in the damage, gear or hold), the client puts the car back to
   its saved state for that sample with the host's on top and runs the later
   samples again on their inputs (`phys::World::replaySample`: the car alone,
-  everything it touches held still and moving at its own velocity, the
-  other players' cars where each sample first met them; no sound or effect),
-  at most 120 samples. The drawing keeps the car where it was and eases it
+  everything it touches held still and moving at its own velocity, every
+  body within 40 m of it (the other players' cars, the police, knocked
+  traffic cars and props) where each sample first met it; the traffic cars
+  on their rails where the frame placed them; no sound or effect), at most
+  120 samples. The drawing keeps the car where it was and eases it
   onto the corrected place with a 60 ms half-life (`game::CorrectionBlend`;
   more than 4 m is a jump, drawn at once). The client's simulation runs up
   to 3% faster when the host had fewer than one of its inputs in hand over

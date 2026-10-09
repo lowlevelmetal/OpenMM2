@@ -40,7 +40,14 @@ behaviour and what OpenMM2 does differently.
   and how close every machine drew the two cars within 0.6 s of it;
   **corrections** are a client's own car moved by the host's states.
 * The 0.3.1 numbers come from 0.3.1 with only the trace added (80b8b8e and
-  the clock fix below), built separately.
+  the clock fix below), built separately; the "host authority" numbers from
+  c367288 (merged with the shared traffic's work, 52aa601), release builds.
+* A crash is chaotic: the same scenario run again moves by tens of percent
+  (rear: 543, 786 and 423 corrections a minute in three runs, the second
+  while the opponent sweep was loading the machine). The tables show single
+  runs; where a scenario was run twice both are given.
+* A jump's velocity for a machine's own car is its body's frame velocity,
+  which includes the sample's pushes out of contacts.
 
 A first round of "before" numbers was wrong: the trace's clock was each
 process's own (`net::monotonicMs` counts from the process's start), so
@@ -122,8 +129,11 @@ decompile and the asm of `SendPosition` and `PositionUpdate`):
    inputs; clients predict their own car, reconcile and draw the other cars
    interpolated from the host's states; resets travel as commands with the
    inputs; the host decides every car's damage.
-6. **Replays meet the other cars where they were** (19e8271), plus the
-   `OPENMM2_NET_OTHERS` experiment.
+6. **Replays meet the other cars where they were** (19e8271), then every
+   body within 40 m of the car (c367288: the police, knocked traffic cars
+   and props too), plus the `OPENMM2_NET_OTHERS` experiment. The traffic
+   cars still on their rails are held where the frame placed them (the
+   shared traffic's `TrafficClient::poseAt` could put them back too).
 7. **Cops and Robbers' limits on the host** (276e508, sync review S6).
 8. **Catch-up** (127ac41): a client's backlog (it loaded before the host)
    is dropped after a second instead of lagging its car by seconds.
@@ -139,26 +149,28 @@ showing B's car):
 
 | Scenario | view | 0.3.1 | host authority |
 | --- | --- | --- | --- |
-| ram | host ← client | 0.60 / 1.53 | 0.60 / 1.29 |
-| ram | client ← host | 0.58 / 1.50 | 0.59 / 1.66 |
-| chase | host ← client | 0.21 / 2.85 | 0.43 / 2.18 |
-| chase | client ← host | 0.19 / 1.56 | 0.65 / 1.57 |
-| ram, 150 ms, 5% | host ← client | 0.95 / 2.46 | 1.04 / 14.9 (a fall through the city, see below) |
-| ram, 150 ms, 5% | client ← host | 0.90 / 2.45 | 0.93 / 2.44 |
-| ram, 3 players | host ← clients | 0.53-0.56 / 1.41-1.42 | 0.42-0.46 / 1.27-1.33 |
-| ram, 3 players | clients ← host | 0.56 / 1.43 | 0.57 / 1.44-1.57 |
-| ram, 3 players | client ← client | 0.80-0.85 / 2.08-2.12 | 0.88-0.96 / 2.60-2.82 |
-| ram, shared traffic | host ← client | 0.49 / 1.47 | 0.54 / 1.30 |
-| ram, shared traffic | client ← host | 0.58 / 1.44 | 0.58 / 1.77 |
-| rear | host ← client | 0.65 / 1.89 | 1.74 / 4.26 |
-| rear | client ← host | 0.31 / 1.05 | 0.15 / 2.24 |
+| ram | host ← client | 0.60 / 1.53 | 0.53 / 1.19 |
+| ram | client ← host | 0.58 / 1.50 | 0.61 / 1.76 |
+| chase | host ← client | 0.21 / 2.85 | 0.24 / 2.20 |
+| chase | client ← host | 0.19 / 1.56 | 0.22 / 1.67 |
+| ram, 150 ms, 5% | host ← client | 0.95 / 2.46 | 1.05 / 2.40 |
+| ram, 150 ms, 5% | client ← host | 0.90 / 2.45 | 0.99 / 2.53 |
+| ram, 3 players | host ← clients | 0.53-0.56 / 1.41-1.42 | 0.50-0.51 / 1.26-1.44 |
+| ram, 3 players | clients ← host | 0.56 / 1.43 | 0.56-0.57 / 1.50-1.51 |
+| ram, 3 players | client ← client | 0.80-0.85 / 2.08-2.12 | 0.99-1.04 / 2.66-2.98 |
+| ram, shared traffic | host ← client | 0.49 / 1.47 | 0.58 / 1.37 |
+| ram, shared traffic | client ← host | 0.58 / 1.44 | 0.59 / 1.61 |
+| rear (two runs) | host ← client | 0.65 / 1.89 | 1.28-1.30 / 4.47-6.01 |
+| rear (two runs) | client ← host | 0.31 / 1.05 | 0.69-1.01 / 2.46-2.53 |
 
 The other players' cars are still drawn in the past (the maintainer's
 choice: interpolated from the host's states), and a client's own car now
 runs ahead of the host's by its inputs' trip and the host's margin, so the
-distance between screens is about what it was. Where one car shunts another
-the client's own car now shows where its prediction put it and the host
-corrects it (below), which is the one view that grew.
+distance between screens is about what it was. A client's view of another
+client grew a little (that car's states now come through the host, a trip
+older than its own snapshots were). Where one car shunts another the
+client's own car shows where its prediction put it and the host corrects
+it (below): that view grew most.
 
 Collisions between players (host authority: the host's collisions are the
 ones that happen; the client's are its prediction of them):
@@ -166,10 +178,10 @@ ones that happen; the client's are its prediction of them):
 | Scenario | 0.3.1: one screen only | host authority: host's collisions the client predicted / client predictions the host did not have |
 | --- | --- | --- |
 | ram | 1 of 4 | 18 of 18 / 0 of 18 |
-| ram, 150 ms, 5% | 2 of 8 | 11 of 11 / 0 of 11 |
-| ram, 3 players | 1 of 9, 1 of 4 | 4 of 4 and 2 of 4 / 0 and 2 |
-| ram, shared traffic | 0 of 3 | 15 of 15 / 0 of 14 |
-| rear | 13 of 21 (host), 6 of 15 (client) | 4 of 4 / 5 of 9 |
+| ram, 150 ms, 5% | 2 of 8 | 18 of 18 / 0 of 18 |
+| ram, 3 players | 1 of 9, 1 of 4 | 7 of 7, 6 of 7, 5 of 5 (host and client 1, host and client 2, the clients) / 1 of 8, 1 of 7, 0 of 5 |
+| ram, shared traffic | 0 of 3 | 6 of 6 / 0 of 6 |
+| rear (two runs) | 13 of 21 (host), 6 of 15 (client) | 12 of 12, 4 of 4 / 10 of 22, 4 of 8 |
 
 Every collision now happens once, on the host, with both cars giving way by
 their masses, and every machine shows its outcome: a client draws its own
@@ -178,35 +190,42 @@ client did not predict reaches its car as a correction a round trip later;
 one it predicted that the host did not have (the other car was elsewhere by
 then: shunting from behind against its past image) is corrected away.
 
-Jumps over 1 m in a frame: none in 0.3.1 and none after except one real
-teleport (the harsh run: the client's car fell through the city at the foot
-of the hill, about z = 255, and the fall rule reset it on both machines at
-the same sample) and one 4.2 m correction drawn at once (3 players).
+Jumps over 1 m in a frame: none in 0.3.1; after, none for any other
+player's car, and none for a client's own car except in the first rear
+run: 81 frames in two spells of under a second, where the client's car,
+corrected to the host's place right behind the host's car, sat 2 m inside
+that car's past image and was pushed out of it every sample, shaking from
+side to side by up to 1.5 m (6 of those were corrections over 4 m, drawn at
+once; finding O1). An earlier build's harsh run had one real teleport: the
+client's car fell through the city at the foot of the hill (about
+z = 255) and the fall rule reset it on both machines at the same sample.
 
 Corrections of a client's own car (host authority only):
 
 | Scenario | a minute | median | 99th pct. | over 10 cm | over 1 m | samples run again |
 | --- | --- | --- | --- | --- | --- | --- |
 | chase (no contact) | 0 | | | 0 | 0 | |
-| ram | 262 | 6.9 cm | 0.81 m | 137 | 1 | 12 |
-| ram, 150 ms, 5% | 227 | 2.3 cm | 2.25 m | 86 | 9 | 24 |
-| ram, 3 players | 193-331 | 2.5-2.9 cm | 1.1-1.3 m | 59-115 | 6-7 | 12 |
-| ram, shared traffic | 257 | 3.4 cm | 0.82 m | 97 | 2 | 12 |
-| rear | 543 | 6.9 cm | 2.15 m | 256 | 29 | 13 |
+| ram | 252 | 5.2 cm | 0.82 m | 121 | 3 | 11 |
+| ram, 150 ms, 5% | 254 | 10.4 cm | 1.49 m | 150 | 16 | 24 |
+| ram, 3 players | 298-312 | 4.9-8.7 cm | 1.2-1.6 m | 126-167 | 5-12 | 12-13 |
+| ram, shared traffic | 182 | 1.2 cm | 0.86 m | 52 | 0 | 13 |
+| rear (two runs) | 786, 423 | 20, 7.8 cm | 3.8, 3.2 m | 666, 232 | 187, 32 | 13 |
 
 A car that touches nothing is never corrected: the host and the client run
 the same code on the same inputs from the same state (chase: 75 s without
 one). Corrections come in bursts around contacts with another player's car
 (and with props, which each machine still runs itself until the props work
-lands); most are millimetres (the state after a correction is the host's
+lands); half are under 1-10 cm (the state after a correction is the host's
 body and main parts, not every last field), and the drawing eases each one
 away over about 60 ms, so the client's own car showed no jump over 1 m in
-any run but one. Running the samples again cost at most 12.8 ms a second
-and 2.5 ms in a frame (shunting, 13 samples a correction); it is bounded at
-120 samples.
+any run but the one above. Running the samples again cost at most 12.8 ms
+a second and 2.5 ms in a frame over every run (shunting, 13 samples a
+correction); it is bounded at 120 samples.
 
-The host never ran short of a client's inputs in these runs (0 repeated or
-coasted samples); the client ran at 1.000 speed throughout.
+The host ran short of a client's inputs once in these runs (one sample
+repeated, in the rear run on the loaded machine); the client ran at 1.000
+speed except for spells at 0.994 in the rear runs (the host holding more
+than three of its inputs).
 
 ### Builds that round differently
 
@@ -229,7 +248,8 @@ coasted samples); the client ran at 1.000 speed throughout.
 the host will have them when it runs this machine's sample (extrapolated
 from the newest states by the samples not yet acknowledged less half the
 round trip) instead of in the past; `=ghost` keeps the client's car from
-touching them at all:
+touching them at all (these runs with the build before c367288 and the
+merge, so the default row is that build's):
 
 | | rear: corrections over 1 m | rear: other car's jumps over 1 m a minute | ram: corrections over 1 m | ram: other car's jumps over 1 m a minute |
 | --- | --- | --- | --- | --- |
@@ -274,12 +294,13 @@ into each other on screen. The default stays as the maintainer chose.
 | C3 | minor (parity) | `CopsAndRobbers::tickLimits` | Every machine checked the limits (sync review S6). | fixed (276e508) |
 | C4 | visible | `HostInputQueue` (new) | A client that loaded before the host started seconds behind its car. | fixed (127ac41) |
 | C5 | visible | `CarPrediction::acknowledge` (new) | Replays against the other cars' newest places made shunting corrections swing by up to 4 m. | fixed (19e8271) |
-| O1 | visible | the prediction | Corrections of up to 2-3 m while shunting another player's car, which the client sees in the past. | open: inherent to drawing the others in the past and predicting one's own car; the experiment above trades it for the other cars jumping |
+| O1 | visible | the prediction | Corrections of up to 2-3 m while shunting another player's car, which the client sees in the past. At worst (one rear run of six) a correction puts the client's car where the host has it, right behind the other car, which is inside that car's past image: the car is pushed out every sample and shakes from side to side by up to 1.5 m for under a second. | open: inherent to drawing the others in the past and predicting one's own car; the experiment above trades it for the other cars jumping. Narrower ways out: let a corrected car pass through another player's image until they part, or limit the push a car takes from an image in a sample |
 | O2 | visible | props | Each machine runs its own props, so a car knocking them is corrected (the props work makes them the host's). | for the props agent |
 | O3 | minor | rules | Checkpoints, laps, finishes and Cops and Robbers' gold are still decided on each player's own machine and relayed (a client could claim them); only the limits are the host's. | open: the host would run each car's gates (`game::session::playerGateHit` on its simulated cars, the laps and the finish) and Cops and Robbers' `CopsAndRobbers::update` over every car (it has every car and every collision now), and send the results; the clients would show them |
 | O4 | minor | commands | The host checks a client's resets only against the city's box and four a second, not against the race's checkpoints and the water. | open (needs the rules on the host) |
 | O5 | minor | `CarStatesMsg` | The own car's state is 270 bytes at 20 Hz to every client (78 KB/s for the host with eight players). | open: it could go only when it changed beyond the tolerance |
 | O6 | minor | MSVC against GCC | Not testable here; the noise test suggests corrections in crashes, eased away. | open |
+| O7 | minor | replays | The shared traffic's cars still on their rails are held where the frame placed them while a client runs its samples again. | open: `TrafficClient::poseAt` could put each where its sample met it |
 
 ## Reproducing
 

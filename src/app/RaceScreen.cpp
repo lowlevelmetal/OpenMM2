@@ -3773,11 +3773,10 @@ private:
         m_player->sim().onImpactCallback = [this](const phys::CarImpact& impact) { playerImpact(impact); };
     }
 
-    // vehCarDamage::ApplyImpact for the player's car: AudImpact (the impact
-    // sounds), the damage effects, and the game's impact callback
-    // (mmPlayer::ImpactCallback), which counts the hits.
     // OPENMM2_NET_TRACE: every player's car as this frame draws it, for the
-    // divergence between machines (netprobe syncreport).
+    // divergence between machines (netprobe syncreport). The own car's
+    // velocity is its body's frame velocity, which includes the sample's
+    // pushes (a contact's push-out shows as speed).
     void traceNetDrawn(Context& ctx) {
         if (!multiplayer(ctx) || !ctx.netGame->tracing())
             return;
@@ -3789,6 +3788,9 @@ private:
                 ctx.netGame->traceDrawn(rc.id, false, *drawn, rc.velocity);
     }
 
+    // vehCarDamage::ApplyImpact for the player's car: AudImpact (the impact
+    // sounds), the damage effects, and the game's impact callback
+    // (mmPlayer::ImpactCallback), which counts the hits.
     void playerImpact(const phys::CarImpact& impact) {
         // OpenMM2: a network client running its samples again has had them.
         if (m_netReplaying)
