@@ -201,3 +201,19 @@ TEST(NetGameLobby, StaleGameEventsAreDroppedAtTheNextCountdown) {
     }));
     EXPECT_EQ(got.front().type, net::GameEventType::CheckpointReached);
 }
+
+// The driver's transmission choice reaches the network race: MM2's session
+// data carries none, and mmGame::Init sets the car's from the player's own
+// state. It used to be automatic for everyone.
+TEST(NetGameLobby, RaceKeepsTheDriversTransmission) {
+    Lobby l;
+    ASSERT_NO_FATAL_FAILURE(l.open());
+    EXPECT_TRUE(l.client.raceConfig().automatic);
+    game::NetCar manual = l.client.localCar();
+    manual.automatic = false;
+    l.client.setLocalCar(manual);
+    EXPECT_FALSE(l.client.raceConfig().automatic);
+    EXPECT_TRUE(l.host.raceConfig().automatic); // each machine its own
+    l.host.setLocalCar({"vpcop", 0, 0, false});
+    EXPECT_FALSE(l.host.raceConfig().automatic);
+}

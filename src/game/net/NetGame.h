@@ -32,6 +32,10 @@ struct NetCar {
     std::string vehicle = "vpbug"; // VehicleInfo::baseName
     int color = 0;                 // paint job
     int team = 0;                  // Cops & Robbers: 0 cops / blue, 1 robbers / red
+    // The driver's transmission choice. It stays on this machine: MM2's
+    // network session data carries no transmission, and mmGame::Init sets
+    // the car's from the player's own state.
+    bool automatic = true;
 };
 
 // Cops & Robbers Free-For-All has no team buttons: the team follows the car,

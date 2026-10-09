@@ -326,7 +326,10 @@ Mustang Cruisers ... the Robber Team in Mustang GTs"): `NetGame::raceConfig()`
 returns `vpcop` for team 0 and `vpmustang99` for team 1. Robber Teams lets
 everyone choose. Free-For-All has no team lamps: the lobby sets the team
 from the car, 0 for a police car (flag 0x08) and 1 for any other
-(`game::freeForAllTeam`, MM2's `mmMultiCR::InitMyPlayer`).
+(`game::freeForAllTeam`, MM2's `mmMultiCR::InitMyPlayer`). The transmission
+is each driver's own (`NetCar::automatic`, the garage's TRANSMISSION) and
+never travels: MM2's session data has none, and `mmGame::Init` sets the car's
+from the player's own state.
 
 ### Menus
 

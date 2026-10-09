@@ -64,6 +64,7 @@ game::NetCar netCar(Frontend& fe) {
     game::NetCar car;
     car.vehicle = fe.config.vehicle;
     car.color = fe.config.vehicleColor;
+    car.automatic = fe.config.automatic;
     if (fe.ctx.netGame)
         car.team = fe.ctx.netGame->localCar().team;
     return car;

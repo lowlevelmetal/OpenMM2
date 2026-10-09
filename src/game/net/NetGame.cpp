@@ -421,6 +421,7 @@ RaceConfig NetGame::raceConfig() const {
     RaceConfig c = fromSessionSettings(settings());
     c.vehicle = m_car.vehicle;
     c.vehicleColor = m_car.color;
+    c.automatic = m_car.automatic;
     // "The Cop Team in Mustang Cruisers takes the gold to the bank, while the
     // Robber Team in Mustang GTs takes it back to the hideout" (help picture
     // host_cvr.jpg): Cops vs. Robbers fixes the cars by team. Robber Teams lets

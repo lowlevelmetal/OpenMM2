@@ -301,10 +301,10 @@ void Frontend::unlockedNetCar() {
 }
 
 void Frontend::saveNetEvent() {
-    // BeDone for the host and every joiner: the lobby's car and paint job
-    // and the session's mode, race and city (copied into the state pack by
-    // mmInterface::GetSessionData), so the main menu shows the network event
-    // as LAST RACE afterwards.
+    // BeDone for the host and every joiner: the lobby's car, paint job and
+    // transmission and the session's mode, race and city (copied into the
+    // state pack by mmInterface::GetSessionData), so the main menu shows the
+    // network event as LAST RACE afterwards.
     if (!profile || !ctx.netGame)
         return;
     const game::RaceConfig cfg = ctx.netGame->raceConfig();
@@ -312,6 +312,7 @@ void Frontend::saveNetEvent() {
     game::Profile& p = *profile;
     p.vehicle = car.vehicle;
     p.vehicleColor = car.color;
+    p.automatic = car.automatic;
     p.city = cfg.city;
     p.mode = cfg.mode;
     p.raceIndex = cfg.raceIndex;
@@ -326,10 +327,12 @@ void Frontend::applyLobbyCar() {
     game::NetCar car = ctx.netGame->localCar();
     car.vehicle = config.vehicle;
     car.color = config.vehicleColor;
+    car.automatic = config.automatic; // the garage's TRANSMISSION
     ctx.netGame->setLocalCar(car);
     if (profile) {
         profile->vehicle = config.vehicle;
         profile->vehicleColor = config.vehicleColor;
+        profile->automatic = config.automatic;
         saveProfile();
     }
 }
