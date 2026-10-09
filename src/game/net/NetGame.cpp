@@ -652,7 +652,8 @@ bool NetGame::playerLoaded(std::uint8_t playerId) const {
 int NetGame::playersLoading() const {
     int n = 0;
     for (const auto& p : players())
-        n += p.id != localId() && !playerLoaded(p.id);
+        if (p.id != localId() && !playerLoaded(p.id))
+            ++n;
     return n;
 }
 

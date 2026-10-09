@@ -279,8 +279,9 @@ public:
         if (const char* shot = std::getenv("OPENMM2_DEBUG_NET_SHOT_MS"); shot && multiplayer(ctx)) {
             const bool fromOrder = *shot == '+';
             const long long at = str::parseInt(fromOrder ? shot + 1 : shot).value_or(0) +
-                                 (fromOrder ? ctx.netGame->raceOrderTime() : 0);
-            if ((fromOrder || ctx.netGame->raceStarted()) && ctx.netGame->sessionTime() >= at)
+                                 (fromOrder ? static_cast<long long>(ctx.netGame->raceOrderTime()) : 0LL);
+            const auto now = static_cast<long long>(ctx.netGame->sessionTime());
+            if ((fromOrder || ctx.netGame->raceStarted()) && now >= at)
                 ctx.lastFrameRequested = true;
         }
         if (multiplayer(ctx)) {
