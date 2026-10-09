@@ -412,6 +412,46 @@ TEST(PropSync, MovingKinematicBodiesBreakProps) {
         m.world.remove(&c->body);
 }
 
+// It gives the prop what a simulated car of its mass gives it (dgImpact's
+// share of the motion), not all of it: a parked car flies as far on the host
+// as from the owner's own car.
+TEST(PropSync, KinematicBodiesShareTheMotionAsTheirMass) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    auto pieceSpeed = [&](bool kinematic) {
+        Machine m(lib);
+        m.place(layout());
+        Car car({6, 1, 3.0f}, {0, 0, -10});
+        if (kinematic) {
+            car.body.kinematic = true;
+            car.body.kinematicMoves = true;
+            car.body.kinematicVelocity = {0, 0, -10};
+            car.body.kinematicBreaksBangers = true;
+            car.body.resetCollider();
+        }
+        m.world.add(&car.body);
+        float speed = 0.0f;
+        for (int i = 0; i < 40 && m.set.standing(1); ++i) {
+            if (kinematic) {
+                Mat34 at = car.body.ics.matrix;
+                at.m3 = at.m3 + car.body.kinematicVelocity * kDt;
+                car.body.place(at);
+            }
+            m.step();
+        }
+        m.step(); // the impulses move the piece
+        for (std::size_t i = 0; i < m.set.instances().size(); ++i)
+            if (m.set.instances()[i].source == 1)
+                if (const phys::Body* b = m.set.body(i))
+                    speed = b->ics.linearVelocity.mag();
+        m.world.remove(&car.body);
+        return speed;
+    };
+    const float simulated = pieceSpeed(false), kinematic = pieceSpeed(true);
+    ASSERT_GT(simulated, 2.0f);
+    EXPECT_NEAR(kinematic, simulated, simulated * 0.05f);
+}
+
 // Lost, late and reordered messages: the client still ends with the host's
 // props, and every knock is applied once.
 TEST(PropSync, LossyLinkConverges) {

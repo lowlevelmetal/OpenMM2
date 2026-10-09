@@ -465,10 +465,11 @@ bool calcBangerImpact(Impact& impact, float weight, float impulseLimit2) {
     // OpenMM2: a kinematic body that moves (a network car on this machine)
     // has no ICS in its collider, so no impulse could stop it and the banger
     // would hold forever. One that may (Body::kinematicBreaksBangers: the
-    // host's copies of the other players' cars) breaks the banger as a body
-    // of its own mass would (Body::ics), keeps its motion and gives the
-    // banger all of the relative velocity. MM2's network cars are simulated
-    // vehCars.
+    // host's copies of the other players' cars) meets the banger as a body
+    // of its own mass would (Body::ics): the same break test and the same
+    // share of the motion for the banger. It keeps its own motion (its
+    // owner's machine simulates the car's side of the hit). MM2's network
+    // cars are simulated vehCars.
     const Body* kinematic =
         !impact.colliderA->ics && impact.colliderA->moving ? impact.colliderA->body : nullptr;
     if (kinematic && (!kinematic->kinematicBreaksBangers || !(kinematic->ics.mass > 0.0f)))
@@ -484,14 +485,10 @@ bool calcBangerImpact(Impact& impact, float weight, float impulseLimit2) {
             j = {j.x * s, j.y * s, j.z * s};
             // A's velocity after the limited impulse, relative to B.
             const Vec3 after = transformed(test, j);
-            Vec3 remaining{after.x + relVel.x, after.y + relVel.y, after.z + relVel.z};
+            const Vec3 remaining{after.x + relVel.x, after.y + relVel.y, after.z + relVel.z};
             impulseA = j;
-            if (kinematic) {
-                remaining = relVel;
-                impulseA = {};
-            }
             mb = invMass(impact.colliderB, impact.position);
-            m = added(m, mb);
+            m = added(test, mb);
             j = age::solveSVD(m, {-remaining.x, -remaining.y, -remaining.z});
             broke = true;
         } else if (kinematic) {

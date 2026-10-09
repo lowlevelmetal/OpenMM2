@@ -24,8 +24,8 @@ namespace mm2::game {
 class NetGame;
 struct NetGameEvent;
 
-// Development aid: OPENMM2_DEBUG_NETPROPS=<file> writes, one line each, every
-// placed prop that broke loose on this machine ("K <session ms> <prop>
+// Development aid: OPENMM2_DEBUG_NETPROPS=<file> writes, one line each, the
+// placed props ("P ..."), every placed prop that broke loose on this machine ("K <session ms> <prop>
 // <model> <cause>"), every knock this machine predicted and undid ("X ..."),
 // and every 250 ms of session time ("T <ms>") the props not standing
 // ("B <ids>"), the knocked-over props and thrown parts shown ("H <what> <x>
@@ -40,6 +40,8 @@ public:
     PropTrace(const PropTrace&) = delete;
     PropTrace& operator=(const PropTrace&) = delete;
 
+    // Every placed prop once ("P <prop> <model> <x> <y> <z>", its ground point).
+    void placed(const bangers::BangerSet& set);
     void knock(double t, std::size_t prop, std::string_view model, std::string_view cause);
     void undo(double t, std::size_t prop);
     void impact(double t, std::string_view cause, float value, float damage);

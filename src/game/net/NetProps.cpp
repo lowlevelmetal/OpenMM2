@@ -44,6 +44,15 @@ std::string describe(const net::PropDescriptor& what) {
     return "?";
 }
 
+void PropTrace::placed(const bangers::BangerSet& set) {
+    const std::size_t n = placedProps(set);
+    for (std::size_t i = 0; i < n; ++i) {
+        const auto& inst = set.instances()[i];
+        std::fprintf(m_file, "P %zu %s %.2f %.2f %.2f\n", i, inst.model.c_str(), inst.ground.m3.x,
+                     inst.ground.m3.y, inst.ground.m3.z);
+    }
+}
+
 void PropTrace::knock(double t, std::size_t prop, std::string_view model, std::string_view cause) {
     std::fprintf(m_file, "K %.0f %zu %.*s %.*s\n", t, prop, static_cast<int>(model.size()), model.data(),
                  static_cast<int>(cause.size()), cause.data());
@@ -96,6 +105,8 @@ void NetProps::setup(NetGame& net, bangers::BangerSet& set,
     m_set = &set;
     m_catalog = propCatalog(set);
     m_trace = PropTrace::fromEnvironment();
+    if (m_trace)
+        m_trace->placed(set);
     set.recordKnocks(true);
     const std::size_t placed = placedProps(set);
     if (const char* mode = std::getenv("OPENMM2_NETPROPS"); mode && std::string_view(mode) == "local") {
