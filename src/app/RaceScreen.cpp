@@ -327,7 +327,6 @@ public:
         }
         if (m_ai && !netTrafficClient(ctx))
             m_ai->updateLights(); // the light sets last (aiMap::Update); a shared-traffic client: the host's
-
         // The gizmo managers, nodes of mmGame (bridges, trains, ferries,
         // sailboats); the player's car is the bridges' proximity trigger.
         if (m_gizmos) {
