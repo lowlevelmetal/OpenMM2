@@ -2169,12 +2169,17 @@ private:
                 // (back to the reset position); with them mmSingleCircuit /
                 // mmGameMulti::HitWaterHandler reset the car at the last
                 // checkpoint and put the reset position back.
+                const std::uint32_t sample =
+                    m_traceNet && m_traceNet->isHost() ? m_netOwnSample + 1 : m_prediction.nextSeq();
                 if (m_session->setup().checkpoints.empty()) {
                     netCommand({0, net::CarCommandKind::Reset, {}, 0.0f});
                 } else {
                     const Mat34 at = m_session->respawnTransform();
                     netCommand({0, net::CarCommandKind::RespawnAt, at.m3, phys::resetRotationOf(at)});
                 }
+                if (m_traceNet)
+                    game::traceWaterReset(m_traceNet->traceFile(), m_traceNet->frameTime(),
+                                          m_traceNet->localId(), sample, m_player->sim().body.ics.matrix.m3);
                 m_crWaterHandled = m_cr != nullptr; // mmMultiCR::HitWaterHandler drops the gold
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
@@ -5179,6 +5184,9 @@ private:
                     if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
                         m_crResets.insert(id);
                     game::NetCarDriver::command(*rv.sim, c);
+                    if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
+                        game::traceWaterReset(m_traceNet->traceFile(), m_traceNet->frameTime(), id, c.seq,
+                                              rv.sim->sim().body.ics.matrix.m3);
                     if (c.kind != net::CarCommandKind::ClearDamage)
                         rv.lastMoveSeq = c.seq;
                     ++rv.resets;

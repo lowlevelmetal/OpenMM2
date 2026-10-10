@@ -367,6 +367,10 @@ void NetRules::applyRaceState(const net::RulesMsg& m, const Vec3& carPosition) {
     if (!s)
         return;
     s->applyNetProgress({m.evaluated, m.firstHit, m.hits}, carPosition);
+    if (const std::size_t n = m.firstHit + m.hits.size(); n > m_confirmedHits) {
+        m_confirmedHits = n;
+        traceRuleConfirmed(m_trace, m_frameTime, m_setup.self, static_cast<int>(n));
+    }
     s->setNetStanding(m.place, m.racers);
     m_icons.clear();
     for (const auto& [id, place] : m.icons)

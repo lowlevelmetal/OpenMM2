@@ -158,6 +158,7 @@ private:
     std::FILE* m_trace = nullptr;
     double m_frameTime = 0.0;
     std::map<std::uint8_t, std::size_t> m_tracedHits;
+    std::size_t m_confirmedHits = 0; // client: the host's count of its car's hits (the trace's RC)
     Stats m_stats;
 };
 
