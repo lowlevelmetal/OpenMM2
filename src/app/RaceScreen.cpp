@@ -4200,8 +4200,11 @@ private:
     // police car chasing the client counting half as far); a car sent the
     // last time is kept kFullKeep metres further, so that one at the edge
     // does not switch between being simulated and placed on the client.
+    // Farther away a police car simulated on its driver's last controls
+    // strayed more than one predicted along its velocity (chasing 60-100 m
+    // behind: 2.2 m at the 90th percentile against 0.7 m), and it cannot
+    // meet the client's car before its next state.
     static constexpr float kFullPoliceRadius = 60.0f; // m
-    static constexpr float kFullChaseRadius = 100.0f; // a police car chasing the client
     static constexpr float kFullBodyRadius = 50.0f;   // m
     static constexpr float kFullKeep = 20.0f;         // m
     void sendNetTrafficFull(Context& ctx) {
@@ -4222,8 +4225,7 @@ private:
                 // Not one the world's last step did not run (MM2 neither
                 // updates nor collides a cop it does not declare, nor a body
                 // beyond its 32 movers): it stands where it is, whatever its
-                // velocity, and a client must not run it (it once showed one
-                // standing 1 m off for a minute).
+                // velocity, and a client must not run it.
                 if (!cop.sim || id >= static_cast<int>(net::kMaxAmbientIds) || !m_world ||
                     !m_world->isActive(&cop.sim->sim().body))
                     continue;
@@ -4232,7 +4234,7 @@ private:
                 const int target = cop.driver->target();
                 const bool chasing = target > kNetPlayerTrackedId &&
                                      target - kNetPlayerTrackedId == static_cast<int>(rc.id);
-                if (!within(id, d, chasing ? kFullChaseRadius : kFullPoliceRadius))
+                if (!within(id, d, kFullPoliceRadius))
                     continue;
                 net::TrafficFullCar f;
                 f.id = static_cast<std::uint16_t>(id);
