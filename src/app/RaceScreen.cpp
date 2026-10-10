@@ -3099,10 +3099,10 @@ private:
         }
         // Development aid: OPENMM2_DEBUG_START_GOLD=<metres> starts a Cops and
         // Robbers car that far from the first gold, facing it, each player on
-        // its own side (every machine knows the first places when it loads).
+        // its own side, facing each other (every machine knows the first places when it loads).
         if (const char* g = std::getenv("OPENMM2_DEBUG_START_GOLD"); g && m_cr && m_player && m_world) {
             const float r = static_cast<float>(str::parseDouble(g).value_or(30.0));
-            const float around = 2.0943951f * static_cast<float>(ctx.netGame->localId());
+            const float around = 3.1415927f * static_cast<float>(ctx.netGame->localId());
             const Vec3 gold = m_cr->set().gold;
             Vec3 at = gold + Vec3{r * std::cos(around), 0.0f, r * std::sin(around)};
             phys::RayHit hit;
