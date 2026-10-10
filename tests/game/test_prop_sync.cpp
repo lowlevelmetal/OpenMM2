@@ -997,7 +997,7 @@ TEST(PropSync, ANearCarsKnockStandsWhileThisCarIsComing) {
 
 // A near car this machine runs ahead reaches a prop well before the real
 // one (its player braked short of it): while the host has that car near the
-// prop the knock stands, and the host's comes in time.
+// prop the knock stands, past the 2 s, and the host's comes in time.
 TEST(PropSync, ANearCarsEarlyKnockWaitsForTheHost) {
     Race r;
     Car near({6, 1, 3.0f}, {0, 0, -10});
@@ -1009,8 +1009,10 @@ TEST(PropSync, ANearCarsEarlyKnockWaitsForTheHost) {
     r.run(0.5);
     r.client.world.remove(&near.body);
     EXPECT_FALSE(r.client.set.standing(1)); // predicted
-    r.run(1.0);
-    EXPECT_FALSE(r.client.set.standing(1)); // the host's car is still by it
+    for (int i = 0; i < 150; ++i) {
+        r.frame();
+        EXPECT_FALSE(r.client.set.standing(1)) << i; // the host's car is still by it
+    }
     copy.body.ics.linearVelocity = {0, 0, -10}; // and drives on into it
     copy.body.ics.linearMomentum = copy.body.ics.linearVelocity * copy.body.ics.mass;
     r.run(1.5);

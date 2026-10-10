@@ -1098,7 +1098,8 @@ them, and dent them, through single player's code.
   may reach a prop seconds before the real one) once the host's states had
   that car more than 6 m from the prop by then as well, and its own car is
   more than 15 m from it (about to knock it itself, which the host's knock
-  would then confirm); any after 2 s. A mirror its cars touch is simulated
+  would then confirm); any after 2 s (4 s for another player's car the
+  host still had by the prop). A mirror its cars touch is simulated
   here from the host's motion (so a flying cone hits its car as on the host)
   and stays where it stopped until the host's has moved and rests again, or
   as long as the host's push would take to show here (the lag above and

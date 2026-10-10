@@ -615,21 +615,26 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
         // host's lag behind this machine (and neither the knock nor its
         // pieces came): the host's car went elsewhere (another player's car:
         // the host had it away from the prop by then).
+        // Another player's car the host still had by the prop may knock it
+        // yet (it braked short of it, say): its prediction waits longer.
         const Prediction& p = it->second;
         const double after = p.at + undoAfterMs();
         bool passed = !p.confirmed && m_any && static_cast<double>(m_latest) >= after;
-        if (passed && !p.ownCar) {
+        double timeout = m_options.predictTimeoutMs;
+        if (!p.ownCar) {
             const auto car = p.car >= 0 && hostCar ? hostCar(p.car) : std::nullopt;
             const float left2 = m_options.leftPropM * m_options.leftPropM;
             const float own2 = m_options.ownNearM * m_options.ownNearM;
             const Vec3& prop = set.instances()[it->first].matrix.m3;
-            passed = car && car->first >= after && car->second.dist2(prop) > left2 &&
-                     (!ownCarAt || ownCarAt->dist2(prop) > own2);
+            const bool away = car && car->second.dist2(prop) > left2;
+            passed = passed && away && car->first >= after && (!ownCarAt || ownCarAt->dist2(prop) > own2);
+            if (car && !away)
+                timeout = m_options.nearCarTimeoutMs;
         }
-        if (!it->second.confirmed && (passed || now - it->second.at >= m_options.predictTimeoutMs)) {
+        if (!p.confirmed && (passed || now - p.at >= timeout)) {
             set.restoreStanding(it->first);
             ++m_stats.undone;
-            if (passed && now - it->second.at < m_options.predictTimeoutMs)
+            if (passed && now - p.at < m_options.predictTimeoutMs)
                 ++m_stats.undoneEarly;
             m_applied.emplace_back(it->first, true);
             log::info("netprops: the host did not knock prop {} ({}): standing again", it->first,

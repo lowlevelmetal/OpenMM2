@@ -171,6 +171,7 @@ public:
         // this machine's own car is farther than ownNearM (it may be about
         // to knock the prop itself, and the host with it).
         double predictTimeoutMs = 2000.0;
+        double nearCarTimeoutMs = 4000.0; // ... one whose car the host still had by the prop
         double undoMarginMs = 300.0;
         double minUndoMs = 600.0;
         float leftPropM = 6.0f;
