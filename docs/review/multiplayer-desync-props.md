@@ -5,7 +5,8 @@ with integration at 3f73059 (the host simulates every player's car), 52aa601
 (the shared traffic) and cae6989 (the players' cars' final work); and in the
 rough edges round (protocol 16, "Rough edges round" below) at 782f469 (the
 players' cars' second round, the host's rules) and b33bebc (the
-cross-platform determinism work), on the
+cross-platform determinism work), and in a third round (protocol 18, "Third
+round" below) at 7fe48bb (the players' cars' third round), on the
 maintainer's report that in a multiplayer cruise over the Internet
 "knocked-over props, parked cars, objects or car damage look different on
 each screen", and on the maintainer's decision that the host is the
@@ -58,6 +59,10 @@ knocks of the other players' cars it runs (before, such a car drove through
 a prop that fell 140-400 ms later), undoes a missed prediction in 0.7-1.8 s
 instead of 2 s, no longer lets its own pieces knock props, and gets its own
 message with the states near its car first; the ring grows in a pile-up.
+In the third round (protocol 18) the host sends the pieces round a client's
+car in full, and a client's car pushing them is predicted exactly: in a test
+of a car pushing a pile of 18 props through the rest, no correction instead
+of 269; in the race runs, its corrections near knocked pieces fell by 58 %.
 
 Props down on one machine and standing on the other, at any 250 ms tick:
 6-16 at the end of the 0.3.1 runs (in 72-93 % of the ticks), 2-6 at the end
@@ -357,6 +362,119 @@ the car's centre came closest is one falling at the contact.
 Bandwidth after: 31 bytes/s to 6.4 KB/s to each client (10 s averages over
 the round's runs), at most 5.5 KB/s before; a message at most 1100 bytes.
 
+## Third round (protocol 18)
+
+On the merged build (integration 7fe48bb: the players' cars' third round,
+protocol 17, merged at f5e2f92), three items: a regression the players' cars
+agent measured in its chase scenario, a client's car pushing knocked props
+and pieces (O11), and the near cars' knock predictions again.
+
+### The chase's corrections are not the props' second round
+
+The players' cars agent's chase (the host leading, the client 10 m behind,
+both driven by looping inputs, 60 ±20 ms each way, 2 % loss, 75 s) corrected
+the client's car 114-405 times a minute on integration after the props'
+second round, and not at all on integration before it. The same scenario
+here, its scripts copied (port 2400), corrections a minute:
+
+| Build | Runs |
+| --- | --- |
+| 782f469 (integration, before the props' second round) | 36, 111, 152 |
+| b33bebc (the determinism work) | 205, 118, 201 |
+| 8e74c96 (the traffic's second round; the cars agent's "before", 0 and 0 there) | 149, 167, 112 |
+| 65529a6 (the props branch before its second round) | 169, 99, 0 |
+| 482ac2c (after it) | 102, 251, 113 |
+| f5e2f92 (merged with the cars' third round) | 99, 34, 123, 284; with every second-round change turned back (debug switches): 152, 211; with none: 260, 8 |
+| the cars' third round before it merged the props' second (the cars agent's own runs) | 426, 15 |
+
+The same binary gives both: 8e74c96 corrected 0 times in both the cars
+agent's runs and 112-167 times a minute in all three here, and every build
+has runs with almost none. The corrections are velocity errors of 3-10 cm/s
+with the position 1-3 mm off (just over the 3 cm/s tolerance), most of them
+with no knocked piece within 4 m and the other car farther than 6 m; once
+they begin in a run they go on, and a run either has them from its first
+seconds or barely at all. The client's car hits the city at the same
+places, as hard, in every run, with them or without. Nothing of the props'
+second round brings them; they are the players' cars agent's to find
+(below).
+
+### Pieces round a client's car in full (O11)
+
+A client's car leaning on knocked-over props and pieces met them where the
+host's messages showed them (a playout delay in the past), or as its own
+simulation had them, and was corrected at nearly every state. The host now
+sends, with each client's `CarStates`, the pieces round its car in full
+(`net::PropFullMsg`, docs/multiplayer.md "Props"), and the client runs them
+with its car when its samples run again. A deterministic test
+(`tests/game/test_prop_push.cpp`: host and client in one process, the
+client's car pushing a pile of 18 props through the rest, 100 ms each way)
+found what such a replay needs to give the host's samples exactly, step by
+step (20 states a second unless said; the pile's first rows knock the
+next, so the farther pieces matter as the cap allows):
+
+| The client's replays | Corrections |
+| --- | --- |
+| without the pieces in full | 95 |
+| the pieces' bodies, the nearest 8 within 1200 bytes | 71 |
+| and their hardest pusher; the other bodies put back for each sample as the race screen puts them | 78 |
+| and the bound where the sample's collisions saw it (the push moves the body after them; the next sweep starts from the bound) | 89 (a piece now about 250 bytes: 4 in a message) |
+| forces and pushes sent only when not zero, the bound's turn only when it turned (about 190 bytes: 6 in a message) | 69 |
+| a piece in full takes this machine's own piece of the same knock before the slot is shown | 68 |
+| three messages a state, the nearest 18 | 8 |
+| 60 states a second, the pieces in full 20 times; a piece in full knocks a placed prop as the host's does, with the replays' ghost | 1 (as committed: 0, and 269 without) |
+
+With the bound, a replay of one row of three pieces reproduced the host's
+states to the last bit for the whole run (before it, the impulses already
+differed after the first sample run again; the hardest pusher, also sent,
+made no measurable difference there); a pile of two rows went from 95 to
+none once the bound and the early stand-in were in. The pieces in full every
+third of 60 states corrected the car about as rarely as at every state (at
+every state and every third: two rows 0 and 0, six rows 0 and 8) with a
+third of the bytes.
+
+In the race runs, five each of the cars agent's rear-end scenario (the
+client's car into the back of the host's, knocking props on the way), on
+f5e2f92 and on this round's build:
+
+| | Corrections a minute | Over 1 cm with a knocked piece within 4 m, a minute | Largest of those | Over 1 cm near a piece only (the other car farther than 6 m), each run |
+| --- | --- | --- | --- | --- |
+| before | 530 (294-744) | 208 (96-382) | 2.81 m | 148, 63, 192, 108, 129 (41 knocks) |
+| after | 550 (136-1521) | 87 (0-242) | 0.77 m | 0 (no knock), 13, 8, 5, 60 (24 knocks) |
+
+The corrections left are the two cars against each other (the run with
+1521 a minute had no knock at all). In the chase (four runs each) the
+corrections over 1 cm near a piece only went from 58 to 27 (25 and 17
+knocks). The pieces still rest where the host's do (2 mm median), but a
+piece the client ran itself at the end of a run was 0.14-0.21 m from the
+host's, being handed back. The host sent 0.2-9 KB/s of pieces in full to a
+client while they moved round its car (10 s averages: 0.2-1.6 KB/s in the
+chase, 2-9 KB/s in the rear-end runs), at most three 1200-byte datagrams 20
+times a second.
+
+### Another player's car's knocks on the merged build (item 3)
+
+The seven scenarios again (slalom and follow at 80 and 150 ms, parked cars,
+three machines, one client alone), on this round's build:
+
+| | Round 2's last batch | This round |
+| --- | --- | --- |
+| knocks by another player's car the client predicted, of the host's | 15 of 50, none undone | 31 of 50, 3 more undone |
+| its own car's predictions confirmed | 52 of 52 | 49 of 49 |
+| the police's and knocked traffic cars' | 1 of 1 | 11 of 12 |
+| a piece in full knocking a placed prop | | 2 of 2 |
+| resting apart (both at rest) | 3 mm (one 15 mm) | 3 mm (one 0.14 m, being handed back at the end) |
+
+The cars' third round (three near cars with the inputs the host holds for
+them) doubled the share of another player's car's knocks a client predicts;
+the three undone ones, all in the three-machine run, are knocks a client's
+run-ahead of another car made and that car on the host did not. Where they
+were predicted the prop fell here 165-261 ms (medians, session time) before
+it fell on the host, as the car met it here.
+
+Checks: 1050 of 1050 tests (3 skipped), the determinism hashes unchanged;
+the same with `-D_GLIBCXX_ASSERTIONS`; the sweep 515/517 finished, 507/517
+across the line (the baseline); the smoke screenshots as before.
+
 ## For the players' cars agent
 
 * A client's props accept contacts from its own car and trailer
@@ -379,6 +497,18 @@ the round's runs), at most 5.5 KB/s before; a message at most 1100 bytes.
   acknowledgement for the first 3-4 s after the start (0.56 m each, the sign
   alternating, 58-59 samples run again), with the props kept local as well:
   the race's start, not the props.
+* The chase's corrections (third round, above): the same binary corrects a
+  client's car 0 or 100-170 times a minute from run to run, 3-10 cm/s at a
+  time, mostly far from pieces and from the other car, and once they begin
+  they go on. Not the props.
+* A body run again with the car needs, besides its rigid body and what a
+  sample hands the next, the bound where the sample's collisions saw it
+  (the push moves the body after them) and its hardest pusher: the pieces in
+  full carry both; `TrafficFull`'s knocked cars carry neither, and the car's
+  own state names no piece as its pusher (`PropFullMsg::carPusher` does).
+  phSleep's jitter sums are carried by none.
+* `CarPrediction::acknowledge` runs the companions in the order given; the
+  pieces in full come in the host's world's order, after the car.
 
 ## Open
 
@@ -393,6 +523,11 @@ the round's runs), at most 5.5 KB/s before; a message at most 1100 bytes.
 * A client's car leaning on a slowly creeping piece that the host's copy of
   the car does not touch (once, at the end of a three-machine run): the
   piece is pushed here, held, handed back, pushed again, and the car's
-  corrections run at every acknowledgement until it drives away.
+  corrections run at every acknowledgement until it drives away. Since the
+  third round the host's piece comes in full while it moves within 10 m of
+  the car and is simulated here from it, without the hand-back; a piece
+  the host has at rest is not run with the car.
+* More than about 18 pieces moving round a car at once: the farther ones
+  wait for room (three datagrams a state).
 * Props are interest-managed by distance from the client's car only, not by
   what its camera sees.

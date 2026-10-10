@@ -188,7 +188,7 @@ Transport is ENet 1.3 with range-coder compression and four channels:
 | Channel | Delivery | Traffic |
 | --- | --- | --- |
 | 0 Control | reliable, ordered | handshake, lobby, chat, clock sync, pings |
-| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients), `PropState` (host→clients), `TrafficFull` (host→clients) |
+| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients), `PropState` (host→clients), `TrafficFull` (host→clients), `PropFull` (host→clients) |
 | 2 Events | reliable, ordered | `GameEvent` |
 | 3 Ambient | unreliable, sequenced; a message beyond ENet's MTU in unreliable fragments | `AmbientState` (host→clients): the shared cruise traffic |
 
@@ -227,7 +227,8 @@ version 17 `CarStates` after every host frame that ran a sample, the near
 set (three cars within 60 m) with as many of them in full as fit one packet,
 a near client car's inputs the host holds for its next samples, and a
 contact's bound and hardest pusher in a car's full state (11, 13 and 15 on
-its own branch).
+its own branch), version 18 the pieces round a client's car in full
+(`PropFull`).
 
 ### Handshake
 
@@ -281,6 +282,7 @@ attempt within `connectTimeoutMs` (8 s).
 | AmbientState | H→C | the shared traffic and police near the client (see "Shared traffic") |
 | TrafficFull | H→C | the police and knocked cars near the client in full, at the physics sample of its `CarStates` (see "Shared traffic") |
 | PropState | H→C | the host's ring of knocked-over props and thrown car parts, the states near the client's car first (see "Props") |
+| PropFull | H→C | the pieces round the client's car in full, at the physics sample of its `CarStates` (see "Props") |
 
 `SessionSettings` holds the session name, city, mode (Cruise, Checkpoint,
 Circuit, Blitz, Cops & Robbers, Crash Course), race id, laps, time of day,
@@ -353,7 +355,11 @@ packet to the game or discovery port, and whatever answers as the router.
   what it holds, ignores a prop it has not placed and, when the host's
   placement checksum differs from its own, every placed prop (it then
   simulates its props itself). A `PropKnocks` event holds at most 512 knocks
-  and counts only from the host.
+  and counts only from the host. A `PropFull` holds at most 8 pieces (slot
+  0-255, generation 0-15, part 0-2, the pusher's kind 0-6), every number
+  finite and within the cars' full states' bounds, the sleep counters
+  ranged; a client keeps at most 32 unread and uses a piece only for the
+  slot and generation it shows or its own piece of that knock.
 * **Rules.** The host refuses a player's own word on a rule (its event
   filter: `CheckpointReached`, `LapCompleted`, `RaceFinished`, the gold
   events, Cops and Robbers' 0x8001-0x8003 and the rules event) and relays
@@ -1157,6 +1163,37 @@ them, and dent them, through single player's code.
   Nothing is knocked or moved in the world by a replay. A prop a client's
   car hits in its own samples is the same knock on the host, sample for
   sample: a client driving alone through props had no correction.
+* **The pieces round a client's car in full** (`PropFull`, protocol 18):
+  with the `CarStates` it sends a client, about 20 times a second (every
+  third of 60), the host sends the pieces within 10 m of its car in up to
+  three datagrams, the nearest that fit, in the order its world runs them:
+  the moving ones with their bodies (as `TrafficFull`'s knocked cars: the
+  rigid body, what a sample hands the next, the phSleep and the age, and as
+  the players' cars' full states the bound where the sample's collisions saw
+  it and what pushed it hardest, which the next sweep against that collider
+  reads), the ones at rest with their exact frame three times. When its car
+  runs again for that state, the client puts each moving piece it shows (the
+  host's slot, or its own piece of the same knock standing in, even before
+  the slot is shown) to the host's state and runs it with its car
+  (`game::CarPrediction::Companion`, only when it differs from where the
+  client had it there); the samples run again then reproduce the host's
+  (to the bit, in the test below, where nothing else differs), so that its
+  car pushes the pieces it leans on as the host's simulation of it does. While they come the client simulates the piece
+  however long; it meets the other pieces simulated here as on the host and
+  knocks a placed prop as the host's does (a prediction, with the replays'
+  ghost), and its prop's ghost goes once the host's state of it is known. A
+  piece at rest is drawn at the host's exact frame. Between the full states
+  the client runs its car again only when its own state differs, against
+  the pieces as it predicted them. Test: a car pushing a pile of 18 props
+  through the rest at 60 states a second, 100 ms each way, was corrected 269
+  times without and never with (`PropPush`). In the race runs (a client's
+  car running into the back of the host's through props, five runs each)
+  its corrections over 1 cm with a knocked piece within 4 m went from 208 to
+  87 a minute, the largest from 2.8 m to 0.77 m; the rest come with the other
+  car against it. The host sent 0.2-9 KB/s of them to a client while pieces
+  moved round its car (10 s averages), three 1200-byte datagrams 20 times a
+  second at most. The phSleep's jitter sums are not sent (they count only
+  for a piece almost at rest).
 * **A different placement** (an altered city, a mismatched build): the
   client follows only the cars' parts and simulates its props itself, as
   0.3 did, and logs it.
