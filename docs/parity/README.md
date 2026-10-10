@@ -318,6 +318,8 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/core/File.h` | 108 | O | - |
 | `src/core/Ini.cpp` | 189 | O | - |
 | `src/core/Ini.h` | 57 | O | - |
+| `src/core/Libm.cpp` | 447 | O | - |
+| `src/core/Libm.h` | 66 | O | - |
 | `src/core/Log.cpp` | 107 | O | - |
 | `src/core/Log.h` | 55 | O | - |
 | `src/core/Math.cpp` | 195 | M | phys-core |
