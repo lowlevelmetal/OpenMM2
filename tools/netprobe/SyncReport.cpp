@@ -406,7 +406,11 @@ int syncReport(const SyncReportOptions& o) {
             over10cm += d > 0.1 ? 1 : 0;
             snaps += c.snapped ? 1 : 0;
         }
-        const double span = (cs.back().wall - cs.front().wall) / 60000.0;
+        // A minute of the race as the machine drew it (not of the span the
+        // corrections fall in, which a burst would shrink).
+        double span = (cs.back().wall - cs.front().wall) / 60000.0;
+        if (const auto own = ms[m].drawn.find(ms[m].self); own != ms[m].drawn.end() && !own->second.empty())
+            span = std::max(span, (own->second.back().wall - own->second.front().wall) / 60000.0);
         std::println("  {:<10} {} corrections ({:.1f} a minute), median {:.4f}, p90 {:.4f}, p99 {:.4f}, "
                      "max {:.3f}; {} over 10 cm, {} over 1 m, {} snapped; steps replayed median {:.0f}, "
                      "max {:.0f}",
