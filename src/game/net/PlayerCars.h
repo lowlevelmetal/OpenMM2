@@ -238,6 +238,15 @@ public:
         // number: every machine keeps the players' cars in that order), and
         // collides first when they run again, as on the host.
         bool first = false;
+        // OpenMM2's shared traffic: a car no player drives (a police car:
+        // `drive` sets its controls before each sample, in place of `driver`
+        // and `input`) or a body that is no car (a knocked traffic car:
+        // `body`, put to the host's state by `rebase` in place of `state`,
+        // which then stays null; `position` and `velocity` are that state's).
+        std::function<void()> drive;
+        phys::Body* body = nullptr;
+        std::function<void()> rebase;
+        Vec3 position, velocity;
     };
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
