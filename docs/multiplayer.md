@@ -642,15 +642,18 @@ every player's car on the host:
   own machine simulate it alike whatever else each simulates (deviation:
   MM2 has one `rand()` for the game).
 * **States.** After every frame that ran a sample (up to 60 times a
-  second; 20 before protocol 11) the host sends each client its
+  second; 20 before protocol 13) the host sends each client its
   `CarStates`: the number of the last input applied to its car, the car's
   state after it at full precision (the body's matrix, momenta, velocities
   and last push; the wheels' spin, turn, springs and tyre deflections; the
   engine, gearbox, drivetrains, stuck watcher, damage and random stream; the
   pedal swap and the hold; and what a sample hands the next: the force and
   torque the wheels and engine set for it, each tyre's rolling resistance,
-  and in a contact the impulses and pushes: about 310 bytes, 370 in a
-  contact), every other player's car as a `VehicleSnapshot`, the near set
+  and in a contact the impulses and pushes, the bound's matrix as the
+  collisions saw it when the push moved the body past it, and the player
+  whose car pushed hardest (`phColliderBase`'s last max pusher, which
+  `CopyLastMatrix` reads): about 315 bytes, 430 in a contact), every other
+  player's car as a `VehicleSnapshot`, the near set
   (the three nearest other players' cars within 60 m of the client's, kept
   to 70 m; not one towing a trailer) and, of those, as many in full as keep
   the message in one ENet packet (1372 bytes: ENet would send a longer
@@ -669,12 +672,18 @@ every player's car on the host:
   players' cars placed at their states, the police, knocked traffic cars
   and props) where each sample first met it, and one that sample did not
   meet out of the way; the shared traffic's cars on their rails where each
-  sample met them; no sound or effect), at most 120 samples. The drawing keeps the car where it was and eases it
-  onto the corrected place with a 60 ms half-life (`game::CorrectionBlend`;
-  more than 4 m is a jump, drawn at once). The client's simulation runs up
-  to 3% faster when the host had fewer than one of its inputs in hand over
-  the last second and 2% slower above three, which keeps its inputs a
-  sample or three ahead of the host's need.
+  sample met them; no sound or effect), at most 120 samples. The drawing
+  keeps the car where it was and eases it onto the corrected place with a
+  60 ms half-life (`game::CorrectionBlend`; more than 4 m is a jump, drawn
+  at once). The client's simulation runs up to 3% faster when the host had
+  fewer than one of its inputs in hand over the last second and 2% slower
+  above three, which keeps its inputs a sample or three ahead of the host's
+  need. A state acknowledging a sample the client has not run (it stalled,
+  or its inputs were lost for longer than the host repeats them, so the host
+  coasted the car on) makes it count the samples up to it, the round trip
+  and the host's margin as run (`CarPrediction::skipTo`): its next inputs
+  reach the host in time again instead of being dropped as late until the
+  faster pace makes the gap up.
 * **The other cars near** a client's car (the ones its `CarStates` carries
   in full) are simulated there along with its own: at every state the
   client puts them to the host's state at the acknowledged sample and runs
