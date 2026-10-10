@@ -490,6 +490,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/net/Sha256.h` | 37 | O | - |
 | `src/net/Snapshot.cpp` | 94 | O | - |
 | `src/net/Snapshot.h` | 106 | O | - |
+| `src/net/TrafficFull.h` | 154 | O | - |
 | `src/net/Transport.cpp` | 270 | O | - |
 | `src/net/Transport.h` | 109 | O | - |
 | `src/net/UpnpBackend.cpp` | 190 | O | - |
