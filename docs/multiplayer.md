@@ -188,9 +188,9 @@ Transport is ENet 1.3 with range-coder compression and four channels:
 | Channel | Delivery | Traffic |
 | --- | --- | --- |
 | 0 Control | reliable, ordered | handshake, lobby, chat, clock sync, pings |
-| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients), `PropState` (host→clients) |
+| 1 State | unreliable, unsequenced (late snapshots still fill the buffer; ENet's throttle never drops them) | `VehicleState` (client→host), `WorldState` (host→clients), `PropState` (host→clients), `TrafficFull` (host→clients) |
 | 2 Events | reliable, ordered | `GameEvent` |
-| 3 Ambient | unreliable, sequenced | `AmbientState` (host→clients): the shared cruise traffic |
+| 3 Ambient | unreliable, sequenced; a message beyond ENet's MTU in unreliable fragments | `AmbientState` (host→clients): the shared cruise traffic |
 
 Every packet is one message: a `MsgType` byte, then the body, bit-packed with
 `BitStream`. Readers check every length, count and enum range. A malformed
@@ -215,7 +215,9 @@ cars a message and no traffic hit reports, version 7 the host's props
 client's in full in `CarStates` and, in every car's full state, what a
 sample hands the next, version 10 the host's rules (the rules event; a
 player's own checkpoint, lap, finish and gold events refused; 8 on its own
-branch), version 14 the water and the fall decided by the host (every car's
+branch), version 12 the shared traffic's police and knocked cars near a
+client in full (`TrafficFull`) and an `AmbientState` of up to 2600 bytes and
+320 cars, version 14 the water and the fall decided by the host (every car's
 full state carries its `vehSplash` and the water handler's time; a client's
 reset commands only for debugging) and a race's rules state also unreliable
 (`RulesState`) between the reliable messages.
@@ -270,6 +272,7 @@ attempt within `connectTimeoutMs` (8 s).
 | GameEvent | both | from, target, type, session time, payload ≤ 1 KiB |
 | PlayerPings | H→C | measured RTT per player, every 2 s |
 | AmbientState | H→C | the shared traffic and police near the client (see "Shared traffic") |
+| TrafficFull | H→C | the police and knocked cars near the client in full, at the physics sample of its `CarStates` (see "Shared traffic") |
 | PropState | H→C | the host's ring of knocked-over props and thrown car parts (see "Props") |
 
 `SessionSettings` holds the session name, city, mode (Cruise, Checkpoint,
@@ -354,14 +357,23 @@ packet to the game or discovery port, and whatever answers as the router.
   for its own race and newer than the last, shows a decision once, and
   rebuilds its waypoints from the list with its own rules (a waypoint the
   rules refuse is dropped).
-* **Shared traffic.** An `AmbientState` holds at most 160 cars, ids 0-511,
+* **Shared traffic.** An `AmbientState` holds at most 320 cars, ids 0-511,
   generations 0-7, catalog indices 0-63 and paint jobs 0-15 (ranged fields:
   nothing else can be read), quantized positions, velocities and spin, and a
   police target that is a player id or none. A client takes it only during a
   race, keeps at most 16 unread, and the race refuses a car whose model is not
   in its own catalog, a repeated id, or a non-finite value, holds a paint job
   to the jobs the model can show, shows at most 32 police cars and loads each
-  model once per car shown (a model that fails is not tried again).
+  model once per car shown (a model that fails is not tried again). A
+  `TrafficFull` holds at most 8 cars (ids 0-511, generations 0-7): a police
+  car's state is checked as a player's in `CarStates` and its controls lie
+  within ±1 (the throttle's cap ±10); a body's matrix is a rotation (entries
+  within ±2) at a position within ±16384 m, its other values are finite and
+  within ±10^7, its wheels' within ±100, its sleep state 0-2 and its counters
+  0-1023, or the whole message is refused. A client takes it from the host
+  only, during a race, keeps at most 32 unread and 24 samples' worth, the
+  first state of a car at a sample, and simulates only a police car it shows
+  (of that generation) and a traffic car it lists.
 
 ### Session clock
 
@@ -739,12 +751,16 @@ when its speed over the ground differs too), a police car 208, a knocked
 car 178 (258 with a body). Each client gets the
 police chasing it, then the cars within 200 m of its car (kept until 230 m,
 so a car on the edge does not come and go), nearest first, as many as fit in
-1100 bytes (at most 160); when they do not all fit, the cars the client has
-count as 25 m nearer than they are, so the car at the edge of what fits does
-not come and go either. Cars within 80 m, off their rails, police and cars
-new to the client carry their state in every message; the others in every
-other one, beyond 160 m every fourth (taking turns by id), and say only
-"still there" in between.
+2600 bytes (at most 320; protocol 12, before 1100 bytes and 160 cars, which
+left the farthest 8 % out at traffic density 1); when they do not all fit,
+the cars the client has count as 25 m nearer than they are, so the car at
+the edge of what fits does not come and go either. A message beyond ENet's
+MTU (1392 bytes) goes in two fragments, sent unreliably like the message
+(`ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT`; without it ENet sends the fragments
+of an unreliable packet reliably). Cars within 120 m, off their rails,
+police and cars new to the client carry their state in every message; the
+others in every other one, beyond 180 m every fourth (taking turns by id),
+and say only "still there" in between.
 
 Each message is complete for its client: a car the client knows that a newer
 message leaves out has gone (out of range, or back in the pool) from that
@@ -786,6 +802,38 @@ the past, as before, a moving car was met 2.6 m from where the host had it
 traffic; MM2 predicts its network cars forward from their last packet
 (`mmNetObject::PositionUpdate`), which is what this does for the host's.
 
+**In full.** With each client's `CarStates` (the same physics sample) the
+host sends a `TrafficFull` (`net/TrafficFull.h`, protocol 12) with the
+police cars within 60 m of its car and the knocked cars with a body within
+50 m, nearest first (a police car chasing it counting half as far; farther
+away a police car on its driver's last controls strays more than one
+predicted along its velocity), as many as one 1200-byte datagram holds (at most
+eight; a car sent the last time is kept 20 m further): a police car's whole
+simulation state, as the players' cars near a client travel in `CarStates`
+(see "Players' cars"), with the controls its driver set averaged over the
+host's frames since the last state (throttle, brake, steering, handbrake,
+the throttle's cap: the driver's throttle and brake go on and off from frame
+to frame); a knocked car's rigid body, what a sample hands the next, its
+four wheels and its sleep state. Only the cars the host's last physics step
+ran go (MM2 neither moves nor collides a police car it does not declare,
+nor a body beyond its 32 movers: they stand where they are, whatever their
+velocity). The host's police draw their wheels' bump numbers from their own
+streams, which travel with them. The client puts each state in at the
+acknowledgement of that sample (`RaceScreen::predictNetTraffic`, a
+`CarPrediction::Companion` without a player) and runs it again with its own
+car to the present, a police car on those controls (which it keeps until
+the next state), so its car meets them with their mass where the host's
+does, in the order the host's world has them (the police before the
+players' cars, the bodies after). A police car is then a simulated body,
+drawn between its last two samples with the host's corrections blended away
+(80 ms; a switch between that and the kinematic placement 150 ms), and
+knocks the traffic cars it runs into loose as the host's does (they count
+as the client's own knocks, for the host's messages to confirm); a knocked
+car a body of the client's `TrafficBodies`, which `NetTrafficCars` lists as
+simulated (a car the client knocked loose itself goes on as the host's). A
+car whose full states stop for 250 ms is predicted and kinematic again, the
+host's messages leading.
+
 **Collisions.** The received cars on their rails are instances of the
 client's level in `game::TrafficBodies`, as the host's rail cars are of its
 own, with the received cars as their traffic (`game::NetTrafficCars`): when
@@ -793,10 +841,13 @@ the client's car hits one, it takes a body at once
 (`aiVehicleInstance::AttachEntity`, `aiVehicleActive`) and the collision runs
 the host's physics, the two cars pushing each other: the host simulates the
 same hit from the same inputs at the same session time (see "Players'
-cars"). Only the client's own car knocks a car loose there (the police and
-the other players' cars reach the client in the host's messages), and not
-while it runs its samples again after a correction (`World::replaySample`
-holds everything else still). While the knocked car moves, the local body
+cars"). Only the client's own car and the police cars it simulates knock a
+car loose there (the other players' cars reach the client in the host's
+messages), and not while it runs its samples again after a correction
+(`World::replaySample` holds everything else still): there a rail car meets
+the cars run again as the body it would take, of its mass and moving along
+its rail (`TrafficBodies`' `heldInertia`; protocol 12, before as a car of
+infinite mass). While the knocked car moves, the local body
 leads, being the better guess (it runs the host's physics from the same
 hit; the host's knocked car arrives a trip old and is predicted along its
 velocity while it tumbles); once the host's messages show it off its rail
@@ -805,21 +856,28 @@ or a host state stamped 150 ms after the hit still shows it on its rail (the
 host did not knock it), the host's messages lead and the drawing blends
 from where the local body left it. The cars off their rails on the host meet
 the client's car as kinematic instances moving at their predicted velocities
-(`game::TrafficProxies`), the police as kinematic bodies. The hits happen on
+(`game::TrafficProxies`), the police as kinematic bodies, unless they come in
+full (above); a car standing still off its rail without a body on the host
+(at rest after a knock) stands as a rail car at rest, which the client's car
+knocks loose as the host's does (protocol 12). The hits happen on
 the host: until protocol 6 a client reported its hits (`TrafficHitEvent`),
 because the host's copy of its car lagged.
 
 Bandwidth, two players in San Francisco at traffic density 0.5 (the
 single-player cruise default) and cop density 1, measured by the host's
 `nettraffic` log: 20 messages a second to the client, 60-70 cars a message,
-10.5-11.6 KB/s (13.4-15.6 KB/s before a far car's state came every fourth
-message beyond 160 m); at density 1, 100-128 cars and about 21 KB/s, where
-the 1100-byte budget binds (about 22 KB/s per client, 150 KB/s for seven
-clients). The client's moving cars within 150 m were 3 cm (median) from the
-host's at the same moment, 12 cm at the 90th percentile, through a relay of
-60 ± 20 ms each way with 2 % loss; 2.6 m and 3.7 m before they were shown at
-the present (docs/review/multiplayer-desync-traffic.md, which has the other
-cases).
+12.5-15.3 KB/s; at density 1, 100-130 cars (every car within 200 m) and
+22.5-27 KB/s (before protocol 12 the 1100-byte budget bound there at about
+21 KB/s and left 8 % of them out). The full states add 0.4-5.4 KB/s driving
+through traffic and 6.6-11.2 KB/s with a police car near; at most 76 KB/s
+per client in all. The client's moving cars within 150 m were 3 cm (median)
+from the host's at the same moment, 12-24 cm at the 90th percentile,
+through a relay of 60 ± 20 ms each way with 2 % loss; 2.6 m and 3.7 m
+before they were shown at the present. A police car within 10 m of the
+client's car, simulated there, was 6-14 cm (median) from the host's, 0.38 m
+when it was dead-reckoned, and a car the client's car knocked loose 0-4 cm
+in the second after (docs/review/multiplayer-desync-traffic.md, which has
+the other cases).
 
 ### Damage
 
@@ -1627,9 +1685,11 @@ the session time its state belongs to (the AI's step or the physics'); a
 client's `TC` lines, the cars where its car meets them each frame, and `TV`,
 that frame's session time of its car on the host's clock; the cars the
 client's car knocked loose (`TX`), the host's cars leaving their rails
-(`TK`) and the client's knocks going back to the host's messages (`TL`). `mm2tool nettrace <host trace>
-<client trace>` compares them: each car's error against the host's at the
-session time of the client's car, the cars near the client one machine had
-and the other did not, the police targets, the hits and knocks.
+(`TK`) and the client's knocks (and the bodies it had in full) going back
+to the host's messages (`TL`). `mm2tool nettrace <host trace> <client
+trace>` compares them: each car's error against the host's at the session
+time of the client's car (apart: the police and the knocked cars the client
+simulates), the cars near the client one machine had and the other did not,
+the police targets, the hits and knocks.
 Latency, jitter and loss can be added between machines on one computer with
 `netprobe relay` in front of the host (tc/netem needs root).

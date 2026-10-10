@@ -132,6 +132,34 @@ TEST(TrafficHost, ChasingPoliceComeFirstAndTheBudgetHolds) {
     EXPECT_GT(m.entities.size(), 50u);
 }
 
+// Protocol 12: at traffic density 1 (100-130 cars within 200 m in San
+// Francisco's downtown) every car within the interest radius fits once the
+// client knows them (the far ones carry their state in every other or fourth
+// message), turning and changing speed, the police chasing the client among
+// them; the message is at most two of ENet's fragments.
+TEST(TrafficHost, EveryCarWithin200MetresFitsAtDensityOne) {
+    TrafficHost host;
+    std::vector<SharedCar> cars;
+    for (int i = 0; i < 150; ++i) {
+        const float angle = static_cast<float>(i) * 2.4f;
+        const float r = 10.0f + static_cast<float>(i) * 1.25f; // out to 196 m
+        SharedCar c = railCar(i, {r * std::cos(angle), 0, r * std::sin(angle)});
+        c.motion.accel = 1.5f;
+        c.motion.curvature = 0.05f;
+        cars.push_back(c);
+    }
+    cars.push_back(cop(300, {40, 0, 0}, 1));
+    cars.push_back(cop(301, {-60, 0, 5}, 1));
+    net::AmbientStateMsg m;
+    for (std::uint32_t t = 0; t < 8; ++t)
+        m = host.build({1, {0, 0, 0}}, cars, t * 50, 0, 0);
+    EXPECT_EQ(m.entities.size(), cars.size());
+    const std::size_t bytes = net::encodeMessage(m).size();
+    EXPECT_LE(bytes, host.options().maxBytes);
+    EXPECT_LE(host.options().maxBytes, 2u * 1392u - 100u); // two fragments, their headers included
+    EXPECT_LE(m.entities.size(), net::kMaxAmbientPerMessage);
+}
+
 TEST(TrafficClient, FollowsSpawnUpdateAndDespawn) {
     TrafficClient client(8, 0x1234);
     client.receive(message(1000, {railCar(5, {0, 0, 0})}, 30));
@@ -360,7 +388,7 @@ TEST(TrafficHost, FarCarsComeWithTheirStateEveryOtherMessage) {
 
 // When the cars near a client do not all fit, the ones it has stay ahead of
 // new ones a little nearer, so the car at the edge of what fits does not
-// come and go; beyond 160 m a known car gets its state every fourth message.
+// come and go; beyond 180 m a known car gets its state every fourth message.
 TEST(TrafficHost, TheCarsThatFitStayAndTheFarthestComeEveryFourthMessage) {
     game::TrafficHost::Options options;
     options.maxBytes = 70; // the header and three cars with their state
@@ -383,7 +411,7 @@ TEST(TrafficHost, TheCarsThatFitStayAndTheFarthestComeEveryFourthMessage) {
     EXPECT_EQ(ids(host.build(viewer, cars, 100, 0, 0)), (std::vector<int>{1, 2, 4}));
 
     TrafficHost far;
-    const std::vector<SharedCar> distant = {railCar(10, {180, 0, 0})};
+    const std::vector<SharedCar> distant = {railCar(10, {190, 0, 0})};
     int states = 0;
     for (std::uint32_t i = 0; i < 9; ++i)
         states += far.build(viewer, distant, i * 50, 0, 0).entities.at(0).hasState ? 1 : 0;

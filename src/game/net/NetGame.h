@@ -334,6 +334,10 @@ public:
     std::size_t sendAmbientState(std::uint8_t playerId, const net::AmbientStateMsg& msg);
     // Client: the host's messages received since the last call.
     std::vector<net::AmbientStateMsg> takeAmbientStates();
+    // Host: one player the police and knocked cars near it in full
+    // (net/TrafficFull.h); returns the bytes sent. Client: those received.
+    std::size_t sendTrafficFull(std::uint8_t playerId, const net::TrafficFullMsg& msg);
+    std::vector<net::TrafficFullMsg> takeTrafficFull();
     // Connection statistics to a player (host) or to the host (client).
     net::PeerStats peerStats(std::uint8_t playerId) const;
 

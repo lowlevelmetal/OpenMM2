@@ -12,8 +12,9 @@
 //   TC frame time id gen kind x y z fx fz speed flags target mode
 //       client: a car where its collisions meet it (the physics proxy) for the
 //       frame that began at session time `frame`, placed for session time
-//       `time`; mode 0 interpolated, 1 extrapolated, 2 predicted, 3 knocked
-//       loose by this machine's car (where its body is)
+//       `time`; mode 0 interpolated, 1 extrapolated, 2 predicted, 3
+//       simulated here (where its body is): knocked loose by this machine's
+//       car, or a knocked car or police car the host sends in full
 //   TV frame time x y z
 //       client: where this machine's car is for the same frame, and the
 //       session time its state is at on the host's clock (its own time plus

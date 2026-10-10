@@ -893,6 +893,14 @@ std::vector<net::AmbientStateMsg> NetGame::takeAmbientStates() {
     return m_impl->session ? m_impl->session->takeAmbientStates() : std::vector<net::AmbientStateMsg>{};
 }
 
+std::size_t NetGame::sendTrafficFull(std::uint8_t playerId, const net::TrafficFullMsg& msg) {
+    return m_impl->session ? m_impl->session->sendTrafficFull(playerId, msg) : 0;
+}
+
+std::vector<net::TrafficFullMsg> NetGame::takeTrafficFull() {
+    return m_impl->session ? m_impl->session->takeTrafficFull() : std::vector<net::TrafficFullMsg>{};
+}
+
 std::size_t NetGame::sendPropState(std::uint8_t playerId, const net::PropStateMsg& msg) {
     return m_impl->session ? m_impl->session->sendPropState(playerId, msg) : 0;
 }

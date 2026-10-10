@@ -42,6 +42,9 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 10: the host's rules (net/RulesState.h: the rules message; a player's own
 //    word on a checkpoint, a finish or the gold is refused). (8 was its number
 //    on its branch.)
+// 12: the shared traffic's police and knocked cars near a client in full
+//    (net/TrafficFull.h: TrafficFull), AmbientState up to 2600 bytes and 320
+//    cars (two unreliable fragments).
 // 14: the water and the fall decided by the host (in every car's full state
 //    its vehSplash and the water handler's time; a client's Reset and
 //    RespawnAt only for debugging, its Cops and Robbers repair refused), and
@@ -112,8 +115,9 @@ enum class MsgType : std::uint8_t {
     RaceStart,
     PlayerInput, // net/PlayerCars.h
     CarStates,
-    PropState, // net/PropState.h
-    RulesState, // net/RulesState.h (protocol 14)
+    PropState,   // net/PropState.h
+    TrafficFull, // net/TrafficFull.h
+    RulesState,  // net/RulesState.h (protocol 14)
     Last = RulesState,
 };
 

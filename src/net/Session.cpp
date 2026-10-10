@@ -239,6 +239,7 @@ void Session::resetState() {
     m_lastSnapshotSent = 0;
     m_lastPlayoutUpdate = -1.0;
     m_ambientStates.clear();
+    m_trafficFull.clear();
 }
 
 void Session::leave() {
@@ -1147,6 +1148,16 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         m_ambientStates.push_back(std::move(m));
         return;
     }
+    case MsgType::TrafficFull: {
+        // As the cars' states: only during a race.
+        TrafficFullMsg m;
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+            return;
+        if (m_trafficFull.size() >= kMaxQueuedTrafficFull)
+            m_trafficFull.erase(m_trafficFull.begin());
+        m_trafficFull.push_back(std::move(m));
+        return;
+    }
     case MsgType::PropState: {
         // As the cars' states: only during a race.
         PropStateMsg m;
@@ -1308,6 +1319,7 @@ void Session::resetReplication() {
     m_localState.reset();
     m_lastSentStateTime = 0;
     m_ambientStates.clear();
+    m_trafficFull.clear();
 }
 
 SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime,
@@ -1380,6 +1392,18 @@ std::size_t Session::sendAmbientState(std::uint8_t playerId, const AmbientStateM
         return 0;
     const auto packet = encodeMessage(msg);
     return m_transport->send(r->peer, Channel::Ambient, packet) ? packet.size() : 0;
+}
+
+std::size_t Session::sendTrafficFull(std::uint8_t playerId, const TrafficFullMsg& msg) {
+    if (m_role != Role::Host || !m_transport || m_state != State::Active || m_phase == SessionPhase::Lobby ||
+        playerId == m_localId)
+        return 0;
+    Remote* r = remoteForPlayer(playerId);
+    if (!r)
+        return 0;
+    const auto packet = encodeMessage(msg);
+    // Unsequenced: each message stands alone (the client keys it by time).
+    return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
 
 std::size_t Session::sendPropState(std::uint8_t playerId, const PropStateMsg& msg) {
