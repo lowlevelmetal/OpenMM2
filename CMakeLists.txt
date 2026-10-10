@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25...4.0)
 
 project(OpenMM2
-    VERSION 0.3.1
+    VERSION 0.4.0
     DESCRIPTION "Open source reimplementation of Midtown Madness 2"
     HOMEPAGE_URL "https://github.com/lowlevelmetal/OpenMM2"
     LANGUAGES C CXX)

@@ -44,6 +44,11 @@
     <display_length compare="ge">768</display_length>
   </requires>
   <releases>
+    <release version="0.4.0" date="2026-10-10" type="development">
+      <description>
+        <p>Multiplayer rebuilt around the host: the host decides every car, collision, traffic and police car, prop, damage and rule, while each player's own car and the cars near it are predicted so they stay responsive. Players see the same game on every screen, and Windows and Linux players simulate identically.</p>
+      </description>
+    </release>
     <release version="0.3.1" date="2026-10-09" type="development">
       <description>
         <p>Fixes a crash when an opponent or police car drove onto a road narrower than its lane offset; such cars now steer as in the original game.</p>
