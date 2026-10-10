@@ -4219,7 +4219,13 @@ private:
             for (std::size_t i = 0; i < m_cops.size(); ++i) {
                 const Cop& cop = m_cops[i];
                 const int id = kNetPoliceId + static_cast<int>(i);
-                if (!cop.sim || id >= static_cast<int>(net::kMaxAmbientIds))
+                // Not one the world's last step did not run (MM2 neither
+                // updates nor collides a cop it does not declare, nor a body
+                // beyond its 32 movers): it stands where it is, whatever its
+                // velocity, and a client must not run it (it once showed one
+                // standing 1 m off for a minute).
+                if (!cop.sim || id >= static_cast<int>(net::kMaxAmbientIds) || !m_world ||
+                    !m_world->isActive(&cop.sim->sim().body))
                     continue;
                 const phys::CarSim& sim = cop.sim->sim();
                 const float d = sim.body.ics.matrix.m3.dist(at);
