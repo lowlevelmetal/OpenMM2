@@ -140,6 +140,8 @@ public:
     bool setBodyState(int carId, const net::TrafficBodyState& state);
     // The body of a car that has one (null without).
     phys::Body* body(int carId);
+    // OpenMM2: the car whose body `b` is (-1: none of them).
+    int carOfBody(const phys::Instance* b) const;
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 

@@ -3724,8 +3724,17 @@ private:
             // OpenMM2: a network race's props are the host's (game/net/NetProps).
             if (multiplayer(ctx)) {
                 m_netLocalId = ctx.netGame->localId();
-                m_netProps.setup(*ctx.netGame, *m_bangers,
-                                 [this](const phys::Instance& other) { return ownCarBody(&other); });
+                m_netProps.setup(
+                    *ctx.netGame, *m_bangers,
+                    [this](const phys::Instance& other) { return propMover(&other); },
+                    [this](std::uint8_t id) { return netCarAt(id); });
+                m_netProps.setClientCars([this](const phys::Instance* b) { return propMoverCar(b); },
+                                         [this](int id) { return hostCarState(id); },
+                                         [this]() -> std::optional<Vec3> {
+                                             if (!m_player)
+                                                 return std::nullopt;
+                                             return m_player->sim().body.ics.matrix.m3;
+                                         });
             }
         }
         // aiMap::Init ends with the police cars (aiPoliceOfficer::Init ->
@@ -6515,6 +6524,57 @@ private:
             return true;
         const phys::Trailer* trailer = m_player->trailer();
         return trailer && other == &trailer->body;
+    }
+
+    // A client: what may set its props moving (the host decides what the
+    // others do): its own car, and the cars it simulates along with it,
+    // whose knocks it predicts as its own: the other players' near it
+    // (predictNearCars), and the shared police and knocked traffic cars the
+    // host sends it in full or its car knocked loose (predictNetTraffic).
+    bool propMover(const phys::Instance* other) const {
+        if (!other)
+            return false;
+        if (ownCarBody(other))
+            return true;
+        for (const auto& [id, rv] : m_remotes)
+            if (rv.predicted && rv.sim && other == &rv.sim->sim().body)
+                return true;
+        for (const auto& [id, c] : m_netCops)
+            if (c.predicted && c.sim && other == &c.sim->sim().body)
+                return true;
+        if (m_netTrafficCars && m_trafficBodies) {
+            const int car = m_trafficBodies->carOfBody(other);
+            return car >= 0 && m_netTrafficCars->simulated(car);
+        }
+        return false;
+    }
+
+    // A client: which player's car set a prop moving (-1: none of them).
+    int propMoverCar(const phys::Instance* other) const {
+        if (!other)
+            return -1;
+        if (ownCarBody(other))
+            return m_netLocalId;
+        for (const auto& [id, rv] : m_remotes)
+            if (rv.predicted && rv.sim && other == &rv.sim->sim().body)
+                return id;
+        return -1;
+    }
+    // A client: where the host had player `id`'s car, and when (its states
+    // as this machine shows them).
+    std::optional<std::pair<double, Vec3>> hostCarState(int id) const {
+        for (const auto& rc : m_remoteCars)
+            if (rc.id == id && rc.hasState)
+                return std::pair{rc.time, rc.transform.m3};
+        return std::nullopt;
+    }
+
+    // Host: where a client's car is (what its props messages carry first).
+    std::optional<Vec3> netCarAt(std::uint8_t id) const {
+        const auto it = m_remotes.find(id);
+        if (it == m_remotes.end() || !it->second.simulated || !it->second.placed || !it->second.sim)
+            return std::nullopt;
+        return it->second.sim->sim().body.ics.matrix.m3;
     }
 
     // What set a prop moving, for OPENMM2_NET_TRACE's props lines.

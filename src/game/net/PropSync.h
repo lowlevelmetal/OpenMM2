@@ -9,15 +9,17 @@
 // screen to screen. In OpenMM2 the host is the authority:
 //
 //   PropHost    host side: the placed props that broke loose (reliable
-//               events, and every one so far to a machine that has just
-//               loaded the race) and the ring of knocked-over props, sent to
-//               every client about 20 times a second while any moves
+//               events to everyone, and every one so far to a machine that
+//               has just loaded the race) and the ring of knocked-over props,
+//               each client its own message about 20 times a second while
+//               any near its car moves, the states near it first
 //   PropClient  client side: the host's knocks applied when the props are
 //               shown at their time, the host's ring shown in mirror slots
 //               (interpolated like the other players' cars), and this
-//               machine's own predictions: a prop its car knocks moves at
-//               once and hands over to the host's when it comes to rest, and a
-//               knock the host never confirms is undone
+//               machine's own predictions: a prop its car (or another
+//               player's car it simulates) knocks moves at once and hands
+//               over to the host's when it comes to rest, and a knock the
+//               host never confirms is undone
 //
 // Nothing here touches the network: the race screen sends and feeds in the
 // messages.
@@ -61,19 +63,36 @@ std::optional<net::PropDescriptor> describeHit(const bangers::BangerSet::Instanc
 class PropHost {
 public:
     struct Options {
-        // A message at most this often, while any prop moves fast or a slot
-        // changed; every slowIntervalMs while props only creep (slower than
-        // slowSpeed and slowSpin: a prop sliding down a hill, which MM2's
-        // phSleep may never put to sleep); else every idleIntervalMs.
+        // A client's message at most this often while a prop near its car
+        // moves fast or a slot changed; every slowIntervalMs while props near
+        // it only creep (slower than slowSpeed and slowSpin: a prop sliding
+        // down a hill, which MM2's phSleep may never put to sleep) or props
+        // far from it move; else every idleIntervalMs.
         std::uint32_t intervalMs = 50;
         std::uint32_t slowIntervalMs = 200;
         std::uint32_t idleIntervalMs = 500;
         float slowSpeed = 0.5f; // m/s
         float slowSpin = 1.0f;  // rad/s
-        // A slot at rest carries its state in the first messages after it
-        // changed, then in every tenth one (by slot number).
+        // A slot carries its state in the first messages after it changed
+        // (or came near), then at rest in every tenth one (by slot number).
         int freshMessages = 3;
         int restRotation = 10;
+        // OpenMM2's interest: a client's area is within nearRadius of its
+        // car (inferred: well past where a prop is still drawn larger than
+        // a few pixels). Outside it a moving slot's state goes in every
+        // farRotation-th message and one at rest in every farRestRotation-th.
+        // The states of a message stay within maxBytes (one unfragmented
+        // datagram), the nearest first; the knocks always go to everyone.
+        float nearRadius = 150.0f;
+        int farRotation = 4;
+        int farRestRotation = 40;
+        std::size_t maxBytes = 1100;
+    };
+    // A client the host sends to, and where its car is (none yet: all of the
+    // city is its area).
+    struct Viewer {
+        std::uint8_t id = 0;
+        std::optional<Vec3> at;
     };
 
     PropHost() : PropHost(Options{}) {}
@@ -91,13 +110,22 @@ public:
     static std::vector<std::vector<std::byte>> catchUp(const bangers::BangerSet& set, std::uint32_t time);
 
     // The ring at session time `time` (the state after this frame's
-    // simulation steps), when a message is due at monotonic time `nowMs`.
-    // The same message goes to every client.
+    // simulation steps): the messages due at monotonic time `nowMs`, each
+    // client its own.
+    std::vector<std::pair<std::uint8_t, net::PropStateMsg>> build(const bangers::BangerSet& set,
+                                                                  std::uint32_t time, std::uint64_t nowMs,
+                                                                  std::uint32_t catalog,
+                                                                  std::span<const Viewer> viewers);
+    // One client whose car is nowhere yet (tests).
     std::optional<net::PropStateMsg> build(const bangers::BangerSet& set, std::uint32_t time,
                                            std::uint64_t nowMs, std::uint32_t catalog);
+    // A client that left.
+    void forget(std::uint8_t id) { m_viewers.erase(id); }
 
     struct Stats {
         std::uint64_t messages = 0, slots = 0, fullStates = 0, bytes = 0, knocks = 0;
+        std::uint64_t nearStates = 0; // of fullStates, in the client's area
+        std::uint64_t deferred = 0;   // states due that the datagram had no room for
     };
     Stats& stats() { return m_stats; }
 
@@ -106,15 +134,20 @@ private:
         std::uint32_t generation = 0;
         bool moving = false;
         bool occupied = false;
+        bool near = false;
         int fresh = 0;
+        std::uint32_t lastState = 0; // the message that last carried its state
+    };
+    struct ViewerState {
+        std::vector<SlotSeen> seen;
+        std::uint64_t lastSent = 0;
+        bool sentAny = false;
+        std::uint32_t sequence = 0;
     };
     Options m_options;
     std::vector<net::PropKnock> m_pending;
     std::uint32_t m_pendingTime = 0;
-    std::vector<SlotSeen> m_seen;
-    std::uint64_t m_lastSent = 0;
-    bool m_sentAny = false;
-    std::uint32_t m_sequence = 0;
+    std::map<std::uint8_t, ViewerState> m_viewers;
     Stats m_stats;
 };
 
@@ -128,8 +161,21 @@ public:
         double maxDelayMs = 500.0;
         double initialDelayMs = 150.0;
         // A knock this machine predicted is undone when the host has not
-        // made it by then.
+        // made it by then; sooner once the host's messages have passed its
+        // time by the host's usual lag behind this machine's knocks (the most
+        // of the last confirmed ones) plus undoMarginMs, at least minUndoMs:
+        // one by its own car (the host runs it on the same inputs) at once,
+        // one by another player's car (run here ahead on its last input, it
+        // may reach a prop seconds before or after the real one) once the
+        // host had that car farther than leftPropM from the prop by then and
+        // this machine's own car is farther than ownNearM (it may be about
+        // to knock the prop itself, and the host with it).
         double predictTimeoutMs = 2000.0;
+        double nearCarTimeoutMs = 4000.0; // ... one whose car the host still had by the prop
+        double undoMarginMs = 300.0;
+        double minUndoMs = 600.0;
+        float leftPropM = 6.0f;
+        float ownNearM = 15.0f;
         // A piece simulated here hands over to the host's when it rests, or
         // after this long; the hand-over blends over blendMs.
         double handoverMs = 4000.0;
@@ -152,10 +198,14 @@ public:
     void receive(const net::PropStateMsg& msg, double arrival);
     // A knocks event from the host.
     void receiveKnocks(const net::PropKnocksEvent& event);
-    // The placed props this machine's own car broke loose
-    // (BangerSet::takeKnocks after its physics steps), at session time
-    // `now`: predictions the host confirms or corrects.
-    void predicted(std::span<const bangers::BangerSet::Knock> knocks, double now);
+    // Which player's car a knock's toucher is (-1: none, a piece).
+    using CarOfToucher = std::function<int(const phys::Instance*)>;
+    // The placed props this machine's cars broke loose (its own, player
+    // `ownCar`, and the other players' it simulates; BangerSet::takeKnocks
+    // after its physics steps), at session time `now`: predictions the host
+    // confirms or corrects.
+    void predicted(std::span<const bangers::BangerSet::Knock> knocks, double now, int ownCar = -1,
+                   const CarOfToucher& carOf = {});
     // What update() did to the placed props since the last call: the host's
     // knocks applied (false) and this machine's predictions undone (true).
     std::vector<std::pair<std::size_t, bool>> takeApplied() { return std::exchange(m_applied, {}); }
@@ -165,10 +215,15 @@ public:
     // cannot (the part is then not shown).
     using CarPartResolver =
         std::function<std::optional<bangers::BangerSet::MirrorSpec>(const net::PropDescriptor&)>;
+    // Where the host had player `car`'s car and when (session time), as its
+    // states have come here; nullopt when unknown.
+    using HostCar = std::function<std::optional<std::pair<double, Vec3>>(int car)>;
     // Once a frame before the physics steps: the props as the host had them
     // at session time `now` less the delay. `now` is the session time the
-    // simulation will have reached after this frame's steps.
-    void update(bangers::BangerSet& set, double now, const CarPartResolver& resolve);
+    // simulation will have reached after this frame's steps. `ownCarAt`:
+    // where this machine's car is.
+    void update(bangers::BangerSet& set, double now, const CarPartResolver& resolve,
+                const HostCar& hostCar = {}, std::optional<Vec3> ownCarAt = std::nullopt);
 
     double delayMs() const { return m_delay; }
     bool catalogMismatch() const { return m_mismatch; }
@@ -181,6 +236,7 @@ public:
         std::uint64_t predicted = 0;    // knocks this machine's car made first
         std::uint64_t confirmed = 0;    // ... that the host made too
         std::uint64_t undone = 0;       // ... that it did not (the prop stood again)
+        std::uint64_t undoneEarly = 0;  // ... of them, once the host's messages had passed them
         std::uint64_t handovers = 0;    // pieces simulated here handed to the host's
         std::uint64_t orphans = 0;      // pieces simulated here that the host's ring did not hold
     };
@@ -219,7 +275,10 @@ private:
     struct Prediction {
         double at = 0.0;
         bool confirmed = false;
+        bool ownCar = false; // by this machine's own car
+        int car = -1;        // the player whose car made it (-1: a piece)
     };
+    double undoAfterMs() const;
     struct LocalPiece {
         std::uint32_t generation = 0;
         double since = 0.0;
@@ -255,6 +314,7 @@ private:
     std::deque<PendingKnock> m_knocks; // the host's, waiting for their time
     std::set<std::size_t> m_hostBroken;
     std::map<std::size_t, Prediction> m_predicted;
+    std::deque<double> m_confirmLags; // the host's knock time less this machine's, the last ones
     std::map<std::size_t, LocalPiece> m_pieces; // this machine's ring slots, by slot
     std::vector<std::pair<std::size_t, bool>> m_applied;
     Stats m_stats;

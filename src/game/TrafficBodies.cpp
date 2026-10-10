@@ -852,6 +852,15 @@ phys::Body* TrafficBodies::body(int carId) {
     return r && r->active ? &r->active->body : nullptr;
 }
 
+int TrafficBodies::carOfBody(const phys::Instance* b) const {
+    for (int n = 0; n < m_count; ++n) {
+        const Active* a = m_order[static_cast<std::size_t>(n)];
+        if (a && &a->body == b && a->rail)
+            return a->rail->id;
+    }
+    return -1;
+}
+
 bool TrafficBodies::motionOf(int carId, Vec3& velocity, Vec3& spin) const {
     const RailCar* r = findRailCar(carId);
     if (!r || !r->active)

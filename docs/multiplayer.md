@@ -220,11 +220,14 @@ client in full (`TrafficFull`) and an `AmbientState` of up to 2600 bytes and
 320 cars, version 14 the water and the fall decided by the host (every car's
 full state carries its `vehSplash` and the water handler's time; a client's
 reset commands only for debugging) and a race's rules state also unreliable
-(`RulesState`) between the reliable messages, version 15 `CarStates` after
-every host frame that ran a sample, the near set (three cars within 60 m)
-with as many of them in full as fit one packet, a near client car's inputs
-the host holds for its next samples, and a contact's bound and hardest
-pusher in a car's full state (11 and 13 on its own branch).
+(`RulesState`) between the reliable messages, version 16 each client its own
+`PropState` (the states near its car first), a ring of up to 256 slots and a
+slot's number after the one before it in a bit (13 on its own branch),
+version 17 `CarStates` after every host frame that ran a sample, the near
+set (three cars within 60 m) with as many of them in full as fit one packet,
+a near client car's inputs the host holds for its next samples, and a
+contact's bound and hardest pusher in a car's full state (11, 13 and 15 on
+its own branch).
 
 ### Handshake
 
@@ -277,7 +280,7 @@ attempt within `connectTimeoutMs` (8 s).
 | PlayerPings | H→C | measured RTT per player, every 2 s |
 | AmbientState | H→C | the shared traffic and police near the client (see "Shared traffic") |
 | TrafficFull | H→C | the police and knocked cars near the client in full, at the physics sample of its `CarStates` (see "Shared traffic") |
-| PropState | H→C | the host's ring of knocked-over props and thrown car parts (see "Props") |
+| PropState | H→C | the host's ring of knocked-over props and thrown car parts, the states near the client's car first (see "Props") |
 
 `SessionSettings` holds the session name, city, mode (Cruise, Checkpoint,
 Circuit, Blitz, Cops & Robbers, Crash Course), race id, laps, time of day,
@@ -342,7 +345,7 @@ packet to the game or discovery port, and whatever answers as the router.
   host only, keeps at most 96 cars' records with at most 1024 patches each,
   lets at most 64 events wait for their time per car (older ones go into the
   record at once) and waits at most 2 s for an entry's time.
-* **Props.** A `PropState` holds at most 64 slots (ranged: slot 0-63,
+* **Props.** A `PropState` holds at most 256 slots, ascending (ranged: slot 0-255,
   generation 0-15, placed prop 0-32767, piece 0-15, car part 0-19, owner
   0-63, paint job 0-15), quantized positions (±8 km), velocities (±128 m/s)
   and spin (±64 rad/s); a client keeps at most 16 unread, takes them only
@@ -1059,45 +1062,76 @@ them, and dent them, through single player's code.
   (`dgBangerManager`): the whole prop, one of its BREAKnn pieces, or a part
   thrown off a car, named by the car (a player's id, or a shared car's catalog
   index), the part (`damagePartIndex`) and the paint job.
+* **The ring grows in a pile-up.** When the host's ring is about to wrap onto
+  a prop that still moves or was knocked less than 10 s ago (more knocks than
+  MM2's 40 slots hold, which would make props knocked moments ago disappear
+  in mid-flight), it grows by 40 slots instead, up to 40 a player (at least
+  80, at most 256; `BangerSet::setRingGrowth`, inferred: a player's knocks
+  then last about as long as in single player). Otherwise it wraps as MM2's
+  does; a single-player ring never grows.
 * **Knocks** (`PropKnocks`, reliable, to everyone): the placed props the host
   broke loose, each with its session time. A machine that reports the race
   loaded gets every knock so far at once, so props knocked earlier, anywhere,
   are down when it gets there.
-* **The ring** (`PropState`, unreliable, the same message to every client):
-  every occupied slot, complete (a slot left out is empty from that message's
-  time), 20 times a second while a prop flies or a slot changed, 5 while props
-  only creep (slower than 0.5 m/s: a meter sliding down a hill, which phSleep
-  may never stop), 2 otherwise:
+* **The ring** (`PropState`, unreliable, each client its own): every
+  occupied slot, complete and ascending (a slot left out is empty from that
+  message's time), with the states that client needs most. Its area is
+  within 150 m of its car (inferred: well past where a prop still shows as
+  more than a few pixels): a message 20 times a second while a prop there
+  flies or a slot there changed (or came into it), 5 while props there only
+  creep (slower than 0.5 m/s: a meter sliding down a hill, which phSleep may
+  never stop) or props elsewhere move, 2 otherwise. The states go in by need
+  until the message would pass 1100 bytes (one unfragmented datagram):
+  the moving slots of its area every time, then its changed ones, its
+  creeping ones every fourth message, the changed ones elsewhere, the moving
+  ones elsewhere every fourth message, its slots at rest every tenth, the
+  others at rest every fortieth; within each, the nearest first. A state
+  that does not fit waits for a later message (a changed slot stays changed
+  until it has gone three times). The knocks go to everyone whatever the
+  area, so no client misses one:
 
   | Field | Encoding |
   | --- | --- |
   | header | u32 session time, u32 placement checksum, count |
-  | slot, generation | 6 + 4 bits; without a state only these travel (still there, at rest) |
+  | slot, generation | 1 bit (the slot after the one before) or 1 + 8 bits, then 4 bits; without a state only these travel (still there, at rest) |
   | what | 2 bits; a prop 15, a piece 15 + 4, a car part 1 + 6 + 5 + 4 (owner, part, paint) |
   | moving | 1 bit |
   | frame at the CG | 3 × 22 bits over ±8 km (4 mm), smallest-three quaternion (32 bits) |
   | motion (moving only) | velocity 3 × 13 bits (±128 m/s), spin 3 × 12 bits (±64 rad/s) |
 
-  A flying piece takes about 206 bits, a slot at rest 110, a slot only still
-  there 11. A slot carries its state while it moves (a creeping one every
-  fourth message), in the three messages after it changed, and in every
-  tenth otherwise.
+  A flying piece takes about 204 bits, a slot at rest 108, a slot only still
+  there 6 (a ring of 256 listed in 192 bytes).
 * **A client** shows the host's props as the host had them a playout delay
   in the past (what the messages needed to arrive over the last 3 s plus a
   send interval, 50-500 ms, as the other players' cars): a knock when it shows
   that time, the ring in mirror slots interpolated on their velocities
-  (`net::SnapshotBuffer`). Only its own car may touch its props
-  (`phys::Instance::acceptsContact`), and the pieces it simulates itself may
-  knock a standing prop for their first 0.5 s: the other cars pass through
-  them, since the host decides what they do. Its car hits a
-  prop at once, as in single player (the impulse, the damage, the prop
-  breaking loose): a prediction. When the host's knock comes (from its copy
-  of the car, a playout delay later) the piece simulated here stands in for
-  the host's until both rest, then hands over to the host's, blended over
-  0.4 s; a knock the host has not made 2 s later is undone (the prop stands
-  again). A mirror its car touches is simulated here from the host's motion
-  (so a flying cone hits its car as on the host) and stays where it stopped
-  until the host's has moved and rests again, or 2 s. A piece simulated here
+  (`net::SnapshotBuffer`). Only its own car and the cars it simulates along
+  with it (the other players' near ones the host sends in full,
+  `NearCarState`; the shared police and knocked traffic cars it sends in
+  full, `TrafficFull`, or its car knocked loose) may touch its props
+  (`phys::Instance::acceptsContact`), and
+  the pieces it simulates itself one another but no standing prop (the
+  host's knocks bring those its pieces knock): the other cars pass through
+  them, since the host decides what they do. Those cars hit a prop at once,
+  as in single player (the impulse, the damage, the prop breaking loose): a
+  prediction (before protocol 16 another player's car drove through a prop
+  that fell 150-400 ms later). When the
+  host's knock comes (from its copy of the car, a playout delay later) the
+  piece simulated here stands in for the host's until both rest, then hands
+  over to the host's, blended over 0.4 s. A knock the host has not made is
+  undone (the prop stands again): one by its own car once the host's
+  messages have passed its time by the host's usual lag behind its knocks
+  (the most of the last 16) and 0.3 s, at least 0.6 s; one by another
+  player's car (which it runs ahead on that player's last input, and which
+  may reach a prop seconds before the real one) once the host's states had
+  that car more than 6 m from the prop by then as well, and its own car is
+  more than 15 m from it (about to knock it itself, which the host's knock
+  would then confirm); any after 2 s (4 s for another player's car the
+  host still had by the prop). A mirror its cars touch is simulated
+  here from the host's motion (so a flying cone hits its car as on the host)
+  and stays where it stopped until the host's has moved and rests again, or
+  as long as the host's push would take to show here (the lag above and
+  the playout delay, at most 2 s). A piece simulated here
   that the host's ring does not hold disappears 2 s after it was made once at
   rest. The parts the host's damage records take off a car (its own
   included) come off without a throw: the host's ring shows the parts it
@@ -1133,16 +1167,22 @@ apart, a playout delay), no prop differed at the end, and the knocked-over
 props, parked cars and parts rested within 3 mm of the host's (the
 position's quantization is 4 mm). A client alone among props had no
 correction of its car, and a client's corrections over 30 cm just after a
-prop hit (nothing else around) went from 31 in eight runs to 7. The host
-sent 0.1-5 KB/s to each client (10 s averages; a big crash in the test, 27
-props knocked by one car, 5 KB/s for a few seconds, at most 425 bytes a
-message); the ring bounds a message at 40 slots, about 1 KB.
+prop hit (nothing else around) went from 31 in eight runs to 7. Since
+protocol 16 a prop another player's car (run on the client) hits falls as
+that car meets it, where it fell 140-400 ms after the car came closest
+(179 of 198 such knocks confirmed by the host; the others stand again
+within 0.7-2 s), and a missed prediction stands again in 0.7-1.8 s, not 2 s.
+The host sent 0.1-6.4 KB/s to each client (10 s averages; a big crash in the
+test, 27 props knocked by one car, 5 KB/s for a few seconds, at most 425
+bytes a message); a message stays within 1100 bytes, the states nearest the
+client first.
 
 **Deviations.** MM2 lets each machine knock its own props; OpenMM2 shows the
 host's everywhere, as it does the traffic. The ring's wrapping (the oldest
 knocked-over prop disappears when the 41st is knocked) is the host's on every
-machine. A client's predicted knock that the host does not make stands up
-again, and a client's pieces move to the host's place when they rest.
+machine, and in a pile-up the ring grows instead. A client's predicted knock
+that the host does not make stands up again, and a client's pieces move to
+the host's place when they rest.
 
 ### Rules
 
@@ -1475,8 +1515,9 @@ When `config.multiplayer && ctx.netGame`:
    resets (`DamageRecorder`: `own()`, `player(id)`, `police(id)`), sent with
    `NetDamage::send` after the frame's effects.
 8. **Props** (`game::NetProps`, see "Props"): set up once the props are
-   placed (`setup`, with this machine's car as the only thing that may touch
-   a client's props); a client's `beforeStep` before the physics step (the
+   placed (`setup`, with this machine's car and the other players' cars it
+   simulates as the only things that may touch a client's props, and on the
+   host where each client's car is); a client's `beforeStep` before the physics step (the
    host's messages and knocks, the mirrors placed for the session time the
    simulation will reach), every machine's `afterStep` after the props'
    update (`BangerSet::update`: the host sends, a client takes its own
@@ -1645,8 +1686,11 @@ client in one process through a lossy link: the host's knocks and pieces,
 a predicted knock handed over and one undone, other cars passing through a
 client's props, a replayed car meeting a prop as a real sample does
 (through the knock, and from 1-8 samples after it), a replay moving no prop
-for real, loss and reordering, a big crash, the catch-up, thrown car parts, refused input,
-and on retail data the same placement on every machine).
+for real, loss and reordering, a big crash, a pile-up growing the ring, two
+clients far apart each getting the states of its own area first within a
+small datagram, a near car's knock predicted and one undone, the catch-up,
+thrown car parts, refused input, and on retail data the same placement on
+every machine).
 
 ### Diagnosing replication
 

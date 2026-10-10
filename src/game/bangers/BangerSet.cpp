@@ -547,7 +547,12 @@ std::size_t BangerSet::getBanger() {
     // so after each wrap slot 0 is handed out twice in a row (MM2's
     // behaviour, kept).
     std::size_t slot;
-    if (m_ringNext == kMaxHit) {
+    if (m_ringNext == m_ringSize && m_ringSize < m_ringLimit && ringSlotBusy(0)) {
+        // OpenMM2 (network games): the oldest prop is still busy: the ring
+        // grows rather than wrapping onto it (setRingGrowth).
+        m_ringSize = std::min(m_ringSize + kMaxHit, m_ringLimit);
+        slot = static_cast<std::size_t>(m_ringNext++);
+    } else if (m_ringNext == m_ringSize) {
         slot = 0;
         m_ringNext = 0;
     } else {
@@ -563,8 +568,10 @@ std::size_t BangerSet::getBanger() {
         m_instances[i].state = State::Gone;
         m_ring.push_back(i);
         m_ringGeneration.push_back(0);
+        m_ringHandedAt.push_back(0.0);
     }
     ++m_ringGeneration[slot]; // OpenMM2: a new prop in the slot (network games)
+    m_ringHandedAt[slot] = m_world ? m_world->time() : 0.0;
     const std::size_t i = m_ring[slot];
     // Its previous prop disappears.
     if (Active* a = activeOf(i))
@@ -573,6 +580,22 @@ std::size_t BangerSet::getBanger() {
         moveToRoom(i, 0);
     m_instances[i].state = State::Gone;
     return i;
+}
+
+void BangerSet::setRingGrowth(int limit, double busySeconds) {
+    m_ringLimit = std::max(limit, m_ringSize);
+    m_ringBusySeconds = busySeconds;
+}
+
+bool BangerSet::ringSlotBusy(std::size_t slot) const {
+    if (slot >= m_ring.size())
+        return false;
+    const std::size_t i = m_ring[slot];
+    if (m_instances[i].state == State::Gone)
+        return false;
+    if (m_instances[i].active >= 0)
+        return true; // still moving
+    return m_world && m_world->time() - m_ringHandedAt[slot] < m_ringBusySeconds;
 }
 
 // --- Actives ---------------------------------------------------------------------------------
@@ -1205,18 +1228,16 @@ bool BangerSet::acceptsFrom(std::size_t i, const phys::Instance& other) const {
         return true;
     if (m_localToucher && m_localToucher(other))
         return true;
-    // The props this machine simulates (its predictions) go on knocking
-    // the placed props as they would while they are young (later the
-    // simulation here has drifted from the host's, and such a knock is
-    // mostly undone); the host's pieces move only for this machine's car
-    // (two of them lying together would otherwise keep each other moving
-    // here while the host's rest).
-    if (m_instances[i].mirror)
+    // The props this machine simulates (its predictions) meet one another,
+    // but knock no placed prop: the host's pieces of the same knock fly
+    // differently, and such a knock was more often undone than not (5 of 9
+    // in the measured runs; one left the client's car tangled in pieces the
+    // host never had). The host's knocks bring those it makes. The host's
+    // pieces move only for this machine's cars (two of them lying together
+    // would otherwise keep each other moving here while the host's rest).
+    if (m_instances[i].mirror || !m_instances[i].everHit)
         return false;
-    for (const auto& a : m_active)
-        if (&a->body == &other)
-            return a->age <= kPredictedChainSeconds;
-    return false;
+    return isActiveBody(&other);
 }
 
 void BangerSet::breakPlaced(std::size_t i) {

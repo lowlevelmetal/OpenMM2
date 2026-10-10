@@ -42,6 +42,17 @@ Mat34 blendMatrix(const Mat34& from, const Mat34& to, float t) {
 
 constexpr std::uint32_t kTagMarker = 0x80000000u;
 
+// The bits of a slot without its state (PropHost::build): the one after
+// the slot before it, and any other.
+net::PropSlot bareSlot(std::uint8_t slot) {
+    net::PropSlot p;
+    p.slot = slot;
+    p.hasState = false;
+    return p;
+}
+const std::size_t kNextBits = net::propSlotBits(bareSlot(1), 0);
+const std::size_t kJumpBits = net::propSlotBits(bareSlot(2), 0);
+
 // What a slot of the host's ring holds this frame (PropHost::build).
 struct RingSlot {
     std::optional<net::PropDescriptor> what;
@@ -177,11 +188,21 @@ std::vector<std::vector<std::byte>> PropHost::catchUp(const BangerSet& set, std:
 
 std::optional<net::PropStateMsg> PropHost::build(const BangerSet& set, std::uint32_t time,
                                                  std::uint64_t nowMs, std::uint32_t catalog) {
+    const Viewer one{1, std::nullopt};
+    auto msgs = build(set, time, nowMs, catalog, std::span<const Viewer>(&one, 1));
+    if (msgs.empty())
+        return std::nullopt;
+    return std::move(msgs.front().second);
+}
+
+std::vector<std::pair<std::uint8_t, net::PropStateMsg>> PropHost::build(const BangerSet& set,
+                                                                        std::uint32_t time,
+                                                                        std::uint64_t nowMs,
+                                                                        std::uint32_t catalog,
+                                                                        std::span<const Viewer> viewers) {
+    // The ring this frame, the same for every client.
     const auto& ring = set.ring();
     const std::size_t slots = std::min<std::size_t>(ring.size(), net::kMaxPropSlots);
-    if (m_seen.size() < slots)
-        m_seen.resize(slots);
-    bool busy = !m_sentAny, creeping = false;
     std::vector<RingSlot> current(slots);
     for (std::size_t k = 0; k < slots; ++k) {
         const auto& inst = set.instances()[ring[k]];
@@ -193,66 +214,156 @@ std::optional<net::PropStateMsg> PropHost::build(const BangerSet& set, std::uint
             if (const phys::Body* body = set.body(ring[k]))
                 c.slow = body->ics.linearVelocity.mag2() < m_options.slowSpeed * m_options.slowSpeed &&
                          body->ics.angularVelocity.mag2() < m_options.slowSpin * m_options.slowSpin;
-        SlotSeen& seen = m_seen[k];
-        const bool occupied = c.what.has_value();
-        const std::uint32_t generation = set.generation(k);
-        if (seen.generation != generation || seen.occupied != occupied || seen.moving != c.moving) {
-            seen.generation = generation;
-            seen.occupied = occupied;
-            seen.moving = c.moving;
-            seen.fresh = m_options.freshMessages;
-        }
-        if ((c.moving && !c.slow) || (occupied && seen.fresh > 0))
-            busy = true;
-        creeping = creeping || c.slow;
     }
-    const std::uint32_t interval = busy ? m_options.intervalMs
-                                   : creeping ? m_options.slowIntervalMs
-                                              : m_options.idleIntervalMs;
-    if (m_sentAny && nowMs - m_lastSent < interval)
-        return std::nullopt;
-
-    net::PropStateMsg msg;
-    msg.time = time;
-    msg.catalog = catalog;
-    const int rotation = std::max(1, m_options.restRotation);
-    for (std::size_t k = 0; k < slots; ++k) {
-        const RingSlot& c = current[k];
-        if (!c.what)
+    const float near2 = m_options.nearRadius * m_options.nearRadius;
+    const auto rotation = static_cast<std::uint32_t>(std::max(1, m_options.restRotation));
+    const auto farRotation = static_cast<std::uint32_t>(std::max(1, m_options.farRotation));
+    const auto farRest = static_cast<std::uint32_t>(std::max(1, m_options.farRestRotation));
+    std::vector<std::pair<std::uint8_t, net::PropStateMsg>> out;
+    for (const Viewer& v : viewers) {
+        ViewerState& view = m_viewers[v.id];
+        if (view.seen.size() < slots)
+            view.seen.resize(slots);
+        // What changed for this client: a slot's prop, its motion, or the
+        // slot coming into its area.
+        bool busy = !view.sentAny, creeping = false, farMoving = false;
+        std::vector<float> distance2(slots, 0.0f);
+        for (std::size_t k = 0; k < slots; ++k) {
+            const RingSlot& c = current[k];
+            SlotSeen& seen = view.seen[k];
+            const bool occupied = c.what.has_value();
+            if (occupied && v.at)
+                distance2[k] = set.instances()[ring[k]].matrix.m3.dist2(*v.at);
+            const bool near = !v.at || distance2[k] < near2;
+            const std::uint32_t generation = set.generation(k);
+            if (seen.generation != generation || seen.occupied != occupied || seen.moving != c.moving ||
+                (near && !seen.near)) {
+                seen.generation = generation;
+                seen.occupied = occupied;
+                seen.moving = c.moving;
+                seen.fresh = m_options.freshMessages;
+            }
+            seen.near = near;
+            if (!occupied)
+                continue;
+            if (near) {
+                if ((c.moving && !c.slow) || seen.fresh > 0)
+                    busy = true;
+                creeping = creeping || c.slow;
+            } else {
+                farMoving = farMoving || c.moving || seen.fresh > 0;
+            }
+        }
+        const std::uint32_t interval = busy                    ? m_options.intervalMs
+                                       : creeping || farMoving ? m_options.slowIntervalMs
+                                                               : m_options.idleIntervalMs;
+        if (view.sentAny && nowMs - view.lastSent < interval)
             continue;
-        SlotSeen& seen = m_seen[k];
-        const auto& inst = set.instances()[ring[k]];
-        net::PropSlot p;
-        p.slot = static_cast<std::uint8_t>(k);
-        p.generation = static_cast<std::uint8_t>(seen.generation % net::kPropGenerations);
-        // A creeping prop's state every fourth message while others move
-        // fast (every one at the slow interval).
-        const bool slowDue = !busy || (k + m_sequence) % 4 == 0;
-        p.hasState = (c.moving && (!c.slow || slowDue)) || seen.fresh > 0 ||
-                     static_cast<int>(k % static_cast<std::size_t>(rotation)) ==
-                         static_cast<int>(m_sequence % static_cast<std::uint32_t>(rotation));
-        if (seen.fresh > 0)
-            --seen.fresh;
-        if (p.hasState) {
-            p.what = *c.what;
-            p.moving = c.moving;
-            p.position = inst.matrix.m3;
-            p.orientation = Quat::fromMatrix(inst.matrix);
+
+        // Every occupied slot, in order; the states by priority within the
+        // datagram: near and moving, near and changed, near and creeping,
+        // far and changed, far and moving, near at rest, far at rest.
+        net::PropStateMsg msg;
+        msg.time = time;
+        msg.catalog = catalog;
+        std::vector<std::size_t> listed;
+        for (std::size_t k = 0; k < slots; ++k) {
+            if (!current[k].what)
+                continue;
+            net::PropSlot p;
+            p.slot = static_cast<std::uint8_t>(k);
+            p.generation = static_cast<std::uint8_t>(view.seen[k].generation % net::kPropGenerations);
+            p.hasState = false;
+            msg.slots.push_back(p);
+            listed.push_back(k);
+        }
+        const std::uint32_t seq = view.sequence;
+        struct Due {
+            int priority = 0;
+            float distance2 = 0.0f;
+            std::size_t index = 0; // in msg.slots
+        };
+        std::vector<Due> due;
+        for (std::size_t n = 0; n < listed.size(); ++n) {
+            const std::size_t k = listed[n];
+            const RingSlot& c = current[k];
+            const SlotSeen& seen = view.seen[k];
+            const auto key = static_cast<std::uint32_t>(k);
+            int priority = -1;
+            if (seen.near) {
+                const bool slowDue = !busy || (key + seq) % 4 == 0;
+                if (c.moving && !c.slow)
+                    priority = 0;
+                else if (seen.fresh > 0)
+                    priority = 1;
+                else if (c.moving && slowDue)
+                    priority = 2;
+                else if (key % rotation == seq % rotation)
+                    priority = 5;
+            } else {
+                if (seen.fresh > 0)
+                    priority = 3;
+                else if (c.moving && (!busy || (key + seq) % farRotation == 0))
+                    priority = 4;
+                else if (key % farRest == seq % farRest)
+                    priority = 6;
+            }
+            // The nearest first, one that has waited longer as if nearer (a
+            // pile-up with more pieces flying than a datagram holds gets
+            // them all in turn).
+            const auto waited = static_cast<float>(seq - seen.lastState);
+            if (priority >= 0)
+                due.push_back({priority, (distance2[k] + 1.0f) / ((1.0f + waited) * (1.0f + waited)), n});
+        }
+        std::ranges::sort(due, [](const Due& a, const Due& b) {
+            return a.priority != b.priority ? a.priority < b.priority : a.distance2 < b.distance2;
+        });
+        // The listing's bits, then each state's on top while they fit.
+        std::size_t bits = 8 * (1 + 4 + 4 + 5); // type, time, catalog, count (at most)
+        for (std::size_t n = 0; n < msg.slots.size(); ++n)
+            bits += n > 0 && msg.slots[n].slot == msg.slots[n - 1].slot + 1 ? kNextBits : kJumpBits;
+        const std::size_t budget = m_options.maxBytes * 8;
+        for (const Due& d : due) {
+            net::PropSlot& p = msg.slots[d.index];
+            const std::size_t k = listed[d.index];
+            const RingSlot& c = current[k];
+            const auto& inst = set.instances()[ring[k]];
+            const std::int32_t previous = d.index == 0 ? -1 : msg.slots[d.index - 1].slot;
+            net::PropSlot full = p;
+            full.hasState = true;
+            full.what = *c.what;
+            full.moving = c.moving;
+            full.position = inst.matrix.m3;
+            full.orientation = Quat::fromMatrix(inst.matrix);
             if (c.moving)
                 if (const phys::Body* body = set.body(ring[k])) {
-                    p.velocity = body->ics.linearVelocity;
-                    p.angularVelocity = body->ics.angularVelocity;
+                    full.velocity = body->ics.linearVelocity;
+                    full.angularVelocity = body->ics.angularVelocity;
                 }
+            const bool next = previous >= 0 && p.slot == previous + 1;
+            const std::size_t extra = net::propSlotBits(full, previous) - (next ? kNextBits : kJumpBits);
+            if (bits + extra > budget) {
+                ++m_stats.deferred;
+                continue; // a later message (it stays fresh, or comes round again)
+            }
+            bits += extra;
+            p = full;
+            SlotSeen& seen = view.seen[k];
+            if (seen.fresh > 0)
+                --seen.fresh;
+            seen.lastState = seq;
             ++m_stats.fullStates;
+            if (seen.near)
+                ++m_stats.nearStates;
         }
-        msg.slots.push_back(p);
+        view.lastSent = nowMs;
+        view.sentAny = true;
+        ++view.sequence;
+        ++m_stats.messages;
+        m_stats.slots += msg.slots.size();
+        out.emplace_back(v.id, std::move(msg));
     }
-    m_lastSent = nowMs;
-    m_sentAny = true;
-    ++m_sequence;
-    ++m_stats.messages;
-    m_stats.slots += msg.slots.size();
-    return msg;
+    return out;
 }
 
 // --- Client --------------------------------------------------------------------------------------
@@ -344,17 +455,37 @@ void PropClient::receiveKnocks(const net::PropKnocksEvent& event) {
     for (const auto& k : event.knocks) {
         if (m_knocks.size() >= net::kMaxPropIds)
             m_knocks.pop_front();
-        m_knocks.push_back({k.prop, event.time + k.delay, event.catchUp});
+        const std::uint32_t time = event.time + k.delay;
+        m_knocks.push_back({k.prop, time, event.catchUp});
+        // How far behind this machine's prediction the host made it.
+        if (const auto it = m_predicted.find(k.prop);
+            it != m_predicted.end() && it->second.ownCar && !event.catchUp) {
+            const double lag = static_cast<double>(time) - it->second.at;
+            if (lag >= 0.0 && lag < m_options.predictTimeoutMs) {
+                m_confirmLags.push_back(lag);
+                while (m_confirmLags.size() > 16)
+                    m_confirmLags.pop_front();
+            }
+        }
     }
 }
 
-void PropClient::predicted(std::span<const BangerSet::Knock> knocks, double now) {
-    // This machine's car broke props loose: shown at once, until the host
+double PropClient::undoAfterMs() const {
+    double worst = 0.0;
+    for (const double lag : m_confirmLags)
+        worst = std::max(worst, lag);
+    return std::max(m_options.minUndoMs, worst + m_options.undoMarginMs);
+}
+
+void PropClient::predicted(std::span<const BangerSet::Knock> knocks, double now, int ownCar,
+                           const CarOfToucher& carOf) {
+    // This machine's cars broke props loose: shown at once, until the host
     // confirms or corrects it.
     for (const auto& k : knocks) {
         if (m_mismatch || m_hostBroken.contains(k.prop))
             continue;
-        if (m_predicted.emplace(k.prop, Prediction{now, false}).second)
+        const int car = carOf ? carOf(k.by) : -1;
+        if (m_predicted.emplace(k.prop, Prediction{now, false, car >= 0 && car == ownCar, car}).second)
             ++m_stats.predicted;
     }
 }
@@ -441,7 +572,8 @@ void PropClient::applyKnock(BangerSet& set, std::size_t prop) {
     }
 }
 
-void PropClient::update(BangerSet& set, double now, const CarPartResolver& carParts) {
+void PropClient::update(BangerSet& set, double now, const CarPartResolver& carParts, const HostCar& hostCar,
+                        std::optional<Vec3> ownCarAt) {
     updateDelay(now);
     const double render = now - m_delay;
     const double drawn = render - m_options.drawBehindMs;
@@ -479,9 +611,31 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
             ++it;
             continue;
         }
-        if (!it->second.confirmed && now - it->second.at >= m_options.predictTimeoutMs) {
+        // The host's messages have passed the knock's time by more than the
+        // host's lag behind this machine (and neither the knock nor its
+        // pieces came): the host's car went elsewhere (another player's car:
+        // the host had it away from the prop by then).
+        // Another player's car the host still had by the prop may knock it
+        // yet (it braked short of it, say): its prediction waits longer.
+        const Prediction& p = it->second;
+        const double after = p.at + undoAfterMs();
+        bool passed = !p.confirmed && m_any && static_cast<double>(m_latest) >= after;
+        double timeout = m_options.predictTimeoutMs;
+        if (!p.ownCar) {
+            const auto car = p.car >= 0 && hostCar ? hostCar(p.car) : std::nullopt;
+            const float left2 = m_options.leftPropM * m_options.leftPropM;
+            const float own2 = m_options.ownNearM * m_options.ownNearM;
+            const Vec3& prop = set.instances()[it->first].matrix.m3;
+            const bool away = car && car->second.dist2(prop) > left2;
+            passed = passed && away && car->first >= after && (!ownCarAt || ownCarAt->dist2(prop) > own2);
+            if (car && !away)
+                timeout = m_options.nearCarTimeoutMs;
+        }
+        if (!p.confirmed && (passed || now - p.at >= timeout)) {
             set.restoreStanding(it->first);
             ++m_stats.undone;
+            if (passed && now - p.at < m_options.predictTimeoutMs)
+                ++m_stats.undoneEarly;
             m_applied.emplace_back(it->first, true);
             log::info("netprops: the host did not knock prop {} ({}): standing again", it->first,
                       set.instances()[it->first].model);
@@ -572,11 +726,16 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
             slot.blendStart = now;
             ++m_stats.handovers;
         } else if (mine.active >= 0) {
-            if (!slot.local)
+            if (!slot.local) {
                 slot.localSince = now;
+                slot.hostMoved = false;
+            }
             slot.local = true;
-            slot.holdUntil = now + m_options.predictTimeoutMs;
-            slot.hostMoved = false;
+            if (!hostResting)
+                slot.hostMoved = true;
+            // The host's push of it, if its copy of the car pushed it too,
+            // shows here its lag and the delay later.
+            slot.holdUntil = now + std::min(m_options.predictTimeoutMs, undoAfterMs() + m_delay);
             continue;
         }
         if (slot.local) {

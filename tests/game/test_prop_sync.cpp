@@ -229,12 +229,16 @@ struct Race {
     double now = 10000.0; // session ms
     PropClient::CarPartResolver resolver;
     const phys::Instance* clientCar = nullptr;
+    const phys::Instance* nearCar = nullptr; // another player's, simulated on the client too
+    const phys::Body* hostNearCar = nullptr; // ... and the host's (its states reach the client)
+    const phys::Body* clientBody = nullptr;  // the client's own car, where the client's props see it
 
     Race() {
         host.place(layout());
         client.place(layout());
         propClient.emplace(propCatalog(client.set));
-        client.set.setReplica([this](const phys::Instance& other) { return &other == clientCar; });
+        client.set.setReplica(
+            [this](const phys::Instance& other) { return &other == clientCar || &other == nearCar; });
     }
     // One frame on both machines, in the race screen's order.
     void frame() {
@@ -261,9 +265,17 @@ struct Race {
                 propClient->receive(m, now);
             }
         });
-        propClient->update(client.set, now, resolver);
+        propClient->update(client.set, now, resolver, [this](int car) {
+            // The host's state of the near car, a link's latency ago.
+            using State = std::optional<std::pair<double, Vec3>>;
+            if (car != 2 || !hostNearCar)
+                return State{};
+            return State{{now - net.latencyMs, hostNearCar->ics.matrix.m3}};
+        }, clientBody ? std::optional{clientBody->ics.matrix.m3} : std::nullopt);
         client.step();
-        propClient->predicted(client.set.takeKnocks(), now);
+        propClient->predicted(client.set.takeKnocks(), now, 1, [this](const phys::Instance* by) {
+            return by == clientCar ? 1 : by == nearCar ? 2 : -1;
+        });
     }
     void run(double seconds) {
         for (int i = 0; i < static_cast<int>(seconds * 60.0); ++i)
@@ -396,19 +408,29 @@ TEST(PropSync, ClientKnockIsPredictedThenHandedOver) {
 }
 
 // A knock the host never makes (its copy of the car missed the prop) is
-// undone: the prop stands again on the client.
+// undone: the prop stands again on the client, as soon as the host's
+// messages have passed the knock's time by more than the host's lag.
 TEST(PropSync, UnconfirmedKnockIsUndone) {
     Race r;
     Car mine({0, 1, 3.0f}, {0, 0, -10});
     r.clientCar = &mine.body;
     r.client.world.add(&mine.body);
-    r.run(1.0);
+    while (r.client.set.standing(0) && r.now < 12000.0)
+        r.frame();
+    const double knockedAt = r.now;
+    ASSERT_FALSE(r.client.set.standing(0)); // predicted
+    r.run(0.4);
     r.client.world.remove(&mine.body);
-    EXPECT_FALSE(r.client.set.standing(0)); // predicted
-    r.run(2.5);
+    EXPECT_FALSE(r.client.set.standing(0)); // still: the host may yet knock it
+    while (!r.client.set.standing(0) && r.now < knockedAt + 3000.0)
+        r.frame();
     EXPECT_TRUE(r.client.set.standing(0));
+    // The host's next message after it (2 a second with nothing moving)
+    // passed it, well before the 2 s.
+    EXPECT_LT(r.now - knockedAt, 1300.0);
     EXPECT_TRUE(piecesOf(r.client.set, 0).empty());
     EXPECT_EQ(r.propClient->stats().undone, 1u);
+    EXPECT_EQ(r.propClient->stats().undoneEarly, 1u);
     EXPECT_TRUE(r.host.set.standing(0));
 }
 
@@ -672,6 +694,333 @@ TEST(PropSync, ABigCrashStaysWithinADatagram) {
     std::printf("big crash: %zu props knocked, %zu messages (largest %zu bytes, %zu bytes/s), %zu knock "
                 "events\n",
                 knocked, messages, largest, bytes / 8, events);
+}
+
+// A piece a client's own car knocked flies into the prop behind: in single
+// player it knocks that one too; on a client it passes through (the host's
+// piece of the same knock flies differently; the host's knocks bring the
+// ones it makes).
+TEST(PropSync, APredictedPieceKnocksNoPlacedProp) {
+    for (const bool replica : {false, true}) {
+        TempBangers files;
+        bangers::BangerDataLibrary lib(files.vfs);
+        Machine m(lib);
+        m.place({{"light", Mat34::translation({0, 0, 0}), 1, PlacedProp::Source::Instance, true},
+                 {"light", Mat34::translation({0, 0, -1.2f}), 1, PlacedProp::Source::Instance, true}});
+        Car car({0, 1, 3.0f}, {0, 0, -25});
+        if (replica)
+            m.set.setReplica([&car](const phys::Instance& other) { return &other == &car.body; });
+        m.world.add(&car.body);
+        while (m.set.standing(0) && m.world.time() < 1.0)
+            m.step();
+        m.world.remove(&car.body); // only the piece goes on
+        ASSERT_FALSE(m.set.standing(0)) << replica;
+        for (int i = 0; i < 60; ++i)
+            m.step();
+        EXPECT_EQ(m.set.standing(1), replica) << "the piece knocked the prop behind";
+    }
+}
+
+// A pile-up of more knocks than MM2's ring of 40 holds: in a network race
+// the ring grows rather than make the props knocked moments ago disappear
+// (BangerSet::setRingGrowth); a single-player ring wraps as MM2's does.
+TEST(PropSync, APileUpGrowsTheRing) {
+    for (const bool network : {false, true}) {
+        TempBangers files;
+        bangers::BangerDataLibrary lib(files.vfs);
+        Machine m(lib);
+        std::vector<PlacedProp> column;
+        for (int i = 0; i < 60; ++i)
+            column.push_back({"light", Mat34::translation({0.0f, 0.0f, -static_cast<float>(i) * 1.5f}), 1,
+                              PlacedProp::Source::Instance, true});
+        m.place(column);
+        if (network)
+            m.set.setRingGrowth(160, 10.0);
+        Car car({0, 1, 4.0f}, {0, 0, -12});
+        m.world.add(&car.body);
+        for (int i = 0; i < 9 * 60; ++i) {
+            // Driven straight on at 12 m/s whatever it hits (the 32 actives
+            // come free as the first pieces come to rest).
+            car.body.place(Mat34::translation({0, 1, car.body.ics.matrix.m3.z}));
+            car.body.ics.linearVelocity = {0, 0, -12};
+            car.body.ics.linearMomentum = car.body.ics.linearVelocity * car.body.ics.mass;
+            car.body.ics.angularVelocity = {};
+            car.body.ics.angularMomentum = {};
+            m.step();
+        }
+        m.world.remove(&car.body);
+        std::size_t knocked = 0, shown = 0;
+        for (std::size_t i = 0; i < 60; ++i)
+            knocked += m.set.standing(i) ? 0 : 1;
+        for (const std::size_t i : m.set.ring())
+            shown += m.set.instances()[i].state != BangerSet::State::Gone ? 1 : 0;
+        EXPECT_GT(knocked, 45u) << network;
+        if (network) {
+            EXPECT_EQ(m.set.ringSize(), 80);
+            EXPECT_EQ(shown, knocked); // every knocked prop still there
+        } else {
+            EXPECT_EQ(m.set.ringSize(), BangerSet::kMaxHit);
+            EXPECT_EQ(shown, static_cast<std::size_t>(BangerSet::kMaxHit));
+        }
+    }
+}
+
+// Two clients far apart, each with props flying around its car: each one's
+// messages carry the states near its car every time, within the datagram
+// budget, and the far ones as room allows; both end with every piece where
+// the host's rests.
+TEST(PropSync, EachClientGetsItsAreaFirst) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    Machine host(lib), a(lib), b(lib);
+    std::vector<PlacedProp> field;
+    for (const float x : {0.0f, 300.0f})
+        for (int i = 0; i < 10; ++i)
+            field.push_back({"light", Mat34::translation({x, 0.0f, -static_cast<float>(i) * 1.5f}), 1,
+                             PlacedProp::Source::Instance, true});
+    host.place(field);
+    a.place(field);
+    b.place(field);
+    a.set.setReplica([](const phys::Instance&) { return false; });
+    b.set.setReplica([](const phys::Instance&) { return false; });
+    PropHost::Options options;
+    options.maxBytes = 300;
+    PropHost propHost(options);
+    PropClient clientA(propCatalog(a.set)), clientB(propCatalog(b.set));
+    Car carA({0, 1, 4.0f}, {0, 0, -20}), carB({300, 1, 4.0f}, {0, 0, -20});
+    host.world.add(&carA.body);
+    host.world.add(&carB.body);
+    const PropHost::Viewer viewers[] = {{1, Vec3{0, 1, -5}}, {2, Vec3{300, 1, -5}}};
+    double now = 10000.0;
+    std::size_t nearMoving = 0, nearMovingSent = 0, farSent = 0, largest = 0;
+    for (int i = 0; i < 10 * 60; ++i) {
+        if (i == 3 * 60) {
+            host.world.remove(&carA.body);
+            host.world.remove(&carB.body);
+        }
+        now += kStepMs;
+        host.step();
+        const auto t = static_cast<std::uint32_t>(now);
+        propHost.knocked(host.set.takeKnocks(), t);
+        for (auto& e : propHost.takeKnockEvents()) {
+            net::PropKnocksEvent k;
+            ASSERT_TRUE(net::decodePayload(e, k));
+            clientA.receiveKnocks(k);
+            clientB.receiveKnocks(k);
+        }
+        const auto msgs =
+            propHost.build(host.set, t, static_cast<std::uint64_t>(now), propCatalog(host.set), viewers);
+        for (const auto& [id, msg] : msgs) {
+            const auto bytes = net::encodeMessage(msg);
+            largest = std::max(largest, bytes.size());
+            net::PropStateMsg back;
+            ASSERT_TRUE(net::decodeMessage(bytes, back));
+            const Vec3 at = *viewers[id - 1].at;
+            for (const auto& p : back.slots) {
+                const std::size_t inst = host.set.ring()[p.slot];
+                const bool near = host.set.instances()[inst].matrix.m3.dist(at) < options.nearRadius;
+                if (near && host.set.moving(inst)) {
+                    ++nearMoving;
+                    nearMovingSent += p.hasState ? 1 : 0;
+                } else if (!near && p.hasState) {
+                    ++farSent;
+                }
+            }
+            (id == 1 ? clientA : clientB).receive(back, now + 40.0);
+        }
+        clientA.update(a.set, now, nullptr);
+        clientB.update(b.set, now, nullptr);
+        a.step();
+        b.step();
+    }
+    EXPECT_LE(largest, options.maxBytes);
+    EXPECT_GT(nearMoving, 100u);
+    EXPECT_EQ(nearMovingSent, nearMoving); // every one, every time
+    EXPECT_GT(farSent, 0u);
+    EXPECT_GT(propHost.stats().deferred, 0u); // the budget held some far ones back
+    std::size_t knocked = 0;
+    for (std::size_t prop = 0; prop < field.size(); ++prop) {
+        if (host.set.standing(prop))
+            continue;
+        ++knocked;
+        const Vec3 rest = piecesOf(host.set, prop).at(-1);
+        for (const BangerSet* client : {&a.set, &b.set}) {
+            EXPECT_FALSE(client->standing(prop)) << prop;
+            const auto shown = piecesOf(*client, prop);
+            ASSERT_TRUE(shown.contains(-1)) << prop;
+            EXPECT_LT(shown.at(-1).dist(rest), 0.01f) << prop;
+        }
+    }
+    EXPECT_GT(knocked, 10u);
+    std::printf("areas: %zu props knocked, near moving states %zu of %zu, far states %zu, %llu deferred, "
+                "largest %zu bytes\n",
+                knocked, nearMovingSent, nearMoving, farSent,
+                static_cast<unsigned long long>(propHost.stats().deferred), largest);
+}
+
+// More pieces flying near a client than a message's datagram holds: they
+// take turns, none waiting long for its state.
+TEST(PropSync, APileUpBeyondADatagramTakesTurns) {
+    TempBangers files;
+    bangers::BangerDataLibrary lib(files.vfs);
+    Machine host(lib);
+    std::vector<PlacedProp> field;
+    for (int i = 0; i < 24; ++i)
+        field.push_back({"light", Mat34::translation({-1.5f + static_cast<float>(i % 3) * 1.5f, 0.0f,
+                                                      -static_cast<float>(i / 3) * 2.0f}),
+                         1, PlacedProp::Source::Instance, true});
+    host.place(field);
+    PropHost::Options options;
+    options.maxBytes = 200; // a few flying states a message
+    PropHost propHost(options);
+    Car car({0, 1, 4.0f}, {0, 0, -25});
+    host.world.add(&car.body);
+    const PropHost::Viewer viewer[] = {{1, Vec3{0, 1, -8}}};
+    std::map<std::size_t, int> lastState; // slot -> message
+    int message = 0, longest = 0, flying = 0;
+    double now = 10000.0;
+    for (int i = 0; i < 3 * 60; ++i) {
+        now += kStepMs;
+        host.step();
+        host.set.takeKnocks();
+        const auto msgs = propHost.build(host.set, static_cast<std::uint32_t>(now),
+                                         static_cast<std::uint64_t>(now), propCatalog(host.set), viewer);
+        for (const auto& [id, msg] : msgs) {
+            EXPECT_LE(net::encodeMessage(msg).size(), options.maxBytes);
+            ++message;
+            for (const auto& p : msg.slots) {
+                const std::size_t inst = host.set.ring()[p.slot];
+                if (!host.set.moving(inst)) {
+                    lastState.erase(p.slot);
+                    continue;
+                }
+                ++flying;
+                if (p.hasState) {
+                    lastState[p.slot] = message;
+                } else {
+                    const auto it = lastState.try_emplace(p.slot, message).first;
+                    longest = std::max(longest, message - it->second);
+                }
+            }
+        }
+    }
+    EXPECT_GT(propHost.stats().deferred, 0u);
+    EXPECT_GT(flying, 200);
+    EXPECT_LE(longest, 8); // messages a flying piece waited at most for its state
+    std::printf("pile-up: %d flying slots listed, %llu states deferred, longest wait %d messages\n", flying,
+                static_cast<unsigned long long>(propHost.stats().deferred), longest);
+}
+
+// A client predicts the knocks of the other players' cars it simulates with
+// its own (net::NearCarState) as it does its own car's: at once, then the
+// host's knock confirms it and its pieces take over.
+TEST(PropSync, ANearCarsKnockIsPredicted) {
+    Race r;
+    Car near({6, 1, 3.0f}, {0, 0, -10}); // another player's car as the client simulates it
+    r.nearCar = &near.body;
+    r.client.world.add(&near.body);
+    Car copy({6, 1, 3.0f}, {0, 0, -10}); // the host's, which knocks the same prop
+    r.host.world.add(&copy.body);
+    double hostAt = 0, clientAt = 0;
+    for (int i = 0; i < 7 * 60; ++i) {
+        r.frame();
+        if (hostAt == 0 && !r.host.set.standing(1))
+            hostAt = r.now;
+        if (clientAt == 0 && !r.client.set.standing(1))
+            clientAt = r.now;
+        if (i == 60) {
+            r.client.world.remove(&near.body);
+            r.host.world.remove(&copy.body);
+        }
+    }
+    ASSERT_GT(hostAt, 0);
+    EXPECT_LE(clientAt, hostAt); // as it met the car here, not a delay later
+    const auto& s = r.propClient->stats();
+    EXPECT_EQ(s.predicted, 1u);
+    EXPECT_EQ(s.confirmed, 1u);
+    EXPECT_EQ(s.undone, 0u);
+    expectSamePieces(r, 1, 0.01f);
+}
+
+// One the host's car did not make (its player turned away) stands again,
+// once the host's states had that car away from the prop.
+TEST(PropSync, ANearCarsMissedKnockIsUndone) {
+    Race r;
+    Car near({6, 1, 3.0f}, {0, 0, -10});
+    r.nearCar = &near.body;
+    r.client.world.add(&near.body);
+    Car copy({40, 1, 3.0f}, {0, 0, -10}); // elsewhere on the host
+    r.hostNearCar = &copy.body;
+    r.host.world.add(&copy.body);
+    r.run(0.5);
+    r.client.world.remove(&near.body);
+    EXPECT_FALSE(r.client.set.standing(1)); // predicted
+    r.run(1.0);
+    EXPECT_TRUE(r.client.set.standing(1)); // before the 2 s
+    EXPECT_TRUE(r.host.set.standing(1));
+    EXPECT_EQ(r.propClient->stats().undone, 1u);
+    EXPECT_EQ(r.propClient->stats().undoneEarly, 1u);
+    r.host.world.remove(&copy.body);
+}
+
+// One the host's near car did not make while this machine's own car is on
+// its way to the prop: it stands (the host's knock comes from the client's
+// car), rather than standing up and falling again a moment later.
+TEST(PropSync, ANearCarsKnockStandsWhileThisCarIsComing) {
+    Race r;
+    Car near({6, 1, 3.0f}, {0, 0, -10});
+    r.nearCar = &near.body;
+    r.client.world.add(&near.body);
+    Car away({40, 1, 3.0f}, {0, 0, -10}); // the near car elsewhere on the host
+    r.hostNearCar = &away.body;
+    r.host.world.add(&away.body);
+    Car mine({6, 1, 12.0f}, {0, 0, -8}); // the client's own car, 1.5 s from the prop
+    r.clientCar = &mine.body;
+    r.clientBody = &mine.body;
+    r.client.world.add(&mine.body);
+    Car copy({6, 1, 12.0f}, {0, 0, -8}); // and the host's copy of it
+    r.host.world.add(&copy.body);
+    r.run(0.4);
+    r.client.world.remove(&near.body);
+    ASSERT_FALSE(r.client.set.standing(1)); // the near car's knock, predicted
+    for (int i = 0; i < 3 * 60; ++i) {
+        r.frame();
+        EXPECT_FALSE(r.client.set.standing(1)) << i; // never up again
+    }
+    EXPECT_FALSE(r.host.set.standing(1)); // the client's car knocked it there
+    EXPECT_EQ(r.propClient->stats().undone, 0u);
+    EXPECT_EQ(r.propClient->stats().confirmed, 1u);
+    r.client.world.remove(&mine.body);
+    r.host.world.remove(&copy.body);
+    r.host.world.remove(&away.body);
+}
+
+// A near car this machine runs ahead reaches a prop well before the real
+// one (its player braked short of it): while the host has that car near the
+// prop the knock stands, past the 2 s, and the host's comes in time.
+TEST(PropSync, ANearCarsEarlyKnockWaitsForTheHost) {
+    Race r;
+    Car near({6, 1, 3.0f}, {0, 0, -10});
+    r.nearCar = &near.body;
+    r.client.world.add(&near.body);
+    Car copy({6, 1, 5.5f}, {0, 0, 0}); // stopped short of the prop on the host
+    r.hostNearCar = &copy.body;
+    r.host.world.add(&copy.body);
+    r.run(0.5);
+    r.client.world.remove(&near.body);
+    EXPECT_FALSE(r.client.set.standing(1)); // predicted
+    for (int i = 0; i < 150; ++i) {
+        r.frame();
+        EXPECT_FALSE(r.client.set.standing(1)) << i; // the host's car is still by it
+    }
+    copy.body.ics.linearVelocity = {0, 0, -10}; // and drives on into it
+    copy.body.ics.linearMomentum = copy.body.ics.linearVelocity * copy.body.ics.mass;
+    r.run(1.5);
+    EXPECT_FALSE(r.host.set.standing(1));
+    EXPECT_FALSE(r.client.set.standing(1));
+    EXPECT_EQ(r.propClient->stats().confirmed, 1u);
+    EXPECT_EQ(r.propClient->stats().undone, 0u);
+    r.host.world.remove(&copy.body);
 }
 
 // A machine that loads the race late (or a prop knocked far from it) gets

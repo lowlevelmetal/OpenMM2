@@ -216,6 +216,13 @@ public:
     std::uint32_t generation(std::size_t slot) const {
         return slot < m_ringGeneration.size() ? m_ringGeneration[slot] : 0;
     }
+    // OpenMM2 (network games): when the ring is about to wrap onto a slot
+    // whose prop still moves or was handed out less than `busySeconds` ago
+    // (a pile-up of more knocks than the ring holds), it grows by kMaxHit
+    // slots instead, up to `limit` (MM2's ring of 40 makes those props
+    // disappear in mid-flight). Off (the limit kMaxHit) in single player.
+    void setRingGrowth(int limit, double busySeconds);
+    int ringSize() const { return m_ringSize; }
     // Whether instance i has an active whose body is moving in the world.
     bool moving(std::size_t i) const;
     // Whether `i` is the body of one of this set's actives.
@@ -233,14 +240,12 @@ public:
     bool replayGhost(std::size_t i) const;
     bool replayGhostPiece(std::size_t i) const;
     static constexpr double kGhostSeconds = 1.0;
-    // A client's own simulated prop knocks others for this long after it
-    // was set moving (a prediction of a prediction; inferred).
-    static constexpr float kPredictedChainSeconds = 0.5f;
 
-    // A network client: only this machine's own car (`localToucher`) and the
-    // props this set simulates itself may touch a prop (phys::Instance::
+    // A network client: only this machine's cars (`localToucher`: its own
+    // and the other players' it simulates) may touch a prop, and the props
+    // this set simulates itself one another (phys::Instance::
     // acceptsContact); everything else passes through them, since the host
-    // decides what the other cars do to them.
+    // decides what the other cars do to them (and what its pieces knock).
     void setReplica(std::function<bool(const phys::Instance&)> localToucher);
     // Back to simulating every contact (a client that cannot follow the
     // host's props).
@@ -329,7 +334,12 @@ private:
     std::vector<int> m_activeList; // the attached ones (the list's head), for drawing
     std::vector<std::size_t> m_ring; // dgBangerManager's hit instances by slot
     std::vector<std::uint32_t> m_ringGeneration; // times each slot was handed out
+    std::vector<double> m_ringHandedAt;          // world time each slot was last handed out
     int m_ringNext = 0;
+    int m_ringSize = kMaxHit;  // OpenMM2: grows in network games (setRingGrowth)
+    int m_ringLimit = kMaxHit;
+    double m_ringBusySeconds = 0.0;
+    bool ringSlotBusy(std::size_t slot) const;
     // OpenMM2 network games.
     std::vector<Knock> m_knocks;
     bool m_recordKnocks = false;
