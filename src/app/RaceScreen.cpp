@@ -791,7 +791,7 @@ public:
         for (auto& [id, rv] : m_remotes) {
             if (rv.simulated || !rv.sim)
                 continue;
-            updateDrawAhead(rv);
+            updateDrawAhead(id, rv);
             rv.blend.update(m_frameDt);
             if (const auto base = remoteDrawnBase(id, rv))
                 m_remoteDrawn[id] = rv.blend.apply(*base);
@@ -5300,8 +5300,14 @@ private:
     // that leaves at more than that rate), at its player's present once they
     // are 12 m apart and a second from meeting, sliding between over a
     // quarter of a second (OPENMM2_NET_NEAR_DRAW=ahead draws it at this
-    // machine's car's time always, the comparison).
-    void updateDrawAhead(RemoteVehicle& rv) const {
+    // machine's car's time always, the comparison). Another client's car is
+    // at this machine's car's time always: that client's screen runs ahead
+    // of the host's as this one's does (each predicts its car its inputs'
+    // trip and the host's margin ahead), so that is its player's present
+    // (three players ramming: 0.02-0.06 m from it at the median, against
+    // 0.38-0.54 drawn at the host's present); the host's car's present is
+    // the host's.
+    void updateDrawAhead(std::uint8_t id, RemoteVehicle& rv) const {
         static const bool always = [] {
             const char* v = std::getenv("OPENMM2_NET_NEAR_DRAW");
             return v && std::string_view(v) == "ahead";
@@ -5317,7 +5323,7 @@ private:
         const float closing = d > 0.01f ? -(other.linearVelocity - own.linearVelocity).dot(apart) / d : 0.0f;
         const float toMeet = closing > 0.01f ? std::max(0.0f, d - 5.0f) / closing : 1e9f;
         float& w = rv.drawAhead;
-        if (always || d < 8.0f || toMeet < 0.5f)
+        if (always || id != net::kHostPlayerId || d < 8.0f || toMeet < 0.5f)
             w = std::min(1.0f, w + m_frameDt * 4.0f);
         else if (d > 12.0f && toMeet > 1.0f)
             w = std::max(0.0f, w - m_frameDt * 4.0f);
@@ -6438,9 +6444,11 @@ private:
     std::optional<Mat34> remoteDrawnBase(std::uint8_t id, const RemoteVehicle& rv) const {
         if (rv.predicted && rv.sim) {
             // Simulated here: at this machine's car's time while the two may
-            // meet (they meet where the host's do), else at its player's
-            // present (the car's place a lead back on its trail: what the
-            // host's newest states put there, little predicted), blended.
+            // meet (they meet where the host's do) and always for another
+            // client's car, else (the host's car) at its player's present
+            // (the car's place a lead back on its trail: what the host's
+            // newest states put there, little predicted), blended
+            // (updateDrawAhead).
             const Mat34 now = drawnPose(game::Drawn::RemoteCar, id, *rv.sim).body;
             if (rv.drawAhead >= 1.0f || !m_world || !m_netCarLead)
                 return now;
