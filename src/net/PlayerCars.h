@@ -238,7 +238,7 @@ struct OwnCarState {
     std::array<float, 4> tireResistance{};
     bool contact = false;
     Vec3 linearImpulse, angularImpulse, linearPush, turnForce, framePush;
-    // A contact's bookkeeping at the sample's end (protocol 11): the bound's
+    // A contact's bookkeeping at the sample's end (protocol 17): the bound's
     // matrix as the sample's collisions saw it, when the sample's push has
     // moved the body past it (`hasBound`; otherwise it follows the body), and
     // the collider that pushed hardest in the sample (phColliderBase's last
@@ -375,7 +375,7 @@ struct NearCarState {
     OwnCarState state;
     CarInputFrame input; // the last applied (its keys, applied once, left out)
     // A client's car: the inputs the host holds for its next samples, in
-    // order (protocol 11; the host's own car has none), so that the
+    // order (protocol 17; the host's own car has none), so that the
     // receiving client runs it on them instead of on `input` repeated.
     std::vector<CarInputFrame> upcoming;
 };
