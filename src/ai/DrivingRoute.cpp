@@ -9,6 +9,7 @@
 #include "ai/PathGeometry.h"
 #include "ai/Pedestrians.h"
 #include "ai/Traffic.h"
+#include "core/Libm.h"
 #include "phys/vehicle/CarSim.h"
 
 #include <algorithm>
@@ -34,7 +35,7 @@ float angleBetween(const Vec3& a, const Vec3& b) {
         return 0.0f;
     if (c < -1.0f)
         return 3.1415927f;
-    return std::acos(c);
+    return libm::acos(c);
 }
 
 int wayPoint(const std::vector<int>& wp, int i) {
@@ -1013,7 +1014,7 @@ int PhysicsDriver::calcObstacleAvoidPoints(const TrackedCar& obstacle, int i, bo
                 lon = d.x * z.x + d.z * z.z;
             }
         }
-        const float a = std::atan2(lat, lon);
+        const float a = libm::atan2(lat, lon);
         return a < 1.57f && a > -1.57f;
     };
     if (ahead(left, false))
@@ -1092,7 +1093,7 @@ void PhysicsDriver::enumTargets(const Vec3& pt, const TrackedCar& obstacle, int 
         const Vec3 d = q - prev.pos;
         const float lat = fwd ? -(d.x * x.x + d.z * x.z) : d.x * x.x + d.z * x.z;
         const float lon = fwd ? -(d.x * z.x + d.z * z.z) : d.x * z.x + d.z * z.z;
-        const float a = std::atan2(lat, lon);
+        const float a = libm::atan2(lat, lon);
         return a < 1.57f && a > -1.57f;
     };
     // The gap before a further ambient car more than 15 m on, nearer the

@@ -6,6 +6,7 @@
 
 #include "ai/MapView.h"
 #include "ai/Traffic.h"
+#include "core/Libm.h"
 #include "phys/vehicle/CarSim.h"
 
 #include <algorithm>
@@ -164,8 +165,8 @@ void Opponent::setFinishLine(const Vec3& point, float headingDeg) {
     // aiMap::SetWaypoints: the point, and the z axis (0, 0, 1) turned by
     // RotateY(heading x -0.017453292).
     const float a = headingDeg * -0.017453292f;
-    const float s = std::sin(a);
-    const float c = std::cos(a);
+    const float s = libm::sin(a);
+    const float c = libm::cos(a);
     m_finishPoint = point;
     m_finishNormal = {s * 1.0f + c * 0.0f, 0.0f, c * 1.0f - s * 0.0f};
     m_hasFinishLine = true;

@@ -2,6 +2,8 @@
 // TrafficPrediction.h.
 #include "game/net/TrafficPrediction.h"
 
+#include "core/Libm.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -11,13 +13,13 @@ namespace {
 // `v` turned by `angle` about the unit axis `k` (Rodrigues: a physical
 // rotation, the right-hand way round the axis).
 Vec3 rotated(const Vec3& v, const Vec3& k, float angle) {
-    const float c = std::cos(angle), s = std::sin(angle);
+    const float c = libm::cos(angle), s = libm::sin(angle);
     return v * c + k.cross(v) * s + k * (k.dot(v) * (1.0f - c));
 }
 
 // Turned by `angle` about +y (from +z toward +x).
 Vec3 yawed(const Vec3& v, float angle) {
-    const float c = std::cos(angle), s = std::sin(angle);
+    const float c = libm::cos(angle), s = libm::sin(angle);
     return {v.x * c + v.z * s, v.y, v.z * c - v.x * s};
 }
 
@@ -31,12 +33,12 @@ float wrapAngle(float a) {
 
 // The chord of an arc of length `s` that turns by `angle`: its length.
 float chord(float s, float angle) {
-    return std::abs(angle) > 1e-4f ? s * (2.0f * std::sin(angle * 0.5f) / angle) : s;
+    return std::abs(angle) > 1e-4f ? s * (2.0f * libm::sin(angle * 0.5f) / angle) : s;
 }
 
 } // namespace
 
-float groundHeading(const Vec3& forward) { return std::atan2(forward.x, forward.z); }
+float groundHeading(const Vec3& forward) { return libm::atan2(forward.x, forward.z); }
 
 // --- RailMotionTracker --------------------------------------------------------------------
 
@@ -58,7 +60,7 @@ void RailMotionTracker::update(std::span<const ai::AmbientCar> cars, double time
             continue; // the AI has not stepped since
         const auto dt = static_cast<float>(dtMs / 1000.0);
         last.motion.accel = (c.speed - last.speed) / dt;
-        const float ds = std::hypot(p.x - last.position.x, p.z - last.position.z);
+        const float ds = libm::hypot(p.x - last.position.x, p.z - last.position.z);
         // Over a short move the heading's change is mostly rounding: the
         // curvature stays as it was.
         if (ds > 0.05f)

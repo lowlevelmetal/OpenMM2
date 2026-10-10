@@ -1,5 +1,7 @@
 #include "game/session/Gate.h"
 
+#include "core/Libm.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -7,7 +9,7 @@ namespace mm2::game::session {
 
 void calculateGatePoints(const Vec3& p, float headingDeg, float radius, Vec2& a, Vec2& b) {
     const float h = headingDeg * 0.017453292f;
-    const float c = std::cos(h) * radius, s = std::sin(h) * radius;
+    const float c = libm::cos(h) * radius, s = libm::sin(h) * radius;
     a = {c + p.x, s + p.z};
     b = {p.x - c, p.z - s};
 }

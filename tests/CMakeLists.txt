@@ -16,5 +16,10 @@ foreach(module IN LISTS OPENMM2_MODULES)
     add_executable(test_${module} ${sources} "${CMAKE_CURRENT_SOURCE_DIR}/TestData.cpp")
     target_include_directories(test_${module} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(test_${module} PRIVATE mm2_${module} OpenMM2::vfs GTest::gtest_main)
+    if(module STREQUAL "core")
+        # core/test_libm reads the sources: the simulation calls no C runtime
+        # transcendental function.
+        target_compile_definitions(test_core PRIVATE OPENMM2_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+    endif()
     gtest_discover_tests(test_${module} DISCOVERY_MODE PRE_TEST)
 endforeach()

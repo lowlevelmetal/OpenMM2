@@ -20,6 +20,7 @@
 // aiObstacle::InAccident.
 #include "ai/Traffic.h"
 
+#include "core/Libm.h"
 #include "core/StringUtil.h"
 
 #include <algorithm>
@@ -86,7 +87,7 @@ Mat34 frameFromRows(const Vec3& a, const Vec3& b, const Vec3& c, const Vec3& pos
 PlayerCar PlayerCar::at(const Vec3& pos, const Vec3& vel) {
     PlayerCar p;
     Vec3 f{vel.x, 0.0f, vel.z};
-    const float yaw = f.mag2() > 0.01f ? std::atan2(-f.x, -f.z) : 0.0f;
+    const float yaw = f.mag2() > 0.01f ? libm::atan2(-f.x, -f.z) : 0.0f;
     // Mat34::rotationY(a) faces (-sin a, 0, -cos a): forward (-Z) along the
     // velocity (still, it faces -Z).
     p.transform = Mat34::rotationY(yaw);
@@ -134,7 +135,7 @@ void Traffic::init() {
         if (i >= count)
             continue;
         Car& c = m_cars[static_cast<std::size_t>(i)];
-        c.laneRandomness = std::sin(lane * 6.2831f) * 0.5f;
+        c.laneRandomness = libm::sin(lane * 6.2831f) * 0.5f;
         c.totReactTicks = 8 - static_cast<int>(react * -17.0f);
     }
     // Then per car: its type, aiVehicleAmbient::Init: aiVehicleSpline::Init
@@ -688,7 +689,7 @@ void Traffic::adjustAmbients(int oldRoom, int newRoom, int slot) {
                 for (int l = 0; l < lanes; ++l) {
                     const float space = laneLength(p, dir, l) / static_cast<float>(n + 1);
                     for (int i = 0; i < n && !m_pool.empty(); ++i) {
-                        const float jitter = std::sin(m_rng->frand() * 6.28f);
+                        const float jitter = libm::sin(m_rng->frand() * 6.28f);
                         const float dist = (static_cast<float>(i + 1) * space - space * 0.5f) +
                                            (space - 10.0f) * jitter * 0.5f;
                         if (!placeCar(m_pool.back(), p, dir, l, dist))
@@ -1800,7 +1801,7 @@ void Traffic::updateAvoidPlayer(int idx, float dt) {
         else
             brakeFor();
         c.passOffset = (R + c.rightSide) + 2.5f;
-        c.heading = std::atan2(c.transform.m2.x, c.transform.m2.z);
+        c.heading = libm::atan2(c.transform.m2.x, c.transform.m2.z);
         const float lat = c.transform.m0.dot(p.transform.m3 - c.transform.m3);
         c.centred = -0.4f <= lat && lat <= 0.4f;
     }
@@ -1818,17 +1819,17 @@ void Traffic::updateAvoidPlayer(int idx, float dt) {
                 c.speed -= 0.5f;
                 beta = 0.4f;
             } else {
-                beta = std::atan2(lat + off, fwd);
+                beta = libm::atan2(lat + off, fwd);
             }
         } else if (c.centred) {
             c.accel -= 10.0f;
-            beta = lat < 0.0f ? std::atan2(lat + off, fwd) : std::atan2(lat - off, fwd);
+            beta = lat < 0.0f ? libm::atan2(lat + off, fwd) : libm::atan2(lat - off, fwd);
         } else if (std::abs(lat) <= 0.4f) {
             beta = 0.4f;
         } else if (lat > 0.4f) {
-            beta = (p.horn || f < 0.7f) ? std::atan2(lat - off, fwd) : std::atan2(lat + off, fwd);
+            beta = (p.horn || f < 0.7f) ? libm::atan2(lat - off, fwd) : libm::atan2(lat + off, fwd);
         } else {
-            beta = (p.horn || f < 0.7f) ? std::atan2(lat + off, fwd) : std::atan2(lat - off, fwd);
+            beta = (p.horn || f < 0.7f) ? libm::atan2(lat + off, fwd) : libm::atan2(lat - off, fwd);
         }
         float ratio = cap > 0.0f ? c.speed / cap : 0.0f;
         if (c.centred && c.speed > 5.0f)
