@@ -21,11 +21,14 @@
 //       this machine's results took player's finish (ms 86400000: did not)
 //   RE clock frame place racers
 //       this machine's "Place: n/N" changed
-//   CG clock frame type car value
+//   CG clock frame type car value x y z
 //       Cops and Robbers: this machine's HUD showed a gold event
-//       (CopsAndRobbers::EventType; value: the points, or 1 for a hit)
+//       (CopsAndRobbers::EventType; value: the points, or 1 for a hit), the
+//       gold then at (x, y, z)
 //   CS clock frame n id score ...
 //       Cops and Robbers: every player's score, when one changed
+
+#include "core/Math.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -40,7 +43,7 @@ void traceRuleHostHit(std::FILE* f, double frame, int player, std::uint32_t samp
                       int lap);
 void traceRuleFinish(std::FILE* f, double frame, int player, std::uint32_t ms);
 void traceRuleStanding(std::FILE* f, double frame, int place, int racers);
-void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value);
+void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value, const Vec3& gold);
 void traceCopsScores(std::FILE* f, double frame, const std::vector<std::pair<int, int>>& scores);
 
 } // namespace mm2::game

@@ -2689,7 +2689,7 @@ private:
             const bool me = e.car == m_crSelf;
             if (e.type != E::TimeWarning)
                 game::traceCopsEvent(trace, ctx.netGame->frameTime(), static_cast<int>(e.type), e.car,
-                                     e.value);
+                                     e.value, m_cr->goldPosition());
             switch (e.type) {
             case E::GoldTaken:
                 if (me) {
@@ -5360,7 +5360,17 @@ private:
             m_netReplayMs = m_netReplayWorstMs = 0.0;
         }
         m_netStatesBytes = m_netStatesSent = m_netInputBytes = m_netInputsSent = 0;
+        // The rules' messages (game/net/NetRules): sent by the host, taken by a client.
+        if (verbose && m_netRules.active()) {
+            const auto& r = m_netRules.stats();
+            log::info("netrules: {} messages sent ({:.0f} B/s), {} taken, {} decisions, {} refused, {} malformed, "
+                      "{} stale, {} decisions missed",
+                      r.sent - m_netRulesSent.sent, static_cast<double>(r.bytes - m_netRulesSent.bytes) / seconds,
+                      r.received, r.decisions, r.refused, r.malformed, r.stale, r.gaps);
+            m_netRulesSent = r;
+        }
     }
+    game::NetRules::Stats m_netRulesSent; // the rules' statistics at the last log
 
     // mmPlayer::Reset, the HitWaterHandlers and vehCar::ClearDamage on this
     // machine's car. A client's command reaches the host with its inputs and

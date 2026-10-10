@@ -40,9 +40,10 @@ void traceRuleStanding(std::FILE* f, double frame, int place, int racers) {
         std::fprintf(f, "RE %.3f %.3f %d %d\n", machineMs(), frame, place, racers);
 }
 
-void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value) {
+void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value, const Vec3& gold) {
     if (f)
-        std::fprintf(f, "CG %.3f %.3f %d %d %d\n", machineMs(), frame, type, car, value);
+        std::fprintf(f, "CG %.3f %.3f %d %d %d %.2f %.2f %.2f\n", machineMs(), frame, type, car, value, gold.x,
+                     gold.y, gold.z);
 }
 
 void traceCopsScores(std::FILE* f, double frame, const std::vector<std::pair<int, int>>& scores) {

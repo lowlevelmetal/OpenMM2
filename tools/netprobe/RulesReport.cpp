@@ -17,6 +17,7 @@
 #include "RulesReport.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <format>
 #include <fstream>
@@ -51,6 +52,15 @@ struct Finish {
 struct Gold {
     double clock = 0;
     int type = 0, car = 0, value = 0;
+    double x = 0, y = 0, z = 0; // the gold then
+};
+struct Pos {
+    double clock = 0, x = 0, y = 0, z = 0;
+};
+struct Hit {
+    double clock = 0;
+    int a = 0, b = 0;
+    double strength = 0;
 };
 
 struct Machine {
@@ -62,6 +72,8 @@ struct Machine {
     std::vector<std::pair<int, int>> standings;
     std::vector<Gold> gold;
     std::map<int, int> scores;
+    std::map<int, std::vector<Pos>> drawn; // every player's car as this machine draws it
+    std::vector<Hit> hits;                 // collisions between players' cars here
     double firstClock = 0, lastClock = 0;
 };
 
@@ -85,8 +97,17 @@ bool load(const std::string& path, Machine& m) {
         m.lastClock = std::max(m.lastClock, clock);
         if (tag == "D") {
             int id = 0, own = 0;
-            if (s >> id >> own && own)
+            Pos p{clock};
+            if (!(s >> id >> own >> p.x >> p.y >> p.z))
+                continue;
+            if (own)
                 m.self = id;
+            m.drawn[id].push_back(p);
+        } else if (tag == "K") {
+            Hit h{clock};
+            double x = 0, y = 0, z = 0;
+            if (s >> h.a >> h.b >> x >> y >> z >> h.strength)
+                m.hits.push_back(h);
         } else if (tag == "RS") {
             Shown e{clock, frame};
             int player = 0;
@@ -121,8 +142,10 @@ bool load(const std::string& path, Machine& m) {
                 m.standings.emplace_back(place, racers);
         } else if (tag == "CG") {
             Gold g{clock};
-            if (s >> g.type >> g.car >> g.value)
+            if (s >> g.type >> g.car >> g.value) {
+                s >> g.x >> g.y >> g.z;
                 m.gold.push_back(g);
+            }
         } else if (tag == "CS") {
             std::size_t n = 0;
             if (!(s >> n))
@@ -269,6 +292,62 @@ void finishes(const std::vector<Machine>& machines) {
     std::println("  finishing order the same on every machine: {}", same ? "yes" : "no");
 }
 
+// Whether the host's simulation backs each pickup and each knock (whoever
+// decided it): the taker's car within 5 m of the gold as the host draws it
+// (7 m allowed: a drawing is up to a frame off), a carrier knocked loose by
+// a collision of its own of 250 or more with another player's car on the
+// host within 0.3 s.
+void backing(const std::vector<Machine>& machines) {
+    const Machine& host = machines.front();
+    auto nearest = [](const std::vector<Pos>& v, double clock) -> const Pos* {
+        const Pos* best = nullptr;
+        for (const auto& p : v)
+            if (!best || std::abs(p.clock - clock) < std::abs(best->clock - clock))
+                best = &p;
+        return best && std::abs(best->clock - clock) < 100.0 ? best : nullptr;
+    };
+    int pickups = 0, farPickups = 0, knocks = 0, unbacked = 0;
+    for (const auto& g : host.gold) {
+        if (g.type != 0)
+            continue;
+        ++pickups;
+        const auto it = host.drawn.find(g.car);
+        const Pos* p = it == host.drawn.end() ? nullptr : nearest(it->second, g.clock);
+        const double d = p ? std::hypot(p->x - g.x, p->y - g.y, p->z - g.z) : 1e9;
+        if (d > 7.0) {
+            ++farPickups;
+            std::println("    player {}'s pickup at {:.0f}: its car {:.1f} m from the gold on the host", g.car, g.clock,
+                         d);
+        }
+    }
+    // Each knock once: the host's own record of it (every car's since
+    // protocol 8, only its own car's before), else the carrier's machine's.
+    std::vector<const Gold*> knockList;
+    for (const auto& g : host.gold)
+        if (g.type == 1 && g.value == 1)
+            knockList.push_back(&g);
+    for (std::size_t i = 1; i < machines.size(); ++i)
+        for (const auto& g : machines[i].gold)
+            if (g.type == 1 && g.value == 1 && g.car == machines[i].self &&
+                std::ranges::none_of(knockList, [&](const Gold* k) {
+                    return k->car == g.car && std::abs(k->clock - g.clock) < 1000.0;
+                }))
+                knockList.push_back(&g);
+    for (const Gold* g : knockList) {
+        ++knocks;
+        const bool backed = std::ranges::any_of(host.hits, [&](const Hit& h) {
+            return h.a == g->car && h.strength >= 250.0 && std::abs(h.clock - g->clock) < 300.0;
+        });
+        if (!backed) {
+            ++unbacked;
+            std::println("    player {}'s gold knocked loose at {:.0f}: no such hit on the host", g->car, g->clock);
+        }
+    }
+    std::println("  the host's simulation: {} of {} pickups with the car more than 7 m from the gold, {} of {} "
+                 "knocks without a hit of 250 there",
+                 farPickups, pickups, unbacked, knocks);
+}
+
 void gold(const std::vector<Machine>& machines) {
     // The events that matter (taken, dropped, delivered, limits) in order,
     // a client's predicted pickup that it took back left out.
@@ -349,6 +428,7 @@ int rulesReport(const RulesReportOptions& options) {
     if (cops) {
         std::println("Cops and Robbers:");
         gold(machines);
+        backing(machines);
     }
     return 0;
 }
