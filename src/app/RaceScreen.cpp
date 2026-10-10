@@ -2531,6 +2531,10 @@ private:
         // host ordered the race seeds them, which every machine knows when it
         // loads; the host's sets follow by message).
         st.seed = std::max(1u, ctx.netGame->raceOrderTime());
+        // Development aid: OPENMM2_DEBUG_CR_SEED=<n> on every machine draws the
+        // same first places in every run (automated runs).
+        if (const char* seed = std::getenv("OPENMM2_DEBUG_CR_SEED"))
+            st.seed = std::max(1u, static_cast<std::uint32_t>(str::parseInt(seed).value_or(1)));
         m_crRng = st.seed;
         // GetRandomPoints' picker: mmGame::RespawnXYZ(false, false, false)
         // less its 2 m: an intersection whose room (FindRoomId of its
