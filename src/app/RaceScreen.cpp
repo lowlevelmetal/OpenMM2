@@ -5077,7 +5077,8 @@ private:
         // samples run again meet them there.
         m_bodyHistory.push_back({m_prediction.nextSeq(), bodyPoses(), {}});
         if (m_trafficClient && m_trafficBodies && netTrafficReplay() != NetTrafficReplay::Frame)
-            m_bodyHistory.back().rails = m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
+            m_bodyHistory.back().rails =
+                m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
         while (m_bodyHistory.size() > 240)
             m_bodyHistory.pop_front();
         // Its car's first sample puts it where this machine started it, on
@@ -5265,9 +5266,11 @@ private:
                     if (h.seq != seq)
                         continue;
                     placeBodies(h.poses);
-                    for (const auto& p : now)
-                        if (std::ranges::none_of(h.poses, [&](const BodyPose& q) { return q.body == p.body; }))
+                    for (const auto& p : now) {
+                        const auto met = [&](const BodyPose& q) { return q.body == p.body; };
+                        if (std::ranges::none_of(h.poses, met))
                             parkBody(p);
+                    }
                     if (!railsNow.empty() && railReplay == NetTrafficReplay::History)
                         m_trafficBodies->placeRailCars(h.rails);
                 }
