@@ -5075,7 +5075,9 @@ private:
         // Where the bodies around its car (the other players' cars, the
         // police, knocked traffic cars and props) stood for this sample: the
         // samples run again meet them there.
-        m_bodyHistory.push_back({m_prediction.nextSeq(), bodyPoses()});
+        m_bodyHistory.push_back({m_prediction.nextSeq(), bodyPoses(), {}});
+        if (m_trafficClient && m_trafficBodies && netTrafficReplay() != NetTrafficReplay::Frame)
+            m_bodyHistory.back().rails = m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
         while (m_bodyHistory.size() > 240)
             m_bodyHistory.pop_front();
         // Its car's first sample puts it where this machine started it, on
@@ -5133,6 +5135,23 @@ private:
         const double ran = anchor->second - static_cast<double>(anchor->first - ack) * step;
         const double lead = std::clamp(static_cast<double>(time) - ran, 0.0, 1000.0);
         m_netCarLead = m_netCarLead ? *m_netCarLead + (lead - *m_netCarLead) * 0.1 : lead;
+    }
+
+    // Client: where the samples run again meet the shared traffic's cars on
+    // their rails: where each sample met them (History), or where the host
+    // had them at that sample's time (Predicted: TrafficClient::poseAt, from
+    // the newest messages), or where this frame put them (Frame).
+    // OPENMM2_NET_TRAFFIC_REPLAY=predicted|frame picks the others, for
+    // comparison.
+    enum class NetTrafficReplay { History, Predicted, Frame };
+    static NetTrafficReplay netTrafficReplay() {
+        static const NetTrafficReplay mode = [] {
+            const char* v = std::getenv("OPENMM2_NET_TRAFFIC_REPLAY");
+            const std::string_view s = v ? v : "";
+            return s == "frame" ? NetTrafficReplay::Frame
+                                : s == "predicted" ? NetTrafficReplay::Predicted : NetTrafficReplay::History;
+        }();
+        return mode;
     }
 
     // Client: the session time sample `seq` of this machine's car ended at
@@ -5201,25 +5220,29 @@ private:
         std::vector<game::CarPrediction::Companion> companions;
         predictNearCars(newest->near, companions);
         // The shared traffic's cars on their rails around this car: the
-        // samples run again meet each where it was at that sample's time on
-        // the host (TrafficClient::poseAt), as the frames placed them; after,
-        // where this frame put them. (OPENMM2_NET_TRAFFIC_REPLAY=frame keeps
-        // them where this frame put them, the comparison.)
-        static const bool railsHeld = [] {
-            const char* v = std::getenv("OPENMM2_NET_TRAFFIC_REPLAY");
-            return v && std::string_view(v) == "frame";
-        }();
+        // samples run again meet each where that sample met it (or, the
+        // experiment, where the host had it at that sample's time); after,
+        // where this frame put them (netTrafficReplay).
+        const NetTrafficReplay railReplay = netTrafficReplay();
         std::vector<game::TrafficBodies::RailPose> railsNow;
-        if (m_trafficClient && m_trafficBodies && !railsHeld)
+        if (m_trafficClient && m_trafficBodies && railReplay != NetTrafficReplay::Frame)
             railsNow = m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
-        // The bodies the samples run again may move, as they stand now.
+        // The bodies the samples run again may move, as they stand now: the
+        // ones a sample met, and the ones around the car now (a sample that
+        // did not meet one, say a piece the host's state brought later, runs
+        // without it: it waits far below the city).
         std::vector<BodyPose> now;
+        const auto keep = [&](phys::Body* b) {
+            if (std::ranges::none_of(now, [&](const BodyPose& q) { return q.body == b; }) &&
+                m_world->contains(b) && !predictedBody(b))
+                now.push_back(poseOf(*b));
+        };
         for (const auto& h : m_bodyHistory)
             if (h.seq > ack)
                 for (const auto& p : h.poses)
-                    if (std::ranges::none_of(now, [&](const BodyPose& q) { return q.body == p.body; }) &&
-                        m_world->contains(p.body) && !predictedBody(p.body))
-                        now.push_back(poseOf(*p.body));
+                    keep(p.body);
+        for (const auto& p : bodyPoses())
+            keep(p.body);
         const auto replayStart = std::chrono::steady_clock::now();
         m_netReplaying = true;
         const auto c = m_prediction.acknowledge(
@@ -5238,10 +5261,17 @@ private:
                                            rv.sim->sim().resets);
             },
             [&](std::uint32_t seq) {
-                for (const auto& h : m_bodyHistory)
-                    if (h.seq == seq)
-                        placeBodies(h.poses);
-                if (railsNow.empty())
+                for (const auto& h : m_bodyHistory) {
+                    if (h.seq != seq)
+                        continue;
+                    placeBodies(h.poses);
+                    for (const auto& p : now)
+                        if (std::ranges::none_of(h.poses, [&](const BodyPose& q) { return q.body == p.body; }))
+                            parkBody(p);
+                    if (!railsNow.empty() && railReplay == NetTrafficReplay::History)
+                        m_trafficBodies->placeRailCars(h.rails);
+                }
+                if (railsNow.empty() || railReplay != NetTrafficReplay::Predicted)
                     return;
                 const auto t = netSampleTime(seq);
                 if (!t)
@@ -5317,6 +5347,15 @@ private:
             if (b != &m_player->sim().body && (!trailer || b != &trailer->body) && !predictedBody(b))
                 out.push_back(poseOf(*b));
         return out;
+    }
+    // A body a sample run again did not meet, out of its way (1 km below).
+    void parkBody(const BodyPose& p) {
+        phys::Body& b = *p.body;
+        b.ics.matrix = p.ics;
+        b.ics.matrix.m3.y -= 1000.0f;
+        b.boundMatrix = p.bound;
+        b.boundMatrix.m3.y -= 1000.0f;
+        b.ics.linearVelocity = b.ics.angularVelocity = b.kinematicVelocity = b.kinematicSpin = {};
     }
     void placeBodies(const std::vector<BodyPose>& poses) {
         for (const auto& p : poses) {
@@ -6538,6 +6577,7 @@ private:
     struct BodyHistory {
         std::uint32_t seq = 0;
         std::vector<BodyPose> poses;
+        std::vector<game::TrafficBodies::RailPose> rails; // the shared traffic's cars on their rails
     };
     std::deque<BodyHistory> m_bodyHistory; // client: the bodies around its car at each recent sample
     std::deque<std::int32_t> m_netWaiting; // client: the host's latest counts of its inputs in hand
