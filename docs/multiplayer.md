@@ -1150,10 +1150,12 @@ for everything) decides them on the host from the cars it simulates (see
     1 m more, or on its way there in the next quarter of a second, as this
     machine has it where the host will run its sample: the cars it
     simulates with its own as they are, the others run on from their
-    drawing), when it waits for the host's word as MM2's did. The car's
-    water and fall are predicted the same way (see "Players' cars"). The host's `GoldTaken` for it confirms it; one for another
-    car undoes it and shows that car's; the state undoes it once the host
-    has seen the car 30 samples past the pickup without granting it.
+    drawing), when it waits for the host's word as MM2's did. The host's
+    `GoldTaken` for it confirms it; one for another car undoes it and
+    shows that car's; the state undoes it once the host has seen the car
+    30 samples past the pickup without granting it.
+  * the water and the fall on its own car (see "Players' cars", "The water
+    and the fall"): put back at once, the host's states confirming it.
   * nothing else: the finishes, the results, the standings, drops,
     deliveries, scores, the new places and the limits are the host's word
     only. A client's own "finished in" line (MM2's client line: 149, 106,
