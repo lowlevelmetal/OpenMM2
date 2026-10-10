@@ -130,6 +130,21 @@ TEST(SessionLobby, NoUntakenRaceMessagesReachTheNextRace) {
     EXPECT_TRUE(a.session->takePropStates().empty());
     EXPECT_TRUE(a.session->takePropFull().empty());
     EXPECT_TRUE(a.session->takeRulesStates().empty());
+
+    // The new race's own messages come through (both sides stamp race 2).
+    input.first = 1;
+    states.ack = 1;
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
+        a.session->sendPlayerInput(input);
+        host.session->sendCarStates(aId, states);
+        return host.session->playerInputsQueued() > 0 && a.session->ownCarStatesQueued() > 0;
+    }));
+    const auto inputs = host.session->takePlayerInputs();
+    ASSERT_FALSE(inputs.empty());
+    EXPECT_EQ(inputs.front().msg.first, 1u);
+    const auto own = a.session->takeOwnCarStates();
+    ASSERT_FALSE(own.empty());
+    EXPECT_EQ(own.front().ack, 1u);
 }
 
 TEST(SessionLobby, NoVehicleStatesBetweenRaces) {
