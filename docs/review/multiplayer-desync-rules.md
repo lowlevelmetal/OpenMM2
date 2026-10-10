@@ -2,7 +2,11 @@
 
 Reviewed and reworked on 2026-10-09 on top of integration (cae6989, the
 host simulating every player's car; then 14dc206, the host-run props; then
-04112e1, the players' cars' second round).
+04112e1, the players' cars' second round). A second round the same day
+(below, "Second round: the rough edges", protocol 14, on integration
+782f469) made the water and the fall the host's, sent the race's state
+unreliably too and made a client's pickup prediction wait for a car about
+to reach the gold.
 
 This is open item O3 of docs/review/multiplayer-desync-cars.md: with every
 player's car simulated by the host, each player's machine still decided its
@@ -263,6 +267,158 @@ players a race's message is about 85 bytes (340 B/s to each client,
 finish event per event (a few bytes). The players' cars' states are
 6.2 KB/s to each client for comparison.
 
+## Second round: the rough edges (protocol 14)
+
+The maintainer accepts more bandwidth and wants the remaining rough edges
+fixed. Four were open after the first round: O2 (the water was still a
+client's word), O3 (a predicted pickup undone), O4 (ResetRules' Cops and
+Robbers repair) and O1 (a checkpoint's confirmation a round trip late).
+
+### MM2's water and fall
+
+`mmGame::Update` checks the player's car after each frame's update: its
+matrix below -50 m calls the game's `DropThruCityHandler`; otherwise, the
+car's vehSplash latched (mmPlayer +0x2340 counts the frame's seconds,
++0x2348 is the handled flag), past 5 s it calls `HitWaterHandler`, clears
+the timer and sets the flag. `mmGameMulti::DropThruCityHandler` calls the
+water's handler. `mmGameMulti::HitWaterHandler`, with the race's
+mmWaypoints, keeps the reset position and heading, sets them to the last
+waypoint cleared (`GetWaypoint`, `GetHeading`), resets the player
+(mmPlayer::Reset) and puts them back, keeping the waypoint count; without
+waypoints it is `mmGame::HitWaterHandler` (mmPlayer::Reset at the reset
+position); then `SendHitWater`. `mmMultiCR::HitWaterHandler` and
+`DropThruCityHandler` drop a carried gold back (`DropGold`,
+`FondleCarMass`, `EnableRegen`), reset the player and keep its waypoint
+count. Each machine ran this for its own car.
+
+### What was left, and what changed
+
+1. **The water and the fall on the host** (e168a58). Before, a client's
+   session ran the timer on its own frames and sent a Reset or RespawnAt
+   command, which the host carried out when its own simulation of the car
+   had been in the water for 4 of the 5 s or was below -40 m
+   (`game::ResetRules`, a second's and 10 m's slack). Now mmGame::Update's
+   checks run on the car's samples (`game::NetCarDriver::
+   setWaterHandler`, before each sample on the car as the last one left
+   it, the timer counting samples): on the host for every car it
+   simulates, with the respawn point from its referee
+   (`RaceReferee::lastCleared`, `NetRules::respawnIndex`) or the car's
+   reset position; on a client for its own car, predicted, with its
+   session's last checkpoint (`Session::netRespawnPoint`). Every car's full
+   state carries its vehSplash (latched, buoyancy, level) and the
+   handler's time, so a client resumes the host's water exactly, and a
+   client that disagrees is corrected to the host's car. A client's Reset
+   and RespawnAt are refused (only the debug respawn passes, with the
+   host's `OPENMM2_DEBUG_RESPAWN_MS`). The session shows only the water's
+   message; the race screen presents the reset (`presentOwnWaterReset`).
+   Cops and Robbers' water handler follows the host's resets.
+2. **ResetRules narrowed** (e168a58): a repair only for a car past its
+   maximum damage (the wreck penalty's); a delivery's is the host's own.
+3. **The rules state unreliably too** (e168a58, da767c3): in a race the
+   host sends each player its state alone (`RulesState` on the State
+   channel: the newest 16 waypoints, the samples seen, the place and the
+   icons; no decisions, no results) 20 times a second and at once on a
+   hit, numbered with the reliable messages, which now go once a second
+   when nothing happened (Cops and Robbers' stay at four a second: its
+   state goes no other way). Whichever arrives first stands; a reliable
+   message older than the newest state still brings its decisions.
+4. **A contested pickup waits** (e168a58): a client predicts its pickup
+   only when no other car is within the gold's 5 m and 1 m more, or on its
+   way there in the next quarter of a second, as the client has it where
+   the host will run its sample: the near cars it simulates with its own
+   (`NearCarState`) as they are, the others run on from their drawing by
+   the playout delay and its car's lead (inferred margins).
+5. Measurement aids (0c96102, da64b77): the RC and RW trace lines,
+   rulesreport's confirmation times, water resets and a client's own
+   pickups. Tests (e168a58, 8dbc9a3, 86db4c6): `NetWater.*`,
+   `WaterState.*`, the narrowed ResetRules, the unreliable state (on its
+   own, fuzzed, and in the live three-machine test) and the contested
+   pickup.
+
+### How it was measured
+
+As the first round (host and one client on one machine, `netprobe relay`
+at 60 ± 20 ms 2 % loss and 150 ± 20 ms 5 % loss, release builds, the
+autopilot in the races, the ram inputs in Cops and Robbers, now 270 s).
+**Before** is integration 782f469 with the measurement aids (0c96102);
+**after** is e168a58 and, for Cops and Robbers, da767c3. Added:
+
+* **The water**: a cruise and a Cops and Robbers game with both cars
+  started over the bay (room 228, `OPENMM2_DEBUG_START=-1779,3,-1040,0` and
+  `-1779,3,-1130,0`): every five seconds in the water the car goes back to
+  its reset position, in the water again (150 s, 120 s). Once with a client
+  whose simulation differs (`OPENMM2_DEBUG_NETCARS_NOISE=0.002`).
+* **Contested gold**: both cars on opposite sides of the first gold,
+  facing it, at full throttle, the host's 12 m away and the client's 10 to
+  14 m (seven runs each), so that they reach it together.
+
+### Results
+
+**Checkpoints** (the client, player 1; every run: 0 shown and never
+counted, 0 taken back, every finish the host's measure on both machines):
+
+| Run | Link | Lead before the host counted (median) | The host's word after shown: median / 99 % / most |
+| --- | --- | --- | --- |
+| race before | 60 ms | 142 ms | 208 / 217 / 217 ms |
+| race after | 60 ms | 117 ms | 208 / 217 / 217 ms |
+| circuit before | 60 ms | 130 ms | 200 / 217 / 217 ms |
+| circuit after | 60 ms | 142 ms | 217 / 233 / 233 ms |
+| race before | 150 ms, 5 % | 238 ms | 458 / 776 / 776 ms |
+| race after | 150 ms, 5 % | 241 ms | 395 / 417 / 417 ms |
+| circuit before | 150 ms, 5 % | 227 ms | 392 / 767 / 767 ms |
+| circuit after | 150 ms, 5 % | 226 ms | 400 / 441 / 441 ms |
+
+A lost reliable message held the confirmation until ENet sent it again
+(the 99th percentile twice the median at 5 % loss); the unreliable copy
+takes the tail away. The median is a round trip plus the host's margin of
+inputs and cannot go lower without taking the client's word.
+
+**The water** (each machine's own car's resets against the host's):
+
+| Run | Link | Before | After |
+| --- | --- | --- | --- |
+| cruise | 60 ms | 24 / 24 at the same sample, 0 corrections | 24 / 24, 0 corrections |
+| cruise | 150 ms, 5 % | 21 / 21, 0 corrections | 24 / 24, 0 corrections |
+| Cops and Robbers | 60 ms | 18 / 18 (one more on the client at the end of the run) | 18 / 18 |
+| cruise, a client that simulates differently | 60 ms | 13 / 13 | 13 / 13 |
+
+With an honest client the two agree: its word was checked and the
+simulations match. What changed is who decides: a client can no longer
+put its car back (a second early, or anywhere the checks allowed), and its
+timer counts the samples the host counts. One race started with both cars
+in the water (`OPENMM2_DEBUG_SPAWN`) diverged the same way before and
+after: the host simulates a client's car only from its inputs after its
+own loading, and this car sank while held on the grid during the load (a
+held car does not float, vehCar::Update), so the client's car fell below
+-50 m at its sample 140 and the host's at 436; before, the host refused the
+client's reset and the car went back into the water; after, the host's
+states take its prediction back the same way. It needs a car spawned in
+the water by the development aid.
+
+**Cops and Robbers**:
+
+| Run | Link | Gold events (agree) | Scores | Pickups predicted and undone | The client's own pickups |
+| --- | --- | --- | --- | --- | --- |
+| ram before | 60 ms | 5 (yes) | the same | 1 | 1 predicted, 1 on the host's word |
+| ram after | 60 ms | 3 (yes) | the same | 0 | 1 on the host's word |
+| ram before | 150 ms, 5 % | 11 (yes) | the same | 1 | 1 predicted, 1 on the host's word |
+| ram after | 150 ms, 5 % | 5 (yes) | the same | 0 | (none) |
+| contested before | 60 ms, 7 runs | 7 (yes) | the same | 3 | 1 predicted (202 ms early) |
+| contested after | 60 ms, 7 runs | 7 (yes) | the same | 0 | 1 on the host's word (65 ms after it decided) |
+
+In the contested runs the host's car took the gold six times of seven
+before and after; before, the client showed "You have the Gold!" and took
+it back in three of them. After, it waits whenever the host's car is at
+the gold or about to be, and its own pickup shows a trip later (MM2's
+client always waited for 0x25a).
+
+**Bandwidth** (per client): in a race the reliable messages fell from
+93-101 B/s to 22-27 B/s and the unreliable state is 411-494 B/s (20 a
+second, about 23 bytes with two players; about 40 with eight: 800 B/s to
+each client, 5.6 KB/s from the host). Cops and Robbers' stays 284-292 B/s.
+A car's full state costs two bits more, twelve bytes more while it is in
+the water.
+
 ## Deviations from MM2
 
 * The host decides every machine's rules (MM2: each machine its own car's,
@@ -283,6 +439,13 @@ finish event per event (a few bytes). The players' cars' states are
 * The place and the icon numbers use the host's view of each car (its
   target is the nearest one at its last hit; the Next / Prev. Checkpoint
   keys stay on that player's machine).
+* The water and the fall (protocol 14): the host runs mmGame::Update's
+  checks for every car it simulates (MM2: each machine for its own car),
+  before each sample rather than after each frame, the water's 5 s counted
+  in samples; a client predicts its own.
+* A client's pickup prediction waits for the host's word while another car
+  is near the gold or heading into it (inferred margins: 1 m beyond the
+  gold's 5 m, a quarter of a second).
 
 ## Findings
 
@@ -296,15 +459,30 @@ finish event per event (a few bytes). The players' cars' states are
 | R6 | minor | `RaceScreen::netCommandAllowed` | A client's water respawn could put its car on any checkpoint (players' cars review O4). | fixed for races: only at the start or a checkpoint the host counted for it (`game::ResetRules`' respawn points) |
 | R7 | crash (development aid only) | `game::NetAutopilot` (new) | The autopilot's AI took the player's car's impact callback and left it pointing at a destroyed driver. | fixed before measuring (619ce6f) |
 | R8 | visible | `Session::playerFinished` | A machine whose player finished second or later showed "Place 1/N" from the finish on: the place was its own count of finishers, which network finishes never raised. | fixed: the host's place, kept from the finish on |
-| O1 | minor | the host's frame | The host's own car is decided with no latency; a client's a trip later. Its finish time does not depend on it (measured in its own samples), but a client's checkpoints are confirmed a trip later (they show at once, predicted). | open: inherent |
-| O2 | minor | Cops and Robbers | Whether a car was in the water (its reset) is still its player's word, checked by `game::ResetRules` (five seconds in the water on the host's simulation) before the host applies it. | open: the host could run the water handler itself on the cars it simulates |
-| O3 | minor | Cops and Robbers | A predicted pickup is undone when the host gave the gold to a car the client had not yet seen at the gold (the other car's state a trip old): one in each run. | open: inherent to predicting; MM2's client waited for 0x25a |
-| O4 | minor | `game::ResetRules` | Its Cops and Robbers repair exception (any repair allowed) is now only needed for a client's own command; the host repairs a deliverer's car itself. | open: could be narrowed |
+| R9 | minor (security) | `Session::updateHazards`, `RaceScreen` | The water's and the fall's handler ran on the client's frames for its own car and its reset was its command, which the host took with a second's and 10 m's slack: a client could put its car back a second early, or not at all (the host never did it for it). | fixed (protocol 14): the host's own, on the car's samples; a client's reset refused |
+| O1 | minor | the host's frame | The host's own car is decided with no latency; a client's a trip later. Its finish time does not depend on it (measured in its own samples), but a client's checkpoints are confirmed a round trip later (they show at once, predicted); at 5 % loss a lost message doubled that. | tightened (protocol 14): the unreliable state takes the tail away (99 %: 767-776 to 417-441 ms at 150 ms); the round trip itself is inherent |
+| O2 | minor | Cops and Robbers | Whether a car was in the water (its reset) is still its player's word, checked by `game::ResetRules` (five seconds in the water on the host's simulation) before the host applies it. | fixed (protocol 14): the host runs the water and fall handlers for every car |
+| O3 | minor | Cops and Robbers | A predicted pickup is undone when the host gave the gold to a car the client had not yet seen at the gold (the other car's state a trip old): one in each run. | fixed (protocol 14): no prediction while another car is at the gold or about to be, as the near-car simulation has it; 3 of 7 contested runs undone before, 0 after |
+| O4 | minor | `game::ResetRules` | Its Cops and Robbers repair exception (any repair allowed) is now only needed for a client's own command; the host repairs a deliverer's car itself. | fixed (protocol 14): a repair only for a wrecked car |
+| O5 | minor (development aid) | the players' cars | The host simulates a client's car from its inputs after its own loading; a car that moves while held on the grid (sinking in the water from a debug spawn) is somewhere else on the client by then, and the two put it back at different samples. | open: only with `OPENMM2_DEBUG_SPAWN` in the water; the players' cars' start |
+| O6 | minor | Cops and Robbers | Its state goes only reliably (four a second); a lost message delays an undone pickup or a missed decision's stand-in until ENet sends it again. | open: its scores and gold would need the reliable decisions' order to go unreliably |
 
 ## Reproducing
 
 The scripts are kept with the scratch files of this review
-(`desync-rules/`); the runs need the retail ISO.
+(`desync-rules/`, the second round's in `round2/`); the runs need the
+retail ISO.
+
+```
+# second round: run2.sh <bin> <name> <mode> <race|-> <laps> <delay> <jitter> <loss> <seconds>
+#   (AUTOPILOT=0, HOST_ENV / CLIENT_ENV add variables to either instance)
+batch.sh <bin dir> <tag>   # races, circuits, Cops and Robbers (ram), the water: both links
+batch_before2.sh           # the before build's Cops and Robbers (270 s) and the race in the water
+batch_contest.sh           # contested gold, before and after; Cops and Robbers on the final build
+batch_water2.sh            # the water with a client that simulates differently
+report.sh [run]...         # rulesreport and the bandwidth and correction lines
+report_contest.sh          # the contested runs
+```
 
 ```
 batch.sh            # before and after, both links: run.sh (races, autopilot), run_cr.sh (Cops and Robbers)

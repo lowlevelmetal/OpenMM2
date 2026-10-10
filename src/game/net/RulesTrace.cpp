@@ -40,6 +40,17 @@ void traceRuleStanding(std::FILE* f, double frame, int place, int racers) {
         std::fprintf(f, "RE %.3f %.3f %d %d\n", machineMs(), frame, place, racers);
 }
 
+void traceRuleConfirmed(std::FILE* f, double frame, int player, int count) {
+    if (f)
+        std::fprintf(f, "RC %.3f %.3f %d %d\n", machineMs(), frame, player, count);
+}
+
+void traceWaterReset(std::FILE* f, double frame, int player, std::uint32_t sample, const Vec3& at) {
+    if (f)
+        std::fprintf(f, "RW %.3f %.3f %d %u %.3f %.3f %.3f\n", machineMs(), frame, player, sample, at.x, at.y,
+                     at.z);
+}
+
 void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value, const Vec3& gold) {
     if (f)
         std::fprintf(f, "CG %.3f %.3f %d %d %d %.2f %.2f %.2f\n", machineMs(), frame, type, car, value,

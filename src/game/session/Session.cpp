@@ -898,7 +898,9 @@ void Session::updateRank(const PlayerState& player, std::span<const OpponentStat
 // --- Hazards (mmGame::Update) ------------------------------------------------------
 
 bool Session::updateHazards(float dt, const PlayerState& player) {
-    if (player.transform.m3.y < kDropY) {
+    // A network race: the handlers run on the car's samples
+    // (netRespawnPoint, netWaterReset); the message still shows here.
+    if (player.transform.m3.y < kDropY && !netRules()) {
         dropThroughCity();
         return true;
     }
@@ -915,13 +917,25 @@ bool Session::updateHazards(float dt, const PlayerState& player) {
             setMessage(30, "Sleep with the fishes!", 3.0f, true);
     }
     m_waterTimer += dt;
-    if (m_waterTimer > kWaterHandler) {
+    if (m_waterTimer > kWaterHandler && !netRules()) {
         m_waterHandled = true;
         m_waterTimer = 0.0f;
         hitWater();
         return true;
     }
     return false;
+}
+
+std::optional<Mat34> Session::netRespawnPoint() const {
+    if (rule() == WaypointRule::None || m_checkpoints.empty())
+        return std::nullopt;
+    const int last = static_cast<int>(m_checkpoints.size()) - 1;
+    return spawnAt(m_checkpoints[static_cast<std::size_t>(std::clamp(m_wp.lastCleared, 0, last))]);
+}
+
+void Session::netWaterReset() {
+    m_waterHandled = false;
+    m_waterTimer = 0.0f;
 }
 
 void Session::hitWater() {

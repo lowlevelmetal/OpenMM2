@@ -44,7 +44,29 @@ void NetCarDriver::attach(const SimVehicle& car) {
     m_extraMass = 0;
 }
 
+void NetCarDriver::checkWater(SimVehicle& car) {
+    if (!m_waterHandler)
+        return;
+    // mmGame::Update, after UpdateGame: the car's matrix below -50 m calls
+    // DropThruCityHandler; otherwise, its vehSplash active and the handler not
+    // run yet, the timer counts and past 5 s calls HitWaterHandler (in a
+    // network game both put the car back at once, and the timer and the
+    // handled flag start again).
+    const phys::CarSim& sim = car.sim();
+    bool handler = sim.body.ics.matrix.m3.y < kDropHeight;
+    if (!handler && sim.splash.active()) {
+        m_waterTime += phys::kFixedSampleStep;
+        handler = m_waterTime > kWaterSeconds;
+    }
+    if (!handler)
+        return;
+    m_waterTime = 0.0f;
+    command(car, *m_waterHandler);
+    ++m_waterResets;
+}
+
 bool NetCarDriver::apply(SimVehicle& car, const net::CarInputFrame& in) {
+    checkWater(car);
     phys::CarSim& sim = car.sim();
     // mmPlayer::UpdateRegen (Cops and Robbers, while the car carries no gold).
     const bool cleared = (in.flags & net::kInputRegen) && sim.regenerate();
@@ -195,7 +217,7 @@ std::int32_t HostInputQueue::takeLeastWaiting() {
     return w;
 }
 
-net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets) {
+net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const NetCarDriver* driver) {
     const phys::CarSim& sim = car.sim();
     const phys::InertialCS& ics = sim.body.ics;
     net::OwnCarState s;
@@ -229,6 +251,10 @@ net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets) {
     s.swapThrottle = car.controls().swapThrottle;
     s.held = car.held();
     s.resets = resets;
+    s.splash = sim.splash.active();
+    s.buoyancy = sim.splash.buoyancy;
+    s.waterLevel = s.splash ? sim.splash.waterLevel : 0.0f;
+    s.waterTime = driver ? driver->waterTime() : 0.0f;
     s.force = ics.linearForce;
     s.torque = ics.angularTorque;
     for (std::size_t i = 0; i < 4; ++i)
@@ -290,6 +316,11 @@ void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
     sim.randomState = s.random;
     car.controls().swapThrottle = s.swapThrottle;
     car.setHeld(s.held);
+    if (s.splash)
+        sim.splash.activate(s.waterLevel);
+    else
+        sim.splash.deactivate();
+    sim.splash.buoyancy = s.buoyancy;
     // The bound follows the body; the next sweep starts where it is (the
     // host's bound matrix does not travel: it differs from the body's only
     // by a push during a contact).
@@ -305,23 +336,14 @@ bool ResetRules::allows(const net::CarCommand& c) const {
     };
     switch (c.kind) {
     case net::CarCommandKind::ResetTo: return !placed && inCity(c.position);
-    case net::CarCommandKind::ClearDamage: return placed && (debug || wrecked || copsAndRobbers);
+    case net::CarCommandKind::ClearDamage: return placed && (debug || wrecked);
     case net::CarCommandKind::Reset:
     case net::CarCommandKind::RespawnAt: break;
     }
-    if (!placed || c.seq < lastMoveSeq + kMoveInterval)
+    // The water and the fall are the host's own (NetCarDriver::checkWater).
+    if (!debug || !placed || c.seq < lastMoveSeq + kMoveInterval)
         return false;
-    if (c.kind == net::CarCommandKind::RespawnAt) {
-        if (!inCity(c.position))
-            return false;
-        const bool atCheckpoint = std::ranges::any_of(respawnPoints, [&](const Mat34& at) {
-            return at.m3.dist2(c.position) < 0.25f &&
-                   std::abs(std::remainder(phys::resetRotationOf(at) - c.rotation, 6.2831853f)) < 0.05f;
-        });
-        if (!atCheckpoint && !debug)
-            return false;
-    }
-    return debug || waterSamples >= kWaterSamples || height < kDropHeight;
+    return c.kind != net::CarCommandKind::RespawnAt || inCity(c.position);
 }
 
 net::VehicleSnapshot carSnapshot(const SimVehicle& car, const net::CarInputFrame& input) {
@@ -476,9 +498,11 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     out.damage = base.car.damage.currentDamage != host.damage;
     out.held = base.held != host.held;
     out.gear = base.car.trans.currentGear != host.gear;
+    out.water = base.car.splash.active() != host.splash || base.driver.waterTime() != host.waterTime;
     const bool differs = out.positionError > m_options.positionTolerance ||
                          out.velocityError > m_options.velocityTolerance ||
-                         rotation > m_options.rotationTolerance || out.damage || out.held || out.gear;
+                         rotation > m_options.rotationTolerance || out.damage || out.held || out.gear ||
+                         out.water;
     const std::size_t later = m_history.size() - 1 - index;
     const bool replay = differs || !companions.empty();
     if (replay && later > m_options.maxReplay) {
@@ -532,6 +556,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
         restore(base, car, driver);
         if (differs) {
             applyOwnCarState(car, host);
+            driver.setWaterTime(host.waterTime);
             save(base, car, driver);
         }
         // The bodies in the world's order (the players' cars by number), so

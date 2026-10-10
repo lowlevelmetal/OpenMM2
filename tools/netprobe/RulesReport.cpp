@@ -8,6 +8,9 @@
 //            players still decided their own: the host's measure of it)
 //   RF       a finish in a machine's results
 //   RE       a machine's "Place: n/N"
+//   RC       a client learning how many waypoints the host counted for it
+//   RW       a car put back by the water or a fall (the host: every car it
+//            simulates; a client: its own)
 //   CG / CS  Cops and Robbers' gold events and scores as each machine shows
 //            them
 //
@@ -62,6 +65,12 @@ struct Hit {
     int a = 0, b = 0;
     double strength = 0;
 };
+struct Water {
+    double clock = 0;
+    int player = 0;
+    unsigned sample = 0;
+    double x = 0, y = 0, z = 0;
+};
 
 struct Machine {
     std::string path;
@@ -74,6 +83,8 @@ struct Machine {
     std::map<int, int> scores;
     std::map<int, std::vector<Pos>> drawn; // every player's car as this machine draws it
     std::vector<Hit> hits;                 // collisions between players' cars here
+    std::vector<std::pair<double, int>> confirmed; // (clock, the host's count of its car's waypoints)
+    std::vector<Water> water;
     double firstClock = 0, lastClock = 0;
 };
 
@@ -138,6 +149,14 @@ bool load(const std::string& path, Machine& m) {
                 continue;
             auto& map = tag == "RF" ? m.finishes : m.refereeFinishes;
             map.try_emplace(player, Finish{clock, ms});
+        } else if (tag == "RC") {
+            int player = 0, count = 0;
+            if (s >> player >> count)
+                m.confirmed.emplace_back(clock, count);
+        } else if (tag == "RW") {
+            Water w{clock};
+            if (s >> w.player >> w.sample >> w.x >> w.y >> w.z)
+                m.water.push_back(w);
         } else if (tag == "RE") {
             int place = 0, racers = 0;
             if (s >> place >> racers)
@@ -194,12 +213,19 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
     }
     std::vector<int> counted;
     std::vector<const HostHit*> hostHits;
+    std::vector<int> ordinals; // each one's place among all the car's hits (RC counts them all)
     // (A checkpoint race's finish clears no waypoint the HUD shows.)
-    for (const auto& h : host.hostHits)
-        if (h.player == m.self && h.shown) {
+    int ordinal = 0;
+    for (const auto& h : host.hostHits) {
+        if (h.player != m.self)
+            continue;
+        if (h.shown) {
             counted.push_back(h.index);
             hostHits.push_back(&h);
+            ordinals.push_back(ordinal);
         }
+        ++ordinal;
+    }
     std::vector<int> finalSeq;
     std::vector<const Shown*> finalShown;
     int predicted = 0, fromHost = 0, takenBack = 0;
@@ -215,7 +241,7 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
     const auto hostKeys = keys(counted);
     const auto shownKeys = keys(finalSeq);
     int shownNotCounted = 0, pendingAtEnd = 0, countedNotShown = 0;
-    std::vector<double> leadPredicted, lagHostWord;
+    std::vector<double> leadPredicted, lagHostWord, confirmedAfter;
     for (std::size_t i = 0; i < shownKeys.size(); ++i) {
         const auto it = std::ranges::find(hostKeys, shownKeys[i]);
         if (it == hostKeys.end()) {
@@ -225,6 +251,13 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
         const auto at = static_cast<std::size_t>(it - hostKeys.begin());
         const double dt = finalShown[i]->clock - hostHits[at]->clock;
         (finalShown[i]->kind ? lagHostWord : leadPredicted).push_back(dt);
+        // When this machine learnt that the host had counted it (RC).
+        if (finalShown[i]->kind == 0)
+            for (const auto& [clock, count] : m.confirmed)
+                if (count > ordinals[at]) {
+                    confirmedAfter.push_back(clock - finalShown[i]->clock);
+                    break;
+                }
     }
     for (const auto& k : hostKeys)
         if (std::ranges::find(shownKeys, k) == shownKeys.end())
@@ -245,6 +278,61 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
     if (!lagHostWord.empty())
         std::println("    the host's own shown {:.0f} ms after it counted them (median; 99% {:.0f})",
                      percentile(lagHostWord, 0.5), percentile(lagHostWord, 0.99));
+    if (!confirmedAfter.empty())
+        std::println("    the host's word on predicted ones arrived {:.0f} ms after they were shown "
+                     "(median; 1% {:.0f}, 99% {:.0f}, most {:.0f})",
+                     percentile(confirmedAfter, 0.5), percentile(confirmedAfter, 0.01),
+                     percentile(confirmedAfter, 0.99), percentile(confirmedAfter, 1.0));
+}
+
+// Each machine's own car put back by the water or a fall against the
+// host's doing it to that car: the same samples, the same places.
+void water(const std::vector<Machine>& machines) {
+    const Machine& host = machines.front();
+    for (std::size_t i = 0; i < machines.size(); ++i) {
+        const Machine& m = machines[i];
+        if (m.self < 0)
+            continue;
+        std::vector<const Water*> own, hosts;
+        for (const auto& w : m.water)
+            if (w.player == m.self)
+                own.push_back(&w);
+        for (const auto& w : host.water)
+            if (w.player == m.self)
+                hosts.push_back(&w);
+        if (i == 0) {
+            std::println("  player {} (the host): {} times", m.self, own.size());
+            continue;
+        }
+        // Each of this machine's matched with the host's nearest in samples
+        // (within 2 s), each of the host's used once.
+        const auto apart = [](const Water* a, const Water* b) {
+            return std::abs(static_cast<double>(a->sample) - static_cast<double>(b->sample));
+        };
+        std::vector<bool> used(hosts.size(), false);
+        int matched = 0, sameSample = 0;
+        double worstSamples = 0, worstMetres = 0;
+        for (const Water* w : own) {
+            std::size_t best = hosts.size();
+            for (std::size_t k = 0; k < hosts.size(); ++k)
+                if (!used[k] && apart(hosts[k], w) <= 120.0 &&
+                    (best == hosts.size() || apart(hosts[k], w) < apart(hosts[best], w)))
+                    best = k;
+            if (best == hosts.size())
+                continue;
+            used[best] = true;
+            ++matched;
+            const double ds = apart(hosts[best], w);
+            sameSample += ds == 0.0 ? 1 : 0;
+            worstSamples = std::max(worstSamples, ds);
+            worstMetres = std::max(
+                worstMetres, std::hypot(hosts[best]->x - w->x, hosts[best]->y - w->y, hosts[best]->z - w->z));
+        }
+        std::println("  player {} ({}): {} times here, {} on the host; {} matched ({} at the same sample, "
+                     "{:.0f} samples and {:.2f} m apart at most), {} here only, {} on the host only",
+                     m.self, m.path, own.size(), hosts.size(), matched, sameSample, worstSamples, worstMetres,
+                     static_cast<int>(own.size()) - matched, static_cast<int>(hosts.size()) - matched);
+    }
 }
 
 void finishes(const std::vector<Machine>& machines) {
@@ -403,6 +491,24 @@ void gold(const std::vector<Machine>& machines) {
                      machines[i].path, mine.size(), static_cast<int>(host.size()) - common,
                      static_cast<int>(mine.size()) - common, undone, scores,
                      machines[i].scores == machines.front().scores ? "the same" : "different");
+        // Its own pickups the host decided: shown before the host's
+        // decision (predicted) or after it (the host's word).
+        std::vector<double> early, late;
+        for (const auto& h : machines.front().gold) {
+            if (h.type != 0 || h.car != machines[i].self)
+                continue;
+            const Gold* shown = nullptr;
+            for (const auto& g : machines[i].gold)
+                if (g.type == 0 && g.car == h.car && std::abs(g.clock - h.clock) < 2000.0 &&
+                    (!shown || std::abs(g.clock - h.clock) < std::abs(shown->clock - h.clock)))
+                    shown = &g;
+            if (shown)
+                (shown->clock < h.clock ? early : late).push_back(std::abs(shown->clock - h.clock));
+        }
+        if (!early.empty() || !late.empty())
+            std::println("    its own pickups: {} shown {:.0f} ms before the host decided them (median), {} "
+                         "{:.0f} ms after (the host's word)",
+                         early.size(), percentile(early, 0.5), late.size(), percentile(late, 0.5));
     }
 }
 
@@ -431,6 +537,10 @@ int rulesReport(const RulesReportOptions& options) {
             if (!m.standings.empty())
                 std::println("  {}: \"Place\" changed {} times, last {}/{}", m.path, m.standings.size(),
                              m.standings.back().first, m.standings.back().second);
+    }
+    if (std::ranges::any_of(machines, [](const Machine& m) { return !m.water.empty(); })) {
+        std::println("the water and falls (each machine's own car against the host's):");
+        water(machines);
     }
     if (cops) {
         std::println("Cops and Robbers:");

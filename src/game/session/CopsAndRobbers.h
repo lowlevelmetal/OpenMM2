@@ -83,7 +83,14 @@ public:
         Vec3 position;
         bool wrecked = false;
         bool inWater = false; // hit the water or fell out of the city this frame
+        Vec3 velocity;        // a client's prediction: where the car is heading (m/s)
     };
+    // A client's prediction of its own pickup waits for the host's word while
+    // another car is within the gold's radius and this margin, or reaches it
+    // within this time on its way (OpenMM2: the host decides between them;
+    // inferred margins, the other cars being a client's estimate).
+    static constexpr float kContestMargin = 1.0f;   // m
+    static constexpr float kContestSeconds = 0.25f; // s
     struct Impact {
         int a = 0, b = 0; // car ids
         // vehDamageImpactInfo's total (the damage values summed while the
@@ -166,9 +173,13 @@ public:
     // its own car `me` taking free gold within reach (UpdateGold's test, the
     // car not locked out by a wreck or a lost gold): a prediction, shown at
     // once (GoldTaken), which the host's decision confirms or undoes
-    // (applyHost, adopt); not while another car is at the gold too (the host
-    // decides between them). `players` counts the players in the game.
-    // Returns true when it predicted a pickup.
+    // (applyHost, adopt); not while another car is at the gold too or about
+    // to be (kContestMargin, kContestSeconds: the host decides between
+    // them); `cars` should then be where the host will have them when it
+    // runs this machine's sample (the cars this machine simulates with its
+    // own as they are, the others run on from where they are drawn).
+    // `players` counts the players in the game. Returns true when it
+    // predicted a pickup.
     bool updatePredicted(float dt, const Car& me, const std::vector<Car>& cars, int players);
     // The host's decision (a Message from updateHost) on a machine that is
     // not the host: as receive(), except that a predicted pickup it confirms

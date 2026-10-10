@@ -72,6 +72,21 @@ int cmdPsdlInfo(std::span<char* const> args) {
             for (const auto& pt : rm.perimeter)
                 std::print(" {}->{}", pt.vertex, pt.neighbor);
             std::println("");
+            // Where the perimeter runs (x z, and the centre of its points).
+            Vec3 centre;
+            int counted = 0;
+            std::print("  at:");
+            for (const auto& pt : rm.perimeter)
+                if (pt.vertex < p->vertices.size()) {
+                    const Vec3& v = p->vertices[pt.vertex];
+                    std::print(" ({:.1f} {:.1f})", v.x, v.z);
+                    centre = centre + v;
+                    ++counted;
+                }
+            if (counted > 0)
+                std::print("  centre ({:.1f} {:.1f} {:.1f})", centre.x / static_cast<float>(counted),
+                           centre.y / static_cast<float>(counted), centre.z / static_cast<float>(counted));
+            std::println("");
             for (const auto& a : rm.attributes) {
                 std::print("  {}{} sub {}:", city::psdlAttrTypeName(a.type), a.last ? "*" : "", a.subtype);
                 for (auto w : a.args)

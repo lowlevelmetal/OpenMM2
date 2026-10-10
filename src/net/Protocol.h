@@ -45,10 +45,15 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 12: the shared traffic's police and knocked cars near a client in full
 //    (net/TrafficFull.h: TrafficFull), AmbientState up to 2600 bytes and 320
 //    cars (two unreliable fragments).
-// 13: the props' messages each client's own (the states near its car
+// 14: the water and the fall decided by the host (in every car's full state
+//    its vehSplash and the water handler's time; a client's Reset and
+//    RespawnAt only for debugging, its Cops and Robbers repair refused), and
+//    the race's rules state also unreliable (RulesState) between its
+//    reliable messages.
+// 16: the props' messages each client's own (the states near its car
 //    first), the ring up to 256 slots, a slot's number after the one before
-//    it in a bit.
-inline constexpr std::uint16_t kProtocolVersion = 13;
+//    it in a bit. (13 was its number on its branch; 15 the players' cars'.)
+inline constexpr std::uint16_t kProtocolVersion = 16;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.
@@ -115,7 +120,8 @@ enum class MsgType : std::uint8_t {
     CarStates,
     PropState,   // net/PropState.h
     TrafficFull, // net/TrafficFull.h
-    Last = TrafficFull,
+    RulesState,  // net/RulesState.h (protocol 14)
+    Last = RulesState,
 };
 
 // Sent as ENet disconnect data and in Reject/PlayerLeft messages.

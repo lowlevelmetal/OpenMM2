@@ -306,6 +306,18 @@ public:
     // Where to put the player after Respawn.
     Mat34 respawnTransform() const { return m_respawn; }
 
+    // A network race (netRules): mmGame::Update's water and fall checks run
+    // on the car's samples (game::NetCarDriver, on the host for every car,
+    // here predicted for this machine's), not here; the session shows only
+    // the water's message (and HitWater). Where the water's handler puts
+    // the car: the last checkpoint it cleared in a race
+    // (mmGameMulti::HitWaterHandler), nothing elsewhere (back to its reset
+    // position: mmGame::HitWaterHandler, mmMultiCR's).
+    std::optional<Mat34> netRespawnPoint() const;
+    // The handler put this machine's car back: the water's message may
+    // show again.
+    void netWaterReset();
+
 private:
     struct Racer {
         int count = 1;           // waypoints passed (the start counts)

@@ -252,3 +252,45 @@ TEST(RulesState, RandomAndMutatedPayloadsDecodeSafely) {
     }
     EXPECT_GT(decoded, 0);
 }
+
+TEST(RulesState, TheUnreliableStateCarriesARacesStateAlone) {
+    // Protocol 14: RulesState on the State channel, the same message
+    // without decisions or results; anything else is refused.
+    RulesStateMsg st;
+    st.rules = raceMessage();
+    st.rules.decisions.clear();
+    st.rules.results.clear();
+    RulesStateMsg back;
+    ASSERT_TRUE(decodeMessage(encodeMessage(st), back));
+    EXPECT_EQ(back.rules, st.rules);
+    RulesStateMsg withDecisions;
+    withDecisions.rules = raceMessage();
+    ASSERT_FALSE(withDecisions.rules.decisions.empty());
+    EXPECT_FALSE(decodeMessage(encodeMessage(withDecisions), back));
+    RulesStateMsg cops;
+    cops.rules = copsMessage();
+    cops.rules.decisions.clear();
+    EXPECT_FALSE(decodeMessage(encodeMessage(cops), back));
+    // Random and damaged packets decode safely, or not at all.
+    std::mt19937 rng(14);
+    const auto seed = encodeMessage(st);
+    int decoded = 0;
+    for (int i = 0; i < 3000; ++i) {
+        auto bytes = seed;
+        for (int k = 0; k < 1 + i % 5; ++k) {
+            const auto at = 1 + static_cast<std::size_t>(rng()) % (bytes.size() - 1);
+            bytes[at] ^= static_cast<std::byte>(1 << (rng() % 8));
+        }
+        if (i % 5 == 0)
+            bytes.resize(1 + static_cast<std::size_t>(rng()) % bytes.size());
+        RulesStateMsg m;
+        if (decodeMessage(bytes, m)) {
+            ++decoded;
+            EXPECT_FALSE(m.rules.cops);
+            EXPECT_TRUE(m.rules.decisions.empty());
+            EXPECT_TRUE(m.rules.results.empty());
+            expectSane(m.rules);
+        }
+    }
+    EXPECT_GT(decoded, 0);
+}
