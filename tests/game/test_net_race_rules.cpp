@@ -927,4 +927,21 @@ TEST(NetRaceRules, APlayersOwnWordOnTheRulesReachesNobody) {
     }));
     EXPECT_EQ(static_cast<std::uint16_t>(got[0].type), net::kRulesEvent);
     EXPECT_EQ(got[0].from, net::kHostPlayerId);
+    // The unreliable state (protocol 14) goes from the host only: a client
+    // cannot send one, and the host's reaches its player.
+    net::RulesStateMsg state;
+    state.rules.race = host.raceNumber();
+    state.rules.seq = 2;
+    state.rules.hits = {1};
+    EXPECT_EQ(cheat.sendRulesState(net::kHostPlayerId, state), 0u);
+    EXPECT_EQ(cheat.sendRulesState(honest.localId(), state), 0u);
+    EXPECT_GT(host.sendRulesState(honest.localId(), state), 0u);
+    std::vector<net::RulesMsg> states;
+    ASSERT_TRUE(pumpAll({&host, &cheat, &honest}, [&] {
+        for (auto& m : honest.takeRulesStates())
+            states.push_back(std::move(m));
+        return !states.empty();
+    }));
+    EXPECT_EQ(states[0], state.rules);
+    EXPECT_TRUE(host.takeRulesStates().empty());
 }
