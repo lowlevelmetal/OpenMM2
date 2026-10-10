@@ -93,6 +93,8 @@ struct Machine {
     std::optional<Clock::time_point> loadedAt; // the race screen is running from here
     int maxWaitingFor = 0;
     std::optional<double> countdownAt, goAt; // session times
+    std::optional<double> beforeCountdown, beforeGo; // the frames before them
+    std::optional<double> lastFrame;
     bool everReleasedEarly = false;
 
     Machine(NetGame& n, game::GameMode mode) : net(n), start(NetRaceStart::kindOf(mode)) {}
@@ -101,12 +103,27 @@ struct Machine {
             return;
         const auto out = start.update(dt, net);
         maxWaitingFor = std::max(maxWaitingFor, out.waitingFor);
-        if (out.countdownBegan)
+        if (out.countdownBegan) {
             countdownAt = net.frameTime();
-        if (out.went)
+            beforeCountdown = lastFrame;
+        }
+        if (out.went) {
             goAt = net.frameTime();
+            beforeGo = lastFrame;
+        }
         if (!out.held && !start.gone())
             everReleasedEarly = true;
+        lastFrame = net.frameTime();
+    }
+    // `at` is the first frame of this machine at or after `time` (within the
+    // float seconds NetRaceStart counts in), however late the frames come.
+    static void expectFirstFrameAt(const std::optional<double>& at, const std::optional<double>& before,
+                                   double time) {
+        ASSERT_TRUE(at.has_value());
+        EXPECT_GE(*at, time - 1.0);
+        if (before) {
+            EXPECT_LT(*before, time + 1.0);
+        }
     }
 };
 
@@ -281,12 +298,14 @@ TEST(NetGameStart, SlowLoaderIsWaitedForAndBothGoTogether) {
     EXPECT_EQ(client.maxWaitingFor, 0); // the host had reported long before
     EXPECT_EQ(p.host.raceStartTime(), p.client.raceStartTime());
     ASSERT_TRUE(host.countdownAt && client.countdownAt);
-    // Within a frame and the clock's error of each other, and of the start.
+    // Each machine counts down and goes in its first frame at or after the
+    // shared times, on its own session clock (a frame's length under load
+    // would not fit a fixed tolerance).
     const double start = p.host.raceStartTime();
-    EXPECT_NEAR(*host.goAt, start, 25.0);
-    EXPECT_NEAR(*client.goAt, start, 25.0);
-    EXPECT_NEAR(*host.countdownAt, start - 2500.0, 25.0);
-    EXPECT_NEAR(*client.countdownAt, start - 2500.0, 25.0);
+    for (const Machine* m : {&host, &client}) {
+        Machine::expectFirstFrameAt(m->goAt, m->beforeGo, start);
+        Machine::expectFirstFrameAt(m->countdownAt, m->beforeCountdown, start - 2500.0);
+    }
     EXPECT_FALSE(host.everReleasedEarly);
     EXPECT_FALSE(client.everReleasedEarly);
 }
