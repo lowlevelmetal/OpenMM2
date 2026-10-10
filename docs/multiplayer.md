@@ -1078,10 +1078,11 @@ for everything) decides them on the host from the cars it simulates (see
     its waypoints from the host's list and its hits still on their way, with
     the same rules, so nothing is shown twice.
   * a gold pickup (`CopsAndRobbers::updatePredicted`): "You have the Gold!"
-    at once (MM2's client asked the host and waited for 0x25a). The host's
-    `GoldTaken` for it confirms it; one for another car undoes it and shows
-    that car's; the state undoes it once the host has seen the car 30
-    samples past the pickup without granting it.
+    at once (MM2's client asked the host and waited for 0x25a), unless
+    another car is at the gold too, when it waits for the host's word as
+    MM2's did. The host's `GoldTaken` for it confirms it; one for another
+    car undoes it and shows that car's; the state undoes it once the host
+    has seen the car 30 samples past the pickup without granting it.
   * nothing else: the finishes, the results, the standings, drops,
     deliveries, scores, the new places and the limits are the host's word
     only. A client's own "finished in" line (MM2's client line: 149, 106,

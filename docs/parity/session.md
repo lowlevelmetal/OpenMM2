@@ -11,6 +11,11 @@ A second pass (2026-10-08) wired the race-side items the first pass and
 the other areas left open; its rows are in "Second pass" below, and the
 Missing table is updated.
 
+The host-authority work (2026-10-09, docs/review/multiplayer-desync-rules.md)
+moved mmWaypoints' rules into `WaypointTracker` (game/session/Waypoints.h)
+unchanged, so the host's referee runs them too; its rows are in "Host
+authority" below (8 more: verified 2, fixed 2, deviation 3, openmm2 1).
+
 Scope: the game modes and race rules (`src/game/session/Session`,
 `RaceSetup`, `Gate`, `CopsAndRobbers`, `Types`), the in-race HUD
 (`src/game/session/Hud`), the race configuration and strings
@@ -95,18 +100,18 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `rule` | `mmWaypoints` types 1-5 | verified | |
 | `resetRace` | `mmGame::Reset`, `mmGameSingle::Reset`, the modes' `Reset` | fixed | the minimum-speed state and the race-over flag are reset only here (not per exam event); the timer warning sound is stopped; the engine is un-silenced |
 | `beginEvent` | `mmSingleStunt::InitNewEvent`, `InitHUD`, the race modes' `InitGameObjects` | verified | clocks per lesson type |
-| `resetWaypoints` | `mmWaypoints::Reset` | verified | target 1, count 1; the finish of a checkpoint race hidden |
+| `WaypointTracker::reset` (was `resetWaypoints`) | `mmWaypoints::Reset` | verified | target 1, count 1; the finish of a checkpoint race hidden |
 | `start` | `mmGame::Reset`, `mmSingleRoam`, `mmMultiRoam::UpdateGame` state 1 | fixed | mmMultiRoam's "Go!" plays Startracehigh; `mmGame::Reset` asks the announcer for the pre-race line |
 | `restart` | `mmGame::Reset` | verified | |
 | `playerHold`, `playerHeld` | `vehCar::SetDrivable`, mmPlayer +0x2258 | fixed | was "held" for every post-race phase; now per ending: undrivable before "Go!", in wreck penalties, after a race/Blitz/jump/course wreck and any multiplayer ending; +0x2258 after the others; nothing after the water and the Clean and minimum-speed wrecks |
 | `updateCountdown` | the modes' `UpdateGame` states 0-2, `mmSingleStunt::Update*` | fixed | circuits and checkpoint races wait for the pre-race camera (mmPlayer +0xE5A); multiplayer waits for the host's start; a later exam event enables its cars in state 0 and says "Go" one update later; sounds |
 | `go` | the modes' state 2 → 3 | fixed | starts mmHUD's second timer too; Evade's later-event line (652) |
-| `setTarget` | `mmWaypoints::SetCurrentGoals` | verified | |
-| `closestTarget` | `mmWaypoints::GetClosestWaypoint` | verified | nearest shown, uncleared, 3D |
+| `WaypointTracker::setTarget` | `mmWaypoints::SetCurrentGoals` | verified | |
+| `WaypointTracker::closestTarget` | `mmWaypoints::GetClosestWaypoint` | verified | nearest shown, uncleared, 3D |
 | `cycleTarget` | `mmSingleRace` / `mmMultiRace::UpdateGameInput` | fixed | only for waypoint type 2 (OpenMM2 also cycled Blitz and lesson targets) |
-| `cycleCurrent` | `mmWaypoints::CycleCurrentWaypoint`, `GetNextWaypoint`, `GetLastWaypoint` | verified | OpenMM2 also stops below three waypoints (MM2 would index past the list) |
-| `displayCleared` | `mmWaypoints::DisplayHUDMessage`, `mmHUD::ShowSplitTime` | fixed | every cleared checkpoint shows the split time for 1 s (circuits: since the lap started), not in the crash course; Waypoint / Lastwaypoint sounds |
-| `updateWaypoints` | `mmWaypoints::Update`, `ClearWaypoint` | verified | per type; the rules see the waypoints as the previous frame left them (MM2 updates them after `UpdateGame`) |
+| `WaypointTracker::cycleCurrent` | `mmWaypoints::CycleCurrentWaypoint`, `GetNextWaypoint`, `GetLastWaypoint` | verified | OpenMM2 also stops below three waypoints (MM2 would index past the list) |
+| `displayCleared`, `WaypointTracker::markCleared` | `mmWaypoints::DisplayHUDMessage`, `mmHUD::ShowSplitTime` | fixed | every cleared checkpoint shows the split time for 1 s (circuits: since the lap started), not in the crash course; Waypoint / Lastwaypoint sounds |
+| `updateWaypoints`, `WaypointTracker::detect`, `apply`, `showWaypointSteps`, `lapCompleted` | `mmWaypoints::Update`, `ClearWaypoint` | verified | per type (the tracker reports what a hit did in Update's order and the session shows it); the rules see the waypoints as the previous frame left them (MM2 updates them after `UpdateGame`) |
 | `updateOpponents` | `mmSingleRace` / `mmSingleCircuit::UpdateOpponentStatus`, `FinishMessage` | fixed | finish times from mmHUD's +0xA24 timer (the player's finish does not stop it); also runs in the frame the race ends; Messagenote in both modes |
 | `updateRank` | `UpdateScore` | verified | |
 | `updateHazards` | `mmGame::Update` | verified | below y = −50; 5 s in the water; per-city lines |
@@ -284,6 +289,19 @@ Behaviour is documented in `docs/gamemodes.md`. Tests:
 | `setupCopsAndRobbers`, `updateCopsAndRobbers`, `fondleMass`, `crTeam` | `mmMultiCR::Init`, `InitMyPlayer`, `FondleCarMass`, `mmPlayer::UpdateRegen`, `mmGame::UpdateSteeringBrakes` | fixed | new: the mode is played (places, teams, messages, mass, throttle cap in every network game, regeneration, repair at delivery, HUD lines, limits, end after 3 s); the shared first set is seeded by the race's order time (OpenMM2) |
 | `Hud::drawCrObjects`, `drawCrReadouts`, arrow interest | `mmPowerupInstance::Draw`, `mmBillInstance::Draw`, `mmArrow::SetInterest`, `mmCRHUD::Init` | fixed | new: the spinning gold, the bases' billboards, the team totals ("COPS" / "ROBBERS" or "BLUE" / "RED"); the roster of names and the gold icon are not drawn, and the totals' corner is inferred |
 | Cops and Robbers speech | `mmSpeechContainer::InitCNR` | verified | loaded; nothing in build 3393 calls `mmCNRSpeech::Play` |
+
+## Host authority (2026-10-09)
+
+| OpenMM2 | MM2 | Verdict | Notes |
+| --- | --- | --- | --- |
+| `RaceReferee::sample` | `mmWaypoints::Update` on each machine's car; `mmMultiRace` / `mmMultiCircuit` / `mmMultiBlitz::UpdateGame` state 3 (the finish, a Blitz clock, nothing checked while a wreck penalty holds the car) | deviation | the host runs every player's car after every physics sample (MM2: each machine its own, once a frame); the finish time is the host's samples from the car's own release, where MM2's was each machine's timer |
+| `RaceReferee::decideFinish`, `results` | `mmGameMulti::SortResults`, `SendFinishAck`, `mmMultiRace::SetTimeoutOn` | verified | listed once, by time, a later equal time after; the first finish arms 60 s (race) or 120 s (circuit) |
+| `RaceReferee::update`, `timeOutAll` | the timeout of `mmMultiRace` / `mmMultiCircuit::UpdateGame`, `GameMessage` 0x1fe, 0x206, 0x211; `mmMultiBlitz` 0x1fe at the host's time-up | deviation | the host decides everyone's did-not-finish at once (MM2: each machine sent its own after 0x1fe); counted against the players still in the race (the existing deviation) |
+| `RaceReferee` standings, `iconPlace` | `mmGameMulti::UpdateScore` | verified | each player's place and each car's icon number as that player's machine computes them; a player's target is the host's view of it (the Next / Prev. Checkpoint keys stay on its machine) |
+| `Session::updateNetRace` (icon numbers) | `mmGameMulti::UpdateScore` | fixed | the player's own car against another car level with it: both measured to the player's own target, not to that car's next waypoint |
+| `Session::netFinished` (own line) | `mmMultiRace` / `Circuit` / `Blitz::GameMessage` 0x1f7 | fixed | a client's own "finished in" line is its line (149 / 106 / 95), shown with the host's time when the host's word arrives; it showed the host's line (148 / 105 / 93) at its own detection |
+| `Session::applyNetProgress`, `setNetStanding`, `netTimedOut`, `netAllCounted`; `CopsAndRobbers::updatePredicted`, `applyHost`, `adopt` | `GameMessage` 0x1f7, 0x1fe, 0x211; `mmMultiCR::UpdateGold` (a client's request), `GameMessage` 0x25a, 0x259, 600, 0x261 | openmm2 | a client predicts its checkpoints and a pickup and takes the host's word on them; everything else is the host's |
+| `CopsAndRobbers::updateHost` | `mmMultiCR::ImpactCallback`, `UpdateGame` state 4, `HitWaterHandler`, `DropThruCityHandler`, `UpdateGold`, `UpdateBank`, `UpdateHideout`, `UpdateLimit`, `GameMessage` 0x25e, `SystemMessage` 0x2d | deviation | the host runs each car's rules as its own machine did; two cars at the gold in one frame are decided in car order (MM2: the first request to arrive) |
 
 ## Missing
 
