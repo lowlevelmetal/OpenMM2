@@ -222,7 +222,8 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
             (finalShown[i]->clock > endClock - 1000.0 ? pendingAtEnd : shownNotCounted) += 1;
             continue;
         }
-        const double dt = finalShown[i]->clock - hostHits[static_cast<std::size_t>(it - hostKeys.begin())]->clock;
+        const auto at = static_cast<std::size_t>(it - hostKeys.begin());
+        const double dt = finalShown[i]->clock - hostHits[at]->clock;
         (finalShown[i]->kind ? lagHostWord : leadPredicted).push_back(dt);
     }
     for (const auto& k : hostKeys)
@@ -233,11 +234,12 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
     std::println("  player {} ({}): host counted {} checkpoints ({} at gate 0); its HUD showed {} ({} as "
                  "predicted, {} on the host's word), took {} back",
                  m.self, m.path, counted.size(), hostLaps, m.shown.size(), predicted, fromHost, takenBack);
-    std::println("    shown and never counted by the host: {} (+{} still on their way at the end); counted and "
-                 "not shown: {}; gate-0 passes shown {} against {}",
+    std::println("    shown and never counted by the host: {} (+{} still on their way at the end); "
+                 "counted and not shown: {}; gate-0 passes shown {} against {}",
                  shownNotCounted, pendingAtEnd, countedNotShown, shownLaps, hostLaps);
     if (!leadPredicted.empty())
-        std::println("    predicted ones shown {:.0f} ms before the host counted them (median; 1% {:.0f}, 99% {:.0f})",
+        std::println("    predicted ones shown {:.0f} ms before the host counted them "
+                     "(median; 1% {:.0f}, 99% {:.0f})",
                      -percentile(leadPredicted, 0.5), -percentile(leadPredicted, 0.99),
                      -percentile(leadPredicted, 0.01));
     if (!lagHostWord.empty())
@@ -267,7 +269,8 @@ void finishes(const std::vector<Machine>& machines) {
         if (const auto r = referee.find(id); r != referee.end()) {
             line += std::format("  (the host's measure {})", time(r->second.ms));
             for (const auto& m : machines)
-                if (const auto it = m.finishes.find(id); it != m.finishes.end() && it->second.ms != r->second.ms)
+                if (const auto it = m.finishes.find(id);
+                    it != m.finishes.end() && it->second.ms != r->second.ms)
                     ++offReferee;
         }
         ++total;
@@ -277,8 +280,8 @@ void finishes(const std::vector<Machine>& machines) {
         agree += all ? 1 : 0;
         std::println("{}", line);
     }
-    std::println("  {} of {} finishes the same on every machine; {} results differ from the host's measure", agree,
-                 total, offReferee);
+    std::println("  {} of {} finishes the same on every machine; {} results differ from the host's measure",
+                 agree, total, offReferee);
     auto order = [](const Machine& m) {
         std::vector<std::pair<unsigned, int>> v;
         for (const auto& [id, f] : m.finishes)
@@ -319,8 +322,8 @@ void backing(const std::vector<Machine>& machines) {
         const double d = p ? std::hypot(p->x - g.x, p->y - g.y, p->z - g.z) : 1e9;
         if (d > 7.0) {
             ++farPickups;
-            std::println("    player {}'s pickup at {:.0f}: its car {:.1f} m from the gold on the host", g.car, g.clock,
-                         d);
+            std::println("    player {}'s pickup at {:.0f}: its car {:.1f} m from the gold on the host",
+                         g.car, g.clock, d);
         }
     }
     // Each knock once: the host's own record of it (every car's since
@@ -343,11 +346,12 @@ void backing(const std::vector<Machine>& machines) {
         });
         if (!backed) {
             ++unbacked;
-            std::println("    player {}'s gold knocked loose at {:.0f}: no such hit on the host", g->car, g->clock);
+            std::println("    player {}'s gold knocked loose at {:.0f}: no such hit on the host", g->car,
+                         g->clock);
         }
     }
-    std::println("  the host's simulation: {} of {} pickups with the car more than 7 m from the gold, {} of {} "
-                 "knocks without a hit of 250 there",
+    std::println("  the host's simulation: {} of {} pickups with the car more than 7 m from the gold, "
+                 "{} of {} knocks without a hit of 250 there",
                  farPickups, pickups, unbacked, knocks);
 }
 

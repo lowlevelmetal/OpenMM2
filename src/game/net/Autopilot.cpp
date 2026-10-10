@@ -16,8 +16,8 @@ NetAutopilot::~NetAutopilot() = default;
 
 std::unique_ptr<NetAutopilot> NetAutopilot::create(const city::CityData& city, const vfs::Vfs& vfs,
                                                    const session::RaceSetup& setup, phys::CarSim& car,
-                                                   int line, float speedLimit, const phys::GroundQuery* ground,
-                                                   std::string* error) {
+                                                   int line, float speedLimit,
+                                                   const phys::GroundQuery* ground, std::string* error) {
     auto fail = [&](std::string text) -> std::unique_ptr<NetAutopilot> {
         if (error)
             *error = std::move(text);
@@ -48,8 +48,8 @@ std::unique_ptr<NetAutopilot> NetAutopilot::create(const city::CityData& city, c
     // The AI takes the car's impact callback for itself; the player's car
     // keeps its own.
     const auto impacts = car.onImpactCallback;
-    pilot->m_driver = ai::Opponent::create(pilot->m_ai->map(), car, *path, o.params, laps, 1, 0, error, ground,
-                                           setup.config.vehicle);
+    pilot->m_driver = ai::Opponent::create(pilot->m_ai->map(), car, *path, o.params, laps, 1, 0, error,
+                                           ground, setup.config.vehicle);
     car.onImpactCallback = impacts;
     if (!pilot->m_driver)
         return nullptr;
@@ -84,8 +84,9 @@ void NetAutopilot::setTarget(phys::CarSim& car, const Vec3& target, const phys::
     if (m_target && m_target->dist2(target) < 25.0f * 25.0f && m_driver)
         return;
     m_target = target;
-    log::info("autopilot: to ({:.0f}, {:.0f}, {:.0f}) from ({:.0f}, {:.0f}, {:.0f})", target.x, target.y, target.z,
-              car.body.ics.matrix.m3.x, car.body.ics.matrix.m3.y, car.body.ics.matrix.m3.z);
+    const Vec3& from = car.body.ics.matrix.m3;
+    log::info("autopilot: to ({:.0f}, {:.0f}, {:.0f}) from ({:.0f}, {:.0f}, {:.0f})", target.x, target.y,
+              target.z, from.x, from.y, from.z);
     std::vector<city::OpponentPoint> path(2);
     path[0].position = car.body.ics.matrix.m3;
     path[1].position = target;

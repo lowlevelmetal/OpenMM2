@@ -1157,7 +1157,8 @@ void Session::updateNetRace(float dt, const PlayerState& player) {
         // runs the finish timeout (netTimedOut).
         m_netPlaces.assign(m_netRacers.size(), 0);
         for (std::size_t i = 0; i < m_netRacers.size(); ++i)
-            m_netPlaces[i] = m_netRacers[i].present && !m_netRacers[i].finished ? m_netRacers[i].hostPlace : 0;
+            m_netPlaces[i] =
+                m_netRacers[i].present && !m_netRacers[i].finished ? m_netRacers[i].hostPlace : 0;
         return;
     }
     // mmGameMulti::UpdateScore: the place among the other players, while
@@ -1813,9 +1814,9 @@ void Session::updateRules(float dt, const PlayerState& player, std::span<const O
         // race of one still driving (deviation: MM2 counts the leaver's
         // finish against the smaller session at the next finish).
         // Under the host's authority its 0x211 says so (netAllCounted).
+        const auto finished = [](const NetRacer& r) { return r.finished; };
         const bool counted =
-            netRules() ? m_netAllCounted
-                       : m_netTimedOut || std::ranges::all_of(m_netRacers, [](const NetRacer& r) { return r.finished; });
+            netRules() ? m_netAllCounted : m_netTimedOut || std::ranges::all_of(m_netRacers, finished);
         if (m_postWait <= 0.0f && (!netWaitsForAll() || counted)) {
             m_phase = Phase::Done;
             push(EventType::SessionOver);

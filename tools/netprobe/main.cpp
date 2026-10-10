@@ -384,7 +384,8 @@ int cmdRelay(const Args& a) {
 }
 
 int usage() {
-    std::println(stderr, "usage: netprobe <info|host|join|scan|portmap|relay|syncreport|rulesreport> [options]\n"
+    std::println(stderr, "usage: netprobe "
+                         "<info|host|join|scan|portmap|relay|syncreport|rulesreport> [options]\n"
                          "  info\n"
                          "  host    [--port N] [--name S] [--car S] [--password P] [--upnp] [--seconds N]\n"
                          "  join    <host[:port]> [--name S] [--car S] [--password P] [--chat TEXT] [--seconds N]\n"

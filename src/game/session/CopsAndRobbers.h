@@ -159,7 +159,8 @@ public:
     // GetNewSet after a delivery), and tells everyone. `cars` are every
     // player's car in the game, `impacts` the damaging hits between them.
     // Returns the decisions, in order.
-    std::vector<Message> updateHost(float dt, const std::vector<Car>& cars, const std::vector<Impact>& impacts);
+    std::vector<Message> updateHost(float dt, const std::vector<Car>& cars,
+                                    const std::vector<Impact>& impacts);
     // A machine that is not the host: the clock and its warnings, the gold
     // riding above its carrier among `cars` (as this machine has them), and
     // its own car `me` taking free gold within reach (UpdateGold's test, the

@@ -3101,11 +3101,11 @@ private:
             const float speed =
                 parts.size() > 1 ? static_cast<float>(str::parseDouble(parts[1]).value_or(0.0)) : 0.0f;
             std::string error;
-            m_autopilot = s.session ? game::NetAutopilot::create(*m_city, ctx.game->vfs, m_session->setup(),
-                                                                 m_player->sim(), line, speed, m_world.get(),
-                                                                 &error)
-                                    : game::NetAutopilot::createFree(*m_city, ctx.game->vfs, m_session->setup(),
-                                                                     speed, &error);
+            const auto& setup = m_session->setup();
+            const auto& files = ctx.game->vfs;
+            m_autopilot = s.session ? game::NetAutopilot::create(*m_city, files, setup, m_player->sim(), line,
+                                                                 speed, m_world.get(), &error)
+                                    : game::NetAutopilot::createFree(*m_city, files, setup, speed, &error);
             if (m_autopilot)
                 log::info("race: the autopilot drives opponent line {}", line);
             else
@@ -5661,10 +5661,11 @@ private:
         // The rules' messages (game/net/NetRules): sent by the host, taken by a client.
         if (verbose && m_netRules.active()) {
             const auto& r = m_netRules.stats();
-            log::info("netrules: {} messages sent ({:.0f} B/s), {} taken, {} decisions, {} refused, {} malformed, "
-                      "{} stale, {} decisions missed",
-                      r.sent - m_netRulesSent.sent, static_cast<double>(r.bytes - m_netRulesSent.bytes) / seconds,
-                      r.received, r.decisions, r.refused, r.malformed, r.stale, r.gaps);
+            log::info("netrules: {} messages sent ({:.0f} B/s), {} taken, {} decisions, {} refused, "
+                      "{} malformed, {} stale, {} decisions missed",
+                      r.sent - m_netRulesSent.sent,
+                      static_cast<double>(r.bytes - m_netRulesSent.bytes) / seconds, r.received, r.decisions,
+                      r.refused, r.malformed, r.stale, r.gaps);
             m_netRulesSent = r;
         }
     }
