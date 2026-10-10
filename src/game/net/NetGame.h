@@ -318,7 +318,7 @@ public:
 
     // --- The players' cars, simulated by the host (net/PlayerCarState.h) -------------------
     // Client: this machine's car's inputs.
-    void sendPlayerInput(const net::PlayerInputMsg& msg);
+    std::size_t sendPlayerInput(const net::PlayerInputMsg& msg); // bytes sent
     // Host: the clients' inputs received since the last call.
     std::vector<net::Session::ReceivedInput> takePlayerInputs();
     // Host: one client's states; returns the bytes sent.

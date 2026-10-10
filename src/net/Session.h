@@ -254,7 +254,7 @@ public:
 
     // --- The players' cars, simulated by the host (net/PlayerCarState.h) ---
     // Client: this machine's inputs to the host (during a race only).
-    void sendPlayerInput(const PlayerInputMsg& msg);
+    std::size_t sendPlayerInput(const PlayerInputMsg& msg); // bytes sent, 0 if not
     // Host: the clients' inputs received since the last call, oldest first
     // (at most kMaxQueuedPlayerInputs; a joiner beyond its budget of
     // kInputRate messages a second loses the excess, which the next ones

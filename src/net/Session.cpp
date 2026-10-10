@@ -1391,10 +1391,12 @@ void Session::sendGameEvent(std::uint16_t type, std::vector<std::byte> payload, 
         sendTo(m_hostPeer, Channel::Events, std::move(msg));
 }
 
-void Session::sendPlayerInput(const PlayerInputMsg& msg) {
-    if (m_role != Role::Client || m_state != State::Active || !replicating() || msg.frames.empty())
-        return;
-    sendTo(m_hostPeer, Channel::State, raced(msg));
+std::size_t Session::sendPlayerInput(const PlayerInputMsg& msg) {
+    if (m_role != Role::Client || !m_transport || m_state != State::Active || !replicating() ||
+        msg.frames.empty())
+        return 0;
+    const auto packet = encodeMessage(raced(msg));
+    return m_transport->send(m_hostPeer, Channel::State, packet) ? packet.size() : 0;
 }
 
 std::size_t Session::sendCarStates(std::uint8_t playerId, const CarStatesMsg& msg) {

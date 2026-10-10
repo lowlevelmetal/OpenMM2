@@ -3728,6 +3728,7 @@ private:
                     *ctx.netGame, *m_bangers,
                     [this](const phys::Instance& other) { return propMover(&other); },
                     [this](std::uint8_t id) { return netCarAt(id); });
+                m_netProps.setInRace([this](std::uint8_t id) { return !m_netLeft.contains(id); });
                 m_netProps.setClientCars([this](const phys::Instance* b) { return propMoverCar(b); },
                                          [this](int id) { return hostCarState(id); },
                                          [this]() -> std::optional<Vec3> {
@@ -6103,9 +6104,8 @@ private:
             }
         } else if (m_frameSteps > 0) {
             if (const auto msg = m_prediction.message()) {
-                ctx.netGame->sendPlayerInput(*msg);
+                m_netInputBytes += ctx.netGame->sendPlayerInput(*msg);
                 ++m_netInputsSent;
-                m_netInputBytes += net::encodeMessage(*msg).size();
             }
             // The session time this machine's car's newest sample ended at,
             // for the lead over the host (reconcileNetCar).

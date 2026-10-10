@@ -223,7 +223,7 @@ void NetProps::afterStep(NetGame& net, double now, std::uint64_t nowMs, const Cl
         sendCatchUps(net, time);
         std::vector<PropHost::Viewer> viewers;
         for (const auto& p : net.players())
-            if (p.id != net.localId() && net.playerLoaded(p.id))
+            if (p.id != net.localId() && net.playerLoaded(p.id) && (!m_inRace || m_inRace(p.id)))
                 viewers.push_back({p.id, m_carOf ? m_carOf(p.id) : std::nullopt});
         for (const auto& [id, msg] : m_host->build(*m_set, time, nowMs, m_catalog, viewers)) {
             const std::size_t bytes = net.sendPropState(id, msg);

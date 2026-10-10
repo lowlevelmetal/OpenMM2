@@ -93,6 +93,9 @@ public:
         m_hostCar = std::move(hostCar);
         m_ownCarAt = std::move(ownCarAt);
     }
+    // Host: whether a player is still in the race (one who quit it has no
+    // car and is sent nothing).
+    void setInRace(std::function<bool(std::uint8_t)> inRace) { m_inRace = std::move(inRace); }
     bool host() const { return m_host.has_value(); }
     bool client() const { return m_client.has_value(); }
     // A client takes the cars' thrown parts from the host's ring (except
@@ -146,6 +149,7 @@ private:
     std::uint32_t m_catalog = 0;
     std::set<std::uint8_t> m_caughtUp; // host: players sent every knock so far
     CarOf m_carOf;
+    std::function<bool(std::uint8_t)> m_inRace;
     PropClient::CarOfToucher m_carOfToucher;
     PropClient::HostCar m_hostCar;
     OwnCarAt m_ownCarAt;

@@ -861,9 +861,8 @@ std::vector<NetGameEvent> NetGame::takeGameEvents() { return std::exchange(m_gam
 
 // --- The players' cars ----------------------------------------------------------------------
 
-void NetGame::sendPlayerInput(const net::PlayerInputMsg& msg) {
-    if (m_impl->session)
-        m_impl->session->sendPlayerInput(msg);
+std::size_t NetGame::sendPlayerInput(const net::PlayerInputMsg& msg) {
+    return m_impl->session ? m_impl->session->sendPlayerInput(msg) : 0;
 }
 
 std::vector<net::Session::ReceivedInput> NetGame::takePlayerInputs() {

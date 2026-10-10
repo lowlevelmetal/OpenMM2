@@ -82,7 +82,9 @@ std::unique_ptr<NetAutopilot> NetAutopilot::createFree(const city::CityData& cit
 
 void NetAutopilot::setTarget(phys::CarSim& car, const Vec3& target, const phys::GroundQuery* ground) {
     // A new destination: the racer AI drives the city's roads to it.
-    if (m_target && m_target->dist2(target) < 25.0f * 25.0f && m_driver)
+    // The same destination again: kept, also when the AI could not route to
+    // it (tried once, not every frame).
+    if (m_target && m_target->dist2(target) < 25.0f * 25.0f)
         return;
     m_target = target;
     const Vec3& from = car.body.ics.matrix.m3;

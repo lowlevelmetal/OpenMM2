@@ -456,8 +456,10 @@ public:
         dialogPicture = "jpg/pass_dlg.jpg";
         menuId = kPasswordDialog;
         origin = centredOrigin(fe, "jpg/pass_dlg.jpg", {400, 330});
-        auto& entry =
-            menu.add<ui::TextEntry>(fe.layout.widget(kPasswordDialog, 0, {72, 91, 203, 22}, origin), &m_password, 24);
+        // UIMenu::AddTextField with 0x19, the host dialog's length too: a
+        // host's 25-character password can be typed here.
+        auto& entry = menu.add<ui::TextEntry>(fe.layout.widget(kPasswordDialog, 0, {72, 91, 203, 22}, origin),
+                                              &m_password, 25);
         auto join = [this, &fe] {
             const auto target = m_address;
             // Trimmed as the host's is (HostOptionsDialog::host).
@@ -864,10 +866,11 @@ private:
 
     // What the joiners' ready depends on: the host's race settings.
     static std::string settingsKey(const game::RaceConfig& c, int goldMass) {
-        return std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", c.city, static_cast<int>(c.mode), c.raceIndex, c.laps,
-                           static_cast<int>(c.timeOfDay), static_cast<int>(c.weather),
+        // OpenMM2's shared cruise traffic too (netTraffic and its densities).
+        return std::format("{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}", c.city, static_cast<int>(c.mode),
+                           c.raceIndex, c.laps, static_cast<int>(c.timeOfDay), static_cast<int>(c.weather),
                            static_cast<int>(c.copsAndRobbers), c.timeLimitMinutes, c.pointLimit, goldMass,
-                           c.pedestrianDensity);
+                           c.pedestrianDensity, c.netTraffic, c.trafficDensity, c.copDensity);
     }
 
     // NetArena::LoadRaceMap: "<city>_map" + dgGameModeNames[mode] with the
