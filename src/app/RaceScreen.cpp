@@ -2071,6 +2071,7 @@ private:
             // any chase (of anyone) and a wrecked, out-of-action cop count.
             st.pursuing = c.driver->mode() != ai::PoliceCar::Mode::Parked;
         }
+        presentOwnWaterReset();
         const auto phaseBefore = m_session->phase();
         m_session->setPreRaceCamera(m_cams.preRace());
         // The multiplayer countdown (2.5 s) starts with the host's start
@@ -2169,18 +2170,14 @@ private:
                 // (back to the reset position); with them mmSingleCircuit /
                 // mmGameMulti::HitWaterHandler reset the car at the last
                 // checkpoint and put the reset position back.
-                const std::uint32_t sample =
-                    m_traceNet && m_traceNet->isHost() ? m_netOwnSample + 1 : m_prediction.nextSeq();
+                // (A network race's water and fall run on the car's samples:
+                // NetCarDriver::setWaterHandler, presentOwnWaterReset.)
                 if (m_session->setup().checkpoints.empty()) {
                     netCommand({0, net::CarCommandKind::Reset, {}, 0.0f});
                 } else {
                     const Mat34 at = m_session->respawnTransform();
                     netCommand({0, net::CarCommandKind::RespawnAt, at.m3, phys::resetRotationOf(at)});
                 }
-                if (m_traceNet)
-                    game::traceWaterReset(m_traceNet->traceFile(), m_traceNet->frameTime(),
-                                          m_traceNet->localId(), sample, m_player->sim().body.ics.matrix.m3);
-                m_crWaterHandled = m_cr != nullptr; // mmMultiCR::HitWaterHandler drops the gold
                 if (m_vehicleFx)
                     m_vehicleFx->reset(); // vehCar::Reset
                 clearVehicleDamage();
@@ -2657,12 +2654,12 @@ private:
             // water handler fires (5 s in the water, or a fall out of the
             // city): this car's, or a reset another player's car took.
             std::vector<CopsAndRobbers::Car> cars;
-            cars.push_back(
-                {m_crSelf, m_crMyTeam, own, m_playerState.wrecked, std::exchange(m_crWaterHandled, false)});
+            const bool ownWater = std::exchange(m_crWaterHandled, false);
+            cars.push_back({m_crSelf, m_crMyTeam, own, m_playerState.wrecked, ownWater, {}});
             for (const auto& [id, rv] : m_remotes)
                 if (rv.simulated && rv.placed && rv.sim && !m_netLeft.contains(id))
                     cars.push_back({id, m_cr->teamOf(id), rv.sim->sim().body.ics.matrix.m3,
-                                    rv.sim->sim().damage.wrecked(), m_crResets.contains(id)});
+                                    rv.sim->sim().damage.wrecked(), m_crResets.contains(id), {}});
             m_crResets.clear();
             auto decisions = m_cr->updateHost(ruleDt, cars, m_crImpacts);
             for (const auto id : left) {
@@ -2677,12 +2674,28 @@ private:
             // The host's word came with the frame's events
             // (receiveNetRules); this machine predicts only its own car
             // taking free gold, which the host confirms or undoes.
+            // The other cars where the host will have them when it runs
+            // this machine's sample: the ones simulated here with its car
+            // (predictNearCars) as they are, the others run on from where
+            // they are drawn (a playout delay and this car's lead behind).
             std::vector<CopsAndRobbers::Car> cars;
-            cars.push_back({m_crSelf, m_crMyTeam, own, m_playerState.wrecked, false});
-            for (const auto& rc : m_remoteCars)
-                if (rc.hasState)
-                    cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3,
-                                    (rc.flags & net::kVehicleWrecked) != 0, false});
+            cars.push_back({m_crSelf, m_crMyTeam, own, m_playerState.wrecked, false, {}});
+            const double hostMs = ctx.netGame->frameTime() + m_netCarLead.value_or(0.0);
+            for (const auto& rc : m_remoteCars) {
+                if (!rc.hasState)
+                    continue;
+                const bool wrecked = (rc.flags & net::kVehicleWrecked) != 0;
+                if (const auto it = m_remotes.find(rc.id);
+                    it != m_remotes.end() && it->second.predicted && it->second.sim) {
+                    const auto& ics = it->second.sim->sim().body.ics;
+                    cars.push_back({rc.id, m_cr->teamOf(rc.id), ics.matrix.m3, wrecked, false,
+                                    ics.linearVelocity});
+                    continue;
+                }
+                const float ahead = static_cast<float>(std::clamp((hostMs - rc.time) * 0.001, 0.0, 0.5));
+                cars.push_back({rc.id, m_cr->teamOf(rc.id), rc.transform.m3 + rc.velocity * ahead, wrecked,
+                                false, rc.velocity});
+            }
             int players = 0;
             for (const auto& p : ctx.netGame->players())
                 players += m_netLeft.contains(p.id) ? 0 : 1;
@@ -3144,8 +3157,10 @@ private:
         for (const auto& p : ctx.netGame->players())
             m_netRules.setName(p.id, p.name);
         m_netRules.setTrace(ctx.netGame->traceFile(), ctx.netGame->frameTime());
-        if (!ctx.netGame->isHost() && m_player)
+        if (!ctx.netGame->isHost() && m_player) {
             m_netRules.receive(m_netEvents, m_player->sim().body.ics.matrix.m3);
+            m_netRules.receiveStates(ctx.netGame->takeRulesStates(), m_player->sim().body.ics.matrix.m3);
+        }
     }
 
     // Host: its referee's frame, its word on its own player, each player's message.
@@ -3158,6 +3173,9 @@ private:
         m_netRules.hostUpdate(dt, net::monotonicMs(), m_player->sim().body.ics.matrix.m3,
                               [&ctx](std::uint8_t player, std::vector<std::byte> payload) {
                                   ctx.netGame->sendEvent(net::kRulesEvent, std::move(payload), player);
+                              },
+                              [&ctx](std::uint8_t player, const net::RulesStateMsg& state) {
+                                  ctx.netGame->sendRulesState(player, state);
                               });
     }
 
@@ -5051,7 +5069,7 @@ private:
                 // Its player's first command puts it where that machine
                 // started it.
                 const auto first = rv.inputs.ready() ? rv.inputs.placement() : std::nullopt;
-                if (!first || !netCommandAllowed(p.id, rv, *first))
+                if (!first || !netCommandAllowed(rv, *first))
                     continue;
                 game::NetCarDriver::command(*rv.sim, *first);
                 rv.lastMoveSeq = first->seq;
@@ -5073,36 +5091,64 @@ private:
 
     // Host: whether a client's command may reset its car (game::ResetRules,
     // on this machine's simulation of it).
-    bool netCommandAllowed(std::uint8_t id, const RemoteVehicle& rv, const net::CarCommand& c) {
+    bool netCommandAllowed(const RemoteVehicle& rv, const net::CarCommand& c) const {
         static const bool debug = std::getenv("OPENMM2_DEBUG_RESPAWN_MS") != nullptr;
-        if (m_netRespawnPoints.empty() && m_session)
-            for (const auto& cp : m_session->setup().checkpoints)
-                m_netRespawnPoints.push_back(game::session::spawnAt(cp));
-        // In a race only the start and the checkpoints the host's referee
-        // counted for that car (game/net/NetRules: mmGameMulti::
-        // HitWaterHandler puts it back at the last one it cleared).
-        std::vector<Mat34> counted;
-        if (const auto indices = m_netRules.respawnCheckpoints(id)) {
-            for (const int i : *indices)
-                if (i >= 0 && static_cast<std::size_t>(i) < m_netRespawnPoints.size())
-                    counted.push_back(m_netRespawnPoints[static_cast<std::size_t>(i)]);
-        }
         game::ResetRules r;
         r.placed = rv.placed && rv.sim;
         r.lastMoveSeq = rv.lastMoveSeq;
-        r.waterSamples = rv.waterSamples;
-        if (rv.sim) {
-            r.height = rv.sim->sim().body.ics.matrix.m3.y;
-            r.wrecked = rv.sim->sim().damage.maxDamaged();
-        }
-        r.copsAndRobbers = m_result.config.mode == game::GameMode::CopsAndRobbers;
+        r.wrecked = rv.sim && rv.sim->sim().damage.maxDamaged();
         r.debug = debug;
         r.city = m_city->psdl.bounds;
-        r.respawnPoints = m_netRules.respawnCheckpoints(id) ? std::span<const Mat34>(counted)
-                                                            : std::span<const Mat34>(m_netRespawnPoints);
         return r.allows(c);
     }
-    std::vector<Mat34> m_netRespawnPoints; // host: the race's checkpoints' spawns
+
+    // What the water's handler does to a car (NetCarDriver::setWaterHandler):
+    // in a race RespawnAt the last checkpoint it cleared
+    // (mmGameMulti::HitWaterHandler; `checkpoint` its index), elsewhere
+    // Reset at its reset position (mmGame::HitWaterHandler, mmMultiCR's).
+    net::CarCommand waterHandler(std::optional<int> checkpoint) const {
+        if (!checkpoint || !m_session || m_session->setup().checkpoints.empty())
+            return {0, net::CarCommandKind::Reset, {}, 0.0f};
+        const auto& cps = m_session->setup().checkpoints;
+        const int last = static_cast<int>(cps.size()) - 1;
+        const auto k = static_cast<std::size_t>(std::clamp(*checkpoint, 0, last));
+        const Mat34 at = game::session::spawnAt(cps[k]);
+        return {0, net::CarCommandKind::RespawnAt, at.m3, phys::resetRotationOf(at)};
+    }
+    // This machine's car's handler: where its session puts it back.
+    net::CarCommand ownWaterHandler() const {
+        if (!m_session)
+            return {0, net::CarCommandKind::Reset, {}, 0.0f};
+        const std::optional<Mat34> at = m_session->netRespawnPoint();
+        if (!at)
+            return {0, net::CarCommandKind::Reset, {}, 0.0f};
+        return {0, net::CarCommandKind::RespawnAt, at->m3, phys::resetRotationOf(*at)};
+    }
+    // This machine's car was put back by the water or a fall at the start of
+    // its sample `sample` (the host's decision for its own car, a client's
+    // prediction of the host's): the trace, Cops and Robbers' handler on the
+    // host, and the rest once the frame's samples are done.
+    void ownWaterReset(std::uint32_t sample) {
+        if (m_traceNet)
+            game::traceWaterReset(m_traceNet->traceFile(), m_traceNet->frameTime(), m_traceNet->localId(),
+                                  sample, m_player->sim().body.ics.matrix.m3);
+        if (m_traceNet && m_traceNet->isHost())
+            m_crWaterHandled = m_cr != nullptr; // mmMultiCR::HitWaterHandler drops the gold
+        m_ownWaterReset = true;
+    }
+    // mmPlayer::Reset's presentation: the car's effects and dents, the
+    // camera; the session's water message may show again.
+    void presentOwnWaterReset() {
+        if (!std::exchange(m_ownWaterReset, false))
+            return;
+        if (m_vehicleFx)
+            m_vehicleFx->reset(); // vehCar::Reset
+        clearVehicleDamage();
+        m_cams.reset(cameraTarget());
+        if (m_session)
+            m_session->netWaterReset();
+    }
+    bool m_ownWaterReset = false;
 
     // Host: a simulated player's car's impact (vehCarDamage::ApplyImpact):
     // its sound, sparks and damage, which everyone is sent.
@@ -5159,20 +5205,24 @@ private:
         net::CarInputFrame in = m_netInput;
         in.events = std::exchange(m_netKeys, 0); // the keys go with the first sample after them
         if (m_traceNet->isHost()) {
+            // OpenMM2: the water and the fall on every car the host
+            // simulates are its own decision (protocol 14).
+            m_netDriver.setWaterHandler(ownWaterHandler());
+            const std::uint32_t ownResets = m_netDriver.waterResets();
             if (m_netDriver.apply(*m_player, in))
                 clearVehicleDamage(); // mmPlayer::ResetDamage
+            if (m_netDriver.waterResets() != ownResets)
+                ownWaterReset(m_netOwnSample + 1);
             for (auto& [id, rv] : m_remotes) {
                 if (!rv.simulated || !rv.placed || !rv.sim)
                     continue;
-                // The samples it has been in the water (netCommandAllowed).
-                rv.waterSamples = rv.sim->sim().splash.active() ? rv.waterSamples + 1 : 0;
                 auto next = rv.inputs.next();
                 if (!next)
                     continue;
                 for (const auto& c : next->commands) {
                     if (c.kind == net::CarCommandKind::ResetTo && c.seq == rv.lastMoveSeq)
                         continue; // the placement, carried out already
-                    if (!netCommandAllowed(id, rv, c)) {
+                    if (!netCommandAllowed(rv, c)) {
                         static const bool verbose = std::getenv("OPENMM2_DEBUG_NETCARS") != nullptr;
                         if (verbose)
                             log::info("netcars: refused player {}'s {} at sample {}", id,
@@ -5180,13 +5230,7 @@ private:
                         ++rv.refused;
                         continue;
                     }
-                    // mmMultiCR::HitWaterHandler / DropThruCityHandler on that machine.
-                    if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
-                        m_crResets.insert(id);
                     game::NetCarDriver::command(*rv.sim, c);
-                    if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
-                        game::traceWaterReset(m_traceNet->traceFile(), m_traceNet->frameTime(), id, c.seq,
-                                              rv.sim->sim().body.ics.matrix.m3);
                     if (c.kind != net::CarCommandKind::ClearDamage)
                         rv.lastMoveSeq = c.seq;
                     ++rv.resets;
@@ -5196,8 +5240,19 @@ private:
                 if (m_netHeld)
                     next->frame.flags |= net::kInputHeld;
                 hostGoldInput(id, next->frame);
+                // mmGameMulti::HitWaterHandler (a race: the last checkpoint
+                // the referee counted it clearing) or mmGame's / mmMultiCR's.
+                rv.driver.setWaterHandler(waterHandler(m_netRules.respawnIndex(id)));
+                const std::uint32_t waterResets = rv.driver.waterResets();
                 if (rv.driver.apply(*rv.sim, next->frame))
                     hostCarReset(id, rv);
+                if (rv.driver.waterResets() != waterResets) {
+                    m_crResets.insert(id); // mmMultiCR::HitWaterHandler / DropThruCityHandler
+                    ++rv.resets;
+                    hostCarReset(id, rv);
+                    game::traceWaterReset(m_traceNet->traceFile(), m_traceNet->frameTime(), id, next->seq,
+                                          rv.sim->sim().body.ics.matrix.m3);
+                }
                 rv.input = next->frame;
             }
             return;
@@ -5221,7 +5276,14 @@ private:
         if (m_prediction.nextSeq() == 1)
             m_prediction.command(*m_player, {0, net::CarCommandKind::ResetTo, m_player->sim().resetPos(),
                                              m_player->sim().resetRotation});
+        // The water and the fall as the host will decide them (predicted;
+        // its states confirm or correct them).
+        m_netDriver.setWaterHandler(ownWaterHandler());
+        const std::uint32_t waterResets = m_netDriver.waterResets();
+        const std::uint32_t sample = m_prediction.nextSeq();
         m_prediction.beginSample(*m_player, m_netDriver, in);
+        if (m_netDriver.waterResets() != waterResets)
+            ownWaterReset(sample);
     }
     void afterNetSample() {
         if (!m_player || !m_traceNet)
@@ -5603,7 +5665,7 @@ private:
             msg.waiting = rv.inputs.takeLeastWaiting();
             msg.hasOwn = rv.placed && msg.ack != 0;
             if (msg.hasOwn)
-                msg.own = game::ownCarState(*rv.sim, rv.resets);
+                msg.own = game::ownCarState(*rv.sim, rv.resets, &rv.driver);
             for (const auto& c : cars)
                 if (c.first != id)
                     msg.cars.push_back(c);
@@ -5669,11 +5731,13 @@ private:
         // The rules' messages (game/net/NetRules): sent by the host, taken by a client.
         if (verbose && m_netRules.active()) {
             const auto& r = m_netRules.stats();
-            log::info("netrules: {} messages sent ({:.0f} B/s), {} taken, {} decisions, {} refused, "
-                      "{} malformed, {} stale, {} decisions missed",
+            log::info("netrules: {} messages sent ({:.0f} B/s) and {} states ({:.0f} B/s), {} taken and {} "
+                      "states, {} decisions, {} refused, {} malformed, {} stale, {} decisions missed",
                       r.sent - m_netRulesSent.sent,
-                      static_cast<double>(r.bytes - m_netRulesSent.bytes) / seconds, r.received, r.decisions,
-                      r.refused, r.malformed, r.stale, r.gaps);
+                      static_cast<double>(r.bytes - m_netRulesSent.bytes) / seconds,
+                      r.states - m_netRulesSent.states,
+                      static_cast<double>(r.stateBytes - m_netRulesSent.stateBytes) / seconds, r.received,
+                      r.statesTaken, r.decisions, r.refused, r.malformed, r.stale, r.gaps);
             m_netRulesSent = r;
         }
     }
@@ -6125,8 +6189,6 @@ private:
                 pedals.brake = 1.0f;
             m_lastPedals = pedals;
             updateForceFeedback(ctx, dt, false);
-            if (m_player->sim().modelMatrix().m3.y < std::min(-50.0f, m_city->psdl.bounds.min.y) - 30.0f)
-                netCommand({0, net::CarCommandKind::Reset, {}, 0.0f});
             return;
         }
         m_player->sim().raceFinished = over;
@@ -6684,7 +6746,6 @@ private:
         std::uint32_t resets = 0;       // the commands carried out
         std::uint32_t lastMoveSeq = 0;  // the sample of the last command that moved it
         std::set<std::uint8_t> nearIds; // the other cars sent to its player in full
-        int waterSamples = 0;           // the samples it has been in the water (netCommandAllowed)
         std::uint64_t refused = 0;      // its commands the host refused
         // Client (OpenMM2): a car near this machine's that the host sends in
         // full (net::NearCarState) is simulated here along with this

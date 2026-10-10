@@ -897,6 +897,14 @@ std::size_t NetGame::sendPropState(std::uint8_t playerId, const net::PropStateMs
     return m_impl->session ? m_impl->session->sendPropState(playerId, msg) : 0;
 }
 
+std::size_t NetGame::sendRulesState(std::uint8_t playerId, const net::RulesStateMsg& msg) {
+    return m_impl->session ? m_impl->session->sendRulesState(playerId, msg) : 0;
+}
+
+std::vector<net::RulesMsg> NetGame::takeRulesStates() {
+    return m_impl->session ? m_impl->session->takeRulesStates() : std::vector<net::RulesMsg>{};
+}
+
 std::vector<net::PropStateMsg> NetGame::takePropStates() {
     return m_impl->session ? m_impl->session->takePropStates() : std::vector<net::PropStateMsg>{};
 }

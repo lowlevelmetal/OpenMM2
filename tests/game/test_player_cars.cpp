@@ -310,9 +310,6 @@ TEST(PlayerCars, AShuntIsCorrectedOnlyWhereTheOtherPlayerChangedItsInput) {
 TEST(PlayerCars, TheHostResetsAClientsCarOnlyWhereTheRulesDo) {
     ResetRules r;
     r.city = {{-2000.0f, -100.0f, -2000.0f}, {2000.0f, 300.0f, 2000.0f}};
-    const Mat34 checkpoint = Mat34::rotationY(1.0f) * Mat34::translation({100.0f, 5.0f, 200.0f});
-    const Mat34 points[] = {checkpoint};
-    r.respawnPoints = points;
     const net::CarCommand placeAt{1, net::CarCommandKind::ResetTo, {10.0f, 2.0f, 30.0f}, 0.5f};
     // The start: once, in the city.
     EXPECT_TRUE(r.allows(placeAt));
@@ -322,44 +319,26 @@ TEST(PlayerCars, TheHostResetsAClientsCarOnlyWhereTheRulesDo) {
     r.placed = true;
     r.lastMoveSeq = 1;
     EXPECT_FALSE(r.allows({600, net::CarCommandKind::ResetTo, {10.0f, 2.0f, 30.0f}, 0.5f}));
-    // Back to the reset position: only from the water or below the city.
+    // Back to the reset position or at a checkpoint: never (the water and
+    // the fall are the host's own, NetCarDriver::setWaterHandler).
     const net::CarCommand reset{600, net::CarCommandKind::Reset, {}, 0.0f};
-    r.height = 2.0f;
     EXPECT_FALSE(r.allows(reset));
-    r.waterSamples = ResetRules::kWaterSamples - 1;
-    EXPECT_FALSE(r.allows(reset));
-    r.waterSamples = ResetRules::kWaterSamples;
-    EXPECT_TRUE(r.allows(reset));
-    r.waterSamples = 0;
-    r.height = -60.0f;
-    EXPECT_TRUE(r.allows(reset));
-    // Not four times a second.
-    r.lastMoveSeq = 595;
-    EXPECT_FALSE(r.allows(reset));
-    r.lastMoveSeq = 1;
-    // At a checkpoint, facing its heading.
-    r.height = -60.0f;
-    const float heading = phys::resetRotationOf(checkpoint);
-    EXPECT_TRUE(r.allows({600, net::CarCommandKind::RespawnAt, checkpoint.m3, heading}));
-    EXPECT_FALSE(r.allows({600, net::CarCommandKind::RespawnAt, checkpoint.m3, heading + 0.5f}));
-    EXPECT_FALSE(r.allows({600, net::CarCommandKind::RespawnAt, checkpoint.m3 + Vec3{3.0f, 0, 0}, heading}));
-    r.height = 2.0f;
-    EXPECT_FALSE(r.allows({600, net::CarCommandKind::RespawnAt, checkpoint.m3, heading}));
-    // Repairs: a wreck's, or Cops and Robbers'.
+    EXPECT_FALSE(r.allows({600, net::CarCommandKind::RespawnAt, {100.0f, 5.0f, 200.0f}, 1.0f}));
+    // Repairs: a wreck's only (Cops and Robbers' at a delivery is the host's).
     const net::CarCommand repair{600, net::CarCommandKind::ClearDamage, {}, 0.0f};
     EXPECT_FALSE(r.allows(repair));
     r.wrecked = true;
     EXPECT_TRUE(r.allows(repair));
-    r.wrecked = false;
-    r.copsAndRobbers = true;
-    EXPECT_TRUE(r.allows(repair));
-    // The development hook lets any reset in the city through.
+    // The development hook lets any reset in the city through, not four times
+    // a second.
     ResetRules d = r;
     d.debug = true;
-    d.copsAndRobbers = false;
+    d.wrecked = false;
     EXPECT_TRUE(d.allows(reset));
     EXPECT_TRUE(d.allows({600, net::CarCommandKind::RespawnAt, {0.0f, 1.0f, 0.0f}, 0.0f}));
     EXPECT_FALSE(d.allows({600, net::CarCommandKind::RespawnAt, {0.0f, 1.0f, 9000.0f}, 0.0f}));
+    d.lastMoveSeq = 595;
+    EXPECT_FALSE(d.allows(reset));
 }
 
 TEST(PlayerCars, InputFramesCarryTheRecordedPedalsExactly) {

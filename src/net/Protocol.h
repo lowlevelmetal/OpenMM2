@@ -42,7 +42,12 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 10: the host's rules (net/RulesState.h: the rules message; a player's own
 //    word on a checkpoint, a finish or the gold is refused). (8 was its number
 //    on its branch.)
-inline constexpr std::uint16_t kProtocolVersion = 10;
+// 14: the water and the fall decided by the host (in every car's full state
+//    its vehSplash and the water handler's time; a client's Reset and
+//    RespawnAt only for debugging, its Cops and Robbers repair refused), and
+//    the race's rules state also unreliable (RulesState) between its
+//    reliable messages.
+inline constexpr std::uint16_t kProtocolVersion = 14;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.
@@ -108,7 +113,8 @@ enum class MsgType : std::uint8_t {
     PlayerInput, // net/PlayerCars.h
     CarStates,
     PropState, // net/PropState.h
-    Last = PropState,
+    RulesState, // net/RulesState.h (protocol 14)
+    Last = RulesState,
 };
 
 // Sent as ENet disconnect data and in Reject/PlayerLeft messages.

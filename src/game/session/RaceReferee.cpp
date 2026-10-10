@@ -187,27 +187,11 @@ void RaceReferee::update(float dt) {
     }
 }
 
-bool RaceReferee::mayRespawnAt(std::uint8_t id, const Vec3& position) const {
-    const Player* p = player(id);
-    if (!p || m_config.checkpoints.empty())
-        return false;
-    auto near = [&](int index) {
-        const auto k = static_cast<std::size_t>(index);
-        return k < m_config.checkpoints.size() && spawnAt(m_config.checkpoints[k]).m3.dist2(position) < 0.25f;
-    };
-    return near(0) || std::ranges::any_of(p->hits, [&](std::uint8_t h) { return near(h); });
-}
-
-std::vector<int> RaceReferee::respawnCheckpoints(std::uint8_t id) const {
-    std::vector<int> out;
+std::optional<int> RaceReferee::lastCleared(std::uint8_t id) const {
     const Player* p = player(id);
     if (!p)
-        return out;
-    out.push_back(0);
-    for (const std::uint8_t h : p->hits)
-        if (std::ranges::find(out, static_cast<int>(h)) == out.end())
-            out.push_back(h);
-    return out;
+        return std::nullopt;
+    return p->wp.lastCleared;
 }
 
 int RaceReferee::iconPlace(std::uint8_t viewer, std::uint8_t car) const {

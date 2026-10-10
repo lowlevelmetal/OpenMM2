@@ -1157,6 +1157,16 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         m_propStates.push_back(std::move(m));
         return;
     }
+    case MsgType::RulesState: {
+        // The host's only (a client hears no one else), during a race.
+        RulesStateMsg m;
+        if (m_role != Role::Client || m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+            return;
+        if (m_rulesStates.size() >= kMaxQueuedRulesStates)
+            m_rulesStates.erase(m_rulesStates.begin());
+        m_rulesStates.push_back(std::move(m.rules));
+        return;
+    }
     default: return;
     }
 }
@@ -1382,6 +1392,17 @@ std::size_t Session::sendPropState(std::uint8_t playerId, const PropStateMsg& ms
     const auto packet = encodeMessage(msg);
     // Unsequenced: a late message still fills the client's buffers (it
     // orders them by their time).
+    return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
+}
+
+std::size_t Session::sendRulesState(std::uint8_t playerId, const RulesStateMsg& msg) {
+    if (m_role != Role::Host || !m_transport || m_state != State::Active || m_phase == SessionPhase::Lobby ||
+        playerId == m_localId)
+        return 0;
+    Remote* r = remoteForPlayer(playerId);
+    if (!r)
+        return 0;
+    const auto packet = encodeMessage(msg);
     return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
 

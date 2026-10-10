@@ -289,24 +289,21 @@ TEST(NetRaceRules, RefereeRanksEveryCarAsItsMachineWould) {
     EXPECT_EQ(r.player(0)->racers, 2);
 }
 
-TEST(NetRaceRules, RefereeLetsACarRespawnOnlyWhereItHasBeen) {
+TEST(NetRaceRules, RefereeNamesTheCheckpointTheWaterPutsACarBackAt) {
     // mmGameMulti::HitWaterHandler puts the car back at the last checkpoint
-    // it cleared: the host takes such a reset at the start or a checkpoint
-    // it counted for that car, not at one it never reached.
+    // it cleared (mmWaypoints' respawn point): the start until it clears one.
     RaceReferee::Config c;
     c.mode = GameMode::Checkpoint;
     c.checkpoints = straightCourse(3);
     RaceReferee r(c);
     r.addPlayer(1);
+    EXPECT_EQ(r.lastCleared(1), 0);
     Car a{1};
     for (int i = 0; i < 120; ++i)
         a.sample(r, false); // clears gate 1
     ASSERT_EQ(r.player(1)->hits, (std::vector<std::uint8_t>{1}));
-    EXPECT_TRUE(r.mayRespawnAt(1, c.checkpoints[0].position));
-    EXPECT_TRUE(r.mayRespawnAt(1, c.checkpoints[1].position + Vec3{0.2f, 0.0f, 0.2f}));
-    EXPECT_FALSE(r.mayRespawnAt(1, c.checkpoints[2].position));
-    EXPECT_FALSE(r.mayRespawnAt(1, c.checkpoints[1].position + Vec3{2.0f, 0.0f, 0.0f}));
-    EXPECT_FALSE(r.mayRespawnAt(7, c.checkpoints[0].position)); // nobody's
+    EXPECT_EQ(r.lastCleared(1), 1);
+    EXPECT_EQ(r.lastCleared(7), std::nullopt); // nobody's
 }
 
 // --- Cops and Robbers on the host -------------------------------------------------------
@@ -751,6 +748,111 @@ bool pumpAll(std::initializer_list<NetGame*> games, const std::function<bool()>&
 }
 
 } // namespace
+
+TEST(NetRaceRules, AClientTakesTheNewestStateOfEitherKind) {
+    MM2_REQUIRE_GAME_DATA();
+    ASSERT_TRUE(rulesRetail());
+    // Protocol 14: the race's state also goes unreliably, 20 times a second
+    // and at once on a hit; whichever copy arrives first stands, and the
+    // reliable messages' decisions are taken whatever their state's age.
+    auto hs = netSession(GameMode::Checkpoint, true);
+    auto cs = netSession(GameMode::Checkpoint, false);
+    ASSERT_TRUE(hs && cs);
+    NetRules host, client;
+    host.begin({true, 0, 7, hs.get(), nullptr, {0, 1}});
+    client.begin({false, 1, 7, cs.get(), nullptr, {0, 1}});
+    for (auto* r : {&host, &client}) {
+        r->setName(0, "Host");
+        r->setName(1, "Client");
+    }
+    std::vector<std::vector<std::byte>> wire;
+    std::vector<net::RulesMsg> states;
+    auto send = [&](std::uint8_t, std::vector<std::byte> payload) { wire.push_back(std::move(payload)); };
+    auto sendState = [&](std::uint8_t to, const net::RulesStateMsg& st) {
+        EXPECT_EQ(to, 1);
+        // What the State channel carries: encoded and decoded again.
+        net::RulesStateMsg back;
+        EXPECT_TRUE(net::decodeMessage(net::encodeMessage(st), back));
+        states.push_back(back.rules);
+    };
+    auto event = [](const std::vector<std::byte>& payload) {
+        NetGameEvent e;
+        e.from = net::kHostPlayerId;
+        e.type = static_cast<net::GameEventType>(net::kRulesEvent);
+        e.payload = payload;
+        return e;
+    };
+    for (int i = 0; i < 3; ++i) {
+        hs->update(kStep, away(*hs));
+        cs->update(kStep, away(*cs));
+    }
+    const auto& cps = hs->checkpoints();
+    std::uint32_t seq = 0;
+    auto drive = [&](int waypoint, int samples) {
+        for (int i = 0; i < samples; ++i) {
+            const Mat34 at = i == samples / 2 ? spawnAt(cps[static_cast<std::size_t>(waypoint)])
+                                              : away(*hs).transform;
+            host.hostSample(1, ++seq, at, kBox, false);
+            host.hostSample(0, seq, away(*hs).transform, kBox, false);
+        }
+    };
+    // Nothing happened: the first message goes both ways, then only the
+    // state, every 50 ms.
+    host.hostUpdate(kStep, 1000, away(*hs).transform.m3, send, sendState);
+    EXPECT_EQ(wire.size(), 1u);
+    EXPECT_EQ(states.size(), 1u);
+    host.hostUpdate(kStep, 1030, away(*hs).transform.m3, send, sendState);
+    EXPECT_EQ(states.size(), 1u);
+    host.hostUpdate(kStep, 1050, away(*hs).transform.m3, send, sendState);
+    EXPECT_EQ(wire.size(), 1u);
+    ASSERT_EQ(states.size(), 2u);
+    EXPECT_TRUE(states[1].decisions.empty());
+    EXPECT_TRUE(states[1].results.empty());
+    EXPECT_GT(states[1].seq, states[0].seq);
+    wire.clear();
+    states.clear();
+    // A hit: both at once. The state arrives first and is taken; the
+    // reliable message after it is older (its state left alone).
+    drive(1, 80);
+    host.hostUpdate(kStep, 1060, away(*hs).transform.m3, send, sendState);
+    ASSERT_EQ(wire.size(), 1u);
+    ASSERT_EQ(states.size(), 1u);
+    client.receiveStates(states, {});
+    EXPECT_EQ(cs->netHits(), (std::vector<std::uint8_t>{1}));
+    EXPECT_EQ(client.stats().statesTaken, 1u);
+    client.receive({event(wire[0])}, {});
+    EXPECT_EQ(cs->netHits(), (std::vector<std::uint8_t>{1}));
+    EXPECT_EQ(client.stats().received, 1u);
+    // The same state again, another race's, one with decisions: refused.
+    client.receiveStates(states, {});
+    net::RulesMsg other = states[0];
+    other.seq = 900;
+    other.race = 6;
+    client.receiveStates({other}, {});
+    other.race = 7;
+    other.decisions.push_back({901, net::RuleDecision::TimedOut});
+    client.receiveStates({other}, {});
+    EXPECT_EQ(client.stats().statesTaken, 1u);
+    EXPECT_FALSE(cs->netFinishKnown());
+    wire.clear();
+    states.clear();
+    // The client's car finishes: the decision is reliable only; the state
+    // that comes first does not finish it, the older reliable message does,
+    // once.
+    for (int w = 2; w < static_cast<int>(cps.size()); ++w)
+        drive(w, 40);
+    host.hostUpdate(kStep, 1100, away(*hs).transform.m3, send, sendState);
+    ASSERT_EQ(wire.size(), 1u);
+    ASSERT_EQ(states.size(), 1u);
+    client.receiveStates(states, {});
+    EXPECT_FALSE(cs->netFinishKnown());
+    client.receive({event(wire[0])}, {});
+    EXPECT_TRUE(cs->netFinishKnown());
+    EXPECT_TRUE(client.finished(1));
+    const auto decisions = client.stats().decisions;
+    client.receive({event(wire[0])}, {}); // a duplicate: stale
+    EXPECT_EQ(client.stats().decisions, decisions);
+}
 
 TEST(NetRaceRules, APlayersOwnWordOnTheRulesReachesNobody) {
     NetGame host(rulesOptions("Hosty")), cheat(rulesOptions("Cheaty")), honest(rulesOptions("Honesty"));

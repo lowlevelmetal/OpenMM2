@@ -209,4 +209,23 @@ bool serialize(S& s, RulesMsg& m) {
     return s.ok();
 }
 
+// A race's rules state for one player, sent again unreliably (the State
+// channel) between the reliable messages (protocol 14): the waypoints its
+// car hit (the newest few), the samples the rules saw, its place and the
+// icons, numbered as the reliable messages are (the client takes the newest
+// state of either). No decisions, no results: those stay reliable.
+struct RulesStateMsg {
+    static constexpr MsgType kType = MsgType::RulesState;
+    RulesMsg rules;
+};
+
+template <class S>
+bool serialize(S& s, RulesStateMsg& m) {
+    if (!serialize(s, m.rules))
+        return false;
+    if (m.rules.cops || !m.rules.decisions.empty() || !m.rules.results.empty())
+        return s.fail();
+    return s.ok();
+}
+
 } // namespace mm2::net
