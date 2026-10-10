@@ -185,6 +185,9 @@ jobs:
       # tests: the native jobs run the rest.
       - name: Test determinism under Wine
         env:
+          # A prefix of the container's own user (Wine refuses one it does
+          # not own), without the Mono and Gecko installers.
+          WINEPREFIX: /tmp/wineprefix
           WINEDEBUG: -all
           WINEDLLOVERRIDES: mscoree,mshtml=
         run: |
