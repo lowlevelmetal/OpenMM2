@@ -722,7 +722,8 @@ void Session::netFinished(float seconds) {
         // Did not finish: its clock ran out (a Blitz), or the host timed the
         // race out (its "Race over" came with netTimedOut).
         addNetResult(m_options.playerName, kNetDnf, true);
-        if (m_phase == Phase::Racing) {
+        // (A late loader the host gave up on may still be in its countdown.)
+        if (m_phase == Phase::Racing || m_phase == Phase::Countdown) {
             stopTimerWarning();
             m_wp.stopped = true;
             if (mode() == GameMode::Blitz) {
@@ -771,7 +772,7 @@ void Session::netTimedOut() {
     // 0x1fe: a machine still racing stops, braked, with the mode's line for
     // 5 s (a Blitz's with the net alert); MM2 then sends its did-not-finish,
     // which the host has decided already.
-    if (!netRules() || m_phase != Phase::Racing)
+    if (!netRules() || (m_phase != Phase::Racing && m_phase != Phase::Countdown))
         return;
     m_netTimedOut = true;
     stopTimerWarning();
