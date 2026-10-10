@@ -3,7 +3,7 @@
 Worked on 2026-10-09 from `integration` at cd5ae29 (release 0.3.1), merged
 with integration at 3f73059 (the host simulates every player's car), 52aa601
 (the shared traffic) and cae6989 (the players' cars' final work); and in the
-rough edges round (protocol 13, "Rough edges round" below) at 782f469 (the
+rough edges round (protocol 16, "Rough edges round" below) at 782f469 (the
 players' cars' second round, the host's rules) and b33bebc (the
 cross-platform determinism work), on the
 maintainer's report that in a multiplayer cruise over the Internet
@@ -53,7 +53,7 @@ corrections just after a prop hit with nothing else around went from 31 over
 | host and two clients, 150 ±20 ms, 5 % loss, after | 0 of 15 (each pair) | 15 | 245-249 ms median (clients 492) | 3 mm max (14), clients 9 mm |
 | one client alone through props, 80 ±20 ms, after | 0 of 7 | 7 | 173 ms | 3 mm max (4) |
 
-In the rough edges round (protocol 13, below) a client also predicts the
+In the rough edges round (protocol 16, below) a client also predicts the
 knocks of the other players' cars it runs (before, such a car drove through
 a prop that fell 140-400 ms later), undoes a missed prediction in 0.7-1.8 s
 instead of 2 s, no longer lets its own pieces knock props, and gets its own
@@ -151,7 +151,7 @@ This is why OpenMM2 does not follow MM2 here (the maintainer's decision).
 | D10 | minor (found in the final runs) | `BangerSet::acceptsFrom` | A client's own simulated piece knocked a parking meter 3 s after its car hit a street light; the host's piece of the same knock had gone elsewhere, and the meter stood up again 2 s later (an undone prediction). | client alone, one undone of 4 | f1f3b56: a piece this machine simulates knocks placed props for its first 0.5 s only |
 | D11 | visible (found in the final runs) | `BangerSet::replayGhost` (784b3b1) | A prop the client's car broke loose stood again for every replay in the next second, so a replay that started after the knock (the host's correction a few samples later) knocked the car a second time. | client alone: corrections of 1.3-1.6 m and up to 8.6 m/s 250-550 ms after a hit; 31 corrections over 30 cm after prop hits alone in eight clients' runs | 59ca116: it stands for the samples up to the one that broke it loose (`World::replayTime`) |
 | D12 | visible (found in the final runs) | `World::collideHeld` (0791996) | The client puts the bodies around its car back where each sample started them (c367288), but a real sample moves a simulated body on before the collisions: the replayed car met the pieces a sample behind and sank into them; and a light piece gave way after one hit, though the real car pushed it all along. | test: a replay from 1-8 samples after a knock ended 0.1-0.2 m from the real samples | 59ca116: the held copy moves on over the sample; no giving way (the replay ends within 15 mm and 0.04 m/s) |
-| D13 | visible (rough edges round) | `RaceScreen` props toucher (`ownCarBody`), with c5c1b4c | A client runs the other players' cars near its own (`NearCarState`) ahead to its own time, but only its own car could knock its props: such a car drove through a prop that fell when the host's knock came. | before: props fell 143-404 ms after the car (as drawn there) came closest, the car 2.2-8.5 m from the prop's place (median per run) | 993c285: a client predicts the knocks of the cars it simulates |
+| D13 | visible (rough edges round) | `RaceScreen` props toucher (`ownCarBody`), with c5c1b4c | A client runs the other players' cars near its own (`NearCarState`) ahead to its own time, but only its own car could knock its props: such a car drove through a prop that fell when the host's knock came. | before: props fell 143-404 ms after the car (as drawn there) came closest, the car 2.2-8.5 m from the prop's place (median per run) | 993c285: a client predicts the knocks of the cars it simulates (dcca773: the police and knocked traffic cars too; cd9a409: waiting up to 4 s while the host has that car by the prop) |
 | D14 | visible (rough edges round) | `PropClient::update` | A prediction the host never confirmed stood until 2 s had passed. | every undone prediction, 2.0 s | 993c285: undone once the host's messages have passed it by the host's lag (another player's car's: once the host also had that car away from the prop and this machine's car is not about to hit it) |
 | D15 | visible (rough edges round) | `BangerSet::acceptsFrom` (f1f3b56) | A client's own pieces still knocked placed props in their first 0.5 s: 4 of 9 such knocks were confirmed, and one left the client's car tangled in pieces the host never had (157 corrections over 30 cm in a minute, the prop knocked and undone three times). | follow 150 ms | 993c285: a client's pieces knock no placed prop (the host's knocks bring its chain knocks) |
 | D16 | minor (rough edges round) | `PropHost::build`, `BangerSet::getBanger` | Every client got the same message, the whole ring whatever was near it; and the ring of 40 wraps in a pile-up, so props knocked moments ago disappeared in mid-flight. | by reading; tests | 993c285: each client its own message, the states near its car first within a datagram; the ring grows instead of wrapping onto a busy prop |
@@ -278,35 +278,36 @@ in a crash that keeps all 40 slots flying.
   the same with `-D_GLIBCXX_ASSERTIONS`; the opponent sweep 516/517
   finished, 508/517 across the line (as before); single-player smoke
   screenshots (a San Francisco cruise, a London circuit) as before.
-* Rough edges round, merged with integration at b33bebc: 1027 of 1027 (3
-  skipped; integration's 1017 and 10 new), the determinism hashes
-  unchanged; the same with `-D_GLIBCXX_ASSERTIONS`; the sweep 515/517 finished, 507/517 across the line (the new
-  baseline); the smoke screenshots as before; a three-machine and a slalom
-  run on the merged build as above (every knock shared, pieces within 3 mm
-  of the host's, 31 predictions with one undone).
+* Rough edges round, merged with integration at 65529a6 (the determinism
+  work, the traffic's and the rules' second rounds): 1045 of 1045 (3
+  skipped; integration's 1035 and 10 new), the determinism hashes
+  unchanged; the same with `-D_GLIBCXX_ASSERTIONS`; the sweep 515/517
+  finished, 507/517 across the line (the new baseline); the smoke
+  screenshots as before.
 
-## Rough edges round (protocol 13)
+## Rough edges round (protocol 16; 13 on its branch)
 
 The maintainer accepted more bandwidth and asked for the remaining rough
 edges. Measured as above on the merged build before (integration 782f469,
-protocol 10) and after (993c285), one run each:
+protocol 10) and after (cd9a409 merged with integration at 65529a6: the
+traffic's and the rules' second rounds), one run each:
 
 | Run | Knocks shared; on one machine only at the end | Resting apart, host and client | Another player's car's knocks: that car from the prop's place when it fell, and when it fell against when that car (as drawn there) came closest (medians) | Predicted (undone) |
 | --- | --- | --- | --- | --- |
 | slalom, 80 ms, before | 25; 0 | 3 mm | 12: 3.5 m, 222 ms after | 11 (1, at 2 s) |
-| slalom, 80 ms, after | 6; 0 | 3 mm | (none this run) | 6 (1, at 2 s: this machine's car was close) |
+| slalom, 80 ms, after | 13; 0 | 15 mm | 1: 2.3 m, 257 ms before | 11 (0) |
 | slalom, 150 ms, before | 7; 0 | 2 mm | 1: 2.2 m, 143 ms after | 4 (0) |
-| slalom, 150 ms, after | 8; 0 | 2 mm | 1: 3.2 m, 192 ms before | 6 (0) |
+| slalom, 150 ms, after | 5; 0 | 2 mm | (none this run) | 3 (0) |
 | follow, 80 ms, before | 12; 0 | 2 mm | 8: 3.1 m, 84 ms before | 0 |
-| follow, 80 ms, after | 17; 0 | 2 mm | 6: 2.3 m, 152 ms before | 9 (0) |
+| follow, 80 ms, after | 14; 0 | 3 mm | 5: 2.3 m, 131 ms before | 7 (0) |
 | follow, 150 ms, before | 10; 0 | 3 mm | 6: 4.6 m, 369 ms after | 1 (0) |
-| follow, 150 ms, after | 10; 0 | 2 mm | 3: 2.6 m, 146 ms before | 6 (0) |
+| follow, 150 ms, after | 15; 0 | 3 mm | 6: 2.4 m, 102 ms before | 8 (0) |
 | parked cars, before | 5; 0 | 27 mm | 3: 3.9 m, 171 ms after | 2 (0) |
-| parked cars, after | 5; 0 | 2 mm | 3: 3.4 m (pushed slowly) | 4 (0) |
+| parked cars, after | 5; 0 | 3 mm | 4: 3.7 m (pushed slowly) | 4 (0) |
 | three machines, before | 28; 1-3 (knocked in the last second, after a client's trace ended) | 3 mm (one piece still falling: 0.9 m) | 11: 2.7 m, 25 ms before; 6: 8.5 m, 404 ms after | 14 (0) |
-| three machines, after | 23; 0 | 2 mm | 8: 2.7 m, 169 ms before; 12: 2.3 m, 138 ms before | 15 (4, after 1.5-1.8 s) |
+| three machines, after | 32; 0 | 3 mm | 12: 2.6 m, 116 ms before; 22: 2.8 m, 128 ms before | 33 (0) |
 | one client alone, before | 12; 0 | 2 mm | | 7 (0); no correction |
-| one client alone, after | 5; 0 | 2 mm | | 4 (0); no correction |
+| one client alone, after | 4; 0 | 3 mm | | 4 (0); no correction |
 
 A car's centre is about 2.2 m behind its front: "2.2-2.7 m" is a prop
 falling as the car's front meets it, and a prop falling 130-190 ms before
@@ -314,20 +315,25 @@ the car's centre came closest is one falling at the contact.
 
 * **Another player's car's knocks** (D13) are now predicted by the client
   that runs that car (the near ones, `NearCarState`), as its own car's are,
-  and replayed with it (`World::collideHeld`, `replayGhost`). Over the seven
-  batches of the round with it the host confirmed 138 of 155 such knocks;
-  the 17 others were knocks the client's run-ahead of that car made and the
-  real car did not (the prop stands again). Better inputs for the near cars
-  (the players' cars' work) will lower that; the client's own car's
-  predictions: 279 of 281 confirmed.
+  and replayed with it (`World::collideHeld`, `replayGhost`); since the
+  traffic's second round also the shared police and knocked traffic cars it
+  runs (`TrafficFull`; 7 of 8 confirmed in the last two batches). Over the
+  nine batches of the round with it the host confirmed 179 of 198 knocks by
+  another player's car; the 19 others were knocks the client's run-ahead of
+  that car made and the real car did not (the prop stands again; none in
+  the last batch, all 66 predictions there confirmed). Better inputs for
+  the near cars (the players' cars' work) will lower that; the client's own
+  car's predictions: 378 of 382 confirmed.
 * **Undoing** (D14): a missed prediction stands again as soon as the host's
   messages have passed it by the host's usual lag (the most of the last 16
   confirmed, plus 0.3 s, at least 0.6 s), in the runs 0.7-1.8 s after it
   fell (2 s before); one by another player's car waits until the host also
   had that car more than 6 m from the prop and this machine's car is more
   than 15 m from it (the host's knock may still come from either: in two
-  runs it came 1.7-2.2 s later, from the client's own car, or a braking
-  car reached a parked car 1.9 s after this machine's run-ahead of it).
+  runs it came 1.7-2.2 s later, from the client's own car); while the host
+  still has that car within 6 m of the prop it waits up to 4 s (a braking
+  car reached a parked car 1.9 s after this machine's run-ahead of it, and
+  the knock stood up and fell again at 2 s, cd9a409).
 * **Chain knocks** (D15): a client's own pieces meet one another and no
   placed prop; the host's knocks bring the ones its pieces make.
 * **Interest** (D16): each client's message lists every occupied slot and
@@ -348,8 +354,8 @@ the car's centre came closest is one falling at the contact.
 * **Mirrors** (D17): a host's piece a client's car pushed goes back to the
   host's as soon as the host's push would have shown.
 
-Bandwidth after: 64 bytes/s to 6.4 KB/s to each client (10 s averages), at
-most 5.5 KB/s before; a message at most 1100 bytes.
+Bandwidth after: 31 bytes/s to 6.4 KB/s to each client (10 s averages over
+the round's runs), at most 5.5 KB/s before; a message at most 1100 bytes.
 
 ## For the players' cars agent
 
@@ -376,16 +382,14 @@ most 5.5 KB/s before; a message at most 1100 bytes.
 
 ## Open
 
-* A knock by another player's car that this client runs ahead is wrong one
-  time in nine (the real car passed the prop); it stands again within
-  0.7-2 s. Re-measure once the near cars' inputs improve; a further step
-  would re-run the knock from each newer host state and undo it as soon as
-  that run misses the prop.
-* The shared traffic's knocks are shown when the host's come, while a
-  traffic car is shown at the client's time: a prop it hits falls up to a
-  few hundred milliseconds after it passes. Once the knocked traffic cars
-  are simulated on the client (the traffic's work), their knocks can be
-  predicted like the near cars' (`propMover` needs to know their bodies).
+* A knock by another player's car that this client runs ahead is wrong about
+  one time in ten (the real car passed the prop); it stands again within
+  0.7-2 s (4 s while the host has that car by the prop). Re-measure once
+  the near cars' inputs improve; a further step would re-run the knock from
+  each newer host state and undo it as soon as that run misses the prop.
+* The shared traffic on its rails (not simulated on the client) still
+  knocks props only when the host's knock comes; the police and knocked
+  cars the client simulates predict theirs (dcca773).
 * A client's car leaning on a slowly creeping piece that the host's copy of
   the car does not touch (once, at the end of a three-machine run): the
   piece is pushed here, held, handed back, pushed again, and the car's

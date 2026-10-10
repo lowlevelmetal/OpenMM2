@@ -1142,7 +1142,7 @@ correction of its car, and a client's corrections over 30 cm just after a
 prop hit (nothing else around) went from 31 in eight runs to 7. Since
 protocol 16 a prop another player's car (run on the client) hits falls as
 that car meets it, where it fell 140-400 ms after the car came closest
-(138 of 155 such knocks confirmed by the host; the others stand again
+(179 of 198 such knocks confirmed by the host; the others stand again
 within 0.7-2 s), and a missed prediction stands again in 0.7-1.8 s, not 2 s.
 The host sent 0.1-6.4 KB/s to each client (10 s averages; a big crash in the
 test, 27 props knocked by one car, 5 KB/s for a few seconds, at most 425
