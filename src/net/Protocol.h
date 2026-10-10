@@ -53,7 +53,12 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 16: the props' messages each client's own (the states near its car
 //    first), the ring up to 256 slots, a slot's number after the one before
 //    it in a bit. (13 was its number on its branch; 15 the players' cars'.)
-inline constexpr std::uint16_t kProtocolVersion = 16;
+// 17: CarStates after every host frame that ran a sample (up to 60 a second),
+//    three near cars within 60 m (as many in full as fit one packet, in turn),
+//    a near client car's inputs the host holds for its next samples
+//    (NearCarState::upcoming), and a contact's bound and hardest pusher in a
+//    car's full state. (11, 13 and 15 on its branch.)
+inline constexpr std::uint16_t kProtocolVersion = 17;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.

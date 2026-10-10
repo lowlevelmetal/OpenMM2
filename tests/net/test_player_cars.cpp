@@ -92,6 +92,10 @@ OwnCarState sampleOwn() {
     o.linearPush = {0.001f, 0.0f, 0.002f};
     o.turnForce = {0.0f, 0.0001f, 0.0f};
     o.framePush = {0.003f, 0.0f, 0.0f};
+    o.hasBound = true;
+    o.bound = Mat34::rotationY(0.69f);
+    o.bound.m3 = {-1149.9f, 112.2f, 163.1f};
+    o.pusher = 3;
     return o;
 }
 
@@ -118,6 +122,9 @@ CarStatesMsg sampleStates(std::size_t cars, std::size_t near = 0) {
         n.state = sampleOwn();
         n.state.matrix.m3.x += 3.0f * static_cast<float>(i);
         n.input = sampleInput().frames[9];
+        const auto frames = sampleInput().frames;
+        n.upcoming.assign(frames.begin(), frames.begin() + 6);
+        m.nearIds.push_back(n.id);
         m.near.push_back(n);
     }
     return m;
@@ -156,6 +163,10 @@ void expectSameOwn(const OwnCarState& a, const OwnCarState& b) {
     EXPECT_TRUE(vec(a.linearImpulse, b.linearImpulse) && vec(a.angularImpulse, b.angularImpulse));
     EXPECT_TRUE(vec(a.linearPush, b.linearPush) && vec(a.turnForce, b.turnForce) &&
                 vec(a.framePush, b.framePush));
+    EXPECT_EQ(a.hasBound, b.hasBound);
+    EXPECT_TRUE(vec(a.bound.m0, b.bound.m0) && vec(a.bound.m1, b.bound.m1) && vec(a.bound.m2, b.bound.m2) &&
+                vec(a.bound.m3, b.bound.m3));
+    EXPECT_EQ(a.pusher, b.pusher);
 }
 
 // What a decoded message may hold, whatever arrived.
@@ -179,12 +190,28 @@ void checkInput(const PlayerInputMsg& m) {
     }
 }
 
+// What a sample hands the next and a contact's bookkeeping (protocol 17).
+void checkCarry(const OwnCarState& c) {
+    const auto within = [](const Vec3& v, float r) {
+        return std::abs(v.x) <= r && std::abs(v.y) <= r && std::abs(v.z) <= r;
+    };
+    for (const Vec3& v : {c.force, c.torque, c.linearImpulse, c.angularImpulse, c.linearPush, c.turnForce,
+                          c.framePush})
+        ASSERT_TRUE(within(v, kOwnStateMaxValue));
+    for (float r : c.tireResistance)
+        ASSERT_LE(std::abs(r), kOwnStateMaxValue);
+    ASSERT_TRUE(within(c.bound.m0, 2.0f) && within(c.bound.m1, 2.0f) && within(c.bound.m2, 2.0f));
+    ASSERT_TRUE(within(c.bound.m3, kOwnStateMaxCoordinate));
+}
+
 void checkStates(const CarStatesMsg& m) {
     ASSERT_LE(m.cars.size(), kMaxPlayers);
     ASSERT_LE(std::abs(m.waiting), kMaxReportedWaiting);
+    ASSERT_LE(m.nearIds.size(), kMaxNearCars);
     if (!m.hasOwn)
         return;
     const OwnCarState& o = m.own;
+    checkCarry(o);
     for (const Vec3& v : {o.matrix.m0, o.matrix.m1, o.matrix.m2})
         ASSERT_TRUE(std::abs(v.x) <= 2.0f && std::abs(v.y) <= 2.0f && std::abs(v.z) <= 2.0f);
     for (const Vec3& v : {o.matrix.m3, o.stuckPosition})
@@ -210,6 +237,13 @@ void checkStates(const CarStatesMsg& m) {
                     std::abs(c.matrix.m3.z) <= kOwnStateMaxCoordinate);
         for (const Vec3& v : {c.linearMomentum, c.angularMomentum, c.linearVelocity, c.angularVelocity})
             ASSERT_TRUE(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z));
+        checkCarry(c);
+        ASSERT_LE(n.upcoming.size(), kMaxUpcomingInputs);
+        for (const auto& u : n.upcoming) {
+            ASSERT_EQ(u.flags & ~kCarInputFlagMask, 0);
+            ASSERT_EQ(u.events & ~kCarInputEventMask, 0);
+            ASSERT_LE(u.extraMass, kMaxExtraMass);
+        }
     }
 }
 
@@ -352,16 +386,14 @@ TEST(PlayerCars, StatesRoundTripTheOwnCarBitForBit) {
 }
 
 TEST(PlayerCars, NearCarsTravelInFullWithoutTheirKeys) {
-    // Eight players: seven other cars, two of them near, in full, in a
-    // contact.
+    // Eight players: seven other cars, three of them near, in full with the
+    // inputs the host holds for them, in a contact.
     CarStatesMsg m = sampleStates(kMaxPlayers / 2 - 1, kMaxNearCars);
     m.near[1].input.events = kInputShiftUp; // a key: applied once on the host, never sent on
     const auto bytes = encodeMessage(m);
-    // In one ENet packet: its default MTU (1400 bytes) less its header and
-    // a fragment's (ENet splits anything longer).
-    EXPECT_LE(bytes.size(), 1372u);
     CarStatesMsg out;
     ASSERT_TRUE(decodeMessage(bytes, out));
+    ASSERT_EQ(out.nearIds, m.nearIds);
     ASSERT_EQ(out.near.size(), kMaxNearCars);
     for (std::size_t i = 0; i < kMaxNearCars; ++i) {
         EXPECT_EQ(out.near[i].id, m.near[i].id);
@@ -369,11 +401,20 @@ TEST(PlayerCars, NearCarsTravelInFullWithoutTheirKeys) {
         CarInputFrame expected = m.near[i].input;
         expected.events = 0;
         EXPECT_EQ(out.near[i].input, expected);
+        EXPECT_EQ(out.near[i].upcoming, m.near[i].upcoming); // keys and all: each applied once, in turn
     }
+    // The host puts in full as many as keep it in one ENet packet
+    // (kMaxCarStatesBytes), taking them in turn: one in a contact with
+    // eight players.
+    CarStatesMsg one = m;
+    one.near.resize(1);
+    EXPECT_LE(encodeMessage(one).size(), kMaxCarStatesBytes);
     // More than kMaxNearCars: the first ones only.
     m.near.push_back(m.near[0]);
+    m.nearIds.push_back(7);
     ASSERT_TRUE(decodeMessage(encodeMessage(m), out));
     EXPECT_EQ(out.near.size(), kMaxNearCars);
+    EXPECT_EQ(out.nearIds.size(), kMaxNearCars);
     // A near car out of range refuses the message.
     m = sampleStates(1, 2);
     m.near[1].state.matrix.m3.y = -1.0e7f;
@@ -397,9 +438,13 @@ TEST(PlayerCars, StatesOutOfRangeAreRefused) {
     bad = sampleStates(2);
     bad.own.framePush.x = std::numeric_limits<float>::quiet_NaN();
     EXPECT_FALSE(decodeMessage(encodeMessage(bad), out));
+    bad = sampleStates(2);
+    bad.own.bound.m1.y = 5.0f; // not a rotation
+    EXPECT_FALSE(decodeMessage(encodeMessage(bad), out));
     // Out of a contact the impulses and pushes do not travel.
     auto calm = sampleStates(2);
     calm.own.contact = false;
+    calm.own.hasBound = false;
     ASSERT_TRUE(decodeMessage(encodeMessage(calm), out));
     EXPECT_EQ(out.own.linearImpulse, Vec3{});
     EXPECT_LT(encodeMessage(calm).size(), encodeMessage(sampleStates(2)).size());
@@ -475,6 +520,7 @@ TEST(PlayerCars, AClientTakesNoNearStateOfItsOwnCarOrOfACarTwice) {
     p.race();
     CarStatesMsg states = sampleStates(0, 2);
     states.time = p.host.time();
+    states.nearIds = {kHostPlayerId, 5};
     states.near[0].id = kHostPlayerId;
     states.near[1].id = kHostPlayerId; // twice: both refused
     p.host.sendCarStates(p.client.localId(), states);
@@ -485,7 +531,9 @@ TEST(PlayerCars, AClientTakesNoNearStateOfItsOwnCarOrOfACarTwice) {
         return !own.empty();
     }));
     EXPECT_TRUE(own[0].near.empty());
-    states.near[0].id = p.client.localId(); // its own car: refused; the host's once: taken
+    EXPECT_EQ(own[0].nearIds, (std::vector<std::uint8_t>{kHostPlayerId, 5}));
+    states.nearIds = {p.client.localId(), kHostPlayerId}; // its own car: refused
+    states.near[0].id = p.client.localId();               // so is its state; the host's once: taken
     p.host.sendCarStates(p.client.localId(), states);
     own.clear();
     ASSERT_TRUE(pumpUntil({&p.host, &p.client}, [&] {
@@ -495,6 +543,19 @@ TEST(PlayerCars, AClientTakesNoNearStateOfItsOwnCarOrOfACarTwice) {
     }));
     ASSERT_EQ(own[0].near.size(), 1u);
     EXPECT_EQ(own[0].near[0].id, kHostPlayerId);
+    EXPECT_EQ(own[0].nearIds, (std::vector<std::uint8_t>{kHostPlayerId}));
+    // A state in full of a car not among the near ones: refused.
+    states.nearIds = {5};
+    states.near.resize(1);
+    states.near[0].id = kHostPlayerId;
+    p.host.sendCarStates(p.client.localId(), states);
+    own.clear();
+    ASSERT_TRUE(pumpUntil({&p.host, &p.client}, [&] {
+        for (auto& u : p.client.takeOwnCarStates())
+            own.push_back(u);
+        return !own.empty();
+    }));
+    EXPECT_TRUE(own[0].near.empty());
 }
 
 TEST(PlayerCars, AFloodOfInputsKeepsToTheBudget) {
@@ -534,7 +595,7 @@ TEST(PlayerCars, MutatedTrafficLeavesBothSidesWithinLimits) {
                 checkInput(r.msg);
             for (const auto& u : p.client.takeOwnCarStates())
                 if (u.hasOwn)
-                    checkStates({u.time, u.ack, u.waiting, true, u.own, {}, u.near});
+                    checkStates({u.time, u.ack, u.waiting, true, u.own, {}, u.nearIds, u.near});
         }
     }
     EXPECT_EQ(p.host.state(), Session::State::Active);

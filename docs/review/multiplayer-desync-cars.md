@@ -2,7 +2,10 @@
 
 Reviewed and reworked on 2026-10-09 from 0.3.1 (cd5ae29); a second round
 the same day (below, "Second round") made shunting predictable, the host
-check a client's resets and the replays meet the traffic where it was.
+check a client's resets and the replays meet the traffic where it was; a
+third (below, "Third round", protocol 17) sent the states every sample with
+the inputs the host holds, and drew the near cars at their players'
+present.
 
 The maintainer's report, for multiplayer cruise over the internet with
 everyone on 0.3.1: "another player's car is somewhere other than where they
@@ -477,6 +480,273 @@ apart, as in the first round, about 11 and 78 KB/s.
 * A client's car pressed against a wall correcting: a car driven into a
   wall at full throttle for 20 s was not corrected once.
 
+## Third round: the rough edges (protocol 17)
+
+The maintainer accepted more bandwidth (about 100 KB/s down for each client
+and 1 MB/s up for a host with eight players) and asked for the remaining
+rough edges: a near car mispredicted when its player brakes or turns (O9),
+and a client pushing through a queue of traffic corrected at nearly every
+state (O8). O5 (the state's size) was dropped. The wire number was 11, 13
+and 15 on this branch while the other rounds merged, 17 at the end.
+
+### What the runs showed
+
+* **A near car ran on old inputs.** The host holds a client's inputs some
+  50 ms before it applies them (`HostInputQueue`'s margin), but a near car
+  went to the other clients with the input last applied only, and at 20
+  states a second a change of input reached them up to 50 ms later than it
+  had to. (The host's own car has no inputs ahead: the host applies its
+  player's as they come.)
+* **Where a near car was drawn.** A client drew a near car where it
+  predicted it, at its own car's time, about 150 ms ahead of the host's
+  screen: half a metre off at the median wherever the two cars were (0.3.1
+  drew it as far behind). Bucketed by how far apart the host had the two
+  cars (client ← host in the rear runs, median / 99th percentile): with the
+  host's car drawn at its player's present (below), 15-40 m apart
+  0.03-0.04 / 0.05-0.14 (0.3.1: 0.53-0.72 / 0.93-1.22); within 6 m, where
+  the client draws it ahead because the two meet there, 0.10-0.96 /
+  2.04-2.25 against the host's screen at the same moment but 0.02-0.20 /
+  0.32-0.36 against the host's screen 125-150 ms later. What remains in a
+  contact is the time by which the client shows it ahead, not the
+  prediction.
+* **A contact's bookkeeping.** With the second round's full state a push
+  against a braking car (the two-car test) was still corrected by 0.93 m:
+  the next sample also reads the bound's matrix as the collisions saw it
+  (when the push moved the body past it, the next sweep starts there,
+  phColliderBase::UpdateMtx) and which collider pushed hardest
+  (`CopyLastMatrix` adds the last push only for the same pusher).
+* **A client behind the host's samples.** In one run with the traffic, on a
+  loaded machine, a client stalled; the host coasted its car through the
+  samples it had no inputs for and then dropped every input as late (the
+  client's 3% faster pace would have taken a minute to make up two
+  seconds): the host's copy of the car stood while the client drove off,
+  537 m apart at the median.
+* **O8.** In the second round's jam run 99.5% of the client's corrections
+  had a traffic car the host had knocked off its rail within 6 m of the
+  client's car (the trace's `TC` lines), which the client met as a body of
+  infinite mass (`TrafficProxies`): its car bounced off cars the host's
+  pushed aside. The shared traffic's second round (protocol 12) made those
+  cars bodies of their mass that the client simulates from the host's full
+  states with its own car (`TrafficFull`, `predictNetTraffic`).
+
+### What changed
+
+1. **States every sample, the inputs ahead** (557ade8): the host sends each
+   client its `CarStates` after every frame that ran a sample (up to 60 a
+   second; `OPENMM2_NET_STATE_HZ` for fewer), the near set (the three
+   nearest other players' cars within 60 m, kept to 70 m) and as many of
+   them in full as keep the message in one ENet packet (1372 bytes), in
+   turn; for another client's car the inputs the host holds for its next
+   samples (up to 16, `NearCarState::upcoming`). The client runs a near car
+   on them, then the last again, and runs the samples again for its near
+   cars only when the host's state or inputs differ from what it ran them
+   on. The host's car is drawn at its player's present (where its trail
+   stood a lead back: what the host's newest states put there, little
+   predicted) unless the two cars may meet within half a second (8 m apart,
+   or closing on 5 m faster than that), and at the client's car's time
+   then, sliding between over a quarter of a second
+   (`OPENMM2_NET_NEAR_DRAW=ahead` keeps the old drawing).
+2. **The client's car from the host's state** (83f5762) whenever the
+   samples run again with near cars, even within the tolerance (in a
+   contact what the tolerance let pass grew from state to state: the shunt
+   test with the other car braking, 2 corrections instead of 7).
+3. **A skip** (28562cf): a state acknowledging a sample the client has not
+   run makes it count the samples up to it, the round trip and the host's
+   margin as run (`CarPrediction::skipTo`), so that its next inputs reach
+   the host in time (the stalled-client test: no input missed from a second
+   after the stall).
+4. **A contact's bound and hardest pusher** (c29326f) in every car's full
+   state (the pusher as a player's number): the braking push of the test
+   corrected twice by a centimetre instead of 0.93 m.
+5. **Another client's car at the client's time** (694ebfe): another
+   client's screen runs ahead of the host's as this one's does, so a near
+   client's car is drawn at this machine's car's time always; only the
+   host's car is drawn at its (the host's) present (three players: client ←
+   client 0.02 m at the median while the clients were near each other,
+   against 0.38-0.54 drawn at the host's present).
+
+### Before and after
+
+Two runs of each scenario on each build, interleaved, 75 s each; 0.3.1 as
+in the second round. "Before" is integration and "after" this branch, each
+twice: the first two runs before the rules' and props' second rounds
+merged (integration 8e74c96; this branch at 15f69e6), the last two after
+(integration 482ac2c; this branch at d805730). Metres, median / 99th
+percentile.
+
+Host ← client:
+
+| Scenario | 0.3.1 | before | after |
+| --- | --- | --- | --- |
+| rear | 0.88 / 11.79, 0.99 / 4.28 | 0.50 / 2.39, 0.36 / 2.08; 0.40 / 2.11, 0.55 / 3.10 | 0.45 / 2.66, 0.47 / 2.37; 0.31 / 2.11, 1.09 / 3.64 |
+| ram | 0.60 / 1.56, 0.60 / 1.45 | 0.56 / 1.37, 0.28 / 1.28; 0.56 / 1.37, 0.58 / 1.44 | 0.60 / 1.42, 0.57 / 1.37; 0.57 / 1.32, 0.56 / 1.35 |
+| chase | 0.60 / 4.89, 0.26 / 2.57 | 0.50 / 2.62, 0.27 / 2.24; 0.51 / 2.42, 0.24 / 2.00 | 1.01 / 3.90, 0.22 / 2.36; 0.24 / 2.35, 0.27 / 2.27 |
+| ram, 150 ms, 5% | 1.00 / 2.54, 0.97 / 2.32 | 0.92 / 2.13, 0.94 / 1.99; 0.94 / 2.05, 0.95 / 2.49 | 0.93 / 2.05, 0.91 / 1.97; 0.87 / 2.07, 0.94 / 2.19 |
+| ram, 3 players (client 1) | 0.60 / 1.54, 0.60 / 1.74 | 0.54 / 1.35, 0.56 / 1.33; 0.52 / 1.26, 0.53 / 1.22 | 0.51 / 1.24, 0.48 / 1.20; 0.53 / 1.29, 0.57 / 1.39 |
+| ram, shared traffic | 0.55 / 1.43, 0.56 / 1.57 | 0.49 / 1.14, 0.50 / 1.32; 0.51 / 1.35, 0.56 / 1.30 | 0.55 / 1.38, 0.55 / 1.35; 0.52 / 1.31, 0.58 / 1.38 |
+
+Client ← host:
+
+| Scenario | 0.3.1 | before | after |
+| --- | --- | --- | --- |
+| rear | 0.33 / 1.13, 0.49 / 1.19 | 0.27 / 1.92, 0.04 / 1.77; 0.17 / 1.73, 0.61 / 1.53 | 0.10 / 1.86, 0.07 / 2.19; 0.09 / 1.84, 0.18 / 2.01 |
+| ram | 0.57 / 1.53, 0.57 / 1.50 | 0.56 / 2.54, 0.51 / 1.54; 0.54 / 1.57, 0.56 / 1.56 | 0.04 / 1.46, 0.06 / 1.40; 0.06 / 1.40, 0.04 / 1.39 |
+| chase | 0.76 / 5.40, 0.53 / 1.76 | 0.56 / 1.48, 0.53 / 1.46; 0.46 / 1.32, 0.49 / 1.50 | 0.03 / 1.26, 0.01 / 1.20; 0.06 / 1.20, 0.07 / 1.30 |
+| ram, 150 ms, 5% | 0.84 / 2.43, 0.76 / 2.24 | 0.92 / 2.63, 0.99 / 2.85; 0.93 / 2.82, 0.96 / 2.77 | 0.04 / 2.22, 0.12 / 2.11; 0.19 / 2.17, 0.07 / 2.10 |
+| ram, 3 players (client 1) | 0.54 / 1.37, 0.30 / 1.35 | 0.54 / 1.56, 0.59 / 3.55; 0.50 / 1.48, 0.51 / 1.37 | 0.07 / 1.29, 0.11 / 1.33; 0.06 / 1.26, 0.06 / 1.45 |
+| ram, shared traffic | 0.57 / 1.45, 0.59 / 1.47 | 0.50 / 1.44, 0.53 / 1.51; 0.53 / 1.44, 0.54 / 1.44 | 0.14 / 1.39, 0.14 / 1.31; 0.09 / 1.17, 0.06 / 1.44 |
+
+The three-player runs' second client against the host: 0.3.1 0.55 / 1.42,
+0.30 / 1.31; before 0.48-0.56 / 1.49-1.63; after 0.12-0.18 / 1.19-1.30.
+The clients' views of each other (client 1 ← client 2, client 2 ← client
+1), with the final build (item 5) twice more:
+
+| Build | client 1 ← client 2 | client 2 ← client 1 |
+| --- | --- | --- |
+| 0.3.1 | 0.82 / 2.05, 0.81 / 2.20 | 0.90 / 2.26, 0.88 / 2.39 |
+| before | 0.17 / 2.51, 0.32 / 3.78; 0.04 / 2.40, 0.09 / 2.64 | 0.15 / 2.75, 0.30 / 4.24; 0.04 / 2.66, 0.09 / 2.62 |
+| after, drawn at the host's present | 0.44 / 2.06, 0.34 / 1.77; 0.44 / 2.21, 0.38 / 2.10 | 0.36 / 2.12, 0.27 / 1.92; 0.45 / 2.28, 0.54 / 2.42 |
+| final, drawn at the client's time | 0.02 / 2.04, 0.24 / 2.23 | 0.02 / 2.20, 0.32 / 2.38 |
+
+(In the final build's second run the two clients were within 60 m of each
+other 29% of the time, 78% in the first: farther, the other client's car
+is drawn from its states a playout delay in the past. The final build
+changes only how another client's car is drawn; everything else below is
+the same simulation.)
+
+**O9.** A client's view of the other cars near it is now within
+centimetres at the median (0.01-0.19 m against the host's car, 0.02 against
+a near client's; 0.46-0.99 before outside the rear runs, 0.30-0.90 in
+0.3.1), and its 99th
+percentile is at or below 0.3.1's in the ram (1.39-1.46 against 1.50-1.53),
+harsh (2.10-2.22 against 2.24-2.43), chase, traffic and three-player runs.
+Not in the rear runs (1.84-2.19 against 1.13-1.19): there the cars are in
+contact most of the run, and the client shows the contact ahead with its
+own car (against the host's screen 125-150 ms later the contact's 99th
+percentile is 0.32-0.36, above). Drawing the host's car at the host's
+present in a contact would put it back into the client's car (O1). The
+host's view of a client's car is unchanged: it draws what it simulates,
+about 140-150 ms behind the client's screen, so its divergence is that
+time the car's speed (the client's car's median speed in the second rear
+run after the merge was 7.8 m/s, in the others 3.0-4.1).
+
+Corrections of a client's own car (a minute; over 10 cm; over 1 m; no
+jump of a client's own car over 1 m in any run):
+
+| Scenario | before | after |
+| --- | --- | --- |
+| rear | 376, 512; 40, 23; 2, 2 / 610, 314; 22, 32; 0, 0 | 314, 308; 5, 19; 0, 0 / 1112, 225; 68, 69; 2, 0 |
+| ram | 136, 141; 1, 13; 0, 0 / 177, 155; 9, 2; 0, 0 | 68, 114; 0, 1; 0, 0 / 104, 217; 3, 19; 0, 0 |
+| chase | 0, 0; 0, 0; 0, 0 / 405, 191; 47, 10; 0, 0 | 424, 15; 54, 0; 0, 0 / 114, 267; 4, 9; 0, 0 |
+| ram, 150 ms, 5% | 186, 204; 47, 43; 2, 4 / 228, 423; 24, 220; 1, 3 | 181, 364; 14, 149; 1, 13 / 257, 106; 75, 16; 1, 1 |
+| ram, 3 players (two clients) | 146 and 154, 71 and 364; 21 and 13, 1 and 3; 0 / 141 and 98, 170 and 99; 8 and 8, 10 and 10; 0, 0 and 1 | 128 and 97, 112 and 87; 6 and 10, 10 and 9; 0 / 180 and 114, 149 and 218; 9 and 4, 7 and 15; 0 |
+| ram, shared traffic | 103, 325; 4, 87; 0, 10 / 191, 171; 21, 6; 0, 0 | 436, 172; 39, 9; 0, 0 / 86, 144; 12, 9; 2, 0 |
+
+The corrections vary from run to run more than between the builds; what
+drives them:
+
+* **Knocked-over props in the rear runs.** The rear runs end with the two
+  cars pushing each other into street furniture the host's car knocked
+  over (a tree, a traffic light, parking meters), and the runs that
+  corrected most did it there: of the corrections over 1 cm, those with a
+  knocked-over prop or piece within 4 m of the client's car (the props'
+  `h` lines) were 851 of 894 in this branch's first run after the merge
+  (1112 a minute), 344 of 445 in integration's (610 a minute), and in two
+  more runs of this branch each before and after the merge 960 of 1027
+  (978 a minute) and 474 of 610 (868 a minute); the other two of them
+  corrected 140 and 167 times a minute. Without a prop near, the
+  corrections over 1 cm with the host's car within 6 m: before 216, 342,
+  101, 72; after 37, 49, 50, 64 and 43, 64, 39, 136. The props' record has
+  the pieces a client's car leans on (multiplayer-desync-props.md,
+  "Open").
+* **The harsh runs' tangles.** Most of the over-1 m corrections in the
+  harsh runs (13 in one, 4 before) fall within three seconds in which the
+  two cars ride up on each other at walking pace, in runs of both builds.
+* **The chase.** Before the props' second round the integration build's
+  chase never corrected the client (the cars never touched); this branch's
+  did in a run where they touched twice. Since, both correct it 114-405
+  times a minute, mostly by millimetres: the client predicts its knocks
+  and the other car's (the props' second round).
+
+Running the samples again cost a client 5.5 ms a second on average over
+the runs after the merge (integration 7.9), at most 37 ms in a second and
+2.2 ms in a frame (integration 27 and 2.9).
+
+### The traffic (O8)
+
+Driving through the shared traffic along the busy street (as in the second
+round), two runs each on the merged builds; the client knocked 5-32 traffic
+cars loose in each (the host 18-49), and in three of the four runs 80-98%
+of the corrections had a car the host had knocked off its rail within 6 m
+(in integration's first, 11 of 294):
+
+| Build | a minute | median | over 10 cm | over 1 m |
+| --- | --- | --- | --- | --- |
+| second round (where each sample met them) | 904, 184 | - | 60, 3 | 6, 0 |
+| integration 482ac2c | 238, 184 | 2.1, 0.5 cm | 53, 4 | 3, 1 |
+| this branch | 120, 216 | 0.7, 0.9 cm | 2, 3 | 1, 0 |
+
+With the knocked cars simulated with their mass on the client, pushing
+through them is corrected by millimetres: O8 is fixed by the traffic's
+second round.
+
+### Another player's car's knocks (for the props)
+
+The props' record found about one knock in ten that a client predicted for
+another player's car undone (the real car missed the prop). The props'
+scenarios (slalom and follow at 80 ms and 150 ms, three machines at 150 ms)
+twice each on the merged builds, the knocks each client predicted and how
+many the host never confirmed:
+
+| Build | another player's car | the host's | another client's | its own car |
+| --- | --- | --- | --- | --- |
+| integration 482ac2c | 10 undone of 57 | 5 of 30 | 5 of 27 | 0 of 65 |
+| this branch | 3 undone of 43 | 2 of 20 | 1 of 23 | 1 of 84 |
+
+Most of them in the three-machine runs (integration 9 of 37, this branch 2
+of 28): with the inputs the host holds for a client's car and 60 states a
+second, a client runs the other cars on what their players did.
+
+### The checkpoint race's start
+
+The props' record saw a client corrected at every acknowledgement for 3-4
+s after a checkpoint race's start (0.56 m, the sign alternating, 58-59
+samples run again). Four checkpoint races on the merged builds (the race's
+grid, the start handshake, 60 ms; two each): each had one correction
+during the countdown with 55-57 samples run again (the host's first state
+of the held car: 5-23 cm, the car drawn 1 mm away), then samples run again
+11-13 at a time and millimetres until the cars met. Not reproduced.
+
+### A race started in the water (the rules' O5)
+
+Both cars spawned in the water (`OPENMM2_DEBUG_SPAWN`), a checkpoint race,
+60 ms, on the final build: the client's car went back to the race's start
+at its sample 141 (its own prediction of the water's handler; held on the
+grid, it sank from the first sample), the host's copy of it at 435. Each
+machine runs its own car's samples from its own loading, but the host
+places a client's car only once the race's start is set (here 5 s later)
+and drops the inputs it is behind on (42), so a car that moves while held
+before then is elsewhere on the client. Only a car spawned in the water by
+the development aid moves while held; starting a client's samples when the
+host places its car would change how every race starts, so it stays open
+(the rules' O5).
+
+### Bandwidth
+
+60 states a second: about 440 bytes a message for a client with no near
+car (26 KB/s of payload), 700-870 bytes with the host's car near (42-52
+KB/s); with three players near each other 1.1 KB (65 KB/s for each client,
+133 KB/s for the host). A message stays within 1372 bytes, so with eight
+players a client gets at most 82 KB/s and the host sends at most about 580
+KB/s, within the maintainer's ceiling. A client's inputs stay at 0.9 KB/s.
+
+### Not done
+
+* The host's own car has no inputs ahead (the host applies its player's
+  input at once); a client learns of the host braking a trip after it.
+  Holding the host's input back by the clients' margin would give them
+  the same 50 ms, at the cost of the host's own response.
+
 ## Deviations from MM2
 
 * The host simulates every player's car; MM2 ran every network car on every
@@ -489,11 +759,11 @@ apart, as in the first round, about 11 and 78 KB/s.
   each machine its own car's damage; the limits were already the host's in
   MM2, `UpdateLimit` / `SendLimitReached`).
 * A client simulates the other players' cars near its own from the host's
-  states and their last inputs (MM2 drove every network car on its last
-  pedals and pulled it toward the packets, `mmNetObject::Predict`; OpenMM2
-  puts it to the host's state instead), and keeps the players' cars in
-  player order among the world's movers (MM2: in the order they were
-  declared).
+  states and their inputs (the last the host applied and those it holds
+  for the next samples; MM2 drove every network car on its last pedals and
+  pulled it toward the packets, `mmNetObject::Predict`; OpenMM2 puts it to
+  the host's state instead), and keeps the players' cars in player order
+  among the world's movers (MM2: in the order they were declared).
 * The host resets a client's car only where the game's rules would (MM2's
   peers reset their own cars and told the others).
 
@@ -510,14 +780,19 @@ apart, as in the first round, about 11 and 78 KB/s.
 | O2 | visible | props | Each machine runs its own props, so a car knocking them is corrected (the props work makes them the host's). | the props work landed (14dc206): docs/review/multiplayer-desync-props.md; a chase with props knocked is now corrected about 130-240 times a minute by a few millimetres |
 | O3 | minor | rules | Checkpoints, laps, finishes and Cops and Robbers' gold were decided on each player's own machine and relayed (a client could claim them); only the limits were the host's. | fixed (protocol 10, docs/review/multiplayer-desync-rules.md): the host runs every car's waypoints after every sample (`game::session::RaceReferee`), the finish exchange, timeout and standings, and Cops and Robbers' rules for every car (`CopsAndRobbers::updateHost`), and tells each player (`game::NetRules`); a client predicts its checkpoints and a pickup, which the host confirms or corrects, and the host refuses a player's own rule events |
 | O4 | minor | commands | The host checks a client's resets only against the city's box and four a second, not against the race's checkpoints and the water. | fixed (78886cf): `game::ResetRules` (the water, the fall, the race's checkpoints, a wreck's or Cops and Robbers' repair) on the host's simulation of the car; in a race a respawn only at the start or at a checkpoint the host's referee counted for that car (docs/review/multiplayer-desync-rules.md); since protocol 14 the water and the fall are the host's own (`NetCarDriver::setWaterHandler`) and a client's reset is refused, a repair only the wreck penalty's |
-| O5 | minor | `CarStatesMsg` | The own car's state is 270 bytes at 20 Hz to every client (78 KB/s for the host with eight players); since protocol 9 about 310 (370 in a contact), and up to two near cars in full: at most about 160 KB/s for the host with eight players all near each other. | open: it could go only when it changed beyond the tolerance, a near car only while the two can meet |
+| O5 | minor | `CarStatesMsg` | The own car's state is 270 bytes at 20 Hz to every client (78 KB/s for the host with eight players); since protocol 9 about 310 (370 in a contact), and up to two near cars in full: at most about 160 KB/s for the host with eight players all near each other. | dropped: the maintainer accepted more bandwidth; since protocol 17 60 states a second of at most 1372 bytes (at most 82 KB/s for each client, about 580 KB/s for a host with eight players) |
 | O6 | minor | MSVC against GCC | Not testable here; the noise test suggests corrections in crashes, eased away. | fixed (multiplayer-determinism.md): the simulation's maths are OpenMM2's own and every build rounds alike; a MinGW build under Wine gives the Linux build's hashes, and CI checks MSVC and Clang |
 | O7 | minor | replays | The shared traffic's cars still on their rails are held where the frame placed them while a client runs its samples again. | fixed (e51e9bf, 60ddfd0): where each sample met them (corrections over 10 cm driving through the traffic 3 and 60 against 194 and 205; `poseAt` 34 and 89) |
 | C6 | visible | `RaceScreen` (the players' cars' movers) | Each machine had its own car first among the world's movers, so two cars collided in a different order on the host and on a client. | fixed (94d542a): player order everywhere |
 | C7 | visible | `net::OwnCarState` | The full state left out what a sample hands the next (the force and torque set for it, the tyres' rolling resistance, a contact's impulses and pushes): a car rebuilt from it drifted from the host's in a contact. | fixed (38fcf08), protocol 9 |
 | C8 | minor | `netprobe syncreport` | Corrections a minute were counted over the span they fell in. | fixed (156908f) |
-| O8 | minor | the shared traffic | A client pushing through a queue of traffic cars is corrected at nearly every state (by a few centimetres), whichever way the replays place them: the host knocks the cars loose, a replay meets them as walls. | open (with the shared traffic) |
-| O9 | minor | the near cars | A near car is drawn where the client predicts it: in the harsh runs a client's view of the host's car reached 2.7-2.8 m at the 99th percentile (2.3-2.4 placed at its states), where the host braked or turned in the last 250 ms. | open: inherent to predicting another player; the client's own car is corrected far less in exchange |
+| O8 | minor | the shared traffic | A client pushing through a queue of traffic cars is corrected at nearly every state (by a few centimetres), whichever way the replays place them: the host knocks the cars loose, a replay meets them as walls. | fixed by the shared traffic's second round (protocol 12): the cause was the cars the host knocks off their rails, which a client met as bodies of infinite mass (99.5% of the jam's corrections had one within 6 m); simulated with their mass from the host's full states, 120-216 corrections a minute by under a centimetre at the median, 2-3 over 10 cm (second round: 904 and 184; 60 and 3) |
+| O9 | minor | the near cars | A near car is drawn where the client predicts it: in the harsh runs a client's view of the host's car reached 2.7-2.8 m at the 99th percentile (2.3-2.4 placed at its states), where the host braked or turned in the last 250 ms. | fixed (557ade8, 694ebfe; protocol 17): the inputs the host holds for a client's car, 60 states a second, the host's car drawn at its present unless the cars may meet; a client's view of the near cars 0.01-0.19 m at the median, at its 99th percentile at or below 0.3.1's except in the rear runs' contact (1.84-2.19 against 1.13-1.19: the contact shown ahead with the client's car) |
+| C9 | visible | `CarPrediction` (new) | A client that stalled, or lost its inputs for longer than the host repeats them, stayed behind the host's samples: the host coasted its car and dropped every later input as late (537 m apart at the median in one run). | fixed (28562cf): `CarPrediction::skipTo` |
+| C10 | visible | `net::OwnCarState` | The full state left out a contact's bound matrix and hardest pusher, which the next sample reads: a push against a braking car was corrected by 0.93 m. | fixed (c29326f), protocol 17 |
+| C11 | minor | `CarPrediction::acknowledge` | Within the tolerance a client kept its own car's prediction while running the near cars again, and in a contact what the tolerance let pass grew. | fixed (83f5762) |
+| O10 | minor | the host's own car | A client learns of the host's player braking or turning a trip after it: the host applies its own inputs at once, so it has none ahead to send (a client's car's go 50 ms ahead). | open: holding the host's inputs back by the clients' margin would give the clients those 50 ms at the cost of the host's own response |
+| O11 | minor | props, the rear runs | The rear runs that corrected most did it with the client's car pushing into knocked-over props and pieces (851 of 894 corrections over 1 cm in one run). | open, with the props (multiplayer-desync-props.md, "Open") |
 
 ## Reproducing
 
@@ -546,3 +821,10 @@ each; wall: client at (-1149.945, 111.9, 183.194), angle π/2, input
 race ran without `OPENMM2_DEBUG_START` (the race's grid). The two-car shunt
 without a network is `PlayerCars.AShunt*` in
 `tests/game/test_player_cars.cpp`.
+
+The third round's water race: a checkpoint race (`mp:mode:race`) with the
+host spawned at (-1779, 3, -1040) and the client at (-1779, 3, -1130), angle
+0 (`OPENMM2_DEBUG_SPAWN`). The props' scenarios are those of
+multiplayer-desync-props.md ("How it was measured"); `x` lines in a client's
+trace after its `k` line with another player's car as the cause count an
+undone prediction.

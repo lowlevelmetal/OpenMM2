@@ -277,8 +277,9 @@ public:
         bool hasOwn = false;
         OwnCarState own;
         double arrival = 0.0; // session ms
-        // The other players' cars near this one, in full (none is this
-        // machine's own, none twice).
+        // The other players' cars near this one (none is this machine's own,
+        // none twice), and those of them in full in this state.
+        std::vector<std::uint8_t> nearIds;
         std::vector<NearCarState> near;
     };
     std::vector<OwnCarUpdate> takeOwnCarStates() { return std::exchange(m_ownCarStates, {}); }

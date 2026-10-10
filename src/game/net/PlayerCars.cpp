@@ -153,6 +153,19 @@ void HostInputQueue::receive(const net::PlayerInputMsg& msg) {
             m_commands[c.seq] = c;
 }
 
+std::vector<net::CarInputFrame> HostInputQueue::upcoming(std::size_t most) const {
+    std::vector<net::CarInputFrame> out;
+    if (m_next == 0)
+        return out;
+    for (std::uint32_t seq = m_next; out.size() < most; ++seq) {
+        const auto it = m_frames.find(seq);
+        if (it == m_frames.end())
+            break;
+        out.push_back(it->second);
+    }
+    return out;
+}
+
 std::optional<HostInputQueue::Next> HostInputQueue::next() {
     if (m_next == 0)
         return std::nullopt;
@@ -217,7 +230,8 @@ std::int32_t HostInputQueue::takeLeastWaiting() {
     return w;
 }
 
-net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const NetCarDriver* driver) {
+net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const NetCarDriver* driver,
+                             const PusherOf& pusherOf) {
     const phys::CarSim& sim = car.sim();
     const phys::InertialCS& ics = sim.body.ics;
     net::OwnCarState s;
@@ -267,10 +281,19 @@ net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const 
     const Vec3 zero{};
     s.contact = !(s.linearImpulse == zero && s.angularImpulse == zero && s.linearPush == zero &&
                   s.turnForce == zero && s.framePush == zero);
+    // The bound where the collisions saw it, when the push moved the body on.
+    const phys::Body& body = sim.body;
+    Mat34 follows = ics.matrix;
+    follows.m3 = ics.matrix.transform(body.boundOrigin);
+    s.hasBound = !(body.boundMatrix.m0 == follows.m0 && body.boundMatrix.m1 == follows.m1 &&
+                   body.boundMatrix.m2 == follows.m2 && body.boundMatrix.m3 == follows.m3);
+    s.bound = s.hasBound ? body.boundMatrix : Mat34::identity();
+    const void* pusher = body.collider.lastMaxPusher;
+    s.pusher = !pusher ? net::kPusherNone : pusherOf ? pusherOf(pusher) : net::kPusherOther;
     return s;
 }
 
-void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
+void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s, const PusherKey& pusherKey) {
     phys::CarSim& sim = car.sim();
     phys::InertialCS& ics = sim.body.ics;
     ics.matrix = s.matrix;
@@ -321,11 +344,23 @@ void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
     else
         sim.splash.deactivate();
     sim.splash.buoyancy = s.buoyancy;
-    // The bound follows the body; the next sweep starts where it is (the
-    // host's bound matrix does not travel: it differs from the body's only
-    // by a push during a contact).
-    sim.body.syncBoundMatrix();
-    sim.body.collider.lastMatrix = sim.body.boundMatrix;
+    // The bound follows the body, or (the sample's push moved the body past
+    // it) stands where the collisions saw it; the next sweep starts there
+    // (phColliderBase::UpdateMtx's last matrix), and the hardest pusher of
+    // the sample is the same car's here.
+    if (s.hasBound)
+        sim.body.boundMatrix = s.bound;
+    else
+        sim.body.syncBoundMatrix();
+    auto& collider = sim.body.collider;
+    collider.lastMatrix = sim.body.boundMatrix;
+    static const char kSomethingElse = 0; // a pusher that is no player's car: matches none here
+    collider.lastMaxPusher = s.pusher == net::kPusherNone ? nullptr
+                             : s.pusher == net::kPusherOther || !pusherKey ? &kSomethingElse
+                                                                           : pusherKey(s.pusher);
+    collider.maxPusher = nullptr;
+    collider.maxPush2 = 0.0f;
+    collider.justReset = false;
 }
 
 bool ResetRules::allows(const net::CarCommand& c) const {
@@ -421,6 +456,23 @@ void CarPrediction::endSample(const SimVehicle& car, const NetCarDriver& driver)
         m_history.pop_front();
 }
 
+std::uint32_t CarPrediction::skipTo(std::uint32_t ack, std::uint32_t trip) {
+    const std::uint32_t to = ack + trip + HostInputQueue::kStartMargin; // the next sample's number
+    if (to <= m_next || m_history.empty() || m_history.back().seq != m_next - 1)
+        return 0;
+    const std::uint32_t skipped = to - m_next;
+    Entry last = m_history.back();
+    last.commands.clear();
+    last.input.events = 0;
+    for (; m_next < to; ++m_next) {
+        last.seq = m_next;
+        m_history.push_back(last);
+    }
+    while (m_history.size() > m_options.history)
+        m_history.pop_front();
+    return skipped;
+}
+
 std::optional<net::PlayerInputMsg> CarPrediction::message() const {
     if (m_history.empty() || m_history.back().seq != m_next - 1)
         return std::nullopt;
@@ -453,17 +505,24 @@ Vec3 companionPosition(const CarPrediction::Companion& c) {
 Vec3 companionVelocity(const CarPrediction::Companion& c) {
     return c.state ? c.state->linearVelocity : c.velocity;
 }
-void rebaseCompanion(const CarPrediction::Companion& c) {
+void rebaseCompanion(const CarPrediction::Companion& c, const PusherKey& pusherKey) {
     if (c.rebase)
         c.rebase();
     else if (c.car && c.state)
-        applyOwnCarState(*c.car, *c.state);
+        applyOwnCarState(*c.car, *c.state, pusherKey);
 }
-void driveCompanion(const CarPrediction::Companion& c) {
+// A player's car's input for the `k`th sample after the acknowledged one:
+// the host's for it, then the last again.
+const net::CarInputFrame& companionInput(const CarPrediction::Companion& c, std::size_t k) {
+    if (k < c.upcoming.size())
+        return c.upcoming[k];
+    return c.upcoming.empty() ? c.input : c.upcoming.back();
+}
+void driveCompanion(const CarPrediction::Companion& c, std::size_t k) {
     if (c.drive)
         c.drive();
     else if (c.driver && c.car)
-        c.driver->apply(*c.car, c.input);
+        c.driver->apply(*c.car, companionInput(c, k));
 }
 
 } // namespace
@@ -473,7 +532,8 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                                                      const net::OwnCarState& host,
                                                      const std::function<void()>& beforeLast,
                                                      const std::function<void(std::uint32_t)>& beforeEach,
-                                                     std::span<const Companion> companions) {
+                                                     std::span<const Companion> companions,
+                                                     const std::function<void(std::uint32_t)>& companionsAt) {
     Correction out;
     if (ack <= m_acked)
         return out; // an older or repeated state
@@ -504,7 +564,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                          rotation > m_options.rotationTolerance || out.damage || out.held || out.gear ||
                          out.water;
     const std::size_t later = m_history.size() - 1 - index;
-    const bool replay = differs || !companions.empty();
+    const bool replay = differs || std::ranges::any_of(companions, &Companion::differs);
     if (replay && later > m_options.maxReplay) {
         ++m_stats.unreplayable;
         m_history.erase(m_history.begin(), m_history.begin() + static_cast<std::ptrdiff_t>(index));
@@ -516,7 +576,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     // the car held where each sample had it: the car's own prediction is
     // then not run again against bodies held still (a prop it pushed in
     // those samples meets it as a wall when they run again).
-    bool alone = !differs && !companions.empty();
+    bool alone = !differs && replay;
     const float span = static_cast<float>(later + 1) * phys::kFixedSampleStep;
     const Vec3 carNow = car.sim().body.ics.matrix.m3;
     for (const Companion& c : companions) {
@@ -529,21 +589,25 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     if (replay && alone) {
         std::vector<phys::Body*> bodies;
         for (const Companion& c : companions) {
-            rebaseCompanion(c);
+            rebaseCompanion(c, pusherKey);
             bodies.push_back(&companionBody(c));
         }
         // (In the world's order: the companions come in player order.)
+        if (companionsAt)
+            companionsAt(ack);
         world.beginReplay(world.time() -
                           static_cast<double>(later) * static_cast<double>(phys::kFixedSampleStep));
         for (std::size_t k = index + 1; k < m_history.size(); ++k) {
             restore(m_history[k - 1], car, driver); // the car as the sample met it
             for (const Companion& c : companions)
-                driveCompanion(c);
+                driveCompanion(c, k - index - 1);
             if (beforeEach)
                 beforeEach(m_history[k].seq);
             if (k + 1 == m_history.size() && beforeLast)
                 beforeLast();
             world.replaySample(bodies, phys::kFixedSampleStep);
+            if (companionsAt)
+                companionsAt(m_history[k].seq);
             ++out.replayed;
         }
         restore(m_history.back(), car, driver);
@@ -554,8 +618,12 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     } else if (replay) {
         const Vec3 before = car.sim().modelMatrix().m3;
         restore(base, car, driver);
-        if (differs) {
-            applyOwnCarState(car, host);
+        // With other cars it may meet, the host's state even within the
+        // tolerance: in a contact what the tolerance lets pass grows from
+        // state to state (a shunt with the other car braking: 7 corrections
+        // over the tolerance before, 2 with it).
+        if (differs || !companions.empty()) {
+            applyOwnCarState(car, host, pusherKey);
             driver.setWaterTime(host.waterTime);
             save(base, car, driver);
         }
@@ -572,7 +640,9 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
             if (!c.first)
                 bodies.push_back(&companionBody(c));
         for (const Companion& c : companions)
-            rebaseCompanion(c);
+            rebaseCompanion(c, pusherKey);
+        if (companionsAt && !companions.empty())
+            companionsAt(ack);
         // OpenMM2: the props the replay meets (World::collideHeld), the samples
         // having run for real one after another up to the world's time now.
         world.beginReplay(world.time() -
@@ -583,13 +653,15 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                 NetCarDriver::command(car, c);
             driver.apply(car, e.input);
             for (const Companion& c : companions)
-                driveCompanion(c);
+                driveCompanion(c, k - index - 1);
             if (beforeEach)
                 beforeEach(e.seq);
             if (k + 1 == m_history.size() && beforeLast)
                 beforeLast();
             world.replaySample(bodies, phys::kFixedSampleStep);
             save(e, car, driver);
+            if (companionsAt && !companions.empty())
+                companionsAt(e.seq);
             ++out.replayed;
         }
         // The resets asked for the next sample stand again.

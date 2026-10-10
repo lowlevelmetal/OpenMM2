@@ -121,7 +121,7 @@ counted in the summary above.
 | OpenMM2 | MM2 | Verdict | Notes |
 | --- | --- | --- | --- |
 | `game::NetCarDriver`, `HostInputQueue`, `CarPrediction`, `CorrectionBlend`, `net::PlayerInputMsg`, `CarStatesMsg` | `mmNetObject`, `mmGameMulti::SendPosition` | deviation | The host simulates every player's car from its inputs; a client predicts its own and is corrected by the host's states. |
-| `CarPrediction`'s companions, `net::NearCarState` | `mmNetObject::Predict` (a network car driven on its last pedals) | deviation | A client simulates the other players' cars near its own from the host's full states and last inputs, put to the host's state at every one (MM2 pulled the car toward its packet along a path). |
+| `CarPrediction`'s companions, `net::NearCarState` | `mmNetObject::Predict` (a network car driven on its last pedals) | deviation | A client simulates the other players' cars near its own from the host's full states, the inputs the host last applied and those it holds for their next samples (protocol 17), put to the host's state at every one that differs from what it ran them on (MM2 pulled the car toward its packet along a path). |
 | The players' cars in player order among the world's movers (`RaceScreen::orderPlayerCars`) | `dgPhysManager::DeclareMover` (the order of the declarations) | deviation | So that two players' cars collide in the same order on every machine. |
 | `game::ResetRules` | `mmPlayer::Reset` from `mmGameMulti::HitWaterHandler` and `DropThruCityHandler` | openmm2 | The host carries out a client's reset only where those rules would. |
 

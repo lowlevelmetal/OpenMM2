@@ -238,7 +238,20 @@ struct OwnCarState {
     std::array<float, 4> tireResistance{};
     bool contact = false;
     Vec3 linearImpulse, angularImpulse, linearPush, turnForce, framePush;
+    // A contact's bookkeeping at the sample's end (protocol 17): the bound's
+    // matrix as the sample's collisions saw it, when the sample's push has
+    // moved the body past it (`hasBound`; otherwise it follows the body), and
+    // the collider that pushed hardest in the sample (phColliderBase's last
+    // max pusher, which CopyLastMatrix reads): a player's car by its number,
+    // or kPusherNone / kPusherOther. Without them a car pressed against
+    // another drifted from the host's (a push against a braking car: a 0.93 m
+    // correction).
+    bool hasBound = false;
+    Mat34 bound;
+    std::uint8_t pusher = 0xFF;
 };
+inline constexpr std::uint8_t kPusherNone = 0xFF;
+inline constexpr std::uint8_t kPusherOther = 0xFE;
 
 // Ranges an OwnCarState must lie in (anything else is refused).
 inline constexpr float kOwnStateMaxCoordinate = 16384.0f;
@@ -311,6 +324,16 @@ bool serialize(S& s, OwnCarState& o) {
     } else if constexpr (S::kReading) {
         o.linearImpulse = o.angularImpulse = o.linearPush = o.turnForce = o.framePush = {};
     }
+    s.boolean(o.hasBound);
+    if (o.hasBound) {
+        s.vec3(o.bound.m0);
+        s.vec3(o.bound.m1);
+        s.vec3(o.bound.m2);
+        s.vec3(o.bound.m3);
+    } else if constexpr (S::kReading) {
+        o.bound = Mat34::identity();
+    }
+    s.u8(o.pusher);
     if constexpr (S::kReading) {
         // Untrusted: every number finite (f32 refuses the rest) and in range.
         const auto ok = [](const Vec3& v, float r) {
@@ -324,7 +347,8 @@ bool serialize(S& s, OwnCarState& o) {
                     ok(o.force, kOwnStateMaxValue) && ok(o.torque, kOwnStateMaxValue) &&
                     ok(o.linearImpulse, kOwnStateMaxValue) && ok(o.angularImpulse, kOwnStateMaxValue) &&
                     ok(o.linearPush, kOwnStateMaxValue) && ok(o.turnForce, kOwnStateMaxValue) &&
-                    ok(o.framePush, kOwnStateMaxValue);
+                    ok(o.framePush, kOwnStateMaxValue) && ok(o.bound.m0, 2.0f) && ok(o.bound.m1, 2.0f) &&
+                    ok(o.bound.m2, 2.0f) && ok(o.bound.m3, kOwnStateMaxCoordinate);
         for (float r : o.tireResistance)
             good = good && std::abs(r) <= kOwnStateMaxValue;
         for (const auto& w : o.wheels)
@@ -350,8 +374,17 @@ struct NearCarState {
     std::uint8_t id = 0;
     OwnCarState state;
     CarInputFrame input; // the last applied (its keys, applied once, left out)
+    // A client's car: the inputs the host holds for its next samples, in
+    // order (protocol 17; the host's own car has none), so that the
+    // receiving client runs it on them instead of on `input` repeated.
+    std::vector<CarInputFrame> upcoming;
 };
-inline constexpr std::size_t kMaxNearCars = 2;
+inline constexpr std::size_t kMaxNearCars = 3;
+// A CarStates message stays within one ENet packet (its default MTU, 1400
+// bytes, less its header and a fragment's: ENet would send a longer
+// unsequenced packet as reliable fragments).
+inline constexpr std::size_t kMaxCarStatesBytes = 1372;
+inline constexpr std::size_t kMaxUpcomingInputs = 16;
 
 struct CarStatesMsg {
     static constexpr MsgType kType = MsgType::CarStates;
@@ -365,7 +398,10 @@ struct CarStatesMsg {
     OwnCarState own;
     // Every other player's car.
     std::vector<std::pair<std::uint8_t, VehicleSnapshot>> cars;
-    // The ones near the client's car (at most kMaxNearCars), in full.
+    // The ones near the client's car (at most kMaxNearCars, nearest first),
+    // and of those the ones in full in this message: as many as keep it in
+    // one packet (kMaxCarStatesBytes), taken in turn.
+    std::vector<std::uint8_t> nearIds;
     std::vector<NearCarState> near;
 };
 inline constexpr std::int32_t kMaxReportedWaiting = 63;
@@ -389,6 +425,12 @@ bool serialize(S& s, CarStatesMsg& m) {
         s.u8(id);
         serialize(s, state);
     }
+    auto nearIds = static_cast<std::int32_t>(std::min(m.nearIds.size(), kMaxNearCars));
+    s.ranged(nearIds, 0, static_cast<std::int32_t>(kMaxNearCars));
+    if constexpr (S::kReading)
+        m.nearIds.resize(static_cast<std::size_t>(nearIds));
+    for (std::int32_t i = 0; i < nearIds; ++i)
+        s.u8(m.nearIds[static_cast<std::size_t>(i)]);
     auto nearCount = static_cast<std::int32_t>(std::min(m.near.size(), kMaxNearCars));
     s.ranged(nearCount, 0, static_cast<std::int32_t>(kMaxNearCars));
     if constexpr (S::kReading)
@@ -400,6 +442,15 @@ bool serialize(S& s, CarStatesMsg& m) {
         c.input.events = 0; // keys are applied once: never repeated
         serialize(s, c.input, CarInputFrame{});
         c.input.events = 0;
+        auto upcoming = static_cast<std::int32_t>(std::min(c.upcoming.size(), kMaxUpcomingInputs));
+        s.ranged(upcoming, 0, static_cast<std::int32_t>(kMaxUpcomingInputs));
+        if constexpr (S::kReading)
+            c.upcoming.resize(static_cast<std::size_t>(upcoming));
+        CarInputFrame previous = c.input;
+        for (std::int32_t k = 0; k < upcoming; ++k) {
+            serialize(s, c.upcoming[static_cast<std::size_t>(k)], previous);
+            previous = c.upcoming[static_cast<std::size_t>(k)];
+        }
     }
     return s.ok();
 }

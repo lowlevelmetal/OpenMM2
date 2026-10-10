@@ -73,6 +73,8 @@ struct Outcome {
     int replayed = 0;
     float largest = 0.0f; // the largest correction's move (m)
     std::uint64_t missed = 0;
+    std::uint64_t missedAfterStall = 0; // a second after a stall ended
+    std::uint32_t skipped = 0;
 };
 
 // The client drives `samples` samples; its messages reach the host
@@ -80,7 +82,7 @@ struct Outcome {
 // samples after it sent them (every third sample). `lose` drops every n-th
 // message of the client's (0 none).
 Outcome simulate(const vfs::Vfs& vfs, int samples, std::uint32_t upLatency, std::uint32_t downLatency,
-                 int lose = 0) {
+                 int lose = 0, std::uint32_t stallAt = 0, std::uint32_t stallFor = 0) {
     Machine host(vfs), client(vfs);
     const Mat34 start = Mat34::translation({0.0f, 0.6f, 0.0f});
     client.car->setResetPos(start);
@@ -93,9 +95,13 @@ Outcome simulate(const vfs::Vfs& vfs, int samples, std::uint32_t upLatency, std:
     Outcome run;
     const float dt = phys::kFixedSampleStep;
     for (std::uint32_t t = 1; t <= static_cast<std::uint32_t>(samples); ++t) {
-        // Client: the host's states due by now, then its sample.
-        while (!down.empty() && down.front().due <= t) {
+        // Client: the host's states due by now, then its sample (none while
+        // it stalls).
+        const bool stalled = t >= stallAt && t < stallAt + stallFor;
+        while (!stalled && !down.empty() && down.front().due <= t) {
             const auto& [ack, state] = down.front().msg;
+            if (ack >= prediction.nextSeq())
+                run.skipped += prediction.skipTo(ack, upLatency + downLatency);
             const auto c = prediction.acknowledge(*client.car, client.driver, client.world, ack, state);
             if (c.corrected) {
                 ++run.corrections;
@@ -107,12 +113,16 @@ Outcome simulate(const vfs::Vfs& vfs, int samples, std::uint32_t upLatency, std:
         if (prediction.nextSeq() == 1)
             prediction.command(*client.car, {0, net::CarCommandKind::ResetTo, client.car->sim().resetPos(),
                                              client.car->sim().resetRotation});
-        prediction.beginSample(*client.car, client.driver, driveInput(prediction.nextSeq()));
-        client.world.step(dt);
-        prediction.endSample(*client.car, client.driver);
-        const bool lost = lose > 0 && t % static_cast<std::uint32_t>(lose) == 0;
-        if (const auto m = prediction.message(); m && !lost)
-            up.push_back({t + upLatency, *m});
+        if (!stalled) {
+            prediction.beginSample(*client.car, client.driver, driveInput(prediction.nextSeq()));
+            client.world.step(dt);
+            prediction.endSample(*client.car, client.driver);
+            const bool lost = lose > 0 && t % static_cast<std::uint32_t>(lose) == 0;
+            if (const auto m = prediction.message(); m && !lost)
+                up.push_back({t + upLatency, *m});
+        }
+        if (t == stallAt + stallFor + 60)
+            run.missedAfterStall = queue.missed();
         // Host: the inputs due by now, then its sample.
         while (!up.empty() && up.front().due <= t) {
             queue.receive(up.front().msg);
@@ -185,7 +195,8 @@ struct ShuntOutcome {
 // from the host's full states (companion) when `companion`, and otherwise
 // meets it held where the host's newest state put it (the host's car not
 // simulated: a body that does not give way).
-ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uint32_t brakeAt) {
+ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uint32_t brakeAt,
+                   std::uint32_t ahead = 0) {
     TwoCars host(vfs), client(vfs);
     const Mat34 front = Mat34::translation({0.0f, 0.6f, 0.0f});
     const Mat34 back = Mat34::translation({0.0f, 0.6f, 9.0f}); // facing -Z: behind
@@ -200,6 +211,14 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
         client.a->sim().body.resetCollider();
     }
     CarPrediction prediction;
+    prediction.pusherKey = [&](std::uint8_t id) -> const void* {
+        return id == 0 ? client.a->sim().body.collider.key() : client.b->sim().body.collider.key();
+    };
+    const PusherOf pusherOf = [&](const void* key) -> std::uint8_t {
+        return key == host.a->sim().body.collider.key()   ? 0
+               : key == host.b->sim().body.collider.key() ? 1
+                                                         : net::kPusherOther;
+    };
     HostInputQueue queue;
     struct Down {
         std::uint32_t ack = 0;
@@ -212,31 +231,41 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
     const float dt = phys::kFixedSampleStep;
     const std::uint32_t latency = 6;
     net::CarInputFrame leader = leaderInput(0, throttle, brakeAt);
+    std::deque<net::CarInputFrame> leaderAhead; // the host's inputs beyond those run again
     for (std::uint32_t t = 1; t <= 300; ++t) {
         while (!down.empty() && down.front().due <= t) {
             const Down& d = down.front().msg;
-            CarPrediction::Companion c{client.a.get(), &client.da, &d.near.state, d.near.input, true};
+            CarPrediction::Companion c{client.a.get(), &client.da, &d.near.state, d.near.input,
+                                       d.near.upcoming, true};
             const auto r = companion
                                ? prediction.acknowledge(*client.b, client.db, client.world, d.ack, d.own, {},
                                                         {}, std::span(&c, 1))
                                : prediction.acknowledge(*client.b, client.db, client.world, d.ack, d.own);
             if (!companion) {
                 // The host's car where its newest state says, held there.
-                applyOwnCarState(*client.a, d.near.state);
-            } else {
-                leader = d.near.input;
+                applyOwnCarState(*client.a, d.near.state, prediction.pusherKey);
+            } else if (r.rebased) {
+                leader = d.near.upcoming.empty() ? d.near.input : d.near.upcoming.back();
+                const auto from = std::min<std::ptrdiff_t>(r.replayed, std::ssize(d.near.upcoming));
+                leaderAhead.assign(d.near.upcoming.begin() + from, d.near.upcoming.end());
             }
             if (r.corrected) {
                 ++run.corrections;
                 run.largest = std::max(run.largest, r.moved.mag());
+                if (std::getenv("SHUNT_DEBUG"))
+                    std::printf("t %u ack %u pos %.4f vel %.4f dmg %d moved %.4f\n", t, d.ack,
+                                r.positionError, r.velocityError, r.damage, r.moved.mag());
             }
             down.pop_front();
         }
         if (prediction.nextSeq() == 1)
             prediction.command(*client.b, {0, net::CarCommandKind::ResetTo, client.b->sim().resetPos(),
                                            client.b->sim().resetRotation});
-        if (companion)
-            client.da.apply(*client.a, leader);
+        if (companion) {
+            client.da.apply(*client.a, leaderAhead.empty() ? leader : leaderAhead.front());
+            if (!leaderAhead.empty())
+                leaderAhead.pop_front();
+        }
         phys::PedalInput full;
         full.accelerator = 1.0f;
         net::CarInputFrame mine = inputFrame(full);
@@ -263,10 +292,13 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
         if (t % 3 == 0 && queue.lastApplied() != 0) {
             Down d;
             d.ack = queue.lastApplied();
-            d.own = ownCarState(*host.b, 0);
+            d.own = ownCarState(*host.b, 0, &host.db, pusherOf);
             d.near.id = 0;
-            d.near.state = ownCarState(*host.a, 0);
+            d.near.state = ownCarState(*host.a, 0, &host.da, pusherOf);
             d.near.input = leaderInput(t, throttle, brakeAt);
+            // A client's car: the inputs the host already holds for it.
+            for (std::uint32_t k = 1; k <= ahead; ++k)
+                d.near.upcoming.push_back(leaderInput(t + k, throttle, brakeAt));
             down.push_back({t + latency, d});
         }
     }
@@ -299,12 +331,32 @@ TEST(PlayerCars, AShuntPredictedWithTheOtherCarAsTheHostRunsIt) {
 TEST(PlayerCars, AShuntIsCorrectedOnlyWhereTheOtherPlayerChangedItsInput) {
     MM2_REQUIRE_GAME_DATA();
     // The host's car brakes hard while the client's pushes it: the client
-    // learns of it a trip late and is corrected, by less than a metre.
+    // learns of it a trip late; corrected (a few centimetres, in the hard
+    // contact after) by less than a metre.
     const ShuntOutcome run = shunt(*test::gameData(), true, 0.3f, 200);
     std::printf("[ measure  ] shunt with the host's car braking: %d corrections, largest %.3f m\n",
                 run.corrections, static_cast<double>(run.largest));
     EXPECT_GE(run.corrections, 1);
     EXPECT_LT(run.largest, 1.0f);
+    // Another client's car: the host holds that player's inputs for its next
+    // samples (here six) and sends them on: the brake is known sooner, and
+    // the correction it caused goes.
+    const ShuntOutcome relayed = shunt(*test::gameData(), true, 0.3f, 200, 6);
+    std::printf("[ measure  ] the same with six inputs ahead: %d corrections, largest %.3f m\n",
+                relayed.corrections, static_cast<double>(relayed.largest));
+    EXPECT_LE(relayed.corrections, run.corrections);
+    EXPECT_LE(relayed.largest, run.largest + 1e-4f);
+}
+
+TEST(PlayerCars, APushAgainstABrakingCarStaysPredicted) {
+    MM2_REQUIRE_GAME_DATA();
+    // The host's car stands on its brakes and the client's pushes it at full
+    // throttle: the two stay pressed together (a wedge).
+    const ShuntOutcome run = shunt(*test::gameData(), true, 0.0f, 0);
+    std::printf("[ measure  ] a push against a braking car: %d corrections, largest %.3f m, closest %.2f m\n",
+                run.corrections, static_cast<double>(run.largest), static_cast<double>(run.closest));
+    EXPECT_LT(run.closest, 4.6f);
+    EXPECT_LE(run.corrections, 3);
 }
 
 TEST(PlayerCars, TheHostResetsAClientsCarOnlyWhereTheRulesDo) {
@@ -439,6 +491,19 @@ TEST(PlayerCars, ACarPredictedOnTheSameInputsNeedsNoCorrection) {
     const Outcome run = simulate(*test::gameData(), 600, 6, 6);
     EXPECT_LE(run.corrections, 1);
     EXPECT_EQ(run.missed, 0u);
+}
+
+TEST(PlayerCars, AClientThatStalledSkipsToTheHostsSamples) {
+    MM2_REQUIRE_GAME_DATA();
+    // The client freezes for two seconds: the host coasts its car through
+    // them, then the client counts those samples as run and its inputs reach
+    // the host in time again (otherwise they arrive behind the host's samples
+    // and are dropped until the 3% faster pace makes up two seconds: over a
+    // minute).
+    const Outcome run = simulate(*test::gameData(), 900, 6, 6, 0, 300, 120);
+    EXPECT_GE(run.skipped, 100u);
+    EXPECT_LE(run.missed, run.missedAfterStall + 2);       // no input missed after the first second back
+    EXPECT_LE(run.missedAfterStall, 120u + 60u + 12u);
 }
 
 TEST(PlayerCars, LostInputsAreRepeatedFromTheNextMessage) {
