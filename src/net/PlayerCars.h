@@ -231,7 +231,20 @@ struct OwnCarState {
     std::array<float, 4> tireResistance{};
     bool contact = false;
     Vec3 linearImpulse, angularImpulse, linearPush, turnForce, framePush;
+    // A contact's bookkeeping at the sample's end (protocol 11): the bound's
+    // matrix as the sample's collisions saw it, when the sample's push has
+    // moved the body past it (`hasBound`; otherwise it follows the body), and
+    // the collider that pushed hardest in the sample (phColliderBase's last
+    // max pusher, which CopyLastMatrix reads): a player's car by its number,
+    // or kPusherNone / kPusherOther. Without them a car pressed against
+    // another drifted from the host's (a push against a braking car: a 0.93 m
+    // correction).
+    bool hasBound = false;
+    Mat34 bound;
+    std::uint8_t pusher = 0xFF;
 };
+inline constexpr std::uint8_t kPusherNone = 0xFF;
+inline constexpr std::uint8_t kPusherOther = 0xFE;
 
 // Ranges an OwnCarState must lie in (anything else is refused).
 inline constexpr float kOwnStateMaxCoordinate = 16384.0f;
@@ -289,6 +302,16 @@ bool serialize(S& s, OwnCarState& o) {
     } else if constexpr (S::kReading) {
         o.linearImpulse = o.angularImpulse = o.linearPush = o.turnForce = o.framePush = {};
     }
+    s.boolean(o.hasBound);
+    if (o.hasBound) {
+        s.vec3(o.bound.m0);
+        s.vec3(o.bound.m1);
+        s.vec3(o.bound.m2);
+        s.vec3(o.bound.m3);
+    } else if constexpr (S::kReading) {
+        o.bound = Mat34::identity();
+    }
+    s.u8(o.pusher);
     if constexpr (S::kReading) {
         // Untrusted: every number finite (f32 refuses the rest) and in range.
         const auto ok = [](const Vec3& v, float r) {
@@ -302,7 +325,8 @@ bool serialize(S& s, OwnCarState& o) {
                     ok(o.force, kOwnStateMaxValue) && ok(o.torque, kOwnStateMaxValue) &&
                     ok(o.linearImpulse, kOwnStateMaxValue) && ok(o.angularImpulse, kOwnStateMaxValue) &&
                     ok(o.linearPush, kOwnStateMaxValue) && ok(o.turnForce, kOwnStateMaxValue) &&
-                    ok(o.framePush, kOwnStateMaxValue);
+                    ok(o.framePush, kOwnStateMaxValue) && ok(o.bound.m0, 2.0f) && ok(o.bound.m1, 2.0f) &&
+                    ok(o.bound.m2, 2.0f) && ok(o.bound.m3, kOwnStateMaxCoordinate);
         for (float r : o.tireResistance)
             good = good && std::abs(r) <= kOwnStateMaxValue;
         for (const auto& w : o.wheels)

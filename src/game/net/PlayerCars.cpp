@@ -208,7 +208,7 @@ std::int32_t HostInputQueue::takeLeastWaiting() {
     return w;
 }
 
-net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets) {
+net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const PusherOf& pusherOf) {
     const phys::CarSim& sim = car.sim();
     const phys::InertialCS& ics = sim.body.ics;
     net::OwnCarState s;
@@ -254,10 +254,19 @@ net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets) {
     const Vec3 zero{};
     s.contact = !(s.linearImpulse == zero && s.angularImpulse == zero && s.linearPush == zero &&
                   s.turnForce == zero && s.framePush == zero);
+    // The bound where the collisions saw it, when the push moved the body on.
+    const phys::Body& body = sim.body;
+    Mat34 follows = ics.matrix;
+    follows.m3 = ics.matrix.transform(body.boundOrigin);
+    s.hasBound = !(body.boundMatrix.m0 == follows.m0 && body.boundMatrix.m1 == follows.m1 &&
+                   body.boundMatrix.m2 == follows.m2 && body.boundMatrix.m3 == follows.m3);
+    s.bound = s.hasBound ? body.boundMatrix : Mat34::identity();
+    const void* pusher = body.collider.lastMaxPusher;
+    s.pusher = !pusher ? net::kPusherNone : pusherOf ? pusherOf(pusher) : net::kPusherOther;
     return s;
 }
 
-void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
+void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s, const PusherKey& pusherKey) {
     phys::CarSim& sim = car.sim();
     phys::InertialCS& ics = sim.body.ics;
     ics.matrix = s.matrix;
@@ -303,11 +312,23 @@ void applyOwnCarState(SimVehicle& car, const net::OwnCarState& s) {
     sim.randomState = s.random;
     car.controls().swapThrottle = s.swapThrottle;
     car.setHeld(s.held);
-    // The bound follows the body; the next sweep starts where it is (the
-    // host's bound matrix does not travel: it differs from the body's only
-    // by a push during a contact).
-    sim.body.syncBoundMatrix();
-    sim.body.collider.lastMatrix = sim.body.boundMatrix;
+    // The bound follows the body, or (the sample's push moved the body past
+    // it) stands where the collisions saw it; the next sweep starts there
+    // (phColliderBase::UpdateMtx's last matrix), and the hardest pusher of
+    // the sample is the same car's here.
+    if (s.hasBound)
+        sim.body.boundMatrix = s.bound;
+    else
+        sim.body.syncBoundMatrix();
+    auto& collider = sim.body.collider;
+    collider.lastMatrix = sim.body.boundMatrix;
+    static const char kSomethingElse = 0; // a pusher that is no player's car: matches none here
+    collider.lastMaxPusher = s.pusher == net::kPusherNone ? nullptr
+                             : s.pusher == net::kPusherOther || !pusherKey ? &kSomethingElse
+                                                                           : pusherKey(s.pusher);
+    collider.maxPusher = nullptr;
+    collider.maxPush2 = 0.0f;
+    collider.justReset = false;
 }
 
 bool ResetRules::allows(const net::CarCommand& c) const {
@@ -507,7 +528,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     if (replay && alone) {
         std::vector<phys::Body*> bodies;
         for (const Companion& c : companions) {
-            applyOwnCarState(*c.car, *c.state);
+            applyOwnCarState(*c.car, *c.state, pusherKey);
             bodies.push_back(&c.car->sim().body);
         }
         // (In the world's order: the companions come in player order.)
@@ -541,7 +562,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
         // state to state (a shunt with the other car braking: 7 corrections
         // over the tolerance before, 2 with it).
         if (differs || !companions.empty()) {
-            applyOwnCarState(car, host);
+            applyOwnCarState(car, host, pusherKey);
             save(base, car, driver);
         }
         // The bodies in the world's order (the players' cars by number), so
@@ -557,7 +578,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
             if (!c.first)
                 bodies.push_back(&c.car->sim().body);
         for (const Companion& c : companions)
-            applyOwnCarState(*c.car, *c.state);
+            applyOwnCarState(*c.car, *c.state, pusherKey);
         if (companionsAt && !companions.empty())
             companionsAt(ack);
         // OpenMM2: the props the replay meets (World::collideHeld), the samples

@@ -211,6 +211,14 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
         client.a->sim().body.resetCollider();
     }
     CarPrediction prediction;
+    prediction.pusherKey = [&](std::uint8_t id) -> const void* {
+        return id == 0 ? client.a->sim().body.collider.key() : client.b->sim().body.collider.key();
+    };
+    const PusherOf pusherOf = [&](const void* key) -> std::uint8_t {
+        return key == host.a->sim().body.collider.key()   ? 0
+               : key == host.b->sim().body.collider.key() ? 1
+                                                         : net::kPusherOther;
+    };
     HostInputQueue queue;
     struct Down {
         std::uint32_t ack = 0;
@@ -235,7 +243,7 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
                                : prediction.acknowledge(*client.b, client.db, client.world, d.ack, d.own);
             if (!companion) {
                 // The host's car where its newest state says, held there.
-                applyOwnCarState(*client.a, d.near.state);
+                applyOwnCarState(*client.a, d.near.state, prediction.pusherKey);
             } else if (r.rebased) {
                 leader = d.near.upcoming.empty() ? d.near.input : d.near.upcoming.back();
                 const auto from = std::min<std::ptrdiff_t>(r.replayed, std::ssize(d.near.upcoming));
@@ -284,9 +292,9 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
         if (t % 3 == 0 && queue.lastApplied() != 0) {
             Down d;
             d.ack = queue.lastApplied();
-            d.own = ownCarState(*host.b, 0);
+            d.own = ownCarState(*host.b, 0, pusherOf);
             d.near.id = 0;
-            d.near.state = ownCarState(*host.a, 0);
+            d.near.state = ownCarState(*host.a, 0, pusherOf);
             d.near.input = leaderInput(t, throttle, brakeAt);
             // A client's car: the inputs the host already holds for it.
             for (std::uint32_t k = 1; k <= ahead; ++k)
@@ -338,6 +346,17 @@ TEST(PlayerCars, AShuntIsCorrectedOnlyWhereTheOtherPlayerChangedItsInput) {
                 relayed.corrections, static_cast<double>(relayed.largest));
     EXPECT_LE(relayed.corrections, run.corrections);
     EXPECT_LE(relayed.largest, run.largest + 1e-4f);
+}
+
+TEST(PlayerCars, APushAgainstABrakingCarStaysPredicted) {
+    MM2_REQUIRE_GAME_DATA();
+    // The host's car stands on its brakes and the client's pushes it at full
+    // throttle: the two stay pressed together (a wedge).
+    const ShuntOutcome run = shunt(*test::gameData(), true, 0.0f, 0);
+    std::printf("[ measure  ] a push against a braking car: %d corrections, largest %.3f m, closest %.2f m\n",
+                run.corrections, static_cast<double>(run.largest), static_cast<double>(run.closest));
+    EXPECT_LT(run.closest, 4.6f);
+    EXPECT_LE(run.corrections, 3);
 }
 
 TEST(PlayerCars, TheHostResetsAClientsCarOnlyWhereTheRulesDo) {

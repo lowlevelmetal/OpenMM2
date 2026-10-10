@@ -176,8 +176,14 @@ struct ResetRules {
 
 // The car's state as the host sends it to its player, and the car put there
 // (the rest of its state stays as it was).
-net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets);
-void applyOwnCarState(SimVehicle& car, const net::OwnCarState& state);
+// `pusherOf` names the player whose car a collider is (its collider key;
+// net::kPusherOther for anything else), `pusherKey` the collider of a
+// player's car on this machine (nullptr when it has none): the hardest
+// pusher of the car's last sample travels as a player's number.
+using PusherOf = std::function<std::uint8_t(const void*)>;
+using PusherKey = std::function<const void*(std::uint8_t)>;
+net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const PusherOf& pusherOf = {});
+void applyOwnCarState(SimVehicle& car, const net::OwnCarState& state, const PusherKey& pusherKey = {});
 
 // A player's car as the others draw it.
 net::VehicleSnapshot carSnapshot(const SimVehicle& car, const net::CarInputFrame& input);
@@ -224,6 +230,10 @@ public:
     // after (it ignores late ones, and the 3% faster pace would take a
     // minute to make up two seconds). Returns how many it skipped.
     std::uint32_t skipTo(std::uint32_t ack, std::uint32_t trip);
+
+    // The players' cars' colliders on this machine, for the states' pushers
+    // (applyOwnCarState).
+    PusherKey pusherKey;
 
     // The inputs and commands the host has not acknowledged (the newest
     // net::kMaxInputFrames), or nothing before the first sample.

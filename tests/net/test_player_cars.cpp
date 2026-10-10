@@ -92,6 +92,10 @@ OwnCarState sampleOwn() {
     o.linearPush = {0.001f, 0.0f, 0.002f};
     o.turnForce = {0.0f, 0.0001f, 0.0f};
     o.framePush = {0.003f, 0.0f, 0.0f};
+    o.hasBound = true;
+    o.bound = Mat34::rotationY(0.69f);
+    o.bound.m3 = {-1149.9f, 112.2f, 163.1f};
+    o.pusher = 3;
     return o;
 }
 
@@ -159,6 +163,10 @@ void expectSameOwn(const OwnCarState& a, const OwnCarState& b) {
     EXPECT_TRUE(vec(a.linearImpulse, b.linearImpulse) && vec(a.angularImpulse, b.angularImpulse));
     EXPECT_TRUE(vec(a.linearPush, b.linearPush) && vec(a.turnForce, b.turnForce) &&
                 vec(a.framePush, b.framePush));
+    EXPECT_EQ(a.hasBound, b.hasBound);
+    EXPECT_TRUE(vec(a.bound.m0, b.bound.m0) && vec(a.bound.m1, b.bound.m1) && vec(a.bound.m2, b.bound.m2) &&
+                vec(a.bound.m3, b.bound.m3));
+    EXPECT_EQ(a.pusher, b.pusher);
 }
 
 // What a decoded message may hold, whatever arrived.
@@ -373,12 +381,11 @@ TEST(PlayerCars, NearCarsTravelInFullWithoutTheirKeys) {
         EXPECT_EQ(out.near[i].upcoming, m.near[i].upcoming); // keys and all: each applied once, in turn
     }
     // The host puts in full as many as keep it in one ENet packet
-    // (kMaxCarStatesBytes), here two of them without their coming inputs.
-    CarStatesMsg two = m;
-    two.near.pop_back();
-    for (auto& n : two.near)
-        n.upcoming.clear();
-    EXPECT_LE(encodeMessage(two).size(), kMaxCarStatesBytes);
+    // (kMaxCarStatesBytes), taking them in turn: one in a contact with
+    // eight players.
+    CarStatesMsg one = m;
+    one.near.resize(1);
+    EXPECT_LE(encodeMessage(one).size(), kMaxCarStatesBytes);
     // More than kMaxNearCars: the first ones only.
     m.near.push_back(m.near[0]);
     m.nearIds.push_back(7);
@@ -408,9 +415,13 @@ TEST(PlayerCars, StatesOutOfRangeAreRefused) {
     bad = sampleStates(2);
     bad.own.framePush.x = std::numeric_limits<float>::quiet_NaN();
     EXPECT_FALSE(decodeMessage(encodeMessage(bad), out));
+    bad = sampleStates(2);
+    bad.own.bound.m1.y = 5.0f; // not a rotation
+    EXPECT_FALSE(decodeMessage(encodeMessage(bad), out));
     // Out of a contact the impulses and pushes do not travel.
     auto calm = sampleStates(2);
     calm.own.contact = false;
+    calm.own.hasBound = false;
     ASSERT_TRUE(decodeMessage(encodeMessage(calm), out));
     EXPECT_EQ(out.own.linearImpulse, Vec3{});
     EXPECT_LT(encodeMessage(calm).size(), encodeMessage(sampleStates(2)).size());

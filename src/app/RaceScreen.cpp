@@ -5474,6 +5474,14 @@ private:
         }
         std::vector<game::CarPrediction::Companion> companions;
         predictNearCars(newest->nearIds, newest->near, ack, companions);
+        m_prediction.pusherKey = [this, &ctx](std::uint8_t id) -> const void* {
+            if (id == ctx.netGame->localId())
+                return m_player->sim().body.collider.key();
+            const auto it = m_remotes.find(id);
+            if (it == m_remotes.end() || !it->second.sim)
+                return nullptr;
+            return it->second.sim->sim().body.collider.key();
+        };
         // The shared traffic's cars on their rails around this car: the
         // samples run again meet each where that sample met it (or, the
         // experiment, where the host had it at that sample's time); after,
@@ -5735,6 +5743,15 @@ private:
             std::vector<net::CarInputFrame> upcoming;
         };
         std::vector<Full> full;
+        // The players' cars by their colliders (the states' pushers).
+        const game::PusherOf pusherOf = [this, &ctx](const void* key) -> std::uint8_t {
+            if (key == m_player->sim().body.collider.key())
+                return ctx.netGame->localId();
+            for (const auto& [id, rv] : m_remotes)
+                if (rv.sim && key == rv.sim->sim().body.collider.key())
+                    return id;
+            return net::kPusherOther;
+        };
         if (!m_player->trailer())
             full.push_back({ctx.netGame->localId(), m_player.get(), m_netInput, {}});
         for (const auto& [id, rv] : m_remotes)
@@ -5752,7 +5769,7 @@ private:
             msg.waiting = rv.inputs.takeLeastWaiting();
             msg.hasOwn = rv.placed && msg.ack != 0;
             if (msg.hasOwn)
-                msg.own = game::ownCarState(*rv.sim, rv.resets);
+                msg.own = game::ownCarState(*rv.sim, rv.resets, pusherOf);
             for (const auto& c : cars)
                 if (c.first != id)
                     msg.cars.push_back(c);
@@ -5780,7 +5797,7 @@ private:
                     const Full* f = near[(rv.nearTurn + k) % near.size()].second;
                     net::NearCarState n;
                     n.id = f->id;
-                    n.state = game::ownCarState(*f->car, 0);
+                    n.state = game::ownCarState(*f->car, 0, pusherOf);
                     n.input = f->input;
                     n.input.events = 0;
                     n.upcoming = f->upcoming;
