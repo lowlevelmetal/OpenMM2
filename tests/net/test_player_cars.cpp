@@ -190,12 +190,28 @@ void checkInput(const PlayerInputMsg& m) {
     }
 }
 
+// What a sample hands the next and a contact's bookkeeping (protocol 17).
+void checkCarry(const OwnCarState& c) {
+    const auto within = [](const Vec3& v, float r) {
+        return std::abs(v.x) <= r && std::abs(v.y) <= r && std::abs(v.z) <= r;
+    };
+    for (const Vec3& v : {c.force, c.torque, c.linearImpulse, c.angularImpulse, c.linearPush, c.turnForce,
+                          c.framePush})
+        ASSERT_TRUE(within(v, kOwnStateMaxValue));
+    for (float r : c.tireResistance)
+        ASSERT_LE(std::abs(r), kOwnStateMaxValue);
+    ASSERT_TRUE(within(c.bound.m0, 2.0f) && within(c.bound.m1, 2.0f) && within(c.bound.m2, 2.0f));
+    ASSERT_TRUE(within(c.bound.m3, kOwnStateMaxCoordinate));
+}
+
 void checkStates(const CarStatesMsg& m) {
     ASSERT_LE(m.cars.size(), kMaxPlayers);
     ASSERT_LE(std::abs(m.waiting), kMaxReportedWaiting);
+    ASSERT_LE(m.nearIds.size(), kMaxNearCars);
     if (!m.hasOwn)
         return;
     const OwnCarState& o = m.own;
+    checkCarry(o);
     for (const Vec3& v : {o.matrix.m0, o.matrix.m1, o.matrix.m2})
         ASSERT_TRUE(std::abs(v.x) <= 2.0f && std::abs(v.y) <= 2.0f && std::abs(v.z) <= 2.0f);
     for (const Vec3& v : {o.matrix.m3, o.stuckPosition})
@@ -221,6 +237,13 @@ void checkStates(const CarStatesMsg& m) {
                     std::abs(c.matrix.m3.z) <= kOwnStateMaxCoordinate);
         for (const Vec3& v : {c.linearMomentum, c.angularMomentum, c.linearVelocity, c.angularVelocity})
             ASSERT_TRUE(std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z));
+        checkCarry(c);
+        ASSERT_LE(n.upcoming.size(), kMaxUpcomingInputs);
+        for (const auto& u : n.upcoming) {
+            ASSERT_EQ(u.flags & ~kCarInputFlagMask, 0);
+            ASSERT_EQ(u.events & ~kCarInputEventMask, 0);
+            ASSERT_LE(u.extraMass, kMaxExtraMass);
+        }
     }
 }
 
