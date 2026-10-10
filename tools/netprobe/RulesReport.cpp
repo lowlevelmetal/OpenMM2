@@ -491,6 +491,24 @@ void gold(const std::vector<Machine>& machines) {
                      machines[i].path, mine.size(), static_cast<int>(host.size()) - common,
                      static_cast<int>(mine.size()) - common, undone, scores,
                      machines[i].scores == machines.front().scores ? "the same" : "different");
+        // Its own pickups the host decided: shown before the host's
+        // decision (predicted) or after it (the host's word).
+        std::vector<double> early, late;
+        for (const auto& h : machines.front().gold) {
+            if (h.type != 0 || h.car != machines[i].self)
+                continue;
+            const Gold* shown = nullptr;
+            for (const auto& g : machines[i].gold)
+                if (g.type == 0 && g.car == h.car && std::abs(g.clock - h.clock) < 2000.0 &&
+                    (!shown || std::abs(g.clock - h.clock) < std::abs(shown->clock - h.clock)))
+                    shown = &g;
+            if (shown)
+                (shown->clock < h.clock ? early : late).push_back(std::abs(shown->clock - h.clock));
+        }
+        if (!early.empty() || !late.empty())
+            std::println("    its own pickups: {} shown {:.0f} ms before the host decided them (median), {} "
+                         "{:.0f} ms after (the host's word)",
+                         early.size(), percentile(early, 0.5), late.size(), percentile(late, 0.5));
     }
 }
 
