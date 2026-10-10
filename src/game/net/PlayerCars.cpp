@@ -130,6 +130,19 @@ void HostInputQueue::receive(const net::PlayerInputMsg& msg) {
             m_commands[c.seq] = c;
 }
 
+std::vector<net::CarInputFrame> HostInputQueue::upcoming(std::size_t most) const {
+    std::vector<net::CarInputFrame> out;
+    if (m_next == 0)
+        return out;
+    for (std::uint32_t seq = m_next; out.size() < most; ++seq) {
+        const auto it = m_frames.find(seq);
+        if (it == m_frames.end())
+            break;
+        out.push_back(it->second);
+    }
+    return out;
+}
+
 std::optional<HostInputQueue::Next> HostInputQueue::next() {
     if (m_next == 0)
         return std::nullopt;
@@ -421,7 +434,8 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                                                      const net::OwnCarState& host,
                                                      const std::function<void()>& beforeLast,
                                                      const std::function<void(std::uint32_t)>& beforeEach,
-                                                     std::span<const Companion> companions) {
+                                                     std::span<const Companion> companions,
+                                                     const std::function<void(std::uint32_t)>& companionsAt) {
     Correction out;
     if (ack <= m_acked)
         return out; // an older or repeated state
@@ -450,7 +464,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                          out.velocityError > m_options.velocityTolerance ||
                          rotation > m_options.rotationTolerance || out.damage || out.held || out.gear;
     const std::size_t later = m_history.size() - 1 - index;
-    const bool replay = differs || !companions.empty();
+    const bool replay = differs || std::ranges::any_of(companions, &Companion::differs);
     if (replay && later > m_options.maxReplay) {
         ++m_stats.unreplayable;
         m_history.erase(m_history.begin(), m_history.begin() + static_cast<std::ptrdiff_t>(index));
@@ -462,7 +476,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     // the car held where each sample had it: the car's own prediction is
     // then not run again against bodies held still (a prop it pushed in
     // those samples meets it as a wall when they run again).
-    bool alone = !differs && !companions.empty();
+    bool alone = !differs && replay;
     const float span = static_cast<float>(later + 1) * phys::kFixedSampleStep;
     const Vec3 carNow = car.sim().body.ics.matrix.m3;
     for (const Companion& c : companions) {
@@ -479,17 +493,21 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
             bodies.push_back(&c.car->sim().body);
         }
         // (In the world's order: the companions come in player order.)
+        if (companionsAt)
+            companionsAt(ack);
         world.beginReplay(world.time() -
                           static_cast<double>(later) * static_cast<double>(phys::kFixedSampleStep));
         for (std::size_t k = index + 1; k < m_history.size(); ++k) {
             restore(m_history[k - 1], car, driver); // the car as the sample met it
             for (const Companion& c : companions)
-                c.driver->apply(*c.car, c.input);
+                c.driver->apply(*c.car, companionInput(c, k - index - 1));
             if (beforeEach)
                 beforeEach(m_history[k].seq);
             if (k + 1 == m_history.size() && beforeLast)
                 beforeLast();
             world.replaySample(bodies, phys::kFixedSampleStep);
+            if (companionsAt)
+                companionsAt(m_history[k].seq);
             ++out.replayed;
         }
         restore(m_history.back(), car, driver);
@@ -518,6 +536,8 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                 bodies.push_back(&c.car->sim().body);
         for (const Companion& c : companions)
             applyOwnCarState(*c.car, *c.state);
+        if (companionsAt && !companions.empty())
+            companionsAt(ack);
         // OpenMM2: the props the replay meets (World::collideHeld), the samples
         // having run for real one after another up to the world's time now.
         world.beginReplay(world.time() -
@@ -528,13 +548,15 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                 NetCarDriver::command(car, c);
             driver.apply(car, e.input);
             for (const Companion& c : companions)
-                c.driver->apply(*c.car, c.input);
+                c.driver->apply(*c.car, companionInput(c, k - index - 1));
             if (beforeEach)
                 beforeEach(e.seq);
             if (k + 1 == m_history.size() && beforeLast)
                 beforeLast();
             world.replaySample(bodies, phys::kFixedSampleStep);
             save(e, car, driver);
+            if (companionsAt && !companions.empty())
+                companionsAt(e.seq);
             ++out.replayed;
         }
         // The resets asked for the next sample stand again.
@@ -549,6 +571,12 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     }
     m_history.erase(m_history.begin(), m_history.begin() + static_cast<std::ptrdiff_t>(index));
     return out;
+}
+
+const net::CarInputFrame& CarPrediction::companionInput(const Companion& c, std::size_t k) {
+    if (k < c.upcoming.size())
+        return c.upcoming[k];
+    return c.upcoming.empty() ? c.input : c.upcoming.back();
 }
 
 // --- CorrectionBlend -----------------------------------------------------------------

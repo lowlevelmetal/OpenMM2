@@ -42,7 +42,10 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // 10: the host's rules (net/RulesState.h: the rules message; a player's own
 //    word on a checkpoint, a finish or the gold is refused). (8 was its number
 //    on its branch.)
-inline constexpr std::uint16_t kProtocolVersion = 10;
+// 11: CarStates after every host frame that ran a sample (up to 60 a second),
+// three near cars within 60 m, and a near client car's inputs the host holds
+// for its next samples (NearCarState::upcoming).
+inline constexpr std::uint16_t kProtocolVersion = 11;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.

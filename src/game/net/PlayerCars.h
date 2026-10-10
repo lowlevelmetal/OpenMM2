@@ -115,6 +115,9 @@ public:
     // The fewest inputs waiting behind the applied one since the last call
     // (negative: samples the queue ran short); for CarStatesMsg::waiting.
     std::int32_t takeLeastWaiting();
+    // The inputs in hand for the next samples, in order up to the first
+    // missing one, at most `most` (net::NearCarState::upcoming).
+    std::vector<net::CarInputFrame> upcoming(std::size_t most) const;
     // Inputs applied that the client did not send in time (repeated or
     // coasted), and inputs dropped to catch up (kMaxSlack), since the start.
     std::uint64_t missed() const { return m_missed; }
@@ -234,10 +237,17 @@ public:
         NetCarDriver* driver = nullptr;
         const net::OwnCarState* state = nullptr;
         net::CarInputFrame input;
+        // Its inputs for the samples after the acknowledged one, as far as
+        // the host had them (then `input`, or the last of these, again).
+        std::span<const net::CarInputFrame> upcoming;
         // It comes before the car in the world's movers (a lower player
         // number: every machine keeps the players' cars in that order), and
         // collides first when they run again, as on the host.
         bool first = false;
+        // Its state or inputs differ from what this machine ran it on: the
+        // samples run again for it (otherwise only when the car's own state
+        // differed, and then with it).
+        bool differs = true;
     };
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
@@ -246,13 +256,15 @@ public:
     // number before it (the other players' cars put back where they stood
     // when it first ran) and `beforeLast` before the last one (the drawing
     // keeps the car's pose before its last sample). With `companions` the
-    // samples are run again whether the car's state differed or not, every
-    // companion with it from the host's state (the car's own state at `ack`
-    // is the host's only when it differed).
+    // samples are run again when the car's state or a companion's differed,
+    // every companion with it from the host's state (the car's own state at `ack`
+    // is the host's only when it differed); `companionsAt` is called with each
+    // sample's number once the companions stand as after it (`ack` first).
     Correction acknowledge(SimVehicle& car, NetCarDriver& driver, phys::World& world, std::uint32_t ack,
                            const net::OwnCarState& host, const std::function<void()>& beforeLast = {},
                            const std::function<void(std::uint32_t)>& beforeEach = {},
-                           std::span<const Companion> companions = {});
+                           std::span<const Companion> companions = {},
+                           const std::function<void(std::uint32_t)>& companionsAt = {});
 
     // Statistics since the start.
     struct Stats {
@@ -273,6 +285,8 @@ private:
         NetCarDriver driver;
     };
     void save(Entry& e, const SimVehicle& car, const NetCarDriver& driver) const;
+    // A companion's input for the `k`th sample after the acknowledged one.
+    static const net::CarInputFrame& companionInput(const Companion& c, std::size_t k);
     static void restore(const Entry& e, SimVehicle& car, NetCarDriver& driver);
 
     Options m_options;
