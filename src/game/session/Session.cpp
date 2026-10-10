@@ -689,6 +689,13 @@ void Session::applyNetProgress(const NetProgress& progress, const Vec3& carPosit
         else if (!wp.finished)
             wp.closestTarget(m_checkpoints, carPosition);
     }
+    // A race this machine has ended (its Blitz clock, the host's timeout)
+    // stays ended, its finish marker hidden.
+    if (m_wp.stopped) {
+        wp.stopped = true;
+        if (!wp.visible.empty() && !m_wp.visible.empty())
+            wp.visible.back() = m_wp.visible.back();
+    }
     log::debug("session: the host's word on the waypoints after sample {}: {} hits ({} predicted)",
                progress.evaluated, hits.size(), m_netHits.size());
     // The ones taken back: their markers show again, nothing is played.
