@@ -110,6 +110,9 @@ public:
     // checkpoint it cleared): the start or a checkpoint the host counted for
     // it, within half a metre.
     bool mayRespawnAt(std::uint8_t id, const Vec3& position) const;
+    // The checkpoints such a respawn may be at: the start (0) and every one
+    // the host counted for the car (none for a player it does not know).
+    std::vector<int> respawnCheckpoints(std::uint8_t id) const;
     // A car's icon number on `viewer`'s machine (mmGameMulti::UpdateScore's
     // IconIndex): 0 no icon (finished, or no car), else its place.
     int iconPlace(std::uint8_t viewer, std::uint8_t car) const;

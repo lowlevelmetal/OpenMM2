@@ -275,6 +275,9 @@ public:
         bool hasOwn = false;
         OwnCarState own;
         double arrival = 0.0; // session ms
+        // The other players' cars near this one, in full (none is this
+        // machine's own, none twice).
+        std::vector<NearCarState> near;
     };
     std::vector<OwnCarUpdate> takeOwnCarStates() { return std::exchange(m_ownCarStates, {}); }
     static constexpr std::size_t kMaxQueuedOwnCarStates = 16;

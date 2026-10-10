@@ -1114,7 +1114,12 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         }
         if (m_ownCarStates.size() >= kMaxQueuedOwnCarStates)
             m_ownCarStates.erase(m_ownCarStates.begin());
-        m_ownCarStates.push_back({m.time, m.ack, m.waiting, m.hasOwn, m.own, timeMs()});
+        // Untrusted: this machine's own car or a car given twice is refused.
+        std::vector<NearCarState> near;
+        for (const auto& c : m.near)
+            if (c.id != m_localId && std::ranges::count(m.near, c.id, &NearCarState::id) == 1)
+                near.push_back(c);
+        m_ownCarStates.push_back({m.time, m.ack, m.waiting, m.hasOwn, m.own, timeMs(), std::move(near)});
         return;
     }
     case MsgType::GameEvent: {

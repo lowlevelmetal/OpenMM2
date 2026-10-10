@@ -36,9 +36,13 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // ground (the clients predict the shared traffic to their cars' time), and
 // up to 160 cars; no TrafficHit events.
 // 7: the host's props (net/PropState.h: PropState, the PropKnocks event).
-// 8: the host's rules (net/RulesState.h: the rules message; a player's own
-//    word on a checkpoint, a finish or the gold is refused).
-inline constexpr std::uint16_t kProtocolVersion = 8;
+// 9: in CarStates the players' cars near the client's in full, with the input
+// last applied to them (net/PlayerCars.h NearCarState), and in every car's
+// full state what a sample hands the next.
+// 10: the host's rules (net/RulesState.h: the rules message; a player's own
+//    word on a checkpoint, a finish or the gold is refused). (8 was its number
+//    on its branch.)
+inline constexpr std::uint16_t kProtocolVersion = 10;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.

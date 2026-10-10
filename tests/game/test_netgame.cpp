@@ -185,7 +185,7 @@ TEST(NetGame, HostJoinChatReadyCountdownAndState) {
     EXPECT_EQ(cars[0].controls.gear, 2);
 
     // Game events. A player's own word on the rules (a checkpoint, a
-    // finish) is refused: the host decides them (protocol 8,
+    // finish) is refused: the host decides them (protocol 10,
     // game/net/NetRules); other events come through.
     client.sendCheckpoint(3, 61234);
     client.sendFinish(123456, 1);

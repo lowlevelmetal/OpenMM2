@@ -249,6 +249,44 @@ int syncReport(const SyncReportOptions& o) {
         }
     }
 
+    // 1b. The same against the player's own screen a little earlier or later:
+    // a car drawn a fixed time behind (or ahead of) its player's screen is
+    // that far off at the car's speed, however exactly it follows. The delay
+    // that brings the two closest, and what is left at it.
+    std::println("\nThe same at the delay that brings them closest (ms: the car is drawn that long behind");
+    std::println("its player's screen; negative: ahead of it), what remains (metres):");
+    std::println("  {:<10} {:<10} {:>7} {:>7} {:>7} {:>7}", "viewer", "car of", "delay", "median", "p90",
+                 "p99");
+    for (std::size_t v = 0; v < ms.size(); ++v) {
+        for (std::size_t own = 0; own < ms.size(); ++own) {
+            if (own == v || ms[own].self < 0)
+                continue;
+            const auto seen = ms[v].drawn.find(ms[own].self);
+            const auto truth = ms[own].drawn.find(ms[own].self);
+            if (seen == ms[v].drawn.end() || truth == ms[own].drawn.end())
+                continue;
+            Stats best;
+            int bestDelay = 0;
+            for (int delay = -300; delay <= 300; delay += 5) {
+                Stats s;
+                for (const Drawn& d : seen->second) {
+                    if (d.wall < ms[v].firstWall + skipMs || d.wall < ms[own].firstWall + skipMs)
+                        continue;
+                    V3 p;
+                    if (at(truth->second, d.wall - delay, p))
+                        s.add((d.p - p).length());
+                }
+                if (!s.v.empty() && (best.v.empty() || s.pct(0.5) < best.pct(0.5))) {
+                    best = std::move(s);
+                    bestDelay = delay;
+                }
+            }
+            if (!best.v.empty())
+                std::println("  {:<10} {:<10} {:>7} {:>7.3f} {:>7.3f} {:>7.3f}", who(ms, v), who(ms, own),
+                             bestDelay, best.pct(0.5), best.pct(0.9), best.pct(0.99));
+        }
+    }
+
     // 2. Jumps: a car's move from one drawn frame to the next that its
     // velocity does not explain.
     std::println("\nJumps: a frame's move that the car's velocity does not explain (frames 100 ms apart");
@@ -368,7 +406,11 @@ int syncReport(const SyncReportOptions& o) {
             over10cm += d > 0.1 ? 1 : 0;
             snaps += c.snapped ? 1 : 0;
         }
-        const double span = (cs.back().wall - cs.front().wall) / 60000.0;
+        // A minute of the race as the machine drew it (not of the span the
+        // corrections fall in, which a burst would shrink).
+        double span = (cs.back().wall - cs.front().wall) / 60000.0;
+        if (const auto own = ms[m].drawn.find(ms[m].self); own != ms[m].drawn.end() && !own->second.empty())
+            span = std::max(span, (own->second.back().wall - own->second.front().wall) / 60000.0);
         std::println("  {:<10} {} corrections ({:.1f} a minute), median {:.4f}, p90 {:.4f}, p99 {:.4f}, "
                      "max {:.3f}; {} over 10 cm, {} over 1 m, {} snapped; steps replayed median {:.0f}, "
                      "max {:.0f}",

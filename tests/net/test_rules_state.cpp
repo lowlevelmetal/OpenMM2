@@ -1,4 +1,4 @@
-// The host's rules message (net/RulesState.h, protocol 8): its encoding,
+// The host's rules message (net/RulesState.h, protocol 10): its encoding,
 // its limits, and fixed-seed random and mutated payloads, which must never
 // crash, read out of bounds (run under the sanitizers) or decode to a value
 // the writer could not have produced.

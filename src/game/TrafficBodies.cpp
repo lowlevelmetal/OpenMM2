@@ -682,22 +682,47 @@ void TrafficBodies::beforeStep() {
         if (r && !r->active && r->collidable && r->room != 0)
             m_world.declareInstance(r, 2, c.moverFlags);
     }
-    m_roomList.clear();
     for (auto& r : m_railCars) {
-        if (!r)
-            continue;
-        if (!r->present) {
+        if (r && !r->present) {
             r->collidable = false;
             r->held = false;
             r->lost = false;
             r->room = 0;
-            continue;
         }
-        if (!r->active && r->collidable && r->room != 0)
-            m_roomList.emplace_back(r->room, r.get());
     }
+    listRooms();
+}
+
+void TrafficBodies::listRooms() {
+    m_roomList.clear();
+    for (auto& r : m_railCars)
+        if (r && r->present && !r->active && r->collidable && r->room != 0)
+            m_roomList.emplace_back(r->room, r.get());
     // Already in id order; stable by room keeps it within a room.
     std::ranges::stable_sort(m_roomList, {}, &std::pair<int, RailCar*>::first);
+}
+
+std::vector<TrafficBodies::RailPose> TrafficBodies::railPoses(const Vec3& at, float radius) const {
+    std::vector<RailPose> out;
+    for (const auto& r : m_railCars)
+        if (r && r->present && !r->active && !r->held && r->collidable &&
+            r->railMatrix.m3.dist2(at) <= radius * radius)
+            out.push_back({r->id, r->railMatrix});
+    return out;
+}
+
+void TrafficBodies::placeRailCars(std::span<const RailPose> poses) {
+    const phys::Level* level = m_world.level();
+    for (const RailPose& p : poses) {
+        RailCar* r = p.id >= 0 && static_cast<std::size_t>(p.id) < m_railCars.size()
+                         ? m_railCars[static_cast<std::size_t>(p.id)].get()
+                         : nullptr;
+        if (!r || !r->present || r->active || r->held)
+            continue;
+        r->railMatrix = p.transform;
+        r->room = level ? level->findRoom(r->position(), r->room) : 0;
+    }
+    listRooms();
 }
 
 void TrafficBodies::afterStep() {

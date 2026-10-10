@@ -14,7 +14,10 @@
 //                   the host applied to that client's car and the car's
 //                   state after it (full precision: the client puts its car
 //                   back to it and runs its later inputs again), and every
-//                   other player's car (VehicleSnapshot, drawn interpolated).
+//                   other player's car (VehicleSnapshot, drawn interpolated);
+//                   the few near the client's car also in full with the
+//                   input last applied to them (protocol 9), which the
+//                   client simulates along with its own.
 //
 // Both travel on the State channel (unreliable, unsequenced).
 
@@ -76,6 +79,15 @@ enum class CarCommandKind : std::uint8_t {
     ClearDamage, // vehCar::ClearDamage (Cops and Robbers' repairs, a damage reset)
     Last = ClearDamage,
 };
+constexpr const char* carCommandName(CarCommandKind k) {
+    switch (k) {
+    case CarCommandKind::Reset: return "Reset";
+    case CarCommandKind::ResetTo: return "ResetTo";
+    case CarCommandKind::RespawnAt: return "RespawnAt";
+    case CarCommandKind::ClearDamage: return "ClearDamage";
+    }
+    return "?";
+}
 struct CarCommand {
     std::uint32_t seq = 0;
     CarCommandKind kind = CarCommandKind::Reset;
@@ -183,7 +195,11 @@ bool serialize(S& s, PlayerInputMsg& m) {
 // A car's simulation as the client needs it to carry on from the host's
 // state: the rigid body exactly, and the parts whose state decides the next
 // samples (the wheels' spin, springs and tyres, the engine and gearbox, the
-// drivetrains, the stuck watcher, the damage, the random stream).
+// drivetrains, the stuck watcher, the damage, the random stream), with what
+// a sample hands the next: the forces the wheels and the engine set for it,
+// the tyres' rolling resistance, and in a contact the impulses and pushes
+// (protocol 9; without them a client's car pushing another drifted from the
+// host's at every state, the other car rebuilt from the state alone).
 struct OwnCarState {
     Mat34 matrix; // the body (centre of mass) frame
     Vec3 linearMomentum, angularMomentum, linearVelocity, angularVelocity;
@@ -208,6 +224,13 @@ struct OwnCarState {
     bool swapThrottle = false; // the pedals swapped (automatic reverse)
     bool held = false;         // held on the grid
     std::uint32_t resets = 0;  // the commands the host has carried out (wraps)
+    // Handed to the next sample (protocol 9): phInertialCS's force and torque
+    // so far, each wheel's rolling resistance, and (`contact`: not all zero)
+    // the impulses and pushes of a contact.
+    Vec3 force, torque;
+    std::array<float, 4> tireResistance{};
+    bool contact = false;
+    Vec3 linearImpulse, angularImpulse, linearPush, turnForce, framePush;
 };
 
 // Ranges an OwnCarState must lie in (anything else is refused).
@@ -252,6 +275,20 @@ bool serialize(S& s, OwnCarState& o) {
     s.boolean(o.swapThrottle);
     s.boolean(o.held);
     s.u32(o.resets);
+    s.vec3(o.force);
+    s.vec3(o.torque);
+    for (float& r : o.tireResistance)
+        s.f32(r);
+    s.boolean(o.contact);
+    if (o.contact) {
+        s.vec3(o.linearImpulse);
+        s.vec3(o.angularImpulse);
+        s.vec3(o.linearPush);
+        s.vec3(o.turnForce);
+        s.vec3(o.framePush);
+    } else if constexpr (S::kReading) {
+        o.linearImpulse = o.angularImpulse = o.linearPush = o.turnForce = o.framePush = {};
+    }
     if constexpr (S::kReading) {
         // Untrusted: every number finite (f32 refuses the rest) and in range.
         const auto ok = [](const Vec3& v, float r) {
@@ -261,7 +298,13 @@ bool serialize(S& s, OwnCarState& o) {
         bool good = ok(m.m0, 2.0f) && ok(m.m1, 2.0f) && ok(m.m2, 2.0f) && ok(m.m3, kOwnStateMaxCoordinate) &&
                     ok(o.linearMomentum, kOwnStateMaxValue) && ok(o.angularMomentum, kOwnStateMaxValue) &&
                     ok(o.linearVelocity, kOwnStateMaxValue) && ok(o.angularVelocity, kOwnStateMaxValue) &&
-                    ok(o.lastPush, kOwnStateMaxValue) && ok(o.stuckPosition, kOwnStateMaxCoordinate);
+                    ok(o.lastPush, kOwnStateMaxValue) && ok(o.stuckPosition, kOwnStateMaxCoordinate) &&
+                    ok(o.force, kOwnStateMaxValue) && ok(o.torque, kOwnStateMaxValue) &&
+                    ok(o.linearImpulse, kOwnStateMaxValue) && ok(o.angularImpulse, kOwnStateMaxValue) &&
+                    ok(o.linearPush, kOwnStateMaxValue) && ok(o.turnForce, kOwnStateMaxValue) &&
+                    ok(o.framePush, kOwnStateMaxValue);
+        for (float r : o.tireResistance)
+            good = good && std::abs(r) <= kOwnStateMaxValue;
         for (const auto& w : o.wheels)
             for (float v : {w.rotationSpeed, w.rotation, w.suspension, w.suspensionVelocity, w.tireDispLat,
                             w.tireDispLong})
@@ -275,6 +318,17 @@ bool serialize(S& s, OwnCarState& o) {
     return s.ok();
 }
 
+// Another player's car near the receiving client's, in full (OpenMM2,
+// protocol 9): the client runs it along with its own car from this state on
+// the input the host last applied to it, so that the two meet where they
+// meet on the host instead of where the other was drawn a trip earlier.
+struct NearCarState {
+    std::uint8_t id = 0;
+    OwnCarState state;
+    CarInputFrame input; // the last applied (its keys, applied once, left out)
+};
+inline constexpr std::size_t kMaxNearCars = 2;
+
 struct CarStatesMsg {
     static constexpr MsgType kType = MsgType::CarStates;
     std::uint32_t time = 0; // session ms of the host's sample the states belong to
@@ -287,6 +341,8 @@ struct CarStatesMsg {
     OwnCarState own;
     // Every other player's car.
     std::vector<std::pair<std::uint8_t, VehicleSnapshot>> cars;
+    // The ones near the client's car (at most kMaxNearCars), in full.
+    std::vector<NearCarState> near;
 };
 inline constexpr std::int32_t kMaxReportedWaiting = 63;
 
@@ -308,6 +364,18 @@ bool serialize(S& s, CarStatesMsg& m) {
     for (auto& [id, state] : m.cars) {
         s.u8(id);
         serialize(s, state);
+    }
+    auto nearCount = static_cast<std::int32_t>(std::min(m.near.size(), kMaxNearCars));
+    s.ranged(nearCount, 0, static_cast<std::int32_t>(kMaxNearCars));
+    if constexpr (S::kReading)
+        m.near.resize(static_cast<std::size_t>(nearCount));
+    for (std::int32_t i = 0; i < nearCount; ++i) {
+        NearCarState& c = m.near[static_cast<std::size_t>(i)];
+        s.u8(c.id);
+        serialize(s, c.state);
+        c.input.events = 0; // keys are applied once: never repeated
+        serialize(s, c.input, CarInputFrame{});
+        c.input.events = 0;
     }
     return s.ok();
 }

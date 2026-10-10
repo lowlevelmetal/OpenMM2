@@ -14,6 +14,7 @@
 #include <cmath>
 #include <memory>
 #include <set>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -282,4 +283,44 @@ TEST(TrafficBodies, ThirtyThirdCarTakesTheFirstBody) {
     listed.clear();
     scene.traffic->instancesIn(1, listed);
     EXPECT_NE(std::ranges::find(listed, rail[0]), listed.end());
+}
+
+// OpenMM2 (a network client running its car's samples again): the cars on
+// their rails near a place, and those put elsewhere for a while, their room
+// lists following, then back.
+TEST(TrafficBodies, RailCarsStandElsewhereForAReplayAndComeBack) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& vfs = *test::gameData();
+    auto city = city::loadCity(vfs, "london");
+    ASSERT_TRUE(city);
+    auto ai = londonTraffic(vfs, *city);
+    ASSERT_TRUE(ai);
+    const ai::AmbientCar* target = pickTarget(*ai, 0.0f);
+    ASSERT_TRUE(target);
+    const int id = target->id;
+    Scene scene(*ai, target->transform.m3);
+    scene.traffic->beforeStep();
+    const auto near = scene.traffic->railPoses(target->transform.m3, 30.0f);
+    const auto it = std::ranges::find(near, id, &game::TrafficBodies::RailPose::id);
+    ASSERT_NE(it, near.end());
+    EXPECT_EQ(it->transform.m3, target->transform.m3);
+    for (const auto& r : near)
+        EXPECT_LE(r.transform.m3.dist(target->transform.m3), 30.0f);
+    // Moved 3 m along its lane for a sample run again, then back.
+    game::TrafficBodies::RailPose moved = *it;
+    moved.transform.m3 = moved.transform.m3 - moved.transform.m2 * 3.0f;
+    scene.traffic->placeRailCars(std::span(&moved, 1));
+    const auto there = [&](const Vec3& at) {
+        std::vector<phys::Instance*> list;
+        scene.traffic->instancesIn(1, list);
+        return std::ranges::any_of(list, [&](const phys::Instance* i) { return i->matrix().m3 == at; });
+    };
+    EXPECT_TRUE(there(moved.transform.m3));
+    scene.traffic->placeRailCars(near);
+    EXPECT_TRUE(there(target->transform.m3));
+    EXPECT_FALSE(there(moved.transform.m3));
+    // A car the AI no longer lists is left alone.
+    game::TrafficBodies::RailPose unknown{100000, moved.transform};
+    scene.traffic->placeRailCars(std::span(&unknown, 1));
+    EXPECT_FALSE(there(moved.transform.m3));
 }

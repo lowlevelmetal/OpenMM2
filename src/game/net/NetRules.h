@@ -83,6 +83,13 @@ public:
     bool respawnAllowed(std::uint8_t id, const Vec3& position) const {
         return !m_referee || m_referee->mayRespawnAt(id, position);
     }
+    // The race's checkpoints such a respawn may be at (the start and the
+    // ones counted for that car), or nothing outside a race's host.
+    std::optional<std::vector<int>> respawnCheckpoints(std::uint8_t id) const {
+        if (!m_referee)
+            return std::nullopt;
+        return m_referee->respawnCheckpoints(id);
+    }
     // A player left the session or quit the race.
     void playerLeft(std::uint8_t id);
     // Cops and Robbers: what the host's rules decided this frame.

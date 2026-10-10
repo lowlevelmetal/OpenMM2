@@ -1,6 +1,6 @@
 #pragma once
 
-// The host's rules in a network race (OpenMM2's own protocol, version 8; see
+// The host's rules in a network race (OpenMM2's own protocol, version 10; see
 // docs/multiplayer.md "Rules"). The host simulates every player's car, so it
 // decides the rules from its cars: in a race each car's checkpoints, laps,
 // finish and time, the finish timeout, the end and the standings; in Cops

@@ -198,6 +198,18 @@ bool RaceReferee::mayRespawnAt(std::uint8_t id, const Vec3& position) const {
     return near(0) || std::ranges::any_of(p->hits, [&](std::uint8_t h) { return near(h); });
 }
 
+std::vector<int> RaceReferee::respawnCheckpoints(std::uint8_t id) const {
+    std::vector<int> out;
+    const Player* p = player(id);
+    if (!p)
+        return out;
+    out.push_back(0);
+    for (const std::uint8_t h : p->hits)
+        if (std::ranges::find(out, static_cast<int>(h)) == out.end())
+            out.push_back(h);
+    return out;
+}
+
 int RaceReferee::iconPlace(std::uint8_t viewer, std::uint8_t car) const {
     // mmGameMulti::UpdateScore's second half on `viewer`'s machine: a car's
     // IconIndex is 1 + the other cars ahead of it (more waypoints passed,

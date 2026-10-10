@@ -743,7 +743,8 @@ public:
                 continue;
             game::VehiclePose pose = rv.sim->pose();
             stepBodies[id] = pose.body;
-            if (const auto it = m_remoteStepBodies.find(id); it != m_remoteStepBodies.end() && !rv.simulated)
+            if (const auto it = m_remoteStepBodies.find(id);
+                it != m_remoteStepBodies.end() && !rv.simulated && !rv.predicted)
                 pose.body = it->second;
             const std::uint32_t resets = rv.sim->sim().resets;
             m_drawnPhys.record(drawnKey(Drawn::RemoteCar, id), pose, resets);
@@ -784,6 +785,15 @@ public:
         for (const auto& [id, rv] : m_remotes)
             if (rv.simulated && rv.placed && rv.sim)
                 m_remoteDrawn[id] = drawnPose(game::Drawn::RemoteCar, id, *rv.sim).body;
+        // A client: the other players' cars with what the host's states moved
+        // drawn away (the ones it simulates, between their last two samples).
+        for (auto& [id, rv] : m_remotes) {
+            if (rv.simulated || !rv.sim)
+                continue;
+            rv.blend.update(m_frameDt);
+            if (const auto base = remoteDrawnBase(id, rv))
+                m_remoteDrawn[id] = rv.blend.apply(*base);
+        }
         if (!m_player)
             return;
         m_drawPose = drawnPose(game::Drawn::Player, 0, *m_player);
@@ -3922,8 +3932,12 @@ private:
             ctx.netGame->traceDrawn(ctx.netGame->localId(), true, m_drawPose.body,
                                     m_player->sim().body.ics.frameVelocity);
         for (const auto& rc : m_remoteCars)
-            if (const auto drawn = netCarDrawn(rc.id))
-                ctx.netGame->traceDrawn(rc.id, false, *drawn, rc.velocity);
+            if (const auto drawn = netCarDrawn(rc.id)) {
+                const auto it = m_remotes.find(rc.id);
+                const bool here = it != m_remotes.end() && it->second.predicted && it->second.sim;
+                ctx.netGame->traceDrawn(rc.id, false, *drawn,
+                                        here ? it->second.sim->sim().body.ics.frameVelocity : rc.velocity);
+            }
     }
 
     // vehCarDamage::ApplyImpact for the player's car: AudImpact (the impact
@@ -4770,13 +4784,21 @@ private:
         m_netStateTime = static_cast<std::uint32_t>(std::max(0.0, ctx.netGame->frameTime() - lagMs));
         // Drawn where the rest of the scene is, a sample behind the frame
         // (game::StepHistory): alpha x step = the remainder.
-        m_remoteDrawn.clear();
+        m_remoteInterp.clear();
         const double stepMs = static_cast<double>(phys::kFixedSampleStep) * 1000.0;
         const auto drawn =
             ahead ? ctx.netGame->remoteCarsAhead(stepMs, m_netLead) : ctx.netGame->remoteCars(stepMs);
         for (const auto& rc : drawn)
             if (rc.hasState)
-                m_remoteDrawn[rc.id] = rc.transform;
+                m_remoteInterp[rc.id] = rc.transform;
+        // A car simulated here keeps where it was drawn (updateDrawnPoses
+        // draws it again after the samples).
+        std::erase_if(m_remoteDrawn, [this](const auto& e) {
+            const auto it = m_remotes.find(e.first);
+            return it == m_remotes.end() || !it->second.predicted;
+        });
+        for (const auto& [id, transform] : m_remoteInterp)
+            m_remoteDrawn.try_emplace(id, transform);
         // A player who quit the race takes its car out of it.
         std::erase_if(m_remoteCars, [this](const game::NetRemoteCar& c) { return m_netLeft.contains(c.id); });
         std::vector<std::uint8_t> present;
@@ -4790,28 +4812,13 @@ private:
             if (!rv.sim)
                 continue;
             auto& sim = rv.sim->sim();
-            // The snapshot is the model matrix; the body is at the centre of
-            // mass (vehCarSim::SetWorldMatrix's offset).
-            Mat34 ics = rc.transform;
-            ics.m3 = rc.transform.m3 - rc.transform.transformDir(sim.centerOfGravity);
-            const bool jumped = sim.body.ics.matrix.m3.dist2(ics.m3) > 20.0f * 20.0f;
-            sim.body.place(ics);
-            sim.body.ics.linearVelocity = rc.velocity;
-            sim.body.ics.angularVelocity = rc.angularVelocity;
-            // Everything meets the car as a moving one (the local car, and
-            // the shared traffic and police): as a still wall, a car closing
-            // on it at 1 m/s while both did 30 m/s lost 12.6 m/s, a rear tap
-            // threw the chaser back and rubbing side by side dragged as a
-            // barrier would.
-            sim.body.kinematicMoves = true;
-            sim.body.kinematicVelocity = rc.velocity;
-            sim.body.kinematicSpin = rc.angularVelocity;
-            sim.setInputs(rc.controls.throttle, rc.controls.brake, rc.controls.steering, rc.controls.handbrake);
-            sim.body.declare(3, others == "ghost" ? 0x0b : 0x1b); // mmNetObject::Update
-            if (auto* trailer = rv.sim->trailer()) {
-                trailer->body.declare(3, 0x1b);
-                if (jumped)
-                    trailer->reset(); // respawned: hitched again behind it
+            if (rv.predicted) {
+                // Simulated here (predictNearCars): it runs on its input.
+                sim.body.declare(3, 0x1b); // mmNetObject::Update
+                sim.setWaterLevel(waterLevelAt(sim.modelMatrix().m3));
+            } else {
+                placeNetCar(rv, rc);
+                sim.body.declare(3, others == "ghost" ? 0x0b : 0x1b); // mmNetObject::Update
             }
             updateNetCarDamage(ctx, game::DamageReplica::playerKey(rc.id), *rv.renderer, rv.fx.get(), sim,
                                rv.sim->model().baseName, netCarDrawn(rc.id).value_or(rc.transform), rc.velocity,
@@ -4819,6 +4826,107 @@ private:
         }
         dropRemoteCars(present);
         updateOwnNetDamage(ctx);
+    }
+
+    // Client: another player's car placed at its interpolated state (`rc`),
+    // a kinematic body moving at its velocity.
+    void placeNetCar(RemoteVehicle& rv, const game::NetRemoteCar& rc) {
+        auto& sim = rv.sim->sim();
+        // The snapshot is the model matrix; the body is at the centre of
+        // mass (vehCarSim::SetWorldMatrix's offset).
+        Mat34 ics = rc.transform;
+        ics.m3 = rc.transform.m3 - rc.transform.transformDir(sim.centerOfGravity);
+        const bool jumped = sim.body.ics.matrix.m3.dist2(ics.m3) > 20.0f * 20.0f;
+        sim.body.place(ics);
+        sim.body.ics.linearVelocity = rc.velocity;
+        sim.body.ics.angularVelocity = rc.angularVelocity;
+        // Everything meets the car as a moving one (the local car, and
+        // the shared traffic and police): as a still wall, a car closing
+        // on it at 1 m/s while both did 30 m/s lost 12.6 m/s, a rear tap
+        // threw the chaser back and rubbing side by side dragged as a
+        // barrier would.
+        sim.body.kinematicMoves = true;
+        sim.body.kinematicVelocity = rc.velocity;
+        sim.body.kinematicSpin = rc.angularVelocity;
+        sim.setInputs(rc.controls.throttle, rc.controls.brake, rc.controls.steering, rc.controls.handbrake);
+        if (auto* trailer = rv.sim->trailer()) {
+            trailer->body.declare(3, 0x1b);
+            if (jumped)
+                trailer->reset(); // respawned: hitched again behind it
+        }
+    }
+
+    // Client: which other players' cars it simulates along with its own (the
+    // ones the host's newest state sent in full, `near`; none with
+    // OPENMM2_NET_OTHERS set, the experiments), switching each between that
+    // and its interpolated states; the ones simulated, as the
+    // reconciliation's companions.
+    void predictNearCars(const std::vector<net::NearCarState>& near,
+                         std::vector<game::CarPrediction::Companion>& companions) {
+        static const bool others = [] {
+            const char* v = std::getenv("OPENMM2_NET_OTHERS");
+            return v && *v;
+        }();
+        for (auto& [id, rv] : m_remotes) {
+            if (rv.simulated || !rv.sim)
+                continue;
+            const auto it = std::ranges::find(near, id, &net::NearCarState::id);
+            const auto rc = std::ranges::find(m_remoteCars, id, &game::NetRemoteCar::id);
+            const bool wanted = !others && it != near.end() && !rv.sim->trailer() &&
+                                rc != m_remoteCars.end() && rc->hasState && !m_netLeft.contains(id);
+            auto& sim = rv.sim->sim();
+            if (wanted && !rv.predicted) {
+                // As the host simulates it (loadRemoteCar's `simulated`), but
+                // its damage stays the host's (updateNetCarDamage).
+                sim.body.kinematic = false;
+                sim.body.kinematicMoves = false;
+                sim.body.resetCollider();
+                sim.options.player = true;
+                sim.ownRandom = true;
+                rv.driver.attach(*rv.sim);
+                rv.predicted = true;
+            } else if (!wanted && rv.predicted) {
+                sim.body.kinematic = true;
+                sim.body.resetCollider();
+                sim.options.player = false;
+                sim.ownRandom = false;
+                rv.predicted = false;
+                if (rc != m_remoteCars.end() && rc->hasState)
+                    placeNetCar(rv, *rc);
+            }
+            if (rv.predicted) {
+                rv.input = it->input;
+                companions.push_back(
+                    {rv.sim.get(), &rv.driver, &it->state, it->input, id < m_traceNet->localId()});
+            }
+        }
+    }
+    // OpenMM2: every machine keeps the players' cars in the world's movers in
+    // player order (the host's first), so that two of them collide in the
+    // same order everywhere: World::step runs a mover's collisions with the
+    // city, then with the movers after it, then with the instances, and the
+    // order changes the outcome. A car that joins puts the ones after it
+    // behind it again.
+    void orderPlayerCars() {
+        if (!m_world || !m_traceNet)
+            return;
+        std::vector<std::pair<std::uint8_t, game::SimVehicle*>> cars;
+        if (m_player)
+            cars.emplace_back(m_traceNet->localId(), m_player.get());
+        for (const auto& [id, rv] : m_remotes)
+            if (rv.sim && m_world->contains(&rv.sim->sim().body))
+                cars.emplace_back(id, rv.sim.get());
+        std::ranges::sort(cars, {}, &std::pair<std::uint8_t, game::SimVehicle*>::first);
+        for (const auto& [id, car] : cars) {
+            car->removeFrom(*m_world);
+            car->addTo(*m_world);
+        }
+    }
+    bool predictedBody(const phys::Body* b) const {
+        for (const auto& [id, rv] : m_remotes)
+            if (rv.predicted && rv.sim && &rv.sim->sim().body == b)
+                return true;
+        return false;
     }
 
     // The cars of players no longer in the race leave it.
@@ -4883,6 +4991,7 @@ private:
             sim.body.kinematic = true;
             sim.body.resetCollider();
             rv.sim->addTo(*m_world);
+            orderPlayerCars();
         }
         rv.renderer = std::make_unique<game::VehicleRenderer>(ctx.device(), *m_textures, *m_models,
                                                               rv.sim->model(), rv.color);
@@ -4937,11 +5046,12 @@ private:
                 // Its player's first command puts it where that machine
                 // started it.
                 const auto first = rv.inputs.ready() ? rv.inputs.placement() : std::nullopt;
-                if (!first || !netCommandAllowed(rv, *first))
+                if (!first || !netCommandAllowed(p.id, rv, *first))
                     continue;
                 game::NetCarDriver::command(*rv.sim, *first);
                 rv.lastMoveSeq = first->seq;
                 rv.sim->addTo(*m_world);
+                orderPlayerCars();
                 rv.placed = true;
                 log::info("race: player {}'s car starts at ({:.1f}, {:.1f}, {:.1f})", p.id, first->position.x,
                           first->position.y, first->position.z);
@@ -4956,19 +5066,38 @@ private:
         dropRemoteCars(present);
     }
 
-    // Host: whether a client's command may move its car: in the city, and
-    // not more than four times a second (a hostile client would teleport).
-    bool netCommandAllowed(const RemoteVehicle& rv, const net::CarCommand& c) const {
-        if (c.kind != net::CarCommandKind::ResetTo && c.kind != net::CarCommandKind::RespawnAt)
-            return true;
-        if (rv.placed && c.seq < rv.lastMoveSeq + 15)
-            return false;
-        const Aabb& city = m_city->psdl.bounds;
-        constexpr float kMargin = 200.0f;
-        const Vec3& at = c.position;
-        return at.x >= city.min.x - kMargin && at.x <= city.max.x + kMargin && at.y >= city.min.y - kMargin &&
-               at.y <= city.max.y + kMargin && at.z >= city.min.z - kMargin && at.z <= city.max.z + kMargin;
+    // Host: whether a client's command may reset its car (game::ResetRules,
+    // on this machine's simulation of it).
+    bool netCommandAllowed(std::uint8_t id, const RemoteVehicle& rv, const net::CarCommand& c) {
+        static const bool debug = std::getenv("OPENMM2_DEBUG_RESPAWN_MS") != nullptr;
+        if (m_netRespawnPoints.empty() && m_session)
+            for (const auto& cp : m_session->setup().checkpoints)
+                m_netRespawnPoints.push_back(game::session::spawnAt(cp));
+        // In a race only the start and the checkpoints the host's referee
+        // counted for that car (game/net/NetRules: mmGameMulti::
+        // HitWaterHandler puts it back at the last one it cleared).
+        std::vector<Mat34> counted;
+        if (const auto indices = m_netRules.respawnCheckpoints(id)) {
+            for (const int i : *indices)
+                if (i >= 0 && static_cast<std::size_t>(i) < m_netRespawnPoints.size())
+                    counted.push_back(m_netRespawnPoints[static_cast<std::size_t>(i)]);
+        }
+        game::ResetRules r;
+        r.placed = rv.placed && rv.sim;
+        r.lastMoveSeq = rv.lastMoveSeq;
+        r.waterSamples = rv.waterSamples;
+        if (rv.sim) {
+            r.height = rv.sim->sim().body.ics.matrix.m3.y;
+            r.wrecked = rv.sim->sim().damage.maxDamaged();
+        }
+        r.copsAndRobbers = m_result.config.mode == game::GameMode::CopsAndRobbers;
+        r.debug = debug;
+        r.city = m_city->psdl.bounds;
+        r.respawnPoints = m_netRules.respawnCheckpoints(id) ? std::span<const Mat34>(counted)
+                                                            : std::span<const Mat34>(m_netRespawnPoints);
+        return r.allows(c);
     }
+    std::vector<Mat34> m_netRespawnPoints; // host: the race's checkpoints' spawns
 
     // Host: a simulated player's car's impact (vehCarDamage::ApplyImpact):
     // its sound, sparks and damage, which everyone is sent.
@@ -5030,23 +5159,27 @@ private:
             for (auto& [id, rv] : m_remotes) {
                 if (!rv.simulated || !rv.placed || !rv.sim)
                     continue;
+                // The samples it has been in the water (netCommandAllowed).
+                rv.waterSamples = rv.sim->sim().splash.active() ? rv.waterSamples + 1 : 0;
                 auto next = rv.inputs.next();
                 if (!next)
                     continue;
                 for (const auto& c : next->commands) {
-                    if (!netCommandAllowed(rv, c))
-                        continue;
-                    // A respawn at a checkpoint the host never counted for it.
-                    if (c.kind == net::CarCommandKind::RespawnAt && !m_netRules.respawnAllowed(id, c.position)) {
-                        log::info("race: player {}'s respawn at ({:.1f}, {:.1f}, {:.1f}) refused", id,
-                                  c.position.x, c.position.y, c.position.z);
+                    if (c.kind == net::CarCommandKind::ResetTo && c.seq == rv.lastMoveSeq)
+                        continue; // the placement, carried out already
+                    if (!netCommandAllowed(id, rv, c)) {
+                        static const bool verbose = std::getenv("OPENMM2_DEBUG_NETCARS") != nullptr;
+                        if (verbose)
+                            log::info("netcars: refused player {}'s {} at sample {}", id,
+                                      net::carCommandName(c.kind), c.seq);
+                        ++rv.refused;
                         continue;
                     }
                     // mmMultiCR::HitWaterHandler / DropThruCityHandler on that machine.
                     if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
                         m_crResets.insert(id);
                     game::NetCarDriver::command(*rv.sim, c);
-                    if (c.kind == net::CarCommandKind::ResetTo || c.kind == net::CarCommandKind::RespawnAt)
+                    if (c.kind != net::CarCommandKind::ClearDamage)
                         rv.lastMoveSeq = c.seq;
                     ++rv.resets;
                     hostCarReset(id, rv);
@@ -5061,10 +5194,18 @@ private:
             }
             return;
         }
-        // A client: where the bodies around its car (the other players'
-        // cars, the police, knocked traffic cars and props) stood for this
-        // sample: the samples run again meet them there.
-        m_bodyHistory.push_back({m_prediction.nextSeq(), bodyPoses()});
+        // A client: the other players' cars it simulates take the input the
+        // host last applied to them.
+        for (auto& [id, rv] : m_remotes)
+            if (rv.predicted && rv.sim)
+                rv.driver.apply(*rv.sim, rv.input);
+        // Where the bodies around its car (the other players' cars, the
+        // police, knocked traffic cars and props) stood for this sample: the
+        // samples run again meet them there.
+        m_bodyHistory.push_back({m_prediction.nextSeq(), bodyPoses(), {}});
+        if (m_trafficClient && m_trafficBodies && netTrafficReplay() != NetTrafficReplay::Frame)
+            m_bodyHistory.back().rails =
+                m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
         while (m_bodyHistory.size() > 240)
             m_bodyHistory.pop_front();
         // Its car's first sample puts it where this machine started it, on
@@ -5128,6 +5269,34 @@ private:
         m_netCarLead = m_netCarLead ? *m_netCarLead + (lead - *m_netCarLead) * 0.1 : lead;
     }
 
+    // Client: where the samples run again meet the shared traffic's cars on
+    // their rails: where each sample met them (History), or where the host
+    // had them at that sample's time (Predicted: TrafficClient::poseAt, from
+    // the newest messages), or where this frame put them (Frame).
+    // OPENMM2_NET_TRAFFIC_REPLAY=predicted|frame picks the others, for
+    // comparison.
+    enum class NetTrafficReplay { History, Predicted, Frame };
+    static NetTrafficReplay netTrafficReplay() {
+        static const NetTrafficReplay mode = [] {
+            const char* v = std::getenv("OPENMM2_NET_TRAFFIC_REPLAY");
+            const std::string_view s = v ? v : "";
+            return s == "frame" ? NetTrafficReplay::Frame
+                                : s == "predicted" ? NetTrafficReplay::Predicted : NetTrafficReplay::History;
+        }();
+        return mode;
+    }
+
+    // Client: the session time sample `seq` of this machine's car ended at
+    // (m_netSampleTimes keeps each frame's last).
+    std::optional<double> netSampleTime(std::uint32_t seq) const {
+        const auto e =
+            std::ranges::find_if(m_netSampleTimes, [seq](const auto& x) { return x.first >= seq; });
+        if (e == m_netSampleTimes.end())
+            return std::nullopt;
+        const double step = static_cast<double>(phys::kFixedSampleStep) * 1000.0 / m_netDilation;
+        return e->second - static_cast<double>(e->first - seq) * step;
+    }
+
     // Client: the host's states of this machine's car since the last frame:
     // the newest corrects the prediction when they differ; how many of its
     // inputs the host had in hand sets how fast the samples run.
@@ -5135,12 +5304,12 @@ private:
         if (!multiplayer(ctx) || ctx.netGame->isHost() || !m_player || !m_world)
             return;
         const auto updates = ctx.netGame->takeOwnCarStates();
-        const net::OwnCarState* newest = nullptr;
+        const net::Session::OwnCarUpdate* newest = nullptr;
         std::uint32_t ack = 0;
         for (const auto& u : updates) {
             m_netWaiting.push_back(u.waiting);
             if (u.hasOwn && u.ack > ack) {
-                newest = &u.own;
+                newest = &u;
                 ack = u.ack;
             }
             updateNetCarLead(u.ack, u.time);
@@ -5168,38 +5337,110 @@ private:
             m_netLead = m_netLead < 0.0 ? lead : m_netLead + (lead - m_netLead) * 0.1;
         }
         const game::VehiclePose before = drawnPose(game::Drawn::Player, 0, *m_player);
-        // The bodies the samples run again may move, as they stand now.
+        // Where the other players' cars are drawn now: the drawing blends
+        // from there to where the host's states put them.
+        std::map<std::uint8_t, Mat34> othersBefore;
+        std::set<std::uint8_t> predictedBefore;
+        for (const auto& [id, rv] : m_remotes) {
+            if (!rv.sim || rv.simulated)
+                continue;
+            if (const auto drawn = remoteDrawnBase(id, rv))
+                othersBefore[id] = rv.blend.apply(*drawn);
+            if (rv.predicted)
+                predictedBefore.insert(id);
+        }
+        std::vector<game::CarPrediction::Companion> companions;
+        predictNearCars(newest->near, companions);
+        // The shared traffic's cars on their rails around this car: the
+        // samples run again meet each where that sample met it (or, the
+        // experiment, where the host had it at that sample's time); after,
+        // where this frame put them (netTrafficReplay).
+        const NetTrafficReplay railReplay = netTrafficReplay();
+        std::vector<game::TrafficBodies::RailPose> railsNow;
+        if (m_trafficClient && m_trafficBodies && railReplay != NetTrafficReplay::Frame)
+            railsNow = m_trafficBodies->railPoses(m_player->sim().body.ics.matrix.m3, 60.0f);
+        // The bodies the samples run again may move, as they stand now: the
+        // ones a sample met, and the ones around the car now (a sample that
+        // did not meet one, say a piece the host's state brought later, runs
+        // without it: it waits far below the city).
         std::vector<BodyPose> now;
+        const auto keep = [&](phys::Body* b) {
+            if (std::ranges::none_of(now, [&](const BodyPose& q) { return q.body == b; }) &&
+                m_world->contains(b) && !predictedBody(b))
+                now.push_back(poseOf(*b));
+        };
         for (const auto& h : m_bodyHistory)
             if (h.seq > ack)
                 for (const auto& p : h.poses)
-                    if (std::ranges::none_of(now, [&](const BodyPose& q) { return q.body == p.body; }) &&
-                        m_world->contains(p.body))
-                        now.push_back(poseOf(*p.body));
+                    keep(p.body);
+        for (const auto& p : bodyPoses())
+            keep(p.body);
         const auto replayStart = std::chrono::steady_clock::now();
         m_netReplaying = true;
         const auto c = m_prediction.acknowledge(
-            *m_player, m_netDriver, *m_world, ack, *newest,
+            *m_player, m_netDriver, *m_world, ack, newest->own,
             [this] {
-                // What the drawing blends from: the car before its last sample.
+                // What the drawing blends from: the cars before their last
+                // sample.
                 const std::uint32_t resets = m_player->sim().resets;
                 m_drawnPhys.record(game::drawnKey(game::Drawn::Player, 0), m_player->pose(), resets);
                 if (m_player->trailer())
                     m_drawnPhys.record(game::drawnKey(game::Drawn::PlayerTrailer, 0), m_player->trailerPose(),
                                        resets);
+                for (const auto& [id, rv] : m_remotes)
+                    if (rv.predicted && rv.sim)
+                        m_drawnPhys.record(game::drawnKey(game::Drawn::RemoteCar, id), rv.sim->pose(),
+                                           rv.sim->sim().resets);
             },
-            [this](std::uint32_t seq) {
-                for (const auto& h : m_bodyHistory)
-                    if (h.seq == seq)
-                        placeBodies(h.poses);
-            });
+            [&](std::uint32_t seq) {
+                for (const auto& h : m_bodyHistory) {
+                    if (h.seq != seq)
+                        continue;
+                    placeBodies(h.poses);
+                    for (const auto& p : now) {
+                        const auto met = [&](const BodyPose& q) { return q.body == p.body; };
+                        if (std::ranges::none_of(h.poses, met))
+                            parkBody(p);
+                    }
+                    if (!railsNow.empty() && railReplay == NetTrafficReplay::History)
+                        m_trafficBodies->placeRailCars(h.rails);
+                }
+                if (railsNow.empty() || railReplay != NetTrafficReplay::Predicted)
+                    return;
+                const auto t = netSampleTime(seq);
+                if (!t)
+                    return;
+                const double at = *t + m_netCarLead.value_or(0.0);
+                std::vector<game::TrafficBodies::RailPose> then;
+                for (const auto& r : railsNow)
+                    if (const auto p = m_trafficClient->poseAt(r.id, at))
+                        then.push_back({r.id, p->transform});
+                m_trafficBodies->placeRailCars(then);
+            },
+            companions);
         placeBodies(now);
+        if (!railsNow.empty())
+            m_trafficBodies->placeRailCars(railsNow);
         m_netReplaying = false;
+        // The other players' cars: what the host's states moved the ones
+        // simulated here by, and a switch between simulating one and placing
+        // it at its states, drawn away (a switch more slowly).
+        for (auto& [id, rv] : m_remotes) {
+            const auto from = othersBefore.find(id);
+            const auto to = remoteDrawnBase(id, rv);
+            const bool switched = rv.predicted != predictedBefore.contains(id);
+            if (from == othersBefore.end() || !to || (!rv.predicted && !switched))
+                continue;
+            rv.blend.halfLife = switched ? 0.15f : 0.08f;
+            rv.blend.snapDistance = 20.0f;
+            rv.blend.add(from->second, *to);
+        }
         const double replayMs =
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replayStart).count();
         m_netReplayMs += replayMs;
         m_netReplayWorstMs = std::max(m_netReplayWorstMs, replayMs);
-        if (!c.corrected)
+        // Run again with the other cars, this one moves only where they meet.
+        if (!c.corrected && c.moved.mag() <= 0.003f)
             return;
         const game::VehiclePose after = drawnPose(game::Drawn::Player, 0, *m_player);
         m_correction.add(m_correction.apply(before.body), after.body);
@@ -5210,9 +5451,10 @@ private:
         static const bool verbose = std::getenv("OPENMM2_DEBUG_NETCARS") != nullptr;
         if (verbose)
             log::info("netcars: correction at sample {} ({} run again): position {:.4f} m, "
-                      "velocity {:.4f} m/s, rotation {:.5f}{}{}{}",
+                      "velocity {:.4f} m/s, rotation {:.5f}{}{}{}{}; moved {:.4f} m",
                       ack, c.replayed, c.positionError, c.velocityError, c.rotationError,
-                      c.damage ? ", damage" : "", c.held ? ", held" : "", c.gear ? ", gear" : "");
+                      c.damage ? ", damage" : "", c.held ? ", held" : "", c.gear ? ", gear" : "",
+                      c.corrected ? "" : ", only the other cars' states", c.moved.mag());
     }
 
     // Client: the bodies within reach of its car as they stand, and put
@@ -5236,13 +5478,22 @@ private:
         m_world->bodiesNear(m_player->sim().body.ics.matrix.m3, 40.0f, near);
         const phys::Trailer* trailer = m_player->trailer();
         for (phys::Body* b : near)
-            if (b != &m_player->sim().body && (!trailer || b != &trailer->body))
+            if (b != &m_player->sim().body && (!trailer || b != &trailer->body) && !predictedBody(b))
                 out.push_back(poseOf(*b));
         return out;
     }
+    // A body a sample run again did not meet, out of its way (1 km below).
+    void parkBody(const BodyPose& p) {
+        phys::Body& b = *p.body;
+        b.ics.matrix = p.ics;
+        b.ics.matrix.m3.y -= 1000.0f;
+        b.boundMatrix = p.bound;
+        b.boundMatrix.m3.y -= 1000.0f;
+        b.ics.linearVelocity = b.ics.angularVelocity = b.kinematicVelocity = b.kinematicSpin = {};
+    }
     void placeBodies(const std::vector<BodyPose>& poses) {
         for (const auto& p : poses) {
-            if (!m_world->contains(p.body))
+            if (!m_world->contains(p.body) || predictedBody(p.body))
                 continue;
             phys::Body& b = *p.body;
             b.ics.matrix = p.ics;
@@ -5308,15 +5559,33 @@ private:
         }
     }
 
+    // Host: the other players' cars sent to a client in full
+    // (net::NearCarState): those within kNearEnter metres of its car, kept
+    // until kNearLeave, the nearest net::kMaxNearCars; not one towing a
+    // trailer (its trailer's state does not travel).
+    static constexpr float kNearEnter = 40.0f, kNearLeave = 50.0f;
+
     // Host: each client's CarStates: the last input applied to its car and
-    // the car's state after it, and every other player's car.
+    // the car's state after it, every other player's car, and the ones near
+    // it in full.
     void sendNetCars(Context& ctx, std::uint64_t now) {
         m_netCarsSentAt = now;
         std::vector<std::pair<std::uint8_t, net::VehicleSnapshot>> cars;
         cars.emplace_back(ctx.netGame->localId(), game::carSnapshot(*m_player, m_netInput));
+        struct Full {
+            std::uint8_t id = 0;
+            const game::SimVehicle* car = nullptr;
+            net::CarInputFrame input;
+        };
+        std::vector<Full> full;
+        if (!m_player->trailer())
+            full.push_back({ctx.netGame->localId(), m_player.get(), m_netInput});
         for (const auto& [id, rv] : m_remotes)
-            if (rv.simulated && rv.placed && rv.sim)
+            if (rv.simulated && rv.placed && rv.sim) {
                 cars.emplace_back(id, game::carSnapshot(*rv.sim, rv.input));
+                if (!rv.sim->trailer())
+                    full.push_back({id, rv.sim.get(), rv.input});
+            }
         for (auto& [id, rv] : m_remotes) {
             if (!rv.simulated || !rv.sim)
                 continue;
@@ -5330,6 +5599,30 @@ private:
             for (const auto& c : cars)
                 if (c.first != id)
                     msg.cars.push_back(c);
+            if (rv.placed) {
+                const Vec3 at = rv.sim->sim().body.ics.matrix.m3;
+                std::vector<std::pair<float, const Full*>> near;
+                for (const auto& f : full) {
+                    if (f.id == id)
+                        continue;
+                    const float d = std::sqrt(f.car->sim().body.ics.matrix.m3.dist2(at));
+                    if (d < (rv.nearIds.contains(f.id) ? kNearLeave : kNearEnter))
+                        near.emplace_back(d, &f);
+                }
+                std::ranges::sort(near, {}, &std::pair<float, const Full*>::first);
+                if (near.size() > net::kMaxNearCars)
+                    near.resize(net::kMaxNearCars);
+                rv.nearIds.clear();
+                for (const auto& [d, f] : near) {
+                    rv.nearIds.insert(f->id);
+                    net::NearCarState n;
+                    n.id = f->id;
+                    n.state = game::ownCarState(*f->car, 0);
+                    n.input = f->input;
+                    n.input.events = 0;
+                    msg.near.push_back(std::move(n));
+                }
+            }
             m_netStatesBytes += ctx.netGame->sendCarStates(id, msg);
             ++m_netStatesSent;
         }
@@ -5349,8 +5642,9 @@ private:
             std::string queues;
             for (const auto& [id, rv] : m_remotes)
                 if (rv.simulated)
-                    queues += std::format(" player {}: {} inputs missed, {} dropped to catch up;", id,
-                                          rv.inputs.missed(), rv.inputs.skipped());
+                    queues += std::format(" player {}: {} inputs missed, {} dropped to catch up, {} resets "
+                                          "refused;",
+                                          id, rv.inputs.missed(), rv.inputs.skipped(), rv.refused);
             log::info("netcars: host sent {} states ({:.0f} B/s);{}", m_netStatesSent,
                       static_cast<double>(m_netStatesBytes) / seconds, queues);
         } else if (verbose) {
@@ -5537,6 +5831,14 @@ private:
 
     // Where a network player's car and a shared police car are drawn
     // (model matrices), when known.
+    // Client: another player's car as drawn before the blend: simulated
+    // here, between its last two samples; else at its interpolated state.
+    std::optional<Mat34> remoteDrawnBase(std::uint8_t id, const RemoteVehicle& rv) const {
+        if (rv.predicted && rv.sim)
+            return drawnPose(game::Drawn::RemoteCar, id, *rv.sim).body;
+        const auto it = m_remoteInterp.find(id);
+        return it != m_remoteInterp.end() ? std::optional(it->second) : std::nullopt;
+    }
     std::optional<Mat34> netCarDrawn(std::uint8_t id) const {
         const auto it = m_remoteDrawn.find(id);
         return it != m_remoteDrawn.end() ? std::optional(it->second) : std::nullopt;
@@ -6372,6 +6674,17 @@ private:
         net::CarInputFrame input;       // the last one applied
         std::uint32_t resets = 0;       // the commands carried out
         std::uint32_t lastMoveSeq = 0;  // the sample of the last command that moved it
+        std::set<std::uint8_t> nearIds; // the other cars sent to its player in full
+        int waterSamples = 0;           // the samples it has been in the water (netCommandAllowed)
+        std::uint64_t refused = 0;      // its commands the host refused
+        // Client (OpenMM2): a car near this machine's that the host sends in
+        // full (net::NearCarState) is simulated here along with this
+        // machine's car instead of placed at its interpolated states
+        // (reconcileNetCar, predictNearCars), on the input the host last
+        // applied to it (`input`); each new state, and the change between
+        // the two ways of placing it, is blended away in the drawing.
+        bool predicted = false;
+        game::CorrectionBlend blend;
     };
     std::map<std::uint8_t, RemoteVehicle> m_remotes;
     // OpenMM2: the network cars' damage (game/net/DamageSync): this player's
@@ -6384,6 +6697,7 @@ private:
     int m_netLocalId = -1;     // this player's id in a network race
     std::vector<game::NetRemoteCar> m_remoteCars; // this frame's sample (updateRemoteCars)
     std::map<std::uint8_t, Mat34> m_remoteDrawn;  // and where they are drawn
+    std::map<std::uint8_t, Mat34> m_remoteInterp; // client: where their interpolated states put them
     std::map<std::uint8_t, Mat34> m_remoteStepBodies; // their bodies in the last sample (recordStepPoses)
     std::vector<game::NetGameEvent> m_netEvents; // this frame's game events (takeNetEvents)
     std::set<std::uint8_t> m_netLeft;            // players who quit this race
@@ -6414,6 +6728,7 @@ private:
     struct BodyHistory {
         std::uint32_t seq = 0;
         std::vector<BodyPose> poses;
+        std::vector<game::TrafficBodies::RailPose> rails; // the shared traffic's cars on their rails
     };
     std::deque<BodyHistory> m_bodyHistory; // client: the bodies around its car at each recent sample
     std::deque<std::int32_t> m_netWaiting; // client: the host's latest counts of its inputs in hand

@@ -324,7 +324,7 @@ void backing(const std::vector<Machine>& machines) {
         }
     }
     // Each knock once: the host's own record of it (every car's since
-    // protocol 8, only its own car's before), else the carrier's machine's.
+    // protocol 10, only its own car's before), else the carrier's machine's.
     std::vector<const Gold*> knockList;
     for (const auto& g : host.gold)
         if (g.type == 1 && g.value == 1)

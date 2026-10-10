@@ -36,6 +36,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace mm2::game {
@@ -133,6 +134,43 @@ private:
     std::uint64_t m_missed = 0, m_skipped = 0;
 };
 
+// Whether the host carries out a client's reset of its car (OpenMM2: the
+// game resets a network player's car only where its rules do, and the host
+// checks them on its own simulation of the car; a hostile client would
+// teleport, or repair its car at will):
+// * ResetTo puts the car at its start: only the first command, which
+//   places it, in the city;
+// * Reset and RespawnAt (mmPlayer::Reset from mmGameMulti::HitWaterHandler,
+//   and DropThruCityHandler, which multiplayer treats as the water): the car
+//   has been in the water (its vehSplash latched) for nearly
+//   HitWaterHandler's 5 s, or fell below mmGame::Update's -50 m (the client's
+//   rules see its own car a little ahead of the host's: a second's and 10 m's
+//   slack); RespawnAt (a race with checkpoints) only at one of the race's
+//   checkpoints, facing its heading (Session's respawn there); not more than
+//   four times a second;
+// * ClearDamage (vehCar::ClearDamage): the wreck penalty's repair (the car is
+//   past its maximum damage), or Cops and Robbers' repair at a delivery of the
+//   gold (mmMultiCR's UpdateBank / UpdateHideout: allowed in that mode until
+//   its rules run on the host).
+// `debug` (OPENMM2_DEBUG_RESPAWN_MS on the host, a development aid) lets any
+// reset in the city pass.
+struct ResetRules {
+    bool placed = false;           // the car is in the race (its first command carried out)
+    std::uint32_t lastMoveSeq = 0; // the sample of the last command that moved it
+    int waterSamples = 0;          // the samples it has been in the water
+    float height = 0.0f;           // its centre of mass's y
+    bool wrecked = false;          // past its maximum damage (mmPlayer::IsMaxDamaged)
+    bool copsAndRobbers = false;
+    bool debug = false;
+    Aabb city;                          // the city's bounds (200 m round them allowed)
+    std::span<const Mat34> respawnPoints; // the race's checkpoints' spawns (game::session::spawnAt)
+
+    static constexpr std::uint32_t kMoveInterval = 15; // samples
+    static constexpr int kWaterSamples = 4 * 60;      // HitWaterHandler's 5 s less a second
+    static constexpr float kDropHeight = -50.0f + 10.0f;
+    bool allows(const net::CarCommand& c) const;
+};
+
 // The car's state as the host sends it to its player, and the car put there
 // (the rest of its state stays as it was).
 net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets);
@@ -152,6 +190,11 @@ public:
         float positionTolerance = 0.003f;  // m
         float velocityTolerance = 0.03f;   // m/s
         float rotationTolerance = 0.0015f; // matrix entries
+        // Other players' cars run with this one (Companion) farther than
+        // this from it, and than their speeds close in the samples run
+        // again, run again without it (m; two cars' half lengths and a
+        // margin).
+        float companionReach = 8.0f;
     };
     CarPrediction() = default;
     explicit CarPrediction(const Options& o) : m_options(o) {}
@@ -180,6 +223,21 @@ public:
         float rotationError = 0.0f;  // the largest difference of the matrices' entries
         bool damage = false, held = false, gear = false; // which of these differed
         Vec3 moved; // where the car is now against where it was predicted
+        bool rebased = false; // other cars were put to the host's state with it (companions)
+    };
+    // Another player's car the client simulates along with its own (the
+    // host sent it in full: net::NearCarState): put to the host's state at
+    // the acknowledged sample and run with it on the input the host last
+    // applied to it.
+    struct Companion {
+        SimVehicle* car = nullptr;
+        NetCarDriver* driver = nullptr;
+        const net::OwnCarState* state = nullptr;
+        net::CarInputFrame input;
+        // It comes before the car in the world's movers (a lower player
+        // number: every machine keeps the players' cars in that order), and
+        // collides first when they run again, as on the host.
+        bool first = false;
     };
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
@@ -187,10 +245,14 @@ public:
     // phys::World::replaySample), calling `beforeEach` with each sample's
     // number before it (the other players' cars put back where they stood
     // when it first ran) and `beforeLast` before the last one (the drawing
-    // keeps the car's pose before its last sample).
+    // keeps the car's pose before its last sample). With `companions` the
+    // samples are run again whether the car's state differed or not, every
+    // companion with it from the host's state (the car's own state at `ack`
+    // is the host's only when it differed).
     Correction acknowledge(SimVehicle& car, NetCarDriver& driver, phys::World& world, std::uint32_t ack,
                            const net::OwnCarState& host, const std::function<void()>& beforeLast = {},
-                           const std::function<void(std::uint32_t)>& beforeEach = {});
+                           const std::function<void(std::uint32_t)>& beforeEach = {},
+                           std::span<const Companion> companions = {});
 
     // Statistics since the start.
     struct Stats {
