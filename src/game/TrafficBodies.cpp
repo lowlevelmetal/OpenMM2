@@ -775,7 +775,11 @@ void TrafficBodies::instancesIn(int room, std::vector<phys::Instance*>& out) con
 
 std::optional<net::TrafficBodyState> TrafficBodies::bodyState(int carId) const {
     const RailCar* r = findRailCar(carId);
-    if (!r || !r->active)
+    // A body the world's last step did not run (dgPhysManager's table of 32
+    // movers was full: MM2 then leaves it where it is) is not simulated: a
+    // client must not run it either (it once ran one at the 10 m/s its
+    // body had when it froze, 1.8 m from the host's for 90 s).
+    if (!r || !r->active || !m_world.isActive(&r->active->body))
         return std::nullopt;
     const Active& a = *r->active;
     const phys::InertialCS& ics = a.body.ics;
