@@ -264,6 +264,7 @@ public:
         PlayerInputMsg msg;
     };
     std::vector<ReceivedInput> takePlayerInputs() { return std::exchange(m_playerInputs, {}); }
+    std::size_t playerInputsQueued() const { return m_playerInputs.size(); }
     static constexpr std::size_t kMaxQueuedPlayerInputs = 256;
     // Host: one client's states (its own car and the others'); returns the
     // bytes sent.
@@ -283,6 +284,7 @@ public:
         std::vector<NearCarState> near;
     };
     std::vector<OwnCarUpdate> takeOwnCarStates() { return std::exchange(m_ownCarStates, {}); }
+    std::size_t ownCarStatesQueued() const { return m_ownCarStates.size(); }
     static constexpr std::size_t kMaxQueuedOwnCarStates = 16;
 
     // --- Shared ambient traffic (multiplayer cruise) ---
@@ -369,6 +371,14 @@ private:
     void updatePlayout();
     bool replicating() const { return m_phase != SessionPhase::Lobby; }
     void resetReplication();
+    // A race-time message stamped with this session's race: the receiver
+    // drops one from another race (a packet ENet held across the boundary).
+    template <class M>
+    M raced(const M& msg) const {
+        M copy = msg;
+        copy.race = m_race;
+        return copy;
+    }
     PlayerInfo* findPlayer(std::uint8_t id);
     Remote* remoteForPlayer(std::uint8_t id);
     std::uint8_t allocatePlayerId() const;

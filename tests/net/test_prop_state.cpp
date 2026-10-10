@@ -110,7 +110,7 @@ TEST(PropState, AGrownRingListsCheaply) {
         m.slots.push_back(p);
     }
     const auto bytes = encodeMessage(m);
-    EXPECT_LE(bytes.size(), 14u + kMaxPropSlots * 6u / 8u + 1u); // 6 bits a slot
+    EXPECT_LE(bytes.size(), 15u + kMaxPropSlots * 6u / 8u + 1u); // 6 bits a slot (and the race)
     PropStateMsg back;
     ASSERT_TRUE(decodeMessage(bytes, back));
     ASSERT_EQ(back.slots.size(), kMaxPropSlots);
@@ -135,8 +135,9 @@ TEST(PropState, RefusesSlotsOutOfOrder) {
     // By hand: slot 5, then slot 5 again (not "the next one").
     WriteStream s;
     std::uint8_t type = static_cast<std::uint8_t>(MsgType::PropState);
-    std::uint32_t time = 1, catalog = 2, count = 2;
+    std::uint32_t race = 0, time = 1, catalog = 2, count = 2;
     s.u8(type);
+    s.varU32(race);
     s.u32(time);
     s.u32(catalog);
     s.varU32(count);

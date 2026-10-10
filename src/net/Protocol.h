@@ -60,7 +60,10 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 //    car's full state. (11, 13 and 15 on its branch.)
 // 18: the pieces round a client's car in full with its CarStates
 //    (net/PropState.h: PropFull), which it simulates with its car.
-inline constexpr std::uint16_t kProtocolVersion = 18;
+// 19: the race-time messages (inputs, car states, traffic, props) carry
+//     their race number, as the rules' already did; a packet ENet held
+//     across a race's end no longer reaches the next race.
+inline constexpr std::uint16_t kProtocolVersion = 19;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.

@@ -177,6 +177,7 @@ TEST(AmbientState, MalformedMessagesAreRejected) {
     // A count beyond the limit.
     BitWriter w;
     w.writeU8(static_cast<std::uint8_t>(MsgType::AmbientState));
+    w.writeVarU32(0); // race
     w.writeU32(1);
     w.writeU32(2);
     w.writeU16(3);
@@ -188,6 +189,7 @@ TEST(AmbientState, MalformedMessagesAreRejected) {
     auto copWithTarget = [](std::uint32_t target) {
         BitWriter p;
         p.writeU8(static_cast<std::uint8_t>(MsgType::AmbientState));
+        p.writeVarU32(0); // race
         p.writeU32(1);
         p.writeU32(2);
         p.writeU16(3);

@@ -769,7 +769,7 @@ void Session::hostHandle(Remote& r, MsgType type, std::span<const std::byte> dat
         // what a dropped one carried.
         PlayerInputMsg msg;
         if (!replicating() || !r.inputs.take(monotonicMs(), kInputRate, kInputBurst) ||
-            !decodeMessage(data, msg))
+            !decodeMessage(data, msg) || msg.race != m_race)
             return;
         if (m_playerInputs.size() >= kMaxQueuedPlayerInputs)
             m_playerInputs.erase(m_playerInputs.begin());
@@ -1106,7 +1106,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
         // The host's states of the players' cars: this machine's own with
         // the last input it applied, the others into their buffers.
         CarStatesMsg m;
-        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m) || m.race != m_race)
             return;
         for (auto& [id, state] : m.cars) {
             state.time = m.time;
@@ -1148,7 +1148,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::AmbientState: {
         // As the cars' states: only during a race.
         AmbientStateMsg m;
-        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m) || m.race != m_race)
             return;
         if (m_ambientStates.size() >= kMaxQueuedAmbientStates)
             m_ambientStates.erase(m_ambientStates.begin());
@@ -1158,7 +1158,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::TrafficFull: {
         // As the cars' states: only during a race.
         TrafficFullMsg m;
-        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m) || m.race != m_race)
             return;
         if (m_trafficFull.size() >= kMaxQueuedTrafficFull)
             m_trafficFull.erase(m_trafficFull.begin());
@@ -1168,7 +1168,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::PropFull: {
         // As the cars' states: only during a race.
         PropFullMsg m;
-        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m) || m.race != m_race)
             return;
         if (m_propFull.size() >= kMaxQueuedPropFull)
             m_propFull.erase(m_propFull.begin());
@@ -1178,7 +1178,7 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
     case MsgType::PropState: {
         // As the cars' states: only during a race.
         PropStateMsg m;
-        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m))
+        if (m_phase == SessionPhase::Lobby || !decodeMessage(data, m) || m.race != m_race)
             return;
         if (m_propStates.size() >= kMaxQueuedPropStates)
             m_propStates.erase(m_propStates.begin());
@@ -1337,6 +1337,14 @@ void Session::resetReplication() {
     m_lastSentStateTime = 0;
     m_ambientStates.clear();
     m_trafficFull.clear();
+    // Whatever a race left untaken belongs to it: car states and inputs
+    // number their samples from 1 every race and carry no race number, so
+    // a leftover would be read as the next race's.
+    m_playerInputs.clear();
+    m_ownCarStates.clear();
+    m_propStates.clear();
+    m_propFull.clear();
+    m_rulesStates.clear();
 }
 
 SnapshotBuffer::Result Session::sampleRemoteAt(std::uint8_t playerId, double sessionTime,
@@ -1386,7 +1394,7 @@ void Session::sendGameEvent(std::uint16_t type, std::vector<std::byte> payload, 
 void Session::sendPlayerInput(const PlayerInputMsg& msg) {
     if (m_role != Role::Client || m_state != State::Active || !replicating() || msg.frames.empty())
         return;
-    sendTo(m_hostPeer, Channel::State, msg);
+    sendTo(m_hostPeer, Channel::State, raced(msg));
 }
 
 std::size_t Session::sendCarStates(std::uint8_t playerId, const CarStatesMsg& msg) {
@@ -1396,7 +1404,7 @@ std::size_t Session::sendCarStates(std::uint8_t playerId, const CarStatesMsg& ms
     Remote* r = remoteForPlayer(playerId);
     if (!r)
         return 0;
-    const auto packet = encodeMessage(msg);
+    const auto packet = encodeMessage(raced(msg));
     return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
 
@@ -1407,7 +1415,7 @@ std::size_t Session::sendAmbientState(std::uint8_t playerId, const AmbientStateM
     Remote* r = remoteForPlayer(playerId);
     if (!r)
         return 0;
-    const auto packet = encodeMessage(msg);
+    const auto packet = encodeMessage(raced(msg));
     return m_transport->send(r->peer, Channel::Ambient, packet) ? packet.size() : 0;
 }
 
@@ -1418,7 +1426,7 @@ std::size_t Session::sendTrafficFull(std::uint8_t playerId, const TrafficFullMsg
     Remote* r = remoteForPlayer(playerId);
     if (!r)
         return 0;
-    const auto packet = encodeMessage(msg);
+    const auto packet = encodeMessage(raced(msg));
     // Unsequenced: each message stands alone (the client keys it by time).
     return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
@@ -1430,7 +1438,7 @@ std::size_t Session::sendPropFull(std::uint8_t playerId, const PropFullMsg& msg)
     Remote* r = remoteForPlayer(playerId);
     if (!r)
         return 0;
-    const auto packet = encodeMessage(msg);
+    const auto packet = encodeMessage(raced(msg));
     // Unsequenced: each message stands alone (the client keys it by time).
     return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
@@ -1442,7 +1450,7 @@ std::size_t Session::sendPropState(std::uint8_t playerId, const PropStateMsg& ms
     Remote* r = remoteForPlayer(playerId);
     if (!r)
         return 0;
-    const auto packet = encodeMessage(msg);
+    const auto packet = encodeMessage(raced(msg));
     // Unsequenced: a late message still fills the client's buffers (it
     // orders them by their time).
     return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
@@ -1455,7 +1463,7 @@ std::size_t Session::sendRulesState(std::uint8_t playerId, const RulesStateMsg& 
     Remote* r = remoteForPlayer(playerId);
     if (!r)
         return 0;
-    const auto packet = encodeMessage(msg);
+    const auto packet = encodeMessage(msg); // RulesMsg carries its race (game::NetRules checks it)
     return m_transport->send(r->peer, Channel::State, packet) ? packet.size() : 0;
 }
 

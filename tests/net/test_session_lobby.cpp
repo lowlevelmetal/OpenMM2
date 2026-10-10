@@ -93,6 +93,45 @@ VehicleSnapshot at(float x) {
 // its last state and kept sending it at the snapshot rate through the lobby;
 // the host stored it and passed it on, so the next race began with the car
 // drawn (and collided with) where it had stopped in the last one.
+// Messages of a race that nobody took before it ended (its last frame, or
+// one service with the return to the lobby) are not handed to the next race:
+// car states and inputs number their samples from 1 every race.
+TEST(SessionLobby, NoUntakenRaceMessagesReachTheNextRace) {
+    Peer host, a, b;
+    ASSERT_TRUE(host.session->host(hostParams()));
+    ASSERT_TRUE(a.session->join(joinParams(host, "A")));
+    ASSERT_TRUE(b.session->join(joinParams(host, "B")));
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
+        return a.session->phase() == SessionPhase::Lobby && b.session->players().size() == 3 &&
+               a.session->clockSynced() && b.session->clockSynced();
+    }));
+    const std::uint8_t aId = a.session->localId();
+    startRace(host, a, b);
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return a.session->phase() == SessionPhase::InGame; }));
+
+    // Late in the race: an input from A and car states for A, never taken.
+    PlayerInputMsg input;
+    input.first = 5000;
+    input.frames.resize(1);
+    CarStatesMsg states;
+    states.ack = 5000;
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] {
+        a.session->sendPlayerInput(input);
+        host.session->sendCarStates(aId, states);
+        return host.session->playerInputsQueued() > 0 && a.session->ownCarStatesQueued() > 0;
+    }));
+
+    host.session->returnToLobby();
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return a.session->phase() == SessionPhase::Lobby; }));
+    startRace(host, a, b);
+    ASSERT_TRUE(pumpUntil({&host, &a, &b}, [&] { return a.session->phase() == SessionPhase::InGame; }));
+    EXPECT_TRUE(host.session->takePlayerInputs().empty());
+    EXPECT_TRUE(a.session->takeOwnCarStates().empty());
+    EXPECT_TRUE(a.session->takePropStates().empty());
+    EXPECT_TRUE(a.session->takePropFull().empty());
+    EXPECT_TRUE(a.session->takeRulesStates().empty());
+}
+
 TEST(SessionLobby, NoVehicleStatesBetweenRaces) {
     Peer host, a, b;
     ASSERT_TRUE(host.session->host(hostParams()));

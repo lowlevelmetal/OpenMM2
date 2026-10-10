@@ -341,7 +341,7 @@ TEST(PlayerCars, RepeatedInputsCostABitEach) {
     f.flags = kInputAutomatic;
     m.frames.assign(kMaxInputFrames, f);
     const auto bytes = encodeMessage(m);
-    EXPECT_LE(bytes.size(), 20u);
+    EXPECT_LE(bytes.size(), 21u); // with the race number (1 byte)
     PlayerInputMsg out;
     ASSERT_TRUE(decodeMessage(bytes, out));
     EXPECT_EQ(out.frames, m.frames);
@@ -595,7 +595,8 @@ TEST(PlayerCars, MutatedTrafficLeavesBothSidesWithinLimits) {
                 checkInput(r.msg);
             for (const auto& u : p.client.takeOwnCarStates())
                 if (u.hasOwn)
-                    checkStates({u.time, u.ack, u.waiting, true, u.own, {}, u.nearIds, u.near});
+                    checkStates({.race = p.client.raceNumber(), .time = u.time, .ack = u.ack, .waiting = u.waiting, .hasOwn = true,
+                                 .own = u.own, .cars = {}, .nearIds = u.nearIds, .near = u.near});
         }
     }
     EXPECT_EQ(p.host.state(), Session::State::Active);

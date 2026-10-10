@@ -111,6 +111,7 @@ struct AmbientEntity {
 // Host -> one client.
 struct AmbientStateMsg {
     static constexpr MsgType kType = MsgType::AmbientState;
+    std::uint32_t race = 0; // the race it belongs to (net::Session stamps and checks it)
     std::uint32_t time = 0;       // session time the cars were sampled at
     std::uint32_t lightSteps = 0; // the host's traffic light steps (1/30 s) since its AI reset
     std::uint16_t catalog = 0;    // checksum of the host's model catalog
@@ -214,6 +215,7 @@ bool serializeAmbientEntity(S& s, AmbientEntity& e, const Vec3& origin) {
 
 template <class S>
 bool serialize(S& s, AmbientStateMsg& m) {
+    s.varU32(m.race);
     s.u32(m.time);
     s.u32(m.lightSteps);
     s.u16(m.catalog);

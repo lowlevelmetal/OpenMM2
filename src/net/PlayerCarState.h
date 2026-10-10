@@ -108,6 +108,7 @@ inline constexpr float kMaxCommandAngle = 64.0f;
 
 struct PlayerInputMsg {
     static constexpr MsgType kType = MsgType::PlayerInput;
+    std::uint32_t race = 0; // the race it belongs to (net::Session stamps and checks it)
     std::uint32_t first = 0; // the number of frames[0] (samples count from 1)
     std::vector<CarInputFrame> frames;
     std::vector<CarCommand> commands;
@@ -168,6 +169,7 @@ bool serialize(S& s, CarCommand& c) {
 
 template <class S>
 bool serialize(S& s, PlayerInputMsg& m) {
+    s.varU32(m.race);
     s.u32(m.first);
     auto count = static_cast<std::int32_t>(std::min(m.frames.size(), kMaxInputFrames));
     s.ranged(count, 1, static_cast<std::int32_t>(kMaxInputFrames));
@@ -388,6 +390,7 @@ inline constexpr std::size_t kMaxUpcomingInputs = 16;
 
 struct CarStatesMsg {
     static constexpr MsgType kType = MsgType::CarStates;
+    std::uint32_t race = 0; // the race it belongs to (net::Session stamps and checks it)
     std::uint32_t time = 0; // session ms of the host's sample the states belong to
     // The receiving client's car: the number of the last input the host
     // applied to it (0: none yet), how many of its inputs were waiting
@@ -408,6 +411,7 @@ inline constexpr std::int32_t kMaxReportedWaiting = 63;
 
 template <class S>
 bool serialize(S& s, CarStatesMsg& m) {
+    s.varU32(m.race);
     s.u32(m.time);
     s.u32(m.ack);
     m.waiting = std::clamp(m.waiting, -kMaxReportedWaiting, kMaxReportedWaiting);

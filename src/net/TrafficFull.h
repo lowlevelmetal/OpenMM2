@@ -60,6 +60,7 @@ struct TrafficFullCar {
 
 struct TrafficFullMsg {
     static constexpr MsgType kType = MsgType::TrafficFull;
+    std::uint32_t race = 0; // the race it belongs to (net::Session stamps and checks it)
     std::uint32_t time = 0; // session ms of the host's physics sample (its CarStates' time)
     std::vector<TrafficFullCar> cars;
 };
@@ -117,6 +118,7 @@ bool serialize(S& s, TrafficBodyState& b) {
 
 template <class S>
 bool serialize(S& s, TrafficFullMsg& m) {
+    s.varU32(m.race);
     s.u32(m.time);
     auto count = static_cast<std::int32_t>(std::min(m.cars.size(), kMaxTrafficFullCars));
     s.ranged(count, 0, static_cast<std::int32_t>(kMaxTrafficFullCars));

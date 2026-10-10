@@ -108,6 +108,7 @@ struct PropSlot {
 // Host -> one client.
 struct PropStateMsg {
     static constexpr MsgType kType = MsgType::PropState;
+    std::uint32_t race = 0; // the race it belongs to (net::Session stamps and checks it)
     std::uint32_t time = 0;    // session time the states belong to
     std::uint32_t catalog = 0; // checksum of the host's placed props (game::propCatalog)
     std::vector<PropSlot> slots;
@@ -185,6 +186,7 @@ bool serializePropSlot(S& s, PropSlot& p, std::int32_t previous = -1) {
 
 template <class S>
 bool serialize(S& s, PropStateMsg& m) {
+    s.varU32(m.race);
     s.u32(m.time);
     s.u32(m.catalog);
     auto count = static_cast<std::uint32_t>(std::min<std::size_t>(m.slots.size(), kMaxPropSlots));
@@ -291,6 +293,7 @@ inline constexpr std::size_t kMaxPropFullMessages = 3; // per state
 
 struct PropFullMsg {
     static constexpr MsgType kType = MsgType::PropFull;
+    std::uint32_t race = 0; // the race it belongs to (net::Session stamps and checks it)
     std::uint32_t time = 0; // session ms of the host's physics sample (its CarStates' time)
     // Which of the state's messages (0 .. kMaxPropFullMessages - 1): the
     // pieces come in the host's world's order, the first message's first.
@@ -394,6 +397,7 @@ bool serialize(S& s, PropBodyState& b, bool moving) {
 
 template <class S>
 bool serialize(S& s, PropFullMsg& m) {
+    s.varU32(m.race);
     s.u32(m.time);
     std::int32_t part = m.part;
     s.ranged(part, 0, static_cast<std::int32_t>(kMaxPropFullMessages) - 1);

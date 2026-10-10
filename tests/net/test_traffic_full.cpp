@@ -309,7 +309,7 @@ TEST(TrafficFull, DecoderSurvivesMutatedMessages) {
     for (std::uint16_t i = 0; i < 4; ++i)
         big.cars.push_back(body(static_cast<std::uint16_t>(500 + i)));
     const std::vector<Bytes> corpus{encodeMessage(sample()), encodeMessage(big),
-                                    encodeMessage(TrafficFullMsg{7, {police(511)}})};
+                                    encodeMessage(TrafficFullMsg{.time = 7, .cars = {police(511)}})};
     std::mt19937 rng(20261012);
     for (int i = 0; i < 40000; ++i) {
         const Bytes b = mutate(corpus, rng);
