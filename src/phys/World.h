@@ -198,6 +198,14 @@ public:
     void add(Body* body);
     void remove(Body* body);
     bool contains(const Body* body) const;
+    // OpenMM2: the body's place in the update order (the movers' count when
+    // it is none of them).
+    std::size_t order(const Body* body) const;
+    // OpenMM2 (network games): the keys (Collider::key) of the colliders the
+    // collisions lend the city and static instances, which a body's hardest
+    // pusher may be.
+    const void* cityKey() const { return m_levelCollider.key(); }
+    const void* staticKey(bool b) const { return b ? m_tempB.key() : m_tempA.key(); }
     // dgPhysManager::DeclareMover of an instance without a body (an ambient
     // car off its rail: aiGoalAvoidPlayer and aiGoalRegainRail declare its
     // aiVehicleInstance (2, 0x0a) each frame, aiGoalCollision a wreck's

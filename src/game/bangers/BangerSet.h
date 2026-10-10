@@ -19,6 +19,7 @@
 #include "game/fx/EffectLibrary.h"
 #include "game/fx/ParticleRenderer.h"
 #include "game/fx/Particles.h"
+#include "net/PropState.h"
 #include "phys/World.h"
 #include "render/Device.h"
 
@@ -70,6 +71,7 @@ public:
     // places props without a room. Must outlive this set (or call
     // setWorld(nullptr) first).
     void setWorld(phys::World* world);
+    const phys::World* world() const { return m_world; }
 
     // Once per frame, after the physics world's step: dgBangerActive::
     // PostUpdate (actives that sleep or fell below the city detach), then
@@ -132,6 +134,9 @@ public:
         // (showMirror), where it is drawn while the host drives it and its
         // motion there (an active attached to it here starts with it).
         bool mirror = false;
+        // OpenMM2: one the host sends in full (net::PropFull), simulated here
+        // from its states: it meets the pieces simulated here as the host's.
+        bool driven = false;
         std::optional<Mat34> drawn;
         Vec3 mirrorVelocity, mirrorSpin;
     };
@@ -227,6 +232,9 @@ public:
     bool moving(std::size_t i) const;
     // Whether `i` is the body of one of this set's actives.
     bool isActiveBody(const phys::Instance* i) const;
+    // Whether `other` is the body of a piece the host sends in full (net::
+    // PropFull), simulated here from its states.
+    bool drivenBody(const phys::Instance& other) const;
     // The body an active would give instance i if a car hit it now
     // (phys::Instance::heldInertia, for World::replaySample); false for an
     // instance with an active or out of the world.
@@ -287,6 +295,31 @@ public:
     // where it is).
     void releaseMirror(std::size_t slot);
     std::size_t mirrorCount() const { return m_mirrors.size(); }
+
+    // OpenMM2 (network games, net::PropFull): instance i's body as the host
+    // sends it in full (nullopt without an active the world's last step ran);
+    // `car`: the car of the client it is for (net::PropPusher::Car).
+    std::optional<net::PropBodyState> bodyState(std::size_t i, const phys::Body* car = nullptr) const;
+    // What a collider key (a body's hardest pusher) is in those terms.
+    std::pair<net::PropPusher, std::uint8_t> pusherOf(const void* key, const phys::Body* car) const;
+    // Where instance i's body runs in the world's movers (World::order;
+    // SIZE_MAX without one).
+    std::size_t worldOrder(std::size_t i) const;
+    // Client: instance i (a mirror shown, or a piece this machine simulates)
+    // simulated here, given an active first when it has none (from the
+    // motion it has); its body, or null when it cannot be (not shown).
+    phys::Body* simulate(std::size_t i);
+    void setDriven(std::size_t i, bool driven) {
+        if (i < m_instances.size())
+            m_instances[i].driven = driven;
+    }
+    // ... and put to the host's state (given an active first), `pusher`
+    // the key of its hardest pusher here.
+    bool setBodyState(std::size_t i, const net::PropBodyState& s, const void* pusher = nullptr);
+    // Client: the host's state of piece i is known (it knocked the prop
+    // over before then, whatever knocked it), so the replays starting from
+    // it meet the piece and not the prop standing (no replayGhost).
+    void forgetGhostOf(std::size_t i);
 
 private:
     struct Active;

@@ -346,6 +346,10 @@ public:
     std::size_t sendPropState(std::uint8_t playerId, const net::PropStateMsg& msg);
     // Client: the host's messages received since the last call.
     std::vector<net::PropStateMsg> takePropStates();
+    // Host: sends one player the pieces round its car in full (unreliable);
+    // returns the bytes sent. Client: those received since the last call.
+    std::size_t sendPropFull(std::uint8_t playerId, const net::PropFullMsg& msg);
+    std::vector<net::PropFullMsg> takePropFull();
 
     // --- The host's rules state (OpenMM2, net/RulesState.h, game::NetRules) -------------
     // Host: sends one player its race's rules state (unreliable); returns the bytes sent.

@@ -58,7 +58,9 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 //    a near client car's inputs the host holds for its next samples
 //    (NearCarState::upcoming), and a contact's bound and hardest pusher in a
 //    car's full state. (11, 13 and 15 on its branch.)
-inline constexpr std::uint16_t kProtocolVersion = 17;
+// 18: the pieces round a client's car in full with its CarStates
+//    (net/PropState.h: PropFull), which it simulates with its car.
+inline constexpr std::uint16_t kProtocolVersion = 18;
 inline constexpr std::uint32_t kConnectData = (std::uint32_t{kProtocolMagic} << 16) | kProtocolVersion;
 
 // ENet channels.
@@ -126,7 +128,8 @@ enum class MsgType : std::uint8_t {
     PropState,   // net/PropState.h
     TrafficFull, // net/TrafficFull.h
     RulesState,  // net/RulesState.h (protocol 14)
-    Last = RulesState,
+    PropFull,    // net/PropState.h (protocol 18)
+    Last = PropFull,
 };
 
 // Sent as ENet disconnect data and in Reject/PlayerLeft messages.

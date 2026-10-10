@@ -917,6 +917,14 @@ std::vector<net::PropStateMsg> NetGame::takePropStates() {
     return m_impl->session ? m_impl->session->takePropStates() : std::vector<net::PropStateMsg>{};
 }
 
+std::size_t NetGame::sendPropFull(std::uint8_t playerId, const net::PropFullMsg& msg) {
+    return m_impl->session ? m_impl->session->sendPropFull(playerId, msg) : 0;
+}
+
+std::vector<net::PropFullMsg> NetGame::takePropFull() {
+    return m_impl->session ? m_impl->session->takePropFull() : std::vector<net::PropFullMsg>{};
+}
+
 net::PeerStats NetGame::peerStats(std::uint8_t playerId) const {
     return m_impl->session ? m_impl->session->peerStats(playerId) : net::PeerStats{};
 }

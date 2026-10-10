@@ -238,6 +238,16 @@ bool World::contains(const Body* body) const {
     return std::ranges::any_of(m_movers, [&](const Mover& m) { return m.body == body && !m.removed; });
 }
 
+std::size_t World::order(const Body* body) const {
+    std::size_t n = 0;
+    for (const Mover& m : m_movers) {
+        if (m.body == body && !m.removed)
+            return n;
+        n += m.removed ? 0 : 1;
+    }
+    return n;
+}
+
 bool World::probe(const Vec3& a, const Vec3& b, RayHit& hit) const {
     return m_static.raycast(a, b, hit);
 }

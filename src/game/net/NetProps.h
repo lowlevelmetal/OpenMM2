@@ -7,6 +7,7 @@
 // props differ.
 
 #include "game/bangers/BangerSet.h"
+#include "game/net/PlayerCars.h"
 #include "game/net/PropSync.h"
 
 #include <cstdint>
@@ -110,6 +111,24 @@ public:
     using Classifier = std::function<std::string(const phys::Instance*)>;
     void afterStep(NetGame& net, double now, std::uint64_t nowMs, const Classifier& classify);
 
+    // Host, with the CarStates it sends client `id` this frame (session time
+    // `time`): the pieces round that client's car in full (net::PropFull).
+    void sendFull(NetGame& net, std::uint8_t id, std::uint32_t time, const phys::Body& car);
+    // Client, in its car's acknowledgement of the CarStates at `time`: the
+    // host's moving pieces round its car as companions of its car's samples
+    // run again (put to the host's state there and simulated with it); their
+    // bodies join `bodies` (the race screen's companions' bodies). `now`:
+    // this frame's session time; `car`: this machine's car. `recorded`: where this machine had a body
+    // after the acknowledged sample (its frame and velocity), if it knows: a
+    // piece it had within the car's tolerances there (game::CarPrediction::
+    // Options) needs no samples run again for it.
+    using Recorded = std::function<std::optional<std::pair<Mat34, Vec3>>(const phys::Body*)>;
+    void fullCompanions(std::uint32_t time, double now, std::vector<CarPrediction::Companion>& out,
+                        std::vector<const phys::Body*>& bodies, phys::Body& car,
+                        const Recorded& recorded = {});
+    // ... and after it: those states used.
+    void afterReplay(std::uint32_t time);
+
     // The trace, when OPENMM2_NET_TRACE is set; `traced()` tells whether
     // afterStep began a tick this frame (the race adds its cars' lines).
     PropTrace* trace() { return m_trace.get(); }
@@ -134,6 +153,7 @@ private:
     bool m_traced = false;
     std::uint64_t m_statsAt = 0;
     std::uint64_t m_sentBytes = 0, m_sentMessages = 0, m_sentEvents = 0, m_eventBytes = 0;
+    std::uint64_t m_fullBytes = 0;
 };
 
 } // namespace mm2::game

@@ -366,6 +366,100 @@ std::vector<std::pair<std::uint8_t, net::PropStateMsg>> PropHost::build(const Ba
     return out;
 }
 
+std::vector<net::PropFullMsg> PropHost::buildFull(const BangerSet& set, std::uint8_t id, std::uint32_t time,
+                                                  const Vec3& car, const phys::Body* carBody) {
+    std::vector<net::PropFullMsg> out;
+    FullClient& client = m_full[id];
+    if (client.sentAt && time >= *client.sentAt && time - *client.sentAt < kFullIntervalMs)
+        return out;
+    const auto& ring = set.ring();
+    const std::size_t slots = std::min<std::size_t>(ring.size(), net::kMaxPropSlots);
+    auto& rest = client.rest;
+    const float r2 = kFullRadius * kFullRadius;
+    std::vector<std::pair<float, net::PropFullPiece>> pieces;
+    for (std::size_t k = 0; k < slots; ++k) {
+        const auto& inst = set.instances()[ring[k]];
+        const float d2 = inst.matrix.m3.dist2(car);
+        if (inst.state == BangerSet::State::Gone || !describeHit(inst) || d2 > r2) {
+            rest.erase(k);
+            continue;
+        }
+        net::PropFullPiece p;
+        p.slot = static_cast<std::uint8_t>(k);
+        p.generation = static_cast<std::uint8_t>(set.generation(k) % net::kPropGenerations);
+        if (const auto state = set.bodyState(ring[k], carBody)) {
+            p.moving = true;
+            p.body = *state;
+            rest.erase(k);
+        } else if (set.body(ring[k])) {
+            continue; // an active the world's last step did not run: nor does a client
+        } else {
+            // At rest: its exact frame (the messages' is quantized), three
+            // times (they are unreliable) after it came to rest or near.
+            RestSent& r = rest[k];
+            const Mat34& m = inst.matrix;
+            const bool same = r.generation == set.generation(k) && r.matrix.m0 == m.m0 &&
+                              r.matrix.m1 == m.m1 && r.matrix.m2 == m.m2 && r.matrix.m3 == m.m3;
+            if (!same)
+                r = {set.generation(k), m, 0};
+            if (r.sent >= 3)
+                continue;
+            ++r.sent;
+            p.moving = false;
+            p.body.matrix = m;
+        }
+        pieces.emplace_back(d2, p);
+    }
+    if (pieces.empty())
+        return out;
+    client.sentAt = time;
+    std::ranges::sort(pieces, {}, &std::pair<float, net::PropFullPiece>::first);
+    net::PropFullMsg header;
+    header.time = time;
+    if (carBody)
+        if (const auto [kind, slot] = set.pusherOf(carBody->collider.lastMaxPusher, carBody);
+            kind == net::PropPusher::Piece)
+            header.carPusher = slot;
+    // The nearest that fit (a smaller one further away may), then in the
+    // world's order: the client's car meets them in that order when its
+    // samples run again, as the host's world runs them.
+    const std::size_t empty = net::encodeMessage(header).size();
+    const std::size_t room = net::kPropFullBytes - empty;
+    std::size_t budget = net::kMaxPropFullMessages * room;
+    std::vector<std::pair<std::size_t, net::PropFullPiece>> chosen;
+    for (const auto& [d2, p] : pieces) {
+        if (chosen.size() == net::kMaxPropFullMessages * net::kMaxPropFullPieces)
+            break;
+        net::PropFullMsg one = header;
+        one.pieces = {p};
+        const std::size_t bytes = net::encodeMessage(one).size() - empty + 1; // + 1: the bits' rounding
+        if (bytes > budget)
+            continue;
+        budget -= bytes;
+        chosen.emplace_back(set.worldOrder(ring[p.slot]), p);
+    }
+    std::ranges::stable_sort(chosen, {}, &std::pair<std::size_t, net::PropFullPiece>::first);
+    net::PropFullMsg msg = header;
+    for (const auto& [order, p] : chosen) {
+        msg.pieces.push_back(p);
+        if (msg.pieces.size() <= net::kMaxPropFullPieces &&
+            net::encodeMessage(msg).size() <= net::kPropFullBytes)
+            continue;
+        msg.pieces.pop_back();
+        out.push_back(msg);
+        if (out.size() == net::kMaxPropFullMessages)
+            break;
+        msg.pieces = {p};
+        msg.part = static_cast<std::uint8_t>(out.size());
+    }
+    if (out.size() < net::kMaxPropFullMessages && !msg.pieces.empty())
+        out.push_back(std::move(msg));
+    m_stats.fullMessages += out.size();
+    for (const auto& m : out)
+        m_stats.fullPieces += m.pieces.size();
+    return out;
+}
+
 // --- Client --------------------------------------------------------------------------------------
 
 PropClient::PropClient(std::uint32_t catalog, const Options& options)
@@ -489,6 +583,111 @@ void PropClient::predicted(std::span<const BangerSet::Knock> knocks, double now,
             ++m_stats.predicted;
     }
 }
+
+void PropClient::receiveFull(const net::PropFullMsg& msg) {
+    if (m_mismatch)
+        return;
+    auto& kept = m_full[msg.time];
+    auto& list = kept.pieces;
+    if (!kept.carPusher)
+        kept.carPusher = msg.carPusher;
+    for (const auto& p : msg.pieces) {
+        if (std::ranges::any_of(list, [&](const auto& o) { return o.second.slot == p.slot; }))
+            continue; // the same slot twice: the first counts
+        // In the host's order: after the earlier messages' pieces, whichever came first.
+        const auto at =
+            std::ranges::upper_bound(list, msg.part, {}, &std::pair<std::uint8_t, net::PropFullPiece>::first);
+        list.emplace(at, msg.part, p);
+        if (!p.moving)
+            m_slots[p.slot].exactRest = std::pair{p.generation, p.body.matrix};
+    }
+    // About a second's worth (CarStates come up to 60 times a second).
+    while (m_full.size() > 64)
+        m_full.erase(m_full.begin());
+}
+
+std::vector<PropClient::FullPiece> PropClient::fullPieces(BangerSet& set, std::uint32_t time, double now,
+                                                          const phys::Body* car) {
+    std::vector<FullPiece> out;
+    const auto it = m_full.find(time);
+    if (it == m_full.end())
+        return out;
+    std::vector<std::uint8_t> slots;
+    for (const auto& [part, p] : it->second.pieces) {
+        if (!p.moving)
+            continue;
+        const auto s = m_slots.find(p.slot);
+        if (s == m_slots.end())
+            continue;
+        Slot& slot = s->second;
+        std::size_t instance = 0;
+        if (slot.shownGeneration == p.generation) {
+            // The generation shown here (a slot handed out again since shows
+            // its old prop until then).
+            instance = slot.standIn ? *slot.standIn : set.mirror(p.slot);
+        } else {
+            // Not shown yet (the playout delay): the piece this machine's car
+            // made of the same prop, if it knocked it too, stands in for it
+            // from now on (as update() would make it once shown).
+            const auto g = std::ranges::find_if(slot.generations, [&](const Generation& x) {
+                return x.described && x.generation == p.generation && !x.goneAt;
+            });
+            if (g == slot.generations.end() || slot.standIn)
+                continue;
+            const auto i = findStandIn(set, g->what);
+            if (!i || std::ranges::any_of(m_slots, [&](const auto& o) { return o.second.standIn == i; }))
+                continue;
+            instance = *i;
+            slot.standIn = i;
+            slot.standInSince = now;
+        }
+        if (!set.simulate(instance))
+            continue;
+        if (!slot.standIn && !slot.local) {
+            slot.local = true;
+            slot.localSince = now;
+            slot.hostMoved = false;
+        }
+        slot.fullUntil = now + m_options.fullKeepMs;
+        // The host had knocked its prop over by then (whatever knocked it
+        // here, and when): the samples run again meet the piece, not the
+        // prop standing.
+        set.forgetGhostOf(instance);
+        out.push_back({instance, p.body});
+        slots.push_back(p.slot);
+    }
+    // What pushed each hardest, now that each has its body here: the host's
+    // slot's instance here (shown or standing in for it), the city, this
+    // machine's car; something else matches no collider here.
+    static const char kSomethingElse = 0;
+    const auto keyOfSlot = [&](std::uint8_t k) -> const void* {
+        const auto s = m_slots.find(k);
+        if (s == m_slots.end())
+            return &kSomethingElse;
+        const std::size_t i = s->second.standIn ? *s->second.standIn : set.mirror(k);
+        const phys::Body* b = set.body(i);
+        return b ? b->collider.key() : &kSomethingElse;
+    };
+    const phys::World* world = set.world();
+    for (FullPiece& f : out) {
+        using net::PropPusher;
+        switch (f.state.pusher) {
+        case PropPusher::None: f.pusher = nullptr; break;
+        case PropPusher::City: f.pusher = world ? world->cityKey() : &kSomethingElse; break;
+        case PropPusher::Car: f.pusher = car ? car->collider.key() : &kSomethingElse; break;
+        case PropPusher::Piece: f.pusher = keyOfSlot(f.state.pusherSlot); break;
+        case PropPusher::StaticA: f.pusher = world ? world->staticKey(false) : &kSomethingElse; break;
+        case PropPusher::StaticB: f.pusher = world ? world->staticKey(true) : &kSomethingElse; break;
+        case PropPusher::Other: f.pusher = &kSomethingElse; break;
+        }
+    }
+    if (const auto k = it->second.carPusher)
+        for (std::size_t n = 0; n < out.size(); ++n)
+            out[n].pushedCar = slots[n] == *k;
+    return out;
+}
+
+void PropClient::forgetFull(std::uint32_t time) { m_full.erase(m_full.begin(), m_full.upper_bound(time)); }
 
 void PropClient::updateDelay(double now) {
     while (!m_lateness.empty() && m_lateness.front().first < now - 3000.0)
@@ -674,8 +873,17 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
             slot.local = false;
             slot.blendFrom.reset();
             slot.standIn.reset();
+            slot.shownGeneration.reset();
+            set.setDriven(mirror, false);
             continue;
         }
+        slot.shownGeneration = g->generation;
+        // The host sends its state in full (net::PropFull): simulated here
+        // from it, however long, meeting the pieces simulated here.
+        const bool full = slot.fullUntil > now;
+        set.setDriven(mirror, full);
+        if (slot.standIn)
+            set.setDriven(*slot.standIn, full);
         net::VehicleSnapshot s, sd;
         if (g->buffer.sample(render, s) == net::SnapshotBuffer::Result::Empty) {
             set.hideMirror(index);
@@ -701,7 +909,7 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
         if (slot.standIn) {
             standIns.insert(*slot.standIn);
             const bool resting = !set.body(*slot.standIn);
-            if ((!resting || !hostResting) && now - slot.standInSince < m_options.handoverMs) {
+            if ((!resting || !hostResting) && (full || now - slot.standInSince < m_options.handoverMs)) {
                 set.hideMirror(index);
                 continue;
             }
@@ -717,7 +925,7 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
         // left where it stopped until the host has pushed it too and it rests
         // there (or the prediction's time is up).
         const auto& mine = set.instances()[mirror];
-        if (mine.active >= 0 && slot.local && now - slot.localSince >= m_options.handoverMs) {
+        if (mine.active >= 0 && slot.local && !full && now - slot.localSince >= m_options.handoverMs) {
             // Still moving here after that long (creeping down a hill, which
             // phSleep may never stop): back to the host's.
             set.releaseMirror(index);
@@ -753,6 +961,11 @@ void PropClient::update(BangerSet& set, double now, const CarPartResolver& carPa
         }
         Mat34 matrix = matrixOf(s);
         Mat34 draw = matrixOf(sd);
+        // At rest, the host's exact frame (net::PropFull) rather than the
+        // message's quantized one, where they agree.
+        if (hostResting && slot.exactRest && slot.exactRest->first == g->generation &&
+            slot.exactRest->second.m3.dist2(matrix.m3) < 0.05f * 0.05f)
+            matrix = draw = slot.exactRest->second;
         if (slot.blendFrom) {
             const double t = (now - slot.blendStart) / m_options.blendMs;
             if (t >= 1.0) {

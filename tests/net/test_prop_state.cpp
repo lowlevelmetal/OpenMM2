@@ -6,6 +6,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <limits>
 
 using namespace mm2;
 using namespace mm2::net;
@@ -152,6 +153,103 @@ TEST(PropState, RefusesSlotsOutOfOrder) {
     }
     PropStateMsg back;
     EXPECT_FALSE(decodeMessage(s.writer().take(), back));
+}
+
+// The pieces round a client's car in full (protocol 18): a moving piece's
+// body round trips exactly; one at rest only its frame; a message of five
+// pieces in contact stays one datagram; a non-finite or wild number is
+// refused.
+TEST(PropState, FullPiecesRoundTripExactly) {
+    PropFullMsg m;
+    m.time = 90123;
+    m.part = 1;
+    m.carPusher = 202;
+    for (std::uint8_t k = 0; k < 5; ++k) {
+        PropFullPiece p;
+        p.slot = static_cast<std::uint8_t>(200 + k);
+        p.generation = 7;
+        p.body.matrix =
+            Quat::fromAxisAngle(Vec3{0.0f, 1.0f, 0.0f}, 0.3f * k).toMatrix({-1153.25f, 110.5f, 57.125f});
+        p.body.linearMomentum = {1.5f, -2.25f, 3.0f};
+        p.body.angularMomentum = {0.1f, 0.2f, -0.3f};
+        p.body.linearVelocity = {0.03f, -0.045f, 0.06f};
+        p.body.angularVelocity = {0.5f, 0.25f, -0.125f};
+        p.body.force = {0.0f, -500.0f, 0.0f};
+        p.body.contact = true;
+        p.body.linearImpulse = {7.0f, 0.0f, -1.0f};
+        p.body.framePush = {0.001f, 0.0f, 0.002f};
+        p.body.sleepState = 2;
+        p.body.stillUpdates = 14;
+        p.body.dormantUpdates = 3;
+        p.body.age = 12.75f;
+        p.body.pusher = k == 1 ? PropPusher::Piece : k == 2 ? PropPusher::City : PropPusher::None;
+        p.body.pusherSlot = k == 1 ? 204 : 0;
+        // The second one's bound where the push left it, the third's turned too.
+        p.body.hasBound = k == 1 || k == 2;
+        p.body.bound = p.body.hasBound ? p.body.matrix : Mat34{};
+        p.body.bound.m3 = p.body.bound.m3 + Vec3{0.0f, -0.003f, 0.0f};
+        if (k == 2)
+            p.body.bound.m0 = p.body.bound.m0 + Vec3{0.0001f, 0.0f, 0.0f};
+        m.pieces.push_back(p);
+    }
+    PropFullPiece rest;
+    rest.slot = 3;
+    rest.moving = false;
+    rest.body.matrix = Mat34::translation({10.0f, 2.0f, -30.0f});
+    m.pieces.push_back(rest);
+    const auto bytes = encodeMessage(m);
+    EXPECT_LE(bytes.size(), kPropFullBytes);
+    PropFullMsg back;
+    ASSERT_TRUE(decodeMessage(bytes, back));
+    EXPECT_EQ(back.time, m.time);
+    EXPECT_EQ(back.part, 1);
+    EXPECT_EQ(back.carPusher, m.carPusher);
+    ASSERT_EQ(back.pieces.size(), m.pieces.size());
+    for (std::size_t i = 0; i < 5; ++i) {
+        const auto& a = m.pieces[i].body;
+        const auto& b = back.pieces[i].body;
+        EXPECT_EQ(back.pieces[i].slot, m.pieces[i].slot);
+        EXPECT_TRUE(back.pieces[i].moving);
+        EXPECT_EQ(b.matrix.m0, a.matrix.m0);
+        EXPECT_EQ(b.matrix.m3, a.matrix.m3);
+        EXPECT_EQ(b.linearMomentum, a.linearMomentum);
+        EXPECT_EQ(b.angularVelocity, a.angularVelocity);
+        EXPECT_EQ(b.linearImpulse, a.linearImpulse);
+        EXPECT_EQ(b.framePush, a.framePush);
+        EXPECT_EQ(b.sleepState, 2);
+        EXPECT_EQ(b.stillUpdates, 14);
+        EXPECT_EQ(b.age, a.age);
+        EXPECT_EQ(b.force, a.force);
+        EXPECT_EQ(b.torque, Vec3{});
+        EXPECT_EQ(b.lastPush, Vec3{});
+        EXPECT_EQ(b.pusher, a.pusher);
+        EXPECT_EQ(b.pusherSlot, a.pusherSlot);
+        EXPECT_EQ(b.hasBound, a.hasBound);
+        if (a.hasBound) {
+            EXPECT_EQ(b.bound.m0, a.bound.m0);
+            EXPECT_EQ(b.bound.m1, a.bound.m1);
+            EXPECT_EQ(b.bound.m2, a.bound.m2);
+            EXPECT_EQ(b.bound.m3, a.bound.m3);
+        }
+    }
+    EXPECT_FALSE(back.pieces[5].moving);
+    EXPECT_EQ(back.pieces[5].body.matrix.m3, rest.body.matrix.m3);
+    EXPECT_EQ(back.pieces[5].body.linearVelocity, Vec3{});
+
+    // Wild numbers are refused.
+    PropFullMsg bad = m;
+    bad.pieces.resize(1);
+    bad.pieces[0].body.matrix.m3.x = 1.0e6f;
+    EXPECT_FALSE(decodeMessage(encodeMessage(bad), back));
+    bad = m;
+    bad.pieces.resize(1);
+    bad.pieces[0].body.linearVelocity.y = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(decodeMessage(encodeMessage(bad), back));
+    // Every truncation fails.
+    for (std::size_t n = 0; n < bytes.size(); ++n) {
+        const std::vector<std::byte> cut(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(n));
+        EXPECT_FALSE(decodeMessage(cut, back)) << n;
+    }
 }
 
 TEST(PropState, RefusesMalformedMessages) {

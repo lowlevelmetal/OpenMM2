@@ -16,6 +16,7 @@
 #include <cfloat>
 #include <cmath>
 #include <format>
+#include <tuple>
 
 namespace mm2::game::bangers {
 namespace {
@@ -571,6 +572,7 @@ std::size_t BangerSet::getBanger() {
         m_ringHandedAt.push_back(0.0);
     }
     ++m_ringGeneration[slot]; // OpenMM2: a new prop in the slot (network games)
+    m_instances[m_ring[slot]].driven = false;
     m_ringHandedAt[slot] = m_world ? m_world->time() : 0.0;
     const std::size_t i = m_ring[slot];
     // Its previous prop disappears.
@@ -839,9 +841,11 @@ void BangerSet::unhitImpact(std::size_t i, const phys::Instance* by) {
     Prop& unhitProp = *m_props[i];
     if (m_recordKnocks && !m_instances[i].everHit)
         m_knocks.push_back({i, by}); // OpenMM2: network games (game/net/PropSync)
-    // OpenMM2: a network client's own car broke it loose: its replays meet
-    // it where it stood for a while (replayGhost).
-    if (m_replica && m_world && !m_instances[i].everHit && by && m_localToucher && m_localToucher(*by))
+    // OpenMM2: a network client's own car broke it loose (or a host's piece
+    // it simulates from the host's states): its replays meet it where it
+    // stood for a while (replayGhost).
+    if (m_replica && m_world && !m_instances[i].everHit && by &&
+        ((m_localToucher && m_localToucher(*by)) || drivenBody(*by)))
         m_ghosts.push_back({i, m_world->time()});
 
     if (d.numParts == 0) {
@@ -1211,6 +1215,13 @@ bool BangerSet::replayGhostPiece(std::size_t i) const {
     });
 }
 
+bool BangerSet::drivenBody(const phys::Instance& other) const {
+    for (const auto& a : m_active)
+        if (&a->body == &other)
+            return a->instance >= 0 && m_instances[static_cast<std::size_t>(a->instance)].driven;
+    return false;
+}
+
 bool BangerSet::isActiveBody(const phys::Instance* i) const {
     for (const auto& a : m_active)
         if (&a->body == i)
@@ -1235,9 +1246,21 @@ bool BangerSet::acceptsFrom(std::size_t i, const phys::Instance& other) const {
     // host never had). The host's knocks bring those it makes. The host's
     // pieces move only for this machine's cars (two of them lying together
     // would otherwise keep each other moving here while the host's rest).
-    if (m_instances[i].mirror || !m_instances[i].everHit)
-        return false;
-    return isActiveBody(&other);
+    // A host's piece the host sends in full (net::PropFull) flies as the
+    // host's: it knocks a placed prop as the host's does (a prediction like
+    // its car's; measured on a car pushing a pile of 18 props through the
+    // rest: no correction with, 10 without).
+    if (!m_instances[i].everHit)
+        return drivenBody(other);
+    if (!m_instances[i].mirror)
+        return isActiveBody(&other);
+    // A host's piece the host sends in full (net::PropFull) meets the pieces
+    // simulated here, and they it, as on the host.
+    for (const auto& a : m_active)
+        if (&a->body == &other)
+            return m_instances[i].driven ||
+                   (a->instance >= 0 && m_instances[static_cast<std::size_t>(a->instance)].driven);
+    return false;
 }
 
 void BangerSet::breakPlaced(std::size_t i) {
@@ -1322,6 +1345,127 @@ void BangerSet::showMirror(std::size_t slot, const MirrorSpec& spec, const Mat34
     const int room = roomsTracked() ? findRoom(matrix.m3, inst.room) : inst.room;
     if (room != inst.room || (room > 0 && !prop.listed))
         moveToRoom(i, room);
+}
+
+std::pair<net::PropPusher, std::uint8_t> BangerSet::pusherOf(const void* key, const phys::Body* car) const {
+    using net::PropPusher;
+    if (!key)
+        return {PropPusher::None, 0};
+    if (m_world && key == m_world->cityKey())
+        return {PropPusher::City, 0};
+    if (car && key == car->collider.key())
+        return {PropPusher::Car, 0};
+    if (m_world && key == m_world->staticKey(false))
+        return {PropPusher::StaticA, 0};
+    if (m_world && key == m_world->staticKey(true))
+        return {PropPusher::StaticB, 0};
+    for (std::size_t k = 0; k < m_ring.size() && k < net::kMaxPropSlots; ++k)
+        if (const phys::Body* b = body(m_ring[k]); b && b->collider.key() == key)
+            return {PropPusher::Piece, static_cast<std::uint8_t>(k)};
+    return {PropPusher::Other, 0};
+}
+
+std::optional<net::PropBodyState> BangerSet::bodyState(std::size_t i, const phys::Body* car) const {
+    // A body the world's last step did not run (beyond its movers, or not
+    // declared) is not simulated: a client must not run it either.
+    const phys::Body* b = i < m_instances.size() ? body(i) : nullptr;
+    if (!b || !m_world || !m_world->isActive(b))
+        return std::nullopt;
+    const Active& a = *m_active[static_cast<std::size_t>(m_instances[i].active)];
+    const phys::InertialCS& ics = b->ics;
+    net::PropBodyState s;
+    s.matrix = ics.matrix;
+    s.linearMomentum = ics.linearMomentum;
+    s.angularMomentum = ics.angularMomentum;
+    s.linearVelocity = ics.linearVelocity;
+    s.angularVelocity = ics.angularVelocity;
+    s.force = ics.linearForce;
+    s.torque = ics.angularTorque;
+    s.lastPush = ics.lastPush;
+    s.linearImpulse = ics.linearImpulse;
+    s.angularImpulse = ics.angularImpulse;
+    s.linearPush = ics.linearPush;
+    s.turnForce = ics.turnForce;
+    s.framePush = ics.framePush;
+    const Vec3 zero{};
+    s.contact = !(s.linearImpulse == zero && s.angularImpulse == zero && s.linearPush == zero &&
+                  s.turnForce == zero && s.framePush == zero);
+    s.sleepState = a.sleep.state;
+    s.stillUpdates = std::clamp(a.sleep.stillUpdates, 0, 1023);
+    s.dormantUpdates = std::clamp(a.sleep.dormantUpdates, 0, 1023);
+    s.age = a.age;
+    std::tie(s.pusher, s.pusherSlot) = pusherOf(b->collider.lastMaxPusher, car);
+    // The bound where the collisions saw it, when the push moved the body on.
+    Mat34 follows = ics.matrix;
+    follows.m3 = ics.matrix.transform(b->boundOrigin);
+    s.hasBound = !(b->boundMatrix.m0 == follows.m0 && b->boundMatrix.m1 == follows.m1 &&
+                   b->boundMatrix.m2 == follows.m2 && b->boundMatrix.m3 == follows.m3);
+    if (s.hasBound)
+        s.bound = b->boundMatrix;
+    return s;
+}
+
+phys::Body* BangerSet::simulate(std::size_t i) {
+    if (i >= m_instances.size() || !m_instances[i].data || m_instances[i].state == State::Gone ||
+        m_instances[i].state == State::Unhit)
+        return nullptr;
+    if (Active* a = activeOf(i))
+        return &a->body;
+    // As a car's touch would (World::collideInstances: AttachEntity, then
+    // the new mover), the mirror from the host's motion.
+    phys::Body* b = attachEntity(i);
+    if (b && m_world && !m_world->contains(b))
+        m_world->addNewMover(b);
+    return b;
+}
+
+std::size_t BangerSet::worldOrder(std::size_t i) const {
+    const phys::Body* b = body(i);
+    return b && m_world ? m_world->order(b) : SIZE_MAX;
+}
+
+void BangerSet::forgetGhostOf(std::size_t i) {
+    if (i >= m_instances.size() || !m_instances[i].everHit || m_instances[i].source < 0)
+        return;
+    const auto source = static_cast<std::size_t>(m_instances[i].source);
+    std::erase_if(m_ghosts, [source](const Ghost& g) { return g.prop == source; });
+}
+
+bool BangerSet::setBodyState(std::size_t i, const net::PropBodyState& s, const void* pusher) {
+    phys::Body* b = simulate(i);
+    if (!b)
+        return false;
+    Active& a = *m_active[static_cast<std::size_t>(m_instances[i].active)];
+    phys::InertialCS& ics = b->ics;
+    ics.matrix = s.matrix;
+    ics.linearMomentum = s.linearMomentum;
+    ics.angularMomentum = s.angularMomentum;
+    ics.linearVelocity = s.linearVelocity;
+    ics.angularVelocity = s.angularVelocity;
+    ics.linearForce = s.force;
+    ics.angularTorque = s.torque;
+    ics.lastPush = s.lastPush;
+    ics.linearImpulse = s.linearImpulse;
+    ics.angularImpulse = s.angularImpulse;
+    ics.linearPush = s.linearPush;
+    ics.turnForce = s.turnForce;
+    ics.framePush = s.framePush;
+    a.sleep.state = std::clamp(s.sleepState, 0, 2);
+    a.sleep.stillUpdates = s.stillUpdates;
+    a.sleep.dormantUpdates = s.dormantUpdates;
+    a.age = s.age;
+    // The bound follows the body; the next sweep starts where it is; the
+    // instance is drawn there.
+    if (s.hasBound)
+        b->boundMatrix = s.bound;
+    else
+        b->syncBoundMatrix();
+    b->collider.lastMatrix = b->boundMatrix;
+    b->collider.lastMaxPusher = pusher;
+    b->collider.maxPusher = nullptr;
+    b->collider.maxPush2 = 0.0f;
+    m_instances[i].matrix = s.matrix;
+    return true;
 }
 
 void BangerSet::releaseMirror(std::size_t slot) {

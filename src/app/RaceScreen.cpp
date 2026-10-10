@@ -5888,6 +5888,17 @@ private:
         std::vector<game::CarPrediction::Companion> companions;
         predictNearCars(newest->nearIds, newest->near, ack, companions);
         predictNetTraffic(ctx, newest->time, companions);
+        m_netProps.fullCompanions(newest->time, ctx.netGame->frameTime(), companions, m_netFullBodies,
+                                  m_player->sim().body,
+                                  [this, ack](const phys::Body* b) -> std::optional<std::pair<Mat34, Vec3>> {
+                                      // As each sample began: the one after the acknowledged one.
+                                      for (const auto& h : m_bodyHistory)
+                                          if (h.seq == ack + 1)
+                                              for (const auto& p : h.poses)
+                                                  if (p.body == b)
+                                                      return std::pair{p.ics, p.velocity};
+                                      return std::nullopt;
+                                  });
         m_prediction.pusherKey = [this, &ctx](std::uint8_t id) -> const void* {
             if (id == ctx.netGame->localId())
                 return m_player->sim().body.collider.key();
@@ -5990,6 +6001,7 @@ private:
                     }
         m_netReplaying = false;
         afterNetTrafficReplay(newest->time);
+        m_netProps.afterReplay(newest->time);
         // The other players' cars: what the host's states moved the ones
         // simulated here by, and a switch between simulating one and placing
         // it at its states, drawn away (a switch more slowly).
@@ -6084,6 +6096,10 @@ private:
             if (m_frameSteps > 0 && now - m_netCarsSentAt >= netCarStatesIntervalMs()) {
                 sendNetCars(ctx, now);
                 sendNetTrafficFull(ctx); // OpenMM2: the shared traffic near each client, in full
+                // OpenMM2: the pieces round each client's car, in full.
+                for (const auto& [id, rv] : m_remotes)
+                    if (rv.simulated && rv.placed && rv.sim)
+                        m_netProps.sendFull(*ctx.netGame, id, m_netStateTime, rv.sim->sim().body);
             }
         } else if (m_frameSteps > 0) {
             if (const auto msg = m_prediction.message()) {

@@ -310,6 +310,12 @@ public:
     // most kMaxQueuedPropStates; older ones are dropped).
     std::vector<PropStateMsg> takePropStates() { return std::exchange(m_propStates, {}); }
     static constexpr std::size_t kMaxQueuedPropStates = 16;
+    // Host: sends one player the pieces round its car in full (unreliable,
+    // unsequenced). Client: those received since the last call (at most
+    // kMaxQueuedPropFull; older ones are dropped).
+    std::size_t sendPropFull(std::uint8_t playerId, const PropFullMsg& msg);
+    std::vector<PropFullMsg> takePropFull() { return std::exchange(m_propFull, {}); }
+    static constexpr std::size_t kMaxQueuedPropFull = 32;
 
     // --- The host's rules state (OpenMM2, net/RulesState.h, protocol 14) ---
     // Host: sends one player its race's rules state on the unreliable State
@@ -430,6 +436,7 @@ private:
     std::vector<ReceivedInput> m_playerInputs;    // host: the clients' inputs, not yet taken
     std::vector<OwnCarUpdate> m_ownCarStates;     // client: the host's word on its car, not yet taken
     std::vector<PropStateMsg> m_propStates;       // client: received, not yet taken
+    std::vector<PropFullMsg> m_propFull;          // client: received, not yet taken
     std::vector<TrafficFullMsg> m_trafficFull;    // client: received, not yet taken
     std::vector<RulesMsg> m_rulesStates;          // client: received, not yet taken
 };

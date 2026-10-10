@@ -125,10 +125,13 @@ void NetProps::setup(NetGame& net, bangers::BangerSet& set,
 void NetProps::beforeStep(NetGame& net, std::span<const NetGameEvent> events, double now,
                           const PropClient::CarPartResolver& resolve) {
     auto messages = net.takePropStates();
+    auto full = net.takePropFull();
     if (!m_client || !m_set)
         return;
     for (const auto& msg : messages)
         m_client->receive(msg, net.frameTime());
+    for (const auto& msg : full)
+        m_client->receiveFull(msg);
     for (const auto& ev : events) {
         if (static_cast<std::uint16_t>(ev.type) != net::kPropKnocksEvent || ev.from != net::kHostPlayerId)
             continue;
@@ -136,6 +139,56 @@ void NetProps::beforeStep(NetGame& net, std::span<const NetGameEvent> events, do
             m_client->receiveKnocks(*knocks);
     }
     m_client->update(*m_set, now, resolve, m_hostCar, m_ownCarAt ? m_ownCarAt() : std::nullopt);
+}
+
+void NetProps::sendFull(NetGame& net, std::uint8_t id, std::uint32_t time, const phys::Body& car) {
+    if (!m_host || !m_set)
+        return;
+    for (const auto& msg : m_host->buildFull(*m_set, id, time, car.ics.matrix.m3, &car))
+        m_fullBytes += net.sendPropFull(id, msg);
+}
+
+void NetProps::fullCompanions(std::uint32_t time, double now, std::vector<CarPrediction::Companion>& out,
+                              std::vector<const phys::Body*>& bodies, phys::Body& car,
+                              const Recorded& recorded) {
+    if (!m_client || !m_set)
+        return;
+    bangers::BangerSet* set = m_set;
+    const CarPrediction::Options tolerances{};
+    for (const auto& piece : m_client->fullPieces(*set, time, now, &car)) {
+        phys::Body* body = set->simulate(piece.instance);
+        if (!body)
+            continue;
+        CarPrediction::Companion c;
+        c.body = body;
+        // (After the car's own state: the piece may have pushed it hardest.)
+        c.rebase = [set, piece, body, &car] {
+            set->setBodyState(piece.instance, piece.state, piece.pusher);
+            if (piece.pushedCar)
+                car.collider.lastMaxPusher = body->collider.key();
+        };
+        c.position = piece.state.matrix.m3;
+        c.velocity = piece.state.linearVelocity;
+        // As the car's own state is compared (CarPrediction::acknowledge).
+        if (const auto had = recorded ? recorded(body) : std::nullopt) {
+            const Mat34& a = had->first;
+            const Mat34& b = piece.state.matrix;
+            float rotation = 0.0f;
+            for (const auto& [u, v] : {std::pair{a.m0, b.m0}, std::pair{a.m1, b.m1}, std::pair{a.m2, b.m2}})
+                rotation =
+                    std::max({rotation, std::abs(u.x - v.x), std::abs(u.y - v.y), std::abs(u.z - v.z)});
+            c.differs = a.m3.dist(b.m3) > tolerances.positionTolerance ||
+                        (had->second - piece.state.linearVelocity).mag() > tolerances.velocityTolerance ||
+                        rotation > tolerances.rotationTolerance;
+        }
+        out.push_back(std::move(c));
+        bodies.push_back(body);
+    }
+}
+
+void NetProps::afterReplay(std::uint32_t time) {
+    if (m_client)
+        m_client->forgetFull(time);
 }
 
 void NetProps::sendCatchUps(NetGame& net, std::uint32_t time) {
@@ -225,7 +278,7 @@ void NetProps::logStats(NetGame& net, std::uint64_t nowMs) {
         if (s.messages > 0 || m_sentEvents > 0)
             log::info("netprops: host sent {:.1f} messages/s ({:.0f} bytes/s to each of {} clients, {:.1f} "
                       "slots and {:.1f} states a message, {:.0f}% of them near; {} deferred), ring {}, {} "
-                      "knocks in {} events ({} bytes)",
+                      "knocks in {} events ({} bytes); in full {:.0f} bytes/s, {} pieces",
                       static_cast<double>(s.messages) / seconds / static_cast<double>(clients),
                       static_cast<double>(m_sentBytes) / seconds / static_cast<double>(clients), clients,
                       s.messages ? static_cast<double>(s.slots) / static_cast<double>(s.messages) : 0.0,
@@ -233,9 +286,11 @@ void NetProps::logStats(NetGame& net, std::uint64_t nowMs) {
                       s.fullStates
                           ? 100.0 * static_cast<double>(s.nearStates) / static_cast<double>(s.fullStates)
                           : 0.0,
-                      s.deferred, m_set->ringSize(), s.knocks, m_sentEvents, m_eventBytes);
+                      s.deferred, m_set->ringSize(), s.knocks, m_sentEvents, m_eventBytes,
+                      static_cast<double>(m_fullBytes) / seconds / static_cast<double>(clients),
+                      s.fullPieces);
         s = {};
-        m_sentBytes = m_sentMessages = m_sentEvents = m_eventBytes = 0;
+        m_sentBytes = m_sentMessages = m_sentEvents = m_eventBytes = m_fullBytes = 0;
     }
     if (m_client) {
         const auto& s = m_client->stats();

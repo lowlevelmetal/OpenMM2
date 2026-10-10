@@ -120,12 +120,31 @@ public:
     std::optional<net::PropStateMsg> build(const bangers::BangerSet& set, std::uint32_t time,
                                            std::uint64_t nowMs, std::uint32_t catalog);
     // A client that left.
-    void forget(std::uint8_t id) { m_viewers.erase(id); }
+    void forget(std::uint8_t id) { m_viewers.erase(id); m_full.erase(id); }
+
+    // The pieces round client `id`'s car (at `car`) in full at session time
+    // `time`, the time of the CarStates sent it this frame (net::PropFull),
+    // at most every kFullIntervalMs: the moving ones within kFullRadius, the
+    // nearest that fit in kMaxPropFullMessages messages, in the order the
+    // world runs them; the resting ones there with their exact frame, sent
+    // three times after they came to rest or near. Nothing when there is
+    // none to send. `carBody`: that car (whether it or a piece pushed the
+    // other hardest: net::PropPusher).
+    std::vector<net::PropFullMsg> buildFull(const bangers::BangerSet& set, std::uint8_t id,
+                                            std::uint32_t time, const Vec3& car,
+                                            const phys::Body* carBody = nullptr);
+    static constexpr float kFullRadius = 10.0f; // m: a piece's centre to the car's (inferred)
+    // About 20 a second, every third of 60 CarStates: between them the
+    // client's car, run again only when its own state differs, meets the
+    // pieces as it predicted them, which the last ones made the host's
+    // (measured: as few corrections as with every state, a third of the bytes).
+    static constexpr std::uint32_t kFullIntervalMs = 45;
 
     struct Stats {
         std::uint64_t messages = 0, slots = 0, fullStates = 0, bytes = 0, knocks = 0;
         std::uint64_t nearStates = 0; // of fullStates, in the client's area
         std::uint64_t deferred = 0;   // states due that the datagram had no room for
+        std::uint64_t fullMessages = 0, fullPieces = 0; // net::PropFull
     };
     Stats& stats() { return m_stats; }
 
@@ -144,10 +163,20 @@ private:
         bool sentAny = false;
         std::uint32_t sequence = 0;
     };
+    struct RestSent {
+        std::uint32_t generation = 0;
+        Mat34 matrix;
+        int sent = 0;
+    };
     Options m_options;
     std::vector<net::PropKnock> m_pending;
     std::uint32_t m_pendingTime = 0;
     std::map<std::uint8_t, ViewerState> m_viewers;
+    struct FullClient {
+        std::map<std::size_t, RestSent> rest; // by slot
+        std::optional<std::uint32_t> sentAt;
+    };
+    std::map<std::uint8_t, FullClient> m_full; // per client
     Stats m_stats;
 };
 
@@ -187,6 +216,9 @@ public:
         // it differently, or reused its slot) disappears once at rest this
         // long after it was made.
         double orphanMs = 2000.0;
+        // A slot whose state the host sends in full stays simulated here
+        // this long after the last one (inferred: a few CarStates).
+        double fullKeepMs = 250.0;
     };
 
     // `catalog`: this machine's propCatalog.
@@ -198,6 +230,27 @@ public:
     void receive(const net::PropStateMsg& msg, double arrival);
     // A knocks event from the host.
     void receiveKnocks(const net::PropKnocksEvent& event);
+    // The host's pieces round this machine's car in full (net::PropFull).
+    void receiveFull(const net::PropFullMsg& msg);
+    // The moving ones of the CarStates at `time` (this machine's car's
+    // acknowledgement): which instance of `set` stands for each (the host's
+    // ring slot shown here, or the piece this machine knocked that stands in
+    // for it) and the host's state of it, for the car's samples run again
+    // (game::CarPrediction::Companion); the slots stay simulated here while
+    // they come (fullKeepMs). `now`: this frame's session time. `car`: this
+    // machine's car: `pusher` is the key of what pushed the piece hardest
+    // here (BangerSet::setBodyState), `pushedCar` whether the piece pushed
+    // the car hardest (its collider's lastMaxPusher is then the piece's).
+    struct FullPiece {
+        std::size_t instance = 0;
+        net::PropBodyState state;
+        const void* pusher = nullptr;
+        bool pushedCar = false;
+    };
+    std::vector<FullPiece> fullPieces(bangers::BangerSet& set, std::uint32_t time, double now,
+                                      const phys::Body* car = nullptr);
+    // Those of the CarStates up to `time`, used.
+    void forgetFull(std::uint32_t time);
     // Which player's car a knock's toucher is (-1: none, a piece).
     using CarOfToucher = std::function<int(const phys::Instance*)>;
     // The placed props this machine's cars broke loose (its own, player
@@ -271,6 +324,10 @@ private:
         double blendStart = 0.0;
         std::optional<std::size_t> standIn; // the piece simulated here shown instead
         double standInSince = 0.0;
+        double fullUntil = -1.0; // net::PropFull: simulated here from the host's states until then
+        std::optional<std::uint8_t> shownGeneration; // the generation shown
+        // The host's exact frame of its generation at rest (net::PropFull).
+        std::optional<std::pair<std::uint8_t, Mat34>> exactRest;
     };
     struct Prediction {
         double at = 0.0;
@@ -314,6 +371,11 @@ private:
     std::deque<PendingKnock> m_knocks; // the host's, waiting for their time
     std::set<std::size_t> m_hostBroken;
     std::map<std::size_t, Prediction> m_predicted;
+    struct FullAt {
+        std::optional<std::uint8_t> carPusher;
+        std::vector<std::pair<std::uint8_t, net::PropFullPiece>> pieces; // by message part
+    };
+    std::map<std::uint32_t, FullAt> m_full; // by the CarStates' time
     std::deque<double> m_confirmLags; // the host's knock time less this machine's, the last ones
     std::map<std::size_t, LocalPiece> m_pieces; // this machine's ring slots, by slot
     std::vector<std::pair<std::size_t, bool>> m_applied;

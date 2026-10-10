@@ -233,6 +233,34 @@ std::vector<Bytes> corpus() {
     knocked.body.stillUpdates = 40;
     full.cars.push_back(knocked);
     c.push_back(encodeMessage(full));
+    // The pieces round a client's car in full (protocol 18): one moving in
+    // contact, one at rest.
+    PropFullMsg pieces;
+    pieces.time = 6300;
+    pieces.part = 2;
+    pieces.carPusher = 41;
+    PropFullPiece moving;
+    moving.slot = 41;
+    moving.generation = 3;
+    moving.body.matrix = Mat34::rotationY(0.7f);
+    moving.body.matrix.m3 = {-1153.0f, 110.4f, 57.0f};
+    moving.body.linearVelocity = {0.2f, -0.1f, 0.05f};
+    moving.body.contact = true;
+    moving.body.linearPush = {0.0f, 0.002f, 0.0f};
+    moving.body.sleepState = 1;
+    moving.body.age = 3.5f;
+    moving.body.pusher = PropPusher::Piece;
+    moving.body.pusherSlot = 42;
+    moving.body.hasBound = true;
+    moving.body.bound = moving.body.matrix;
+    moving.body.bound.m3.y -= 0.002f;
+    pieces.pieces.push_back(moving);
+    PropFullPiece resting;
+    resting.slot = 42;
+    resting.moving = false;
+    resting.body.matrix = Mat34::translation({-1150.0f, 110.0f, 60.0f});
+    pieces.pieces.push_back(resting);
+    c.push_back(encodeMessage(pieces));
 
     LanAdvert advert;
     advert.sessionName = "Fuzz";
@@ -445,6 +473,26 @@ void checkTrafficFull(const TrafficFullMsg& m) {
     }
 }
 
+void checkPropFull(const PropFullMsg& m) {
+    ASSERT_LE(m.pieces.size(), kMaxPropFullPieces);
+    ASSERT_LT(m.part, kMaxPropFullMessages);
+    for (const PropFullPiece& p : m.pieces) {
+        ASSERT_LT(p.generation, kPropGenerations);
+        ASSERT_LE(static_cast<int>(p.body.pusher), static_cast<int>(PropPusher::Other));
+        for (const Mat34* b : {&p.body.matrix, &p.body.bound}) {
+            for (const Vec3& v : {b->m0, b->m1, b->m2})
+                ASSERT_TRUE(std::abs(v.x) <= 2.0f && std::abs(v.y) <= 2.0f && std::abs(v.z) <= 2.0f);
+            ASSERT_LE(std::abs(b->m3.x), kOwnStateMaxCoordinate);
+        }
+        for (const Vec3& v : {p.body.linearMomentum, p.body.angularVelocity, p.body.linearPush})
+            ASSERT_TRUE(std::abs(v.x) <= kOwnStateMaxValue && std::abs(v.y) <= kOwnStateMaxValue &&
+                        std::abs(v.z) <= kOwnStateMaxValue);
+        ASSERT_GE(p.body.sleepState, 0);
+        ASSERT_LE(p.body.sleepState, 2);
+        ASSERT_TRUE(std::isfinite(p.body.age));
+    }
+}
+
 void checkPlayer(const PlayerInfo& p) {
     ASSERT_LE(p.name.size(), kMaxNameLength);
     ASSERT_LE(p.car.size(), kMaxShortStringLength);
@@ -551,6 +599,9 @@ void decodeEverything(std::span<const std::byte> b) {
     }
     if (const auto m = decoded<TrafficFullMsg>(b)) {
         checkTrafficFull(*m);
+    }
+    if (const auto m = decoded<PropFullMsg>(b)) {
+        checkPropFull(*m);
     }
 
     std::uint32_t nonce = 0;
@@ -834,6 +885,11 @@ TEST(Fuzz, ClientSurvivesMutatedTraffic) {
     EXPECT_LE(full.size(), Session::kMaxQueuedTrafficFull);
     for (const auto& m : full)
         checkTrafficFull(m);
+    // And the pieces in full.
+    const auto pieces = client.takePropFull();
+    EXPECT_LE(pieces.size(), Session::kMaxQueuedPropFull);
+    for (const auto& m : pieces)
+        checkPropFull(m);
 }
 
 // The race start under mutated race messages from a joiner: whatever it

@@ -1023,6 +1023,70 @@ TEST(PropSync, ANearCarsEarlyKnockWaitsForTheHost) {
     r.host.world.remove(&copy.body);
 }
 
+// The host sends the pieces round a client's car in full (net::PropFull):
+// a moving one with its body as the host's simulation has it, one at rest
+// with its exact frame three times, none far from the car; the client puts
+// the host's piece shown there to that state (its car's samples run again
+// with it, game::CarPrediction::Companion).
+TEST(PropSync, PiecesRoundACarComeInFull) {
+    Race r;
+    Car host({0, 1, 3.0f}, {0, 0, -10}); // knocks prop 0 on the host
+    r.host.world.add(&host.body);
+    r.run(0.5);
+    r.host.world.remove(&host.body);
+    ASSERT_FALSE(r.host.set.standing(0));
+    ASSERT_FALSE(r.host.set.ring().empty());
+    const std::size_t hit = r.host.set.ring()[0];
+    ASSERT_TRUE(r.host.set.body(hit)); // flying
+    const Vec3 piece = r.host.set.instances()[hit].matrix.m3;
+    const auto time = static_cast<std::uint32_t>(r.now);
+    EXPECT_TRUE(r.propHost.buildFull(r.host.set, 1, time, piece + Vec3{100, 0, 0}).empty()); // far
+    const auto sent = r.propHost.buildFull(r.host.set, 1, time, piece + Vec3{2, 0, 0});
+    ASSERT_EQ(sent.size(), 1u);
+    const net::PropFullMsg& full = sent[0];
+    ASSERT_EQ(full.pieces.size(), 1u);
+    const net::PropFullPiece& p = full.pieces[0];
+    EXPECT_TRUE(p.moving);
+    EXPECT_EQ(p.slot, 0);
+    const phys::Body& body = *r.host.set.body(hit);
+    EXPECT_EQ(p.body.matrix.m3, body.ics.matrix.m3);
+    EXPECT_EQ(p.body.linearMomentum, body.ics.linearMomentum);
+    EXPECT_EQ(p.body.angularVelocity, body.ics.angularVelocity);
+    // Not again before kFullIntervalMs.
+    EXPECT_TRUE(r.propHost.buildFull(r.host.set, 1, time + 20, piece + Vec3{2, 0, 0}).empty());
+
+    // The client: the host's piece is shown there (a playout delay later),
+    // then put to the host's state.
+    r.propClient->receiveFull(full);
+    const auto pieces = r.propClient->fullPieces(r.client.set, time, r.now);
+    ASSERT_EQ(pieces.size(), 1u);
+    EXPECT_EQ(pieces[0].instance, r.client.set.mirror(0));
+    ASSERT_TRUE(r.client.set.setBodyState(pieces[0].instance, pieces[0].state));
+    const phys::Body* mirror = r.client.set.body(pieces[0].instance);
+    ASSERT_TRUE(mirror);
+    EXPECT_EQ(mirror->ics.matrix.m3, p.body.matrix.m3);
+    EXPECT_EQ(mirror->ics.linearMomentum, p.body.linearMomentum);
+    EXPECT_EQ(mirror->ics.angularMomentum, p.body.angularMomentum);
+    r.propClient->forgetFull(time);
+    EXPECT_TRUE(r.propClient->fullPieces(r.client.set, time, r.now).empty());
+
+    // At rest on the host: its exact frame, three times, then no more.
+    r.run(6.0);
+    ASSERT_FALSE(r.host.set.body(hit));
+    const Vec3 rest = r.host.set.instances()[hit].matrix.m3;
+    int restSent = 0;
+    for (std::uint32_t i = 1; i <= 5; ++i) {
+        const std::uint32_t later = time + i * PropHost::kFullIntervalMs;
+        for (const auto& m : r.propHost.buildFull(r.host.set, 1, later, rest)) {
+            ASSERT_EQ(m.pieces.size(), 1u);
+            EXPECT_FALSE(m.pieces[0].moving);
+            EXPECT_EQ(m.pieces[0].body.matrix.m3, rest);
+            ++restSent;
+        }
+    }
+    EXPECT_EQ(restSent, 3);
+}
+
 // A machine that loads the race late (or a prop knocked far from it) gets
 // every knock so far at once: PropHost::catchUp.
 TEST(PropSync, LateMachineCatchesUp) {
