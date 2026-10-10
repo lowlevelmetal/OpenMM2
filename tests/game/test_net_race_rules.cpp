@@ -423,6 +423,22 @@ TEST(NetRaceRules, AClientsPredictedPickupIsConfirmedOrUndone) {
     const CopsAndRobbers::Car other{0, CrTeam::Robber, f.set().gold + Vec3{2.0f, 0.0f, 0.0f}, false, false};
     EXPECT_FALSE(f.updatePredicted(0.1f, me, {me, other}, 2));
     EXPECT_EQ(f.goldCarrier(), -1);
+    // ... or about to be (protocol 14): just outside its reach, or heading
+    // into it within a quarter of a second; one driving away, or farther
+    // off, does not hold this machine back.
+    const Vec3 gold = f.set().gold;
+    CopsAndRobbers::Car near{0, CrTeam::Robber, gold + Vec3{5.8f, 0.0f, 0.0f}, false, false, {}};
+    EXPECT_FALSE(f.updatePredicted(0.1f, me, {me, near}, 2));
+    CopsAndRobbers::Car coming{0, CrTeam::Robber, gold + Vec3{12.0f, 0.0f, 0.0f}, false, false,
+                               Vec3{-30.0f, 0.0f, 0.0f}};
+    EXPECT_FALSE(f.updatePredicted(0.1f, me, {me, coming}, 2));
+    CopsAndRobbers::Car leaving = coming;
+    leaving.velocity = Vec3{30.0f, 0.0f, 0.0f};
+    CopsAndRobbers::Car slow = coming;
+    slow.velocity = Vec3{-10.0f, 0.0f, 0.0f}; // 2.5 m in a quarter of a second: 9.5 m off
+    EXPECT_EQ(f.goldCarrier(), -1);
+    EXPECT_TRUE(f.updatePredicted(0.1f, me, {me, leaving, slow}, 2));
+    EXPECT_EQ(f.goldCarrier(), 1);
 }
 
 // --- The message ----------------------------------------------------------------------------
