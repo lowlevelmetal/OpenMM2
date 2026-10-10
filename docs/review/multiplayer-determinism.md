@@ -20,9 +20,9 @@ No wire change: the protocol stays as integration has it.
 | Elementary functions in the simulation | the C runtime's: glibc against MinGW's (Wine's ucrtbase) differ for 21 % of atan2f, 14 % of tanf, 8 % of acosf, 2 % of atanf and about 1 % of sinf / cosf results (a million arguments each in the game's ranges) | OpenMM2's own (`core/Libm.h`), the same bits on every platform; float results correctly rounded, as MM2's x87 got them |
 | Float contraction (a * b + c fused) | off for `mm2_phys` only; GCC (`fast` for C++) and Clang (`on`) fuse the AI, props, session and core maths on FMA targets (AArch64, `-march=native`, x86-64-v3) | off for every target, explicit on every compiler |
 | A client's knocked traffic cars | collided in an unordered map's order, unstably sorted by room (differs between libstdc++ and MSVC's STL) | room, then id |
-| Proof | none | `Determinism.*`: the maths (tests/core/test_libm.cpp) and a data-free minute of a car through props and traffic (tests/game/test_determinism.cpp) hashed against committed values on GCC, Clang, MinGW under Wine and MSVC in CI |
-| Data-free scenario, Linux GCC against MinGW under Wine | differs from the first checkpoint (see "Before and after") | identical, all 30 checkpoints |
-| London race1 with full traffic, 40 s, Linux GCC against MinGW under Wine | see "Before and after" | identical |
+| Proof | none | `Determinism.*`: the maths (tests/core/test_libm.cpp) and a data-free minute of a car and an AI racer among props and traffic (tests/game/test_determinism.cpp) hashed against committed values on GCC, Clang, MinGW under Wine and MSVC in CI; run here on GCC, Clang (in the CI's container) and MinGW under Wine |
+| Data-free scenario: Linux GCC, Linux Clang, MinGW under Wine | GCC and MinGW differ from the first checkpoint (see "Before and after") | identical, all 30 checkpoints |
+| London race1 with full traffic, 40 s: the same three builds | GCC and MinGW differ (see "Before and after") | identical |
 | Single-player results on Linux | | changed where glibc's own sinf, cosf, expf, logf and powf were not correctly rounded; the opponent sweep 516/517 finished and 508/517 across the line became 515/517 and 507/517 (see "Single player") |
 
 ## How it was measured
@@ -55,11 +55,12 @@ No wire change: the protocol stays as integration has it.
   exp, log), 2-3 ulp (tan, atan, atan2, asin, acos) and, for pow, about
   |y log x| ulp.
 * The scenario and race hashes: `test_game --gtest_filter='Determinism.*'`
-  in the Linux GCC build and in the MinGW cross build under Wine
-  (`ctest --preset mingw-cross-release -R '^Determinism[.]'`, as CI runs
-  it; the race with `OPENMM2_GAME_DATA` set). "Before" is the same tests
-  with `core/Libm.h` made a thin wrapper of the C runtime's functions, which
-  is what the call sites computed before.
+  in the Linux GCC build, in a Clang build inside the CI job's container
+  (`archlinux:latest` under podman, Clang 23.1.1) and in the MinGW cross
+  build under Wine (also `ctest --preset mingw-cross-release -R
+  '^Determinism[.]'`, as CI runs it); the race with `OPENMM2_GAME_DATA`
+  set. "Before" is integration's sources (782f469) with the two new test
+  files, built natively and with MinGW.
 * Uninitialised values: the three `Determinism` tests of `test_game` under
   valgrind memcheck: no errors.
 * The opponent sweep (`OPENMM2_AI_SWEEP=1`, OpponentRace.EveryRaceSweep)
@@ -91,10 +92,10 @@ were added so that the test fails on a build whose maths differ.
 
 | # | Severity | Location | What | Fix |
 | --- | --- | --- | --- | --- |
-| D1 | visible | 27 files: `phys` (`vehicle/Wheel.cpp` MakeRotateY and the road bumps, `TrailerJoint`, `vehicle/Transmission` and `vehicle/Controls` pow, `CarSim`, `Trailer`, `AgeMath`), `core/Math.cpp`, `ai` (Driving, DrivingTargets, DrivingRoute, PathGeometry, Traffic, Police, Opponent, Course, AmbientRoute, Pedestrians), `city/AiMap.cpp` (the intersection's road order), `game/session` (RaceSetup, Gate), `game/net` (TrafficPrediction, TrafficSync, PlayerCars, Autopilot), `net/VehicleDamage.h`, `app/Controls.cpp` | The simulation called the C runtime's sin, cos, tan, acos, atan2, exp, exp2, log2, pow and hypot, whose last bits differ between glibc, MSVC's runtime and MinGW's. The steered wheels' rotation, the AI's every steering angle and the damage encoding differed with them. | a0e118e: `core/Libm.h`, used at every call; a test fails when a simulation source calls the runtime again |
-| D2 | latent | `src/phys/CMakeLists.txt`, `cmake/CompilerOptions.cmake` | Only `mm2_phys` was built with `-ffp-contract=off`. On FMA targets GCC and Clang fused the AI's, the props', the session's and the core maths' a * b + c, rounding once where the other builds round twice. The release x86-64 builds have no FMA, so it did not show there. | 6d37388: `-ffp-contract=off -fno-fast-math` (MSVC `/fp:precise`) for every target |
-| D3 | minor | `game/net/TrafficProxies.cpp` | A client's traffic cars that the host knocked loose were listed in an `unordered_map`'s order and sorted by room with `std::sort`; the physics collides a room's instances in the order listed, and both orders differ between standard libraries. | 16f0e5d: by id, stably sorted by room (as `TrafficBodies`) |
-| D4 | latent | `ai/Course.cpp` (`findTurns`), `RaceScreen.cpp` (the host's nearest players for a client) | `std::sort` on keys that can tie (a circuit's turns at the same distance; two players at the same distance): equal keys come out in an order that differs between standard libraries. | 16f0e5d: `stable_sort` |
+| D1 | visible | 27 files: `phys` (`vehicle/Wheel.cpp` MakeRotateY and the road bumps, `TrailerJoint`, `vehicle/Transmission` and `vehicle/Controls` pow, `CarSim`, `Trailer`, `AgeMath`), `core/Math.cpp`, `ai` (Driving, DrivingTargets, DrivingRoute, PathGeometry, Traffic, Police, Opponent, Course, AmbientRoute, Pedestrians), `city/AiMap.cpp` (the intersection's road order), `game/session` (RaceSetup, Gate), `game/net` (TrafficPrediction, TrafficSync, PlayerCars, Autopilot), `net/VehicleDamage.h`, `app/Controls.cpp` | The simulation called the C runtime's sin, cos, tan, acos, atan2, exp, exp2, log2, pow and hypot, whose last bits differ between glibc, MSVC's runtime and MinGW's. The steered wheels' rotation, the AI's every steering angle and the damage encoding differed with them. | 37d2123: `core/Libm.h`, used at every call; a test fails when a simulation source calls the runtime again |
+| D2 | latent | `src/phys/CMakeLists.txt`, `cmake/CompilerOptions.cmake` | Only `mm2_phys` was built with `-ffp-contract=off`. On FMA targets GCC and Clang fused the AI's, the props', the session's and the core maths' a * b + c, rounding once where the other builds round twice. The release x86-64 builds have no FMA, so it did not show there. | ee94506: `-ffp-contract=off -fno-fast-math` (MSVC `/fp:precise`) for every target |
+| D3 | minor | `game/net/TrafficProxies.cpp` | A client's traffic cars that the host knocked loose were listed in an `unordered_map`'s order and sorted by room with `std::sort`; the physics collides a room's instances in the order listed, and both orders differ between standard libraries. | 222ee38: by id, stably sorted by room (as `TrafficBodies`) |
+| D4 | latent | `ai/Course.cpp` (`findTurns`), `RaceScreen.cpp` (the host's nearest players for a client) | `std::sort` on keys that can tie (a circuit's turns at the same distance; two players at the same distance): equal keys come out in an order that differs between standard libraries. | 222ee38: `stable_sort` |
 
 ### Checked and found deterministic
 
@@ -128,8 +129,8 @@ were added so that the test fails on a build whose maths differ.
 * **Order of evaluation.** No expression draws twice from one random
   stream (the comma-separated declarations that do are sequenced). Function
   arguments are evaluated in an unspecified order (GCC and MSVC from the
-  right, Clang from the left), so the Clang CI job is the check that
-  nothing else depends on it.
+  right, Clang from the left); a Clang build gives the GCC build's hashes
+  (see "What CI should show"), so nothing the tests run depends on it.
 * **Uninitialised values.** None under valgrind in the scenario and the
   40 s race.
 * **Data.** Numbers are parsed with `std::from_chars` (correctly rounded in
@@ -199,23 +200,29 @@ Windows MSVC job with the rest of the suite, the MinGW job under Wine
 
 ### What CI should show
 
-* Linux GCC: everything passes (the hashes are this build's).
-* MinGW under Wine: passes; checked here with the same Wine (11.19) and
-  MinGW GCC (16.2) as the Arch container installs.
-* Linux Clang: should pass. Clang evaluates function arguments left to
-  right where GCC goes right to left; if some simulation code depends on
-  that order, `ScenarioHashesMatchEveryPlatform` fails and names the first
-  checkpoint and part (car, traffic, props) that differ.
-* Windows MSVC: should pass. MSVC's `/fp:precise` on x64 neither fuses nor
-  widens, and the maths no longer touches its runtime. A failure there
-  would point at a remaining source (the report says where to look first:
-  the checkpoint and part; then the libm tests, which isolate the maths).
+* Linux GCC: everything passes (the hashes are this build's; also in a
+  build with `-D_GLIBCXX_ASSERTIONS`, and under valgrind).
+* Linux Clang: passes. Checked here in the CI job's own container
+  (`archlinux:latest` under podman, Clang 23.1.1, the CI's packages): all
+  eight `Determinism` tests pass with the GCC build's hashes, the London
+  race included (with the game data mounted).
+* MinGW under Wine: passes. Checked here with the CI step's own commands
+  (`wineboot --init`, `ctest --preset mingw-cross-release -R
+  '^Determinism[.]'`) and the same Wine (11.19) and MinGW GCC (16.2) as the
+  Arch container installs; the London race passes too when run with the
+  game data.
+* Windows MSVC: should pass, and is the one build not run here. MSVC's
+  `/fp:precise` on x64 neither fuses nor widens, and the maths no longer
+  touches its runtime. A failure would point at a remaining source: the
+  report names the first checkpoint and part (cars, traffic, props) that
+  differ and prints where the cars were at each checkpoint, to compare with
+  the Linux log; the libm tests isolate the maths.
 
 ## Open
 
 | # | Severity | What | Needs |
 | --- | --- | --- | --- |
-| O1 | unknown | Clang and MSVC could not be run here; CI is the proof. | The PR's CI run. |
+| O1 | unknown | MSVC could not be run here (GCC, Clang and MinGW under Wine were); CI is the proof. | The PR's CI run. |
 | O2 | minor | Where MM2's compiled code keeps an fsin or fpatan result in an x87 register for the next operation (e.g. `sin(a) * r` multiplied before the store), OpenMM2 rounds the function's result to float first. A parity question per call, as before this change. | The parity audits, call by call. |
 | O3 | minor | Nothing resets the floating-point environment at run time: a library that set flush-to-zero or another rounding mode on the main thread would change the results (no known one does; the test checks the defaults). | A guard in the frame loop if it is ever seen. |
 | O4 | minor | `libm::pow` is accurate to about \|y log x\| ulp in double (float results correctly rounded but for 1 in 10^7 or so); the game uses it for the gearing, the steering curve and the AI's per-frame factors. | Nothing unless a use needs double accuracy. |
