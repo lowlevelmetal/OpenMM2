@@ -201,8 +201,9 @@ needs, all of it inert in a single-player race:
   ring of 40 makes such props disappear in a pile-up).
 * `takeKnocks` (with `recordKnocks(true)`): the placed props that broke loose
   (`dgUnhitBangerInstance::Impact`) and what hit them.
-* A client (`setReplica`): only its own car and the other players' cars it
-  simulates may touch its props, and the props it simulates one another but
+* A client (`setReplica`): only its own car and the cars it simulates with
+  it (the other players' near ones, the shared police and knocked traffic
+  cars) may touch its props, and the props it simulates one another but
   no placed prop (`phys::Instance::acceptsContact`); `breakPlaced` takes a
   prop out of its room as Impact does but without a body; `restoreStanding`
   undoes a knock its car predicted that the host did not make (Reset for one

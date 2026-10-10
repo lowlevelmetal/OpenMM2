@@ -1059,9 +1059,11 @@ them, and dent them, through single player's code.
   in the past (what the messages needed to arrive over the last 3 s plus a
   send interval, 50-500 ms, as the other players' cars): a knock when it shows
   that time, the ring in mirror slots interpolated on their velocities
-  (`net::SnapshotBuffer`). Only its own car and the other players' cars it
-  simulates along with it (the near ones the host sends in full,
-  `NearCarState`) may touch its props (`phys::Instance::acceptsContact`), and
+  (`net::SnapshotBuffer`). Only its own car and the cars it simulates along
+  with it (the other players' near ones the host sends in full,
+  `NearCarState`; the shared police and knocked traffic cars it sends in
+  full, `TrafficFull`, or its car knocked loose) may touch its props
+  (`phys::Instance::acceptsContact`), and
   the pieces it simulates itself one another but no standing prop (the
   host's knocks bring those its pieces knock): the other cars pass through
   them, since the host decides what they do. Those cars hit a prop at once,

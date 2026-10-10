@@ -6251,14 +6251,25 @@ private:
     }
 
     // A client: what may set its props moving (the host decides what the
-    // others do): its own car, and the other players' cars it simulates
-    // along with it (predictNearCars), whose knocks it predicts as its own.
+    // others do): its own car, and the cars it simulates along with it,
+    // whose knocks it predicts as its own: the other players' near it
+    // (predictNearCars), and the shared police and knocked traffic cars the
+    // host sends it in full or its car knocked loose (predictNetTraffic).
     bool propMover(const phys::Instance* other) const {
+        if (!other)
+            return false;
         if (ownCarBody(other))
             return true;
         for (const auto& [id, rv] : m_remotes)
             if (rv.predicted && rv.sim && other == &rv.sim->sim().body)
                 return true;
+        for (const auto& [id, c] : m_netCops)
+            if (c.predicted && c.sim && other == &c.sim->sim().body)
+                return true;
+        if (m_netTrafficCars && m_trafficBodies) {
+            const int car = m_trafficBodies->carOfBody(other);
+            return car >= 0 && m_netTrafficCars->simulated(car);
+        }
         return false;
     }
 
