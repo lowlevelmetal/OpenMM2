@@ -207,7 +207,9 @@ the cars' damage, version 5 the players' cars simulated by the host
 host), version 6 what the clients predict the shared traffic with (a rail
 car's acceleration, curvature and speed over the ground), up to 160 shared
 cars a message and no traffic hit reports, version 7 the host's props
-(`PropState`, the `PropKnocks` event).
+(`PropState`, the `PropKnocks` event), version 9 the players' cars near a
+client's in full in `CarStates` and, in every car's full state, what a
+sample hands the next (8 is the rules').
 
 ### Handshake
 
@@ -576,10 +578,22 @@ every player's car on the host:
 * **Commands.** What the client's rules decide about its car travels with
   the inputs, numbered with the sample it applies at, until the host
   acknowledges it: the first sample's placement (where that machine
-  started the car), mmPlayer::Reset (a fall, the debug respawn), the
-  `HitWaterHandler`s' respawn at a checkpoint and `vehCar::ClearDamage`
-  (Cops and Robbers' repairs). The client applies it at once and the host at
-  the same sample, so a reset is no correction.
+  started the car), mmPlayer::Reset (the water, a fall, the debug respawn),
+  the `HitWaterHandler`s' respawn at a checkpoint and `vehCar::ClearDamage`
+  (a wreck's repair, Cops and Robbers' repairs). The client applies it at
+  once and the host at the same sample, so a reset is no correction. The
+  host carries one out only where the game's rules would
+  (`game::ResetRules`, on its own simulation of the car): the placement only
+  first and in the city; a reset or a respawn only after nearly five seconds
+  in the water (the car's `vehSplash` latched; `mmGameMulti::
+  HitWaterHandler`) or below -50 m (`DropThruCityHandler`, which
+  multiplayer treats as the water), a respawn only at one of the race's
+  checkpoints facing its heading, and not more than four a second; a repair
+  only for a car past its maximum damage (the wreck penalty's) or in Cops
+  and Robbers (until its rules run on the host). A refused command leaves
+  the car where the host has it, and the client's is corrected back
+  (`OPENMM2_DEBUG_RESPAWN_MS` on the host lets any reset in the city pass,
+  for development).
 * **The host** (`game::HostInputQueue` per client) starts a client's car
   once three of its inputs are in hand, applies one per sample, repeats the
   last one (without its keys) for a quarter of a second when the next is
@@ -597,42 +611,70 @@ every player's car on the host:
   state after it at full precision (the body's matrix, momenta, velocities
   and last push; the wheels' spin, turn, springs and tyre deflections; the
   engine, gearbox, drivetrains, stuck watcher, damage and random stream; the
-  pedal swap and the hold: about 270 bytes), and every other player's car
-  as a `VehicleSnapshot`.
+  pedal swap and the hold; and what a sample hands the next: the force and
+  torque the wheels and engine set for it, each tyre's rolling resistance,
+  and in a contact the impulses and pushes: about 310 bytes, 370 in a
+  contact), every other player's car as a `VehicleSnapshot`, and the two
+  nearest other players' cars within 40 m of the client's (kept to 50 m;
+  not one towing a trailer) in full with the input the host last applied to
+  them (`net::NearCarState`).
 * **Prediction** (`game::CarPrediction`). A client runs its car on its
   inputs at once and keeps each sample's input and the car's whole state
   after it (`CarSim::saveState`, 3 s). When a host state for a sample
   differs from the prediction for it (by 3 mm, 3 cm/s, 0.0015 in the
   matrix, or in the damage, gear or hold), the client puts the car back to
   its saved state for that sample with the host's on top and runs the later
-  samples again on their inputs (`phys::World::replaySample`: the car alone,
-  everything it touches held still and moving at its own velocity, every
-  body within 40 m of it (the other players' cars, the police, knocked
-  traffic cars and props) where each sample first met it; the traffic cars
-  on their rails where the frame placed them; no sound or effect), at most
-  120 samples. The drawing keeps the car where it was and eases it
+  samples again on their inputs (`phys::World::replaySample`: the car and
+  the other players' cars it simulates, everything else held still and
+  moving at its own velocity, every body within 40 m of it (the other
+  players' cars placed at their states, the police, knocked traffic cars
+  and props) where each sample first met it, and one that sample did not
+  meet out of the way; the shared traffic's cars on their rails where each
+  sample met them; no sound or effect), at most 120 samples. The drawing keeps the car where it was and eases it
   onto the corrected place with a 60 ms half-life (`game::CorrectionBlend`;
   more than 4 m is a jump, drawn at once). The client's simulation runs up
   to 3% faster when the host had fewer than one of its inputs in hand over
   the last second and 2% slower above three, which keeps its inputs a
   sample or three ahead of the host's need.
-* **The other cars** on a client are drawn interpolated from the host's
-  states a playout delay in the past, as before, and its own car collides
-  with them there as kinematic bodies moving at their velocity; the host's
-  collision is the one that counts. (`OPENMM2_NET_OTHERS`, a development
-  aid, places them ahead instead; see
-  `docs/review/multiplayer-desync-cars.md`.)
+* **The other cars near** a client's car (the ones its `CarStates` carries
+  in full) are simulated there along with its own: at every state the
+  client puts them to the host's state at the acknowledged sample and runs
+  them with its own car through the later samples (`CarPrediction`'s
+  companions), on the input the host last applied to them, and on between
+  states. Its car then meets them where the host's does and both give way
+  by their masses, as on the host; only the other player's change of input
+  since that state is unknown. Farther ones (by their distance and how fast
+  they close in the samples run again) run again without the client's car,
+  which stays where each sample had it. Every machine keeps the players'
+  cars in the world's movers in player order (the host's first), and a
+  replay runs them in that order: two cars collide in that order, and the
+  order changes the outcome. They are drawn between their last two samples
+  with what each state moves them by eased away (80 ms half-life), and the
+  switch between simulating one and placing it at its states eased over
+  150 ms.
+* **The other cars farther away** on a client are drawn interpolated from
+  the host's states a playout delay in the past, as before, and its own car
+  collides with them there as kinematic bodies moving at their velocity; the
+  host's collision is the one that counts. (`OPENMM2_NET_OTHERS`, a
+  development aid, places every other car ahead, or keeps all of them at
+  their states; see `docs/review/multiplayer-desync-cars.md`.)
 * **The host's own car** has no latency and no prediction.
 
 Measured through `netprobe relay` (60 ± 20 ms each way, 2% loss,
 reordering), a host and a client ramming each other: the client's car was
-corrected about 4 times a second, by 4 cm at the median, 1 m or more about
-4 times a minute (at collisions); the host never ran short of its inputs.
-The inputs cost a client about 0.9 KB/s of payload (3.3 KB/s on the wire),
-the states about 0.3 KB/s per client plus 35 bytes per other car per
-message (6 KB/s on the wire for two players; about 9 KB/s per client and
-60 KB/s for the host with eight). See
-`docs/review/multiplayer-desync-cars.md` for the measurements against 0.3.1.
+corrected 3-7 times a second, by 1-3 cm at the median and at most 33 times
+a run over 10 cm, never over 1 m; shunting from behind, at most 7 times
+over 1 m a run, and never drawn jumping over 1 m (the first round, without
+the near cars: up to 53); the host never ran short of its inputs. Every
+machine draws another player's car about 150 ms from its player's screen
+(the host behind it, a client behind a far car and ahead of a near one),
+as 0.3.1 did; at that delay a few centimetres remain at the median. The
+inputs cost a client about 0.9 KB/s of payload (3.3 KB/s on the wire), the
+states about 0.4 KB a message per client, 0.7 KB with a near car (8 KB/s
+of payload for two players apart, 14 KB/s near; with eight players at most
+about 22 KB/s per client and 160 KB/s for the host, about 11 and 78 KB/s
+apart). See `docs/review/multiplayer-desync-cars.md` for the measurements
+against 0.3.1.
 
 ### Shared traffic
 
@@ -1214,9 +1256,16 @@ the last (`<screenshot>-1.png`, ...) and ends at the last. For the damage:
 `OPENMM2_DEBUG_NETCARS` logs every correction of a client's car (how far the
 prediction was off, how many samples ran again) and every 10 s what the
 players' cars cost and how often the host ran short of a client's inputs;
-`OPENMM2_NET_OTHERS=ahead` (an experiment) places and draws the other
-players' cars where the host will have them when it runs this machine's
-sample, `=ghost` keeps this machine's car from touching them;
+`OPENMM2_NET_OTHERS=ahead` (an experiment) places and draws every other
+player's car where the host will have them when it runs this machine's
+sample, `=ghost` keeps this machine's car from touching them, `=past` (or
+any value) keeps them all at their interpolated states instead of
+simulating the near ones; `OPENMM2_NET_TRAFFIC_REPLAY=predicted|frame`
+meets the shared traffic's cars on their rails, in a client's samples run
+again, where the host had them at each sample's time or where the frame put
+them, instead of where each sample met them (comparisons); with
+`OPENMM2_DEBUG_NETCARS` the host also logs every reset of a client's car
+it refuses;
 `OPENMM2_DEBUG_NETCARS_NOISE=<fraction>` nudges a client's car's momentum by
 about that fraction each sample, as a machine whose compiler rounds
 differently might (the prediction's tolerance);
@@ -1282,9 +1331,13 @@ link with 2 % loss, which prints the same-moment error) and
 withdrawn, recycled).
 The players' cars by `tests/net/test_player_cars.cpp` (the messages, their
 limits, mutated messages, delivery and the input budget through real
-sessions), `tests/game/test_player_cars.cpp` (the pedals' bytes, the host's
-queue and its catch-up, a client predicting a host's car through a
-simulated network with and without losses), `tests/game/test_net_rules.cpp`
+sessions, the near cars in full in one packet, a client refusing its own
+car or a car given twice among them), `tests/game/test_player_cars.cpp`
+(the pedals' bytes, the host's queue and its catch-up, a client predicting
+a host's car through a simulated network with and without losses, a client
+predicting a shunt with the other car simulated, held, and braking, the
+host's reset rules), `tests/game/test_traffic_bodies.cpp` (the rail cars
+put elsewhere for a replay and back), `tests/game/test_net_rules.cpp`
 (Cops and Robbers' limits from the host) and
 `tests/phys/test_net_prediction.cpp` (a car's state saved and run again, a
 car's sample alone, the sample hooks, a car's own random stream).
@@ -1341,7 +1394,10 @@ apart each machine draws each player's car from its own player's screen,
 the frames in which a car moves further than its velocity explains, the
 collisions between players each machine had (and how close every machine
 drew the two cars around them) and the corrections, then the props (by
-session time, see below).
+session time, see below). A car drawn a fixed time behind (or ahead of) its
+player's screen is that far off at its speed however exactly it follows,
+so the report also gives, for each viewer and car, the delay that brings
+the two drawings closest and what remains at it.
 
 With one trace per machine, a remote car as drawn (`R`) can be compared with
 where the other machine's car really was at `sampleTime` (its `F` lines).
