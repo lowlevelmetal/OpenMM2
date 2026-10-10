@@ -1397,7 +1397,9 @@ brakes, wheel and a reverse through AUTO REVERSE), so automated runs drive
 through the checkpoints; in Cops and Robbers it drives to the gold, then to
 the car's base, over the roads and the last 80 m straight.
 `OPENMM2_DEBUG_START_GOLD=<metres>` starts a Cops and Robbers car that far
-from the first gold, facing it, each player on its own side.
+from the first gold, facing it, the two first players on opposite sides,
+and `OPENMM2_DEBUG_CR_SEED=<n>` (on every machine) draws the first places
+from n rather than the race's order time, so runs can be compared.
 `OPENMM2_DEBUG_LOAD_DELAY_MS=<ms>` keeps a race's loading screen up
 until that long after its loading began (the frames go on and the session is
 serviced): a slow loader for trying the race start; the race logs each

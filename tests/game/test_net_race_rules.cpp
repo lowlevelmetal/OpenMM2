@@ -422,6 +422,10 @@ TEST(NetRaceRules, AClientsPredictedPickupIsConfirmedOrUndone) {
     // Alone in the game a car takes nothing (UpdateGold's other players).
     CopsAndRobbers f = client();
     EXPECT_FALSE(f.updatePredicted(0.1f, me, {me}, 1));
+    // With another car at the gold too, it waits for the host's word.
+    const CopsAndRobbers::Car other{0, CrTeam::Robber, f.set().gold + Vec3{2.0f, 0.0f, 0.0f}, false, false};
+    EXPECT_FALSE(f.updatePredicted(0.1f, me, {me, other}, 2));
+    EXPECT_EQ(f.goldCarrier(), -1);
 }
 
 // --- The message ----------------------------------------------------------------------------

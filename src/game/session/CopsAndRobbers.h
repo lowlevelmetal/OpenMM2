@@ -165,8 +165,9 @@ public:
     // its own car `me` taking free gold within reach (UpdateGold's test, the
     // car not locked out by a wreck or a lost gold): a prediction, shown at
     // once (GoldTaken), which the host's decision confirms or undoes
-    // (applyHost, adopt). `players` counts the players in the game. Returns
-    // true when it predicted a pickup.
+    // (applyHost, adopt); not while another car is at the gold too (the host
+    // decides between them). `players` counts the players in the game.
+    // Returns true when it predicted a pickup.
     bool updatePredicted(float dt, const Car& me, const std::vector<Car>& cars, int players);
     // The host's decision (a Message from updateHost) on a machine that is
     // not the host: as receive(), except that a predicted pickup it confirms
