@@ -200,8 +200,8 @@ struct ResetRules {
 // player's number.
 using PusherOf = std::function<std::uint8_t(const void*)>;
 using PusherKey = std::function<const void*(std::uint8_t)>;
-net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const NetCarDriver* driver = nullptr,
-                             const PusherOf& pusherOf = {});
+net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets,
+                             const NetCarDriver* driver = nullptr, const PusherOf& pusherOf = {});
 void applyOwnCarState(SimVehicle& car, const net::OwnCarState& state, const PusherKey& pusherKey = {});
 
 // A player's car as the others draw it.
