@@ -1017,8 +1017,8 @@ TEST(Determinism, RetailRaceThroughTraffic) {
             fnvVec(racers, p);
         const phys::CarSim& sim = r.vehicle->sim();
         const phys::InertialCS& ics = sim.body.ics;
-        for (const Vec3& row :
-             {ics.matrix.m0, ics.matrix.m1, ics.matrix.m2, ics.matrix.m3, ics.linearVelocity, ics.angularVelocity})
+        const Mat34& m = ics.matrix;
+        for (const Vec3& row : {m.m0, m.m1, m.m2, m.m3, ics.linearVelocity, ics.angularVelocity})
             fnvVec(racers, row);
         fnv(racers, sim.damage.currentDamage);
         fnv(racers, sim.engine.rpm);

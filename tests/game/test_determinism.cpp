@@ -1,15 +1,22 @@
 // The simulation gives the same bits on every platform and compiler
 // (docs/physics.md, "The same results on every platform"): a fixed scenario
 // with no game data (a car on fixed inputs through props, over a jump and
-// round and round a block of ambient traffic it knocks loose, for a minute)
-// is hashed every two seconds of simulation and compared with hashes
-// committed from a Linux GCC build. CI runs it on GCC, Clang, MinGW (under
-// Wine) and MSVC; a host and a client built by two of those then simulate a
-// network game's samples alike.
+// round and round a block of ambient traffic it knocks loose, on cobbles,
+// with an AI racer lapping the block, for a minute) is hashed every two
+// seconds of simulation and compared with hashes committed from a Linux GCC
+// build. CI runs it on GCC, Clang, MinGW (under Wine) and MSVC; a host and a
+// client built by two of those then simulate a network game's samples
+// alike. (Built against the C runtime's sin, cos and atan2, as before
+// core/Libm.h, the Linux and the MinGW builds differ from the first
+// checkpoint on.)
 //
 // When the simulation changes on purpose the hashes change with it: run
 // test_game --gtest_filter='Determinism.*' and paste the table it prints.
 // The new values must be the same on every platform (the CI jobs).
+#include "ai/Course.h"
+#include "ai/Driving.h"
+#include "ai/MapView.h"
+#include "ai/Opponent.h"
 #include "ai/PlayerCar.h"
 #include "ai/RoadNetwork.h"
 #include "ai/Traffic.h"
@@ -23,6 +30,7 @@
 #include "game/bangers/PropPlacement.h"
 #include "phys/Constants.h"
 #include "phys/Level.h"
+#include "phys/Material.h"
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
 #include "phys/vehicle/Controls.h"
@@ -36,6 +44,7 @@
 #include <bit>
 #include <cfenv>
 #include <cfloat>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -43,6 +52,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -219,18 +229,30 @@ ai::VehicleData sedan() {
     return d;
 }
 
-// The level as the collision manager sees it: one room with the ground, a
-// wall across the far end of road 0, a ramp beside it, and the instances of
+// Cobbles: the wheels bump along them (vehWheel's road bumps).
+phys::MaterialTable materials() {
+    phys::MaterialTable table;
+    phys::Material cobbles;
+    cobbles.name = "cobbles";
+    cobbles.width = 0.45f;
+    cobbles.height = 0.03f;
+    table.add(cobbles);
+    return table;
+}
+
+// The level as the collision manager sees it: one room with cobbled ground,
+// a wall across the far end of road 0, a jump on it, and the instances of
 // the props and the traffic.
 class ScenarioLevel final : public phys::Level {
 public:
+    explicit ScenarioLevel(int ground) : m_ground(static_cast<std::uint8_t>(ground)) {}
     void addSource(const game::InstanceSource* s) { m_sources.push_back(s); }
     int findRoom(const Vec3&, int) const override { return 1; }
     int touchedNeighbors(int*, int, int, const Vec3&, float) const override { return 0; }
     void collect(const int*, int, const Vec3&, float, phys::LevelBound& out) const override {
         out.clear();
         const Vec3 ground[4] = {{-2000, 0, -2000}, {-2000, 0, 2000}, {2000, 0, 2000}, {2000, 0, -2000}};
-        out.addPolygon(ground, 4, {0, 1, 0}, 0);
+        out.addPolygon(ground, 4, {0, 1, 0}, m_ground);
         const Vec3 wall[4] = {{-30, 0, -230}, {30, 0, -230}, {30, 6, -230}, {-30, 6, -230}};
         out.addPolygon(wall, 4, {0, 0, 1}, 0);
         // A jump on road 0: rising 1.2 m over 15 m.
@@ -244,6 +266,7 @@ public:
     }
 
 private:
+    std::uint8_t m_ground;
     std::vector<const game::InstanceSource*> m_sources;
 };
 
@@ -267,12 +290,18 @@ private:
 // The driver's inputs for sample `i`: off the line up the lane of traffic,
 // through the props, over the jump towards the wall, braking into reverse,
 // a handbrake turn, then circling and weaving through both lanes.
+// The steering always moves a little (a triangle wave), so the wheels' angles
+// take ever new values.
 phys::PedalInput inputs(int i, float& steerTarget) {
     phys::PedalInput in;
     const float t = static_cast<float>(i) * kDt;
     if (t < 1.0f)
         return in;
+    float phase = t / 3.0f;
+    phase -= std::floor(phase);
+    const float wobble = 0.08f * (4.0f * std::abs(phase - 0.5f) - 1.0f);
     in.accelerator = 1.0f;
+    steerTarget = wobble * 0.5f;
     if (t > 12.0f && t < 15.0f) {
         in.accelerator = 0.0f;
         in.brake = 1.0f; // and on into reverse
@@ -280,9 +309,9 @@ phys::PedalInput inputs(int i, float& steerTarget) {
         in.handbrake = 1.0f;
         steerTarget = 1.0f;
     } else if (t > 16.5f && t < 38.0f) {
-        steerTarget = 0.25f;
+        steerTarget = 0.25f + wobble;
     } else if (t > 38.0f) {
-        steerTarget = -0.3f;
+        steerTarget = -0.3f + wobble;
     }
     return in;
 }
@@ -309,6 +338,7 @@ struct ScenarioRun {
     std::vector<std::string> notes; // per checkpoint: where the car is, what it hit
     std::set<int> knockedCars;      // traffic cars that took a body
     int movedProps = 0;             // props that left their place
+    float racerProgress = 0.0f; // metres the racer drove along its course
 };
 
 ScenarioRun runScenario() {
@@ -317,8 +347,9 @@ ScenarioRun runScenario() {
     vfs::Vfs files;
     files.mount(bangerFiles());
     game::bangers::BangerDataLibrary bangerData(files);
-    ScenarioLevel level;
-    phys::World world;
+    const phys::MaterialTable table = materials();
+    ScenarioLevel level(table.find("cobbles"));
+    phys::World world(table);
     world.setLevel(&level);
     world.seedRandom(1);
 
@@ -364,6 +395,30 @@ ScenarioRun runScenario() {
     phys::ArcadeControls controls;
     phys::SteeringFilter steering;
 
+    // An AI racer lapping the block ahead of it (ai::Opponent: the
+    // aiVehiclePhysics steering, its atan2s, the turns' arcs, pow).
+    const ai::MapView mapView(net);
+    phys::CarSim racerCar;
+    racerCar.init(sportsCar(), phys::VehicleGeometry::placeholder());
+    Mat34 grid = Mat34::identity();
+    grid.m3 = {2.0f, 0.5f, -24.0f};
+    racerCar.reset(grid);
+    world.add(&racerCar.body);
+    const std::vector<int> corners{0, 1, 2, 3};
+    std::optional<ai::Course> course = ai::Course::build(net, corners, grid.m3, std::nullopt, true);
+    if (!course)
+        return run;
+    ai::OpponentSettings racing;
+    racing.laps = 5;
+    racing.world = &world;
+    ai::RouteRegistration route;
+    route.wayPoints = {1, 2, 3, 0};
+    route.laps = 5;
+    route.destination = grid.m3;
+    ai::Opponent racer(racerCar, std::move(*course), racing, 2, &mapView, route, 0, "sedan");
+    racer.reset();
+    std::vector<ai::TrackedCar> tracked;
+
     for (int i = 0; i < kSteps; ++i) {
         // The AI at its own 30 Hz, before the physics (as RaceScreen).
         if (i % 2 == 0) {
@@ -372,6 +427,13 @@ ScenarioRun runScenario() {
             player.velocity = car.body.ics.linearVelocity;
             lights.update(ai::kAiStepSeconds);
             traffic.step(ai::kAiStepSeconds, player, 0);
+            tracked.clear();
+            tracked.push_back(ai::trackedCar(car, 1, true));
+            tracked.push_back(ai::trackedCar(racerCar, 2, false));
+            racer.describe(tracked.back());
+            for (const ai::AmbientCar& a : traffic.cars())
+                tracked.push_back(ai::trackedAmbient(a, 100 + a.id));
+            racer.update(ai::kAiStepSeconds, tracked);
         }
         float target = 0.0f;
         phys::PedalInput in = inputs(i, target);
@@ -402,6 +464,10 @@ ScenarioRun runScenario() {
         hc.add(static_cast<std::int64_t>(car.trans.currentGear));
         hc.add(car.damage.currentDamage);
         hc.add(static_cast<std::int64_t>(*world.randomSeed()));
+        hc.add(racerCar.body.ics.matrix);
+        hc.add(racerCar.body.ics.linearVelocity);
+        hc.add(racerCar.steering);
+        hc.add(racer.progress());
         c.car = hc.h;
         Hash ht;
         for (const ai::AmbientCar& a : traffic.cars()) {
@@ -423,46 +489,50 @@ ScenarioRun runScenario() {
         c.props = hp.h;
         run.checkpoints.push_back(c);
         const Vec3& p = car.body.ics.matrix.m3;
+        const Vec3& q = racerCar.body.ics.matrix.m3;
         run.notes.push_back(std::format("{:2.0f} s: car ({:.2f} {:.2f} {:.2f}) {:.1f} m/s damage {:.0f}, "
-                                        "x {:a}; {} cars knocked, {} props moved",
+                                        "x {:a}; racer ({:.2f} {:.2f}) {:.0f} m, x {:a}; {} cars knocked, "
+                                        "{} props moved",
                                         static_cast<float>(c.step) * kDt, p.x, p.y, p.z, car.speed(),
-                                        car.damage.currentDamage, p.x, run.knockedCars.size(), moved));
+                                        car.damage.currentDamage, p.x, q.x, q.z, racer.progress(), q.x,
+                                        run.knockedCars.size(), moved));
     }
+    run.racerProgress = racer.progress();
     return run;
 }
 
 // From a Linux GCC build; every platform must match them.
 constexpr Checkpoint kExpected[] = {
-    {120, 0x3a3c70fe586627f4, 0x232b43b2bd3790f5, 0xb09b3c26cd8491f7},
-    {240, 0xf44a3b1523419836, 0x07c07745035920ff, 0x1f857ed1cc92639c},
-    {360, 0x6636072d75e5e70b, 0x9c83a9eb6e1d0701, 0x4625eefff3380c42},
-    {480, 0xcc99546d20f06ace, 0x014e85b48382d19b, 0xd1a0dda3b99b98c2},
-    {600, 0xc93d8ea3e4d97515, 0xa45510819c5caa3f, 0x9b20f4fcb7081d7b},
-    {720, 0xcbff89324d9fc812, 0x3d9829c47749bf73, 0xcda29e43be99bfc7},
-    {840, 0x8857e8bd0f88da1a, 0x1b987cda49fc2236, 0xfbfbd6f4d19d434d},
-    {960, 0x9bce1e35dd3b7d09, 0xcaa7d5466fc9d822, 0xfbfbd6f4d19d434d},
-    {1080, 0x0f34a38e28017b62, 0x95cd177ee51c5cdf, 0xfbfbd6f4d19d434d},
-    {1200, 0xf1cf1f60a2b3cdb7, 0x29d554768d7bae0a, 0xfbfbd6f4d19d434d},
-    {1320, 0x9baa47913191c83d, 0x0f2c14141a6658b6, 0xfbfbd6f4d19d434d},
-    {1440, 0x62032f6974458ffe, 0x87709e323c4d7f0a, 0xfbfbd6f4d19d434d},
-    {1560, 0x8ac89bb2fdc0dca4, 0x1f6a24acb4aa99cb, 0xfbfbd6f4d19d434d},
-    {1680, 0xcbabc0f348538d48, 0xaf5f5de0861f667f, 0xfbfbd6f4d19d434d},
-    {1800, 0x73e4a52494f9f6e2, 0x5f46e4c1ecfb7e2d, 0xfbfbd6f4d19d434d},
-    {1920, 0x13867b1c2b431420, 0xe2f3b1b45a0015f1, 0xfbfbd6f4d19d434d},
-    {2040, 0xfcec09922ecc3586, 0x51b5aea0fb69eb7a, 0xfbfbd6f4d19d434d},
-    {2160, 0x92995741f1f6e8b2, 0x754b679d69746280, 0xfbfbd6f4d19d434d},
-    {2280, 0x9272324f6533ab08, 0xf6e2a9f52d9ac74f, 0xfbfbd6f4d19d434d},
-    {2400, 0xf4a8159c6c341e8a, 0x771d45cc7d7d83e6, 0xfbfbd6f4d19d434d},
-    {2520, 0xc85c1127eb6826c6, 0x5211769ee6ca9265, 0xfbfbd6f4d19d434d},
-    {2640, 0x5b41151bd126696a, 0x3b69c0ce31e6426c, 0xfbfbd6f4d19d434d},
-    {2760, 0x4084751e2380d5a7, 0x06921e31cb806c4b, 0xfbfbd6f4d19d434d},
-    {2880, 0xa453ea47f6c395c0, 0x23cc0dbda0264c29, 0xfbfbd6f4d19d434d},
-    {3000, 0x89728248115b48ff, 0x7528abb5441d5154, 0xfbfbd6f4d19d434d},
-    {3120, 0xf5ea3c8def065bb4, 0xad25ecafb12c28e0, 0xfbfbd6f4d19d434d},
-    {3240, 0x3c6a79fc019cdc90, 0x241b6275021a6397, 0xfbfbd6f4d19d434d},
-    {3360, 0xa3ae9659ea926806, 0x1b566fd8551815e8, 0xfbfbd6f4d19d434d},
-    {3480, 0x1efab959e2778136, 0x87dbb2fe9ab88ca4, 0xfbfbd6f4d19d434d},
-    {3600, 0xfa6b5022efc7f63a, 0x0a248681704e70f9, 0xfbfbd6f4d19d434d},
+    {120, 0xb9fc61f0a349f9a2, 0x232b43b2bd3790f5, 0xb09b3c26cd8491f7},
+    {240, 0x540635521cb728b9, 0x94ea2e7cecd6e0b1, 0x38bbe27461086c06},
+    {360, 0x9d88dcfac2167282, 0x87fcafeb972a5d2e, 0xee1a772f55dba64c},
+    {480, 0x4ad116bf3f84eccb, 0x2a44589a2785d6de, 0xb49fc0ce5fa328a8},
+    {600, 0x9a2618aa5ca19c89, 0x9fe15e6e0faf3f8b, 0x98e4a602fc2a3a3d},
+    {720, 0xcaf38f1e322e09d5, 0x6593abed1f14f562, 0x825ebd85413cbceb},
+    {840, 0x4ec50b1bb7eb0997, 0xd5c1f523d9fef2cb, 0x825ebd85413cbceb},
+    {960, 0x98640d6e04e2cd73, 0x2bd57ac11eb5f922, 0x825ebd85413cbceb},
+    {1080, 0x6629ce8f18289c1b, 0x3ee2929d8ed8bdb8, 0x825ebd85413cbceb},
+    {1200, 0xf1cd29b774301ec0, 0x80e6e7725b647276, 0x825ebd85413cbceb},
+    {1320, 0x417af2277cda9976, 0x18f48d9125d2e856, 0x825ebd85413cbceb},
+    {1440, 0x31dfdfbc465fa77a, 0x9749166afe81a188, 0xd2f8bb6a6d0de584},
+    {1560, 0x19fa78139f0916e7, 0x293aaf0252491628, 0x29a824b688c46e98},
+    {1680, 0x83dcad5ac9abe483, 0x673abcc24932fcae, 0x29a824b688c46e98},
+    {1800, 0x24047868e2aceabf, 0xb2004c59bf00fd17, 0x29a824b688c46e98},
+    {1920, 0x1458eb203c105cba, 0xf4c7e34f98db9e61, 0x29a824b688c46e98},
+    {2040, 0x3a3be016a6f2b4c2, 0x432d39bb327cc92f, 0x29a824b688c46e98},
+    {2160, 0x07584b4d86718441, 0x6b1b48c1058db9a2, 0x29a824b688c46e98},
+    {2280, 0x49d5b9cf9d3a9bed, 0x5eb4b10aa963a647, 0x29a824b688c46e98},
+    {2400, 0x1c3a3ef27aa6fc67, 0x22ab742e790c0f59, 0x29a824b688c46e98},
+    {2520, 0xd007fe6c977a5624, 0xfa1d2016d85455eb, 0x29a824b688c46e98},
+    {2640, 0x42a8cf32a2b8627d, 0xc26c7072a5acbf74, 0x29a824b688c46e98},
+    {2760, 0xfaa8eec83e11fb6a, 0x5d65603cd99f89e5, 0x29a824b688c46e98},
+    {2880, 0x6c226673a88890f1, 0x50bbcaa345a9e4a2, 0x29a824b688c46e98},
+    {3000, 0x923d35ac6bf4743f, 0x9e5a43637794371b, 0x29a824b688c46e98},
+    {3120, 0x23b52875cad0fced, 0xbe022c8fe6c62e22, 0x29a824b688c46e98},
+    {3240, 0xfa4cd7322a8856da, 0xea31d22a306d04e9, 0x29a824b688c46e98},
+    {3360, 0x50a8561a2e4725a0, 0x46abe62bcd50568b, 0x29a824b688c46e98},
+    {3480, 0x2a08b6dba7881b61, 0x653350ae42714fad, 0x29a824b688c46e98},
+    {3600, 0x10dd98a5bd986876, 0xce46f813fcd23be4, 0x29a824b688c46e98},
 };
 
 // The hashes as source, then what happened by each checkpoint (to compare
@@ -500,6 +570,7 @@ TEST(Determinism, ScenarioHashesMatchEveryPlatform) {
     // The scenario does what it is for.
     EXPECT_GT(run.knockedCars.size(), 2u);
     EXPECT_GT(run.movedProps, 5);
+    EXPECT_GT(run.racerProgress, 200.0f);
     bool same = std::size(kExpected) == run.checkpoints.size();
     for (std::size_t i = 0; same && i < run.checkpoints.size(); ++i) {
         const Checkpoint& got = run.checkpoints[i];
