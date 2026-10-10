@@ -104,6 +104,11 @@ public:
     const std::vector<Result>& results() const { return m_results; }
     bool timedOut() const { return m_timedOut; }
     bool allCounted() const { return m_allCounted; }
+    // Whether a player's car may be put back at `position` (a water
+    // handler's respawn, mmGameMulti::HitWaterHandler: at the last
+    // checkpoint it cleared): the start or a checkpoint the host counted for
+    // it, within half a metre.
+    bool mayRespawnAt(std::uint8_t id, const Vec3& position) const;
     // A car's icon number on `viewer`'s machine (mmGameMulti::UpdateScore's
     // IconIndex): 0 no icon (finished, or no car), else its place.
     int iconPlace(std::uint8_t viewer, std::uint8_t car) const;

@@ -5032,6 +5032,12 @@ private:
                 for (const auto& c : next->commands) {
                     if (!netCommandAllowed(rv, c))
                         continue;
+                    // A respawn at a checkpoint the host never counted for it.
+                    if (c.kind == net::CarCommandKind::RespawnAt && !m_netRules.respawnAllowed(id, c.position)) {
+                        log::info("race: player {}'s respawn at ({:.1f}, {:.1f}, {:.1f}) refused", id,
+                                  c.position.x, c.position.y, c.position.z);
+                        continue;
+                    }
                     // mmMultiCR::HitWaterHandler / DropThruCityHandler on that machine.
                     if (c.kind == net::CarCommandKind::Reset || c.kind == net::CarCommandKind::RespawnAt)
                         m_crResets.insert(id);

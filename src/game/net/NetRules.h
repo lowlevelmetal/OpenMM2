@@ -77,6 +77,12 @@ public:
     // After each physics sample of a player's car (the host's own too): `seq`
     // the input's number, `held` whether it held the car.
     void hostSample(std::uint8_t id, std::uint32_t seq, const Mat34& car, const Vec3& inertiaBox, bool held);
+    // Whether a client's car may be put back at `position` (its water
+    // handler's RespawnAt; O4 of the players' cars review): in a race, at the
+    // start or a checkpoint the host counted for it.
+    bool respawnAllowed(std::uint8_t id, const Vec3& position) const {
+        return !m_referee || m_referee->mayRespawnAt(id, position);
+    }
     // A player left the session or quit the race.
     void playerLeft(std::uint8_t id);
     // Cops and Robbers: what the host's rules decided this frame.

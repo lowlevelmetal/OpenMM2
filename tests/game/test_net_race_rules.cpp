@@ -289,6 +289,26 @@ TEST(NetRaceRules, RefereeRanksEveryCarAsItsMachineWould) {
     EXPECT_EQ(r.player(0)->racers, 2);
 }
 
+TEST(NetRaceRules, RefereeLetsACarRespawnOnlyWhereItHasBeen) {
+    // mmGameMulti::HitWaterHandler puts the car back at the last checkpoint
+    // it cleared: the host takes such a reset at the start or a checkpoint
+    // it counted for that car, not at one it never reached.
+    RaceReferee::Config c;
+    c.mode = GameMode::Checkpoint;
+    c.checkpoints = straightCourse(3);
+    RaceReferee r(c);
+    r.addPlayer(1);
+    Car a{1};
+    for (int i = 0; i < 120; ++i)
+        a.sample(r, false); // clears gate 1
+    ASSERT_EQ(r.player(1)->hits, (std::vector<std::uint8_t>{1}));
+    EXPECT_TRUE(r.mayRespawnAt(1, c.checkpoints[0].position));
+    EXPECT_TRUE(r.mayRespawnAt(1, c.checkpoints[1].position + Vec3{0.2f, 0.0f, 0.2f}));
+    EXPECT_FALSE(r.mayRespawnAt(1, c.checkpoints[2].position));
+    EXPECT_FALSE(r.mayRespawnAt(1, c.checkpoints[1].position + Vec3{2.0f, 0.0f, 0.0f}));
+    EXPECT_FALSE(r.mayRespawnAt(7, c.checkpoints[0].position)); // nobody's
+}
+
 // --- Cops and Robbers on the host -------------------------------------------------------
 
 namespace {
