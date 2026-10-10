@@ -130,9 +130,63 @@ TEST(SharedTrafficNet, HostAndClientInOneProcess) {
     EXPECT_EQ(tc.known(), 3u);
     EXPECT_EQ(tc.stats().refused, 0u);
 
+    // Protocol 12: at traffic density 1 a message is two of ENet's fragments
+    // (sent unreliably), and arrives whole.
+    {
+        std::vector<SharedCar> many;
+        for (int i = 0; i < 200; ++i) {
+            const Vec3 at{static_cast<float>(i % 20) * 6.0f - 60.0f, 0.0f, static_cast<float>(i / 20) * 8.0f};
+            many.push_back(movingCar(10 + i, net::AmbientKind::Traffic, at));
+        }
+        const std::uint32_t t = host.sessionTime();
+        const auto msg = th.build({client.localId(), {0, 0, 0}}, many, t, t / 33, 0x1234);
+        const std::size_t bytes = host.sendAmbientState(client.localId(), msg);
+        EXPECT_GT(bytes, 1400u);
+        EXPECT_LE(bytes, TrafficHost::Options{}.maxBytes);
+        std::vector<net::AmbientStateMsg> got;
+        ASSERT_TRUE(pump({&host, &client}, [&] {
+            for (auto& m : client.takeAmbientStates())
+                got.push_back(std::move(m));
+            return !got.empty();
+        }));
+        EXPECT_EQ(got.back().entities.size(), msg.entities.size());
+    }
+    // ... and the police and knocked cars near the client in full, on the
+    // State channel.
+    net::TrafficFullMsg full;
+    full.time = host.sessionTime();
+    net::TrafficFullCar cop;
+    cop.id = 400;
+    cop.kind = net::AmbientKind::Police;
+    cop.car.matrix.m3 = {0, 0, -15};
+    cop.throttle = 0.75f;
+    cop.steering = -0.25f;
+    net::TrafficFullCar knocked;
+    knocked.id = 3;
+    knocked.generation = 1;
+    knocked.kind = net::AmbientKind::Traffic;
+    knocked.body.matrix.m3 = {5, 0, 2};
+    knocked.body.linearVelocity = {1, 0, -2};
+    full.cars = {cop, knocked};
+    EXPECT_GT(host.sendTrafficFull(client.localId(), full), 0u);
+    std::vector<net::TrafficFullMsg> fulls;
+    ASSERT_TRUE(pump({&host, &client}, [&] {
+        for (auto& m : client.takeTrafficFull())
+            fulls.push_back(std::move(m));
+        return !fulls.empty();
+    }));
+    ASSERT_EQ(fulls.size(), 1u);
+    EXPECT_EQ(fulls[0].time, full.time);
+    ASSERT_EQ(fulls[0].cars.size(), 2u);
+    EXPECT_EQ(fulls[0].cars[0].kind, net::AmbientKind::Police);
+    EXPECT_EQ(fulls[0].cars[0].throttle, 0.75f);
+    EXPECT_EQ(fulls[0].cars[1].id, 3);
+    EXPECT_EQ(fulls[0].cars[1].body.linearVelocity, knocked.body.linearVelocity);
+
     // Back in the lobby nothing more is sent.
     const std::uint32_t race = client.raceNumber();
     host.returnToLobby();
     ASSERT_TRUE(pump({&host, &client}, [&] { return client.backToLobby(race); }));
     EXPECT_EQ(host.sendAmbientState(client.localId(), net::AmbientStateMsg{}), 0u);
+    EXPECT_EQ(host.sendTrafficFull(client.localId(), full), 0u);
 }

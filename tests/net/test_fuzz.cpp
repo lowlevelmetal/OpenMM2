@@ -8,6 +8,7 @@
 #include "net/Discovery.h"
 #include "net/NatPmp.h"
 #include "net/Session.h"
+#include "net/TrafficFull.h"
 #include "net/VehicleDamage.h"
 
 #include <gtest/gtest.h>
@@ -203,6 +204,35 @@ std::vector<Bytes> corpus() {
     knocksEvent.time = 6100;
     knocksEvent.payload = encodePayload(knocks);
     c.push_back(encodeMessage(knocksEvent));
+    // The police and a knocked car near a client in full (protocol 12).
+    TrafficFullMsg full;
+    full.time = 6200;
+    TrafficFullCar cop;
+    cop.id = 401;
+    cop.generation = 2;
+    cop.kind = AmbientKind::Police;
+    cop.car.matrix = Mat34::rotationY(0.4f);
+    cop.car.matrix.m3 = {-1150.0f, 112.0f, 160.0f};
+    cop.car.linearVelocity = {12.0f, 0.0f, -3.0f};
+    cop.car.contact = true;
+    cop.car.linearImpulse = {500.0f, 0.0f, 0.0f};
+    cop.throttle = 1.0f;
+    cop.steering = -0.3f;
+    full.cars.push_back(cop);
+    TrafficFullCar knocked;
+    knocked.id = 12;
+    knocked.generation = 6;
+    knocked.kind = AmbientKind::Traffic;
+    knocked.body.matrix = Mat34::rotationY(-1.0f);
+    knocked.body.matrix.m3 = {-1145.0f, 111.0f, 150.0f};
+    knocked.body.linearVelocity = {3.0f, -0.5f, 1.0f};
+    knocked.body.contact = true;
+    knocked.body.framePush = {0.0f, 0.001f, 0.0f};
+    knocked.body.wheels[1] = {0.2f, -0.1f, 0.5f};
+    knocked.body.sleepState = 2;
+    knocked.body.stillUpdates = 40;
+    full.cars.push_back(knocked);
+    c.push_back(encodeMessage(full));
 
     LanAdvert advert;
     advert.sessionName = "Fuzz";
@@ -391,6 +421,30 @@ void checkProps(const PropStateMsg& m) {
     }
 }
 
+void checkTrafficFull(const TrafficFullMsg& m) {
+    ASSERT_LE(m.cars.size(), kMaxTrafficFullCars);
+    for (const TrafficFullCar& c : m.cars) {
+        ASSERT_LT(c.id, kMaxAmbientIds);
+        ASSERT_LT(c.generation, kAmbientGenerations);
+        ASSERT_LE(c.kind, AmbientKind::Last);
+        if (c.kind == AmbientKind::Police) {
+            for (float v : {c.throttle, c.brake, c.steering, c.handBrake})
+                ASSERT_LE(std::abs(v), 1.0f);
+            ASSERT_LE(std::abs(c.car.matrix.m3.y), kOwnStateMaxCoordinate);
+            continue;
+        }
+        const Mat34& b = c.body.matrix;
+        for (const Vec3& v : {b.m0, b.m1, b.m2})
+            ASSERT_TRUE(std::abs(v.x) <= 2.0f && std::abs(v.y) <= 2.0f && std::abs(v.z) <= 2.0f);
+        ASSERT_LE(std::abs(b.m3.x), kOwnStateMaxCoordinate);
+        for (const Vec3& v : {c.body.linearVelocity, c.body.angularMomentum, c.body.framePush})
+            ASSERT_TRUE(std::abs(v.x) <= kOwnStateMaxValue && std::abs(v.y) <= kOwnStateMaxValue &&
+                        std::abs(v.z) <= kOwnStateMaxValue);
+        ASSERT_GE(c.body.sleepState, 0);
+        ASSERT_LE(c.body.sleepState, 2);
+    }
+}
+
 void checkPlayer(const PlayerInfo& p) {
     ASSERT_LE(p.name.size(), kMaxNameLength);
     ASSERT_LE(p.car.size(), kMaxShortStringLength);
@@ -494,6 +548,9 @@ void decodeEverything(std::span<const std::byte> b) {
     }
     if (const auto m = decoded<PropStateMsg>(b)) {
         checkProps(*m);
+    }
+    if (const auto m = decoded<TrafficFullMsg>(b)) {
+        checkTrafficFull(*m);
     }
 
     std::uint32_t nonce = 0;
@@ -772,6 +829,11 @@ TEST(Fuzz, ClientSurvivesMutatedTraffic) {
     EXPECT_LE(props.size(), Session::kMaxQueuedPropStates);
     for (const auto& m : props)
         checkProps(m);
+    // And the police and knocked cars in full.
+    const auto full = client.takeTrafficFull();
+    EXPECT_LE(full.size(), Session::kMaxQueuedTrafficFull);
+    for (const auto& m : full)
+        checkTrafficFull(m);
 }
 
 // The race start under mutated race messages from a joiner: whatever it

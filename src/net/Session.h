@@ -21,6 +21,7 @@
 #include "net/PropState.h"
 #include "net/Protocol.h"
 #include "net/Snapshot.h"
+#include "net/TrafficFull.h"
 #include "net/Transport.h"
 
 #include <array>
@@ -290,6 +291,14 @@ public:
     // most kMaxQueuedAmbientStates; older ones are dropped).
     std::vector<AmbientStateMsg> takeAmbientStates() { return std::exchange(m_ambientStates, {}); }
     static constexpr std::size_t kMaxQueuedAmbientStates = 16;
+    // Host: sends one player the police and knocked cars near it in full
+    // (net/TrafficFull.h) on the unreliable State channel (unsequenced).
+    // Returns the encoded size in bytes (0 when nothing was sent).
+    std::size_t sendTrafficFull(std::uint8_t playerId, const TrafficFullMsg& msg);
+    // Client: the messages received since the last call, oldest first (at
+    // most kMaxQueuedTrafficFull; older ones are dropped).
+    std::vector<TrafficFullMsg> takeTrafficFull() { return std::exchange(m_trafficFull, {}); }
+    static constexpr std::size_t kMaxQueuedTrafficFull = 32;
 
     // --- The host's props (OpenMM2, net/PropState.h) ---
     // Host: sends one player the props' state on the unreliable State
@@ -409,6 +418,7 @@ private:
     std::vector<ReceivedInput> m_playerInputs;    // host: the clients' inputs, not yet taken
     std::vector<OwnCarUpdate> m_ownCarStates;     // client: the host's word on its car, not yet taken
     std::vector<PropStateMsg> m_propStates;       // client: received, not yet taken
+    std::vector<TrafficFullMsg> m_trafficFull;    // client: received, not yet taken
 };
 
 // Proof sent in Hello: SHA-256(nonce || password); all zeros when empty.

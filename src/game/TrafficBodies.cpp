@@ -272,6 +272,13 @@ public:
     phys::Body* entity() override;
     // aiVehicleInstance::AttachEntity.
     phys::Body* attachEntity() override;
+    // OpenMM2 (World::replaySample: a network client's samples run again):
+    // the body aiVehicleActive::Attach would give the car now, of its mass
+    // and moving along its rail at its speed, which a replayed car pushes as
+    // the samples first run did (they knocked the car loose), rather than
+    // meeting a car of infinite mass. Only a car its source lets a
+    // collision knock loose.
+    bool heldInertia(phys::InertialCS& out) const override;
 
 private:
     TrafficBodies& m_owner;
@@ -361,6 +368,20 @@ phys::Body* TrafficBodies::RailCar::attachEntity() {
     Active& a = m_owner.attach(*this);
     m_owner.m_source.impact(id);
     return &a.body;
+}
+
+bool TrafficBodies::RailCar::heldInertia(phys::InertialCS& out) const {
+    if (active || !data || !box || !m_owner.m_source.attachable(id, true))
+        return false;
+    // As Active::attach sets its body up.
+    out = phys::InertialCS{};
+    out.matrix = railMatrix;
+    out.setMass(data->size.x, data->size.y, data->size.z, data->mass);
+    const float alongZ = -speed;
+    out.linearVelocity = {alongZ * railMatrix.m2.x, alongZ * railMatrix.m2.y, alongZ * railMatrix.m2.z};
+    out.linearMomentum = {out.mass * out.linearVelocity.x, out.mass * out.linearVelocity.y,
+                          out.mass * out.linearVelocity.z};
+    return true;
 }
 
 void TrafficBodies::Active::attach(RailCar& car) {
@@ -750,6 +771,85 @@ void TrafficBodies::instancesIn(int room, std::vector<phys::Instance*>& out) con
     for (const auto& [r, car] : range)
         if (!car->active && car->collidable)
             out.push_back(car);
+}
+
+std::optional<net::TrafficBodyState> TrafficBodies::bodyState(int carId) const {
+    const RailCar* r = findRailCar(carId);
+    // A body the world's last step did not run (dgPhysManager's table of 32
+    // movers was full: MM2 then leaves it where it is) is not simulated: a
+    // client must not run it either (it once ran one at the 10 m/s its
+    // body had when it froze, 1.8 m from the host's for 90 s).
+    if (!r || !r->active || !m_world.isActive(&r->active->body))
+        return std::nullopt;
+    const Active& a = *r->active;
+    const phys::InertialCS& ics = a.body.ics;
+    net::TrafficBodyState s;
+    s.matrix = ics.matrix;
+    s.linearMomentum = ics.linearMomentum;
+    s.angularMomentum = ics.angularMomentum;
+    s.linearVelocity = ics.linearVelocity;
+    s.angularVelocity = ics.angularVelocity;
+    s.force = ics.linearForce;
+    s.torque = ics.angularTorque;
+    s.lastPush = ics.lastPush;
+    s.linearImpulse = ics.linearImpulse;
+    s.angularImpulse = ics.angularImpulse;
+    s.linearPush = ics.linearPush;
+    s.turnForce = ics.turnForce;
+    s.framePush = ics.framePush;
+    const Vec3 zero{};
+    s.contact = !(s.linearImpulse == zero && s.angularImpulse == zero && s.linearPush == zero &&
+                  s.turnForce == zero && s.framePush == zero);
+    for (std::size_t i = 0; i < a.wheels.size(); ++i)
+        s.wheels[i] = {a.wheels[i].compression, a.wheels[i].lateral, a.wheels[i].longitudinal};
+    s.sleepState = a.sleep.state;
+    s.stillUpdates = std::clamp(a.sleep.stillUpdates, 0, 1023);
+    s.dormantUpdates = std::clamp(a.sleep.dormantUpdates, 0, 1023);
+    return s;
+}
+
+bool TrafficBodies::setBodyState(int carId, const net::TrafficBodyState& s) {
+    const auto index = static_cast<std::size_t>(carId);
+    RailCar* r = carId >= 0 && index < m_railCars.size() ? m_railCars[index].get() : nullptr;
+    if (!r || !r->present || !r->data || !r->box)
+        return false;
+    if (!r->active) {
+        Active& fresh = attach(*r);
+        m_world.addNewMover(&fresh.body);
+    }
+    Active& a = *r->active;
+    phys::InertialCS& ics = a.body.ics;
+    ics.matrix = s.matrix;
+    ics.linearMomentum = s.linearMomentum;
+    ics.angularMomentum = s.angularMomentum;
+    ics.linearVelocity = s.linearVelocity;
+    ics.angularVelocity = s.angularVelocity;
+    ics.linearForce = s.force;
+    ics.angularTorque = s.torque;
+    ics.lastPush = s.lastPush;
+    ics.linearImpulse = s.linearImpulse;
+    ics.angularImpulse = s.angularImpulse;
+    ics.linearPush = s.linearPush;
+    ics.turnForce = s.turnForce;
+    ics.framePush = s.framePush;
+    for (std::size_t i = 0; i < a.wheels.size(); ++i) {
+        a.wheels[i].compression = s.wheels[i].compression;
+        a.wheels[i].lateral = s.wheels[i].lateral;
+        a.wheels[i].longitudinal = s.wheels[i].longitudinal;
+    }
+    a.sleep.state = std::clamp(s.sleepState, 0, 2);
+    a.sleep.stillUpdates = s.stillUpdates;
+    a.sleep.dormantUpdates = s.dormantUpdates;
+    // The bound follows the body; the next sweep starts where it is.
+    a.body.syncBoundMatrix();
+    a.body.collider.lastMatrix = a.body.boundMatrix;
+    return true;
+}
+
+phys::Body* TrafficBodies::body(int carId) {
+    const auto index = static_cast<std::size_t>(carId);
+    RailCar* r = carId >= 0 && index < m_railCars.size() ? m_railCars[index].get() : nullptr;
+    return r && r->active ? &r->active->body : nullptr;
 }
 
 bool TrafficBodies::motionOf(int carId, Vec3& velocity, Vec3& spin) const {

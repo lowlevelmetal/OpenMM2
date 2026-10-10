@@ -103,12 +103,15 @@ public:
         // message (the others say only that it is still there); nearer
         // ones, cars off their rails, the police and cars new to the
         // client get it in every message.
-        float fullRateRadius = 80.0f;
+        float fullRateRadius = 120.0f;
         // ... and beyond this every fourth (the client predicts it the while).
-        float slowRateRadius = 160.0f;
-        // The message's size, bytes (the header included): one unfragmented
-        // UDP datagram.
-        std::size_t maxBytes = 1100;
+        float slowRateRadius = 180.0f;
+        // The message's size, bytes (the header included): two of ENet's
+        // fragments (its MTU is 1392 bytes, its fragments are sent
+        // unreliably on the Ambient channel), so that every car within the
+        // interest radius fits even at traffic density 1 (protocol 12; 1100
+        // bytes before, which left 12-15 % of the cars at 170-200 m out).
+        std::size_t maxBytes = 2600;
         // When the cars near a client do not all fit, the ones it has are
         // kept ahead of new ones up to this much further away, so a car at the
         // edge of what fits does not come and go with every message.
