@@ -17,7 +17,7 @@ No wire change: the protocol stays as integration has it.
 
 | | Before | After |
 | --- | --- | --- |
-| Elementary functions in the simulation | the C runtime's: glibc against MinGW's (Wine's ucrtbase) differ for 21 % of atan2f, 14 % of tanf, 8 % of acosf, 2 % of atanf and about 1 % of sinf / cosf results (a million arguments each in the game's ranges) | OpenMM2's own (`core/Libm.h`), the same bits on every platform; float results correctly rounded, as MM2's x87 got them |
+| Elementary functions in the simulation | the C runtime's: glibc against MinGW's (Wine's ucrtbase) differ for 21 % of atan2f, 14 % of tanf, 8 % of acosf, 6 % of asinf, 2 % of atanf and about 1 % of sinf / cosf results (a million arguments each in the game's ranges) | OpenMM2's own (`core/Libm.h`), the same bits on every platform; float results correctly rounded, as MM2's x87 got them |
 | Float contraction (a * b + c fused) | off for `mm2_phys` only; GCC (`fast` for C++) and Clang (`on`) fuse the AI, props, session and core maths on FMA targets (AArch64, `-march=native`, x86-64-v3) | off for every target, explicit on every compiler |
 | A client's knocked traffic cars | collided in an unordered map's order, unstably sorted by room (differs between libstdc++ and MSVC's STL) | room, then id |
 | Proof | none | `Determinism.*`: the maths (tests/core/test_libm.cpp) and a data-free minute of a car and an AI racer among props and traffic (tests/game/test_determinism.cpp) hashed against committed values on GCC, Clang, MinGW under Wine and MSVC in CI; run here on GCC, Clang (in the CI's container) and MinGW under Wine |
@@ -27,21 +27,32 @@ No wire change: the protocol stays as integration has it.
 
 ## How it was measured
 
-* The C runtimes: `crt_compare` (scratch) hashes the runtime's float
-  functions and OpenMM2's over the same million arguments, built natively
-  (glibc 2.44, GCC 16.2) and with MinGW-w64 GCC 16.2 run under Wine 11.19.
-  OpenMM2's hashes agree on both; the runtimes' differ:
+* The C runtimes: `mm2tool libm [count]` hashes OpenMM2's float functions
+  and the runtime's over the same million arguments and counts where they
+  differ (and where each differs from the runtime's long double function
+  rounded to float). Built natively (glibc 2.44, GCC 16.2) and with
+  MinGW-w64 GCC 16.2 run under Wine 11.19, OpenMM2's hashes agree; the
+  runtimes' differ:
 
-  | Function (range) | glibc vs OpenMM2 | Wine (MinGW) vs OpenMM2 |
-  | --- | --- | --- |
-  | sinf, cosf (-100 .. 100) | 1.28 %, 1.29 % | 0.13 %, 0.14 % |
-  | tanf (-1.5 .. 1.5) | 0 | 14.0 % |
-  | atanf (-50 .. 50) | 0 | 2.4 % |
-  | atan2f | 0 | 20.6 % |
-  | acosf | 0 | 7.6 % |
-  | expf, exp2f, logf, log2f, powf | 0.02-0.06 % | the same as glibc |
-  | sin, cos in double, rounded to float | 0 | 0 |
-  | hypotf | 0 | 0 |
+  | Function (range) | OpenMM2's hash (every platform) | glibc vs OpenMM2 | Wine (MinGW) vs OpenMM2 |
+  | --- | --- | --- | --- |
+  | sinf (-100 .. 100) | a0ca0bfa0c155ccd | 1.28 % | 0.13 % |
+  | cosf (-100 .. 100) | f7798fc077c36869 | 1.29 % | 0.14 % |
+  | tanf (-1.5 .. 1.5) | fa764f4ac4c8d74e | 0 | 14.0 % |
+  | asinf (-1 .. 1) | a7f2537725727742 | 0 | 6.5 % |
+  | acosf (-1 .. 1) | 5adaf910ad1078c1 | 0 | 7.6 % |
+  | atanf (-50 .. 50) | 065bc3cf9236a2de | 0 | 2.4 % |
+  | atan2f | 9b9da75c0e13f5e8 | 0 | 20.6 % |
+  | expf (-30 .. 30) | 69c95c443cf80355 | 0.06 % | the same as glibc |
+  | exp2f (-30 .. 30) | 48ab300582a9d232 | 0.06 % | the same as glibc |
+  | logf (0.001 .. 1000) | 4fa2f339eeabe0bc | 0.04 % | the same as glibc |
+  | log2f (0.001 .. 1000) | b7d73e9134b55d4e | 0.02 % | the same as glibc |
+  | powf (x^1.7, 0 .. 50) | aad295ad178827c5 | 0.06 % | the same as glibc |
+  | hypotf | 3f5d9340c658959c | 0 | 0 |
+
+  In every row OpenMM2's results equal the long double function rounded
+  to float. On a Windows MSVC build the same command shows MSVC's runtime,
+  and its libm hashes must be the ones above.
 
   (glibc 2.41 and later round atanf, atan2f, acosf, asinf, tanf and hypotf
   correctly; its sinf, cosf, expf, logf and powf come with an FMA variant
