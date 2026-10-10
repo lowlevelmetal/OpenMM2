@@ -1122,7 +1122,8 @@ void Session::clientHandle(MsgType type, std::span<const std::byte> data) {
                 nearIds.push_back(id);
         std::vector<NearCarState> near;
         for (const auto& c : m.near)
-            if (std::ranges::count(nearIds, c.id) == 1 && std::ranges::count(m.near, c.id, &NearCarState::id) == 1)
+            if (std::ranges::count(nearIds, c.id) == 1 &&
+                std::ranges::count(m.near, c.id, &NearCarState::id) == 1)
                 near.push_back(c);
         m_ownCarStates.push_back(
             {m.time, m.ack, m.waiting, m.hasOwn, m.own, timeMs(), std::move(nearIds), std::move(near)});

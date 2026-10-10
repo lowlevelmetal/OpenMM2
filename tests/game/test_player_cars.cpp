@@ -228,16 +228,15 @@ ShuntOutcome shunt(const vfs::Vfs& vfs, bool companion, float throttle, std::uin
                 applyOwnCarState(*client.a, d.near.state);
             } else if (r.rebased) {
                 leader = d.near.upcoming.empty() ? d.near.input : d.near.upcoming.back();
-                leaderAhead.assign(d.near.upcoming.begin() + std::min<std::ptrdiff_t>(r.replayed,
-                                                                                      std::ssize(d.near.upcoming)),
-                                   d.near.upcoming.end());
+                const auto from = std::min<std::ptrdiff_t>(r.replayed, std::ssize(d.near.upcoming));
+                leaderAhead.assign(d.near.upcoming.begin() + from, d.near.upcoming.end());
             }
             if (r.corrected) {
                 ++run.corrections;
                 run.largest = std::max(run.largest, r.moved.mag());
                 if (std::getenv("SHUNT_DEBUG"))
-                    std::printf("t %u ack %u pos %.4f vel %.4f dmg %d moved %.4f\n", t, d.ack, r.positionError,
-                                r.velocityError, r.damage, r.moved.mag());
+                    std::printf("t %u ack %u pos %.4f vel %.4f dmg %d moved %.4f\n", t, d.ack,
+                                r.positionError, r.velocityError, r.damage, r.moved.mag());
             }
             down.pop_front();
         }
