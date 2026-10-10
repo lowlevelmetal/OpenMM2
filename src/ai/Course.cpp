@@ -905,8 +905,10 @@ void Course::findTurns() {
             first.deflection += last.deflection;
             first.halfWidth = std::min(first.halfWidth, last.halfWidth);
             m_turns.pop_back();
-            std::sort(m_turns.begin(), m_turns.end(),
-                      [](const CourseTurn& a, const CourseTurn& b) { return a.s < b.s; });
+            // Stable: two turns at the same s keep their order whichever
+            // standard library sorts them.
+            std::stable_sort(m_turns.begin(), m_turns.end(),
+                             [](const CourseTurn& a, const CourseTurn& b) { return a.s < b.s; });
         }
     }
 }
