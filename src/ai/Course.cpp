@@ -6,6 +6,8 @@
 // road starts).
 #include "ai/Course.h"
 
+#include "core/Libm.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -845,7 +847,7 @@ void Course::findTurns() {
         const std::size_t prev = i == 0 ? n - 2 : i - 1;
         const Vec3 a = flatUnit(pts[i] - pts[prev]);
         const Vec3 b = flatUnit(pts[i + 1] - pts[i]);
-        const float angle = std::atan2(a.x * b.z - a.z * b.x, a.x * b.x + a.z * b.z);
+        const float angle = libm::atan2(a.x * b.z - a.z * b.x, a.x * b.x + a.z * b.z);
         if (std::abs(angle) > 0.03f)
             bends.push_back({m_line.distances[i], angle, i});
     }

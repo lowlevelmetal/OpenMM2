@@ -12,6 +12,7 @@
 
 #include "phys/TrailerJoint.h"
 
+#include "core/Libm.h"
 #include "phys/AgeMath.h"
 #include "phys/InertialCS.h"
 #include "phys/vehicle/TuneParams.h"
@@ -146,7 +147,7 @@ void TrailerJoint::setPosition(const Vec3& pos) {
 }
 
 void TrailerJoint::setCosFreeLean() {
-    cosFreeLean = std::cos(freeLean);
+    cosFreeLean = libm::cos(freeLean);
 }
 
 void TrailerJoint::setRotate1(const Mat34& m) {
@@ -407,7 +408,7 @@ void TrailerJoint::update(float dt, float invDt) {
             } else {
                 // fsin's wide result times 1/m, rounded once.
                 const float s =
-                    static_cast<float>(std::sin(static_cast<double>(halfAngle)) * static_cast<double>(invM));
+                    static_cast<float>(libm::sin(static_cast<double>(halfAngle)) * static_cast<double>(invM));
                 factor = s + s;
             }
             force = {factor * (turned.x + par.x), factor * (turned.y + par.y), factor * (par.z + turned.z)};
@@ -456,7 +457,7 @@ void TrailerJoint::doJointTorque(const Mat34& a, const Mat34& at, const Mat34& b
         else if (!(bInA.z > -1.0f))
             leanOut = kPi;
         else
-            leanOut = static_cast<float>(std::acos(static_cast<double>(bInA.z)));
+            leanOut = static_cast<float>(libm::acos(static_cast<double>(bInA.z)));
         if (static_cast<double>(leanOut) > 1e-05) {
             a0 = {bInA.y, -bInA.x, 0.0f};
             const float s = age::invMag(a0);
@@ -512,7 +513,7 @@ void TrailerJoint::doJointTorque(const Mat34& a, const Mat34& at, const Mat34& b
                      a0.y * bInA.x - a0.x * bInA.y};
         const float num = (av.x * c.x + c.z * av.z) + c.y * av.y;
         const float den = (av.x * a0.x + av.z * a0.z) + av.y * a0.y;
-        rollOut = static_cast<float>(std::atan2(static_cast<double>(num), static_cast<double>(den)));
+        rollOut = static_cast<float>(libm::atan2(static_cast<double>(num), static_cast<double>(den)));
         const float kInv = 1.0f / (ics2->invInertia.z + ics1->invInertia.z);
         const float kS2 = kInv * kJointSpring;
         const float kD2 = kInv * kJointDamp;

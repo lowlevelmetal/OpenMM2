@@ -6,7 +6,8 @@ add_library(mm2_core STATIC
     Paths.cpp
     StringUtil.cpp
     File.cpp
-    Math.cpp)
+    Math.cpp
+    Libm.cpp)
 target_include_directories(mm2_core PUBLIC
     "${PROJECT_SOURCE_DIR}/src"
     "${CMAKE_CURRENT_BINARY_DIR}/generated")

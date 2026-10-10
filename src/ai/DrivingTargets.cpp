@@ -8,6 +8,7 @@
 #include "ai/MapView.h"
 #include "ai/PathGeometry.h"
 #include "ai/Traffic.h"
+#include "core/Libm.h"
 #include "phys/vehicle/CarSim.h"
 
 #include <algorithm>
@@ -74,11 +75,11 @@ void PhysicsDriver::initRoadTurns() {
         if (m_roadDir[w]) {
             const Vec3& x = at(a->xAxis, n - 1);
             const Vec3& z = at(a->zAxis, n - 1);
-            angle = std::atan2(d.z * -x.z + d.x * -x.x, d.z * -z.z + d.x * -z.x);
+            angle = libm::atan2(d.z * -x.z + d.x * -x.x, d.z * -z.z + d.x * -z.x);
         } else {
             const Vec3& x = at(a->xAxis, 0);
             const Vec3& z = at(a->zAxis, 0);
-            angle = std::atan2(d.z * x.z + d.x * x.x, d.z * z.z + d.x * z.x);
+            angle = libm::atan2(d.z * x.z + d.x * x.x, d.z * z.z + d.x * z.x);
         }
         m_turnAngle[w] = angle;
         m_turnDir[w] = angle >= 0.7f ? 1.0f : (angle <= -0.7f ? -1.0f : 0.0f);
@@ -94,9 +95,9 @@ void PhysicsDriver::calcRoadTurns() {
             continue;
         const float d = calcTurnIntersection(w);
         const float h = (3.14f - std::abs(m_turnAngle[w])) * 0.5f;
-        const float r = d / (1.0f - std::sin(h));
+        const float r = d / (1.0f - libm::sin(h));
         m_turnRadius[w] = r;
-        const float t = std::cos(h) * r;
+        const float t = libm::cos(h) * r;
         m_turnSetback[w] = t;
         const float k = (r - d) * m_turnDir[w];
         const int n = static_cast<int>(a->center.size());
@@ -118,8 +119,8 @@ void PhysicsDriver::calcRoadTurns() {
         m_turnStartDir[w] = unitXZ(
             {(left.x * rd + c.x) - c.x, (left.y * rd + c.y) - c.y, (left.z * rd + c.z) - c.z});
         const float e = m_turnAngle[w] * m_turnDir[w];
-        const float s = std::sin(e) * r;
-        const float cs = std::cos(e) * r * m_turnDir[w];
+        const float s = libm::sin(e) * r;
+        const float cs = libm::cos(e) * r * m_turnDir[w];
         const Vec3 q{(c.x - back.x * s) + left.x * cs, (c.y - back.y * s) + left.y * cs,
                      (c.z - back.z * s) + left.z * cs};
         m_turnEndDir[w] = unitXZ(q - c);
@@ -429,8 +430,8 @@ int PhysicsDriver::calcSharpTurnTarget(int& idx, int turnNode) {
         const Vec3& z = at(p->zAxis, k);
         const Vec3& c = st.center;
         auto arcPoint = [&](float a) {
-            const float sr = std::sin(a) * r;
-            const float cr = std::cos(a) * r * dir;
+            const float sr = libm::sin(a) * r;
+            const float cr = libm::cos(a) * r * dir;
             return Vec3{c.x - z.x * sr + x.x * cr, c.y, c.z - z.z * sr + x.z * cr};
         };
         Vec3 p0;
@@ -441,7 +442,7 @@ int PhysicsDriver::calcSharpTurnTarget(int& idx, int turnNode) {
         const Vec3 u = normalized(p0 - c);
         const Vec3 pp = prevPos();
         const float dx = pp.x - c.x, dz = pp.z - c.z;
-        float theta = std::atan2(u.x * dz - u.z * dx, u.x * dx + u.z * dz);
+        float theta = libm::atan2(u.x * dz - u.z * dx, u.x * dx + u.z * dz);
         if ((dir < 0.0f && rd) || (dir > 0.0f && !rd))
             theta = -theta;
         if (theta < -0.1f) {
@@ -494,7 +495,7 @@ int PhysicsDriver::calcSharpTurnTarget(int& idx, int turnNode) {
     const Vec3& sr = m_turnStartDir[w];
     const Vec3 pp = prevPos();
     const float dx = pp.x - c.x, dz = pp.z - c.z;
-    float theta = std::atan2(sr.x * dz - sr.z * dx, dx * sr.x + dz * sr.z);
+    float theta = libm::atan2(sr.x * dz - sr.z * dx, dx * sr.x + dz * sr.z);
     if (dir < 0.0f)
         theta = -theta;
     if (theta < -0.1f) {
@@ -512,8 +513,8 @@ int PhysicsDriver::calcSharpTurnTarget(int& idx, int turnNode) {
             continue;
         node = &m_nodes[static_cast<std::size_t>(idx)];
         const float ai = static_cast<float>(i) * step;
-        const float s = std::sin(ai) * r;
-        const float cc = std::cos(ai) * r * dir;
+        const float s = libm::sin(ai) * r;
+        const float cc = libm::cos(ai) * r * dir;
         node->pos = {(c.x - fwd.x * s) + left.x * cc, (c.y - fwd.y * s) + left.y * cc,
                      (c.z - fwd.z * s) + left.z * cc};
         saveTurnTarget(idx, false);
@@ -653,7 +654,7 @@ void PhysicsDriver::calcRoadTarget(int i, Vec3& from) {
             lat = latValue;
         if (clampLon && lon < 1.0f)
             lon = 1.0f;
-        return std::atan2(lat, lon);
+        return libm::atan2(lat, lon);
     };
 
     // The funnel at the start vertex.
@@ -945,7 +946,7 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
         }
         if (b < 1.0f && i == 1)
             b = 1.0f;
-        angL = std::atan2(a, b);
+        angL = libm::atan2(a, b);
         const Vec3 pr = ra.b80(k0) - nrm * (R + 1.0f);
         d = pr - P;
         a = dotXZ(d, ra.x(dirIdx));
@@ -956,21 +957,21 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
         }
         if (b < 1.0f && i == 1)
             b = 1.0f;
-        angR = std::atan2(a, b);
+        angR = libm::atan2(a, b);
     } else {
         const Vec3 pl = ra.divided ? ra.c(v) - ra.x(v) * (L + 1.0f) : ra.b80(v) - ra.x(v) * L;
         Vec3 d = pl - P;
         float a = -dotXZ(d, ra.x(v)), b = -dotXZ(d, ra.z(v));
         if (-0.01f < a && a < 0.01f)
             a = -1.0f;
-        angL = std::atan2(a, b);
+        angL = libm::atan2(a, b);
         const Vec3 pr = ra.be4(v) + ra.x(v) * R;
         d = pr - P;
         a = -dotXZ(d, ra.x(v));
         b = -dotXZ(d, ra.z(v));
         if (-0.01f < a && a < 0.01f)
             a = 1.0f;
-        angR = std::atan2(a, b);
+        angR = libm::atan2(a, b);
     }
     int leftV = v, rightV = v, leftSlot = r, rightSlot = r;
     bool found = false;
@@ -1012,7 +1013,7 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
             a = -1.0f;
         if (!fwd && b < 1.0f)
             b = 1.0f;
-        const float al = std::atan2(a, b);
+        const float al = libm::atan2(a, b);
         if (al > angR) {
             // Crossed to the right: the right limit's curb point.
             found = true;
@@ -1044,7 +1045,7 @@ void PhysicsDriver::calcDestinationTarget(int i, Vec3& viewOrigin) {
             a = 1.0f;
         if (!fwd && b < 1.0f)
             b = 1.0f;
-        const float ar = std::atan2(a, b);
+        const float ar = libm::atan2(a, b);
         if (ar < angL) {
             // Crossed to the left: the left limit's curb point.
             found = true;
