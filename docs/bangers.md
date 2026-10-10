@@ -195,12 +195,15 @@ needs, all of it inert in a single-player race:
   the same order everywhere); a hit instance remembers the placed prop it came
   from (`Instance::source`, with `part` for a BREAKnn piece) or the tag its
   thrower gave a car part (`Instance::tag`). The ring's slots count how often
-  they were handed out (`generation`).
+  they were handed out (`generation`). In a network race the ring grows by
+  40 slots, up to 40 a player, when it is about to wrap onto a prop that
+  still moves or was knocked less than 10 s ago (`setRingGrowth`; MM2's
+  ring of 40 makes such props disappear in a pile-up).
 * `takeKnocks` (with `recordKnocks(true)`): the placed props that broke loose
   (`dgUnhitBangerInstance::Impact`) and what hit them.
-* A client (`setReplica`): only its own car may touch its props, and the
-  props it simulates may knock a placed prop for their first 0.5 s
-  (`phys::Instance::acceptsContact`); `breakPlaced` takes a
+* A client (`setReplica`): only its own car and the other players' cars it
+  simulates may touch its props, and the props it simulates one another but
+  no placed prop (`phys::Instance::acceptsContact`); `breakPlaced` takes a
   prop out of its room as Impact does but without a body; `restoreStanding`
   undoes a knock its car predicted that the host did not make (Reset for one
   prop); `showMirror` / `hideMirror` show the host's ring slots in instances

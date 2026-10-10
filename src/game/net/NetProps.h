@@ -75,8 +75,23 @@ public:
     // `localToucher` (its own car). OPENMM2_NETPROPS=local leaves every
     // machine with its own props, as MM2 and OpenMM2 0.3 did (for
     // comparison).
+    // `carOf` (host): where a client's car is, for what its messages carry
+    // first (none: anywhere). In a network race the ring of knocked-over
+    // props grows in a pile-up, up to kMaxHit a player (BangerSet::
+    // setRingGrowth).
+    using CarOf = std::function<std::optional<Vec3>(std::uint8_t)>;
     void setup(NetGame& net, bangers::BangerSet& set,
-               std::function<bool(const phys::Instance&)> localToucher);
+               std::function<bool(const phys::Instance&)> localToucher, CarOf carOf = {});
+    // Client: which player's car touched a prop (its predictions), where
+    // the host had a player's car when, and where this machine's car is (its
+    // missed predictions undone).
+    using OwnCarAt = std::function<std::optional<Vec3>()>;
+    void setClientCars(PropClient::CarOfToucher carOfToucher, PropClient::HostCar hostCar,
+                       OwnCarAt ownCarAt) {
+        m_carOfToucher = std::move(carOfToucher);
+        m_hostCar = std::move(hostCar);
+        m_ownCarAt = std::move(ownCarAt);
+    }
     bool host() const { return m_host.has_value(); }
     bool client() const { return m_client.has_value(); }
     // A client takes the cars' thrown parts from the host's ring (except
@@ -111,6 +126,10 @@ private:
     std::optional<PropClient> m_client;
     std::uint32_t m_catalog = 0;
     std::set<std::uint8_t> m_caughtUp; // host: players sent every knock so far
+    CarOf m_carOf;
+    PropClient::CarOfToucher m_carOfToucher;
+    PropClient::HostCar m_hostCar;
+    OwnCarAt m_ownCarAt;
     std::unique_ptr<PropTrace> m_trace;
     bool m_traced = false;
     std::uint64_t m_statsAt = 0;

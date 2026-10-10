@@ -7,11 +7,18 @@
 #include "game/net/NetGame.h"
 #include "net/PropState.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <format>
 
 namespace mm2::game {
+namespace {
+
+// The ring grows rather than wrap onto a prop knocked this recently.
+constexpr double kRingBusySeconds = 10.0;
+
+} // namespace
 
 // --- Trace ---------------------------------------------------------------------------------------
 
@@ -84,8 +91,9 @@ NetProps::NetProps() = default;
 NetProps::~NetProps() = default;
 
 void NetProps::setup(NetGame& net, bangers::BangerSet& set,
-                     std::function<bool(const phys::Instance&)> localToucher) {
+                     std::function<bool(const phys::Instance&)> localToucher, CarOf carOf) {
     m_set = &set;
+    m_carOf = std::move(carOf);
     m_catalog = propCatalog(set);
     m_trace = PropTrace::of(net);
     if (m_trace)
@@ -97,6 +105,13 @@ void NetProps::setup(NetGame& net, bangers::BangerSet& set,
                   placed, m_catalog);
         return;
     }
+    // OpenMM2: a pile-up of more knocks than MM2's ring of 40 holds (the
+    // oldest still moving, or knocked in the last 10 s) grows it, up to 40 a
+    // player (inferred: a player's knocks then last about as long as in
+    // single player).
+    const int players = static_cast<int>(std::max<std::size_t>(2, net.players().size()));
+    set.setRingGrowth(std::min(bangers::BangerSet::kMaxHit * players, static_cast<int>(net::kMaxPropSlots)),
+                      kRingBusySeconds);
     if (net.isHost()) {
         m_host.emplace();
     } else {
@@ -120,7 +135,7 @@ void NetProps::beforeStep(NetGame& net, std::span<const NetGameEvent> events, do
         if (const auto knocks = ev.as<net::PropKnocksEvent>())
             m_client->receiveKnocks(*knocks);
     }
-    m_client->update(*m_set, now, resolve);
+    m_client->update(*m_set, now, resolve, m_hostCar, m_ownCarAt ? m_ownCarAt() : std::nullopt);
 }
 
 void NetProps::sendCatchUps(NetGame& net, std::uint32_t time) {
@@ -153,19 +168,19 @@ void NetProps::afterStep(NetGame& net, double now, std::uint64_t nowMs, const Cl
             net.sendEvent(net::kPropKnocksEvent, std::move(payload));
         }
         sendCatchUps(net, time);
-        if (const auto msg = m_host->build(*m_set, time, nowMs, m_catalog)) {
-            for (const auto& p : net.players()) {
-                if (p.id == net.localId() || !net.playerLoaded(p.id))
-                    continue;
-                const std::size_t bytes = net.sendPropState(p.id, *msg);
-                m_sentBytes += bytes;
-                m_host->stats().bytes += bytes;
-                ++m_sentMessages;
-            }
+        std::vector<PropHost::Viewer> viewers;
+        for (const auto& p : net.players())
+            if (p.id != net.localId() && net.playerLoaded(p.id))
+                viewers.push_back({p.id, m_carOf ? m_carOf(p.id) : std::nullopt});
+        for (const auto& [id, msg] : m_host->build(*m_set, time, nowMs, m_catalog, viewers)) {
+            const std::size_t bytes = net.sendPropState(id, msg);
+            m_sentBytes += bytes;
+            m_host->stats().bytes += bytes;
+            ++m_sentMessages;
         }
     }
     if (m_client) {
-        m_client->predicted(knocks, now);
+        m_client->predicted(knocks, now, net.localId(), m_carOfToucher);
         for (const auto& [prop, undone] : m_client->takeApplied()) {
             if (!m_trace)
                 continue;
@@ -209,21 +224,25 @@ void NetProps::logStats(NetGame& net, std::uint64_t nowMs) {
         const std::size_t clients = std::max<std::size_t>(1, net.players().size() - 1);
         if (s.messages > 0 || m_sentEvents > 0)
             log::info("netprops: host sent {:.1f} messages/s ({:.0f} bytes/s to each of {} clients, {:.1f} "
-                      "slots and {:.1f} states a message), {} knocks in {} events ({} bytes)",
-                      static_cast<double>(s.messages) / seconds,
+                      "slots and {:.1f} states a message, {:.0f}% of them near; {} deferred), ring {}, {} "
+                      "knocks in {} events ({} bytes)",
+                      static_cast<double>(s.messages) / seconds / static_cast<double>(clients),
                       static_cast<double>(m_sentBytes) / seconds / static_cast<double>(clients), clients,
                       s.messages ? static_cast<double>(s.slots) / static_cast<double>(s.messages) : 0.0,
                       s.messages ? static_cast<double>(s.fullStates) / static_cast<double>(s.messages) : 0.0,
-                      s.knocks, m_sentEvents, m_eventBytes);
+                      s.fullStates
+                          ? 100.0 * static_cast<double>(s.nearStates) / static_cast<double>(s.fullStates)
+                          : 0.0,
+                      s.deferred, m_set->ringSize(), s.knocks, m_sentEvents, m_eventBytes);
         s = {};
         m_sentBytes = m_sentMessages = m_sentEvents = m_eventBytes = 0;
     }
     if (m_client) {
         const auto& s = m_client->stats();
         log::info("netprops: client {} messages ({} late, {} refused), host knocks {}, predicted {} "
-                  "(confirmed {}, undone {}), hand-overs {}, orphans {}, delay {:.0f} ms",
+                  "(confirmed {}, undone {}, {} of them early), hand-overs {}, orphans {}, delay {:.0f} ms",
                   s.messages, s.outdated, s.refused, s.knocks, s.predicted, s.confirmed, s.undone,
-                  s.handovers, s.orphans, m_client->delayMs());
+                  s.undoneEarly, s.handovers, s.orphans, m_client->delayMs());
     }
 }
 

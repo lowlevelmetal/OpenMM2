@@ -12,19 +12,23 @@
 //                   index (`prop`) names it everywhere; a checksum of the
 //                   placement travels with every message.
 //   a hit instance  one of the host's ring of knocked-over props
-//                   (dgBangerManager, 40 slots): a placed prop broken loose,
-//                   one of its BREAKnn pieces, or a car part thrown off
+//                   (dgBangerManager, 40 slots, which a network game lets
+//                   grow in a pile-up): a placed prop broken loose, one of
+//                   its BREAKnn pieces, or a car part thrown off
 //                   (vehBreakableMgr::Eject). A slot's generation changes
 //                   whenever the host hands it out again.
 //
 // Two messages carry them:
 //
-//   PropStateMsg     host -> client, unreliable, about 20 a second while
-//                    anything moves (every 0.5 s otherwise): every occupied
-//                    ring slot, complete, so a slot missing from a newer
-//                    message is empty from that message's time. A moving
-//                    slot carries its state every time, one at rest now and
-//                    then (in between only its slot and generation travel).
+//   PropStateMsg     host -> each client its own, unreliable, about 20 a
+//                    second while anything near it moves (less often
+//                    otherwise): every occupied ring slot, complete and in
+//                    ascending order, so a slot missing from a newer message
+//                    is empty from that message's time. The states are the
+//                    client's: a moving slot near its car carries its state
+//                    every time, one far away less often, one at rest now and
+//                    then (in between only its slot and generation travel),
+//                    the nearest first within a datagram.
 //   PropKnocksEvent  host -> everyone, a reliable game event: the placed props
 //                    that broke loose and when. Every machine thus knows every
 //                    knocked prop of the race, wherever it is; a machine that
@@ -38,7 +42,7 @@
 namespace mm2::net {
 
 inline constexpr std::uint32_t kMaxPropIds = 32768;    // placed props 0..32767
-inline constexpr std::uint32_t kMaxPropSlots = 64;     // ring slots 0..63 (MM2's ring has 40)
+inline constexpr std::uint32_t kMaxPropSlots = 256;    // ring slots 0..255 (MM2's ring has 40)
 inline constexpr std::uint32_t kPropGenerations = 16;  // a slot's generation, modulo
 inline constexpr std::uint32_t kMaxPropParts = 16;     // a prop's BREAK01..BREAK16
 inline constexpr std::uint32_t kMaxPropOwners = 64;    // a car part's owner id
@@ -128,10 +132,22 @@ bool serializePropDescriptor(S& s, PropDescriptor& d) {
     return s.ok();
 }
 
+// `previous`: the slot before it in the message (-1 for the first); the
+// slots ascend, the next one in a single bit.
 template <class S>
-bool serializePropSlot(S& s, PropSlot& p) {
+bool serializePropSlot(S& s, PropSlot& p, std::int32_t previous = -1) {
     std::int32_t slot = p.slot, generation = p.generation;
-    s.ranged(slot, 0, static_cast<std::int32_t>(kMaxPropSlots) - 1);
+    bool next = previous >= 0 && slot == previous + 1;
+    s.boolean(next);
+    if (next) {
+        slot = previous + 1;
+        if (slot >= static_cast<std::int32_t>(kMaxPropSlots))
+            return s.fail();
+    } else {
+        s.ranged(slot, 0, static_cast<std::int32_t>(kMaxPropSlots) - 1);
+        if (slot <= previous)
+            return s.fail(); // not ascending
+    }
     s.ranged(generation, 0, static_cast<std::int32_t>(kPropGenerations) - 1);
     p.slot = static_cast<std::uint8_t>(slot);
     p.generation = static_cast<std::uint8_t>(generation);
@@ -163,14 +179,17 @@ bool serialize(S& s, PropStateMsg& m) {
         return s.fail();
     if constexpr (S::kReading)
         m.slots.resize(count);
-    for (std::uint32_t i = 0; i < count; ++i)
-        if (!serializePropSlot(s, m.slots[i]))
+    std::int32_t previous = -1;
+    for (std::uint32_t i = 0; i < count; ++i) {
+        if (!serializePropSlot(s, m.slots[i], previous))
             return s.fail();
+        previous = m.slots[i].slot;
+    }
     return s.ok();
 }
 
-// Bits one slot takes on the wire.
-std::size_t propSlotBits(const PropSlot& p);
+// Bits one slot takes on the wire (after `previous`, as serializePropSlot).
+std::size_t propSlotBits(const PropSlot& p, std::int32_t previous = -1);
 
 // Host -> everyone, a game event (reliable, ordered): placed props that broke
 // loose on the host. Each knock's time is `time` plus its delay; a catch-up

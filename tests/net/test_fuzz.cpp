@@ -160,8 +160,8 @@ std::vector<Bytes> corpus() {
     car.gear = 3;
     ambient.entities.push_back(car);
     c.push_back(encodeMessage(ambient));
-    // The host's props: a piece flying, a prop at rest, a slot only still
-    // there, a car's thrown part; and their knocks.
+    // The host's props: a car's thrown part, a piece flying, a prop at rest,
+    // a slot of a grown ring only still there (ascending); and their knocks.
     PropStateMsg props;
     props.time = 6000;
     props.catalog = 0xF5672068u;
@@ -176,6 +176,10 @@ std::vector<Bytes> corpus() {
     piece.orientation = Quat::fromAxisAngle(Vec3{1.0f, 0.0f, 0.0f}, 0.7f);
     piece.velocity = {0.5f, -3.0f, 6.0f};
     piece.angularVelocity = {2.0f, 0.0f, -1.0f};
+    PropSlot part = piece;
+    part.slot = 0;
+    part.what = {PropSource::CarPart, 0, 12, PropOwner::Catalog, 7, 3};
+    props.slots.push_back(part);
     props.slots.push_back(piece);
     PropSlot rest = piece;
     rest.slot = 4;
@@ -183,14 +187,10 @@ std::vector<Bytes> corpus() {
     rest.moving = false;
     props.slots.push_back(rest);
     PropSlot still;
-    still.slot = 39;
+    still.slot = 200;
     still.generation = 2;
     still.hasState = false;
     props.slots.push_back(still);
-    PropSlot part = piece;
-    part.slot = 0;
-    part.what = {PropSource::CarPart, 0, 12, PropOwner::Catalog, 7, 3};
-    props.slots.push_back(part);
     c.push_back(encodeMessage(props));
     PropKnocksEvent knocks;
     knocks.time = 6100;
@@ -362,6 +362,8 @@ void checkAmbient(const AmbientStateMsg& m) {
 
 void checkProps(const PropStateMsg& m) {
     ASSERT_LE(m.slots.size(), kMaxPropSlots);
+    for (std::size_t i = 1; i < m.slots.size(); ++i)
+        ASSERT_GT(m.slots[i].slot, m.slots[i - 1].slot); // ascending
     for (const PropSlot& p : m.slots) {
         ASSERT_LT(p.slot, kMaxPropSlots);
         ASSERT_LT(p.generation, kPropGenerations);
