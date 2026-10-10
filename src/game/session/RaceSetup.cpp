@@ -2,6 +2,7 @@
 
 #include "ai/Random.h"
 #include "city/RoomInfo.h"
+#include "core/Libm.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 #include "game/session/Gate.h"
@@ -49,7 +50,7 @@ std::optional<city::RaceMode> raceMode(GameMode m) {
 // Heading that faces from `from` towards `to`, as mmWaypoints computes it
 // for waypoints stored with heading 0.
 float headingTowards(const Vec3& from, const Vec3& to) {
-    return std::atan2(from.x - to.x, from.z - to.z) * -57.295776f;
+    return libm::atan2(from.x - to.x, from.z - to.z) * -57.295776f;
 }
 
 } // namespace
@@ -88,7 +89,7 @@ std::vector<Checkpoint> buildCheckpoints(const std::vector<city::Waypoint>& poin
 
 Vec3 headingDirection(float headingDeg) {
     const float h = headingDeg * kDegToRad;
-    return {std::sin(h), 0.0f, -std::cos(h)};
+    return {libm::sin(h), 0.0f, -libm::cos(h)};
 }
 
 Mat34 spawnAt(const Checkpoint& cp) {

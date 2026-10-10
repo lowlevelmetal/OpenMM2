@@ -75,10 +75,15 @@ void TrafficProxies::update(std::span<const ai::AmbientCar> cars) {
         p.room = m_level ? m_level->findRoom(p.position(), p.room) : 0;
     }
     std::erase_if(m_proxies, [](const auto& e) { return !e.second->seen; });
+    // In id order within a room, as TrafficBodies lists its rail cars: the
+    // physics collides a room's instances in the order listed, and an
+    // unordered map's order (or an unstable sort's) differs between standard
+    // libraries, so a client built with MSVC and one built with GCC would
+    // resolve the same contacts in different orders.
     m_byRoom.clear();
     for (auto& [id, p] : m_proxies)
         m_byRoom.emplace_back(p->room, p.get());
-    std::ranges::sort(m_byRoom, [](const auto& a, const auto& b) { return a.first < b.first; });
+    std::ranges::stable_sort(m_byRoom, {}, &std::pair<int, Proxy*>::first);
 }
 
 void TrafficProxies::instancesIn(int room, std::vector<phys::Instance*>& out) const {

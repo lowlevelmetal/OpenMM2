@@ -8,8 +8,8 @@ MM2Recomp reference, see CLAUDE.md): `phInertialCS`, `vehCarSim`, `vehWheel`,
 `vehGyro`, `vehStuck`, `vehTrailer`, `dgTrailerJoint`, `phJoint` and parts of
 `vehCar`, `vehCarDamage`, `phColliderJointed` and `dgPhysManager`. The code
 follows the original's operation order and 32-bit float arithmetic (the game
-runs the x87 in single precision); `mm2_phys` is built with
-`-ffp-contract=off`.
+runs the x87 in single precision), and gives the same bits on every
+platform (see "The same results on every platform").
 
 ## Evidence levels
 
@@ -62,6 +62,51 @@ simulation steps"). The observer only reads; `CarSim::resets` (how many
 times `vehCar::Reset` put the car somewhere) tells the drawing not to blend
 across a reset, and nothing in the simulation reads it. The AI's fixed 1/30 s
 steps (`ai::World`) are drawn the same way.
+
+## The same results on every platform
+
+A network game's host and clients run the same samples (each client
+predicts its own car and replays its inputs on every host state), so a
+sample must give the same bits whichever compiler and C runtime built the
+machine. OpenMM2 makes sure of three things
+([review](review/multiplayer-determinism.md)):
+
+* **Arithmetic.** Every target is built without contraction and without
+  fast-math (`cmake/CompilerOptions.cmake`: `-ffp-contract=off
+  -fno-fast-math`, MSVC `/fp:precise`), on SSE2 or AArch64 where float and
+  double expressions are evaluated in their own type. The basic operations
+  (+ - * / and sqrt) then round as IEEE 754 says, in the order the source
+  writes them, on GCC, Clang, MinGW and MSVC alike. A 32-bit x87 build is
+  not supported.
+* **Elementary functions.** The C runtimes' sin, cos, atan2, exp, log and
+  pow differ in the last bit (glibc's own sinf even depends on whether the
+  CPU has FMA). The simulation calls OpenMM2's (`core/Libm.h`: sin, cos,
+  tan, asin, acos, atan, atan2, exp, exp2, log, log2, pow, hypot), written
+  with the basic operations only. Their float versions are correctly rounded
+  (exhaustive sweeps of the float arguments in the game's ranges found 0 to
+  5 exceptions per function out of 1 to 2 billion), which is what MM2's x87
+  code got: fsin, fcos, fpatan, fyl2x and f2xm1 compute in extended
+  precision whatever the precision control, and the result is stored to a
+  float. Exact operations (sqrt, fmod, remainder, floor, round, abs) stay
+  the runtime's. A test (`Determinism.SimulationCallsNoRuntimeTranscendentals`)
+  fails when a simulation source calls the runtime's again; the drawing,
+  the cameras and the sound may.
+* **Order.** Nothing the simulation iterates depends on an unordered
+  container's order, an unstable sort's order of equal keys or a pointer's
+  value, and nothing runs on other threads.
+
+`Determinism.ScenarioHashesMatchEveryPlatform` (tests/game) proves it in
+CI: a car on fixed inputs drives a minute through props, over a jump and
+round a block of ambient traffic it knocks loose, on cobbles, with an AI
+racer lapping the block, without game data, and the cars', the traffic's
+and the props' states are hashed every two seconds against hashes
+committed from a Linux GCC build (built against the C runtime's functions
+instead, a Linux and a MinGW build differ from the first checkpoint on).
+GCC, Clang, MSVC and MinGW
+(under Wine) run it; `Determinism.RetailRaceThroughTraffic` does the same
+for the first 40 s of London's race1 with game data (locally). When the
+simulation changes on purpose, the failing test prints the new table; the
+values must be the same on every platform.
 
 ## Rigid body (phInertialCS) — MM2
 

@@ -1,25 +1,18 @@
 #include "core/Math.h"
 
+#include "core/Libm.h"
+
 namespace mm2 {
 
 // Rotation matrices are the transposes of the usual column-vector forms
 // because of the row-vector convention; positive angles rotate
 // counter-clockwise when looking down the axis toward the origin.
 
-namespace {
-
-// cos and sin as the x87 computes them (wide), rounded to float.
-float cosf32(float a) {
-    return static_cast<float>(std::cos(static_cast<double>(a)));
-}
-float sinf32(float a) {
-    return static_cast<float>(std::sin(static_cast<double>(a)));
-}
-
-} // namespace
+// cos and sin are OpenMM2's own (core/Libm.h): as the x87 computes them
+// (wide), rounded to float, and the same on every platform.
 
 Mat34 Mat34::rotationX(float a) {
-    const float c = cosf32(a), s = sinf32(a);
+    const float c = libm::cos(a), s = libm::sin(a);
     Mat34 m;
     m.m1 = {0, c, s};
     m.m2 = {0, -s, c};
@@ -27,7 +20,7 @@ Mat34 Mat34::rotationX(float a) {
 }
 
 Mat34 Mat34::rotationY(float a) {
-    const float c = cosf32(a), s = sinf32(a);
+    const float c = libm::cos(a), s = libm::sin(a);
     Mat34 m;
     m.m0 = {c, 0, -s};
     m.m2 = {s, 0, c};
@@ -35,7 +28,7 @@ Mat34 Mat34::rotationY(float a) {
 }
 
 Mat34 Mat34::rotationZ(float a) {
-    const float c = cosf32(a), s = sinf32(a);
+    const float c = libm::cos(a), s = libm::sin(a);
     Mat34 m;
     m.m0 = {c, s, 0};
     m.m1 = {-s, c, 0};
@@ -46,8 +39,8 @@ Mat34 Mat34::rotationAxis(const Vec3& k, float angle) {
     // Matrix34::MakeRotateUnitAxis: the transpose of Rodrigues' rotation. The
     // diagonal adds the cosine as fcos left it (wider than a float); every
     // product before it rounds to float.
-    const double c = std::cos(static_cast<double>(angle));
-    const float s = sinf32(angle);
+    const double c = libm::cos(static_cast<double>(angle));
+    const float s = libm::sin(angle);
     const float t = static_cast<float>(1.0 - c);
     const auto diagonal = [&](float v) { return static_cast<float>(static_cast<double>((v * v) * t) + c); };
     Mat34 m;
@@ -87,7 +80,7 @@ void Mat34::normalize() {
 }
 
 Mat44 Mat44::perspective(float fovY, float aspect, float zNear, float zFar, bool zeroToOne) {
-    const float f = 1.0f / std::tan(fovY * 0.5f);
+    const float f = 1.0f / libm::tan(fovY * 0.5f);
     Mat44 r;
     r.m[0][0] = f / aspect;
     r.m[1][1] = f;
@@ -104,7 +97,7 @@ Mat44 Mat44::perspective(float fovY, float aspect, float zNear, float zFar, bool
 }
 
 Mat44 Mat44::perspectiveReversedInfinite(float fovY, float aspect, float zNear) {
-    const float f = 1.0f / std::tan(fovY * 0.5f);
+    const float f = 1.0f / libm::tan(fovY * 0.5f);
     Mat44 r;
     r.m[0][0] = f / aspect;
     r.m[1][1] = f;
@@ -133,8 +126,8 @@ Mat44 Mat44::orthographic(float left, float right, float bottom, float top, floa
 }
 
 Quat Quat::fromAxisAngle(const Vec3& axis, float angle) {
-    const float s = std::sin(angle * 0.5f);
-    return {axis.x * s, axis.y * s, axis.z * s, std::cos(angle * 0.5f)};
+    const float s = libm::sin(angle * 0.5f);
+    return {axis.x * s, axis.y * s, axis.z * s, libm::cos(angle * 0.5f)};
 }
 
 Quat Quat::fromMatrix(const Mat34& m) {
@@ -206,10 +199,10 @@ Quat Quat::slerp(const Quat& a, const Quat& b, float t) {
         s0 = 1.0f - t;
         s1 = t;
     } else {
-        const float omega = std::acos(cosom);
-        const float sinom = std::sin(omega);
-        s0 = std::sin((1.0f - t) * omega) / sinom;
-        s1 = std::sin(t * omega) / sinom;
+        const float omega = libm::acos(cosom);
+        const float sinom = libm::sin(omega);
+        s0 = libm::sin((1.0f - t) * omega) / sinom;
+        s1 = libm::sin(t * omega) / sinom;
     }
     return Quat{a.x * s0 + end.x * s1, a.y * s0 + end.y * s1, a.z * s0 + end.z * s1, a.w * s0 + end.w * s1}
         .normalized();

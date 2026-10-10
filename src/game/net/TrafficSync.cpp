@@ -3,6 +3,7 @@
 // interpolation. See TrafficSync.h and docs/multiplayer.md.
 #include "game/net/TrafficSync.h"
 
+#include "core/Libm.h"
 #include "core/StringUtil.h"
 
 #include <algorithm>
@@ -361,7 +362,7 @@ void TrafficClient::update(double renderTime) {
         const double elapsed = std::max(0.0, renderTime - entry.updatedAt);
         entry.updatedAt = renderTime;
         if (m_options.correctionMs > 0.0) {
-            const auto keep = static_cast<float>(std::exp(-elapsed / m_options.correctionMs));
+            const auto keep = static_cast<float>(libm::exp(-elapsed / m_options.correctionMs));
             entry.offset = entry.offset * keep;
             entry.offsetTurn *= keep;
         }

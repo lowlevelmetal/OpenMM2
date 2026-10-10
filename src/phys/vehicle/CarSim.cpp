@@ -5,6 +5,7 @@
 
 #include "phys/vehicle/CarSim.h"
 
+#include "core/Libm.h"
 #include "phys/AgeMath.h"
 
 #include <algorithm>
@@ -184,7 +185,7 @@ void CarSim::reset(const Mat34& model) {
 
 float resetRotationOf(const Mat34& spawn) {
     // Mat34::rotationY(a) has m2 = (sin a, 0, cos a).
-    return std::atan2(spawn.m2.x, spawn.m2.z);
+    return libm::atan2(spawn.m2.x, spawn.m2.z);
 }
 
 void CarSim::setResetPos(const Vec3& position) {

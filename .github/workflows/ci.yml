@@ -158,9 +158,11 @@ jobs:
     container: archlinux:latest
     steps:
       - name: Install build dependencies
+        # Wine runs the determinism tests (the toolchain file makes it the
+        # tests' emulator when it is installed at configure time).
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel git cmake ninja mingw-w64-gcc shaderc glslang
+            base-devel git cmake ninja mingw-w64-gcc shaderc glslang wine
 
       - uses: actions/checkout@v7
 
@@ -177,6 +179,20 @@ jobs:
 
       - name: Build
         run: cmake --build --preset mingw-cross-release
+
+      # The simulation must give the same bits as the Linux and MSVC builds
+      # (docs/physics.md, "The same results on every platform"). Only these
+      # tests: the native jobs run the rest.
+      - name: Test determinism under Wine
+        env:
+          # A prefix of the container's own user (Wine refuses one it does
+          # not own), without the Mono and Gecko installers.
+          WINEPREFIX: /tmp/wineprefix
+          WINEDEBUG: -all
+          WINEDLLOVERRIDES: mscoree,mshtml=
+        run: |
+          wineboot --init
+          ctest --preset mingw-cross-release -R '^Determinism[.]'
 
       - name: Package
         run: cpack --preset mingw-portable

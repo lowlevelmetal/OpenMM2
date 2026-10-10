@@ -4,6 +4,7 @@
 
 #include "phys/vehicle/Transmission.h"
 
+#include "core/Libm.h"
 #include "phys/vehicle/Engine.h"
 
 #include <cmath>
@@ -31,13 +32,13 @@ void fillRatios(std::array<float, Transmission::kSlots>& r, int n, const Transmi
     if (2 < forward) {
         const int m = forward - 1;
         const float fm = static_cast<float>(m);
-        const float q = static_cast<float>(
-            std::pow(static_cast<double>(r[static_cast<std::size_t>(n - 1)] / r[2]), static_cast<double>(1.0f / fm)));
+        const double top = r[static_cast<std::size_t>(n - 1)] / r[2];
+        const float q = static_cast<float>(libm::pow(top, static_cast<double>(1.0f / fm)));
         for (int i = 1; i < m; ++i) {
             const float fi = static_cast<float>(i);
             const float e = fi - ((static_cast<float>(i - m) * fi) * p.gearBias) / fm;
             r[static_cast<std::size_t>(2 + i)] =
-                static_cast<float>(std::pow(static_cast<double>(q), static_cast<double>(e))) * r[2];
+                static_cast<float>(libm::pow(static_cast<double>(q), static_cast<double>(e))) * r[2];
         }
     }
 }

@@ -4,6 +4,8 @@
 
 #include "phys/AgeMath.h"
 
+#include "core/Libm.h"
+
 #include <cmath>
 
 namespace mm2::phys::age {
@@ -12,20 +14,20 @@ namespace {
 // Matrix34::MakeRotateX / MakeRotateY / MakeRotateZ (cos and sin rounded
 // from the FPU's wide result).
 Mat34 makeRotateX(float angle) {
-    const float c = static_cast<float>(std::cos(static_cast<double>(angle)));
-    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    const float c = static_cast<float>(libm::cos(static_cast<double>(angle)));
+    const float s = static_cast<float>(libm::sin(static_cast<double>(angle)));
     return {{1.0f, 0.0f, 0.0f}, {0.0f, c, s}, {0.0f, -s, c}, {}};
 }
 
 Mat34 makeRotateY(float angle) {
-    const float c = static_cast<float>(std::cos(static_cast<double>(angle)));
-    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    const float c = static_cast<float>(libm::cos(static_cast<double>(angle)));
+    const float s = static_cast<float>(libm::sin(static_cast<double>(angle)));
     return {{c, 0.0f, -s}, {0.0f, 1.0f, 0.0f}, {s, 0.0f, c}, {}};
 }
 
 Mat34 makeRotateZ(float angle) {
-    const float c = static_cast<float>(std::cos(static_cast<double>(angle)));
-    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    const float c = static_cast<float>(libm::cos(static_cast<double>(angle)));
+    const float s = static_cast<float>(libm::sin(static_cast<double>(angle)));
     return {{c, s, 0.0f}, {-s, c, 0.0f}, {0.0f, 0.0f, 1.0f}, {}};
 }
 
@@ -53,8 +55,8 @@ Vec3 dot3x3Transpose(const Vec3& v, const Mat34& m) {
 Mat34 makeRotateUnitAxis(const Vec3& n, float angle) {
     // The diagonal adds the cosine as fcos left it (wider than a float); the
     // products before it round to float.
-    const double c = std::cos(static_cast<double>(angle));
-    const float s = static_cast<float>(std::sin(static_cast<double>(angle)));
+    const double c = libm::cos(static_cast<double>(angle));
+    const float s = static_cast<float>(libm::sin(static_cast<double>(angle)));
     const float omc = static_cast<float>(1.0 - c);
     const auto diagonal = [&](float k) {
         const float p = (k * k) * omc;

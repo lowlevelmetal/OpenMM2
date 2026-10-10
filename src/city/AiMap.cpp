@@ -2,6 +2,7 @@
 
 #include "city/Reader.h"
 #include "city/SdlDraw.h"
+#include "core/Libm.h"
 
 #include <algorithm>
 #include <cmath>
@@ -201,7 +202,7 @@ void addShortcuts(AiMap& map, std::vector<AiPath> shortcuts, const Psdl* psdl) {
             if (p.center.empty())
                 continue;
             const Vec3& at = p.ends[0].intersection == node ? p.center.back() : p.center.front();
-            key[i] = std::atan2(at.x - in.center.x, at.z - in.center.z);
+            key[i] = libm::atan2(at.x - in.center.x, at.z - in.center.z);
         }
         for (std::size_t i = 0; i < n; ++i) {
             for (std::size_t j = i + 1; j < n; ++j) {

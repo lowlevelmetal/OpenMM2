@@ -25,6 +25,7 @@
 // still converges on the parts and keeps every patch it did get. A new
 // `epoch` starts a new record (the car's damage was cleared).
 
+#include "core/Libm.h"
 #include "net/AmbientState.h"
 #include "net/Protocol.h"
 
@@ -92,8 +93,8 @@ struct VehicleDamageEvent {
     std::vector<DamageImpact> impacts;
 };
 
-inline float damageLog(float v) { return std::log2(1.0f + std::max(0.0f, v)); }
-inline float damageExp(float v) { return std::exp2(v) - 1.0f; }
+inline float damageLog(float v) { return libm::log2(1.0f + std::max(0.0f, v)); }
+inline float damageExp(float v) { return libm::exp2(v) - 1.0f; }
 
 template <class S>
 bool serialize(S& s, VehicleDamageEvent& e) {
