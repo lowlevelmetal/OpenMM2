@@ -36,7 +36,7 @@ inline constexpr std::uint32_t kMaxAmbientIds = 512;   // entity ids 0..511
 inline constexpr std::uint32_t kMaxAmbientModels = 64; // catalog indices 0..63
 inline constexpr std::uint32_t kMaxAmbientPaint = 15;  // paint job 0..15
 inline constexpr std::uint32_t kAmbientGenerations = 8;
-inline constexpr std::size_t kMaxAmbientPerMessage = 160;
+inline constexpr std::size_t kMaxAmbientPerMessage = 320;
 // Offsets from the origin: +-512 m across, +-256 m up and down.
 inline constexpr float kAmbientOffsetRange = 512.0f;
 inline constexpr float kAmbientHeightRange = 256.0f;
