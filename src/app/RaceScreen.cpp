@@ -5425,6 +5425,16 @@ private:
             }
             updateNetCarLead(u.ack, u.time);
         }
+        // The host ran this car's samples past this machine's (it stalled, or
+        // its inputs were lost for a while): count those as run.
+        if (ack != 0 && ack >= m_prediction.nextSeq()) {
+            const double rtt = ctx.netGame->peerStats(net::kHostPlayerId).rttMs;
+            const auto trip = static_cast<std::uint32_t>(
+                std::ceil(rtt / (static_cast<double>(phys::kFixedSampleStep) * 1000.0))) + 1;
+            if (const std::uint32_t n = m_prediction.skipTo(ack, trip); n > 0)
+                log::info("netcars: the host ran {} samples of this car this machine had not; skipped to {}",
+                          n, m_prediction.nextSeq());
+        }
         while (m_netWaiting.size() > 1 && m_netWaiting.back().first - m_netWaiting.front().first > 1000.0)
             m_netWaiting.pop_front(); // a second of reports
         // The host keeps a sample of this car's inputs in hand at the least

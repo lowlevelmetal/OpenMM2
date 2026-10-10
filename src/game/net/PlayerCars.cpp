@@ -412,6 +412,23 @@ void CarPrediction::endSample(const SimVehicle& car, const NetCarDriver& driver)
         m_history.pop_front();
 }
 
+std::uint32_t CarPrediction::skipTo(std::uint32_t ack, std::uint32_t trip) {
+    const std::uint32_t to = ack + trip + HostInputQueue::kStartMargin; // the next sample's number
+    if (to <= m_next || m_history.empty() || m_history.back().seq != m_next - 1)
+        return 0;
+    const std::uint32_t skipped = to - m_next;
+    Entry last = m_history.back();
+    last.commands.clear();
+    last.input.events = 0;
+    for (; m_next < to; ++m_next) {
+        last.seq = m_next;
+        m_history.push_back(last);
+    }
+    while (m_history.size() > m_options.history)
+        m_history.pop_front();
+    return skipped;
+}
+
 std::optional<net::PlayerInputMsg> CarPrediction::message() const {
     if (m_history.empty() || m_history.back().seq != m_next - 1)
         return std::nullopt;

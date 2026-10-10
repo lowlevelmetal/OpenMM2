@@ -73,6 +73,8 @@ struct Outcome {
     int replayed = 0;
     float largest = 0.0f; // the largest correction's move (m)
     std::uint64_t missed = 0;
+    std::uint64_t missedAfterStall = 0; // a second after a stall ended
+    std::uint32_t skipped = 0;
 };
 
 // The client drives `samples` samples; its messages reach the host
@@ -80,7 +82,7 @@ struct Outcome {
 // samples after it sent them (every third sample). `lose` drops every n-th
 // message of the client's (0 none).
 Outcome simulate(const vfs::Vfs& vfs, int samples, std::uint32_t upLatency, std::uint32_t downLatency,
-                 int lose = 0) {
+                 int lose = 0, std::uint32_t stallAt = 0, std::uint32_t stallFor = 0) {
     Machine host(vfs), client(vfs);
     const Mat34 start = Mat34::translation({0.0f, 0.6f, 0.0f});
     client.car->setResetPos(start);
@@ -93,9 +95,13 @@ Outcome simulate(const vfs::Vfs& vfs, int samples, std::uint32_t upLatency, std:
     Outcome run;
     const float dt = phys::kFixedSampleStep;
     for (std::uint32_t t = 1; t <= static_cast<std::uint32_t>(samples); ++t) {
-        // Client: the host's states due by now, then its sample.
-        while (!down.empty() && down.front().due <= t) {
+        // Client: the host's states due by now, then its sample (none while
+        // it stalls).
+        const bool stalled = t >= stallAt && t < stallAt + stallFor;
+        while (!stalled && !down.empty() && down.front().due <= t) {
             const auto& [ack, state] = down.front().msg;
+            if (ack >= prediction.nextSeq())
+                run.skipped += prediction.skipTo(ack, upLatency + downLatency);
             const auto c = prediction.acknowledge(*client.car, client.driver, client.world, ack, state);
             if (c.corrected) {
                 ++run.corrections;
@@ -107,12 +113,16 @@ Outcome simulate(const vfs::Vfs& vfs, int samples, std::uint32_t upLatency, std:
         if (prediction.nextSeq() == 1)
             prediction.command(*client.car, {0, net::CarCommandKind::ResetTo, client.car->sim().resetPos(),
                                              client.car->sim().resetRotation});
-        prediction.beginSample(*client.car, client.driver, driveInput(prediction.nextSeq()));
-        client.world.step(dt);
-        prediction.endSample(*client.car, client.driver);
-        const bool lost = lose > 0 && t % static_cast<std::uint32_t>(lose) == 0;
-        if (const auto m = prediction.message(); m && !lost)
-            up.push_back({t + upLatency, *m});
+        if (!stalled) {
+            prediction.beginSample(*client.car, client.driver, driveInput(prediction.nextSeq()));
+            client.world.step(dt);
+            prediction.endSample(*client.car, client.driver);
+            const bool lost = lose > 0 && t % static_cast<std::uint32_t>(lose) == 0;
+            if (const auto m = prediction.message(); m && !lost)
+                up.push_back({t + upLatency, *m});
+        }
+        if (t == stallAt + stallFor + 60)
+            run.missedAfterStall = queue.missed();
         // Host: the inputs due by now, then its sample.
         while (!up.empty() && up.front().due <= t) {
             queue.receive(up.front().msg);
@@ -483,6 +493,19 @@ TEST(PlayerCars, ACarPredictedOnTheSameInputsNeedsNoCorrection) {
     const Outcome run = simulate(*test::gameData(), 600, 6, 6);
     EXPECT_LE(run.corrections, 1);
     EXPECT_EQ(run.missed, 0u);
+}
+
+TEST(PlayerCars, AClientThatStalledSkipsToTheHostsSamples) {
+    MM2_REQUIRE_GAME_DATA();
+    // The client freezes for two seconds: the host coasts its car through
+    // them, then the client counts those samples as run and its inputs reach
+    // the host in time again (otherwise they arrive behind the host's samples
+    // and are dropped until the 3% faster pace makes up two seconds: over a
+    // minute).
+    const Outcome run = simulate(*test::gameData(), 900, 6, 6, 0, 300, 120);
+    EXPECT_GE(run.skipped, 100u);
+    EXPECT_LE(run.missed, run.missedAfterStall + 2);       // no input missed after the first second back
+    EXPECT_LE(run.missedAfterStall, 120u + 60u + 12u);
 }
 
 TEST(PlayerCars, LostInputsAreRepeatedFromTheNextMessage) {

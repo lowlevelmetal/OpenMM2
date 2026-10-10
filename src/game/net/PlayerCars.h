@@ -214,6 +214,17 @@ public:
     void beginSample(SimVehicle& car, NetCarDriver& driver, const net::CarInputFrame& input);
     void endSample(const SimVehicle& car, const NetCarDriver& driver);
 
+    // The host has run this car's samples up to `ack` and this machine has
+    // not (it stalled, or its inputs were lost for longer than the host
+    // repeats them): the samples up to `ack`, the `trip` the host runs on
+    // while the state and the next inputs travel (samples) and the host's
+    // margin count as run, standing as the newest did (on its input without
+    // keys), so that
+    // the next inputs reach the host before their samples rather than seconds
+    // after (it ignores late ones, and the 3% faster pace would take a
+    // minute to make up two seconds). Returns how many it skipped.
+    std::uint32_t skipTo(std::uint32_t ack, std::uint32_t trip);
+
     // The inputs and commands the host has not acknowledged (the newest
     // net::kMaxInputFrames), or nothing before the first sample.
     std::optional<net::PlayerInputMsg> message() const;
