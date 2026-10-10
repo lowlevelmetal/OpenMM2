@@ -1,7 +1,8 @@
 # Multiplayer desync review: shared traffic and police
 
 Reviewed on 2026-10-09 from `main` at cd5ae29 (release 0.3.1), then on top
-of integration at 3f73059 (the host simulates every player's car). The
+of integration at 3f73059 (the host simulates every player's car); a second
+round on top of integration at 782f469 ("Round 2: protocol 12"). The
 maintainer's report for this area: in a multiplayer cruise over the
 Internet, "different cars, or the same cars in different places, on each
 screen".
@@ -49,6 +50,59 @@ The host-simulated column predicts further (the client's car's lead over the
 host is added to the trip), so its tails are those of the longer horizon;
 emulated before the merge with `OPENMM2_DEBUG_TRAFFIC_LEAD_MS`, 150 ms more
 gave 0.03 / 0.15 / 0.63 m and 300 ms more 0.05 / 0.49 / 1.69 m.
+
+## Round 2: protocol 12
+
+On top of integration at 782f469 (protocol 10), with the maintainer's leave
+to spend more bandwidth: the first round's open O1-O3 fixed, and what the
+measurements turned up on the way. Same relays, scripted driving and tool
+as the first round ("How it was measured"), plus a second police chase
+(post 1, 30 m) and two scripts in the review's scratch work: the police
+error by distance from the client's car, and the client's corrections above
+10 cm with a shared car within 12 m of its car (the ones the traffic can
+cause; respawns left out). The chases and pile-ups differ from run to run
+(how long a police car follows, how many cars get knocked), so each row is
+the range over the runs (one to four per case); the baseline is 782f469
+built from the same sources.
+
+| Measure (median / 90th / 99th percentile) | 782f469 | Protocol 12 |
+| --- | --- | --- |
+| Moving police car within 10 m of the client's car, 60 ± 20 ms each way | 0.26-0.38 / 0.98-1.03 / 1.35-1.62 m | 0.06-0.14 / 0.16-0.73 / 0.22-1.02 m |
+| Moving police car, any distance | 0.24-0.33 / 0.58-0.84 / 0.98-2.82 m | 0.10-0.15 / 0.24-0.77 / 0.33-2.64 m |
+| A car the client's car hit, the second after | 0.07-0.27 / 0.26-0.90 / 0.33-4.44 m | 0.00-0.04 / 0.02-0.24 / 0.14-0.91 m |
+| A knocked car the client simulates | 0.11-1.46 / 0.16-2.18 / 0.29-2.49 m | 0.00 / 0.01-0.19 / 0.06-1.17 m |
+| ... 150 ± 30 ms, 5 % loss | 0.73-1.35 / 1.51-1.67 / 1.74-1.96 m | 0.00-0.08 / 0.00-0.08 / 0.13-1.40 m |
+| A car the client's car hit, 150 ms (1-2 hits a run; one run 300) | 0.57-0.89 / 1.30-1.31 / 1.45-1.60 m | 0.00-0.09 / 0.00-5.47 / 0.04-7.09 m (see O9) |
+| Client's corrections above 10 cm with a shared car within 12 m: ramming the police (post 0) | 28 a minute | 2-3 |
+| ... a chase from post 1 (the police car pins the client's car) | 12 | 11-20 |
+| ... rear-ending traffic, put back every 4 s | 43 | 3-8 |
+| ... driving through traffic | 16 | 0-3 |
+| ... 150 ms, 5 % loss | 6 | 1-4 |
+| Density 1: the host's cars within 200 m missing on the client | 7.9 % | 0.6 % |
+| Moving rail car within 150 m, 60 ms (unchanged in kind) | 0.03 / 0.18-0.23 / 0.89-3.91 m | 0.03 / 0.11-0.24 / 0.65-4.00 m |
+| Bandwidth to a client, density 0.5 | 6.2-15.7 KB/s | 6.9-15.3 KB/s, and 0.4-11.2 KB/s in full |
+| ... density 1 | 19.4-20.4 KB/s (103 cars a message) | 22.5-26.9 KB/s (99-130), and 0-1.4 KB/s in full |
+
+### Fixed
+
+| # | Severity | Location | Scenario | Confirmed | Fix |
+| --- | --- | --- | --- | --- | --- |
+| T10 (O1) | visible | `RaceScreen::updateNetCops`, `TrafficPrediction::predictBody` | The police were kinematic bodies on a client, dead-reckoned along their velocity and yaw rate over the trip and the client's lead (about 200 ms at 60 ms each way): a moving police car within 10 m of the client's car was 0.38 / 1.03 / 1.62 m from the host's, and the client's car, meeting it there with infinite mass, was corrected 28 times a minute by more than 10 cm in the ramming runs. | traces | 184c739, baa3c01, 92628b2: the host sends each client, with its car's state, the police within 60 m in full (a chasing one 60-100 m behind, simulated, strayed more than predicted along its velocity: 2.2 m at the 90th percentile against 0.7 m) (`TrafficFull`, `net/TrafficFull.h`): its whole simulation and its driver's controls averaged over the frames since the last state (the driver's throttle and brake go on and off from frame to frame; the average met the host's car 0.29 m off at the 90th percentile in a chase, the last controls 0.49 m). The client puts it in at that sample's acknowledgement and runs it again with its own car (`predictNetTraffic`, a `CarPrediction::Companion` without a player) on those controls until the next. The host's police draw their wheels' bump numbers from their own streams, which travel with them. A simulated police car knocks the traffic it hits loose, as the host's does. |
+| T11 (O2) | visible | `TrafficProxies`, `NetTrafficCars` | The cars the host knocked loose were kinematic on a client (infinite mass), dead-reckoned while they tumbled: the client's car bounced off them where the host's pushed them (0.73 / 1.51 / 1.96 m off at 150 ms each way), and was corrected. | traces | 184c739, baa3c01: the knocked cars within 50 m in full (the rigid body, what a sample hands the next, the wheels and the sleep state: `TrafficBodies::bodyState`); the client gives each a body (`setBodyState`, `NetTrafficCars`' host bodies) and runs it with its car as the police. Test `TrafficBodies.ABodyPutToAStateMovesOnAlike`: a body put back to a state moves on bit for bit as it did. |
+| T12 (O3) | minor | `TrafficHost::build`, `net/AmbientState.h` | At traffic density 1, 7.9 % of the host's cars within 200 m of the client's were missing there: they did not fit in 1100 bytes. | density-1 traces | 184c739: up to 2600 bytes and 320 cars a message, in two of ENet's fragments sent unreliably (`ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT` on the Ambient channel; ENet sends an unreliable packet's fragments reliably otherwise); full rate within 120 m, every fourth state beyond 180 m. Test `TrafficHost.EveryCarWithin200MetresFitsAtDensityOne`. |
+| T13 | minor | `RaceScreen::sendNetTraffic` (police) | A police car pressed against a wall kept 15 m/s in its velocity for 10 s while it stood; the client predicted it 3.9 m ahead (T6 for the police). | trace | baa3c01: shared standing once it has moved less than 5 cm in 100 ms (`game::StillBodies`), as the knocked cars. |
+| T14 | visible | `World::replaySample`, `TrafficBodies::RailCar` | In the samples a client runs again after a correction its car met the rail cars as cars of infinite mass (`collideHeld`), where the first run knocked them loose. | by reading | baa3c01: a rail car gives the body it would take (`heldInertia`: its mass, moving along its rail), which the replayed car pushes for the rest of the replay. |
+| T15 | visible | `NetTrafficCars`, `TrafficProxies` | A car standing off its rail without a body on the host (at rest after a knock) met the client's car as a kinematic instance of infinite mass, where on the host it is a rail car that takes a body when hit: ramming a pile of them the client's car was corrected by 1.6 m. | trace | baa3c01: it stands as a rail car at rest on the client, which its car knocks loose (the knock counts as confirmed at once). Test `NetTrafficCars.ACarStandingOffItsRailIsKnockedLooseAsOnTheHost`. |
+| T16 | visible | `TrafficBodies::bodyState`, `RaceScreen::sendNetTrafficFull` | A knocked car the host's physics no longer ran (inferred: its table of 32 movers full, where MM2 leaves a body as it is; the car stood still, awake, for 90 s) went to the client in full with the 10 m/s its body had when it froze; the client ran it, 1.8 m from the host's for 90 s. | trace | aeb303a, 4cb28e1: only bodies and police cars the host's last step ran are sent in full. |
+
+### Measured and left as they are (round 2)
+
+* **Corrections without a shared car near.** At density 1 two thirds of the
+  client's corrections above 10 cm had no traffic or police car within
+  12 m (props and the city; other areas).
+* **Respawns.** After a respawn the client's car lacks the traffic of its
+  new place for a trip (92 % of the cars missing in the rear-end runs, which
+  put the car back every 4 s, were in the 500 ms after a respawn).
 
 ## How it was measured
 
@@ -153,23 +207,28 @@ simulation of it, while the traffic arrives a trip old:
 ## Bandwidth
 
 A car on its rail costs 120 bits (136 turning or changing speed, 148 when
-its ground speed differs), as many as 1100 bytes hold (at most 160) per
-client and message, 20 a second. At the cruise's default density (0.5)
-10.5-11.6 KB/s to each client (60-70 cars), a fifth less than before for
-the same cars (a known car beyond 160 m now carries its state every fourth
-message); at density 1 the budget binds at about 21 KB/s. Seven clients:
-about 80 KB/s from the host at density 0.5, 150 KB/s at density 1, on top
-of the players' cars.
+its ground speed differs), as many as 2600 bytes hold (at most 320; 1100 and
+160 before protocol 12) per client and message, 20 a second. At the
+cruise's default density (0.5) 12.5-15.3 KB/s to each client (60-70 cars);
+at density 1 22.5-26.9 KB/s (100-130 cars, every car within 200 m). The
+full states add one datagram of at most 1200 bytes a state: 0.4-5.4 KB/s
+driving through traffic, 6.6-11.2 KB/s with a police car near. The worst
+case per client is 76 KB/s (2600 + 1200 bytes 20 times a second), on top of
+the players' cars; seven clients at density 1 with police near about
+250 KB/s from the host.
 
 ## Open
 
+O1-O3 of the first round are fixed in the second (T10-T12).
+
 | # | Severity | Location | What | Needs |
 | --- | --- | --- | --- | --- |
-| O1 | visible | `TrafficPrediction::predictBody` | The police are dead-reckoned along their velocity and yaw rate; over the host-simulated horizon (a trip plus the client's lead) a chasing police car is 0.33 m off (median), 3.7 m in the tail. | Simulating them on the client from their inputs (MM2's `mmNetObject` way) and pulling them to the host's states. |
-| O2 | minor | `TrafficProxies`, `RaceScreen::updateNetCops` | The cars the host knocked loose and the police are kinematic on the client (infinite mass): the client's predicted car bounces off them where the host's pushes them, and is corrected. | Local bodies for them, as for the client's own knocks. |
-| O3 | minor | `TrafficHost::build` | At traffic density 1 the farthest cars within 200 m (about 15 %, at 170-200 m) do not fit in a client's 1100 bytes and are not shown there; they stay out rather than come and go. | A larger datagram, or cheaper far cars. |
 | O4 | minor | `ai::Traffic` (host) | The AI's own jumps of 10-35 m in one step (see "Measured and left as they are"). | The AI area. |
 | O5 | minor | `TrafficBodies` (host) | T6's cause. | A reproduction. |
+| O6 | minor | `RaceScreen::predictNetTraffic` | A simulated police car runs on its driver's averaged controls over the client's lead (about 200 ms at 60 ms each way); the driver's turns and brakes in that time, and what `aiVehiclePhysics` does to the car's body besides its controls (backing up turns its matrix, a wreck's momentum is damped), are not replayed: chasing 20-60 m away it was up to 1-2 m off at the 99th percentile, as dead reckoning was, and once a police car manoeuvring against the traffic stood 1 m off for 40 s. Within 10 m, where the cars meet, 0.06-0.14 m (median). | The police driver run on the client too (its map, targets and obstacles), or its body changes sent. |
+| O7 | minor | `RaceScreen::predictNearCars` (the players' cars area) | The other players' cars a client simulates (`RemoteVehicle::predicted`) meet the rail cars as cars of infinite mass in its real samples: they cannot knock one loose there, where the host's simulation of them does. | `body.player` for them, as for the simulated police. |
+| O8 | minor | `NetTrafficCars`, `TrafficBodies` (host) | A knocked car the client's car leans on goes to sleep on the host and is knocked loose again when pushed, every second or so; the client follows (a body while the full states come, a standing car between), its drawing jumping a few centimetres each time. | Nothing unless it shows. |
+| O9 | minor | `NetTrafficCars` (the first round's local knock) | At 150 ms each way a car the client's car knocked loose was 3-7 m from the host's in the second after in two runs of three (one hit each; 4 cm at the 99th percentile with 300 hits in the third), then handed back: the client's car, predicted 300 ms ahead, met it otherwise than the host's simulation of it did. Before, 1.3-1.6 m in such runs. | More runs; a shorter lead for the local body at long trips. |
 
 ## Edits outside this area's files
 
@@ -182,3 +241,15 @@ unchanged, the opponent sweep 516/517 and 508/517; `bodiesHitAsPlayer`;
 (`traceFile`), `src/net/AmbientState.h`, `src/net/Protocol.h` (6),
 `tools/mm2tool/cmd_nettrace.cpp`. New: `game/net/TrafficPrediction`,
 `NetTrafficCars`, `TrafficTrace` (parity class O).
+
+Round 2: `src/game/net/PlayerCars.{h,cpp}` (the players' cars area:
+`CarPrediction::Companion` takes a car without a player, driven by a
+function, or a body that is no car, put to its state by a function; the
+players' cars go through it unchanged), `src/net/{Protocol,Session,
+Transport}`, `src/game/net/NetGame` (`TrafficFull`, 12, the Ambient
+channel's unreliable fragments), `src/game/TrafficBodies.{h,cpp}` (a body's
+state in and out, a rail car's mass in replays), `src/app/RaceScreen.cpp`
+(the host's full states and police controls, the client's simulated police
+and bodies). New: `src/net/TrafficFull.h` (parity class O). The single-player
+game is unchanged: the opponent sweep gives integration's 515/517 and
+507/517 (b33bebc).

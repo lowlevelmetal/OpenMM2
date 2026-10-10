@@ -269,6 +269,15 @@ public:
         // samples run again for it (otherwise only when the car's own state
         // differed, and then with it).
         bool differs = true;
+        // OpenMM2's shared traffic: a car no player drives (a police car:
+        // `drive` sets its controls before each sample, in place of `driver`
+        // and `input`) or a body that is no car (a knocked traffic car:
+        // `body`, put to the host's state by `rebase` in place of `state`,
+        // which then stays null; `position` and `velocity` are that state's).
+        std::function<void()> drive;
+        phys::Body* body = nullptr;
+        std::function<void()> rebase;
+        Vec3 position, velocity;
     };
     // The host's state after sample `ack`. Forgets what it acknowledged; when
     // the state differs from the prediction for that sample, puts the car
@@ -306,8 +315,6 @@ private:
         NetCarDriver driver;
     };
     void save(Entry& e, const SimVehicle& car, const NetCarDriver& driver) const;
-    // A companion's input for the `k`th sample after the acknowledged one.
-    static const net::CarInputFrame& companionInput(const Companion& c, std::size_t k);
     static void restore(const Entry& e, SimVehicle& car, NetCarDriver& driver);
 
     Options m_options;

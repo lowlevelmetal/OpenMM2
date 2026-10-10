@@ -124,3 +124,99 @@ TEST(NetTrafficCars, ARecycledOrVanishedCarIsForgotten) {
     cars.impact(7);
     EXPECT_FALSE(cars.knocked(7));
 }
+
+TEST(NetTrafficCars, ABodyTheHostSendsInFullIsSimulatedHere) {
+    // Protocol 12: a car the host knocked loose near this machine's car comes
+    // in full (net/TrafficFull.h); it is listed physical and simulated here
+    // (RaceScreen::predictNetTraffic puts its states in) while they come.
+    NetTrafficCars cars;
+    auto knocked = car(5, 2, 1000, false);
+    knocked.hostBody = true;
+    cars.update(std::vector{knocked}, 1100.0, 200.0);
+    EXPECT_TRUE(cars.simulated(5));
+    EXPECT_FALSE(cars.knocked(5)); // not this machine's knock
+    const ai::AmbientCar* c = listed(cars, 5);
+    ASSERT_NE(c, nullptr);
+    EXPECT_TRUE(c->physical);
+    EXPECT_EQ(c->transform.m3, knocked.car.transform.m3);
+    // Hit by this machine's car it stays the host's knock.
+    cars.impact(5);
+    EXPECT_FALSE(cars.knocked(5));
+    EXPECT_TRUE(cars.takeKnocks().empty());
+    // Its body moves here: listed where it is.
+    const Mat34 moved = Mat34::translation({9, 0, 4});
+    cars.setPhysicalTransform(5, moved);
+    knocked.stateTime = 1050;
+    cars.update(std::vector{knocked}, 1150.0, 200.0);
+    c = listed(cars, 5);
+    ASSERT_NE(c, nullptr);
+    EXPECT_EQ(c->transform.m3, moved.m3);
+    EXPECT_TRUE(cars.takeHandovers().empty());
+    // The full states stop (at rest on the host, or farther away): the
+    // host's messages lead from there, the drawing blending from the body.
+    knocked.hostBody = false;
+    cars.update(std::vector{knocked}, 1200.0, 200.0);
+    EXPECT_FALSE(cars.simulated(5));
+    EXPECT_EQ(listed(cars, 5), nullptr); // off its rail: a moving instance
+    const auto h = cars.takeHandovers();
+    ASSERT_EQ(h.size(), 1u);
+    EXPECT_TRUE(h[0].confirmed);
+    EXPECT_EQ(h[0].pose.m3, moved.m3);
+}
+
+TEST(NetTrafficCars, ACarStandingOffItsRailIsKnockedLooseAsOnTheHost) {
+    // Protocol 12: a car at rest off its rail without a body on the host
+    // (it came to rest after a knock) stands here as a rail car at rest,
+    // which this machine's car knocks loose; one moving off its rail is the
+    // host's moving instance.
+    NetTrafficCars cars;
+    auto standing = car(4, 1, 1000, false);
+    standing.car.speed = 0.0f;
+    standing.car.velocity = {};
+    auto moving = car(6, 1, 1000, false);
+    moving.car.velocity = {3, 0, 0};
+    cars.update(std::vector{standing, moving}, 1100.0, 200.0);
+    EXPECT_TRUE(cars.standing(4));
+    EXPECT_FALSE(cars.standing(6));
+    const ai::AmbientCar* c = listed(cars, 4);
+    ASSERT_NE(c, nullptr);
+    EXPECT_FALSE(c->physical); // an instance at rest, not a body
+    EXPECT_EQ(c->transform.m3, standing.car.transform.m3);
+    EXPECT_EQ(listed(cars, 6), nullptr);
+    cars.impact(4);
+    EXPECT_TRUE(cars.knocked(4));
+    // Off its rail in the host's messages already: confirmed at once, the
+    // local body leading until it rests.
+    standing.stateTime = 1150;
+    cars.update(std::vector{standing}, 1200.0, 200.0);
+    EXPECT_EQ(cars.stats().confirmed, 1u);
+    EXPECT_TRUE(cars.simulated(4));
+    EXPECT_FALSE(cars.standing(4));
+    ASSERT_NE(listed(cars, 4), nullptr);
+    EXPECT_TRUE(listed(cars, 4)->physical);
+}
+
+TEST(NetTrafficCars, ALocalKnockGoesOnAsTheHostsBody) {
+    // This machine's car knocked the car loose; the host's full states of
+    // it confirm the knock and take it over (no handover: it stays
+    // simulated here, from the host's states).
+    NetTrafficCars cars;
+    cars.update(std::vector{car(1, 3, 1000)}, 1100.0, 200.0);
+    cars.impact(1);
+    const Mat34 moved = Mat34::translation({2, 0, 1});
+    cars.setPhysicalTransform(1, moved);
+    auto full = car(1, 3, 1150, false);
+    full.hostBody = true;
+    cars.update(std::vector{full}, 1200.0, 200.0);
+    EXPECT_FALSE(cars.knocked(1));
+    EXPECT_TRUE(cars.simulated(1));
+    EXPECT_EQ(cars.stats().confirmed, 1u);
+    EXPECT_TRUE(cars.takeHandovers().empty());
+    const ai::AmbientCar* c = listed(cars, 1);
+    ASSERT_NE(c, nullptr);
+    EXPECT_TRUE(c->physical);
+    EXPECT_EQ(c->transform.m3, moved.m3); // where the local body is
+    // Gone from the host's messages: forgotten.
+    cars.update(std::vector<NetTrafficCars::Received>{}, 1300.0, 200.0);
+    EXPECT_FALSE(cars.simulated(1));
+}

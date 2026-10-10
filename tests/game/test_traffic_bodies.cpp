@@ -5,6 +5,7 @@
 #include "city/CityData.h"
 #include "game/PlayerVehicle.h"
 #include "game/TrafficBodies.h"
+#include "phys/Sleep.h"
 #include "phys/World.h"
 
 #include <gtest/gtest.h>
@@ -323,4 +324,92 @@ TEST(TrafficBodies, RailCarsStandElsewhereForAReplayAndComeBack) {
     game::TrafficBodies::RailPose unknown{100000, moved.transform};
     scene.traffic->placeRailCars(std::span(&unknown, 1));
     EXPECT_FALSE(there(moved.transform.m3));
+    // OpenMM2: a car run again into a rail car (World::replaySample) meets
+    // the body it would take, of its mass and moving along its rail.
+    std::vector<phys::Instance*> list;
+    scene.traffic->instancesIn(1, list);
+    const auto self = std::ranges::find_if(list, [&](const phys::Instance* i) {
+        return i->matrix().m3 == target->transform.m3;
+    });
+    ASSERT_NE(self, list.end());
+    phys::InertialCS held;
+    ASSERT_TRUE((*self)->heldInertia(held));
+    EXPECT_EQ(held.mass, target->data->mass);
+    EXPECT_EQ(held.matrix.m3, target->transform.m3);
+    const Vec3 along = -target->transform.m2 * target->speed;
+    EXPECT_NEAR(held.linearVelocity.dist(along), 0.0f, 1e-4f);
+    EXPECT_NEAR(held.linearMomentum.dist(along * held.mass), 0.0f, 0.05f);
+}
+
+// OpenMM2 (the shared traffic of a network cruise, net/TrafficFull.h): a
+// car's body put to a state (setBodyState, which gives a car without a body
+// one) moves on from it exactly as it did the first time: the state holds
+// all a sample needs, so a client simulates the host's knocked cars alike.
+TEST(TrafficBodies, ABodyPutToAStateMovesOnAlike) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& vfs = *test::gameData();
+    auto city = city::loadCity(vfs, "london");
+    ASSERT_TRUE(city);
+    auto ai = londonTraffic(vfs, *city);
+    ASSERT_TRUE(ai);
+    const ai::AmbientCar* target = pickTarget(*ai, 0.0f);
+    ASSERT_TRUE(target);
+    const int id = target->id;
+    Scene scene(*ai, target->transform.m3);
+    scene.traffic->beforeStep();
+    EXPECT_FALSE(scene.traffic->bodyState(id));
+    EXPECT_EQ(scene.traffic->body(id), nullptr);
+    EXPECT_FALSE(scene.traffic->setBodyState(100000, {})) << "a car the source does not list";
+    // Given a body where it stands, a little above the road; it settles. (Its
+    // source lists it off its rail: on a client NetTrafficCars does, for a
+    // car the host sends in full.)
+    ai->traffic().impact(id, {});
+    net::TrafficBodyState drop;
+    drop.matrix = target->transform;
+    drop.matrix.m3.y += 0.2f;
+    ASSERT_TRUE(scene.traffic->setBodyState(id, drop));
+    const phys::Body* body = scene.traffic->body(id);
+    ASSERT_NE(body, nullptr);
+    const auto samples = [&](int n) {
+        for (int i = 0; i < n; ++i) {
+            scene.traffic->beforeStep();
+            scene.world->advanceFixed(phys::kFixedSampleStep);
+            scene.traffic->afterStep();
+        }
+    };
+    samples(20);
+    auto start = scene.traffic->bodyState(id);
+    ASSERT_TRUE(start);
+    // Then pushed along its lane, turning.
+    const Vec3 v = -target->transform.m2 * 6.0f;
+    start->linearVelocity = v;
+    start->linearMomentum = v * body->ics.mass;
+    start->angularVelocity = {0.0f, 0.3f, 0.0f};
+    start->angularMomentum = Vec3{0.0f, 0.3f, 0.0f} * body->ics.inertia.y;
+    start->sleepState = phys::Sleep::Awake;
+    start->stillUpdates = 0;
+    ASSERT_TRUE(scene.traffic->setBodyState(id, *start));
+    samples(40);
+    const auto first = scene.traffic->bodyState(id);
+    ASSERT_TRUE(first) << "still moving";
+    EXPECT_GT(first->matrix.m3.dist(start->matrix.m3), 1.0f); // its wheels skid
+    ASSERT_TRUE(scene.traffic->setBodyState(id, *start));
+    const auto put = scene.traffic->bodyState(id);
+    ASSERT_TRUE(put);
+    EXPECT_EQ(put->matrix.m3, start->matrix.m3);
+    EXPECT_EQ(put->linearMomentum, start->linearMomentum);
+    EXPECT_EQ(put->wheels[2].compression, start->wheels[2].compression);
+    samples(40);
+    const auto again = scene.traffic->bodyState(id);
+    ASSERT_TRUE(again);
+    EXPECT_EQ(again->matrix.m0, first->matrix.m0);
+    EXPECT_EQ(again->matrix.m3, first->matrix.m3);
+    EXPECT_EQ(again->linearVelocity, first->linearVelocity);
+    EXPECT_EQ(again->angularMomentum, first->angularMomentum);
+    for (std::size_t i = 0; i < 4; ++i) {
+        EXPECT_EQ(again->wheels[i].compression, first->wheels[i].compression);
+        EXPECT_EQ(again->wheels[i].lateral, first->wheels[i].lateral);
+    }
+    EXPECT_EQ(again->sleepState, first->sleepState);
+    EXPECT_EQ(again->stillUpdates, first->stillUpdates);
 }

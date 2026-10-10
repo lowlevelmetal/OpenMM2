@@ -468,6 +468,42 @@ std::optional<net::PlayerInputMsg> CarPrediction::message() const {
     return msg;
 }
 
+namespace {
+
+// A companion's body, its host state's place and velocity, putting it to
+// that state and driving it for a sample (a player's car, or OpenMM2's
+// shared traffic's police car or knocked car).
+phys::Body& companionBody(const CarPrediction::Companion& c) {
+    return c.body ? *c.body : c.car->sim().body;
+}
+Vec3 companionPosition(const CarPrediction::Companion& c) {
+    return c.state ? c.state->matrix.m3 : c.position;
+}
+Vec3 companionVelocity(const CarPrediction::Companion& c) {
+    return c.state ? c.state->linearVelocity : c.velocity;
+}
+void rebaseCompanion(const CarPrediction::Companion& c, const PusherKey& pusherKey) {
+    if (c.rebase)
+        c.rebase();
+    else if (c.car && c.state)
+        applyOwnCarState(*c.car, *c.state, pusherKey);
+}
+// A player's car's input for the `k`th sample after the acknowledged one:
+// the host's for it, then the last again.
+const net::CarInputFrame& companionInput(const CarPrediction::Companion& c, std::size_t k) {
+    if (k < c.upcoming.size())
+        return c.upcoming[k];
+    return c.upcoming.empty() ? c.input : c.upcoming.back();
+}
+void driveCompanion(const CarPrediction::Companion& c, std::size_t k) {
+    if (c.drive)
+        c.drive();
+    else if (c.driver && c.car)
+        c.driver->apply(*c.car, companionInput(c, k));
+}
+
+} // namespace
+
 CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriver& driver,
                                                      phys::World& world, std::uint32_t ack,
                                                      const net::OwnCarState& host,
@@ -519,17 +555,17 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     const float span = static_cast<float>(later + 1) * phys::kFixedSampleStep;
     const Vec3 carNow = car.sim().body.ics.matrix.m3;
     for (const Companion& c : companions) {
-        const float closing = (c.state->linearVelocity - predicted.linearVelocity).mag() * span;
+        const float closing = (companionVelocity(c) - predicted.linearVelocity).mag() * span;
         const float reach = m_options.companionReach + closing;
-        if (c.state->matrix.m3.dist2(predicted.matrix.m3) < reach * reach ||
-            c.car->sim().body.ics.matrix.m3.dist2(carNow) < reach * reach)
+        if (companionPosition(c).dist2(predicted.matrix.m3) < reach * reach ||
+            companionBody(c).ics.matrix.m3.dist2(carNow) < reach * reach)
             alone = false;
     }
     if (replay && alone) {
         std::vector<phys::Body*> bodies;
         for (const Companion& c : companions) {
-            applyOwnCarState(*c.car, *c.state, pusherKey);
-            bodies.push_back(&c.car->sim().body);
+            rebaseCompanion(c, pusherKey);
+            bodies.push_back(&companionBody(c));
         }
         // (In the world's order: the companions come in player order.)
         if (companionsAt)
@@ -539,7 +575,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
         for (std::size_t k = index + 1; k < m_history.size(); ++k) {
             restore(m_history[k - 1], car, driver); // the car as the sample met it
             for (const Companion& c : companions)
-                c.driver->apply(*c.car, companionInput(c, k - index - 1));
+                driveCompanion(c, k - index - 1);
             if (beforeEach)
                 beforeEach(m_history[k].seq);
             if (k + 1 == m_history.size() && beforeLast)
@@ -570,15 +606,15 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
         std::vector<phys::Body*> bodies;
         for (const Companion& c : companions)
             if (c.first)
-                bodies.push_back(&c.car->sim().body);
+                bodies.push_back(&companionBody(c));
         bodies.push_back(&car.sim().body);
         if (phys::Trailer* t = car.trailer())
             bodies.push_back(&t->body);
         for (const Companion& c : companions)
             if (!c.first)
-                bodies.push_back(&c.car->sim().body);
+                bodies.push_back(&companionBody(c));
         for (const Companion& c : companions)
-            applyOwnCarState(*c.car, *c.state, pusherKey);
+            rebaseCompanion(c, pusherKey);
         if (companionsAt && !companions.empty())
             companionsAt(ack);
         // OpenMM2: the props the replay meets (World::collideHeld), the samples
@@ -591,7 +627,7 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
                 NetCarDriver::command(car, c);
             driver.apply(car, e.input);
             for (const Companion& c : companions)
-                c.driver->apply(*c.car, companionInput(c, k - index - 1));
+                driveCompanion(c, k - index - 1);
             if (beforeEach)
                 beforeEach(e.seq);
             if (k + 1 == m_history.size() && beforeLast)
@@ -614,12 +650,6 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     }
     m_history.erase(m_history.begin(), m_history.begin() + static_cast<std::ptrdiff_t>(index));
     return out;
-}
-
-const net::CarInputFrame& CarPrediction::companionInput(const Companion& c, std::size_t k) {
-    if (k < c.upcoming.size())
-        return c.upcoming[k];
-    return c.upcoming.empty() ? c.input : c.upcoming.back();
 }
 
 // --- CorrectionBlend -----------------------------------------------------------------

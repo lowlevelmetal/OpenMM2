@@ -30,6 +30,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <span>
 #include <vector>
 
@@ -42,6 +43,11 @@ public:
     struct Received {
         ai::AmbientCar car;
         std::uint32_t stateTime = 0;
+        // Protocol 12: the host sends its body in full now and then (a car it
+        // knocked loose near this machine's): the car is simulated here from
+        // those states, put in at each acknowledgement of this machine's car
+        // (RaceScreen::reconcileNetCar), as long as they keep coming.
+        bool hostBody = false;
     };
     // Each frame before TrafficBodies::beforeStep: the received traffic cars
     // at session time `now` (this machine's car's). A car this machine
@@ -65,6 +71,15 @@ public:
     // The cars this machine's car knocked loose since the last call.
     std::vector<int> takeKnocks() { return std::exchange(m_new, {}); }
     bool knocked(int id) const { return m_knocks.contains(id); }
+    // Simulated here: knocked loose by this machine's car, or a body the host
+    // sends in full.
+    bool simulated(int id) const { return m_knocks.contains(id) || m_hostBodies.contains(id); }
+    // Off its rail on the host but standing still, without a body there: a
+    // car this machine's car may knock loose here (listed as a rail car at
+    // rest). A car knocked loose from there counts as confirmed at once (the
+    // host's messages had it off its rail already).
+    bool standing(int id) const { return m_standing.contains(id); }
+    static constexpr float kStandingSpeed = 0.05f; // m/s
 
     struct Stats {
         std::uint64_t knocks = 0;    // knocked loose by this machine's car
@@ -96,6 +111,8 @@ private:
     void keepLocal(const ai::AmbientCar& c, const Knock& k);
 
     std::map<int, Knock> m_knocks;
+    std::map<int, Mat34> m_hostBodies; // the bodies the host sends in full, where they are
+    std::set<int> m_standing;          // off their rails, standing (listed this frame)
     std::vector<ai::AmbientCar> m_cars;
     std::vector<Handover> m_handovers;
     std::vector<int> m_new;

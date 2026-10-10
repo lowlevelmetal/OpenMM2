@@ -31,7 +31,9 @@ std::uint32_t packetFlags(Channel channel) {
     // still fills a gap in the receiver's time-ordered buffer (ENet's
     // sequenced delivery would drop it).
     case Channel::State: return ENET_PACKET_FLAG_UNSEQUENCED;
-    case Channel::Ambient: return 0; // unreliable, sequenced
+    // Unreliable, sequenced; a message beyond the MTU is fragmented
+    // unreliably (ENet would send its fragments reliably otherwise).
+    case Channel::Ambient: return ENET_PACKET_FLAG_UNRELIABLE_FRAGMENT;
     }
     return ENET_PACKET_FLAG_RELIABLE;
 }

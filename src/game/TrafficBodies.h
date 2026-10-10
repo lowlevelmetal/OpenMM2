@@ -16,6 +16,7 @@
 
 #include "ai/World.h"
 #include "game/CityLevel.h"
+#include "net/TrafficFull.h"
 #include "phys/World.h"
 
 #include <array>
@@ -130,6 +131,15 @@ public:
     // without one (OpenMM2: the shared traffic of a network cruise sends
     // them).
     bool motionOf(int carId, Vec3& velocity, Vec3& spin) const;
+    // OpenMM2 (the shared traffic of a network cruise): the state of a car's
+    // body as the host sends it in full (nullopt without a body), and on a
+    // client the car put to such a state, given a body first when it has
+    // none (aiVehicleManager::Attach without an impact). False when the
+    // source does not list the car.
+    std::optional<net::TrafficBodyState> bodyState(int carId) const;
+    bool setBodyState(int carId, const net::TrafficBodyState& state);
+    // The body of a car that has one (null without).
+    phys::Body* body(int carId);
     // Cars with a body (at most 32).
     std::size_t activeCount() const { return static_cast<std::size_t>(m_count); }
 
