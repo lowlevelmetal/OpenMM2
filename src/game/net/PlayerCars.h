@@ -10,7 +10,8 @@
 // players, with the traffic and with the props happen once, on the host.
 //
 //   NetCarDriver     what a machine does to a car each sample: the commands
-//                    due (resets), then the input (mmGame::
+//                    due (resets), the water and fall handlers (mmGame::
+//                    Update's checks), then the input (mmGame::
 //                    UpdateSteeringBrakes, the gearbox keys, the hold, the
 //                    gold's mass), the same on the host and on the car's
 //                    own machine
@@ -61,15 +62,43 @@ public:
     // With net::kInputRegen first mmPlayer::UpdateRegen (OpenMM2: once a
     // sample, MM2 once a frame); returns true when that cleared the car's
     // damage (mmPlayer::ResetDamage).
+    // Before all that, with a water handler set, mmGame::Update's water and
+    // fall checks on the car as the last sample left it (MM2 runs them after
+    // each frame's update, OpenMM2 before each sample, on every machine
+    // that simulates the car: the host decides, its player's machine
+    // predicts): below -50 m (mmGame::DropThruCityHandler, which mmGameMulti
+    // and mmMultiCR turn into the water's handler) or more than 5 s in the
+    // water (its vehSplash latched; the time counts the samples, MM2's the
+    // frames) calls the handler.
     bool apply(SimVehicle& car, const net::CarInputFrame& in);
     // A reset the client's rules asked for (net::CarCommand).
     static void command(SimVehicle& car, const net::CarCommand& c);
 
     std::uint16_t extraMass() const { return m_extraMass; }
 
+    // What the water's handler does to the car: Reset (mmGame::
+    // HitWaterHandler, mmMultiCR's: mmPlayer::Reset at its reset position)
+    // or RespawnAt the last checkpoint it cleared (mmGameMulti::
+    // HitWaterHandler in a race). Without one (the default) the car is
+    // never checked: a car this machine only follows.
+    void setWaterHandler(const std::optional<net::CarCommand>& handler) { m_waterHandler = handler; }
+    // How long the car has been in the water (mmPlayer's timer).
+    float waterTime() const { return m_waterTime; }
+    void setWaterTime(float t) { m_waterTime = t; }
+    // The handler's resets since the start (wraps).
+    std::uint32_t waterResets() const { return m_waterResets; }
+
+    static constexpr float kDropHeight = -50.0f; // mmGame::Update
+    static constexpr float kWaterSeconds = 5.0f; // mmGame::Update: the handler after that long
+
 private:
+    void checkWater(SimVehicle& car);
+
     float m_baseMass = 0.0f;
     std::uint16_t m_extraMass = 0;
+    std::optional<net::CarCommand> m_waterHandler;
+    float m_waterTime = 0.0f;
+    std::uint32_t m_waterResets = 0;
 };
 
 // --- The host ------------------------------------------------------------------------
@@ -137,52 +166,42 @@ private:
     std::uint64_t m_missed = 0, m_skipped = 0;
 };
 
-// Whether the host carries out a client's reset of its car (OpenMM2: the
-// game resets a network player's car only where its rules do, and the host
-// checks them on its own simulation of the car; a hostile client would
-// teleport, or repair its car at will):
+// Whether the host carries out a client's command on its car (OpenMM2: the
+// game resets a network player's car only where its rules do, and those
+// run on the host; a hostile client would teleport, or repair its car at
+// will):
 // * ResetTo puts the car at its start: only the first command, which
 //   places it, in the city;
-// * Reset and RespawnAt (mmPlayer::Reset from mmGameMulti::HitWaterHandler,
-//   and DropThruCityHandler, which multiplayer treats as the water): the car
-//   has been in the water (its vehSplash latched) for nearly
-//   HitWaterHandler's 5 s, or fell below mmGame::Update's -50 m (the client's
-//   rules see its own car a little ahead of the host's: a second's and 10 m's
-//   slack); RespawnAt (a race with checkpoints) only at one of the race's
-//   checkpoints, facing its heading (Session's respawn there); not more than
-//   four times a second;
+// * Reset and RespawnAt: never (since protocol 14 the water and the fall
+//   are the host's own: NetCarDriver::setWaterHandler);
 // * ClearDamage (vehCar::ClearDamage): the wreck penalty's repair (the car is
-//   past its maximum damage), or Cops and Robbers' repair at a delivery of the
-//   gold (mmMultiCR's UpdateBank / UpdateHideout: allowed in that mode until
-//   its rules run on the host).
+//   past its maximum damage). Cops and Robbers' repair at a delivery is the
+//   host's own since protocol 10.
 // `debug` (OPENMM2_DEBUG_RESPAWN_MS on the host, a development aid) lets any
-// reset in the city pass.
+// reset in the city pass, not more than four times a second.
 struct ResetRules {
     bool placed = false;           // the car is in the race (its first command carried out)
     std::uint32_t lastMoveSeq = 0; // the sample of the last command that moved it
-    int waterSamples = 0;          // the samples it has been in the water
-    float height = 0.0f;           // its centre of mass's y
     bool wrecked = false;          // past its maximum damage (mmPlayer::IsMaxDamaged)
-    bool copsAndRobbers = false;
     bool debug = false;
-    Aabb city;                          // the city's bounds (200 m round them allowed)
-    std::span<const Mat34> respawnPoints; // the race's checkpoints' spawns (game::session::spawnAt)
+    Aabb city; // the city's bounds (200 m round them allowed)
 
     static constexpr std::uint32_t kMoveInterval = 15; // samples
-    static constexpr int kWaterSamples = 4 * 60;      // HitWaterHandler's 5 s less a second
-    static constexpr float kDropHeight = -50.0f + 10.0f;
     bool allows(const net::CarCommand& c) const;
 };
 
-// The car's state as the host sends it to its player, and the car put there
-// (the rest of its state stays as it was).
-// `pusherOf` names the player whose car a collider is (its collider key;
-// net::kPusherOther for anything else), `pusherKey` the collider of a
-// player's car on this machine (nullptr when it has none): the hardest
-// pusher of the car's last sample travels as a player's number.
+// The car's state as the host sends it to its player (`driver`: the one that
+// runs it, for the water handler's time), and the car put there (the rest of
+// its state stays as it was; the water handler's time is the driver's,
+// NetCarDriver::setWaterTime). `pusherOf` names the player whose car a
+// collider is (its collider key; net::kPusherOther for anything else),
+// `pusherKey` the collider of a player's car on this machine (nullptr when it
+// has none): the hardest pusher of the car's last sample travels as a
+// player's number.
 using PusherOf = std::function<std::uint8_t(const void*)>;
 using PusherKey = std::function<const void*(std::uint8_t)>;
-net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const PusherOf& pusherOf = {});
+net::OwnCarState ownCarState(const SimVehicle& car, std::uint32_t resets, const NetCarDriver* driver = nullptr,
+                             const PusherOf& pusherOf = {});
 void applyOwnCarState(SimVehicle& car, const net::OwnCarState& state, const PusherKey& pusherKey = {});
 
 // A player's car as the others draw it.
@@ -245,7 +264,7 @@ public:
         float positionError = 0.0f; // at the acknowledged sample
         float velocityError = 0.0f;
         float rotationError = 0.0f;  // the largest difference of the matrices' entries
-        bool damage = false, held = false, gear = false; // which of these differed
+        bool damage = false, held = false, gear = false, water = false; // which of these differed
         Vec3 moved; // where the car is now against where it was predicted
         bool rebased = false; // other cars were put to the host's state with it (companions)
     };

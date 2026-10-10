@@ -347,6 +347,12 @@ public:
     // Client: the host's messages received since the last call.
     std::vector<net::PropStateMsg> takePropStates();
 
+    // --- The host's rules state (OpenMM2, net/RulesState.h, game::NetRules) -------------
+    // Host: sends one player its race's rules state (unreliable); returns the bytes sent.
+    std::size_t sendRulesState(std::uint8_t playerId, const net::RulesStateMsg& msg);
+    // Client: the host's states received since the last call.
+    std::vector<net::RulesMsg> takeRulesStates();
+
     // Game events (reliable, ordered). Race time is ms since the race start.
     void sendCheckpoint(int index, std::uint32_t raceTimeMs);
     void sendLap(int lap, std::uint32_t lapTimeMs);

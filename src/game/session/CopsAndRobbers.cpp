@@ -450,11 +450,21 @@ bool CopsAndRobbers::updatePredicted(float dt, const Car& me, const std::vector<
             m_goldPos = c.position + Vec3{0.0f, 2.0f, 0.0f};
     if (m_over || m_pending || players < 2 || !canTake(me))
         return false;
-    // Another car at the gold too: the host decides between them (its own
-    // car first), so this machine waits for its word as MM2's did.
-    for (const auto& c : cars)
-        if (c.id != me.id && c.position.dist2(m_goldPos) < kGoldRadius * kGoldRadius)
+    // Another car at the gold too, or on its way there: the host decides
+    // between them (its own car first), so this machine waits for its word
+    // as MM2's did. (The nearest point of the car's way in the next
+    // kContestSeconds.)
+    const float reach = kGoldRadius + kContestMargin;
+    for (const auto& c : cars) {
+        if (c.id == me.id)
+            continue;
+        const Vec3 way = c.velocity * kContestSeconds;
+        const float len2 = way.dot(way);
+        const float along =
+            len2 > 0.0f ? std::clamp((m_goldPos - c.position).dot(way) / len2, 0.0f, 1.0f) : 0.0f;
+        if ((c.position + way * along).dist2(m_goldPos) < reach * reach)
             return false;
+    }
     // UpdateGold on a machine that is not the host: MM2 asks the host
     // (0x25e) and shows the gold taken when the host's 0x25a arrives;
     // OpenMM2 shows it at once and the host's decision confirms it.

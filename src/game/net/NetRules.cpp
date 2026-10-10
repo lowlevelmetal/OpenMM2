@@ -166,8 +166,9 @@ void NetRules::apply(const RuleDecisionMsg& d) {
     session::Session* s = m_setup.session;
     switch (d.type) {
     case RuleDecision::Finished:
-        if (m_finished.insert(d.player).second)
-            traceRuleFinish(m_trace, m_frameTime, d.player, d.ms);
+        if (!m_finished.insert(d.player).second)
+            return; // the results stood in for it already
+        traceRuleFinish(m_trace, m_frameTime, d.player, d.ms);
         if (s) {
             if (d.player == m_setup.self)
                 s->netFinished(toSeconds(d.ms));
@@ -176,12 +177,14 @@ void NetRules::apply(const RuleDecisionMsg& d) {
         }
         return;
     case RuleDecision::TimedOut:
-        m_timedOut = true;
+        if (std::exchange(m_timedOut, true))
+            return;
         if (s)
             s->netTimedOut();
         return;
     case RuleDecision::AllCounted:
-        m_allCounted = true;
+        if (std::exchange(m_allCounted, true))
+            return;
         if (s)
             s->netAllCounted();
         return;
@@ -193,14 +196,16 @@ void NetRules::apply(const RuleDecisionMsg& d) {
     }
 }
 
-net::RulesMsg NetRules::message(std::uint8_t player, Client& c) const {
+net::RulesMsg NetRules::message(std::uint8_t player, Client& c, bool decisions) const {
     net::RulesMsg m;
     m.race = m_setup.race;
     m.seq = ++c.seq;
-    std::size_t k = c.lastDecision;
-    for (; k < m_log.size() && m.decisions.size() < net::kMaxRuleDecisions; ++k)
-        m.decisions.push_back(m_log[k]);
-    c.lastDecision = static_cast<std::uint32_t>(k);
+    if (decisions) {
+        std::size_t k = c.lastDecision;
+        for (; k < m_log.size() && m.decisions.size() < net::kMaxRuleDecisions; ++k)
+            m.decisions.push_back(m_log[k]);
+        c.lastDecision = static_cast<std::uint32_t>(k);
+    }
     if (const auto it = m_carSamples.find(player); it != m_carSamples.end())
         m.evaluated = it->second;
     if (const session::CopsAndRobbers* cops = m_setup.cops) {
@@ -222,10 +227,11 @@ net::RulesMsg NetRules::message(std::uint8_t player, Client& c) const {
         return m;
     if (const auto* p = m_referee->player(player)) {
         m.evaluated = p->evaluated;
-        const std::size_t first = p->hits.size() > kHitWindow ? p->hits.size() - kHitWindow : 0;
+        const std::size_t window = decisions ? kHitWindow : kStateHitWindow;
+        const std::size_t first = p->hits.size() > window ? p->hits.size() - window : 0;
         m.firstHit = static_cast<std::uint32_t>(first);
         m.hits.assign(p->hits.begin() + static_cast<std::ptrdiff_t>(first), p->hits.end());
-        c.hits = p->hits.size();
+        (decisions ? c.hits : c.stateHits) = p->hits.size();
         m.place = static_cast<std::uint8_t>(std::clamp(p->place, 1, static_cast<int>(net::kMaxPlayers)));
         m.racers = static_cast<std::uint8_t>(std::clamp(p->racers, 1, static_cast<int>(net::kMaxPlayers)));
     }
@@ -235,6 +241,8 @@ net::RulesMsg NetRules::message(std::uint8_t player, Client& c) const {
         const int icon = std::clamp(m_referee->iconPlace(player, id), 0, static_cast<int>(net::kMaxPlayers));
         m.icons.emplace_back(id, static_cast<std::uint8_t>(icon));
     }
+    if (!decisions)
+        return m; // a state alone: the results stay reliable
     for (const auto& r : m_referee->results())
         if (m.results.size() < net::kMaxPlayers)
             m.results.emplace_back(r.player, toMs(r.seconds));
@@ -243,7 +251,8 @@ net::RulesMsg NetRules::message(std::uint8_t player, Client& c) const {
     return m;
 }
 
-void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition, const Send& send) {
+void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition, const Send& send,
+                          const SendState& sendState) {
     if (!m_setup.host || !active())
         return;
     if (m_referee) {
@@ -291,7 +300,8 @@ void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition
         const bool news = c.lastDecision < m_log.size();
         const auto* p = m_referee ? m_referee->player(id) : nullptr;
         const bool hit = p && p->hits.size() != c.hits;
-        if (!news && !hit && c.seq != 0 && nowMs - c.sentAt < kStateIntervalMs)
+        const std::uint64_t interval = m_referee ? kStateIntervalMs : kCopsStateIntervalMs;
+        if (!news && !hit && c.seq != 0 && nowMs - c.sentAt < interval)
             continue;
         const net::RulesMsg m = message(id, c);
         auto payload = net::encodePayload(m);
@@ -303,6 +313,23 @@ void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition
         ++m_stats.sent;
         m_stats.bytes += payload.size();
         send(id, std::move(payload));
+    }
+    // A race's state alone, unreliably: at once on a new hit (with the
+    // reliable message: whichever arrives first stands), else 20 times a
+    // second.
+    if (!sendState || !m_referee)
+        return;
+    for (auto& [id, c] : m_clients) {
+        const auto* p = m_referee->player(id);
+        const bool hit = p && p->hits.size() != c.stateHits;
+        if (!hit && nowMs - c.stateSentAt < kFastStateIntervalMs)
+            continue;
+        net::RulesStateMsg st;
+        st.rules = message(id, c, false);
+        c.stateSentAt = nowMs;
+        ++m_stats.states;
+        m_stats.stateBytes += net::encodePayload(st.rules).size();
+        sendState(id, st);
     }
 }
 
@@ -327,7 +354,12 @@ void NetRules::receive(const std::vector<NetGameEvent>& events, const Vec3& carP
         }
         m_lastMessage = m.seq;
         ++m_stats.received;
-        m_evaluated = std::max(m_evaluated, m.evaluated);
+        // Its state stands only if no newer one (an unreliable state) came
+        // first; its decisions always do.
+        const bool newest = m.seq > m_lastState;
+        m_lastState = std::max(m_lastState, m.seq);
+        if (newest)
+            m_evaluated = std::max(m_evaluated, m.evaluated);
         for (const auto& d : m.decisions) {
             if (d.seq <= m_lastDecision)
                 continue;
@@ -342,7 +374,7 @@ void NetRules::receive(const std::vector<NetGameEvent>& events, const Vec3& carP
         }
         if (m.cops != (m_setup.cops != nullptr))
             continue;
-        if (session::CopsAndRobbers* cops = m_setup.cops) {
+        if (session::CopsAndRobbers* cops = m_setup.cops; cops && newest) {
             session::CopsAndRobbers::State st;
             st.carrier = m.carrier == net::kInvalidPlayerId ? -1 : m.carrier;
             st.goldActive = m.goldActive;
@@ -356,21 +388,43 @@ void NetRules::receive(const std::vector<NetGameEvent>& events, const Vec3& carP
             cops->adopt(st, m_setup.self, confirmed);
             if (!cops->pickupPending())
                 m_pickupSample.reset();
-        } else {
-            applyRaceState(m, carPosition);
+        } else if (!m.cops) {
+            applyRaceState(m, carPosition, newest);
         }
     }
 }
 
-void NetRules::applyRaceState(const net::RulesMsg& m, const Vec3& carPosition) {
+void NetRules::receiveStates(const std::vector<net::RulesMsg>& states, const Vec3& carPosition) {
+    if (m_setup.host || !active() || !m_setup.session)
+        return;
+    for (const auto& m : states) {
+        // (NetGame hands over the host's only.)
+        if (m.race != m_setup.race || m.cops || !m.decisions.empty() || m.seq <= m_lastState) {
+            ++m_stats.stale;
+            continue;
+        }
+        m_lastState = m.seq;
+        ++m_stats.statesTaken;
+        m_evaluated = std::max(m_evaluated, m.evaluated);
+        applyRaceState(m, carPosition, true);
+    }
+}
+
+void NetRules::applyRaceState(const net::RulesMsg& m, const Vec3& carPosition, bool progress) {
     session::Session* s = m_setup.session;
     if (!s)
         return;
-    s->applyNetProgress({m.evaluated, m.firstHit, m.hits}, carPosition);
-    s->setNetStanding(m.place, m.racers);
-    m_icons.clear();
-    for (const auto& [id, place] : m.icons)
-        m_icons[id] = place;
+    if (progress) {
+        s->applyNetProgress({m.evaluated, m.firstHit, m.hits}, carPosition);
+        if (const std::size_t n = m.firstHit + m.hits.size(); n > m_confirmedHits) {
+            m_confirmedHits = n;
+            traceRuleConfirmed(m_trace, m_frameTime, m_setup.self, static_cast<int>(n));
+        }
+        s->setNetStanding(m.place, m.racers);
+        m_icons.clear();
+        for (const auto& [id, place] : m.icons)
+            m_icons[id] = place;
+    }
     // A finish whose decision this machine missed: the results stand in.
     for (const auto& [id, ms] : m.results)
         if (!m_finished.contains(id))

@@ -217,11 +217,14 @@ sample hands the next, version 10 the host's rules (the rules event; a
 player's own checkpoint, lap, finish and gold events refused; 8 on its own
 branch), version 12 the shared traffic's police and knocked cars near a
 client in full (`TrafficFull`) and an `AmbientState` of up to 2600 bytes and
-320 cars, version 13 `CarStates` after every host frame that ran a sample,
-the near set (three cars within 60 m) with as many of them in full as fit
-one packet, a near client car's inputs the host holds for its next samples,
-and a contact's bound and hardest pusher in a car's full state (11 on its
-own branch).
+320 cars, version 14 the water and the fall decided by the host (every car's
+full state carries its `vehSplash` and the water handler's time; a client's
+reset commands only for debugging) and a race's rules state also unreliable
+(`RulesState`) between the reliable messages, version 15 `CarStates` after
+every host frame that ran a sample, the near set (three cars within 60 m)
+with as many of them in full as fit one packet, a near client car's inputs
+the host holds for its next samples, and a contact's bound and hardest
+pusher in a car's full state (11 and 13 on its own branch).
 
 ### Handshake
 
@@ -612,23 +615,38 @@ every player's car on the host:
 * **Commands.** What the client's rules decide about its car travels with
   the inputs, numbered with the sample it applies at, until the host
   acknowledges it: the first sample's placement (where that machine
-  started the car), mmPlayer::Reset (the water, a fall, the debug respawn),
-  the `HitWaterHandler`s' respawn at a checkpoint and `vehCar::ClearDamage`
-  (a wreck's repair, Cops and Robbers' repairs). The client applies it at
-  once and the host at the same sample, so a reset is no correction. The
-  host carries one out only where the game's rules would
-  (`game::ResetRules`, on its own simulation of the car): the placement only
-  first and in the city; a reset or a respawn only after nearly five seconds
-  in the water (the car's `vehSplash` latched; `mmGameMulti::
-  HitWaterHandler`) or below -50 m (`DropThruCityHandler`, which
-  multiplayer treats as the water), a respawn only at the race's start or at
-  a checkpoint the host's referee counted for that car, facing its heading
-  (see "Rules"), and not more than four a second; a repair only for a car
-  past its maximum damage (the wreck penalty's) or in Cops and Robbers (a
-  delivery's repair is the host's own since the rules run there). A refused
-  command leaves the car where the host has it, and the client's is
-  corrected back (`OPENMM2_DEBUG_RESPAWN_MS` on the host lets any reset in
-  the city pass, for development).
+  started the car), `vehCar::ClearDamage` (the wreck penalty's repair) and
+  the debug respawn. The client applies it at once and the host at the same
+  sample, so a command is no correction. The host carries one out only
+  where the game's rules would (`game::ResetRules`, on its own simulation
+  of the car): the placement only first and in the city, a repair only for
+  a car past its maximum damage. Since protocol 14 a client's reset or
+  respawn is refused: **the water and the fall are the host's own** (see
+  "The water and the fall"), and Cops and Robbers' repair at a delivery is
+  the host's since protocol 10. A refused command leaves the car where the
+  host has it, and the client's is corrected back
+  (`OPENMM2_DEBUG_RESPAWN_MS` on the host lets any reset in the city pass,
+  not more than four a second, for development).
+* **The water and the fall** (protocol 14). mmGame::Update checks the
+  player's car after each frame: below -50 m it calls the mode's
+  `DropThruCityHandler`, which a network game turns into the water's;
+  otherwise, the car's `vehSplash` latched (its model origin went under a
+  water room's level), it counts the seconds and past five calls
+  `HitWaterHandler`: `mmGameMulti::HitWaterHandler` puts the car back at
+  the last checkpoint it cleared, facing its heading (the reset position
+  kept), in a race; `mmGame`'s (the cruise) and `mmMultiCR`'s (with the
+  gold dropped back at its place) reset it to its reset position. In
+  OpenMM2 the checks run on the car's samples (`game::NetCarDriver::
+  setWaterHandler`, before each sample on the car as the last left it; the
+  time counts samples), on the host for every car it simulates, with the
+  respawn point from its referee (`NetRules::respawnIndex`); a client runs
+  them on its own car with its session's last checkpoint as a prediction,
+  which the host's states confirm (they carry the splash, its buoyancy and
+  level, and the handler's time). A client that disagrees (its car went in
+  later, or never) is corrected to the host's car; a client cannot put its
+  own car back. The session shows the water's message as before and the
+  race screen the reset (`presentOwnWaterReset`: the car's effects, its
+  dents and the camera).
 * **The host** (`game::HostInputQueue` per client) starts a client's car
   once three of its inputs are in hand, applies one per sample, repeats the
   last one (without its keys) for a quarter of a second when the next is
@@ -1172,8 +1190,9 @@ for everything) decides them on the host from the cars it simulates (see
   (`CopsAndRobbers::updateHost`): a carrier's own damaging impact of 250 or
   more from another player's car knocks the gold loose where it is and locks
   the carrier out for 2 s; a wrecked car sits out 5 s and drops the gold; a
-  water handler (a reset that player's input asked for) sends the gold back
-  to its place; free gold within 5 m in the car's room goes to the first car
+  water handler (the host's own, see "Players' cars", "The water and the
+  fall") sends the gold back to its place; free gold within 5 m in the car's
+  room goes to the first car
   in order, with another player in the game; a carrier within 12 m of its
   base delivers and the host draws the next places; then the limits. The
   gold's mass, throttle cap and regeneration on the cars the host simulates
@@ -1188,10 +1207,17 @@ for everything) decides them on the host from the cars it simulates (see
   that car's waypoints hit (the newest 64), its place and the racers, the
   other cars' icon numbers, the results so far, the timeout and the end; in
   Cops and Robbers the gold's carrier and place, the set, every score and
-  the end. It goes at once when something happened for that player and four
-  times a second otherwise. A client shows each decision once, in order, and
-  a missed one (a late loader whose queue of events overflowed) is made good
-  by the state, silently.
+  the end. It goes at once when something happened for that player and
+  otherwise four times a second in Cops and Robbers, once a second in a
+  race, where the state alone (the newest 16 waypoints, the samples seen,
+  the place and the icons; no decisions, no results) also goes unreliably
+  (`RulesState` on the State channel, protocol 14) at once on a new hit and
+  20 times a second, numbered with the messages: whichever arrives first
+  stands, so a lost packet no longer holds a checkpoint's confirmation (or
+  its taking back) until ENet sends it again. A client
+  shows each decision once, in order (a reliable message older than the
+  newest state still brings its decisions), and a missed one (a late loader
+  whose queue of events overflowed) is made good by the state, silently.
 * **A client predicts** only what the HUD must show at once, and the host's
   word confirms or corrects it:
   * a checkpoint its own car clears (`Session::applyNetProgress`): shown at
@@ -1205,10 +1231,16 @@ for everything) decides them on the host from the cars it simulates (see
     the same rules, so nothing is shown twice.
   * a gold pickup (`CopsAndRobbers::updatePredicted`): "You have the Gold!"
     at once (MM2's client asked the host and waited for 0x25a), unless
-    another car is at the gold too, when it waits for the host's word as
-    MM2's did. The host's `GoldTaken` for it confirms it; one for another
-    car undoes it and shows that car's; the state undoes it once the host
-    has seen the car 30 samples past the pickup without granting it.
+    another car is at the gold too or about to be (within the gold's 5 m and
+    1 m more, or on its way there in the next quarter of a second, as this
+    machine has it where the host will run its sample: the cars it
+    simulates with its own as they are, the others run on from their
+    drawing), when it waits for the host's word as MM2's did. The host's
+    `GoldTaken` for it confirms it; one for another car undoes it and
+    shows that car's; the state undoes it once the host has seen the car
+    30 samples past the pickup without granting it.
+  * the water and the fall on its own car (see "Players' cars", "The water
+    and the fall"): put back at once, the host's states confirming it.
   * nothing else: the finishes, the results, the standings, drops,
     deliveries, scores, the new places and the limits are the host's word
     only. A client's own "finished in" line (MM2's client line: 149, 106,
@@ -1222,11 +1254,9 @@ for everything) decides them on the host from the cars it simulates (see
   Robbers' old messages 0x8001-0x8003 and the rules message from any player
   but itself, before relaying them, so nobody sees them; a client takes the
   rules message from the host only, for its own race, and newer than the
-  last. In a race the host also takes a client's water respawn
-  (`mmGameMulti::HitWaterHandler`: at the last checkpoint the car cleared)
-  only at the start or at a checkpoint it counted for that car
-  (`RaceReferee::respawnCheckpoints`, which `game::ResetRules` takes as the
-  race's respawn points).
+  last. A client's own reset of its car is refused (`game::ResetRules`): the
+  water's handler is the host's, at the last checkpoint its referee counted
+  the car clearing (`NetRules::respawnIndex`).
 * **Players who join late or leave**: every player in the session when the
   race is ordered is waited for. A player still loading has no car (it counts
   in the standings only once it has a finish) and its time starts at its own
@@ -1234,16 +1264,19 @@ for everything) decides them on the host from the cars it simulates (see
   for, and a finish it had stays in the results (the deviation under "Race
   start"). In Cops and Robbers the host drops a leaver's gold where it is
   (`SystemMessage` 0x2d).
-* **Cruise** has no rules to decide: its wreck penalty follows the host's
-  damage of the car, and its water reset is a command the host applies (see
-  "Players' cars").
+* **Cruise** has no rules to decide but the water's: its wreck penalty
+  follows the host's damage of the car, and the water's reset is the host's
+  (see "Players' cars", "The water and the fall").
 
 **Deviations** (docs/review/multiplayer-desync-rules.md): the host decides
 for every machine; the rules run after every physics sample rather than
 once a frame; the finish time is the host's measure in samples, not each
 machine's own timer; in Cops and Robbers two cars reaching the gold in the
 same frame are decided in car order (MM2: whichever request reached the host
-first); a client shows its own pickup before the host's answer; the place
+first); a client shows its own pickup before the host's answer; the water's
+and the fall's checks run on the host for every car, before each sample
+rather than after each frame, the water's five seconds counted in samples;
+the place
 uses the host's view of each player's target (the Next / Prev. Checkpoint
 keys stay on that player's machine) and positions.
 
@@ -1640,10 +1673,12 @@ each:
   machine's HUD showed for its own car (as predicted, or on the host's
   word), `RX` one the host's word took back, `RH` the host's referee
   counting a car's checkpoint (with the car's sample), `RF` a finish in this
-  machine's results, `RE` its "Place: n/N", `CG` and `CS` Cops and Robbers'
-  gold events and scores as it shows them; `netprobe rulesreport <host
-  trace> <client trace>...` compares them (docs/review/
-  multiplayer-desync-rules.md);
+  machine's results, `RE` its "Place: n/N", `RC` a client learning how many
+  waypoints the host counted for its car, `RW` a car the water or a fall
+  put back (the host: every car it simulates; a client: its own, as
+  predicted), `CG` and `CS` Cops and Robbers' gold events and scores as it
+  shows them; `netprobe rulesreport <host trace> <client trace>...` compares
+  them (docs/review/multiplayer-desync-rules.md);
 * the props' lines (lowercase tags, `game::PropTrace`): every placed prop
   once (`p`), every prop that broke loose here and what broke it (`k`), a
   prediction undone (`x`), every 250 ms of session time (`t`) the props down

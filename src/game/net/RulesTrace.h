@@ -22,6 +22,13 @@
 //       this machine's results took player's finish (ms 86400000: did not)
 //   RE clock frame place racers
 //       this machine's "Place: n/N" changed
+//   RC clock frame player count
+//       a client: the host's word counted `count` waypoints for its car
+//       (it rose)
+//   RW clock frame player sample x y z
+//       a car put back by the water or a fall (the HitWaterHandlers, the
+//       DropThruCityHandlers) at the start of its sample `sample`, to
+//       (x, y, z): the host for every car it simulates, a client for its own
 //   CG clock frame type car value x y z
 //       Cops and Robbers: this machine's HUD showed a gold event
 //       (CopsAndRobbers::EventType; value: the points, or 1 for a hit), the
@@ -44,6 +51,8 @@ void traceRuleHostHit(std::FILE* f, double frame, int player, std::uint32_t samp
                       int lap, bool shown);
 void traceRuleFinish(std::FILE* f, double frame, int player, std::uint32_t ms);
 void traceRuleStanding(std::FILE* f, double frame, int place, int racers);
+void traceRuleConfirmed(std::FILE* f, double frame, int player, int count);
+void traceWaterReset(std::FILE* f, double frame, int player, std::uint32_t sample, const Vec3& at);
 void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value, const Vec3& gold);
 void traceCopsScores(std::FILE* f, double frame, const std::vector<std::pair<int, int>>& scores);
 

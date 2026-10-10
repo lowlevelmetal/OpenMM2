@@ -224,6 +224,13 @@ struct OwnCarState {
     bool swapThrottle = false; // the pedals swapped (automatic reverse)
     bool held = false;         // held on the grid
     std::uint32_t resets = 0;  // the commands the host has carried out (wraps)
+    // The water (protocol 14): vehSplash's latch, buoyancy and level, and how
+    // long the car has been in it as the water handler counts
+    // (game::NetCarDriver: the host decides when the water puts the car back).
+    bool splash = false;
+    float buoyancy = 0.7f;
+    float waterLevel = 0.0f; // with `splash`
+    float waterTime = 0.0f;
     // Handed to the next sample (protocol 9): phInertialCS's force and torque
     // so far, each wheel's rolling resistance, and (`contact`: not all zero)
     // the impulses and pushes of a contact.
@@ -288,6 +295,21 @@ bool serialize(S& s, OwnCarState& o) {
     s.boolean(o.swapThrottle);
     s.boolean(o.held);
     s.u32(o.resets);
+    // (A car that never met the water: two bits.)
+    s.boolean(o.splash);
+    bool wet = o.buoyancy != 0.7f || o.waterTime != 0.0f;
+    s.boolean(wet);
+    if (wet) {
+        s.f32(o.buoyancy);
+        s.f32(o.waterTime);
+    } else if constexpr (S::kReading) {
+        o.buoyancy = 0.7f;
+        o.waterTime = 0.0f;
+    }
+    if (o.splash)
+        s.f32(o.waterLevel);
+    else if constexpr (S::kReading)
+        o.waterLevel = 0.0f;
     s.vec3(o.force);
     s.vec3(o.torque);
     for (float& r : o.tireResistance)
@@ -334,8 +356,10 @@ bool serialize(S& s, OwnCarState& o) {
                             w.tireDispLong})
                 good = good && std::abs(v) <= kOwnStateMaxValue;
         for (float v : {o.engineSpeed, o.gearChangeTime, o.prevGearRpm, o.timeInGear, o.damage, o.stuckTime,
-                        o.drivetrainSpeed[0], o.drivetrainSpeed[1], o.drivetrainSpeed[2]})
+                        o.drivetrainSpeed[0], o.drivetrainSpeed[1], o.drivetrainSpeed[2], o.buoyancy,
+                        o.waterTime})
             good = good && std::abs(v) <= kOwnStateMaxValue;
+        good = good && std::abs(o.waterLevel) <= kOwnStateMaxCoordinate;
         if (!good)
             return s.fail();
     }
