@@ -64,6 +64,7 @@ public:
         WaypointTracker wp;
         std::vector<std::uint8_t> hits;          // the waypoints its car hit, in order
         std::vector<std::uint32_t> hitSamples;   // the sample of each
+        std::vector<char> hitShown;              // each cleared a waypoint (the HUD shows it)
         bool inRace = true;  // in the session and not quit: waited for
         bool placed = false; // its car is in the world (the host simulates it)
         bool released = false;

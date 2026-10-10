@@ -271,7 +271,7 @@ void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition
             std::size_t& traced = m_tracedHits[id];
             for (; traced < p.hits.size(); ++traced)
                 traceRuleHostHit(m_trace, m_frameTime, id, p.hitSamples[traced], p.hits[traced],
-                                 static_cast<int>(traced) + 2, p.wp.lap);
+                                 static_cast<int>(traced) + 2, p.wp.lap, p.hitShown[traced] != 0);
         }
         // The host's own player takes the referee's word as a client does,
         // with no delay.

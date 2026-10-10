@@ -70,6 +70,8 @@ void RaceReferee::sample(std::uint8_t id, std::uint32_t seq, const Mat34& car, c
         if (p.wp.apply(m_config.checkpoints, index, car.m3, steps)) {
             p.hits.push_back(static_cast<std::uint8_t>(index));
             p.hitSamples.push_back(seq);
+            p.hitShown.push_back(std::ranges::any_of(
+                steps, [](const WaypointStep& s) { return s.kind == WaypointStep::Kind::Cleared; }));
         }
     }
     // mmMultiRace / mmMultiCircuit / mmMultiBlitz::UpdateGame state 3. A

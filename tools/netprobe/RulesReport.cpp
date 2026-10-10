@@ -43,7 +43,7 @@ struct HostHit {
     double clock = 0, frame = 0;
     int player = 0;
     unsigned sample = 0;
-    int index = 0, count = 0, lap = 0;
+    int index = 0, count = 0, lap = 0, shown = 1;
 };
 struct Finish {
     double clock = 0;
@@ -127,8 +127,10 @@ bool load(const std::string& path, Machine& m) {
                 }
         } else if (tag == "RH") {
             HostHit h{clock, frame};
-            if (s >> h.player >> h.sample >> h.index >> h.count >> h.lap)
+            if (s >> h.player >> h.sample >> h.index >> h.count >> h.lap) {
+                s >> h.shown;
                 m.hostHits.push_back(h);
+            }
         } else if (tag == "RF" || tag == "RG") {
             int player = 0;
             unsigned ms = 0;
@@ -192,8 +194,9 @@ void checkpoints(const Machine& host, const Machine& m, double endClock) {
     }
     std::vector<int> counted;
     std::vector<const HostHit*> hostHits;
+    // (A checkpoint race's finish clears no waypoint the HUD shows.)
     for (const auto& h : host.hostHits)
-        if (h.player == m.self) {
+        if (h.player == m.self && h.shown) {
             counted.push_back(h.index);
             hostHits.push_back(&h);
         }

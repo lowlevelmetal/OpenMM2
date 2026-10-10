@@ -24,10 +24,10 @@ void traceRuleTakenBack(std::FILE* f, double frame, int player, int index) {
 }
 
 void traceRuleHostHit(std::FILE* f, double frame, int player, std::uint32_t sample, int index, int count,
-                      int lap) {
+                      int lap, bool shown) {
     if (f)
-        std::fprintf(f, "RH %.3f %.3f %d %u %d %d %d\n", machineMs(), frame, player, sample, index, count,
-                     lap);
+        std::fprintf(f, "RH %.3f %.3f %d %u %d %d %d %d\n", machineMs(), frame, player, sample, index, count,
+                     lap, shown ? 1 : 0);
 }
 
 void traceRuleFinish(std::FILE* f, double frame, int player, std::uint32_t ms) {

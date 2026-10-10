@@ -14,9 +14,10 @@
 //       host's word brought it
 //   RX clock frame player index
 //       the host's word took a waypoint this machine had shown back
-//   RH clock frame player sample index count lap
-//       host: its referee counted player's car clearing `index` after the
-//       car's sample `sample`
+//   RH clock frame player sample index count lap shown
+//       host: its referee counted player's car hitting `index` after the
+//       car's sample `sample` (shown 0: a checkpoint race's finish, which
+//       clears no waypoint the HUD shows)
 //   RF clock frame player ms
 //       this machine's results took player's finish (ms 86400000: did not)
 //   RE clock frame place racers
@@ -40,7 +41,7 @@ namespace mm2::game {
 void traceRuleShown(std::FILE* f, double frame, int player, int index, int count, int kind);
 void traceRuleTakenBack(std::FILE* f, double frame, int player, int index);
 void traceRuleHostHit(std::FILE* f, double frame, int player, std::uint32_t sample, int index, int count,
-                      int lap);
+                      int lap, bool shown);
 void traceRuleFinish(std::FILE* f, double frame, int player, std::uint32_t ms);
 void traceRuleStanding(std::FILE* f, double frame, int place, int racers);
 void traceCopsEvent(std::FILE* f, double frame, int type, int car, int value, const Vec3& gold);
