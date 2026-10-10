@@ -5938,7 +5938,7 @@ private:
                     if (d < (rv.nearIds.contains(f.id) ? kNearLeave : kNearEnter))
                         near.emplace_back(d, &f);
                 }
-                std::ranges::sort(near, {}, &std::pair<float, const Full*>::first);
+                std::ranges::stable_sort(near, {}, &std::pair<float, const Full*>::first); // ties: list order
                 if (near.size() > net::kMaxNearCars)
                     near.resize(net::kMaxNearCars);
                 rv.nearIds.clear();

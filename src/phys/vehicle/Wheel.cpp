@@ -6,6 +6,7 @@
 
 #include "phys/vehicle/Wheel.h"
 
+#include "core/Libm.h"
 #include "phys/AgeMath.h"
 #include "phys/Impact.h"
 #include "phys/InertialCS.h"
@@ -31,10 +32,12 @@ float signOf(float v) {
 
 std::uint32_t g_privateSeed = 1;
 
-// Matrix34::MakeRotateY (3x3 only).
+// Matrix34::MakeRotateY (3x3 only): fcos and fsin rounded to float, as
+// phys::age's (core/Libm.h; the C runtime's cosf differed in the last bit
+// for about 0.2 % of angles, and between platforms).
 void makeRotateY(Mat34& m, float a) {
-    const float c = std::cos(a);
-    const float s = std::sin(a);
+    const float c = libm::cos(a);
+    const float s = libm::sin(a);
     m.m0 = {c, 0.0f, -s};
     m.m1 = {0.0f, 1.0f, 0.0f};
     m.m2 = {s, 0.0f, c};
@@ -255,7 +258,7 @@ float Wheel::bumpDisplacement(float speed, float dt, std::uint32_t* seed) {
         return 0.0f;
     bumpPhase = (physFrand(seed ? *seed : g_privateSeed) + 0.618f) * dt * speed + bumpPhase;
     bumpPhase = std::fmod(bumpPhase, material->width);
-    const float b = std::sin((bumpPhase * 6.2831855f) / material->width) * material->height;
+    const float b = libm::sin((bumpPhase * 6.2831855f) / material->width) * material->height;
     return speed < 1.0f ? b * speed : b;
 }
 

@@ -19,6 +19,7 @@
 #include "ai/PathGeometry.h"
 #include "ai/Pedestrians.h"
 #include "ai/Traffic.h"
+#include "core/Libm.h"
 #include "phys/AgeMath.h"
 #include "phys/Bound.h"
 #include "phys/World.h"
@@ -57,7 +58,7 @@ float vectorAngle(const Vec3& a, const Vec3& b) {
         return 0.0f;
     if (c < -1.0f)
         return 3.1415927f;
-    return std::acos(c);
+    return libm::acos(c);
 }
 
 // The steering MM2 computes from a heading error in
@@ -169,12 +170,12 @@ bool nearestPlayer2(const Vec3& position, std::span<const TrackedCar> cars, floa
 }
 
 float perFrame(float factor, float dt) {
-    return std::pow(factor, clampf(30.0f * dt, 0.01f, 2.0f));
+    return libm::pow(factor, clampf(30.0f * dt, 0.01f, 2.0f));
 }
 
 float headingError(const Mat34& m, const Vec3& target) {
     const float dx = target.x - m.m3.x, dz = target.z - m.m3.z;
-    return std::atan2(dx * m.m0.x + dz * m.m0.z, -(dx * m.m2.x + dz * m.m2.z));
+    return libm::atan2(dx * m.m0.x + dz * m.m0.z, -(dx * m.m2.x + dz * m.m2.z));
 }
 
 float forwardSpeed(const phys::CarSim& car) {
@@ -262,7 +263,7 @@ float blockingDistance(const TrackedCar& obstacle, const Vec3& from, const Vec3&
         const Vec3 rel = c - from;
         const float lateral = rel.x * r.x + rel.z * r.z;
         const float along = rel.x * d.x + rel.z * d.z;
-        const float angle = std::atan2(lateral, along);
+        const float angle = libm::atan2(lateral, along);
         if (-halfWidth < lateral && lateral < halfWidth && along > 0.0f && along < length + extra &&
             angle > -0.7f && angle < 0.7f)
             return along;
@@ -305,7 +306,7 @@ void avoidPoints(const TrackedCar& obstacle, const Vec3& from, const Vec3& dir, 
     left = right = obstacle.position;
     for (const Vec3& p : points) {
         const Vec3 rel = p - from;
-        const float a = std::atan2(rel.x * r.x + rel.z * r.z, rel.x * d.x + rel.z * d.z);
+        const float a = libm::atan2(rel.x * r.x + rel.z * r.z, rel.x * d.x + rel.z * d.z);
         if (a < lo) {
             lo = a;
             left = p;
@@ -584,7 +585,7 @@ void PhysicsDriver::backup(float dt) {
     // rate). The inputs go to the car; the driver's values stay as they were.
     auto& ics = m_car.body.ics;
     const Vec3 d = m_target - ics.matrix.m3;
-    const float angle = std::atan2(d.dot(ics.matrix.m0), -d.dot(ics.matrix.m2));
+    const float angle = libm::atan2(d.dot(ics.matrix.m0), -d.dot(ics.matrix.m2));
     if (angle <= 0.1f && angle >= -0.1f) {
         m_car.steering = 0.0f;
         phys::age::rotate(ics.matrix, ics.matrix.m1, angle);
@@ -665,7 +666,7 @@ void PhysicsDriver::mirror(float dt, const TrackedCar& target) {
         }
     }
     const Vec3& f = target.forward;
-    const float angle = std::atan2(f.x * ics.matrix.m0.x + f.z * ics.matrix.m0.z,
+    const float angle = libm::atan2(f.x * ics.matrix.m0.x + f.z * ics.matrix.m0.z,
                                    -(f.x * ics.matrix.m2.x + f.z * ics.matrix.m2.z));
     m_steering = clampf(steeringGain(angle), -1.0f, 1.0f);
     apply();
@@ -688,7 +689,7 @@ void PhysicsDriver::calcSpeed(float dt) {
         const float a = vectorAngle(n[1].pos - n[0].pos, n[2].pos - n[1].pos);
         if (a > kSharpTurn) {
             const float speed = m_car.speed();
-            const double t = std::tan((3.14 - std::abs(static_cast<double>(a))) * 0.5);
+            const double t = libm::tan((3.14 - std::abs(static_cast<double>(a))) * 0.5);
             const float v = static_cast<float>(std::sqrt(t * 10.0 * kAiGripFactor * 19.8) *
                                                static_cast<double>(params.cornerSpeedFactor));
             float brake = 0.0f;
@@ -764,7 +765,7 @@ void PhysicsDriver::calcRoadSpeed(float dt) {
                         p->center[static_cast<std::size_t>(vi + 1)] - p->center[static_cast<std::size_t>(vi)];
                     const Vec3& x = p->xAxis[static_cast<std::size_t>(vi)];
                     const Vec3& z = p->zAxis[static_cast<std::size_t>(vi)];
-                    const float a = std::atan2(-x.z * seg.z + -x.x * seg.x, -z.z * seg.z + -z.x * seg.x);
+                    const float a = libm::atan2(-x.z * seg.z + -x.x * seg.x, -z.z * seg.z + -z.x * seg.x);
                     if (sharpTurn(turns, t, false).angle != a)
                         k = 2;
                 }
@@ -876,7 +877,7 @@ void placeOnCourse(phys::CarSim& car, const Course& course, float s, float side,
     // vehCarSim::Reset: the body's centre at that position plus
     // CenterOfGravity, the identity turned about Y; the model origin one
     // R * CenterOfGravity on (vehCarSim::SetWorldMatrix).
-    const float rotation = phys::resetRotationOf(Mat34::rotationY(-std::atan2(f.x, -f.z)));
+    const float rotation = phys::resetRotationOf(Mat34::rotationY(-libm::atan2(f.x, -f.z)));
     Vec3 at = p + r * best;
     if (world) {
         phys::RayHit hit;

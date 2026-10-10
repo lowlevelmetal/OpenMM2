@@ -3,6 +3,8 @@
 // Also: aiMap::ChooseNextRightStraightLink (chooseTurnOrStraight, +2).
 #include "ai/AmbientRoute.h"
 
+#include "core/Libm.h"
+
 #include <cmath>
 #include <limits>
 #include <vector>
@@ -329,7 +331,7 @@ TurnType solveTurnType(const RoadNetwork& net, const RailLink& from, int nextPat
         side = v.x * right.x + v.z * right.z + v.y * right.y;
         ahead = v.x * forward.x + v.z * forward.z + v.y * forward.y;
     }
-    const float angle = std::atan2(side, ahead);
+    const float angle = libm::atan2(side, ahead);
     if (angle > 0.5f)
         return TurnType::Right;
     if (angle < -0.5f)

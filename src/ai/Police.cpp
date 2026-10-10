@@ -6,6 +6,7 @@
 
 #include "ai/MapView.h"
 #include "ai/PathGeometry.h"
+#include "core/Libm.h"
 #include "phys/World.h"
 #include "phys/vehicle/CarSim.h"
 
@@ -227,7 +228,7 @@ bool PoliceCar::inView(const TrackedCar& c) const {
     // aiPoliceOfficer::Fov: within 1.57 rad either side of the heading.
     const Mat34& m = m_car.body.ics.matrix;
     const Vec3 rel = c.position - m.m3;
-    const float angle = std::atan2(rel.dot(m.m0), -rel.dot(m.m2));
+    const float angle = libm::atan2(rel.dot(m.m0), -rel.dot(m.m2));
     return angle > -m_settings.fov && angle < m_settings.fov;
 }
 

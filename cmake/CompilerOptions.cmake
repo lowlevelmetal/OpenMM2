@@ -6,6 +6,29 @@ add_library(OpenMM2::options ALIAS openmm2_options)
 
 target_compile_features(openmm2_options INTERFACE cxx_std_23)
 
+# Floating point: the same results on every compiler and platform, so that a
+# host and its clients (and replays, tests and the opponent sweep) simulate a
+# sample alike whichever toolchain built them (docs/physics.md, "The same
+# results on every platform"). Every float and double operation is rounded
+# as IEEE 754 says, in the order the source writes it:
+#   * no contraction of a * b + c into a fused multiply-add, which rounds
+#     once instead of twice: GCC defaults to -ffp-contract=fast for C++ and
+#     Clang to on, which fuse wherever the target has FMA (-march=native,
+#     x86-64-v3 distribution builds, every AArch64 build). MSVC 2022 and
+#     later fuse only with /fp:contract or /fp:fast, and x64 has no FMA
+#     below /arch:AVX2, which the project never sets;
+#   * no fast-math reassociation or reciprocal approximations;
+#   * SSE2 (x86-64) or AArch64 arithmetic, where float and double
+#     expressions are evaluated in their own type (FLT_EVAL_METHOD 0); a
+#     32-bit x87 build would round differently and is not supported.
+# The C runtime's sin, cos, atan2, exp, log and pow still differ between
+# platforms; the simulation uses OpenMM2's own (src/core/Libm.h).
+if(MSVC)
+    target_compile_options(openmm2_options INTERFACE /fp:precise)
+else()
+    target_compile_options(openmm2_options INTERFACE -ffp-contract=off -fno-fast-math)
+endif()
+
 if(MSVC)
     target_compile_options(openmm2_options INTERFACE
         /W4 /permissive- /utf-8 /Zc:__cplusplus /Zc:preprocessor /EHsc

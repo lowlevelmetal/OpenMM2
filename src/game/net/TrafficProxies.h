@@ -15,6 +15,7 @@
 #include "phys/Bound.h"
 #include "phys/Level.h"
 
+#include <map>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -49,9 +50,9 @@ private:
     const BoundEntry& boundFor(const ai::VehicleData& data);
 
     const phys::Level* m_level;
-    std::unordered_map<int, std::unique_ptr<Proxy>> m_proxies;
+    std::map<int, std::unique_ptr<Proxy>> m_proxies; // by id: the order they collide in, room by room
     std::unordered_map<const ai::VehicleData*, BoundEntry> m_bounds;
-    std::vector<std::pair<int, Proxy*>> m_byRoom; // sorted by room
+    std::vector<std::pair<int, Proxy*>> m_byRoom; // sorted by room, then id
 };
 
 } // namespace mm2::game

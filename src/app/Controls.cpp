@@ -1,5 +1,7 @@
 #include "app/Controls.h"
 
+#include "core/Libm.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -516,7 +518,7 @@ Options Options::load(const IniFile& ini) {
 namespace {
 float signOf(float v) { return 0.0f < v ? 1.0f : (v < 0.0f ? -1.0f : 0.0f); }
 float powf32(float base, float exponent) {
-    return static_cast<float>(std::pow(static_cast<double>(base), static_cast<double>(exponent)));
+    return static_cast<float>(libm::pow(static_cast<double>(base), static_cast<double>(exponent)));
 }
 } // namespace
 

@@ -3,6 +3,7 @@
 #include "ai/Opponent.h"
 #include "ai/World.h"
 #include "city/Race.h"
+#include "core/Libm.h"
 #include "core/Log.h"
 #include "core/StringUtil.h"
 
@@ -119,7 +120,7 @@ NetAutopilot::Controls NetAutopilot::drive(float dt, phys::CarSim& car, bool hel
     const Mat34& m = car.body.ics.matrix;
     if (m_target && !held && m.m3.dist2(*m_target) < 80.0f * 80.0f) {
         const float dx = m_target->x - m.m3.x, dz = m_target->z - m.m3.z;
-        const float angle = std::atan2(dx * m.m0.x + dz * m.m0.z, -(dx * m.m2.x + dz * m.m2.z));
+        const float angle = libm::atan2(dx * m.m0.x + dz * m.m0.z, -(dx * m.m2.x + dz * m.m2.z));
         c.steering = std::clamp(angle * 1.33f, -1.0f, 1.0f);
         const bool behind = std::fabs(angle) > 2.0f;
         const float speed = -car.body.ics.linearVelocity.dot(m.m2);
