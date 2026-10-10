@@ -3,6 +3,7 @@
 
 #include "game/net/PlayerCars.h"
 
+#include "core/Libm.h"
 #include "game/Interpolation.h"
 
 #include <algorithm>
@@ -606,7 +607,7 @@ void CorrectionBlend::add(const Mat34& before, const Mat34& after) {
 void CorrectionBlend::update(float dt) {
     if (!m_active)
         return;
-    const float keep = std::exp2(-std::max(0.0f, dt) / halfLife);
+    const float keep = libm::exp2(-std::max(0.0f, dt) / halfLife);
     m_position = m_position * keep;
     m_rotation = blendTransform(Mat34::identity(), m_rotation, keep);
     m_rotation.m3 = {};

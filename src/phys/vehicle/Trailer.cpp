@@ -6,6 +6,7 @@
 
 #include "phys/vehicle/Trailer.h"
 
+#include "core/Libm.h"
 #include "phys/vehicle/CarSim.h"
 
 #include <algorithm>
@@ -258,7 +259,7 @@ void Trailer::setTrailerHitchOffset() {
 float Trailer::hitchAngle() const {
     const Mat34& t = m_tractor->body.ics.matrix;
     const Vec3& back = body.ics.matrix.m2;
-    return std::atan2(back.dot(t.m0), back.dot(t.m2));
+    return libm::atan2(back.dot(t.m0), back.dot(t.m2));
 }
 
 void Trailer::beforeIntegrate(Body&, float, const World&) {

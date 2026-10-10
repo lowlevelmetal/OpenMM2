@@ -4,6 +4,7 @@
 
 #include "phys/vehicle/Controls.h"
 
+#include "core/Libm.h"
 #include "phys/vehicle/CarSim.h"
 
 #include <cmath>
@@ -75,8 +76,8 @@ float SteeringFilter::filter(float target, float dt) {
         if (target < m_position)
             m_position = target;
     }
-    const float curve =
-        static_cast<float>(std::pow(static_cast<double>(std::abs(m_position)), static_cast<double>(m_exponent)));
+    const double base = std::abs(m_position);
+    const float curve = static_cast<float>(libm::pow(base, static_cast<double>(m_exponent)));
     return curve * sign(m_position);
 }
 

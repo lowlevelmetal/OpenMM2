@@ -3,6 +3,7 @@
 // Also: aiPedestrian::GetRoadToLeft (setNextRoad).
 #include "ai/Pedestrians.h"
 
+#include "core/Libm.h"
 #include "core/StringUtil.h"
 
 #include <algorithm>
@@ -30,7 +31,7 @@ Vec3 scaledUnit(const Vec3& v, float m2) {
 // m0 = (-cos h, 0, sin h), m1 = up, m2 = (-sin h, 0, -cos h), so it faces
 // (sin h, 0, cos h).
 Mat34 frameOf(float h, const Vec3& pos) {
-    const float c = std::cos(h), s = std::sin(h);
+    const float c = libm::cos(h), s = libm::sin(h);
     Mat34 m;
     m.m0 = {-c, 0.0f, s};
     m.m1 = {0.0f, 1.0f, 0.0f};
@@ -281,7 +282,7 @@ float Pedestrians::getHeading(int path, float dist, int row, int dir) const {
         if (dist <= cum[static_cast<std::size_t>(i)]) {
             const Vec3& a = w.points[static_cast<std::size_t>(i - 1)];
             const Vec3& b = w.points[static_cast<std::size_t>(i)];
-            return dir == 1 ? std::atan2(b.x - a.x, b.z - a.z) : std::atan2(a.x - b.x, a.z - b.z);
+            return dir == 1 ? libm::atan2(b.x - a.x, b.z - a.z) : libm::atan2(a.x - b.x, a.z - b.z);
         }
     }
     return 0.0f;
@@ -607,7 +608,7 @@ void Pedestrians::solveRoadSegment(Ped& p, float dist) {
 void Pedestrians::steer(Ped& p, const Vec3& target) {
     const Mat34 m = frameOf(p.frameHeading, p.position);
     const float dz = target.z - p.position.z, dx = target.x - p.position.x;
-    const float angle = std::atan2(dz * m.m0.z + dx * m.m0.x, -(dz * m.m2.z + dx * m.m2.x));
+    const float angle = libm::atan2(dz * m.m0.z + dx * m.m0.x, -(dz * m.m2.z + dx * m.m2.x));
     p.heading = turnTowards(p.heading, angle);
 }
 
@@ -625,7 +626,7 @@ void Pedestrians::reset(int idx, int path, int side) {
     const int lanes = static_cast<int>(w.rowCum.size()) - 1;
     const float dist = m_rng->frand() * subLength(path, side, 0, sections(path) - 1);
     p.dist = dist;
-    p.lateral = ((w.outer - w.inner) * 0.5f - 0.5f) * std::sin(m_rng->frand() * 6.2831f);
+    p.lateral = ((w.outer - w.inner) * 0.5f - 0.5f) * libm::sin(m_rng->frand() * 6.2831f);
     p.idx = sidewalkIndex(path, side, dist);
     p.dir = p.prevDir = m_rng->frand() < 0.5f ? 1 : -1;
     // (MM2 turns the old heading round here for direction +1; it is
@@ -870,7 +871,7 @@ float bangerBlockingDistance(const Vec3& origin, float yRadius, const Vec3& from
     const float lateral = ox * nx + nz * oz;
     const float along = ox * d.x + oz * d.z;
     const float r = (std::min(yRadius, 2.0f) + width * 0.5f) + 1.0f; // aiBanger::Radius
-    const float angle = std::atan2(lateral, along);
+    const float angle = libm::atan2(lateral, along);
     if (-r < lateral && lateral < r && 0.0f < along && along < span + reach && -0.7f < angle && angle < 0.7f)
         return along;
     return -1.0f;
@@ -1023,11 +1024,11 @@ void Pedestrians::backupAt(Ped& p) {
     if (p.side == 1) {
         p.position.x = x.x * 0.2f + p.wallHit.x;
         p.position.z = x.z * 0.2f + p.wallHit.z;
-        p.heading = std::atan2(x.x, x.z);
+        p.heading = libm::atan2(x.x, x.z);
     } else {
         p.position.x = p.wallHit.x - x.x * 0.2f;
         p.position.z = p.wallHit.z - x.z * 0.2f;
-        p.heading = std::atan2(-x.x, -x.z);
+        p.heading = libm::atan2(-x.x, -x.z);
     }
     startSeq(p, seqs(p).backup);
 }
@@ -1086,7 +1087,7 @@ void Pedestrians::avoidObstacle(Ped& p, const Vec3& obstacle, float radius) {
     p.target = d * r + obstacle;
     const Mat34 m = frameOf(p.frameHeading, p.position);
     const Vec3 t = p.target - p.position;
-    const float angle = std::atan2((t.z * m.m0.z + t.y * m.m0.y) + t.x * m.m0.x,
+    const float angle = libm::atan2((t.z * m.m0.z + t.y * m.m0.y) + t.x * m.m0.x,
                                    -((t.z * m.m2.z + t.y * m.m2.y) + t.x * m.m2.x));
     if (kPedTurnRate < angle)
         p.heading -= kPedTurnRate;
@@ -1153,7 +1154,7 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
             queueSeq(p, s.standAntic);
     };
     auto faceCar = [&] {
-        p.heading = std::atan2(c.transform.m3.x - p.position.x, c.transform.m3.z - p.position.z);
+        p.heading = libm::atan2(c.transform.m3.x - p.position.x, c.transform.m3.z - p.position.z);
     };
     if (p.idx == 0 || p.idx == n) {
         if (entering) {
@@ -1169,7 +1170,7 @@ void Pedestrians::anticipate(Ped& p, const PlayerCar& c) {
         if (p.wall) {
             if (std::sqrt(sq(p.position.z - p.wallHit.z) + sq(p.position.x - p.wallHit.x)) >= 1.25f) {
                 // To the buildings.
-                p.heading = p.side == 1 ? std::atan2(-x.x, -x.z) : std::atan2(x.x, x.z);
+                p.heading = p.side == 1 ? libm::atan2(-x.x, -x.z) : libm::atan2(x.x, x.z);
                 startSeq(p, s.run);
             } else {
                 backupAt(p);
@@ -1232,7 +1233,7 @@ void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
         p.reversingAtDive = c.reversing;
         Vec3 a, b;
         axes(a, b);
-        p.heading = std::atan2(b.x, b.z);
+        p.heading = libm::atan2(b.x, b.z);
         p.sideDist0 = onSegment ? a.x * rel.x + a.y * rel.y + a.z * rel.z
                                 : a.y * rel.y + a.z * rel.z + a.x * rel.x;
         bool right;
@@ -1249,12 +1250,12 @@ void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
     } else if (entering) {
         const Vec3 x = axisX(p.path, p.idx);
         if (p.position.dist(p.wallHit) >= 1.25f) {
-            p.heading = std::atan2(-x.x, -x.z); // as coded, whatever the side
+            p.heading = libm::atan2(-x.x, -x.z); // as coded, whatever the side
             p.scream = true;
             startSeq(p, s.run);
         } else {
             // Unlike Anticipate, whatever the side.
-            p.heading = std::atan2(x.x, x.z);
+            p.heading = libm::atan2(x.x, x.z);
             p.position.x = x.x * 0.2f + p.wallHit.x;
             p.position.z = x.z * 0.2f + p.wallHit.z;
             startSeq(p, s.backup);
@@ -1267,7 +1268,7 @@ void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
             // probe when nothing was hit).
             if (p.wall && p.position.dist(p.wallHit) < 1.25f) {
                 const Vec3 x = axisX(p.path, p.idx);
-                p.heading = std::atan2(x.x, x.z);
+                p.heading = libm::atan2(x.x, x.z);
                 p.position.x = x.x * 0.2f + p.wallHit.x;
                 p.position.z = x.z * 0.2f + p.wallHit.z;
                 startSeq(p, s.backup);
@@ -1289,7 +1290,7 @@ void Pedestrians::avoid(Ped& p, const PlayerCar& c, float& latScale) {
     } else if (p.frame > 12 && std::abs(now) < std::abs(f * v + p.sideDist0)) {
         latScale = 3.0f;
     }
-    p.heading = std::atan2(b.x, b.z);
+    p.heading = libm::atan2(b.x, b.z);
 }
 
 // --- Crossing the street ------------------------------------------------------
@@ -1429,7 +1430,7 @@ void Pedestrians::update(int idx, float dt, const PlayerCar& c) {
             const float r = c.radius;
             if ((p.position - c.transform.m3).dot(m) < 0.0f && (r + r) * (r + r) < d2) {
                 p.reaction = 0;
-                p.lateral = std::sin(m_rng->frand() * 6.2831f) * kPedMaxLateral;
+                p.lateral = libm::sin(m_rng->frand() * 6.2831f) * kPedMaxLateral;
                 calcCurve(p, p.idx - 1, p.idx, p.lateral);
             }
         }

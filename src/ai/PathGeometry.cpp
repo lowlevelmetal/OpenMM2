@@ -1,5 +1,7 @@
 #include "ai/PathGeometry.h"
 
+#include "core/Libm.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -17,7 +19,7 @@ float sectionAngle(const city::AiPath& p, int v) {
     const float dz = p.center[i + 1].z - p.center[i].z;
     const Vec3& x = p.xAxis[i];
     const Vec3& z = p.zAxis[i];
-    return std::atan2(-x.x * dx + -x.z * dz, -z.x * dx + -z.z * dz);
+    return libm::atan2(-x.x * dx + -x.z * dz, -z.x * dx + -z.z * dz);
 }
 
 Vec3 unitXZ(Vec3 v) {
@@ -281,8 +283,8 @@ void calcRoadTurns(const city::AiPath& p, std::span<SharpTurn> turns, const Vec3
         } else {
             room = 3.0f;
         }
-        t.radius = room / (1.0f - std::sin(half));
-        t.setback = std::cos(half) * t.radius;
+        t.radius = room / (1.0f - libm::sin(half));
+        t.setback = libm::cos(half) * t.radius;
         const Vec3& x = p.xAxis[iv];
         const Vec3& z = p.zAxis[iv];
         const float across = (t.radius - room) * t.dir;
@@ -293,8 +295,8 @@ void calcRoadTurns(const city::AiPath& p, std::span<SharpTurn> turns, const Vec3
         t.startDir = unitXZ({(x.x * r + t.center.x) - t.center.x, (x.y * r + t.center.y) - t.center.y,
                              (x.z * r + t.center.z) - t.center.z});
         const float a = t.angle * t.dir;
-        const float s = std::sin(a) * t.radius;
-        const float c = std::cos(a) * t.radius * t.dir;
+        const float s = libm::sin(a) * t.radius;
+        const float c = libm::cos(a) * t.radius * t.dir;
         t.endDir = unitXZ({((t.center.x - z.x * s) + c * x.x) - t.center.x,
                            ((t.center.y - z.y * s) + c * x.y) - t.center.y,
                            ((t.center.z - z.z * s) + c * x.z) - t.center.z});
