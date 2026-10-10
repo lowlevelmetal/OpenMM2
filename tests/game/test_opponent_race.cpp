@@ -32,7 +32,9 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -979,4 +981,66 @@ TEST(OpponentRace, EveryRaceSweep) {
     }
     std::printf("sweep: %d/%d opponents finished\n", finished, total);
     std::printf("sweep: %d/%d crossed the race's finish line (aiRouteRacer::Finished)\n", crossed, total);
+}
+
+// The same race on every platform (docs/physics.md, "The same results on
+// every platform"; the data-free scenario is game/test_determinism): the
+// first 40 s of London's race1 with its six racers and full traffic,
+// hashed. The racers drive physics cars with the AI's atan2 / sin / cos
+// steering and pow throttle, through traffic they knock loose and props.
+// The hashes come from a Linux GCC build; every platform must match them
+// (CI has no game data: run it on Windows with OPENMM2_GAME_DATA set).
+TEST(Determinism, RetailRaceThroughTraffic) {
+    MM2_REQUIRE_GAME_DATA();
+    const vfs::Vfs& vfs = *test::gameData();
+    auto cw = CityWorld::load(vfs, "london", 1.0f);
+    ASSERT_TRUE(cw);
+    const auto setup = loadSetup(*cw->city, vfs, game::GameMode::Checkpoint, 1, 6, 0);
+    ASSERT_TRUE(setup);
+    const RaceRun run = runRace(*cw, vfs, *setup, 40.0f);
+    ASSERT_EQ(run.racers.size(), 6u);
+    auto fnv = [](std::uint64_t& h, float v) {
+        const auto u = std::bit_cast<std::uint32_t>(v);
+        for (int k = 0; k < 4; ++k)
+            h = (h ^ ((u >> (8 * k)) & 0xffu)) * 1099511628211ull;
+    };
+    auto fnvVec = [&](std::uint64_t& h, const Vec3& v) {
+        fnv(h, v.x);
+        fnv(h, v.y);
+        fnv(h, v.z);
+    };
+    // The racers' trails (every third frame) and where they ended; the
+    // traffic; the props.
+    std::uint64_t racers = 1469598103934665603ull, traffic = racers, props = racers;
+    for (const auto& r : run.racers) {
+        for (const Vec3& p : r.trail)
+            fnvVec(racers, p);
+        const phys::CarSim& sim = r.vehicle->sim();
+        const phys::InertialCS& ics = sim.body.ics;
+        for (const Vec3& row :
+             {ics.matrix.m0, ics.matrix.m1, ics.matrix.m2, ics.matrix.m3, ics.linearVelocity, ics.angularVelocity})
+            fnvVec(racers, row);
+        fnv(racers, sim.damage.currentDamage);
+        fnv(racers, sim.engine.rpm);
+    }
+    for (const ai::AmbientCar& c : cw->ai->cars()) {
+        fnv(traffic, static_cast<float>(c.id));
+        fnvVec(traffic, c.transform.m3);
+        fnvVec(traffic, c.transform.m2);
+        fnv(traffic, c.speed);
+    }
+    int moved = 0;
+    for (const auto& p : cw->bangers->instances()) {
+        fnvVec(props, p.matrix.m3);
+        fnvVec(props, p.matrix.m2);
+        moved += p.state != game::bangers::BangerSet::State::Unhit;
+    }
+    const Vec3 lead = run.racers.front().vehicle->sim().body.ics.matrix.m3;
+    std::printf("determinism: racers %016llx traffic %016llx props %016llx (%d props moved); "
+                "car 1 at (%a, %a, %a)\n",
+                static_cast<unsigned long long>(racers), static_cast<unsigned long long>(traffic),
+                static_cast<unsigned long long>(props), moved, lead.x, lead.y, lead.z);
+    EXPECT_EQ(racers, 0x65eb8feebb02f101ull) << "the racers drove differently";
+    EXPECT_EQ(traffic, 0xb8f1c125aa480ce2ull) << "the traffic drove differently";
+    EXPECT_EQ(props, 0xfc1321f4c3363732ull) << "the props moved differently";
 }
