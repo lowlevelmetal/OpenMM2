@@ -14,13 +14,15 @@
 // and the exact ones (sqrt, floor, the exponent bits), so they give the same
 // bits on every platform and compiler.
 //
-// Accuracy. The double versions are within about one unit in the last place.
-// The float versions are the double result rounded to float: that is what
-// MM2's code got from the x87, whose fsin, fcos, fpatan, fyl2x and f2xm1
-// work in extended precision whatever the precision control, the result
-// being stored to a float. They are correctly rounded except in the rare
-// cases a double result lies within its error of a float's rounding
-// boundary, which no test of the game's ranges met (docs/physics.md).
+// Accuracy. The double versions are within an ulp (sin, cos, exp, log), two
+// or three (tan, the inverse functions) or about |y log x| ulps (pow). The
+// float versions are the double result rounded to float: that is what MM2's
+// code got from the x87, whose fsin, fcos, fpatan, fyl2x and f2xm1 work in
+// extended precision whatever the precision control, the result being
+// stored to a float. They are correctly rounded except where a double
+// result lies within its error of a float's rounding boundary: 0 to 5
+// arguments per function in exhaustive sweeps of the game's ranges
+// (docs/review/multiplayer-determinism.md).
 //
 // Not here, because IEEE 754 makes their results exact (or correctly
 // rounded) everywhere: std::sqrt, std::fmod, std::remainder, std::floor,
