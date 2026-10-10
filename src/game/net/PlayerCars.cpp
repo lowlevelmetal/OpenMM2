@@ -518,7 +518,11 @@ CarPrediction::Correction CarPrediction::acknowledge(SimVehicle& car, NetCarDriv
     } else if (replay) {
         const Vec3 before = car.sim().modelMatrix().m3;
         restore(base, car, driver);
-        if (differs) {
+        // With other cars it may meet, the host's state even within the
+        // tolerance: in a contact what the tolerance lets pass grows from
+        // state to state (a shunt with the other car braking: 7 corrections
+        // over the tolerance before, 2 with it).
+        if (differs || !companions.empty()) {
             applyOwnCarState(car, host);
             save(base, car, driver);
         }
