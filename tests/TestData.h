@@ -4,6 +4,15 @@
 
 #include <memory>
 
+// Network tests that host a session pick their ports from their own block,
+// all below 49152 (Windows' dynamic range): two files sharing a block can bind
+// the same port when ctest runs them in parallel. Taken blocks:
+//   17000-19999 game/test_netgame_start     21000-24999 net/test_player_cars
+//   25000-28999 game/test_net_race_rules    29000-32999 game/test_damage_sync
+//   33000-36999 game/test_netgame_lobby     37000-40999 game/test_netgame_sync
+//   41000-44999 game/test_netgame           45000-48999 game/test_traffic_net
+// Other network tests bind port 0.
+
 namespace mm2::test {
 
 // Retail game files mounted from $OPENMM2_GAME_DATA (disc image, mounted
