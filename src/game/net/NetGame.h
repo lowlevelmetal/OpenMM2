@@ -316,7 +316,7 @@ public:
     // tag and its fields (the props', game::PropTrace).
     void traceLine(std::string_view line);
 
-    // --- The players' cars, simulated by the host (net/PlayerCars.h) -------------------
+    // --- The players' cars, simulated by the host (net/PlayerCarState.h) -------------------
     // Client: this machine's car's inputs.
     void sendPlayerInput(const net::PlayerInputMsg& msg);
     // Host: the clients' inputs received since the last call.

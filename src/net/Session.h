@@ -17,7 +17,7 @@
 #include "net/AmbientState.h"
 #include "net/ClockSync.h"
 #include "net/Discovery.h"
-#include "net/PlayerCars.h"
+#include "net/PlayerCarState.h"
 #include "net/PropState.h"
 #include "net/RulesState.h"
 #include "net/Protocol.h"
@@ -252,7 +252,7 @@ public:
     // Connection quality to the host (clients) or to a player (host).
     PeerStats peerStats(std::uint8_t playerId) const;
 
-    // --- The players' cars, simulated by the host (net/PlayerCars.h) ---
+    // --- The players' cars, simulated by the host (net/PlayerCarState.h) ---
     // Client: this machine's inputs to the host (during a race only).
     void sendPlayerInput(const PlayerInputMsg& msg);
     // Host: the clients' inputs received since the last call, oldest first

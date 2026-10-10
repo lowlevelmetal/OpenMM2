@@ -127,7 +127,7 @@ decompile and the asm of `SendPosition` and `PositionUpdate`):
    inputs; `CarSim::ownRandom` (each player's car draws its wheels' bump
    numbers from its own stream on every machine).
 3. **Protocol 5** (5f2f10d): `PlayerInput` and `CarStates`
-   (net/PlayerCars.h), checked within ranges, with a budget.
+   (net/PlayerCarState.h), checked within ranges, with a budget.
 4. **Game layer** (24dbd3d): `NetCarDriver`, `HostInputQueue`,
    `CarPrediction`, `CorrectionBlend` (game/net/PlayerCars).
 5. **The race** (3f73059): the host simulates every client's car from its

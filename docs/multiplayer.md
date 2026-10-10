@@ -16,7 +16,7 @@ decides what they mean.
 | `net/Session.h` | Lobby + in-game session (host or client), event queue |
 | `net/Protocol.h` | Wire messages, settings/player structs, game event payloads |
 | `net/Snapshot.h` | `VehicleSnapshot` and the receive-side `SnapshotBuffer` |
-| `net/PlayerCars.h` | The players' cars simulated by the host: `PlayerInputMsg`, `CarStatesMsg` |
+| `net/PlayerCarState.h` | The players' cars simulated by the host: `PlayerInputMsg`, `CarStatesMsg` |
 | `net/AmbientState.h` | The shared cruise traffic: `AmbientStateMsg` |
 | `net/ClockSync.h` | Session clock estimation on clients |
 | `net/Discovery.h` | LAN beacon/scanner, broadcast addresses, small UDP socket |

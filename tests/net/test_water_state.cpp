@@ -1,8 +1,8 @@
-// The water in a car's full state (protocol 14, net/PlayerCars.h
+// The water in a car's full state (protocol 14, net/PlayerCarState.h
 // OwnCarState): the host decides when the water puts a car back, and a
 // client carries on from the host's state with its vehSplash and the water
 // handler's time.
-#include "net/PlayerCars.h"
+#include "net/PlayerCarState.h"
 
 #include <gtest/gtest.h>
 

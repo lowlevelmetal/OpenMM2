@@ -1,7 +1,7 @@
 #pragma once
 
 // The players' cars in a network race, simulated by the host (OpenMM2; see
-// docs/multiplayer.md, "Players' cars", and net/PlayerCars.h for the wire).
+// docs/multiplayer.md, "Players' cars", and net/PlayerCarState.h for the wire).
 //
 // MM2 ran a network car on every machine as a vehCar pulled toward its
 // owner's packets (mmNetObject::PositionUpdate, Predict), so each machine
@@ -28,7 +28,7 @@
 // Nothing here touches the network or the race's presentation.
 
 #include "game/PlayerVehicle.h"
-#include "net/PlayerCars.h"
+#include "net/PlayerCarState.h"
 #include "net/Snapshot.h"
 #include "phys/World.h"
 

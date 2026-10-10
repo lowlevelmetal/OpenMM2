@@ -1,7 +1,7 @@
-// The host-simulated players' cars on the wire (net/PlayerCars.h): the
+// The host-simulated players' cars on the wire (net/PlayerCarState.h): the
 // clients' inputs and the host's states, their encodings, what a receiver
 // refuses, mutated messages, and their delivery through real sessions.
-#include "net/PlayerCars.h"
+#include "net/PlayerCarState.h"
 #include "net/Session.h"
 
 #include <gtest/gtest.h>

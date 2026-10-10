@@ -30,14 +30,14 @@ inline constexpr std::uint16_t kProtocolMagic = 0x4D32; // "M2"
 // RaceStart; the race in Welcome).
 // 4: the cars' damage (net/VehicleDamage.h events; in AmbientState the
 // police's damage at 10 bits and the knocked traffic cars' wheels).
-// 5: the host simulates every player's car (net/PlayerCars.h: PlayerInput,
+// 5: the host simulates every player's car (net/PlayerCarState.h: PlayerInput,
 // CarStates; damage events about a player's car from the host).
 // 6: in AmbientState a rail car's acceleration, curvature and speed over the
 // ground (the clients predict the shared traffic to their cars' time), and
 // up to 160 cars; no TrafficHit events.
 // 7: the host's props (net/PropState.h: PropState, the PropKnocks event).
 // 9: in CarStates the players' cars near the client's in full, with the input
-// last applied to them (net/PlayerCars.h NearCarState), and in every car's
+// last applied to them (net/PlayerCarState.h NearCarState), and in every car's
 // full state what a sample hands the next.
 // 10: the host's rules (net/RulesState.h: the rules message; a player's own
 //    word on a checkpoint, a finish or the gold is refused). (8 was its number
@@ -123,7 +123,7 @@ enum class MsgType : std::uint8_t {
     AmbientState, // net/AmbientState.h
     RaceLoaded,
     RaceStart,
-    PlayerInput, // net/PlayerCars.h
+    PlayerInput, // net/PlayerCarState.h
     CarStates,
     PropState,   // net/PropState.h
     TrafficFull, // net/TrafficFull.h

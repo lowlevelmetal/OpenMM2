@@ -72,7 +72,7 @@ constexpr double kEventRate = 30.0, kEventBurst = 60.0;
 // a crash's events never use up the race events' or the other way round. The
 // game sends at most ten a second.
 constexpr double kDamageEventRate = 15.0, kDamageEventBurst = 30.0;
-// A joiner's car's inputs (net/PlayerCars.h): the game sends one message a
+// A joiner's car's inputs (net/PlayerCarState.h): the game sends one message a
 // frame that simulated a sample, at most 60 a second; the host only queues
 // them, so the budget bounds the work and the queue.
 constexpr double kInputRate = 90.0, kInputBurst = 180.0;

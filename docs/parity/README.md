@@ -476,7 +476,7 @@ audited in [openmm2-only.md](openmm2-only.md).
 | `src/net/NatPmpBackend.cpp` | 279 | O | - |
 | `src/net/Net.cpp` | 113 | O | - |
 | `src/net/Net.h` | 62 | O | - |
-| `src/net/PlayerCars.h` | 315 | O | - |
+| `src/net/PlayerCarState.h` | 315 | O | - |
 | `src/net/PortMapper.cpp` | 324 | O | - |
 | `src/net/PortMapper.h` | 164 | O | - |
 | `src/net/PropState.cpp` | 12 | O | - |

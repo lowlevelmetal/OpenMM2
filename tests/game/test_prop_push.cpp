@@ -12,7 +12,7 @@
 #include "game/bangers/PropPlacement.h"
 #include "game/net/PlayerCars.h"
 #include "game/net/PropSync.h"
-#include "net/PlayerCars.h"
+#include "net/PlayerCarState.h"
 #include "net/PropState.h"
 #include "phys/Level.h"
 #include "phys/World.h"
