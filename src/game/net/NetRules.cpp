@@ -300,7 +300,8 @@ void NetRules::hostUpdate(float dt, std::uint64_t nowMs, const Vec3& ownPosition
         const bool news = c.lastDecision < m_log.size();
         const auto* p = m_referee ? m_referee->player(id) : nullptr;
         const bool hit = p && p->hits.size() != c.hits;
-        if (!news && !hit && c.seq != 0 && nowMs - c.sentAt < kStateIntervalMs)
+        const std::uint64_t interval = m_referee ? kStateIntervalMs : kCopsStateIntervalMs;
+        if (!news && !hit && c.seq != 0 && nowMs - c.sentAt < interval)
             continue;
         const net::RulesMsg m = message(id, c);
         auto payload = net::encodePayload(m);

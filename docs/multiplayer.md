@@ -1122,13 +1122,14 @@ for everything) decides them on the host from the cars it simulates (see
   that car's waypoints hit (the newest 64), its place and the racers, the
   other cars' icon numbers, the results so far, the timeout and the end; in
   Cops and Robbers the gold's carrier and place, the set, every score and
-  the end. It goes at once when something happened for that player and once
-  a second otherwise. In a race the state alone (the newest 16 waypoints, the
-  samples seen, the place and the icons; no decisions, no results) also goes
-  unreliably (`RulesState` on the State channel, protocol 14) at once on a
-  new hit and 20 times a second, numbered with the messages: whichever
-  arrives first stands, so a lost packet no longer holds a checkpoint's
-  confirmation (or its taking back) until ENet sends it again. A client
+  the end. It goes at once when something happened for that player and
+  otherwise four times a second in Cops and Robbers, once a second in a
+  race, where the state alone (the newest 16 waypoints, the samples seen,
+  the place and the icons; no decisions, no results) also goes unreliably
+  (`RulesState` on the State channel, protocol 14) at once on a new hit and
+  20 times a second, numbered with the messages: whichever arrives first
+  stands, so a lost packet no longer holds a checkpoint's confirmation (or
+  its taking back) until ENet sends it again. A client
   shows each decision once, in order (a reliable message older than the
   newest state still brings its decisions), and a missed one (a late loader
   whose queue of events overflowed) is made good by the state, silently.

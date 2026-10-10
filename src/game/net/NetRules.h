@@ -49,10 +49,12 @@ bool hostAcceptsGameEvent(std::uint8_t from, std::uint16_t type);
 
 class NetRules {
 public:
-    // How often a player hears from the host reliably when nothing happened,
-    // and in a race unreliably (the standings, the samples its rules have
-    // seen; the CarStates rate).
+    // How often a player hears from the host reliably when nothing happened
+    // (in Cops and Robbers, whose state goes no other way, four times a
+    // second), and in a race unreliably (the standings, the samples its
+    // rules have seen; the CarStates rate).
     static constexpr std::uint64_t kStateIntervalMs = 1000;
+    static constexpr std::uint64_t kCopsStateIntervalMs = 250;
     static constexpr std::uint64_t kFastStateIntervalMs = 50;
     // The waypoints a message lists at most (the newest; a client keeps the
     // earlier ones as it has them), and an unreliable state.
