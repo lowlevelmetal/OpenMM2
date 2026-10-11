@@ -11,7 +11,8 @@
 //   25000-28999 game/test_net_race_rules    29000-32999 game/test_damage_sync
 //   33000-36999 game/test_netgame_lobby     37000-40999 game/test_netgame_sync
 //   41000-44999 game/test_netgame           45000-48999 game/test_traffic_net
-// Other network tests bind port 0.
+// Other network tests bind port 0. Within a block, test::processPortSlot
+// (NetTestPorts.h) picks this process's ports.
 
 namespace mm2::test {
 

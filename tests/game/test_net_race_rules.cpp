@@ -4,6 +4,7 @@
 // or corrected by the host's word (Session's net rules), the message that
 // carries it (game::NetRules, net/RulesState.h), and Cops and Robbers' rules
 // on the host with a client's predicted pickup.
+#include "NetTestPorts.h"
 #include "TestData.h"
 #include "city/CityData.h"
 #include "game/Strings.h"
@@ -738,7 +739,7 @@ namespace {
 // This file's block of ports (below 49152; see test_netgame.cpp).
 std::uint16_t rulesPort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        25000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 1000 * 4);
+        25000 + test::processPortSlot(1000) * 4);
     return port;
 }
 

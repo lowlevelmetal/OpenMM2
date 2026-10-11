@@ -2,6 +2,7 @@
 // owner's recorder, the receivers' records (timing, resets, loss, hostile
 // input), the same dents on both machines, and its trip through two
 // NetGames. Also the knocked traffic cars' wheels (game/net/TrafficSync).
+#include "NetTestPorts.h"
 #include "TestData.h"
 #include "asset/VehicleModel.h"
 #include "core/StringUtil.h"
@@ -665,7 +666,7 @@ namespace {
 // test_netgame_sync.cpp).
 std::uint16_t damagePort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        29000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 2000 * 2);
+        29000 + test::processPortSlot(2000) * 2);
     return port;
 }
 

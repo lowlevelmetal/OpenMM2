@@ -1,6 +1,7 @@
 // A network race's start on each machine (game::NetRaceStart, MM2's
 // mmMultiRace / mmMultiCircuit / mmMultiBlitz::UpdateGame state 0) and the
 // handshake through game::NetGame (docs/multiplayer.md, "Race start").
+#include "NetTestPorts.h"
 #include "game/Strings.h"
 #include "game/net/NetGame.h"
 #include "game/net/RaceStart.h"
@@ -28,7 +29,7 @@ constexpr float kFrame = 1.0f / 60.0f;
 // distinct ports per process for parallel ctest runs.
 std::uint16_t basePort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        17000 + (Clock::now().time_since_epoch().count() / 1000) % 1500 * 2);
+        17000 + test::processPortSlot(1500) * 2);
     return port;
 }
 

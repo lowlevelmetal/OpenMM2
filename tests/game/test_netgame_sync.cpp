@@ -1,5 +1,6 @@
 // NetGame's replication timing: a car's state carries the time the
 // simulation was at, and remote cars are sampled with the simulation's lag.
+#include "NetTestPorts.h"
 #include "game/net/NetGame.h"
 
 #include <gtest/gtest.h>
@@ -19,7 +20,7 @@ namespace {
 // fail. Within a block, distinct ports per process for parallel ctest runs.
 std::uint16_t syncPort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        37000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 2000 * 2);
+        37000 + test::processPortSlot(2000) * 2);
     return port;
 }
 

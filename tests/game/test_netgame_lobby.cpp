@@ -1,5 +1,6 @@
 // The lobby and race flow of game::NetGame between a host and a client in
 // one process (docs/review/multiplayer-lobby.md).
+#include "NetTestPorts.h"
 #include "game/net/NetGame.h"
 
 #include <gtest/gtest.h>
@@ -19,7 +20,7 @@ namespace {
 // fail. Within a block, distinct ports per process for parallel ctest runs.
 std::uint16_t basePort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        33000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 2000 * 2);
+        33000 + test::processPortSlot(2000) * 2);
     return port;
 }
 

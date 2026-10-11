@@ -1,6 +1,7 @@
 // The host-simulated players' cars on the wire (net/PlayerCarState.h): the
 // clients' inputs and the host's states, their encodings, what a receiver
 // refuses, mutated messages, and their delivery through real sessions.
+#include "NetTestPorts.h"
 #include "net/PlayerCarState.h"
 #include "net/Session.h"
 
@@ -24,7 +25,7 @@ using Bytes = std::vector<std::byte>;
 // This file's block of ports, below 49152 (see tests/game/test_traffic_net.cpp).
 std::uint16_t testPort(int k) {
     static const auto base = static_cast<std::uint16_t>(
-        21000 + (std::chrono::steady_clock::now().time_since_epoch().count() / 1000) % 1000 * 4);
+        21000 + test::processPortSlot(1000) * 4);
     return static_cast<std::uint16_t>(base + k);
 }
 
