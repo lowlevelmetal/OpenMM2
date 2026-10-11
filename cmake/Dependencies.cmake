@@ -235,7 +235,10 @@ check_c_source_compiles("
     #include <threads.h>
     int main(void) { mtx_t m; if (mtx_init(&m, mtx_recursive) != thrd_success) return 1; mtx_destroy(&m); return 0; }"
     OPENMM2_HAVE_C11_THREADS)
-if(OPENMM2_HAVE_C11_THREADS)
+# Not on MSVC: its C11 threads live in vcruntime140_threads.dll (VS 2022 17.8+),
+# which older VC++ redistributables lack and the packages did not ship, so the
+# game failed to start on such PCs. The library's Win32 threads, as on MinGW.
+if(OPENMM2_HAVE_C11_THREADS AND NOT MSVC)
     target_compile_definitions(openmm2_dmusic PRIVATE _DM_USE_NATIVE_THREAD=1)
 else()
     target_sources(openmm2_dmusic PRIVATE "${_dm}/src/thread/Thread.Posix.c" "${_dm}/src/thread/Thread.Win32.c")

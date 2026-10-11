@@ -142,6 +142,31 @@ jobs:
       - name: Build portable ZIP
         run: cpack --preset windows-portable
 
+      # The runner has Visual Studio, so a missing runtime DLL would never fail
+      # a test here. Every VC++ runtime DLL the package's programs and DLLs
+      # import must be in the package, and every other DLL there or in Windows.
+      - name: Check the package's DLL imports
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem out/build/windows-msvc -Filter 'OpenMM2-*-portable.zip' | Select-Object -First 1
+          $dir = Join-Path $env:RUNNER_TEMP 'portable-check'
+          Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+          Expand-Archive $zip.FullName -DestinationPath $dir
+          $bad = @()
+          foreach ($exe in Get-ChildItem $dir -Recurse -Include *.exe, *.dll) {
+            $here = $exe.DirectoryName
+            $deps = (dumpbin /nologo /dependents $exe.FullName) |
+              ForEach-Object { if ($_ -match '^\s+(\S+\.dll)\s*$') { $Matches[1] } }
+            foreach ($dll in $deps) {
+              $packaged = Test-Path (Join-Path $here $dll)
+              $runtime = $dll -match '^(vcruntime|msvcp|concrt|vccorlib)'
+              $system = (Test-Path (Join-Path "$env:WINDIR\System32" $dll)) -or $dll -match '^(api|ext)-ms-'
+              Write-Host "$($exe.Name): $dll packaged=$packaged"
+              if (-not $packaged -and ($runtime -or -not $system)) { $bad += "$($exe.Name) imports $dll, which the package does not ship" }
+            }
+          }
+          if ($bad.Count -gt 0) { $bad | ForEach-Object { Write-Error $_ }; exit 1 }
+
       - name: Upload packages
         uses: actions/upload-artifact@v7
         with:
