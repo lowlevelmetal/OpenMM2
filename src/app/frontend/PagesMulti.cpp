@@ -190,30 +190,24 @@ public:
         }
         // NetSelectMenu::NetSelectMenu: the NET NAME field takes 12 characters.
         auto& name = menu.add<ui::TextEntry>(Box{kBoxX, 66, kBoxWide, kBoxH}, &m_netName, 12);
-        // NetSelectMenu::NetNameCB -> mmInterface::NetNameCB: the driver's net
-        // name.
-        name.onCommit = [this, &fe] {
-            const auto trimmed = std::string(str::trim(m_netName));
-            m_netName = trimmed.empty() ? netName(fe) : trimmed;
-            if (fe.profile) {
-                fe.profile->netName = m_netName;
-                fe.saveProfile();
-            }
-            // The name is fixed per NetGame: start a fresh one with it.
-            if (fe.ctx.netGame && !fe.ctx.netGame->inSession()) {
-                fe.ctx.netGame.reset();
-                ensureNetGame(fe).startLanScan();
-            }
-        };
+        // The field edits the menu's own name buffer (NetSelectMenu +0x8c),
+        // which hosting and joining read; NetNameCB only logs it. So the name
+        // in the field counts whether or not Enter was pressed: it is applied
+        // on Enter, before HOST and JOIN, and on leaving the page.
+        name.onCommit = [this, &fe] { applyNetName(fe); };
         // HOST (NetSelectMenu::HostCB): the host options dialog.
         auto& host = menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_hst.tga", 4}, kColumnX, 98,
-                                                [&fe] { fe.push(makeHostOptionsDialog(fe)); });
+                                                [this, &fe] {
+                                                    applyNetName(fe);
+                                                    fe.push(makeHostOptionsDialog(fe));
+                                                });
         // NetSelectMenu::FocusDescription has pictures for the provider lamps
         // only.
         menu.add<ui::SpriteButton>(SpriteSheet{"texture/sess_jn.tga", 4}, kColumnX, 167, [this, &fe] {
             // JOIN (NetSelectMenu::JoinCB): a session picked in the list joins
             // directly; otherwise ask for an address ("leave blank to search
             // for available sessions").
+            applyNetName(fe);
             const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
             if (m_selected >= 0 && m_selected < static_cast<int>(list.size()))
                 joinListed(fe, list[static_cast<std::size_t>(m_selected)]);
@@ -229,13 +223,20 @@ public:
         // A double click joins the session (NetSelectMenu::JoinCallback joins
         // on the pick).
         m_list->onDoubleClick = [this, &fe] {
+            applyNetName(fe);
             const auto list = fe.ctx.netGame ? fe.ctx.netGame->lanSessions() : std::vector<net::DiscoveredSession>{};
             if (m_selected >= 0 && m_selected < static_cast<int>(list.size()))
                 joinListed(fe, list[static_cast<std::size_t>(m_selected)]);
         };
         auto& back = addBack(fe, *this);
-        back.onClick = [&fe] { leave(fe); };
-        menu.onBack = [&fe] { leave(fe); };
+        back.onClick = [this, &fe] {
+            applyNetName(fe);
+            leave(fe);
+        };
+        menu.onBack = [this, &fe] {
+            applyNetName(fe);
+            leave(fe);
+        };
         addNavStrip(fe, *this);
         menu.focus(&host);
     }
@@ -270,6 +271,21 @@ private:
     static void leave(Frontend& fe) {
         fe.ctx.netGame.reset();
         fe.pop();
+    }
+
+    // The name in the field as the driver's net name (empty: the profile's),
+    // saved with the profile when it changed and given to the next host or
+    // join (no new NetGame: tearing down its port forwarding stalled the
+    // menus).
+    void applyNetName(Frontend& fe) {
+        const auto trimmed = std::string(str::trim(m_netName));
+        m_netName = trimmed.empty() ? netName(fe) : trimmed;
+        if (fe.profile && m_netName != netName(fe)) {
+            fe.profile->netName = m_netName;
+            fe.saveProfile();
+        }
+        if (fe.ctx.netGame && !fe.ctx.netGame->inSession())
+            fe.ctx.netGame->setPlayerName(m_netName);
     }
 
     std::vector<std::string> rows(Frontend& fe) const {

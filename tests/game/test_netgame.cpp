@@ -223,6 +223,29 @@ TEST(NetGame, HostJoinChatReadyCountdownAndState) {
     EXPECT_EQ(*notice, "The Host has quit");
 }
 
+// The sessions page gives a renamed driver to the NetGame it already has
+// (no new one): the next host or join uses the new name.
+TEST(NetGame, ANameSetBeforeHostingOrJoiningIsUsed) {
+    NetGame host(options("Old host", 4));
+    NetGame client(options("Old client", 4));
+    host.setPlayerName("New host");
+    client.setPlayerName("New client");
+    std::string err;
+    ASSERT_TRUE(host.host(circuitConfig(), {"", "", 4, true}, {"vpbug", 1, 0}, &err)) << err;
+    ASSERT_TRUE(client.join(std::format("127.0.0.1:{}", basePort() + 4), "", {"vpcab", 0, 1}, &err)) << err;
+    ASSERT_TRUE(pump({&host, &client},
+                     [&] { return client.phase() == NetGame::Phase::Lobby && host.players().size() == 2; }));
+    auto nameOf = [](const NetGame& g, std::uint8_t id) {
+        for (const auto& p : g.players())
+            if (p.id == id)
+                return p.name;
+        return std::string("?");
+    };
+    EXPECT_EQ(nameOf(host, host.localId()), "New host");
+    EXPECT_EQ(nameOf(host, client.localId()), "New client");
+    EXPECT_EQ(nameOf(client, host.localId()), "New host");
+}
+
 TEST(NetGame, LanDiscoveryPasswordAndKick) {
     NetGame host(options("Hosty", 2));
     NetGame browser(options("Browser", 2));

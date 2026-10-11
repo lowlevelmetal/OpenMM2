@@ -167,6 +167,9 @@ public:
               std::string* error = nullptr);
     // Leaves the session (as host: ends it for everyone). Stops port forwarding.
     void leave();
+    // The name the next host() or join() uses (a session in progress keeps
+    // the one it started with).
+    void setPlayerName(std::string name) { m_options.playerName = std::move(name); }
     // Services the network. Call every frame while a NetGame exists.
     void update();
 
