@@ -44,6 +44,11 @@
     <display_length compare="ge">768</display_length>
   </requires>
   <releases>
+    <release version="0.4.2" date="2026-10-10" type="development">
+      <description>
+        <p>The multiplayer net name is used as typed, without having to press Enter, and changing it no longer stalls the menus.</p>
+      </description>
+    </release>
     <release version="0.4.1" date="2026-10-10" type="development">
       <description>
         <p>Multiplayer fixes: a late network message from one race can no longer stop a player's car responding in the next, a host's 25-character password can be typed by joiners, and changing the shared traffic settings clears the joiners' ready.</p>
