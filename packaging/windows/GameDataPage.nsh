@@ -9,6 +9,9 @@
 ; Inputs/outputs (declared in openmm2.nsi):
 ;   $GameSource  chosen path, "" to skip
 ;   $CopyData    1 to import the archives into $INSTDIR\gamedata
+; Input (declared here):
+;   $GD_NextIsInstall  1 when installation starts right after this page (an
+;                      update skips the directory page), so Next reads Install
 ; Requires the section index ${SecGameData} and the define STAGE_DIR.
 
 !include nsDialogs.nsh
@@ -38,6 +41,7 @@ Var GD_Folder
 Var GD_CopyState  ; 0/1
 Var GD_Initialized
 Var GD_ExeReady
+Var GD_NextIsInstall
 
 ; Fills the state from $GameSource (previous install or /SOURCE=) or from
 ; whatever can be found on this machine.
@@ -123,6 +127,10 @@ Function GameDataPageCreate
     Pop $GD_Dialog
     ${If} $GD_Dialog == error
         Abort
+    ${EndIf}
+    ${If} $GD_NextIsInstall == 1
+        GetDlgItem $0 $HWNDPARENT 1
+        SendMessage $0 ${WM_SETTEXT} 0 "STR:$(^InstallBtn)"
     ${EndIf}
 
     ${NSD_CreateLabel} 0 0 100% 18u "OpenMM2 contains no game content. It uses the files from your original Midtown Madness 2 disc. Where are they?"

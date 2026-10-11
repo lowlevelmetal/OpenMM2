@@ -45,6 +45,14 @@ Run `OpenMM2-<version>-windows-x86_64-setup.exe` (64-bit Windows 7 or later).
 The installer asks where your Midtown Madness 2 files are and checks them
 before continuing. You can also skip that step; OpenMM2 asks on first start.
 
+To update, run the new version's installer. It finds the installed version
+and updates it in its folder, keeping your settings, driver profiles,
+replays and game data; the game data and shortcut choices are filled in from
+last time, so an update is Next, Next, Install. Files that the new version no
+longer ships are removed. Running the same version again repairs the
+installation, and an older version asks before it replaces a newer one. Close
+OpenMM2 first: setup waits (Retry/Cancel) until it is closed.
+
 Silent installs accept:
 
 | Option | Meaning |
@@ -53,9 +61,27 @@ Silent installs accept:
 | `/D=C:\Games\OpenMM2` | install directory (must be last, unquoted) |
 | `/SOURCE=<path>` | game data: disc image, drive root such as `D:\`, or install folder |
 | `/COPYDATA` | copy the game archives to `<install dir>\gamedata` |
+| `/ALLOWDOWNGRADE` | replace a newer installed version (refused otherwise) |
 
-The exit code is 0 on success and 2 if the program was installed but the
-`/SOURCE` was rejected.
+| Exit code | Meaning |
+| --- | --- |
+| 0 | success |
+| 1 | cancelled or failed (for example, another program held a file open) |
+| 2 | installed, but the `/SOURCE` game data was rejected (OpenMM2 asks on first start) |
+| 3 | nothing changed: a newer version is installed and `/ALLOWDOWNGRADE` was not given |
+| 4 | nothing changed: OpenMM2 is running |
+
+The uninstaller also stops while OpenMM2 is running (exit code 4 when run as
+`uninstall.exe /S _?=<install dir>`; otherwise it restarts itself from a
+temporary copy and returns at once).
+
+A silent update keeps the last installation's choices: game data, shortcuts
+and developer tools. `/D=` naming another folder moves the installation:
+setup removes the old folder's program files and uninstaller but keeps its
+`gamedata` folder and `openmm2-install.ini` (and keeps using that game data
+unless `/SOURCE` is given), so the old folder stays only if it holds them.
+The installer lists what it installed in `install-manifest.txt`, which the
+next update and the uninstaller use to remove exactly those files.
 
 The portable ZIP (`OpenMM2-<version>-windows-x86_64-portable.zip`) needs no
 installation: unpack it anywhere. Because it contains `portable.txt`, settings

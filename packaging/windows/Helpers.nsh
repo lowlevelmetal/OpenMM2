@@ -2,6 +2,7 @@
 ;
 ; All functions preserve the registers they use, except for documented
 ; outputs. They rely only on plug-ins shipped with NSIS (System, nsExec).
+; Functions named "un.X" are the uninstaller's copies of X.
 
 !ifndef OPENMM2_HELPERS_NSH
 !define OPENMM2_HELPERS_NSH
@@ -40,6 +41,250 @@ Function ${un}QuoteArg
 FunctionEnd
 !macroend
 !insertmacro OPENMM2_QUOTEARG ""
+
+; ---------------------------------------------------------------------------
+; SameDir: 1 when two folder paths name the same folder, comparing without
+; case and without a trailing backslash; otherwise 0. (Short 8.3 names or
+; "..\" components are not resolved.)
+;   Push <path a>
+;   Push <path b>
+;   Call SameDir / un.SameDir
+;   Pop <1 or 0>
+!macro OPENMM2_SAMEDIR un
+Function ${un}SameDir
+    Exch $1 ; b
+    Exch
+    Exch $0 ; a
+    Push $2
+    StrCpy $2 $0 1 -1
+    ${If} $2 == "\"
+        StrCpy $0 $0 -1
+    ${EndIf}
+    StrCpy $2 $1 1 -1
+    ${If} $2 == "\"
+        StrCpy $1 $1 -1
+    ${EndIf}
+    ${If} $0 == $1 ; case-insensitive
+    ${AndIf} $0 != ""
+        StrCpy $0 1
+    ${Else}
+        StrCpy $0 0
+    ${EndIf}
+    Pop $2
+    Pop $1
+    Exch $0
+FunctionEnd
+!macroend
+!insertmacro OPENMM2_SAMEDIR ""
+!insertmacro OPENMM2_SAMEDIR "un."
+
+; ---------------------------------------------------------------------------
+; IsFileInUse: 1 when another process has the file open without letting
+; others write to it, which is the case for the executable of a running
+; program (and for a program that holds the file open, such as a scanner);
+; otherwise 0, also for a missing file. Asks Windows by opening the file for
+; writing (without changing it) instead of looking for process names.
+;   Push <path>
+;   Call IsFileInUse / un.IsFileInUse
+;   Pop <1 or 0>
+!define OPENMM2_GENERIC_WRITE 0x40000000
+!define OPENMM2_FILE_SHARE_ALL 7 ; read, write and delete
+!define OPENMM2_OPEN_EXISTING 3
+!define OPENMM2_ERROR_SHARING_VIOLATION 32
+!define OPENMM2_ERROR_LOCK_VIOLATION 33
+!macro OPENMM2_ISFILEINUSE un
+Function ${un}IsFileInUse
+    Exch $0
+    Push $1
+    Push $2
+    StrCpy $2 0
+    ${If} ${FileExists} "$0"
+        System::Call 'kernel32::CreateFileW(w r0, i ${OPENMM2_GENERIC_WRITE}, i ${OPENMM2_FILE_SHARE_ALL}, p 0, i ${OPENMM2_OPEN_EXISTING}, i 0, p 0) p .r1 ?e'
+        Pop $2 ; GetLastError()
+        ${If} $1 = -1 ; INVALID_HANDLE_VALUE
+            ${If} $2 = ${OPENMM2_ERROR_SHARING_VIOLATION}
+            ${OrIf} $2 = ${OPENMM2_ERROR_LOCK_VIOLATION}
+                StrCpy $2 1
+            ${Else}
+                StrCpy $2 0 ; e.g. access denied: not a running program
+            ${EndIf}
+        ${Else}
+            System::Call 'kernel32::CloseHandle(p r1)'
+            StrCpy $2 0
+        ${EndIf}
+    ${EndIf}
+    StrCpy $0 $2
+    Pop $2
+    Pop $1
+    Exch $0
+FunctionEnd
+!macroend
+!insertmacro OPENMM2_ISFILEINUSE ""
+!insertmacro OPENMM2_ISFILEINUSE "un."
+
+; ---------------------------------------------------------------------------
+; IsSafeManifestEntry: 1 when a line of install-manifest.txt is a plain path
+; relative to the install directory that stays inside it and is not the game
+; data or setup's game data setting; otherwise 0. setup only ever writes plain
+; ASCII names (GenerateFileList.cmake), so anything unusual is refused rather
+; than interpreted: drive letters and streams (":"), wildcards, "/", "~"
+; (8.3 short names such as GAMEDA~1), "." or ".." components, and leading or
+; trailing dots, spaces or backslashes (Windows strips trailing dots and
+; spaces, so "gamedata.\x" would name gamedata\x).
+;   Push <entry>
+;   Call IsSafeManifestEntry / un.IsSafeManifestEntry
+;   Pop <1 or 0>
+!macro OPENMM2_ISSAFEMANIFESTENTRY un
+Function ${un}IsSafeManifestEntry
+    Exch $0 ; entry
+    Push $1 ; result
+    Push $2
+    Push $3
+    Push $4
+    StrCpy $1 1
+    StrLen $3 $0
+    ${If} $3 == 0
+        StrCpy $1 0
+    ${EndIf}
+    StrCpy $2 $0 1
+    ${If} $2 == "\"
+    ${OrIf} $2 == "."
+    ${OrIf} $2 == " "
+        StrCpy $1 0
+    ${EndIf}
+    StrCpy $2 $0 1 -1
+    ${If} $2 == "\"
+    ${OrIf} $2 == "."
+    ${OrIf} $2 == " "
+        StrCpy $1 0
+    ${EndIf}
+    StrCpy $4 0
+    ${DoWhile} $4 < $3
+        StrCpy $2 $0 1 $4
+        ${If} $2 == ":"
+        ${OrIf} $2 == "*"
+        ${OrIf} $2 == "?"
+        ${OrIf} $2 == "/"
+        ${OrIf} $2 == "~"
+        ${OrIf} $2 == "<"
+        ${OrIf} $2 == ">"
+        ${OrIf} $2 == "|"
+        ${OrIf} $2 == '"'
+            StrCpy $1 0
+        ${EndIf}
+        StrCpy $2 $0 2 $4
+        ${If} $2 == ".."
+        ${OrIf} $2 == "\\"
+        ${OrIf} $2 == "\."
+        ${OrIf} $2 == ".\"
+        ${OrIf} $2 == " \"
+        ${OrIf} $2 == "\ "
+            StrCpy $1 0
+        ${EndIf}
+        IntOp $4 $4 + 1
+    ${Loop}
+    ; Never the game data or the files setup manages itself (comparisons
+    ; ignore case).
+    StrCpy $2 $0 9
+    ${If} $0 == "gamedata"
+    ${OrIf} $2 == "gamedata\"
+    ${OrIf} $0 == "openmm2-install.ini"
+    ${OrIf} $0 == "install-manifest.txt"
+        StrCpy $1 0
+    ${EndIf}
+    StrCpy $0 $1
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Exch $0
+FunctionEnd
+!macroend
+!insertmacro OPENMM2_ISSAFEMANIFESTENTRY ""
+!insertmacro OPENMM2_ISSAFEMANIFESTENTRY "un."
+
+; ---------------------------------------------------------------------------
+; RemoveListedFiles: removes what <dir>\install-manifest.txt lists: one path
+; relative to <dir> per line, ";" starts a comment line. After each file the
+; folders it was in are removed if they are empty (never recursively), so
+; folders with anything else in them stay. Unsafe entries are skipped (see
+; IsSafeManifestEntry). Finally the manifest itself is deleted. Does nothing
+; when there is no manifest.
+;   Push <dir>
+;   Call RemoveListedFiles / un.RemoveListedFiles
+!macro OPENMM2_REMOVELISTEDFILES un
+Function ${un}RemoveListedFiles
+    Exch $0 ; dir
+    Push $1 ; file handle
+    Push $2 ; entry
+    Push $3
+    Push $4
+    Push $5
+    ClearErrors
+    FileOpen $1 "$0\install-manifest.txt" r
+    ${IfNot} ${Errors}
+        ${Do}
+            ClearErrors
+            FileRead $1 $2
+            ${If} ${Errors}
+                ${ExitDo} ; end of file
+            ${EndIf}
+            ${Do} ; strip the line ending
+                StrCpy $3 $2 1 -1
+                ${If} $3 == "$\r"
+                ${OrIf} $3 == "$\n"
+                    StrCpy $2 $2 -1
+                ${Else}
+                    ${ExitDo}
+                ${EndIf}
+            ${Loop}
+            StrCpy $3 $2 1
+            ${If} $2 == ""
+            ${OrIf} $3 == ";"
+                ${Continue}
+            ${EndIf}
+            Push $2
+            Call ${un}IsSafeManifestEntry
+            Pop $3
+            ${If} $3 != 1
+                DetailPrint "Skipped unexpected entry in install-manifest.txt: $2"
+                ${Continue}
+            ${EndIf}
+            Delete "$0\$2"
+            ; Its folders, innermost first, while they are empty.
+            StrCpy $3 $2
+            ${Do}
+                StrLen $4 $3
+                ${Do} ; $4 = position of the last backslash, or -1
+                    IntOp $4 $4 - 1
+                    ${If} $4 < 0
+                        ${ExitDo}
+                    ${EndIf}
+                    StrCpy $5 $3 1 $4
+                    ${If} $5 == "\"
+                        ${ExitDo}
+                    ${EndIf}
+                ${Loop}
+                ${If} $4 <= 0
+                    ${ExitDo}
+                ${EndIf}
+                StrCpy $3 $3 $4
+                RMDir "$0\$3"
+            ${Loop}
+        ${Loop}
+        FileClose $1
+        Delete "$0\install-manifest.txt"
+    ${EndIf}
+    Pop $5
+    Pop $4
+    Pop $3
+    Pop $2
+    Pop $1
+    Pop $0
+FunctionEnd
+!macroend
+!insertmacro OPENMM2_REMOVELISTEDFILES ""
+!insertmacro OPENMM2_REMOVELISTEDFILES "un."
 
 ; ---------------------------------------------------------------------------
 ; WriteUtf8File: writes a string to a file as UTF-8 without BOM. (WriteINIStr
