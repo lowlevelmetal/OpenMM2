@@ -17,10 +17,12 @@ namespace {
 
 // Each test file has its own block of ports, all below 49152: Windows hands
 // out and reserves ports in its dynamic range (49152-65535), where a bind can
-// fail. Within a block, distinct ports per process for parallel ctest runs.
+// fail. Within a block, distinct ports per process for parallel ctest runs:
+// a process here uses its base port, +1 (LAN discovery), +2 and +4, so the
+// slots are 6 ports apart (neighbouring processes get neighbouring slots).
 std::uint16_t basePort() {
     static const std::uint16_t port = static_cast<std::uint16_t>(
-        41000 + test::processPortSlot(2000) * 2);
+        41000 + test::processPortSlot(666) * 6);
     return port;
 }
 

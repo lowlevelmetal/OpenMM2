@@ -5,7 +5,9 @@
 // its own, several at a time; a slot from the clock let two of them pick the
 // same port now and then (a bind failure in NetGameLobby on CI). Process ids
 // of processes running at the same time differ, and on Linux they are handed
-// out in order, so a slot from the id is distinct for them.
+// out in order, so a slot from the id is distinct for them. Neighbouring
+// processes get neighbouring slots: a block's slot spacing must cover every
+// port one process uses.
 
 #include <cstdint>
 
