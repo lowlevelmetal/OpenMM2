@@ -471,7 +471,9 @@ Function RunWithProgress
     System::Free $4
     System::Call 'kernel32::CloseHandle(p r6)'
 
-    System::Alloc 4096
+    ; Read at most NSIS_MAX_STRLEN - 1 bytes at a time, so that a chunk always
+    ; fits an NSIS string.
+    System::Alloc ${NSIS_MAX_STRLEN}
     Pop $7
     ${Do}
         System::Call 'kernel32::WaitForSingleObject(p r5, i 100) i .r0'
@@ -483,14 +485,19 @@ Function RunWithProgress
             ${OrIf} $2 == 0
                 ${ExitDo}
             ${EndIf}
-            System::Call 'kernel32::ReadFile(p r1, p r7, i 4095, *i .r2, p 0) i .r3'
+            IntOp $4 ${NSIS_MAX_STRLEN} - 1
+            System::Call 'kernel32::ReadFile(p r1, p r7, i r4, *i .r2, p 0) i .r3'
             ${If} $3 == 0
             ${OrIf} $2 == 0
                 ${ExitDo}
             ${EndIf}
             IntOp $3 $7 + $2
             System::Call '*$3(&i1 0)'
-            System::Call '*$7(&m4096 .r3)'
+            ; UTF-8 (what OpenMM2 prints) to an NSIS string. Not with
+            ; '*$7(&m<size> .r3)': System gives that output a buffer of
+            ; NSIS_MAX_STRLEN bytes whatever the size, and copies <size> bytes
+            ; into it (with 4096 it overran the heap and setup could crash).
+            System::Call 'kernel32::MultiByteToWideChar(i ${CP_UTF8}, i 0, p r7, i -1, w .r3, i ${NSIS_MAX_STRLEN})'
             StrCpy $RWP_Pending "$RWP_Pending$3"
             Call RWP_ProcessLines
         ${Loop}
