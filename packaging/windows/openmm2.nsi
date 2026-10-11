@@ -20,7 +20,9 @@
 ;   openmm2.exe --check-source <path>          exit 0 when usable; prints a
 ;                                              one-line reason otherwise
 ;   openmm2.exe --import-source <path> <dir>   copies the archives, printing
-;                                              "progress <0-100>" lines
+;                                              "progress <0-100>" lines; on
+;                                              failure it removes its partial
+;                                              (.part) files itself
 ; and the installer writes $INSTDIR\openmm2-install.ini (UTF-8):
 ;   [GameData]
 ;   Source=<path>
@@ -270,6 +272,12 @@ Function InstallGameData
     StrCpy $R2 $GameSource
     ${If} $CopyData == 1
         StrCpy $R3 "$INSTDIR\gamedata"
+        ; A folder that is already there holds an earlier copy (an update or
+        ; repair): a failed copy must never remove it.
+        StrCpy $R5 0
+        ${If} ${FileExists} "$R3\*.*"
+            StrCpy $R5 1
+        ${EndIf}
         DetailPrint "Copying game data to $R3"
         Push $R3
         Call QuoteArg
@@ -282,8 +290,26 @@ Function InstallGameData
             StrCpy $R2 $R3
         ${Else}
             DetailPrint "Copying failed (exit code $0)"
-            RMDir /r "$R3"
-            MessageBox MB_ICONEXCLAMATION|MB_OK "Copying the game data failed. ${PRODUCT} will read it from $GameSource instead." /SD IDOK
+            ${If} $R5 == 0
+                ; Everything in the folder came from this copy.
+                RMDir /r "$R3"
+                MessageBox MB_ICONEXCLAMATION|MB_OK "Copying the game data failed. ${PRODUCT} will read it from $GameSource instead." /SD IDOK
+            ${Else}
+                ; The import removed its partial files; the earlier copy is
+                ; untouched. Keep using it if it is complete.
+                Push $R3
+                Call QuoteArg
+                Pop $R4
+                nsExec::ExecToStack '"$INSTDIR\openmm2.exe" --check-source $R4'
+                Pop $0
+                Pop $1
+                ${If} $0 == 0
+                    StrCpy $R2 $R3
+                    MessageBox MB_ICONEXCLAMATION|MB_OK "Copying the game data failed. ${PRODUCT} keeps using the copy that is already in $R3." /SD IDOK
+                ${Else}
+                    MessageBox MB_ICONEXCLAMATION|MB_OK "Copying the game data failed. ${PRODUCT} will read it from $GameSource instead." /SD IDOK
+                ${EndIf}
+            ${EndIf}
         ${EndIf}
     ${EndIf}
 
