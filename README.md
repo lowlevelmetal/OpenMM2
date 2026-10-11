@@ -196,6 +196,18 @@ The installer is built from `packaging/windows/openmm2.nsi` and needs NSIS 3
 `makensis` also works when cross-compiling. The icon artwork is in
 `packaging/icons` (`render-icons.sh` regenerates the bitmaps from the SVG).
 
+`packaging/windows/test-installer.sh <build dir>` tests the installer under
+Wine: new installations, updates (also from the last release's installer),
+repair, downgrades, a running game, a failed game data copy, moving with
+`/D=`, uninstalling, and the wizard's pages. It uses synthetic game data, so
+it needs no game files. It needs Wine, a MinGW-w64 C compiler and makensis
+(`MAKENSIS=<path>`, or `MAKENSIS_WINE=1` with the Windows `makensis.exe`);
+the script's header lists its options. CI runs it on the MinGW build.
+
+```sh
+packaging/windows/test-installer.sh out/build/mingw-cross-release
+```
+
 ## mm2tool
 
 `mm2tool` is a developer tool for looking inside the game data:

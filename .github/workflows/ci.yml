@@ -159,10 +159,11 @@ jobs:
     steps:
       - name: Install build dependencies
         # Wine runs the determinism tests (the toolchain file makes it the
-        # tests' emulator when it is installed at configure time).
+        # tests' emulator when it is installed at configure time) and the
+        # installer tests (which also need diffutils).
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel git cmake ninja mingw-w64-gcc shaderc glslang wine
+            base-devel git cmake ninja mingw-w64-gcc shaderc glslang wine diffutils
 
       - uses: actions/checkout@v7
 
@@ -193,6 +194,33 @@ jobs:
         run: |
           wineboot --init
           ctest --preset mingw-cross-release -R '^Determinism[.]'
+
+      # NSIS is not packaged for Arch Linux: use the Windows makensis.exe
+      # through Wine (pinned by hash).
+      - name: Cache NSIS
+        uses: actions/cache@v6
+        with:
+          path: nsis-3.13
+          key: nsis-3.13-windows
+
+      # Installs, updates (also from the 0.4.0 installer), repair,
+      # downgrades, a running game, a failed game data copy, moving and
+      # uninstalling, and the wizard's pages, all under Wine with synthetic
+      # game data (packaging/windows/test-installer.sh).
+      - name: Test the installer under Wine
+        run: |
+          if [ ! -f nsis-3.13/makensis.exe ]; then
+            curl -fsSL --retry 3 -o nsis.zip \
+              https://downloads.sourceforge.net/project/nsis/NSIS%203/3.13/nsis-3.13.zip
+            echo "ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8  nsis.zip" | sha256sum -c -
+            cmake -E tar xf nsis.zip
+            rm nsis.zip
+          fi
+          # The update tests start from the last release's installer scripts.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch --no-tags --depth=1 origin tag v0.4.0
+          MAKENSIS="$PWD/nsis-3.13/makensis.exe" MAKENSIS_WINE=1 \
+            packaging/windows/test-installer.sh out/build/mingw-cross-release
 
       - name: Package
         run: cpack --preset mingw-portable

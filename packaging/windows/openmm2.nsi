@@ -8,6 +8,8 @@
 ;   -DTOOLS_FILES_NSH=<file>     (optional) same for the "tools" component
 ;   -DOUTFILE=<file>             installer to write
 ;   -DSOURCE_DIR=<dir>           repository root (licence, icons)
+; packaging/windows/test-installer.sh builds it the same way and tests
+; installs, updates and removal under Wine.
 ;
 ; Command line options, in addition to NSIS's /S (silent) and /D=<dir>:
 ;   /SOURCE=<path>     game data for silent installs: a disc image, a drive
